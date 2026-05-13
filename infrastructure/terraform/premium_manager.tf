@@ -41,7 +41,7 @@ resource "aws_lambda_function" "premium_manager" {
       # Environment prefix for dynamic resource naming
       ENV_PREFIX = var.environment
 
-      BACKEND_PORT = "8000"
+      BACKEND_PORT = tostring(var.premium_backend_port)
 
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
@@ -283,7 +283,7 @@ resource "aws_lambda_function" "premium_cleanup" {
       RDS_PASSWORD               = var.mysql_password
       RDS_DATABASE               = var.mysql_database
       ENV_PREFIX                 = var.environment
-      BACKEND_PORT               = "8000"
+      BACKEND_PORT               = tostring(var.premium_backend_port)
       # Cleanup-specific settings
       PREMIUM_IDLE_TIMEOUT_HOURS = "3"
     }

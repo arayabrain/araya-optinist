@@ -3528,6 +3528,42 @@ class TestGetHostPortForInstance:
 
             assert get_host_port_for_instance("i-test") == 32769
 
+    def test_raises_on_container_port_mismatch(self, mock_env_vars_premium):
+        """Bindings present but none matching the expected containerPort is
+        permanent config drift — must raise so the caller counts an error
+        rather than silently skipping every row."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 9000, "hostPort": 32700},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            with pytest.raises(RuntimeError, match="containerPort mismatch"):
+                get_host_port_for_instance("i-test")
+            # Must stop polling on first observation; not loop max_attempts.
+            assert mock_ecs.describe_tasks.call_count == 1
+
     def test_skips_non_running_task(self, mock_env_vars_premium):
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"

@@ -5112,19 +5112,19 @@ def get_host_port_for_instance(
     max_attempts: int = EphemeralPortConfig.RESOLVE_MAX_ATTEMPTS,
     delay: float = EphemeralPortConfig.RESOLVE_DELAY_SECONDS,
 ) -> Optional[int]:
-    """Resolve the host port bound to the studio container on instance_id.
+    """Resolve the studio container's host port on instance_id.
 
-    Returns None (soft-fail; caller skips this row) if the port cannot be
-    resolved within the poll window. networkBindings is briefly empty
-    while lastStatus == RUNNING, so we poll. Filters the binding by the
-    container's listen port to stay unambiguous if a future task def
-    adds a second port mapping.
+    Returns None if not resolvable within the poll window (networkBindings
+    is briefly empty after a task starts). Raises if bindings exist but
+    none match the expected containerPort — permanent config drift, not
+    transient.
     """
     cluster_name = get_required_env_var("CLUSTER_NAME")
     container_port = PremiumInstanceConfig.get_backend_port()
     ecs_client: "ECSClient" = boto3.client("ecs")
 
     last_err: Optional[str] = None
+    mismatch_error: Optional[str] = None
     for _ in range(max_attempts):
         try:
             ecs_container_instance_id = get_ecs_container_instance_id(
@@ -5147,24 +5147,37 @@ def get_host_port_for_instance(
             task_details = ecs_client.describe_tasks(
                 cluster=cluster_name, tasks=task_arns
             )
+            observed_container_ports: List[Any] = []
             for task in task_details.get("tasks", []):
                 if task.get("lastStatus") != ECSTaskStatus.RUNNING:
                     continue
                 for container in task.get("containers", []):
+                    bindings = container.get("networkBindings") or []
+                    for b in bindings:
+                        observed_container_ports.append(b.get("containerPort"))
                     match = next(
                         (
                             b
-                            for b in (container.get("networkBindings") or [])
+                            for b in bindings
                             if b.get("containerPort") == container_port
                         ),
                         None,
                     )
                     if match and match.get("hostPort"):
                         return int(match["hostPort"])
+            if observed_container_ports:
+                mismatch_error = (
+                    f"containerPort mismatch on {instance_id}: expected "
+                    f"{container_port}, got {observed_container_ports}"
+                )
+                break
             last_err = "task running but networkBindings still empty"
         except Exception as e:
             last_err = str(e)
         time.sleep(delay)
+
+    if mismatch_error:
+        raise RuntimeError(mismatch_error)
 
     print(
         f"get_host_port_for_instance: could not resolve port for "
