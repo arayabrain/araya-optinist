@@ -112,6 +112,10 @@ async def get_or_generate_thumbnail(
             abs_original_path = ThumbnailGenerator.resolve_source_path(
                 workspace_id, original_path
             )
+        except RemoteStorageLockError:
+            # Let upstream get_thumbnail map this to HTTP 423; swallowing it
+            # here would lose the lock semantics.
+            raise
         except Exception as e:
             logger.warning(f"Failed to download thumbnail source: {e}")
 
