@@ -772,8 +772,8 @@ def _finalize_expired_pending_releases_transaction(connection):
                 (uid, PremiumAssignment.PENDING_RELEASE),
             )
             print(
-                f"Finalized pending_release: deleted user {uid} -> "
-                f"instance {assignment['instance_id']}"
+                f"[premium-trace] finalize-deleted user={uid} "
+                f"instance={assignment['instance_id']}"
             )
 
     return expired
@@ -5672,15 +5672,40 @@ def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
 
 @with_transaction
 def update_user_activity_timestamp(connection, user_id: int) -> bool:
-    """Update activity timestamp for a user with proper transaction isolation"""
+    """Update activity timestamp for a user with proper transaction isolation.
+
+    Also restores a row from `pending_release` back to `active` so an explicit
+    heartbeat from one tab heals a soft-release triggered by another tab's
+    close. Mirrors the user_activity_middleware behaviour. The instance_state
+    guard preserves the dead-EC2 escape valve.
+    """
     with connection.cursor() as cursor:
         cursor.execute(
             """
             UPDATE premium_user_assignments
-            SET last_activity = CURRENT_TIMESTAMP
-            WHERE user_id = %s AND is_standby = 0
-        """,
-            (user_id,),
+            SET last_activity = CURRENT_TIMESTAMP,
+                status = CASE
+                    WHEN status = %s THEN %s
+                    ELSE status
+                END
+            WHERE user_id = %s
+            AND status IN (%s, %s)
+            AND is_standby = 0
+            AND (
+                status = %s
+                OR instance_state IS NULL
+                OR instance_state NOT IN
+                    ('terminated','shutting-down','stopped','stopping')
+            )
+            """,
+            (
+                PremiumAssignment.PENDING_RELEASE,
+                PremiumAssignment.ACTIVE,
+                user_id,
+                PremiumAssignment.ACTIVE,
+                PremiumAssignment.PENDING_RELEASE,
+                PremiumAssignment.ACTIVE,
+            ),
         )
         return cursor.rowcount > 0
 

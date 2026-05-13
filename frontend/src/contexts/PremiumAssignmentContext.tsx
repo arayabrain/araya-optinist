@@ -485,6 +485,8 @@ export const PremiumAssignmentProvider: React.FC<{
           instance_id: statusResponse.assignment.instance_id,
           assigned: true,
           is_shared: statusResponse.assignment.is_shared,
+          assignment_source:
+            statusResponse.assignment.assignment_source ?? "existing",
         }
         setState((prev) => ({
           ...prev,
@@ -665,6 +667,9 @@ export const PremiumAssignmentProvider: React.FC<{
   // Listen for premium release events from other tabs (Cases 54-56)
   useEffect(() => {
     const unsubscribe = tabSync.on("PREMIUM_RELEASED", () => {
+      // Backend has already released this assignment; drop the local token
+      // so a later logout/beforeunload doesn't beacon a now-invalid token.
+      beaconTokenRef.current = null
       setState((prev) => ({
         ...prev,
         assignmentResult: null,
@@ -795,6 +800,12 @@ export const PremiumAssignmentProvider: React.FC<{
 
   const contextValue: PremiumAssignmentContextType = {
     ...state,
+    // Override state.isPremiumUser (mirror-effect-driven) with the
+    // synchronously-computed value derived from currentUser. Closes the
+    // logout race where the mirror effect hasn't propagated yet on a
+    // same-tab sign-out → sign-in flow, causing useLogout's gate to bail
+    // with stale state.isPremiumUser=false
+    isPremiumUser,
     assign,
     release,
     getStatus,

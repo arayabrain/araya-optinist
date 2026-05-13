@@ -35,6 +35,7 @@ export interface PremiumAssignment {
   assigned_at: string
   status: string
   is_shared: boolean
+  assignment_source?: string
 }
 
 export interface PremiumStatusResult {
