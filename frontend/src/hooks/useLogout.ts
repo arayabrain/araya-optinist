@@ -6,6 +6,7 @@ import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 import { logout } from "store/slice/User/UserSlice"
 import { setLoggingOut } from "utils/axios"
 import { tabSync } from "utils/crossTabSync"
+import { flushErrors } from "utils/errorReporter"
 
 export const useLogout = () => {
   const dispatch = useDispatch()
@@ -23,6 +24,8 @@ export const useLogout = () => {
       if (broadcast) {
         tabSync.broadcastLogout()
       }
+
+      flushErrors()
 
       dispatch(logout())
       navigate("/login")

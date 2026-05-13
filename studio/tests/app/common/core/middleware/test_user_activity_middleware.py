@@ -808,3 +808,81 @@ class TestHeartbeatFailureTracking:
             call_args = mock_session.execute.call_args
             sql_text = str(call_args[0][0])
             assert "heartbeat_failures = 0" in sql_text
+
+
+class TestPremiumActivityRestoresPendingRelease:
+    """SQL widening — heartbeat restores `terminating` rows back to `active`.
+
+    These assertions guard the multi-tab close fix. The unit harness
+    mocks `session_scope`, so semantic SQL behaviour (which rows actually
+    match) is not exercised — that's covered by integration tests. Here we
+    assert the SQL shape itself, since the shape encodes the behaviour.
+    """
+
+    def setup_method(self):
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _logged_out_users,
+        )
+
+        _logged_out_users.clear()
+
+    def _execute_sync_update(self, rowcount=1):
+        """Run _update_premium_user_activity_sync under a mocked session.
+
+        Returns (result, sql_text). The mocked rowcount drives the boolean
+        return; sql_text is the raw textual SQL passed to session.execute.
+        """
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_premium_user_activity_sync,
+        )
+
+        mock_result = MagicMock()
+        mock_result.rowcount = rowcount
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = mock_result
+
+        mw_path = "studio.app.common.core.middleware.user_activity_middleware"
+        with patch(f"{mw_path}.session_scope") as mock_session_scope:
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            result = _update_premium_user_activity_sync(TEST_USER_ID)
+            sql_text = str(mock_session.execute.call_args[0][0])
+            return result, sql_text
+
+    def test_update_matches_active_and_terminating(self):
+        """Filter widened from `status='active'` to IN ('active','terminating')."""
+        _, sql_text = self._execute_sync_update()
+        assert "status IN ('active', 'terminating')" in sql_text
+
+    def test_update_writes_active_to_restore_pending_release(self):
+        """SET clause writes status='active' so terminating rows flip back."""
+        _, sql_text = self._execute_sync_update()
+        # The SET-clause assignment, not the WHERE-clause comparison.
+        assert "SET last_activity = :now" in sql_text
+        assert "status = 'active'" in sql_text
+
+    def test_update_guards_against_known_dead_instance_states(self):
+        """instance_state guard prevents restoring known-dead rows
+        (preserves the existing dead-EC2 escape valve)."""
+        _, sql_text = self._execute_sync_update()
+        assert "instance_state NOT IN" in sql_text
+        for dead_state in ("terminated", "shutting-down", "stopped", "stopping"):
+            assert dead_state in sql_text
+
+    def test_update_allows_active_rows_unconditionally(self):
+        """OR-branch on `status = 'active'` skips the instance_state guard
+        for already-active rows (frontend handles instance-unreachable)."""
+        _, sql_text = self._execute_sync_update()
+        # The full OR-branch — the guard is gated only on terminating rows.
+        assert "OR instance_state IS NULL" in sql_text
+
+    def test_returns_true_when_row_matched(self):
+        """rowcount > 0 → returns True (row was updated or restored)."""
+        result, _ = self._execute_sync_update(rowcount=1)
+        assert result is True
+
+    def test_returns_false_when_no_row_matched(self):
+        """rowcount == 0 → returns False (no row, or escape valve blocked)."""
+        result, _ = self._execute_sync_update(rowcount=0)
+        assert result is False

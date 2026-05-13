@@ -613,6 +613,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = var.environment
         },
         {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${local.env_prefix}-cloud-taskdef"
         },
@@ -801,8 +805,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"             = "/ecs/${local.env_prefix}-cloud-taskdef"
-          "mode"                      = "non-blocking"
-          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "awslogs-multiline-pattern" = "^\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
           "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
@@ -873,6 +876,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "ENV_PREFIX"
           value = var.environment
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
@@ -1045,7 +1052,7 @@ resource "aws_ecs_task_definition" "premium" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"             = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
-          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "awslogs-multiline-pattern" = "^\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
           "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"

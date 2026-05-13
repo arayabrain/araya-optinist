@@ -89,6 +89,33 @@ phases:
                 exit 1
               fi
 
+      - name: ValidateNoCredentialLeak
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "=== Validating no credential leak in AMI ==="
+              FAILED=0
+              # Check for AWS credential/config directories
+              for dir in /root/.aws /home/*/.aws; do
+                if [ -d "$dir" ]; then
+                  echo "FAIL: AWS credential directory found: $dir"
+                  FAILED=1
+                fi
+              done
+              # Check for AWS credential env vars in persistent files
+              if grep -rq 'AWS_ACCESS_KEY_ID\|AWS_SECRET_ACCESS_KEY\|AWS_SESSION_TOKEN' \
+                 /etc/environment /etc/profile.d/ 2>/dev/null; then
+                echo "FAIL: AWS credential env vars found in system files"
+                FAILED=1
+              fi
+              if [ $FAILED -ne 0 ]; then
+                echo "Credential leak detected — aborting AMI build"
+                exit 1
+              fi
+              echo "OK: No credential leak detected"
+
   - name: test
     steps:
       - name: TestBakeMarkerPersisted
@@ -133,3 +160,30 @@ phases:
               else
                 echo "WARN: AWS CLI API call failed (expected if no instance role during test)"
               fi
+
+      - name: TestNoCredentialLeak
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "=== Testing no credential leak persisted in AMI ==="
+              FAILED=0
+              # Verify credential directories were not baked into the AMI
+              for dir in /root/.aws /home/*/.aws; do
+                if [ -d "$dir" ]; then
+                  echo "FAIL: AWS credential directory persisted in AMI: $dir"
+                  FAILED=1
+                fi
+              done
+              # Verify no credential env vars in persistent files
+              if grep -rq 'AWS_ACCESS_KEY_ID\|AWS_SECRET_ACCESS_KEY\|AWS_SESSION_TOKEN' \
+                 /etc/environment /etc/profile.d/ 2>/dev/null; then
+                echo "FAIL: AWS credential env vars persisted in AMI"
+                FAILED=1
+              fi
+              if [ $FAILED -ne 0 ]; then
+                echo "Credential leak persisted in AMI — build must be rejected"
+                exit 1
+              fi
+              echo "OK: No credential leak persisted in AMI"

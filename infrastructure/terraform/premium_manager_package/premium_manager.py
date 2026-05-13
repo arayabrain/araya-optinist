@@ -772,8 +772,8 @@ def _finalize_expired_pending_releases_transaction(connection):
                 (uid, PremiumAssignment.PENDING_RELEASE),
             )
             print(
-                f"Finalized pending_release: deleted user {uid} -> "
-                f"instance {assignment['instance_id']}"
+                f"[premium-trace] finalize-deleted user={uid} "
+                f"instance={assignment['instance_id']}"
             )
 
     return expired
@@ -2541,7 +2541,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
         response = elbv2.create_target_group(
             Name=target_group_name,
             Protocol="HTTP",
-            Port=8000,
+            Port=PremiumInstanceConfig.get_backend_port(),
             VpcId=vpc_id,
             HealthCheckPath="/health",
             HealthCheckProtocol="HTTP",
@@ -2678,6 +2678,7 @@ def assign_premium_user(
 
     ec2: "EC2Client" = boto3.client("ec2")
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    backend_port = PremiumInstanceConfig.get_backend_port()
 
     try:
         vpc_id = get_required_env_var("VPC_ID")
@@ -3388,7 +3389,7 @@ def assign_premium_user(
             target_group_response = elbv2.create_target_group(
                 Name=tg_name,
                 Protocol="HTTP",
-                Port=8000,
+                Port=backend_port,
                 VpcId=vpc_id,
                 HealthCheckPath="/health",
                 HealthCheckProtocol="HTTP",
@@ -3410,9 +3411,15 @@ def assign_premium_user(
             _enable_sticky_sessions(elbv2, target_group_arn)
 
             # 8. Register instance to target group
+            print(
+                f"[premium-tg-mutate] site=assign action=register "
+                f"user={user_id} instance={instance_id} "
+                f"tg={target_group_arn} "
+                f"port={backend_port}"
+            )
             elbv2.register_targets(
                 TargetGroupArn=target_group_arn,
-                Targets=[{"Id": instance_id, "Port": 8000}],
+                Targets=[{"Id": instance_id, "Port": backend_port}],
             )
 
         # Create ALB listener rule for user routing
@@ -3781,6 +3788,11 @@ def get_ecs_container_instance_id(
 
         if not container_instance_arns:
             print(f"No premium container instances found in cluster {cluster_name}")
+            print(
+                f"[premium-ecs-map] ec2={ec2_instance_id} "
+                f"cluster={cluster_name} result=None "
+                f"reason=no_premium_container_instances"
+            )
             return None
 
         print(
@@ -3797,13 +3809,29 @@ def get_ecs_container_instance_id(
             if container_instance.get("ec2InstanceId") == ec2_instance_id:
                 container_instance_id = container_instance.get("containerInstanceArn")
                 print(f" Found ECS container instance: {container_instance_id}")
+                print(
+                    f"[premium-ecs-map] ec2={ec2_instance_id} "
+                    f"cluster={cluster_name} "
+                    f"result={container_instance_id} reason=found"
+                )
                 return container_instance_id
 
         print(f"No ECS container instance found for EC2 instance " f"{ec2_instance_id}")
+        print(
+            f"[premium-ecs-map] ec2={ec2_instance_id} "
+            f"cluster={cluster_name} result=None "
+            f"reason=no_matching_ec2_in_premium_set "
+            f"premium_count={len(container_instance_arns)}"
+        )
         return None
 
     except Exception as e:
         print(f"Error mapping EC2 to ECS container instance: {str(e)}")
+        print(
+            f"[premium-ecs-map] ec2={ec2_instance_id} "
+            f"cluster={cluster_name} result=None "
+            f"reason=exception error={str(e)}"
+        )
         return None
 
 
@@ -4155,6 +4183,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
     # Import the utility function
     from premium_user_utils import can_migrate_user
 
+    backend_port = PremiumInstanceConfig.get_backend_port()
+
     # Check if user can be safely migrated (no active workflows)
     if not can_migrate_user(user_id):
         print(
@@ -4213,9 +4243,16 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                     new_target_group_arn = create_or_get_target_group(user_id, vpc_id)
 
                     # Register new instance to new target group
+                    print(
+                        f"[premium-tg-mutate] site=migrate.autoscaling "
+                        f"action=register user={user_id} "
+                        f"instance={new_instance_id} "
+                        f"tg={new_target_group_arn} "
+                        f"port={backend_port}"
+                    )
                     elbv2.register_targets(
                         TargetGroupArn=new_target_group_arn,
-                        Targets=[{"Id": new_instance_id, "Port": 8000}],
+                        Targets=[{"Id": new_instance_id, "Port": backend_port}],
                     )
 
                     # Check if old ALB rule exists, create new one if not
@@ -4316,15 +4353,29 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                             user_id, vpc_id
                         )
 
+                    print(
+                        f"[premium-tg-mutate] site=migrate.dedicated "
+                        f"action=deregister user={user_id} "
+                        f"instance={old_instance_id} "
+                        f"tg={old_target_group_arn} "
+                        f"port={backend_port}"
+                    )
                     elbv2.deregister_targets(
                         TargetGroupArn=old_target_group_arn,
-                        Targets=[{"Id": old_instance_id, "Port": 8000}],
+                        Targets=[{"Id": old_instance_id, "Port": backend_port}],
                     )
 
                     # Register to new instance (same target group)
+                    print(
+                        f"[premium-tg-mutate] site=migrate.dedicated "
+                        f"action=register user={user_id} "
+                        f"instance={new_instance_id} "
+                        f"tg={old_target_group_arn} "
+                        f"port={backend_port}"
+                    )
                     elbv2.register_targets(
                         TargetGroupArn=old_target_group_arn,
-                        Targets=[{"Id": new_instance_id, "Port": 8000}],
+                        Targets=[{"Id": new_instance_id, "Port": backend_port}],
                     )
 
                     # Update RDS assignment
@@ -5672,15 +5723,40 @@ def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
 
 @with_transaction
 def update_user_activity_timestamp(connection, user_id: int) -> bool:
-    """Update activity timestamp for a user with proper transaction isolation"""
+    """Update activity timestamp for a user with proper transaction isolation.
+
+    Also restores a row from `pending_release` back to `active` so an explicit
+    heartbeat from one tab heals a soft-release triggered by another tab's
+    close. Mirrors the user_activity_middleware behaviour. The instance_state
+    guard preserves the dead-EC2 escape valve.
+    """
     with connection.cursor() as cursor:
         cursor.execute(
             """
             UPDATE premium_user_assignments
-            SET last_activity = CURRENT_TIMESTAMP
-            WHERE user_id = %s AND is_standby = 0
-        """,
-            (user_id,),
+            SET last_activity = CURRENT_TIMESTAMP,
+                status = CASE
+                    WHEN status = %s THEN %s
+                    ELSE status
+                END
+            WHERE user_id = %s
+            AND status IN (%s, %s)
+            AND is_standby = 0
+            AND (
+                status = %s
+                OR instance_state IS NULL
+                OR instance_state NOT IN
+                    ('terminated','shutting-down','stopped','stopping')
+            )
+            """,
+            (
+                PremiumAssignment.PENDING_RELEASE,
+                PremiumAssignment.ACTIVE,
+                user_id,
+                PremiumAssignment.ACTIVE,
+                PremiumAssignment.PENDING_RELEASE,
+                PremiumAssignment.ACTIVE,
+            ),
         )
         return cursor.rowcount > 0
 
