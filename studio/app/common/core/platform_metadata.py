@@ -74,9 +74,14 @@ def _get_ecs_instance_id() -> str:
         if not task_arn or not cluster_arn:
             return NO_ECS_INSTANCE_DEFAULT
 
+        # Extract region from the task ARN
+        # (arn:aws:ecs:region:account:task/cluster/id)
+        arn_parts = task_arn.split(":")
+        region = arn_parts[3] if len(arn_parts) > 3 else None
+
         import boto3
 
-        ecs = boto3.client("ecs")
+        ecs = boto3.client("ecs", region_name=region)
         tasks_resp = ecs.describe_tasks(cluster=cluster_arn, tasks=[task_arn])
         tasks = tasks_resp.get("tasks", [])
         if not tasks:
