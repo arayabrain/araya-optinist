@@ -3380,3 +3380,810 @@ class TestCleanupGhostECSRegistrations:
                 force=True,
             )
             mock_ec2.describe_instances.assert_not_called()
+
+
+class TestGetHostPortForInstance:
+    """get_host_port_for_instance polls describe_tasks → networkBindings,
+    filters by CONTAINER_PORT, and soft-fails to None."""
+
+    def _ecs_client(self, mock_boto3):
+        mock_ecs = MagicMock()
+
+        def client_factory(service):
+            if service == "ecs":
+                return mock_ecs
+            return MagicMock()
+
+        mock_boto3.side_effect = client_factory
+        return mock_ecs
+
+    def test_returns_host_port_on_first_attempt(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 8000, "hostPort": 32769}
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32769
+            mock_ecs.describe_tasks.assert_called_once()
+
+    def test_polls_through_empty_bindings(self, mock_env_vars_premium):
+        """First call returns empty networkBindings; second returns populated."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ) as mock_sleep:
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.side_effect = [
+                {
+                    "tasks": [
+                        {
+                            "lastStatus": "RUNNING",
+                            "containers": [{"networkBindings": []}],
+                        }
+                    ]
+                },
+                {
+                    "tasks": [
+                        {
+                            "lastStatus": "RUNNING",
+                            "containers": [
+                                {
+                                    "networkBindings": [
+                                        {"containerPort": 8000, "hostPort": 32770}
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ]
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32770
+            assert mock_ecs.describe_tasks.call_count == 2
+            mock_sleep.assert_called()
+
+    def test_returns_none_after_max_attempts(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [{"networkBindings": []}],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test", max_attempts=3) is None
+            assert mock_ecs.describe_tasks.call_count == 3
+
+    def test_filters_by_container_port(self, mock_env_vars_premium):
+        """A second port mapping that is NOT containerPort 8000 must be ignored."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 9000, "hostPort": 32700},
+                                    {"containerPort": 8000, "hostPort": 32769},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32769
+
+    def test_raises_on_container_port_mismatch(self, mock_env_vars_premium):
+        """Bindings present but none matching the expected containerPort is
+        permanent config drift — must raise so the caller counts an error
+        rather than silently skipping every row."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 9000, "hostPort": 32700},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            with pytest.raises(RuntimeError, match="containerPort mismatch"):
+                get_host_port_for_instance("i-test")
+            # Must stop polling on first observation; not loop max_attempts.
+            assert mock_ecs.describe_tasks.call_count == 1
+
+    def test_skips_non_running_task(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1", "t2"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "STOPPED",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 8000, "hostPort": 99999}
+                                ]
+                            }
+                        ],
+                    },
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 8000, "hostPort": 32777}
+                                ]
+                            }
+                        ],
+                    },
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32777
+
+    def test_returns_none_when_no_container_instance_mapping(
+        self, mock_env_vars_premium
+    ):
+        """get_ecs_container_instance_id returning None (e.g. terminated EC2)
+        should drain attempts and return None, not raise."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value=None,
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-gone", max_attempts=2) is None
+
+
+class TestGetRegisteredPortsForInstance:
+    """get_registered_ports_for_instance returns the full set of (Port)
+    entries for instance_id in target_group_arn."""
+
+    def test_returns_all_ports_for_instance(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": [
+                    {"Target": {"Id": "i-test", "Port": 32768}},
+                    {"Target": {"Id": "i-test", "Port": 32769}},
+                    {"Target": {"Id": "i-test", "Port": 32770}},
+                ]
+            }
+
+            from premium_manager import get_registered_ports_for_instance
+
+            ports = get_registered_ports_for_instance("tg-arn", "i-test")
+            assert sorted(ports) == [32768, 32769, 32770]
+
+    def test_filters_other_instances(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": [
+                    {"Target": {"Id": "i-test", "Port": 32768}},
+                    {"Target": {"Id": "i-other", "Port": 32769}},
+                ]
+            }
+
+            from premium_manager import get_registered_ports_for_instance
+
+            assert get_registered_ports_for_instance("tg-arn", "i-test") == [32768]
+
+
+class TestReconcilePremiumTargetGroupPorts:
+    """reconcile_premium_target_group_ports compares each per-user TG's
+    registered ports against the actual host port and converges drift."""
+
+    def _make_row(self, user_id, instance_id, tg_arn):
+        return MockRow(
+            {
+                "user_id": user_id,
+                "instance_id": instance_id,
+                "target_group_arn": tg_arn,
+            }
+        )
+
+    def test_disabled_via_kill_switch(self, mock_env_vars_premium):
+        env = {**mock_env_vars_premium, "RECONCILE_PREMIUM_TG_PORTS_ENABLED": "false"}
+        with patch.dict("os.environ", env, clear=False), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_conn, patch("boto3.client") as mock_boto3:
+            from premium_manager import reconcile_premium_target_group_ports
+
+            result = reconcile_premium_target_group_ports()
+
+            assert result == {"disabled": True}
+            mock_conn.assert_not_called()
+            mock_boto3.assert_not_called()
+
+    def test_converged_no_drift_is_noop(self, mock_env_vars_premium):
+        """registered == actual_port: zero register/deregister calls."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=8000
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[8000],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["assignments_scanned"] == 1
+            assert summary["drift_detected"] == 0
+            assert summary["drift_fixed"] == 0
+            mock_elbv2.register_targets.assert_not_called()
+            mock_elbv2.deregister_targets.assert_not_called()
+
+    def test_drift_detected_and_fixed(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=32769
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["drift_detected"] == 1
+            assert summary["drift_fixed"] == 1
+            mock_elbv2.register_targets.assert_called_once_with(
+                TargetGroupArn="arn:tg/premium-12-tg",
+                Targets=[{"Id": "i-aaa", "Port": 32769}],
+            )
+            mock_elbv2.deregister_targets.assert_called_once_with(
+                TargetGroupArn="arn:tg/premium-12-tg",
+                Targets=[{"Id": "i-aaa", "Port": 32768}],
+            )
+
+    def test_register_then_deregister_order(self, mock_env_vars_premium):
+        """The reconciler must register first, then deregister, so the TG
+        is never empty mid-transition."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=32769
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            reconcile_premium_target_group_ports()
+
+            method_names = [call[0] for call in mock_elbv2.method_calls]
+            register_idx = method_names.index("register_targets")
+            deregister_idx = method_names.index("deregister_targets")
+            assert register_idx < deregister_idx
+
+    def test_partial_fix_both_ports_registered(self, mock_env_vars_premium):
+        """registered=[old, new], actual=new: no extra register; only
+        deregister old."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=32769
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768, 32769],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["drift_fixed"] == 1
+            mock_elbv2.register_targets.assert_not_called()
+            mock_elbv2.deregister_targets.assert_called_once_with(
+                TargetGroupArn="arn:tg/premium-12-tg",
+                Targets=[{"Id": "i-aaa", "Port": 32768}],
+            )
+
+    def test_multiple_stale_ports_all_deregistered(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=40000
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768, 32769, 32770],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            reconcile_premium_target_group_ports()
+
+            assert mock_elbv2.register_targets.call_count == 1
+            assert mock_elbv2.deregister_targets.call_count == 3
+
+    def test_skips_when_target_group_missing(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=False
+        ), patch(
+            "premium_manager.get_host_port_for_instance"
+        ) as mock_host_port:
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/gone")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["skipped_missing_tg"] == 1
+            assert summary["drift_detected"] == 0
+            mock_host_port.assert_not_called()
+            mock_elbv2.register_targets.assert_not_called()
+
+    def test_skips_when_host_port_unresolved(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=None
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["skipped_no_host_port"] == 1
+            mock_elbv2.register_targets.assert_not_called()
+            mock_elbv2.deregister_targets.assert_not_called()
+
+    def test_iam_deny_per_row_increments_errors_and_continues(
+        self, mock_env_vars_premium
+    ):
+        """First row's describe_target_health raises; second row's
+        succeeds. Errors counted once; second row still processed."""
+
+        def host_port_side_effect(instance_id, *a, **kw):
+            return 32769
+
+        def registered_side_effect(tg, iid):
+            if iid == "i-aaa":
+                raise Exception("AccessDeniedException")
+            return [32768]
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance",
+            side_effect=host_port_side_effect,
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            side_effect=registered_side_effect,
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[
+                    [
+                        self._make_row(12, "i-aaa", "arn:tg/premium-12-tg"),
+                        self._make_row(13, "i-bbb", "arn:tg/premium-13-tg"),
+                    ]
+                ]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["errors"] == 1
+            assert summary["drift_fixed"] == 1
+            assert summary["assignments_scanned"] == 2
+
+    def test_db_read_failure_returns_errors_summary(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection",
+            side_effect=Exception("RDS connection refused"),
+        ):
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["errors"] == 1
+            assert summary["drift_detected"] == 0
+            assert summary["assignments_scanned"] == 0
+
+
+class TestHandleScheduledMonitoringReconcile:
+    """handle_scheduled_monitoring must invoke the reconciler after
+    cleanup_ghost_ecs_registrations and propagate drift counts into
+    publish_premium_metrics."""
+
+    @staticmethod
+    def _lock_ctx(acquired: bool):
+        mock = MagicMock()
+        mock.return_value.__enter__.return_value = acquired
+        mock.return_value.__exit__.return_value = False
+        return mock
+
+    def _common_patches(self, mock_env_vars_premium, call_order, reconcile_summary):
+        return {
+            "env": patch.dict("os.environ", mock_env_vars_premium),
+            "lock": patch("premium_manager.distributed_lock", new=self._lock_ctx(True)),
+            "active": patch(
+                "premium_manager.count_active_premium_users", return_value=0
+            ),
+            "total": patch("premium_manager.count_total_premium_users", return_value=0),
+            "instances": patch(
+                "premium_manager.get_all_premium_instances_with_states",
+                return_value=[],
+            ),
+            "assigned": patch(
+                "premium_manager.get_assigned_users_for_instance", return_value=[]
+            ),
+            "scale": patch("premium_manager.scale_down_if_possible"),
+            "desired": patch("premium_manager.update_premium_service_desired_count"),
+            "cleanup_standby": patch(
+                "premium_manager.cleanup_failed_standby_instances"
+            ),
+            "register_orphans": patch(
+                "premium_manager.register_orphaned_stopped_instances"
+            ),
+            "terminate_aged": patch("premium_manager.terminate_aged_stopped_instances"),
+            "standby_count": patch("premium_manager.get_standby_count", return_value=0),
+            "finalize": patch(
+                "premium_manager.finalize_expired_pending_releases",
+                return_value=[],
+                side_effect=lambda: call_order.append("finalize") or [],
+            ),
+            "ghost": patch(
+                "premium_manager.cleanup_ghost_ecs_registrations",
+                side_effect=lambda: call_order.append("ghost"),
+            ),
+            "reconcile": patch(
+                "premium_manager.reconcile_premium_target_group_ports",
+                side_effect=lambda: call_order.append("reconcile") or reconcile_summary,
+            ),
+            "publish": patch(
+                "premium_manager.publish_premium_metrics",
+                side_effect=lambda **kw: call_order.append(("publish", kw)),
+            ),
+            "orphaned_ec2": patch("premium_manager.cleanup_orphaned_ec2_instances"),
+            "fix_shared": patch(
+                "premium_manager.fix_incorrect_is_shared_flags",
+                return_value={"fixed_count": 0},
+            ),
+            "shared_opt": patch(
+                "premium_manager.process_shared_instance_optimization",
+                return_value={
+                    "migrations_performed": 0,
+                    "shared_instances_found": 0,
+                },
+            ),
+        }
+
+    def _run(self, mock_env_vars_premium, call_order, reconcile_summary):
+        patches = self._common_patches(
+            mock_env_vars_premium, call_order, reconcile_summary
+        )
+        ctx_managers = [p for p in patches.values()]
+        for cm in ctx_managers:
+            cm.__enter__()
+        try:
+            from premium_manager import handle_scheduled_monitoring
+
+            return handle_scheduled_monitoring({"source": "test"}, None)
+        finally:
+            for cm in reversed(ctx_managers):
+                cm.__exit__(None, None, None)
+
+    def test_reconcile_runs_after_ghost_cleanup(self, mock_env_vars_premium):
+        call_order: list = []
+        result = self._run(
+            mock_env_vars_premium,
+            call_order,
+            {"drift_detected": 0, "drift_fixed": 0},
+        )
+
+        assert result["statusCode"] == 200
+        ghost_idx = call_order.index("ghost")
+        reconcile_idx = call_order.index("reconcile")
+        finalize_idx = call_order.index("finalize")
+        assert ghost_idx < reconcile_idx
+        assert finalize_idx < reconcile_idx
+
+    def test_publish_metrics_runs_after_reconcile_with_drift_kwargs(
+        self, mock_env_vars_premium
+    ):
+        call_order: list = []
+        self._run(
+            mock_env_vars_premium,
+            call_order,
+            {"drift_detected": 3, "drift_fixed": 2},
+        )
+
+        publish_calls = [c for c in call_order if isinstance(c, tuple)]
+        assert len(publish_calls) == 1
+        kwargs = publish_calls[0][1]
+        assert kwargs["tg_port_drift_detected"] == 3
+        assert kwargs["tg_port_drift_fixed"] == 2
+
+        reconcile_idx = call_order.index("reconcile")
+        publish_idx = call_order.index(publish_calls[0])
+        assert reconcile_idx < publish_idx
+
+    def test_reconcile_exception_does_not_break_monitor(self, mock_env_vars_premium):
+        """If the reconciler raises, the monitor still returns 200 and
+        publish_premium_metrics still runs with drift kwargs defaulting
+        to 0."""
+        call_order: list = []
+        patches = self._common_patches(
+            mock_env_vars_premium, call_order, {"drift_detected": 0, "drift_fixed": 0}
+        )
+        patches["reconcile"] = patch(
+            "premium_manager.reconcile_premium_target_group_ports",
+            side_effect=RuntimeError("kaboom"),
+        )
+        ctx_managers = [p for p in patches.values()]
+        for cm in ctx_managers:
+            cm.__enter__()
+        try:
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+        finally:
+            for cm in reversed(ctx_managers):
+                cm.__exit__(None, None, None)
+
+        assert result["statusCode"] == 200
+        publish_calls = [c for c in call_order if isinstance(c, tuple)]
+        assert len(publish_calls) == 1
+        # reconcile_summary fell back to {"errors": 1}; drift kwargs default to 0.
+        assert publish_calls[0][1]["tg_port_drift_detected"] == 0
+        assert publish_calls[0][1]["tg_port_drift_fixed"] == 0
+
+
+class TestMigrateUserToDedicatedInstanceOrder:
+    """The dedicated-to-dedicated migration branch must register the new
+    instance before deregistering the old, so the TG is never empty
+    across the swap."""
+
+    def test_dedicated_branch_registers_before_deregisters(self, mock_env_vars_premium):
+        from aws_constants import PremiumAssignment
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.can_migrate_user", return_value=True, create=True
+        ), patch(
+            "premium_manager.try_reserve_instance_for_migration",
+            return_value=True,
+        ), patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.trigger_experiment_sync", return_value=True
+        ), patch(
+            "premium_user_utils.can_migrate_user", return_value=True
+        ):
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": "i-old",
+                            "target_group_arn": "arn:tg/premium-12-tg",
+                            "alb_rule_arn": "arn:rule/r1",
+                            "active_workflow_count": 0,
+                        }
+                    ),
+                ]
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import migrate_user_to_dedicated_instance
+
+            # old_instance_id is not AUTOSCALING_POOL → dedicated branch
+            assert PremiumAssignment.AUTOSCALING_POOL != "i-old"
+            migrate_user_to_dedicated_instance(12, "i-new")
+
+            method_names = [call[0] for call in mock_elbv2.method_calls]
+            register_idx = method_names.index("register_targets")
+            deregister_idx = method_names.index("deregister_targets")
+            assert register_idx < deregister_idx, (
+                "register_targets must precede deregister_targets in "
+                "migrate.dedicated"
+            )
+
+
+class TestPublishPremiumMetricsDriftKwargs:
+    """publish_premium_metrics emits TargetGroupPortDriftDetected and
+    TargetGroupPortDriftFixed; kwargs default to 0 for back-compat."""
+
+    def test_emits_drift_metrics_with_values(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_cw = MagicMock()
+            mock_boto3.return_value = mock_cw
+
+            from premium_manager import publish_premium_metrics
+
+            publish_premium_metrics(
+                active_users=1,
+                idle_users=2,
+                running_instances=3,
+                idle_instances=4,
+                tg_port_drift_detected=5,
+                tg_port_drift_fixed=6,
+            )
+
+            args, kwargs = mock_cw.put_metric_data.call_args
+            metric_data = kwargs["MetricData"]
+            metric_by_name = {m["MetricName"]: m["Value"] for m in metric_data}
+            assert metric_by_name["TargetGroupPortDriftDetected"] == 5
+            assert metric_by_name["TargetGroupPortDriftFixed"] == 6
+
+    def test_drift_metrics_default_to_zero(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_cw = MagicMock()
+            mock_boto3.return_value = mock_cw
+
+            from premium_manager import publish_premium_metrics
+
+            publish_premium_metrics(
+                active_users=0,
+                idle_users=0,
+                running_instances=0,
+                idle_instances=0,
+            )
+
+            args, kwargs = mock_cw.put_metric_data.call_args
+            metric_by_name = {m["MetricName"]: m["Value"] for m in kwargs["MetricData"]}
+            assert metric_by_name["TargetGroupPortDriftDetected"] == 0
+            assert metric_by_name["TargetGroupPortDriftFixed"] == 0
