@@ -86,72 +86,106 @@ async def get_or_generate_thumbnail(
         return normalize_output_path(thumb_path)
 
     # Resolve the original file path
-    abs_original_path = ThumbnailGenerator.resolve_source_path(
-        workspace_id, original_path
+    abs_original_path = (
+        ThumbnailGenerator.resolve_source_path(workspace_id, original_path)
+        if original_path
+        else None
     )
 
     # Download from remote storage if needed
-    if abs_original_path is None and RemoteStorageController.is_available():
-        async with RemoteStorageReader(
-            remote_bucket_name,
-            workspace_id,
-            unique_id,
-            RemoteExperimentSyncMode.THUMBNAILS_ONLY,
-        ) as remote_storage_controller:
-            await remote_storage_controller.download_thumbnail_source(
-                workspace_id, unique_id, original_path, thumb_type
-            )
-        # Re-resolve after download
-        abs_original_path = ThumbnailGenerator.resolve_source_path(
-            workspace_id, original_path
-        )
-
-    # Generate thumbnail
-    # - INPUT: always generates (TIFF render if file exists, placeholder if not)
-    # - ROI: requires the source file to exist
-    can_generate = False
-    if thumb_type == ThumbnailType.INPUT:
-        can_generate = True  # generate_input_thumbnail handles missing files
-    elif abs_original_path is not None:
-        can_generate = True
-
-    if can_generate:
+    if (
+        original_path
+        and abs_original_path is None
+        and RemoteStorageController.is_available()
+    ):
         try:
-            create_directory(os.path.dirname(thumb_path))
+            async with RemoteStorageReader(
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                RemoteExperimentSyncMode.THUMBNAILS_ONLY,
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_thumbnail_source(
+                    workspace_id, unique_id, original_path, thumb_type
+                )
+            # Re-resolve after download
+            abs_original_path = ThumbnailGenerator.resolve_source_path(
+                workspace_id, original_path
+            )
+        except RemoteStorageLockError:
+            # Let upstream get_thumbnail map this to HTTP 423; swallowing it
+            # here would lose the lock semantics.
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to download thumbnail source: {e}")
 
-            if thumb_type == ThumbnailType.INPUT:
-                ThumbnailGenerator.generate_input_thumbnail(
+    # Generate thumbnail. Goal: always produce a PNG at thumb_path.
+    # - INPUT with source: TIFF/HDF5/MAT render or placeholder by extension.
+    # - INPUT without source: labeled "INPUT" placeholder.
+    # - ROI with source: render from cell_roi.json.
+    # - ROI without source: labeled "ROI" placeholder.
+    create_directory(os.path.dirname(thumb_path))
+    wrote_placeholder = False
+    try:
+        if thumb_type == ThumbnailType.INPUT:
+            if original_path:
+                # generate_input_thumbnail returns False when it falls back to a
+                # placeholder (missing source, unsupported format, render error).
+                wrote_real = ThumbnailGenerator.generate_input_thumbnail(
                     source_path=original_path,
                     output_path=thumb_path,
                     abs_source_path=abs_original_path,
                     dataset_paths=dataset_paths,
                 )
+                wrote_placeholder = not wrote_real
             else:
-                ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
+                ThumbnailGenerator.generate_placeholder_thumbnail(
+                    thumb_path, label="INPUT"
+                )
+                wrote_placeholder = True
+        elif abs_original_path is not None:
+            ThumbnailGenerator.generate_roi_thumbnail(abs_original_path, thumb_path)
+        else:
+            # No ROI source available — fall back to a labeled placeholder
+            ThumbnailGenerator.generate_placeholder_thumbnail(thumb_path, label="ROI")
+            wrote_placeholder = True
 
-            logger.info(f"Lazy-generated thumbnail: {thumb_path}")
+        logger.info(f"Lazy-generated thumbnail: {thumb_path}")
 
-            # Upload to remote storage for future use (fire and forget)
-            if RemoteStorageController.is_available():
-                try:
-                    async with RemoteStorageSimpleWriter(
-                        remote_bucket_name
-                    ) as remote_storage_controller:
-                        await remote_storage_controller.upload_thumbnail(
-                            workspace_id, unique_id, thumb_path
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to upload generated thumbnail to remote storage: {e}"
-                    )
+    except Exception as e:
+        # Generation itself failed — write a placeholder so the retry button
+        # always succeeds rather than 404'ing the caller.
+        logger.warning(
+            f"Thumbnail generation failed for {workspace_id}/{unique_id}/{thumb_type}; "
+            f"writing placeholder. Error: {e}",
+            exc_info=True,
+        )
+        try:
+            label = "INPUT" if thumb_type == ThumbnailType.INPUT else "ROI"
+            ThumbnailGenerator.generate_placeholder_thumbnail(thumb_path, label=label)
+            wrote_placeholder = True
+        except Exception as e2:
+            logger.error(f"Even placeholder thumbnail generation failed: {e2}")
+            return normalize_output_path(original_path or thumb_path)
 
-            return normalize_output_path(thumb_path)
-
+    # Upload to remote storage for future use (fire and forget).
+    # Skip placeholder uploads: caching a placeholder in S3 would prevent the
+    # retry button from ever recovering if the source later becomes available
+    # (e.g. after a transient download failure).
+    if RemoteStorageController.is_available() and not wrote_placeholder:
+        try:
+            async with RemoteStorageSimpleWriter(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.upload_thumbnail(
+                    workspace_id, unique_id, thumb_path
+                )
         except Exception as e:
-            logger.warning(f"Failed to generate thumbnail: {e}")
+            logger.warning(
+                f"Failed to upload generated thumbnail to remote storage: {e}"
+            )
 
-    # Fall back to original path if all else fails
-    return normalize_output_path(original_path)
+    return normalize_output_path(thumb_path)
 
 
 async def _background_full_sync(
@@ -320,8 +354,10 @@ async def get_thumbnail(
                     sync_mode=sync_mode,
                 )
         except RemoteExperimentNotFoundError as e:
-            logger.warning(e)
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+            # Don't 404 here — fall through to generation / placeholder
+            logger.warning(
+                f"Experiment not found in remote storage during thumbnail sync: {e}"
+            )
         except RemoteStorageLockError as e:
             logger.warning(e)
             raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -346,9 +382,9 @@ async def get_thumbnail(
                         sync_mode=sync_mode,
                     )
             except RemoteExperimentNotFoundError as e:
-                logger.warning(e)
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+                # Don't 404 here — fall through to placeholder generation
+                logger.warning(
+                    f"Experiment not found in remote storage during config sync: {e}"
                 )
             except RemoteStorageLockError as e:
                 logger.warning(e)
@@ -357,10 +393,12 @@ async def get_thumbnail(
                 logger.warning(f"Failed to sync config files from remote storage: {e}")
                 pass  # Continue processing
 
-        # Get the original file path for generation
+        # Get the original file path for generation.
+        # If we cannot determine it, fall through with original_path=None —
+        # get_or_generate_thumbnail will write a placeholder PNG.
+        original_path = None
         dataset_paths = None
         if thumb_type == ThumbnailType.INPUT:
-            # Need to find the input file and dataset paths
             try:
                 input_filenames = SmkUtils.get_datatypes_inputs(
                     workspace_id, unique_id, apply_basename=True
@@ -368,50 +406,52 @@ async def get_thumbnail(
                 if input_filenames:
                     original_path = input_filenames[0]
                 else:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="No input files found for thumbnail",
+                    logger.warning(
+                        f"No input files found for {workspace_id}/{unique_id}; "
+                        "will fall back to placeholder thumbnail"
                     )
-            except (AssertionError, KeyError):
-                raise HTTPException(
-                    status_code=404,
-                    detail="Could not determine input file",
+            except (AssertionError, KeyError) as e:
+                logger.warning(
+                    f"Could not determine input file for "
+                    f"{workspace_id}/{unique_id}: {e}; "
+                    "will fall back to placeholder thumbnail"
                 )
 
-            # Extract dataset paths from workflow config
+            # Extract dataset paths from workflow config (optional enhancement)
+            if original_path:
+                try:
+                    from studio.app.common.core.dataview.dataview_services import (
+                        DataviewService,
+                    )
+
+                    wf_config = WorkflowConfigReader.read(workspace_id, unique_id)
+                    _, dataset_paths = DataviewService.select_best_thumbnail_input(
+                        wf_config
+                    )
+                except Exception:
+                    pass  # Dataset paths are optional enhancement
+        else:
+            # ROI thumbnail uses cell_roi.json
             try:
                 from studio.app.common.core.dataview.dataview_services import (
                     DataviewService,
                 )
 
-                wf_config = WorkflowConfigReader.read(workspace_id, unique_id)
-                _, dataset_paths = DataviewService.select_best_thumbnail_input(
-                    wf_config
-                )
-            except Exception:
-                pass  # Dataset paths are optional enhancement
-        else:
-            # ROI thumbnail uses cell_roi.json
-            from studio.app.common.core.dataview.dataview_services import (
-                DataviewService,
-            )
-
-            try:
                 thumbnails, _ = DataviewService.make_dataview_thumnail_paths(
                     workspace_id, unique_id
                 )
                 if thumbnails.roi_url:
                     original_path = thumbnails.roi_url
                 else:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="No ROI data found for thumbnail",
+                    logger.warning(
+                        f"No ROI data found for {workspace_id}/{unique_id}; "
+                        "will fall back to placeholder thumbnail"
                     )
             except Exception as e:
-                logger.warning(f"Could not determine ROI path: {e}")
-                raise HTTPException(
-                    status_code=404,
-                    detail="Could not determine ROI file path",
+                logger.warning(
+                    f"Could not determine ROI file path for "
+                    f"{workspace_id}/{unique_id}: {e}; "
+                    "will fall back to placeholder thumbnail"
                 )
 
         # Generate thumbnail (may download source from remote
@@ -430,12 +470,23 @@ async def get_thumbnail(
             workspace_id, unique_id, thumb_type
         )
 
-    # Check if thumbnail exists after all attempts
+    # Final guarantee: always serve a PNG. If every prior attempt
+    # failed to produce thumb_path, write a labeled placeholder here.
     if not os.path.exists(thumb_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Thumbnail not available: {thumb_type.filename}",
+        logger.warning(
+            f"Thumbnail still missing after generation attempts for "
+            f"{workspace_id}/{unique_id}/{thumb_type}; writing placeholder"
         )
+        try:
+            create_directory(os.path.dirname(thumb_path))
+            label = "INPUT" if thumb_type == ThumbnailType.INPUT else "ROI"
+            ThumbnailGenerator.generate_placeholder_thumbnail(thumb_path, label=label)
+        except Exception as e:
+            logger.error(f"Failed to write final placeholder thumbnail: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not produce thumbnail: {e}",
+            )
 
     return FileResponse(
         thumb_path,
