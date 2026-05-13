@@ -1,6 +1,26 @@
-# Infrastructure Deployment Procedure
+# Infrastructure Management Guide
 
-> See also: [Deployment Procedure](DEPLOYMENT_PROCEDURE.md) | [Architecture](TERRAFORM_ARCHITECTURE.md) | [Security](INFRA_SECURITY_MODEL.md) | [Dev Schedule](../scripts/DEV_SCHEDULE_GUIDE.md)
+This document covers **Terraform operations, AWS environment management, and ECR image management**. Use this guide when you need to create, modify, or destroy AWS infrastructure.
+
+> **For application deployment, release procedures, and Git workflow**, see [DEPLOYMENT_PROCEDURE.md](DEPLOYMENT_PROCEDURE.md).
+
+> See also: [Architecture](TERRAFORM_ARCHITECTURE.md) | [Security](INFRA_SECURITY_MODEL.md) | [Dev Schedule](../scripts/DEV_SCHEDULE_GUIDE.md)
+
+---
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [AWS Profile Configuration](#aws-profile-configuration)
+- [First-Time Setup (One-Time Only)](#first-time-setup-one-time-only)
+- [Working with Production](#working-with-production)
+- [Working with Development](#working-with-development)
+- [Switching Between Environments](#switching-between-environments)
+- [Destroying Environments](#destroying-environments)
+- [ECR Repository Management](#ecr-repository-management)
+- [How to Access the Development Site](#how-to-access-the-development-site)
+- [Common Terraform Tasks](#common-terraform-tasks)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -13,17 +33,69 @@ brew install terraform
 # Install AWS CLI
 brew install awscli
 
-# Configure AWS credentials
-aws configure
-# Region: ap-northeast-1
-# Access Key / Secret Key: (from team lead)
+# Install Docker (required for ECR image build/push)
+# https://docs.docker.com/get-docker/
+```
+
+---
+
+## AWS Profile Configuration
+
+This project uses an AWS account dedicated to OptiNiSt. When your machine has multiple AWS profiles configured (e.g., personal account, other project accounts), you **must** specify the correct profile before running any `aws` or `terraform` command.
+
+### Setting Up a Named Profile
+
+```bash
+# Create (or update) a named profile for this project
+aws configure --profile optinist
+# AWS Access Key ID:     <your-key>       (obtain from team lead)
+# AWS Secret Access Key: <your-secret>    (obtain from team lead)
+# Default region name:   ap-northeast-1
+# Default output format: json
+```
+
+This stores credentials in `~/.aws/credentials` and region settings in `~/.aws/config`.
+
+### Activating the Profile
+
+There are two ways to tell CLI tools which profile to use.
+
+#### Option A: Environment Variable (recommended)
+
+Set `AWS_PROFILE` once at the start of your terminal session. **All subsequent `aws` and `terraform` commands will use this profile automatically.**
+
+```bash
+export AWS_PROFILE=optinist
+
+# Verify the correct account is active
+aws sts get-caller-identity
+```
+
+> **Tip:** Add `export AWS_PROFILE=optinist` to your shell configuration file (`~/.bashrc`, `~/.zshrc`) if this is the only AWS project you work on regularly.
+
+#### Option B: Per-Command `--profile` Flag (AWS CLI only)
+
+Pass the profile explicitly with each AWS CLI command:
+
+```bash
+aws ecs list-clusters --profile optinist --region ap-northeast-1
+```
+
+> **Note:** Terraform does **not** have a `--profile` flag. It reads the profile from the `AWS_PROFILE` environment variable or from the `profile` attribute in the `provider "aws"` block in `main.tf`. For this project, **use `export AWS_PROFILE=...`** before running any `terraform` commands.
+
+### Verifying Your Profile
+
+```bash
+# Confirm you are operating on the correct AWS account
+aws sts get-caller-identity
+# Expected: the account ID and ARN for the OptiNiSt project account
 ```
 
 ---
 
 ## First-Time Setup (One-Time Only)
 
-The following steps only need to be done **once**. If another developer has already completed them, skip to "Working with Development".
+The following steps only need to be done **once**. If another developer has already completed them, skip to [Working with Development](#working-with-development).
 
 ### 1. Create S3 bucket for Terraform state
 
@@ -91,17 +163,20 @@ cp development.tfvars.example development.tfvars
 ```bash
 cd infrastructure/terraform
 
-# 1. Initialize — connects to production state bucket
+# 1. Activate the correct AWS profile
+export AWS_PROFILE=optinist
+
+# 2. Initialize — connects to production state bucket
 #    Use -reconfigure if you were previously initialized to a different environment
 terraform init -backend-config=backends/production.hcl -reconfigure
 
-# 2. Preview changes
+# 3. Preview changes
 terraform plan -var-file=environments/production.tfvars
 
-# 3. Apply changes
+# 4. Apply changes
 terraform apply -var-file=environments/production.tfvars
 
-# 4. View outputs (ALB DNS, RDS endpoint, etc.)
+# 5. View outputs (ALB DNS, RDS endpoint, etc.)
 terraform output
 ```
 
@@ -112,19 +187,22 @@ terraform output
 ```bash
 cd infrastructure/terraform
 
-# 1. Initialize — connects to development state bucket
+# 1. Activate the correct AWS profile
+export AWS_PROFILE=optinist
+
+# 2. Initialize — connects to development state bucket
 #    Use -reconfigure if you were previously initialized to a different environment
 terraform init -backend-config=backends/development.hcl -reconfigure
 
-# 2. Ensure development.tfvars exists (download from Google Drive or copy from example)
+# 3. Ensure development.tfvars exists (download from Google Drive or copy from example)
 
-# 3. Preview what will be created
+# 4. Preview what will be created
 terraform plan -var-file=environments/development.tfvars
 
-# 4. Deploy the development environment
+# 5. Deploy the development environment
 terraform apply -var-file=environments/development.tfvars
 
-# 5. Get the development site URL:
+# 6. Get the development site URL:
 terraform output alb_dns_name
 # Access at: http://<ALB-DNS-NAME> (redirects to port 8080)
 ```
@@ -147,7 +225,9 @@ The `-reconfigure` flag tells Terraform to switch backends without migrating sta
 
 ---
 
-## Destroying the Development Environment
+## Destroying Environments
+
+### Destroying Development
 
 ```bash
 # Destroy development (safe — only affects dev state)
@@ -161,6 +241,8 @@ This destroys all AWS resources but **preserves**: S3 tfstate bucket, Firebase p
 
 To recreate later, simply run `terraform apply` again — no first-time setup needed.
 
+### Destroying Production
+
 ```bash
 # DANGER: Destroy production — requires explicit confirmation
 terraform init -backend-config=backends/production.hcl -reconfigure
@@ -169,7 +251,9 @@ terraform destroy -var-file=environments/production.tfvars
 
 ---
 
-## ECR Repository Isolation
+## ECR Repository Management
+
+### Repository Isolation
 
 Production and development use **separate ECR repositories** to ensure complete image isolation:
 
@@ -186,6 +270,9 @@ The build script reads the target environment from Terraform output, displays a 
 
 ```bash
 cd infrastructure/scripts
+
+# Ensure the correct AWS profile is active
+export AWS_PROFILE=optinist
 
 # Standard usage — auto-generates version tag, asks for confirmation
 ./ecr_build_push.sh
@@ -298,7 +385,7 @@ This URL is auto-generated by AWS and changes if you destroy and recreate the en
 
 ---
 
-## Common Tasks
+## Common Terraform Tasks
 
 ### View Current Terraform State
 
