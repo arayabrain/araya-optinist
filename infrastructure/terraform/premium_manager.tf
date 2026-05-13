@@ -46,6 +46,10 @@ resource "aws_lambda_function" "premium_manager" {
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
       INTERNAL_API_SECRET = random_password.internal_api_secret.result
+
+      # Kill-switch for the per-user TG host-port reconciler. Set to
+      # "false" via terraform var to disable without redeploying code.
+      RECONCILE_PREMIUM_TG_PORTS_ENABLED = tostring(var.reconcile_premium_tg_ports_enabled)
     }
   }
 
@@ -492,6 +496,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Effect = "Allow"
         Action = [
           "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeTargetHealth",
           "elasticloadbalancing:DescribeRules"
         ]
         Resource = "*"

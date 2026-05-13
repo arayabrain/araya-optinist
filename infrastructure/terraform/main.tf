@@ -233,6 +233,12 @@ variable "premium_instance_type" {
   default     = "t3.large"
 }
 
+variable "reconcile_premium_tg_ports_enabled" {
+  description = "Kill-switch for the premium target-group port reconciler in handle_scheduled_monitoring. Set false to disable without redeploying code."
+  type        = bool
+  default     = true
+}
+
 variable "background_instance_type" {
   description = "Instance type for background service instance"
   type        = string
