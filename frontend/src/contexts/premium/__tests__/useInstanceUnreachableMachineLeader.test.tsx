@@ -62,6 +62,7 @@ jest.mock("utils/crossTabSync", () => {
 // --- Imports (after mocks) ---
 // require() not import: static imports hoist above mock vars and cause TDZ when factories run.
 const {
+  DEDICATED_HANDOFF_GRACE_MS,
   INITIAL_PROBE_DELAY_MS,
   LS_UNREACHABLE_SNAPSHOT,
 }: typeof import("contexts/premium/unreachableConstants") =
@@ -97,6 +98,13 @@ const dedicated: PremiumAssignmentResult = {
   instance_id: "inst-A",
   assigned: true,
   is_shared: false,
+}
+
+const shared: PremiumAssignmentResult = {
+  message: "ok",
+  instance_id: "shared-pool",
+  assigned: true,
+  is_shared: true,
 }
 
 const renderHook = (opts: {
@@ -245,6 +253,165 @@ describe("useInstanceUnreachableMachine — leader-gated side effects", () => {
     expect(mockLogPremiumUiEvent).not.toHaveBeenCalledWith(
       "instance_probe_armed",
       expect.anything(),
+    )
+  })
+})
+
+describe("useInstanceUnreachableMachine — dedicated handoff warm-up grace", () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    localStorage.clear()
+    routingService.clearRoutingInfo()
+    routingService.setPremiumAssigned(false)
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  test("first 5xx within grace after shared → dedicated transition is suppressed", () => {
+    jest.useFakeTimers()
+
+    // Start on shared, then flip to dedicated — that flip starts the grace.
+    const { ref, rerender } = renderHook({ assignment: shared })
+    act(() => {
+      rerender({ assignment: dedicated })
+    })
+
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS - 1)
+      routingService.emitPremiumUnreachable({
+        url: "/api/run",
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    expect(ref.current?.state.instanceUnreachable).toBe(false)
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "instance_unreachable_warmup_suppressed",
+      expect.objectContaining({
+        instance_id: "inst-A",
+        url: "/api/run",
+        status: 503,
+      }),
+    )
+    expect(mockLogPremiumUiEvent).not.toHaveBeenCalledWith(
+      "instance_unreachable",
+      expect.anything(),
+    )
+  })
+
+  test("5xx after grace expires flips to unreachable as normal", () => {
+    jest.useFakeTimers()
+
+    const { ref, rerender } = renderHook({ assignment: shared })
+    act(() => {
+      rerender({ assignment: dedicated })
+    })
+
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
+      routingService.emitPremiumUnreachable({
+        url: "/api/run",
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    expect(ref.current?.state.instanceUnreachable).toBe(true)
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "instance_unreachable",
+      expect.objectContaining({ instance_id: "inst-A", status: 503 }),
+    )
+    expect(mockLogPremiumUiEvent).not.toHaveBeenCalledWith(
+      "instance_unreachable_warmup_suppressed",
+      expect.anything(),
+    )
+  })
+
+  test("grace is single-shot: a second 5xx within the window is NOT suppressed", () => {
+    jest.useFakeTimers()
+
+    const { ref, rerender } = renderHook({ assignment: shared })
+    act(() => {
+      rerender({ assignment: dedicated })
+    })
+
+    // First 5xx within grace — suppressed.
+    act(() => {
+      jest.advanceTimersByTime(1000)
+      routingService.emitPremiumUnreachable({
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+    expect(ref.current?.state.instanceUnreachable).toBe(false)
+
+    // Second 5xx still within the original grace window — must flip.
+    act(() => {
+      jest.advanceTimersByTime(1000)
+      routingService.emitPremiumUnreachable({
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    expect(ref.current?.state.instanceUnreachable).toBe(true)
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "instance_unreachable_warmup_suppressed",
+      expect.anything(),
+    )
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "instance_unreachable",
+      expect.anything(),
+    )
+  })
+
+  test("dedicated reassignment to a different instance starts a fresh grace", () => {
+    jest.useFakeTimers()
+
+    const { ref, rerender } = renderHook({ assignment: shared })
+    act(() => {
+      rerender({ assignment: dedicated })
+    })
+
+    // Burn the first grace.
+    act(() => {
+      jest.advanceTimersByTime(1000)
+      routingService.emitPremiumUnreachable({
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+    expect(ref.current?.state.instanceUnreachable).toBe(false)
+
+    // Reassign onto a different dedicated instance — should re-arm grace and clear state.
+    const dedicatedB: PremiumAssignmentResult = {
+      ...dedicated,
+      instance_id: "inst-B",
+    }
+    act(() => {
+      rerender({ assignment: dedicatedB })
+    })
+
+    // First 5xx after reassignment, well within new grace.
+    act(() => {
+      jest.advanceTimersByTime(2000)
+      routingService.emitPremiumUnreachable({
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    expect(ref.current?.state.instanceUnreachable).toBe(false)
+    // Two separate suppression events — one per dedicated transition.
+    const suppressedCalls = mockLogPremiumUiEvent.mock.calls.filter(
+      ([event]) => event === "instance_unreachable_warmup_suppressed",
+    )
+    expect(suppressedCalls).toHaveLength(2)
+    expect(suppressedCalls[1][1]).toEqual(
+      expect.objectContaining({ instance_id: "inst-B" }),
     )
   })
 })

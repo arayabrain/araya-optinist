@@ -5,6 +5,7 @@ import {
   PremiumAssignmentResult,
 } from "api/premium/PremiumAssignmentApi"
 import {
+  DEDICATED_HANDOFF_GRACE_MS,
   LS_UNREACHABLE_SNAPSHOT,
   MAX_FAILED_PROBES,
   UNREACHABLE_SNAPSHOT_TTL_MS,
@@ -91,6 +92,11 @@ export function useInstanceUnreachableMachine({
   const lastReachableSentAtRef = useRef(0)
   // Last dedicated instance_id — lets the effect below detect a reassignment to a different instance.
   const prevDedicatedInstanceIdRef = useRef<string | undefined>(undefined)
+  // Distinguishes a true shared → dedicated migration from an initial mount
+  // already on dedicated (no warm-up to absorb in the latter).
+  const hasSeenNonDedicatedRef = useRef(false)
+  // Timestamp of the most recent shared → dedicated transition.
+  const dedicatedSinceRef = useRef<number | null>(null)
 
   // Consolidated state → refs mirror (one effect for three refs).
   useEffect(() => {
@@ -106,6 +112,11 @@ export function useInstanceUnreachableMachine({
 
     if (shouldClearUnreachableForAssignment(assignment)) {
       prevDedicatedInstanceIdRef.current = undefined
+      dedicatedSinceRef.current = null
+      // Only a concrete assignment counts — null is "unknown", not shared.
+      if (assignment != null) {
+        hasSeenNonDedicatedRef.current = true
+      }
       if (unreachableRef.current || probingRef.current) {
         unreachableRef.current = false
         probingRef.current = false
@@ -125,6 +136,15 @@ export function useInstanceUnreachableMachine({
       failedProbesRef.current = 0
       dispatch({ type: "CLEAR" })
       routingService.setPremiumAssigned(true)
+      // Reassignment onto a different dedicated instance — start a fresh grace.
+      dedicatedSinceRef.current = Date.now()
+    } else if (
+      isDedicated &&
+      prevDedicatedInstanceIdRef.current === undefined &&
+      hasSeenNonDedicatedRef.current
+    ) {
+      // Shared → dedicated migration: arm the warm-up grace.
+      dedicatedSinceRef.current = Date.now()
     }
     prevDedicatedInstanceIdRef.current = assignment?.instance_id
   }, [assignment])
@@ -145,6 +165,22 @@ export function useInstanceUnreachableMachine({
           Date.now(),
         )
       ) {
+        return
+      }
+
+      // Single-shot warm-up grace — absorbs one transient 5xx within
+      // DEDICATED_HANDOFF_GRACE_MS of a handoff before flipping unreachable.
+      if (
+        !unreachableRef.current &&
+        dedicatedSinceRef.current !== null &&
+        Date.now() - dedicatedSinceRef.current < DEDICATED_HANDOFF_GRACE_MS
+      ) {
+        dedicatedSinceRef.current = null
+        logPremiumUiEvent("instance_unreachable_warmup_suppressed", {
+          instance_id: a.instance_id ?? null,
+          url: detail.url ?? null,
+          status: detail.status ?? null,
+        })
         return
       }
 
@@ -367,6 +403,8 @@ export function useInstanceUnreachableMachine({
     hasEverBeenUnreachableRef.current = false
     lastReachableSentAtRef.current = 0
     prevDedicatedInstanceIdRef.current = undefined
+    hasSeenNonDedicatedRef.current = false
+    dedicatedSinceRef.current = null
     dispatch({ type: "CLEAR" })
     lsWriteUnreachableSnapshot(null)
   }, [])

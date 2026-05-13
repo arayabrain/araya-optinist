@@ -21,6 +21,8 @@ type SnackbarCall = {
   message: string
   options?: {
     variant?: string
+    autoHideDuration?: number
+    persist?: boolean
     action?: (key: string | number) => React.ReactNode
   }
 }
@@ -131,6 +133,17 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
     snackbarLog = []
     snackbarKeyCounter = 0
     mockCtxValue = baseCtx()
+    // Pre-mark this instance_id as already notified so the success snackbar
+    // doesn't fire — focus of this suite is the unreachable snackbar.
+    try {
+      sessionStorage.clear()
+      sessionStorage.setItem(
+        "premium_notified_instance_id",
+        baseCtx().assignmentResult!.instance_id!,
+      )
+    } catch {
+      /* sessionStorage unavailable */
+    }
 
     mockEnqueueSnackbar.mockImplementation(
       (message: string, options?: Record<string, unknown>) => {
@@ -292,5 +305,71 @@ describe("PremiumNotificationManager — unreachable snackbar", () => {
       "instance_unreachable_popup_dismissed",
       expect.objectContaining({ reason: "not_premium" }),
     )
+  })
+})
+
+describe("PremiumNotificationManager — assignment success snackbar", () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    snackbarLog = []
+    snackbarKeyCounter = 0
+    mockCtxValue = baseCtx()
+    // Clear the per-session notification flag between tests.
+    try {
+      sessionStorage.clear()
+    } catch {
+      /* sessionStorage unavailable */
+    }
+
+    mockEnqueueSnackbar.mockImplementation(
+      (message: string, options?: Record<string, unknown>) => {
+        snackbarKeyCounter += 1
+        const key = snackbarKeyCounter
+        snackbarLog.push({
+          key,
+          message,
+          options: options as SnackbarCall["options"],
+        })
+        return key
+      },
+    )
+  })
+
+  // Renders on shared, then transitions to dedicated — fires the success branch.
+  const renderAndMigrate = () => {
+    mockCtxValue = {
+      ...baseCtx(),
+      assignmentResult: {
+        instance_id: "shared-pool",
+        assigned: true,
+        is_shared: true,
+      },
+    }
+    const { rerender } = render(<PremiumNotificationManager />)
+
+    mockCtxValue = {
+      ...mockCtxValue,
+      assignmentResult: {
+        instance_id: "inst-A",
+        assigned: true,
+        is_shared: false,
+      },
+    }
+    act(() => {
+      rerender(<PremiumNotificationManager />)
+    })
+  }
+
+  test("success snackbar persists and inherits the default close action", () => {
+    renderAndMigrate()
+
+    const successCall = snackbarLog.find((c) =>
+      c.message.includes("Premium instance assigned successfully"),
+    )
+    expect(successCall).toBeDefined()
+    expect(successCall?.options?.variant).toBe("success")
+    expect(successCall?.options?.persist).toBe(true)
+    expect(successCall?.options?.autoHideDuration).toBeUndefined()
+    expect(successCall?.options?.action).toBeUndefined()
   })
 })
