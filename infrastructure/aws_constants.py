@@ -27,6 +27,18 @@ class ECSTaskStatus:
     STOPPED = "STOPPED"
 
 
+class EphemeralPortConfig:
+    """Tuning constants for resolving an ECS task's host port via
+    describe_tasks → networkBindings.
+
+    The poll exists because networkBindings is briefly empty while the
+    task is RUNNING but Docker port mappings are still propagating.
+    """
+
+    RESOLVE_MAX_ATTEMPTS = 10
+    RESOLVE_DELAY_SECONDS = 3.0
+
+
 class InstanceState:
     """
     Instance state constants for premium EC2 instances.

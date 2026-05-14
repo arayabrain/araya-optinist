@@ -865,9 +865,9 @@ resource "aws_ecs_task_definition" "premium" {
 
       portMappings = [
         {
-          name          = "${var.environment}-premium-optinist-cloud-container-port-8000"
-          containerPort = 8000
-          hostPort      = 8000
+          name          = "${var.environment}-premium-optinist-cloud-container-port-${var.premium_backend_port}"
+          containerPort = var.premium_backend_port
+          hostPort      = var.premium_backend_port
           protocol      = "tcp"
         }
       ]
@@ -927,7 +927,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "BACKEND_PORT"
-          value = "8000"
+          value = tostring(var.premium_backend_port)
         },
         {
           name  = "FRONTEND_SERVER_HOST"
@@ -1041,7 +1041,7 @@ resource "aws_ecs_task_definition" "premium" {
       ]
 
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+        command     = ["CMD-SHELL", "curl -f http://localhost:${var.premium_backend_port}/health || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
