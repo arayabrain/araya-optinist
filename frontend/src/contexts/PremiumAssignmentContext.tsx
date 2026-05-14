@@ -308,7 +308,8 @@ export const PremiumAssignmentProvider: React.FC<{
   const recordActivity = useCallback(async (): Promise<void> => {
     if (!isPremiumUser) return
 
-    // No assignment — trigger re-assign; a heartbeat without an instance fails.
+    // No instance yet (initial mount or post-release reset) — bump to re-assign
+    // instead of heartbeating. DOM listener bumps too; hasAttemptedRef dedups.
     if (!hasAttemptedRef.current) {
       setAutoAssignGeneration((g) => g + 1)
       return
