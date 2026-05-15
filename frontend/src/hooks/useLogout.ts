@@ -2,6 +2,7 @@ import { useCallback } from "react"
 import { useDispatch } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
+import { logoutFreeUserApi } from "api/users/UsersMe"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 import { logout } from "store/slice/User/UserSlice"
 import { setLoggingOut } from "utils/axios"
@@ -19,6 +20,18 @@ export const useLogout = () => {
       // so it's safe to call before dispatch(logout) clears creds.
       if (isPremiumUser && broadcast) {
         autoReleaseOnLogout()
+      }
+
+      // Notify backend for free tier users so it can record logged_out_at
+      // and close the active instance_usage_log session.
+      // Must run before dispatch(logout()) which clears auth tokens.
+      // Only on the originating tab (broadcast=true) to avoid duplicate calls.
+      if (!isPremiumUser && broadcast) {
+        try {
+          await logoutFreeUserApi()
+        } catch {
+          // Ignore errors - logout should proceed even if API call fails
+        }
       }
 
       if (broadcast) {
