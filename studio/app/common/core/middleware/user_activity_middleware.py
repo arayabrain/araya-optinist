@@ -462,11 +462,13 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                 from sqlalchemy import select
 
                 open_session = session.execute(
-                    select(InstanceUsageLog.id).where(
+                    select(InstanceUsageLog.id)
+                    .where(
                         InstanceUsageLog.user_id == user_id,
                         InstanceUsageLog.tier == TIER_FREE,
                         InstanceUsageLog.ended_at.is_(None),
-                    ).limit(1)
+                    )
+                    .limit(1)
                 ).scalar()
 
                 if open_session is None:
