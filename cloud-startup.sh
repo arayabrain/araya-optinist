@@ -197,6 +197,16 @@ else
     echo "This is expected in local development, but should not happen in production."
 fi
 
+# Start standalone cleanup worker on free-tier instances
+# This runs DataCleanupJob in its own process, filtered by INSTANCE_ID,
+# so cleanup happens on the instance that owns the local EBS data.
+if [ "$ENABLE_LOCAL_CLEANUP" = "1" ]; then
+    echo "Starting cleanup worker (ENABLE_LOCAL_CLEANUP=1)..."
+    poetry run python -m studio.cleanup_worker &
+    CLEANUP_PID=$!
+    echo "Cleanup worker started (PID: $CLEANUP_PID)"
+fi
+
 # Start the application in background
 echo "Starting application..."
 poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &

@@ -765,6 +765,12 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "1"
         },
+        # Enable standalone cleanup worker on free-tier instances.
+        # cloud-startup.sh starts studio/cleanup_worker.py when this is set.
+        {
+          name  = "ENABLE_LOCAL_CLEANUP"
+          value = "1"
+        },
         {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
