@@ -6,6 +6,7 @@ import {
   TParams,
   TPlatformInfo,
 } from "components/Workspace/FlowChart/ModalLogs/helpers/service"
+import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
 export type TLogs = { text: string; id: string }
 
@@ -127,6 +128,17 @@ export const useLogs = (
     else realtimeApi()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onNextSearchApi])
+
+  // Reset on premium routing change: pagination offsets are per-instance.
+  const { assignmentResult } = usePremiumAssignment()
+  const lastKnownInstanceRef = useRef<string | null>(null)
+  useEffect(() => {
+    const next = assignmentResult?.instance_id ?? null
+    if (next == null) return
+    const prev = lastKnownInstanceRef.current
+    lastKnownInstanceRef.current = next
+    if (prev != null && prev !== next) reset()
+  }, [assignmentResult?.instance_id, reset])
 
   return { onPrevSearchApi, onNextSearchApi, logs, isError, reset, platform }
 }

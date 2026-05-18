@@ -23,12 +23,18 @@ import {
   getRoutingInfo,
   releasePremiumInstance,
   sendPremiumHeartbeat,
+  PremiumAssignment,
   PremiumAssignmentResult,
   PremiumStatusResult,
   RoutingInfo,
 } from "api/premium/PremiumAssignmentApi"
 import { BASE_URL } from "const/API"
 import { PlanName, SubscriptionStatus } from "const/Subscription"
+import { shouldPoll } from "contexts/premium/unreachableMachine"
+import {
+  InstanceUnreachableHandle,
+  useInstanceUnreachableMachine,
+} from "contexts/premium/useInstanceUnreachableMachine"
 import { useSleepDetection } from "hooks/useSleepDetection"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
 import { RootState } from "store/store"
@@ -56,7 +62,21 @@ const ERROR_BACKOFF_MULTIPLIER = 2
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
 const SS_HAS_ATTEMPTED = "premium_hasAttempted"
-const SS_POLL_ATTEMPTS = "premium_pollAttempts"
+export const SS_POLL_ATTEMPTS = "premium_pollAttempts"
+
+// Canonical PremiumAssignment (from /status) → PremiumAssignmentResult shape
+// consumed by the rest of the provider. Fields absent from /status
+// (retry_after, scaling_in_progress) stay undefined.
+const statusToAssignmentResult = (
+  assignment: PremiumAssignment,
+  message: string,
+): PremiumAssignmentResult => ({
+  message,
+  instance_id: assignment.instance_id,
+  assigned: true,
+  is_shared: assignment.is_shared,
+  assignment_source: assignment.assignment_source,
+})
 
 function ssRead(key: string): string | null {
   try {
@@ -97,6 +117,7 @@ interface PremiumAssignmentState {
   isPremiumUser: boolean
   showInactivityWarning: boolean
   lastActivityTime: number
+  // Orthogonal to instanceUnreachable — same 503 can set both; they are not redundant.
   heartbeatFailing: boolean
 }
 
@@ -108,6 +129,7 @@ interface PremiumAssignmentContextType extends PremiumAssignmentState {
   autoReleaseOnLogout: () => void
   dismissInactivityWarning: () => void
   recordActivity: () => Promise<void>
+  unreachable: InstanceUnreachableHandle
 }
 
 const PremiumAssignmentContext =
@@ -175,6 +197,11 @@ export const PremiumAssignmentProvider: React.FC<{
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
 
+  const unreachable = useInstanceUnreachableMachine({
+    assignment: state.assignmentResult,
+    isTabLeader,
+  })
+
   // Calculate premium user status
   const isPremiumUser =
     currentUser?.subscription_plan_name === PlanName.PREMIUM &&
@@ -210,6 +237,7 @@ export const PremiumAssignmentProvider: React.FC<{
         lastActivityTime: Date.now(),
         heartbeatFailing: false,
       })
+      unreachable.reset()
       hasAttemptedRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)
       ssRemove(SS_POLL_ATTEMPTS)
@@ -395,6 +423,8 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+      // Defensive — covers refs outside the reducer that the hook's mirror effect doesn't touch.
+      unreachable.reset()
 
       routingService.setPremiumAssigned(false)
       // Notify other tabs about premium release
@@ -407,7 +437,7 @@ export const PremiumAssignmentProvider: React.FC<{
       setState((prev) => ({ ...prev, isReleasing: false }))
       return { released: true, message: "Release completed with warnings" }
     }
-  }, [])
+  }, [unreachable])
 
   /**
    * Get current status
@@ -464,12 +494,13 @@ export const PremiumAssignmentProvider: React.FC<{
       }
       if (statusResponse?.assignment) {
         // User already has an assignment - update state immediately so notifications trigger
-        // Convert PremiumAssignment to PremiumAssignmentResult format
         const assignmentResult: PremiumAssignmentResult = {
-          message: "Premium instance already assigned",
-          instance_id: statusResponse.assignment.instance_id,
-          assigned: true,
-          is_shared: statusResponse.assignment.is_shared,
+          ...statusToAssignmentResult(
+            statusResponse.assignment,
+            "Premium instance already assigned",
+          ),
+          assignment_source:
+            statusResponse.assignment.assignment_source ?? "existing",
         }
         setState((prev) => ({
           ...prev,
@@ -650,6 +681,9 @@ export const PremiumAssignmentProvider: React.FC<{
   // Listen for premium release events from other tabs (Cases 54-56)
   useEffect(() => {
     const unsubscribe = tabSync.on("PREMIUM_RELEASED", () => {
+      // Backend has already released this assignment; drop the local token
+      // so a later logout/beforeunload doesn't beacon a now-invalid token.
+      beaconTokenRef.current = null
       setState((prev) => ({
         ...prev,
         assignmentResult: null,
@@ -680,23 +714,23 @@ export const PremiumAssignmentProvider: React.FC<{
     }
   }, [state.assignmentResult?.is_shared])
 
-  // Poll for premium instance when user is on temporary shared instance
-  // Only the leader tab polls to prevent duplicate API calls
+  // Poll runs while unreachable so a backend reassignment is caught; a poll result alone never clears unreachable (only a real response does).
   useEffect(() => {
-    const hasDedicated =
-      state.assignmentResult?.assigned && !state.assignmentResult?.is_shared
-    const shouldPoll =
-      isPremiumUser &&
-      isTabLeader &&
-      state.assignmentResult != null &&
-      !hasDedicated
-
-    if (!shouldPoll) {
+    if (
+      !shouldPoll(
+        isPremiumUser,
+        isTabLeader,
+        state.assignmentResult,
+        unreachable.state.instanceUnreachable,
+      )
+    ) {
       return
     }
 
-    // Check if we've exceeded max attempts
-    if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+    // Shared assignments still burn premium budget — keep polling past the cap
+    // so a long migration doesn't strand the UI on a state only a reload can fix.
+    const isOnShared = state.assignmentResult?.is_shared === true
+    if (pollAttempts >= MAX_POLL_ATTEMPTS && !isOnShared) {
       // eslint-disable-next-line no-console
       console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
@@ -713,26 +747,71 @@ export const PremiumAssignmentProvider: React.FC<{
 
     const timeoutId = setTimeout(async () => {
       try {
-        const result = await assignPremiumInstance()
+        // /status reads the canonical assignment row; /assign could return shared even after migration completed.
+        const status = await getPremiumStatus()
 
-        if (result.assigned && !result.is_shared) {
+        if (status?.error) {
           // eslint-disable-next-line no-console
-          console.log("Premium instance now available:", result.instance_id)
+          console.warn("Premium status poll returned error:", status.error)
+          setPollAttempts((prev) => prev + 1)
+          setPollInterval((prev) =>
+            Math.min(prev * ERROR_BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
+          )
+          return
+        }
+
+        const assignment = status?.assignment ?? null
+
+        if (assignment && !assignment.is_shared) {
+          // eslint-disable-next-line no-console
+          console.log("Premium instance now available:", assignment.instance_id)
+          const result = statusToAssignmentResult(
+            assignment,
+            "Premium instance now available",
+          )
+          // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
           setState((prev) => ({
             ...prev,
             assignmentResult: result,
+            statusResult: status,
             error: null,
             isRetryableError: false,
           }))
-          // Reset polling state on success
+          // Restore routing: an earlier 502/503 may have flipped premiumAssigned off.
+          routingService.setPremiumAssigned(true)
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
         } else {
+          if (assignment) {
+            setState((prev) => {
+              const cur = prev.assignmentResult
+              if (
+                cur &&
+                cur.instance_id === assignment.instance_id &&
+                cur.is_shared === assignment.is_shared
+              ) {
+                return { ...prev, statusResult: status }
+              }
+              return {
+                ...prev,
+                assignmentResult: statusToAssignmentResult(
+                  assignment,
+                  "Premium instance assignment (shared)",
+                ),
+                statusResult: status,
+              }
+            })
+          } else {
+            setState((prev) => ({ ...prev, statusResult: status }))
+          }
           // eslint-disable-next-line no-console
           console.warn(
             "Still on temporary instance, will retry with backoff...",
           )
-          setPollAttempts((prev) => prev + 1)
+          const isOnShared = assignment?.is_shared === true
+          if (!isOnShared) {
+            setPollAttempts((prev) => prev + 1)
+          }
           // Exponential backoff capped at MAX_POLL_INTERVAL_MS
           setPollInterval((prev) =>
             Math.min(prev * BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
@@ -754,6 +833,7 @@ export const PremiumAssignmentProvider: React.FC<{
     isPremiumUser,
     isTabLeader,
     state.assignmentResult,
+    unreachable.state.instanceUnreachable,
     pollInterval,
     pollAttempts,
   ])
@@ -780,6 +860,12 @@ export const PremiumAssignmentProvider: React.FC<{
 
   const contextValue: PremiumAssignmentContextType = {
     ...state,
+    // Override state.isPremiumUser (mirror-effect-driven) with the
+    // synchronously-computed value derived from currentUser. Closes the
+    // logout race where the mirror effect hasn't propagated yet on a
+    // same-tab sign-out → sign-in flow, causing useLogout's gate to bail
+    // with stale state.isPremiumUser=false
+    isPremiumUser,
     assign,
     release,
     getStatus,
@@ -787,6 +873,7 @@ export const PremiumAssignmentProvider: React.FC<{
     autoReleaseOnLogout,
     dismissInactivityWarning,
     recordActivity,
+    unreachable,
   }
 
   return (

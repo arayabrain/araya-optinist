@@ -16,7 +16,7 @@
 # ===========================
 resource "aws_launch_template" "background" {
   name_prefix   = "${local.env_prefix}-background-"
-  image_id      = data.aws_ami.ecs_optimized.id
+  image_id      = local.effective_ami_id
   instance_type = var.background_instance_type
 
   vpc_security_group_ids = [aws_security_group.ecs.id]
@@ -50,6 +50,7 @@ resource "aws_launch_template" "background" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 1536 # 2x task memory (768MB) for stable background job operation
+    swap_device_name      = ""   # File-based swap (1.5GB dd is fast, no dedicated volume needed)
   }))
 
   tag_specifications {
@@ -121,6 +122,10 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "ENV_PREFIX"
           value = var.environment
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"

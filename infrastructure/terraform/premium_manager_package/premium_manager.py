@@ -41,7 +41,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import boto3
 import pymysql
@@ -51,6 +51,7 @@ from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
     EnvironmentConfig,
+    EphemeralPortConfig,
     InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
@@ -82,6 +83,10 @@ MIGRATION_INITIAL_DELAY_SECONDS = 60
 
 STANDBY_READINESS_TIMEOUT_SECONDS = 120
 STANDBY_READINESS_RETRY_INTERVAL_SECONDS = 10
+
+# Skip TG reconciliation for rows whose write paths touched them within this
+# window — avoids racing in-flight assign/migrate work.
+RECONCILE_RECENT_MUTATION_SECONDS = 30
 
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
@@ -772,8 +777,8 @@ def _finalize_expired_pending_releases_transaction(connection):
                 (uid, PremiumAssignment.PENDING_RELEASE),
             )
             print(
-                f"Finalized pending_release: deleted user {uid} -> "
-                f"instance {assignment['instance_id']}"
+                f"[premium-trace] finalize-deleted user={uid} "
+                f"instance={assignment['instance_id']}"
             )
 
     return expired
@@ -907,12 +912,12 @@ def get_all_premium_instances_with_states():
             is_premium = name_match or tier_match or type_match
 
             # Filter by environment prefix to prevent cross-environment
-            # contamination. Instance Name tags follow the pattern:
-            # "{env_prefix}-premium-running" (e.g., "development-premium-running"
-            # vs "subscr-premium-running"). Reject instances whose Name tag
-            # doesn't start with this Lambda's ENV_PREFIX, or that have no
-            # Name tag at all (tagless instances cannot be verified as belonging
-            # to this environment).
+            # contamination. Instance Name tags follow the pattern
+            # "<env_prefix>-premium-*" (see PremiumInstanceConfig in
+            # aws_constants.py). Reject instances whose Name tag doesn't
+            # start with this Lambda's ENV_PREFIX, or that have no Name tag
+            # at all (tagless instances cannot be verified as belonging to
+            # this environment).
             if is_premium:
                 if not name_tag or not name_tag.lower().startswith(env_prefix.lower()):
                     print(
@@ -1951,7 +1956,12 @@ def get_premium_user_status(user_id: int) -> Dict[str, Any]:
 
 
 def publish_premium_metrics(
-    active_users: int, idle_users: int, running_instances: int, idle_instances: int
+    active_users: int,
+    idle_users: int,
+    running_instances: int,
+    idle_instances: int,
+    tg_port_drift_detected: int = 0,
+    tg_port_drift_fixed: int = 0,
 ) -> None:
     """
     Publish premium tier monitoring metrics to CloudWatch.
@@ -1961,6 +1971,8 @@ def publish_premium_metrics(
     - IdlePremiumUsers: Count of users with inactive/no assignments
     - RunningInstances: Count of running EC2 instances
     - IdleInstances: Count of instances with no assigned users
+    - TargetGroupPortDriftDetected: drifting per-user TGs observed this cycle
+    - TargetGroupPortDriftFixed: drifting per-user TGs converged this cycle
     """
     cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
 
@@ -1994,11 +2006,25 @@ def publish_premium_metrics(
                     "Unit": "Count",
                     "Timestamp": datetime.now(timezone.utc),
                 },
+                {
+                    "MetricName": "TargetGroupPortDriftDetected",
+                    "Value": tg_port_drift_detected,
+                    "Unit": "Count",
+                    "Timestamp": datetime.now(timezone.utc),
+                },
+                {
+                    "MetricName": "TargetGroupPortDriftFixed",
+                    "Value": tg_port_drift_fixed,
+                    "Unit": "Count",
+                    "Timestamp": datetime.now(timezone.utc),
+                },
             ],
         )
         print(
             f"Published metrics: active_users={active_users}, idle_users={idle_users}, "
-            f"running_instances={running_instances}, idle_instances={idle_instances}"
+            f"running_instances={running_instances}, idle_instances={idle_instances}, "
+            f"tg_port_drift_detected={tg_port_drift_detected}, "
+            f"tg_port_drift_fixed={tg_port_drift_fixed}"
         )
 
     except Exception as e:
@@ -2064,14 +2090,6 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
                 f"{idle_instances} idle instances"
             )
 
-            # 4. Publish metrics to CloudWatch
-            publish_premium_metrics(
-                active_users=active_users,
-                idle_users=total_premium_users - active_users,
-                running_instances=len(running_instances),
-                idle_instances=idle_instances,
-            )
-
             # 5. Call existing scaling logic to stop idle instances
             scale_down_if_possible()
 
@@ -2132,6 +2150,30 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # 10b. Cleanup ghost ECS container instance registrations
             # (deregister container instances where EC2 is stopped/terminated)
             cleanup_ghost_ecs_registrations()
+
+            # 10c. Reconcile per-user TG host ports against actual container
+            # bindings. Closes the same-instance task-restart drift class.
+            # Idempotent under fixed host ports; non-trivial only when
+            # ephemeral ports are re-introduced.
+            try:
+                reconcile_summary = reconcile_premium_target_group_ports()
+            except Exception:
+                print("WARNING: reconcile_premium_target_group_ports() failed")
+                import traceback
+
+                traceback.print_exc()
+                reconcile_summary = {"errors": 1}
+
+            # 10d. Publish metrics to CloudWatch (after reconcile so drift
+            # counters are populated in the same cycle).
+            publish_premium_metrics(
+                active_users=active_users,
+                idle_users=total_premium_users - active_users,
+                running_instances=len(running_instances),
+                idle_instances=idle_instances,
+                tg_port_drift_detected=reconcile_summary.get("drift_detected", 0),
+                tg_port_drift_fixed=reconcile_summary.get("drift_fixed", 0),
+            )
 
             # 11. Stop orphaned EC2 instances not in ECS cluster
             cleanup_orphaned_ec2_instances()
@@ -2541,7 +2583,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
         response = elbv2.create_target_group(
             Name=target_group_name,
             Protocol="HTTP",
-            Port=8000,
+            Port=PremiumInstanceConfig.get_backend_port(),
             VpcId=vpc_id,
             HealthCheckPath="/health",
             HealthCheckProtocol="HTTP",
@@ -2678,6 +2720,7 @@ def assign_premium_user(
 
     ec2: "EC2Client" = boto3.client("ec2")
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    backend_port = PremiumInstanceConfig.get_backend_port()
 
     try:
         vpc_id = get_required_env_var("VPC_ID")
@@ -3388,7 +3431,7 @@ def assign_premium_user(
             target_group_response = elbv2.create_target_group(
                 Name=tg_name,
                 Protocol="HTTP",
-                Port=8000,
+                Port=backend_port,
                 VpcId=vpc_id,
                 HealthCheckPath="/health",
                 HealthCheckProtocol="HTTP",
@@ -3410,9 +3453,15 @@ def assign_premium_user(
             _enable_sticky_sessions(elbv2, target_group_arn)
 
             # 8. Register instance to target group
+            print(
+                f"[premium-tg-mutate] site=assign action=register "
+                f"user={user_id} instance={instance_id} "
+                f"tg={target_group_arn} "
+                f"port={backend_port}"
+            )
             elbv2.register_targets(
                 TargetGroupArn=target_group_arn,
-                Targets=[{"Id": instance_id, "Port": 8000}],
+                Targets=[{"Id": instance_id, "Port": backend_port}],
             )
 
         # Create ALB listener rule for user routing
@@ -3781,6 +3830,11 @@ def get_ecs_container_instance_id(
 
         if not container_instance_arns:
             print(f"No premium container instances found in cluster {cluster_name}")
+            print(
+                f"[premium-ecs-map] ec2={ec2_instance_id} "
+                f"cluster={cluster_name} result=None "
+                f"reason=no_premium_container_instances"
+            )
             return None
 
         print(
@@ -3797,13 +3851,29 @@ def get_ecs_container_instance_id(
             if container_instance.get("ec2InstanceId") == ec2_instance_id:
                 container_instance_id = container_instance.get("containerInstanceArn")
                 print(f" Found ECS container instance: {container_instance_id}")
+                print(
+                    f"[premium-ecs-map] ec2={ec2_instance_id} "
+                    f"cluster={cluster_name} "
+                    f"result={container_instance_id} reason=found"
+                )
                 return container_instance_id
 
         print(f"No ECS container instance found for EC2 instance " f"{ec2_instance_id}")
+        print(
+            f"[premium-ecs-map] ec2={ec2_instance_id} "
+            f"cluster={cluster_name} result=None "
+            f"reason=no_matching_ec2_in_premium_set "
+            f"premium_count={len(container_instance_arns)}"
+        )
         return None
 
     except Exception as e:
         print(f"Error mapping EC2 to ECS container instance: {str(e)}")
+        print(
+            f"[premium-ecs-map] ec2={ec2_instance_id} "
+            f"cluster={cluster_name} result=None "
+            f"reason=exception error={str(e)}"
+        )
         return None
 
 
@@ -4155,6 +4225,8 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
     # Import the utility function
     from premium_user_utils import can_migrate_user
 
+    backend_port = PremiumInstanceConfig.get_backend_port()
+
     # Check if user can be safely migrated (no active workflows)
     if not can_migrate_user(user_id):
         print(
@@ -4213,9 +4285,16 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                     new_target_group_arn = create_or_get_target_group(user_id, vpc_id)
 
                     # Register new instance to new target group
+                    print(
+                        f"[premium-tg-mutate] site=migrate.autoscaling "
+                        f"action=register user={user_id} "
+                        f"instance={new_instance_id} "
+                        f"tg={new_target_group_arn} "
+                        f"port={backend_port}"
+                    )
                     elbv2.register_targets(
                         TargetGroupArn=new_target_group_arn,
-                        Targets=[{"Id": new_instance_id, "Port": 8000}],
+                        Targets=[{"Id": new_instance_id, "Port": backend_port}],
                     )
 
                     # Check if old ALB rule exists, create new one if not
@@ -4304,8 +4383,11 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                         ),
                     )
                 else:
-                    # Normal migration: deregister from old, register to new
-                    # First verify target group exists
+                    # Normal migration: register new, then deregister old.
+                    # Register-before-deregister keeps the TG non-empty across
+                    # the swap; reversing the order leaves a brief window where
+                    # ALB has zero targets and falls through to the free-tier
+                    # default action.
                     if not target_group_exists(old_target_group_arn):
                         print(
                             f"Target group {old_target_group_arn} not found, "
@@ -4316,15 +4398,28 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
                             user_id, vpc_id
                         )
 
-                    elbv2.deregister_targets(
-                        TargetGroupArn=old_target_group_arn,
-                        Targets=[{"Id": old_instance_id, "Port": 8000}],
+                    print(
+                        f"[premium-tg-mutate] site=migrate.dedicated "
+                        f"action=register user={user_id} "
+                        f"instance={new_instance_id} "
+                        f"tg={old_target_group_arn} "
+                        f"port={backend_port}"
                     )
-
-                    # Register to new instance (same target group)
                     elbv2.register_targets(
                         TargetGroupArn=old_target_group_arn,
-                        Targets=[{"Id": new_instance_id, "Port": 8000}],
+                        Targets=[{"Id": new_instance_id, "Port": backend_port}],
+                    )
+
+                    print(
+                        f"[premium-tg-mutate] site=migrate.dedicated "
+                        f"action=deregister user={user_id} "
+                        f"instance={old_instance_id} "
+                        f"tg={old_target_group_arn} "
+                        f"port={backend_port}"
+                    )
+                    elbv2.deregister_targets(
+                        TargetGroupArn=old_target_group_arn,
+                        Targets=[{"Id": old_instance_id, "Port": backend_port}],
                     )
 
                     # Update RDS assignment
@@ -5012,16 +5107,229 @@ _DISCONNECT_TAG_KEY = "optinist:agent-disconnected-at"
 _AGENT_DISCONNECT_GRACE_SECONDS = 300
 
 
+def get_host_port_for_instance(
+    instance_id: str,
+    max_attempts: int = EphemeralPortConfig.RESOLVE_MAX_ATTEMPTS,
+    delay: float = EphemeralPortConfig.RESOLVE_DELAY_SECONDS,
+) -> Optional[int]:
+    """Resolve the studio container's host port on instance_id.
+
+    Returns None if not resolvable within the poll window (networkBindings
+    is briefly empty after a task starts). Raises if bindings exist but
+    none match the expected containerPort — permanent config drift, not
+    transient.
+    """
+    cluster_name = get_required_env_var("CLUSTER_NAME")
+    container_port = PremiumInstanceConfig.get_backend_port()
+    ecs_client: "ECSClient" = boto3.client("ecs")
+
+    last_err: Optional[str] = None
+    mismatch_error: Optional[str] = None
+    for _ in range(max_attempts):
+        try:
+            ecs_container_instance_id = get_ecs_container_instance_id(
+                instance_id, cluster_name
+            )
+            if not ecs_container_instance_id:
+                last_err = "no ECS container instance mapping"
+                time.sleep(delay)
+                continue
+
+            task_arns = ecs_client.list_tasks(
+                cluster=cluster_name,
+                containerInstance=ecs_container_instance_id,
+            ).get("taskArns", [])
+            if not task_arns:
+                last_err = "no tasks on container instance"
+                time.sleep(delay)
+                continue
+
+            task_details = ecs_client.describe_tasks(
+                cluster=cluster_name, tasks=task_arns
+            )
+            observed_container_ports: List[Any] = []
+            for task in task_details.get("tasks", []):
+                if task.get("lastStatus") != ECSTaskStatus.RUNNING:
+                    continue
+                for container in task.get("containers", []):
+                    bindings = container.get("networkBindings") or []
+                    for b in bindings:
+                        observed_container_ports.append(b.get("containerPort"))
+                    match = next(
+                        (
+                            b
+                            for b in bindings
+                            if b.get("containerPort") == container_port
+                        ),
+                        None,
+                    )
+                    if match and match.get("hostPort"):
+                        return int(match["hostPort"])
+            if observed_container_ports:
+                mismatch_error = (
+                    f"containerPort mismatch on {instance_id}: expected "
+                    f"{container_port}, got {observed_container_ports}"
+                )
+                break
+            last_err = "task running but networkBindings still empty"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(delay)
+
+    if mismatch_error:
+        raise RuntimeError(mismatch_error)
+
+    print(
+        f"get_host_port_for_instance: could not resolve port for "
+        f"{instance_id} after {max_attempts} attempts: {last_err}"
+    )
+    return None
+
+
+def get_registered_ports_for_instance(
+    target_group_arn: str, instance_id: str
+) -> List[int]:
+    """Return every port currently registered for instance_id in
+    target_group_arn.
+
+    Plural because partial-fix scenarios can leave both the stale and the
+    current port registered simultaneously; the reconciler needs the
+    full set to deregister all stale entries.
+    """
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    response = elbv2.describe_target_health(TargetGroupArn=target_group_arn)
+    return [
+        int(desc["Target"]["Port"])
+        for desc in response.get("TargetHealthDescriptions", [])
+        if (desc.get("Target") or {}).get("Id") == instance_id
+        and (desc.get("Target") or {}).get("Port") is not None
+    ]
+
+
+def reconcile_premium_target_group_ports() -> Dict[str, Any]:
+    """Reconcile per-user premium target groups so each registered
+    (Id, Port) pair matches the studio container's actual host port on
+    that instance.
+
+    Idempotent. Under fixed-port deployments every comparison resolves
+    equal and the function is a no-op apart from the read calls. Called
+    every 15 minutes by handle_scheduled_monitoring under
+    PREMIUM_SCALING_LOCK.
+    """
+    if os.environ.get("RECONCILE_PREMIUM_TG_PORTS_ENABLED", "true").lower() != "true":
+        print("reconcile_premium_target_group_ports: disabled via kill-switch")
+        return {"disabled": True}
+
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+
+    summary: Dict[str, Any] = {
+        "assignments_scanned": 0,
+        "drift_detected": 0,
+        "drift_fixed": 0,
+        "skipped_no_host_port": 0,
+        "skipped_missing_tg": 0,
+        "errors": 0,
+    }
+
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT user_id, instance_id, target_group_arn
+                       FROM premium_user_assignments
+                       WHERE status IN (%s, %s)
+                         AND is_standby = 0
+                         AND instance_id <> %s
+                         AND target_group_arn IS NOT NULL
+                         AND target_group_arn <> ''
+                         AND target_group_arn NOT IN (%s, %s)
+                         AND last_state_check < (NOW() - INTERVAL %s SECOND)""",
+                    (
+                        PremiumAssignment.ACTIVE,
+                        PremiumAssignment.PENDING_RELEASE,
+                        PremiumAssignment.AUTOSCALING_POOL,
+                        PremiumAssignment.STANDBY,
+                        PremiumAssignment.RESERVING,
+                        RECONCILE_RECENT_MUTATION_SECONDS,
+                    ),
+                )
+                assignments = cursor.fetchall()
+    except Exception as e:
+        print(f"reconcile_premium_target_group_ports: DB read failed: {e}")
+        summary["errors"] += 1
+        return summary
+
+    for row in assignments:
+        summary["assignments_scanned"] += 1
+        user_id = row["user_id"]
+        instance_id = row["instance_id"]
+        tg_arn = row["target_group_arn"]
+
+        try:
+            if not target_group_exists(tg_arn):
+                summary["skipped_missing_tg"] += 1
+                print(f"reconcile: user {user_id} TG {tg_arn} gone — skipping")
+                continue
+
+            actual_port = get_host_port_for_instance(instance_id)
+            if actual_port is None:
+                summary["skipped_no_host_port"] += 1
+                continue
+
+            registered_ports = get_registered_ports_for_instance(tg_arn, instance_id)
+            stale_ports = [p for p in registered_ports if p != actual_port]
+            current_registered = actual_port in registered_ports
+
+            if not stale_ports and current_registered:
+                continue
+
+            summary["drift_detected"] += 1
+            print(
+                f"reconcile: user {user_id} instance {instance_id} drift "
+                f"detected — registered={registered_ports}, "
+                f"actual_host_port={actual_port}, tg={tg_arn}"
+            )
+
+            # Register first (additive), then deregister stale, so the TG
+            # always has at least one entry across the transition.
+            if not current_registered:
+                elbv2.register_targets(
+                    TargetGroupArn=tg_arn,
+                    Targets=[{"Id": instance_id, "Port": actual_port}],
+                )
+            for stale in stale_ports:
+                elbv2.deregister_targets(
+                    TargetGroupArn=tg_arn,
+                    Targets=[{"Id": instance_id, "Port": stale}],
+                )
+
+            summary["drift_fixed"] += 1
+            print(
+                f"reconcile: user {user_id} converged TG {tg_arn} to port "
+                f"{actual_port} (removed stale {stale_ports})"
+            )
+        except Exception as e:
+            summary["errors"] += 1
+            print(f"reconcile: user {user_id} instance {instance_id} " f"failed: {e}")
+            continue
+
+    print(f"reconcile_premium_target_group_ports summary: {summary}")
+    return summary
+
+
 def cleanup_ghost_ecs_registrations():
     """Deregister ghost premium container instances from the ECS cluster.
 
     Only targets instances with attribute:tier == premium.
 
-    Deregistration rules:
-      - EC2 stopped/terminated/gone: deregister immediately.
+    Deregistration rules (EC2 state decides first; agentConnected is consulted
+    only after the instance is alive):
+      - No ec2InstanceId mapping: deregister immediately.
+      - EC2 stopped/terminated/shutting-down/gone: deregister immediately.
+      - EC2 running + agent connected: clear any stale disconnect tag.
       - EC2 running + agent disconnected: tag with a timestamp on first
-        sighting, deregister after _AGENT_DISCONNECT_GRACE_SECONDS.
-        The tag is cleared automatically if the agent reconnects.
+        sighting, deregister after _AGENT_DISCONNECT_GRACE_SECONDS. The tag
+        is cleared automatically if the agent reconnects.
 
     Called every 15 minutes by handle_scheduled_monitoring.
     """
@@ -5058,118 +5366,143 @@ def cleanup_ghost_ecs_registrations():
         ghost_instances = []
         reconnected_ec2_ids = []
 
-        for container_instance in describe_response.get("containerInstances", []):
+        container_instances = describe_response.get("containerInstances", [])
+
+        # Batched describe_instances has no partial-result mode
+        # — any unknown ID fails the call.
+        ec2_ids = [
+            ci["ec2InstanceId"] for ci in container_instances if ci.get("ec2InstanceId")
+        ]
+        ec2_state_by_id: dict = {}
+        ec2_tags_by_id: dict = {}
+
+        def _record(reservations):
+            for reservation in reservations:
+                for instance in reservation.get("Instances", []):
+                    inst_id = instance.get("InstanceId")
+                    if not inst_id:
+                        continue
+                    ec2_state_by_id[inst_id] = instance["State"]["Name"]
+                    ec2_tags_by_id[inst_id] = {
+                        t["Key"]: t["Value"] for t in instance.get("Tags", [])
+                    }
+
+        if ec2_ids:
+            try:
+                ec2_response = ec2.describe_instances(InstanceIds=ec2_ids)
+                _record(ec2_response.get("Reservations", []))
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
+                    raise
+                for ec2_id in ec2_ids:
+                    try:
+                        per = ec2.describe_instances(InstanceIds=[ec2_id])
+                        _record(per.get("Reservations", []))
+                    except ClientError as inner:
+                        if (
+                            inner.response["Error"]["Code"]
+                            != "InvalidInstanceID.NotFound"
+                        ):
+                            raise
+
+        for container_instance in container_instances:
             container_instance_arn = container_instance.get("containerInstanceArn")
             ec2_instance_id = container_instance.get("ec2InstanceId")
             agent_connected = container_instance.get("agentConnected", False)
             status = container_instance.get("status", "UNKNOWN")
 
-            # Agent reconnected — clear any disconnect tag (best-effort)
-            if agent_connected:
-                if ec2_instance_id:
-                    reconnected_ec2_ids.append(ec2_instance_id)
-                continue
-
-            # Agent is disconnected — check EC2 state to decide what to do
+            # EC2 state decides first — a terminated EC2 is a ghost even
+            # if the ECS agent still briefly reports as connected.
             if not ec2_instance_id:
-                # No EC2 mapping at all — deregister immediately
                 ghost_instances.append(
                     {
                         "container_instance_arn": container_instance_arn,
                         "ec2_instance_id": ec2_instance_id,
-                        "reason": "Disconnected agent with no EC2 instance mapping",
+                        "reason": "Container instance has no EC2 mapping",
                         "status": status,
                     }
                 )
                 continue
 
-            if ec2_instance_id:
-                try:
-                    ec2_response = ec2.describe_instances(InstanceIds=[ec2_instance_id])
-                    if ec2_response["Reservations"]:
-                        instance = ec2_response["Reservations"][0]["Instances"][0]
-                        instance_state = instance["State"]["Name"]
+            instance_state = ec2_state_by_id.get(ec2_instance_id)
+            if instance_state is None:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": "EC2 instance does not exist",
+                        "status": status,
+                    }
+                )
+                continue
 
-                        # EC2 is dead → deregister immediately
-                        if instance_state in [
-                            InstanceState.STOPPED,
-                            InstanceState.TERMINATED,
-                            InstanceState.SHUTTING_DOWN,
-                        ]:
-                            ghost_instances.append(
-                                {
-                                    "container_instance_arn": container_instance_arn,
-                                    "ec2_instance_id": ec2_instance_id,
-                                    "reason": f"EC2 instance is {instance_state}",
-                                    "status": status,
-                                }
-                            )
-                            continue
+            if instance_state in [
+                InstanceState.STOPPED,
+                InstanceState.TERMINATED,
+                InstanceState.SHUTTING_DOWN,
+            ]:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": f"EC2 instance is {instance_state}",
+                        "status": status,
+                    }
+                )
+                continue
 
-                        # EC2 is running but agent disconnected — apply grace period
-                        tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
-                        first_seen = tags.get(_DISCONNECT_TAG_KEY)
+            # EC2 is alive. Agent connected → clear any disconnect tag.
+            if agent_connected:
+                reconnected_ec2_ids.append(ec2_instance_id)
+                continue
 
-                        if not first_seen:
-                            now_str = datetime.now(timezone.utc).isoformat()
-                            print(
-                                f"Agent disconnected on {ec2_instance_id}, "
-                                f"starting grace period"
-                            )
-                            ec2.create_tags(
-                                Resources=[ec2_instance_id],
-                                Tags=[
-                                    {
-                                        "Key": _DISCONNECT_TAG_KEY,
-                                        "Value": now_str,
-                                    }
-                                ],
-                            )
-                            continue
+            # EC2 alive + agent disconnected — apply grace period.
+            tags = ec2_tags_by_id.get(ec2_instance_id, {})
+            first_seen = tags.get(_DISCONNECT_TAG_KEY)
 
-                        # Tag exists — check if grace period has elapsed
-                        try:
-                            first_seen_dt = datetime.fromisoformat(first_seen)
-                        except (ValueError, TypeError):
-                            first_seen_dt = datetime.now(timezone.utc)
+            if not first_seen:
+                now_str = datetime.now(timezone.utc).isoformat()
+                print(
+                    f"Agent disconnected on {ec2_instance_id}, "
+                    f"starting grace period"
+                )
+                ec2.create_tags(
+                    Resources=[ec2_instance_id],
+                    Tags=[
+                        {
+                            "Key": _DISCONNECT_TAG_KEY,
+                            "Value": now_str,
+                        }
+                    ],
+                )
+                continue
 
-                        elapsed = (
-                            datetime.now(timezone.utc) - first_seen_dt
-                        ).total_seconds()
+            try:
+                first_seen_dt = datetime.fromisoformat(first_seen)
+            except (ValueError, TypeError):
+                first_seen_dt = datetime.now(timezone.utc)
 
-                        if elapsed < _AGENT_DISCONNECT_GRACE_SECONDS:
-                            print(
-                                f"Agent disconnected on {ec2_instance_id} "
-                                f"for {int(elapsed)}s, within grace period"
-                            )
-                            continue
+            elapsed = (datetime.now(timezone.utc) - first_seen_dt).total_seconds()
 
-                        ghost_instances.append(
-                            {
-                                "container_instance_arn": container_instance_arn,
-                                "ec2_instance_id": ec2_instance_id,
-                                "reason": (
-                                    f"ECS agent disconnected for "
-                                    f"{int(elapsed)}s (grace period "
-                                    f"{_AGENT_DISCONNECT_GRACE_SECONDS}s)"
-                                ),
-                                "status": status,
-                            }
-                        )
-                        continue
+            if elapsed < _AGENT_DISCONNECT_GRACE_SECONDS:
+                print(
+                    f"Agent disconnected on {ec2_instance_id} "
+                    f"for {int(elapsed)}s, within grace period"
+                )
+                continue
 
-                except Exception as e:
-                    if "InvalidInstanceID" in str(e):
-                        ghost_instances.append(
-                            {
-                                "container_instance_arn": container_instance_arn,
-                                "ec2_instance_id": ec2_instance_id,
-                                "reason": "EC2 instance does not exist",
-                                "status": status,
-                            }
-                        )
-                        continue
-                    raise
+            ghost_instances.append(
+                {
+                    "container_instance_arn": container_instance_arn,
+                    "ec2_instance_id": ec2_instance_id,
+                    "reason": (
+                        f"ECS agent disconnected for "
+                        f"{int(elapsed)}s (grace period "
+                        f"{_AGENT_DISCONNECT_GRACE_SECONDS}s)"
+                    ),
+                    "status": status,
+                }
+            )
 
         # Clear disconnect tags on instances whose agents have reconnected
         if reconnected_ec2_ids:
@@ -5644,15 +5977,40 @@ def fix_incorrect_is_shared_flags(connection) -> Dict[str, Any]:
 
 @with_transaction
 def update_user_activity_timestamp(connection, user_id: int) -> bool:
-    """Update activity timestamp for a user with proper transaction isolation"""
+    """Update activity timestamp for a user with proper transaction isolation.
+
+    Also restores a row from `pending_release` back to `active` so an explicit
+    heartbeat from one tab heals a soft-release triggered by another tab's
+    close. Mirrors the user_activity_middleware behaviour. The instance_state
+    guard preserves the dead-EC2 escape valve.
+    """
     with connection.cursor() as cursor:
         cursor.execute(
             """
             UPDATE premium_user_assignments
-            SET last_activity = CURRENT_TIMESTAMP
-            WHERE user_id = %s AND is_standby = 0
-        """,
-            (user_id,),
+            SET last_activity = CURRENT_TIMESTAMP,
+                status = CASE
+                    WHEN status = %s THEN %s
+                    ELSE status
+                END
+            WHERE user_id = %s
+            AND status IN (%s, %s)
+            AND is_standby = 0
+            AND (
+                status = %s
+                OR instance_state IS NULL
+                OR instance_state NOT IN
+                    ('terminated','shutting-down','stopped','stopping')
+            )
+            """,
+            (
+                PremiumAssignment.PENDING_RELEASE,
+                PremiumAssignment.ACTIVE,
+                user_id,
+                PremiumAssignment.ACTIVE,
+                PremiumAssignment.PENDING_RELEASE,
+                PremiumAssignment.ACTIVE,
+            ),
         )
         return cursor.rowcount > 0
 

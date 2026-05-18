@@ -233,6 +233,18 @@ variable "premium_instance_type" {
   default     = "t3.large"
 }
 
+variable "premium_backend_port" {
+  description = "Premium studio container listen port. Single source of truth for the premium task def's containerPort/hostPort/BACKEND_PORT and the premium_manager/cleanup Lambdas' BACKEND_PORT env, so the reconciler's networkBindings filter cannot drift from the live port mapping."
+  type        = number
+  default     = 8000
+}
+
+variable "reconcile_premium_tg_ports_enabled" {
+  description = "Kill-switch for the premium target-group port reconciler in handle_scheduled_monitoring. Set false to disable without redeploying code."
+  type        = bool
+  default     = true
+}
+
 variable "background_instance_type" {
   description = "Instance type for background service instance"
   type        = string
@@ -290,6 +302,18 @@ variable "dev_schedule_stop_mode" {
     condition     = contains(["stop", "destroy"], var.dev_schedule_stop_mode)
     error_message = "dev_schedule_stop_mode must be 'stop' or 'destroy'."
   }
+}
+
+variable "use_custom_ami" {
+  description = "Use pre-baked custom AMI from Image Builder instead of stock ECS-optimized AMI"
+  type        = bool
+  default     = false
+}
+
+variable "custom_ami_version" {
+  description = "Image Builder recipe version string (bump to force a new AMI build)"
+  type        = string
+  default     = "1.0.0"
 }
 
 # Data sources

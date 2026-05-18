@@ -5,6 +5,8 @@ This module defines constants for AWS service statuses to ensure consistency
 across the codebase and prevent typos.
 """
 
+import os
+
 
 class ECSTaskStatus:
     """
@@ -23,6 +25,18 @@ class ECSTaskStatus:
     STOPPING = "STOPPING"
     DEPROVISIONING = "DEPROVISIONING"
     STOPPED = "STOPPED"
+
+
+class EphemeralPortConfig:
+    """Tuning constants for resolving an ECS task's host port via
+    describe_tasks → networkBindings.
+
+    The poll exists because networkBindings is briefly empty while the
+    task is RUNNING but Docker port mappings are still propagating.
+    """
+
+    RESOLVE_MAX_ATTEMPTS = 10
+    RESOLVE_DELAY_SECONDS = 3.0
 
 
 class InstanceState:
@@ -142,8 +156,11 @@ class PremiumInstanceConfig:
     INSTANCE_TYPE_TAG = "Premium-Instance"
     # EC2 Service tag value for premium instances
     SERVICE_TAG = "premium-tier"
-    # Instance Name tag suffix (combined with env prefix: "{prefix}-premium-running")
-    INSTANCE_NAME_SUFFIX = "premium-running"
+    # Instance Name tag suffix for dynamically provisioned premium instances.
+    # Combined with env prefix: "<env_prefix>-<INSTANCE_NAME_SUFFIX>".
+    # Note: Terraform pre-provisions a separate "premium-initial" instance
+    # at deploy time — see compute.tf.
+    INSTANCE_NAME_SUFFIX = "premium-dedicated"
 
     @classmethod
     def get_env_prefix(cls) -> str:
@@ -151,10 +168,18 @@ class PremiumInstanceConfig:
         return EnvironmentConfig.get_env_prefix()
 
     @classmethod
+    def get_backend_port(cls) -> int:
+        raw = os.environ.get("BACKEND_PORT", "8000")
+        port = int(raw)
+        if not 1 <= port <= 65535:
+            raise ValueError(f"BACKEND_PORT out of range: {raw}")
+        return port
+
+    @classmethod
     def get_instance_name_pattern(cls) -> str:
         """Get the EC2 Name tag wildcard pattern for this environment.
 
-        Returns e.g. 'development-premium-*' or 'subscr-premium-*'.
+        Returns '<env_prefix>-premium-*'.
         Used in AWS API tag:Name filters.
         """
         return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_IDENTIFIER}-*"
@@ -163,7 +188,7 @@ class PremiumInstanceConfig:
     def get_instance_name(cls) -> str:
         """Get the EC2 Name tag value for new instances.
 
-        Returns e.g. 'development-premium-running' or 'subscr-premium-running'.
+        Returns '<env_prefix>-<INSTANCE_NAME_SUFFIX>'.
         """
         return f"{EnvironmentConfig.get_env_prefix()}-{cls.INSTANCE_NAME_SUFFIX}"
 

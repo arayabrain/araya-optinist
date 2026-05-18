@@ -1,42 +1,31 @@
-# OptiNiSt Cloud Deployment Procedure
+# OptiNiSt Cloud — Application Deployment & Release Guide
 
-This document describes how to deploy OptiNiSt to AWS infrastructure. There are two deployment methods depending on your level of access.
+This document covers **application code deployment, release procedures, and Git workflow**. Use this guide when deploying code changes (frontend, studio, Lambda) to the AWS environment.
+
+> **For infrastructure management (Terraform operations, environment setup, ECR details)**, see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
 
 **Production URL:** `https://araya-optinist.com`
 
-## Overview: Secrets Manager Architecture
-
-**OptiNiSt uses AWS Secrets Manager for credential storage.** This enables team members to deploy without needing access to `terraform.tfvars`.
-
-### How It Works:
-
-1. **One-time setup (requires terraform.tfvars):**
-   - Run `terraform apply` once to create AWS Secrets Manager secrets
-   - Secrets contain: Firebase config, database credentials, application keys, Stripe config
-   - Secrets are stored permanently in AWS
-
-2. **Ongoing deployments (no terraform.tfvars needed):**
-   - Build and push Docker images using `ecr_build_push.sh`
-   - The static `app_setup.sh` script automatically:
-     - Reads secrets from AWS Secrets Manager
-     - Discovers infrastructure (RDS endpoint, S3 buckets) via AWS CLI
-     - Configures the application with correct settings
+---
 
 ## Table of Contents
 
-- [Method 1: Deployment with Terraform Access](#method-1-deployment-with-terraform-access-full-access)
-- [Method 2: Deployment without Terraform Access](#method-2-deployment-without-terraform-access)
+- [Prerequisites](#prerequisites)
+- [AWS Profile Configuration](#aws-profile-configuration)
+- [Secrets Manager Architecture](#secrets-manager-architecture)
+- [Deployment Workflow](#deployment-workflow)
 - [Post-Deployment Verification](#post-deployment-verification)
 - [Release Preparation](#release-preparation)
 - [Git Workflow and Release Tags](#git-workflow-and-release-tags)
-- [Documentation Updates (Readthedocs)](#documentation-updates-readthedocs)
-- [Wiki Documentation](#wiki-documentation)
+- [Documentation Updates](#documentation-updates)
 - [Hotfix Procedure](#hotfix-procedure)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-### Required Tools Installation
+## Prerequisites
+
+### Required Tools
 
 ```bash
 # Install AWS CLI
@@ -45,172 +34,201 @@ This document describes how to deploy OptiNiSt to AWS infrastructure. There are 
 # Install Docker
 # https://docs.docker.com/get-docker/
 
-# Configure AWS credentials
-aws configure
+# Install Terraform (v1.0+) — only needed if deploying infrastructure changes
+brew install terraform
 ```
+
+### Required AWS Permissions
+
+The deploying user needs the following AWS permissions:
+
+- **ECR**: Push images (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, etc.)
+- **ECS**: List and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:UpdateService`, etc.)
+- **Secrets Manager**: Read secrets (granted automatically to the deployment role)
+- **RDS**: Describe instances (for verification)
+- **S3**: List buckets (for verification)
 
 ---
 
-## Method 1: Deployment with Terraform Access (Full Access)
+## AWS Profile Configuration
 
-Use this method if you have access to `infrastructure/terraform/terraform.tfvars`.
+When your machine has multiple AWS profiles configured, you **must** specify the correct profile before running commands. Without this, commands may execute against the wrong AWS account.
 
-> For environment setup, switching between dev/production, and ECR management, see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
-
-### Prerequisites for Method 1
-
-- Access to `infrastructure/terraform/terraform.tfvars`
-- Terraform installed (v1.0+)
-- Firebase credentials (already configured in terraform.tfvars)
-
-### 1.1 Deployment Steps
-
-After merging, run the deployment:
+### Setting Up a Named Profile
 
 ```bash
-# Step 1: Apply infrastructure and Lambda changes
-cd infrastructure/terraform
-terraform plan     # Review changes before applying
-terraform apply
-
-# Step 2: Build and push the Docker image (if studio/ or frontend/ code changed)
-cd ../scripts
-./ecr_build_push.sh
-
-# Step 3: Force ECS to pull the new image
-#   AWS Console → ECS → Cluster → Service → Update → check "Force new deployment"
+aws configure --profile optinist
+# AWS Access Key ID:     <your-key>       (obtain from team lead)
+# AWS Secret Access Key: <your-secret>    (obtain from team lead)
+# Default region name:   ap-northeast-1
+# Default output format: json
 ```
 
-**What each step does:**
+### Activating the Profile
 
-- **`terraform apply`** updates infrastructure and Lambdas:
-  - Infrastructure (VPC, ALB, RDS, ECS, Auto Scaling, Route53, ACM)
-  - Lambda function code and layers
-  - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
-- **`ecr_build_push.sh`** builds the frontend and studio app into a Docker image and pushes it to ECR. It reads terraform outputs (domain, port, protocol) to configure the frontend build, so terraform must run first. Skip this step if only Lambda/infrastructure code changed.
-- **Force new deployment** tells ECS to pull the latest image from ECR. Required after pushing a new image; skip if only Lambda/infrastructure changed.
+#### Option A: Environment Variable (recommended)
+
+Set `AWS_PROFILE` once per terminal session. All subsequent `aws`, `terraform`, and `ecr_build_push.sh` commands will use this profile automatically.
+
+```bash
+export AWS_PROFILE=optinist
+
+# Verify the correct account is active
+aws sts get-caller-identity
+```
+
+> **Tip:** Add `export AWS_PROFILE=optinist` to your shell configuration (`~/.bashrc`, `~/.zshrc`) if this is your primary AWS project.
+
+#### Option B: Per-Command `--profile` Flag (AWS CLI only)
+
+```bash
+aws ecs list-clusters --profile optinist --region ap-northeast-1
+```
+
+> **Note:** `terraform` and `ecr_build_push.sh` do not accept `--profile`. They read from the `AWS_PROFILE` environment variable. Always use `export AWS_PROFILE=...` before running these tools.
 
 ---
 
-## Method 2: Deployment without Terraform Access
+## Secrets Manager Architecture
 
-**With AWS Secrets Manager, you can now deploy without terraform.tfvars**
-
-Use this method for routine deployments after the initial infrastructure setup has been completed.
-
-### Prerequisites for Method 2
-
-- AWS CLI configured with valid credentials
-- Docker installed and running
-- AWS credentials with permissions for:
-  - ECR (push images)
-  - Secrets Manager (read secrets) - granted automatically to deployment role
-  - ECS (list services/clusters)
-  - RDS (describe instances)
-  - S3 (list buckets)
+OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team members to deploy application code without needing access to Terraform tfvars files.
 
 ### How It Works
 
-The deployment process is now streamlined:
+1. **One-time setup (requires Terraform access):**
+   - Run `terraform apply` once to create AWS Secrets Manager secrets
+   - Secrets contain: Firebase config, database credentials, application keys, Stripe config
+   - Secrets are stored permanently in AWS
 
-1. **Secrets are already in AWS** - Created during initial `terraform apply`
-2. **app_setup.sh reads from Secrets Manager** - No hardcoded credentials
-3. **Infrastructure discovery via AWS CLI** - Finds RDS, S3, etc. automatically
-4. **You only need to build and push** - Everything else is automatic
+2. **Ongoing deployments (no Terraform needed):**
+   - Build and push Docker images using `ecr_build_push.sh`
+   - The `app_setup.sh` script inside the container automatically:
+     - Reads secrets from AWS Secrets Manager
+     - Discovers infrastructure (RDS endpoint, S3 buckets) via AWS CLI
+     - Configures the application with correct settings
 
-**No Firebase extraction needed!** The `app_setup.sh` script automatically retrieves Firebase and all other secrets from AWS Secrets Manager.
+---
 
-### 2.1 Simple Deployment Steps
+## Deployment Workflow
 
-**Deploy in 2 simple steps:**
+### Determine What Needs to Be Deployed
+
+| What changed                 | Actions needed                                                   |
+| ---------------------------- | ---------------------------------------------------------------- |
+| Frontend code (`frontend/`)  | `ecr_build_push.sh` → Force ECS redeployment                     |
+| Studio code (`studio/`)      | `ecr_build_push.sh` → Force ECS redeployment                     |
+| Lambda code (`*_package/`)   | `terraform apply`                                                |
+| Infrastructure (`.tf` files) | `terraform apply`                                                |
+| Frontend + Infrastructure    | `terraform apply` → `ecr_build_push.sh` → Force ECS redeployment |
+| Everything                   | `terraform apply` → `ecr_build_push.sh` → Force ECS redeployment |
+
+> **Important:** When both infrastructure and application code change, run `terraform apply` **before** `ecr_build_push.sh`. The build script reads Terraform outputs (domain, port, protocol) to configure the frontend build.
+
+### Step 1: Apply Infrastructure Changes (if needed)
+
+Skip this step if only `frontend/` or `studio/` code changed.
 
 ```bash
+export AWS_PROFILE=optinist
+cd infrastructure/terraform
+
+# <ENV> = production | development
+
+# Initialize with the correct environment backend
+terraform init -backend-config=backends/<ENV>.hcl -reconfigure
+
+# Review changes
+terraform plan -var-file=environments/<ENV>.tfvars
+
+# Apply changes
+terraform apply -var-file=environments/<ENV>.tfvars
+```
+
+**What `terraform apply` updates:**
+
+- Infrastructure (VPC, ALB, RDS, ECS, Auto Scaling, Route53, ACM)
+- Lambda function code and layers
+- Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
+
+> **Note:** The commands above are a quick reference for production deployment. For the authoritative guide — including environment switching, development setup, destroying environments, and Terraform troubleshooting — see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
+
+### Step 2: Build and Push Docker Image (if application code changed)
+
+Skip this step if only Lambda or infrastructure code changed.
+
+```bash
+export AWS_PROFILE=optinist
 cd infrastructure/scripts
 ./ecr_build_push.sh
 ```
 
-**Script automatically:**
+The script automatically:
 
-1. - Gets infrastructure configuration (tries Terraform outputs first, then prompts if unavailable)
-2. - Builds frontend with correct environment variables
-3. - Builds and tags Docker image
-4. - Pushes to ECR
-5. - ECS automatically deploys the new image
+1. Reads infrastructure configuration from Terraform outputs
+2. Builds frontend with correct environment variables
+3. Builds and tags Docker image
+4. Pushes to the ECR repository for the active environment
 
-**If Terraform outputs aren't available, you'll be prompted for:**
+> For details on ECR repository isolation, image tagging, and rollback, see [INFRA_DEPLOYMENT_PROCEDURE.md — ECR Repository Management](INFRA_DEPLOYMENT_PROCEDURE.md#ecr-repository-management).
 
-- Frontend Host: `araya-optinist.com` (or ALB DNS)
-- Frontend Protocol: `https`
-- Frontend Port: `443`
+**If Terraform outputs aren't available**, the script prompts you for:
 
-### 2.2 Finding AWS Resource Values (If Needed)
+- Frontend Host: `araya-optinist.com` (or ALB DNS for development)
+- Frontend Protocol: `https` (production) / `http` (development)
+- Frontend Port: `443` (production) / `80` (development)
 
-If the build script prompts you for values, here's how to find them via AWS CLI:
+### Step 3: Force ECS Redeployment (after Docker image push)
 
-#### Get ALB DNS Name (For Testing)
+Skip this step if only Lambda or infrastructure code changed.
 
-```bash
-# Find the Application Load Balancer DNS
-aws elbv2 describe-load-balancers \
-  --query "LoadBalancers[?contains(LoadBalancerName, 'subscr-optinist')].DNSName" \
-  --output text \
-  --region ap-northeast-1
+**Option A: AWS Console**
 
-# Production domain: araya-optinist.com
-# Verify Route53 configuration
-aws route53 list-hosted-zones \
-  --query "HostedZones[?contains(Name, 'araya-optinist')].Id" \
-  --output text
-```
+AWS Console → ECS → Cluster → Service → Update → check "Force new deployment"
 
-#### Get AWS Account ID
+**Option B: AWS CLI**
 
 ```bash
-aws sts get-caller-identity --query Account --output text
-```
-
-#### Check Secrets Manager Secrets (For Verification)
-
-```bash
-# List all OptiNiSt secrets
-aws secretsmanager list-secrets \
-  --filters Key=name,Values=subscr-optinist \
-  --region ap-northeast-1 \
-  --query 'SecretList[*].[Name,ARN]' \
-  --output table
-```
-
-**Note:** You don't need to manually extract or configure Firebase credentials. The `app_setup.sh` script automatically retrieves everything from AWS Secrets Manager when EC2 instances launch.
-
----
-
-## Post-Deployment Verification
-
-After deployment, verify the application is running correctly:
-
-### 1. Find Your Cluster and Service Names
-
-```bash
-# Find ECS cluster
+# Find cluster and service names
 CLUSTER_NAME=$(aws ecs list-clusters \
   --region ap-northeast-1 \
   --query "clusterArns[?contains(@, 'subscr-optinist')]" \
   --output text | cut -d'/' -f2)
 
-# Find ECS service
 SERVICE_NAME=$(aws ecs list-services \
   --cluster $CLUSTER_NAME \
   --region ap-northeast-1 \
   --query "serviceArns[?contains(@, 'subscr-optinist')]" \
   --output text | cut -d'/' -f3)
 
-echo "Cluster: $CLUSTER_NAME"
-echo "Service: $SERVICE_NAME"
+# Force new deployment
+aws ecs update-service \
+  --cluster $CLUSTER_NAME \
+  --service $SERVICE_NAME \
+  --force-new-deployment \
+  --region ap-northeast-1
 ```
 
-### 2. Check ECS Service Status
+---
+
+## Post-Deployment Verification
+
+After deployment, verify the application is running correctly.
+
+### 1. Check ECS Service Status
 
 ```bash
+# Find cluster and service (if not already set from previous step)
+CLUSTER_NAME=$(aws ecs list-clusters \
+  --region ap-northeast-1 \
+  --query "clusterArns[?contains(@, 'subscr-optinist')]" \
+  --output text | cut -d'/' -f2)
+
+SERVICE_NAME=$(aws ecs list-services \
+  --cluster $CLUSTER_NAME \
+  --region ap-northeast-1 \
+  --query "serviceArns[?contains(@, 'subscr-optinist')]" \
+  --output text | cut -d'/' -f3)
+
 aws ecs describe-services \
   --cluster $CLUSTER_NAME \
   --services $SERVICE_NAME \
@@ -221,30 +239,23 @@ aws ecs describe-services \
 
 Expected: `runningCount` should match `desiredCount` and status should be `ACTIVE`
 
-### 3. Get ALB DNS Name
-
-```bash
-ALB_DNS=$(aws elbv2 describe-load-balancers \
-  --query "LoadBalancers[?contains(LoadBalancerName, 'subscr-optinist')].DNSName" \
-  --output text \
-  --region ap-northeast-1)
-
-echo "ALB DNS: $ALB_DNS"
-```
-
-### 4. Check Application Health
+### 2. Check Application Health
 
 ```bash
 # Health check endpoint (using custom domain)
 curl https://araya-optinist.com/health
 
 # Or use ALB DNS directly
+ALB_DNS=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?contains(LoadBalancerName, 'subscr-optinist')].DNSName" \
+  --output text \
+  --region ap-northeast-1)
 curl http://$ALB_DNS/health
 ```
 
 Expected: HTTP 200 response
 
-### 5. Access the Application
+### 3. Access the Application
 
 Open in browser:
 
@@ -257,7 +268,7 @@ Verify:
 - Application loads without errors
 - Can create and run workflows
 
-### 6. Check ECS Task Logs
+### 4. Check ECS Task Logs
 
 ```bash
 # Get task ARN
@@ -277,7 +288,7 @@ aws ecs describe-tasks \
   --output table
 ```
 
-### 7. View CloudWatch Logs
+### 5. View CloudWatch Logs
 
 ```bash
 # Get log group name
@@ -296,13 +307,24 @@ aws logs describe-log-streams \
   --query 'logStreams[*].[logStreamName,lastEventTime]' \
   --output table
 
-# Tail recent logs (replace LOG_STREAM_NAME with actual value from above)
+# Tail recent logs
 aws logs tail $LOG_GROUP \
   --follow \
   --region ap-northeast-1
 ```
 
 **Tip:** You can also view logs in AWS Console → CloudWatch → Log Groups → `/ecs/subscr-optinist-*`
+
+### 6. Verify Secrets Manager Access (optional)
+
+```bash
+# List all OptiNiSt secrets
+aws secretsmanager list-secrets \
+  --filters Key=name,Values=subscr-optinist \
+  --region ap-northeast-1 \
+  --query 'SecretList[*].[Name,ARN]' \
+  --output table
+```
 
 ---
 
@@ -463,11 +485,11 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 ---
 
-## Documentation Updates (Readthedocs) TODO
+## Documentation Updates
+
+### Readthedocs TODO
 
 **Documentation URL:** https://optinist-for-cloud.readthedocs.io
-
-### Updating Documentation
 
 1. Documentation source files are located in the `docs/` directory
 
@@ -489,9 +511,7 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
    - Visit https://optinist-for-cloud.readthedocs.io
    - Confirm changes are reflected
 
----
-
-## Wiki Documentation TODO
+### Wiki TODO
 
 **Wiki URL:** https://github.com/oist/optinist/wiki
 
@@ -570,6 +590,7 @@ git push origin main
 # Use title format: "Hotfix vX.Y.Z"
 
 # Deploy to production
+export AWS_PROFILE=optinist
 cd infrastructure/scripts
 ./ecr_build_push.sh
 ```
@@ -589,23 +610,9 @@ Or create a PR: `main → develop-main` with title "Sync hotfix vX.Y.Z to develo
 
 ---
 
-## Edge Case Handling
-
----
-
-## Monitoring and Metrics
-
----
-
-## Key Functions Reference
-
----
-
 ## Troubleshooting
 
-### Common Issues
-
-**ECS service not updating after push:**
+### ECS service not updating after image push
 
 ```bash
 # Force new deployment
@@ -616,14 +623,67 @@ aws ecs update-service \
   --region ap-northeast-1
 ```
 
-**Health check failing:**
+### Health check failing
 
-- Check CloudWatch logs for application errors
-- Verify database connectivity
-- Check Secrets Manager access
+- Check CloudWatch logs for application errors (see [View CloudWatch Logs](#5-view-cloudwatch-logs))
+- Verify database connectivity (check RDS security groups)
+- Check Secrets Manager access (verify IAM role has `secretsmanager:GetSecretValue`)
 
-**Build script fails:**
+### Build script fails
 
-- Ensure AWS credentials are valid: `aws sts get-caller-identity`
-- Verify Docker is running
-- Check ECR repository exists
+```bash
+# 1. Verify AWS credentials are valid
+aws sts get-caller-identity
+
+# 2. Verify Docker is running
+docker info
+
+# 3. Verify ECR repository exists
+aws ecr describe-repositories \
+  --repository-names optinist-for-cloud \
+  --region ap-northeast-1
+
+# 4. Verify Terraform is initialized to the correct environment
+cat infrastructure/terraform/.terraform/terraform.tfstate | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['backend']['config']['bucket'])"
+```
+
+### Wrong AWS account / permission denied
+
+If you receive `AccessDenied` or `UnauthorizedAccess` errors:
+
+```bash
+# Check which account/profile is currently active
+aws sts get-caller-identity
+
+# If wrong, set the correct profile
+export AWS_PROFILE=optinist
+aws sts get-caller-identity
+```
+
+### ECS task failing to start
+
+```bash
+# Check stopped task reasons
+CLUSTER_NAME=$(aws ecs list-clusters \
+  --region ap-northeast-1 \
+  --query "clusterArns[?contains(@, 'subscr-optinist')]" \
+  --output text | cut -d'/' -f2)
+
+aws ecs list-tasks \
+  --cluster $CLUSTER_NAME \
+  --desired-status STOPPED \
+  --region ap-northeast-1 \
+  --query 'taskArns[0]' \
+  --output text | xargs -I {} aws ecs describe-tasks \
+    --cluster $CLUSTER_NAME \
+    --tasks {} \
+    --region ap-northeast-1 \
+    --query 'tasks[0].{reason:stoppedReason,status:lastStatus,exitCode:containers[0].exitCode}'
+```
+
+Common causes:
+
+- **Image pull failure**: ECR image does not exist or IAM role lacks ECR permissions
+- **Secrets Manager error**: Container cannot read secrets (check IAM task execution role)
+- **Out of memory**: Task memory limit too low for current workload

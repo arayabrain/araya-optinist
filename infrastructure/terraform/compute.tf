@@ -120,9 +120,26 @@ data "aws_ami" "ecs_optimized" {
   }
 }
 
+# Custom AMI from Image Builder (when enabled)
+# depends_on ensures the SSM parameter resource is created before this
+# data source tries to read it on first apply with use_custom_ami = true.
+data "aws_ssm_parameter" "custom_ami_id" {
+  count      = var.use_custom_ami ? 1 : 0
+  name       = "/${var.environment}/optinist/custom-ami-id"
+  depends_on = [aws_ssm_parameter.custom_ami_id]
+}
+
+locals {
+  effective_ami_id = (
+    var.use_custom_ami
+    ? data.aws_ssm_parameter.custom_ami_id[0].value
+    : data.aws_ami.ecs_optimized.id
+  )
+}
+
 resource "aws_launch_template" "ecs" {
   name_prefix   = "${local.env_prefix}-ecs-"
-  image_id      = data.aws_ami.ecs_optimized.id
+  image_id      = local.effective_ami_id
   instance_type = var.free_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
@@ -135,9 +152,21 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 120
+      volume_size = 88 # Reduced from 120: 32 GB swap moved to dedicated volume
       volume_type = "gp3"
       encrypted   = true
+    }
+  }
+
+  # Dedicated swap volume — mkswap on a block device takes <1 second
+  # vs ~4.5 minutes for dd-based swap file creation on root volume
+  block_device_mappings {
+    device_name = "/dev/xvds"
+    ebs {
+      volume_size           = 32
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
     }
   }
 
@@ -157,6 +186,7 @@ resource "aws_launch_template" "ecs" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name      = "/dev/xvds"
   }))
   tag_specifications {
     resource_type = "instance"
@@ -322,7 +352,7 @@ resource "aws_ecs_service" "premium" {
   task_definition                    = aws_ecs_task_definition.premium.arn
   desired_count                      = 1
   deployment_maximum_percent         = 200
-  deployment_minimum_healthy_percent = 50
+  deployment_minimum_healthy_percent = 0
   launch_type                        = "EC2"
 
   enable_execute_command = true
@@ -342,7 +372,7 @@ resource "aws_ecs_service" "premium" {
 # Premium Launch Template - Optimized for dedicated premium users
 resource "aws_launch_template" "premium" {
   name_prefix   = "${local.env_prefix}-premium-"
-  image_id      = data.aws_ami.ecs_optimized.id
+  image_id      = local.effective_ami_id
   instance_type = var.premium_instance_type
   key_name      = aws_key_pair.subscr_optinist_cloud_key_pair.key_name
 
@@ -355,9 +385,21 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 80
+      volume_size = 48 # Reduced from 80: 32 GB swap moved to dedicated volume
       volume_type = "gp3"
       encrypted   = true
+    }
+  }
+
+  # Dedicated swap volume — mkswap on a block device takes <1 second
+  # vs ~4.5 minutes for dd-based swap file creation on root volume
+  block_device_mappings {
+    device_name = "/dev/xvds"
+    ebs {
+      volume_size           = 32
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
     }
   }
 
@@ -377,6 +419,7 @@ resource "aws_launch_template" "premium" {
     efs_id                = aws_efs_file_system.snmk.id
     db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
     swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name      = "/dev/xvds"
   }))
 
   tag_specifications {
@@ -504,7 +547,10 @@ resource "aws_instance" "premium" {
   disable_api_termination = false
 
   tags = {
-    Name          = "${var.environment}-premium-${count.index + 1}"
+    # Pre-provisioned at deploy time. Distinct from "premium-dedicated"
+    # instances which are dynamically created per user sign-in.
+    # See PremiumInstanceConfig.INSTANCE_NAME_SUFFIX in aws_constants.py.
+    Name          = "${var.environment}-premium-initial"
     Type          = "Premium-Instance"
     Service       = "premium-tier"
     Tier          = "premium"
@@ -565,6 +611,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "ENV_PREFIX"
           value = var.environment
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
@@ -755,8 +805,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"             = "/ecs/${local.env_prefix}-cloud-taskdef"
-          "mode"                      = "non-blocking"
-          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "awslogs-multiline-pattern" = "^\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
           "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"
@@ -816,9 +865,9 @@ resource "aws_ecs_task_definition" "premium" {
 
       portMappings = [
         {
-          name          = "${var.environment}-premium-optinist-cloud-container-port-8000"
-          containerPort = 8000
-          hostPort      = 8000
+          name          = "${var.environment}-premium-optinist-cloud-container-port-${var.premium_backend_port}"
+          containerPort = var.premium_backend_port
+          hostPort      = var.premium_backend_port
           protocol      = "tcp"
         }
       ]
@@ -827,6 +876,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "ENV_PREFIX"
           value = var.environment
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
@@ -874,7 +927,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "BACKEND_PORT"
-          value = "8000"
+          value = tostring(var.premium_backend_port)
         },
         {
           name  = "FRONTEND_SERVER_HOST"
@@ -988,7 +1041,7 @@ resource "aws_ecs_task_definition" "premium" {
       ]
 
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+        command     = ["CMD-SHELL", "curl -f http://localhost:${var.premium_backend_port}/health || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -999,7 +1052,7 @@ resource "aws_ecs_task_definition" "premium" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"             = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
-          "awslogs-multiline-pattern" = "^\\[\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
+          "awslogs-multiline-pattern" = "^\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}"
           "max-buffer-size"           = "25m"
           "awslogs-region"            = var.aws_region
           "awslogs-create-group"      = "true"

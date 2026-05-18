@@ -1402,6 +1402,97 @@ class TestDatabaseCommits:
             mock_connection.commit.assert_called()
 
 
+class TestHeartbeatRestoresPendingRelease:
+    """SQL widening — heartbeat restores `pending_release` rows back to `active`.
+
+    Mirrors the user_activity_middleware behaviour so explicit /heartbeat
+    calls heal a soft-release triggered by another tab's close. Guards
+    the multi-tab fix on the lambda side.
+
+    The unit harness mocks `pymysql.connect`, so semantic row-matching is
+    not exercised — that's covered by integration tests. Here we assert the
+    SQL shape and parameter binding, since they encode the behaviour.
+    """
+
+    def _execute_timestamp_update(self, mock_env_vars_premium, rowcount=1):
+        """Run update_user_activity_timestamp under a mocked DB connection.
+
+        Returns (result, mock_cursor, sql_text, sql_params). The cursor is
+        returned so caller can inspect both the SQL text and the parameter
+        tuple passed to execute().
+        """
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            mock_cursor.rowcount = rowcount
+
+            from premium_manager import update_user_activity_timestamp
+
+            result = update_user_activity_timestamp(42)
+
+            execute_call = mock_cursor.execute.call_args
+            sql_text = execute_call[0][0]
+            sql_params = execute_call[0][1] if len(execute_call[0]) > 1 else ()
+            return result, mock_connection, sql_text, sql_params
+
+    def test_sql_matches_active_and_pending_release(self, mock_env_vars_premium):
+        """Filter widened from is_standby=0 only to IN (active, pending_release)."""
+        _, _, sql_text, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        assert "status IN" in sql_text
+
+    def test_sql_uses_premium_assignment_status_constants(self, mock_env_vars_premium):
+        """Parameter binding uses PremiumAssignment.ACTIVE / PENDING_RELEASE
+        constants, not raw strings — protects against the
+        'terminating' / 'pending_release' aliasing footgun in aws_constants."""
+        from aws_constants import PremiumAssignment
+
+        _, _, _, sql_params = self._execute_timestamp_update(mock_env_vars_premium)
+        # CASE WHEN status = PENDING_RELEASE THEN ACTIVE, then user_id,
+        # then IN(ACTIVE, PENDING_RELEASE), then OR-branch status = ACTIVE.
+        assert PremiumAssignment.PENDING_RELEASE in sql_params
+        assert PremiumAssignment.ACTIVE in sql_params
+        # Active appears in three places (THEN clause, IN list, OR branch).
+        assert sql_params.count(PremiumAssignment.ACTIVE) == 3
+        # Pending_release appears in two places (CASE WHEN, IN list).
+        assert sql_params.count(PremiumAssignment.PENDING_RELEASE) == 2
+
+    def test_sql_flips_pending_release_to_active_via_case(self, mock_env_vars_premium):
+        """CASE expression restores pending_release rows to active."""
+        _, _, sql_text, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        assert "CASE" in sql_text
+        assert "WHEN status = %s THEN %s" in sql_text
+
+    def test_sql_guards_against_known_dead_instance_states(self, mock_env_vars_premium):
+        """instance_state guard prevents restoring known-dead rows."""
+        _, _, sql_text, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        assert "instance_state NOT IN" in sql_text
+        for dead_state in ("terminated", "shutting-down", "stopped", "stopping"):
+            assert dead_state in sql_text
+
+    def test_returns_true_when_row_matched(self, mock_env_vars_premium):
+        """rowcount > 0 → returns True (row was updated or restored)."""
+        result, _, _, _ = self._execute_timestamp_update(
+            mock_env_vars_premium, rowcount=1
+        )
+        assert result is True
+
+    def test_returns_false_when_no_row_matched(self, mock_env_vars_premium):
+        """rowcount == 0 → returns False (no row, or escape valve blocked)."""
+        result, _, _, _ = self._execute_timestamp_update(
+            mock_env_vars_premium, rowcount=0
+        )
+        assert result is False
+
+    def test_commits_after_update(self, mock_env_vars_premium):
+        """@with_transaction decorator commits on success."""
+        _, mock_connection, _, _ = self._execute_timestamp_update(mock_env_vars_premium)
+        mock_connection.commit.assert_called()
+
+
 class TestGetAllPremiumInstances:
     """get_all_premium_instances tests."""
 
@@ -1492,7 +1583,9 @@ class TestGetAllPremiumInstances:
                                 "Tags": [
                                     {
                                         "Key": "Name",
-                                        "Value": "production-premium-running",
+                                        # <env_prefix>-<INSTANCE_NAME_SUFFIX>
+                                        # see PremiumInstanceConfig
+                                        "Value": "production-premium-dedicated",
                                     },
                                     {
                                         "Key": "Tier",
@@ -2711,7 +2804,60 @@ class TestCleanupGhostECSRegistrations:
             }
             mock_ec2.describe_instances.return_value = {
                 "Reservations": [
-                    {"Instances": [{"State": {"Name": "stopped"}, "Tags": []}]}
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-stopped1",
+                                "State": {"Name": "stopped"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+
+    def test_deregisters_shutting_down_ec2_immediately(self, mock_env_vars_premium):
+        """Instance whose EC2 is shutting-down (the typical transient state
+        during the #549 race) gets deregistered with no grace."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/shutdown1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-shutdown1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-shutdown1",
+                                "State": {"Name": "shutting-down"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
                 ]
             }
 
@@ -2747,7 +2893,15 @@ class TestCleanupGhostECSRegistrations:
             }
             mock_ec2.describe_instances.return_value = {
                 "Reservations": [
-                    {"Instances": [{"State": {"Name": "running"}, "Tags": []}]}
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-running1",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
                 ]
             }
 
@@ -2759,6 +2913,54 @@ class TestCleanupGhostECSRegistrations:
             mock_ec2.create_tags.assert_called_once()
             tag_call = mock_ec2.create_tags.call_args
             assert tag_call.kwargs["Resources"] == ["i-running1"]
+            assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
+
+    def test_pending_ec2_is_not_deregistered(self, mock_env_vars_premium):
+        """EC2 still booting (state=pending) is treated as alive — not in the
+        STOPPED/TERMINATED/SHUTTING_DOWN dead set. With agent disconnected
+        (not yet registered), the grace-period tag is started; deregister is
+        not called. Pins the alive-set boundary so a future "deregister
+        anything not running" tweak can't silently kill booting CIs."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/pending1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-pending1",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-pending1",
+                                "State": {"Name": "pending"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_not_called()
+            mock_ec2.create_tags.assert_called_once()
+            tag_call = mock_ec2.create_tags.call_args
+            assert tag_call.kwargs["Resources"] == ["i-pending1"]
             assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
 
     def test_skips_within_grace_period(self, mock_env_vars_premium):
@@ -2788,6 +2990,7 @@ class TestCleanupGhostECSRegistrations:
                     {
                         "Instances": [
                             {
+                                "InstanceId": "i-grace1",
                                 "State": {"Name": "running"},
                                 "Tags": [
                                     {
@@ -2834,6 +3037,7 @@ class TestCleanupGhostECSRegistrations:
                     {
                         "Instances": [
                             {
+                                "InstanceId": "i-expired1",
                                 "State": {"Name": "running"},
                                 "Tags": [
                                     {
@@ -2874,6 +3078,19 @@ class TestCleanupGhostECSRegistrations:
                         "ec2InstanceId": "i-healthy1",
                         "agentConnected": True,
                         "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-healthy1",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            }
+                        ]
                     }
                 ]
             }
@@ -2918,7 +3135,20 @@ class TestCleanupGhostECSRegistrations:
             }
             mock_ec2.describe_instances.return_value = {
                 "Reservations": [
-                    {"Instances": [{"State": {"Name": "terminated"}, "Tags": []}]}
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-healthy",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            },
+                            {
+                                "InstanceId": "i-ghost",
+                                "State": {"Name": "terminated"},
+                                "Tags": [],
+                            },
+                        ]
+                    }
                 ]
             }
 
@@ -2932,13 +3162,156 @@ class TestCleanupGhostECSRegistrations:
                 containerInstance=ghost_arn,
                 force=True,
             )
-            # EC2 describe only called for the disconnected instance
-            mock_ec2.describe_instances.assert_called_once_with(InstanceIds=["i-ghost"])
+            # describe_instances is batched across both IDs
+            mock_ec2.describe_instances.assert_called_once_with(
+                InstanceIds=["i-healthy", "i-ghost"]
+            )
             # Healthy instance's tag is cleared
             mock_ec2.delete_tags.assert_any_call(
                 Resources=["i-healthy"],
                 Tags=[{"Key": "optinist:agent-disconnected-at"}],
             )
+
+    def test_deregisters_connected_agent_when_ec2_terminated(
+        self, mock_env_vars_premium
+    ):
+        """Regression for #549: a CI reporting agentConnected=True is still
+        deregistered when its underlying EC2 has been terminated."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/term1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "i-term1",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-term1",
+                                "State": {"Name": "terminated"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+            # delete_tags fires once via the post-deregister cleanup, never as
+            # a "reconnect" tag-clear — the CI was not treated as healthy.
+            mock_ec2.delete_tags.assert_called_once_with(
+                Resources=["i-term1"],
+                Tags=[{"Key": "optinist:agent-disconnected-at"}],
+            )
+
+    def test_falls_back_to_per_id_describe_on_invalid_instance_id(
+        self, mock_env_vars_premium
+    ):
+        """When one EC2 ID is long-gone (past AWS's ~1h visibility window),
+        the batched describe_instances raises InvalidInstanceID.NotFound for
+        the whole call. The cleanup must fall back to per-ID describe so the
+        live CI is processed normally and the gone CI is deregistered via the
+        state=None branch, instead of the outer except swallowing the error
+        and skipping the entire cycle."""
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            live_arn = "arn:aws:ecs:r:a:ci/live1"
+            gone_arn = "arn:aws:ecs:r:a:ci/gone1"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [live_arn, gone_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-live",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": gone_arn,
+                        "ec2InstanceId": "i-gone",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+
+            not_found = ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidInstanceID.NotFound",
+                        "Message": "The instance ID 'i-gone' does not exist",
+                    }
+                },
+                "DescribeInstances",
+            )
+
+            def describe_side_effect(**kwargs):
+                ids = kwargs["InstanceIds"]
+                if len(ids) > 1:
+                    raise not_found
+                if ids == ["i-live"]:
+                    return {
+                        "Reservations": [
+                            {
+                                "Instances": [
+                                    {
+                                        "InstanceId": "i-live",
+                                        "State": {"Name": "running"},
+                                        "Tags": [],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                raise not_found
+
+            mock_ec2.describe_instances.side_effect = describe_side_effect
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            # Exactly the gone CI is deregistered; the live one is not.
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=gone_arn,
+                force=True,
+            )
+            # One batch call + one per-ID call per original ID on fallback.
+            id_lists = [
+                c.kwargs["InstanceIds"]
+                for c in mock_ec2.describe_instances.call_args_list
+            ]
+            assert ["i-live", "i-gone"] in id_lists
+            assert ["i-live"] in id_lists
+            assert ["i-gone"] in id_lists
 
     def test_deregisters_disconnected_without_ec2_id(self, mock_env_vars_premium):
         """Container instance with disconnected agent and no ec2InstanceId
@@ -2973,3 +3346,844 @@ class TestCleanupGhostECSRegistrations:
             )
             # No EC2 calls should be made
             mock_ec2.describe_instances.assert_not_called()
+
+    def test_deregisters_connected_without_ec2_id(self, mock_env_vars_premium):
+        """CI with no ec2InstanceId is deregistered even when
+        agentConnected=True (the pre-#549 short-circuit treated any connected
+        agent as healthy regardless of EC2 mapping)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            ci_arn = "arn:aws:ecs:r:a:ci/no-ec2-conn"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ci_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ci_arn,
+                        "ec2InstanceId": "",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ci_arn,
+                force=True,
+            )
+            mock_ec2.describe_instances.assert_not_called()
+
+
+class TestGetHostPortForInstance:
+    """get_host_port_for_instance polls describe_tasks → networkBindings,
+    filters by CONTAINER_PORT, and soft-fails to None."""
+
+    def _ecs_client(self, mock_boto3):
+        mock_ecs = MagicMock()
+
+        def client_factory(service):
+            if service == "ecs":
+                return mock_ecs
+            return MagicMock()
+
+        mock_boto3.side_effect = client_factory
+        return mock_ecs
+
+    def test_returns_host_port_on_first_attempt(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 8000, "hostPort": 32769}
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32769
+            mock_ecs.describe_tasks.assert_called_once()
+
+    def test_polls_through_empty_bindings(self, mock_env_vars_premium):
+        """First call returns empty networkBindings; second returns populated."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ) as mock_sleep:
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.side_effect = [
+                {
+                    "tasks": [
+                        {
+                            "lastStatus": "RUNNING",
+                            "containers": [{"networkBindings": []}],
+                        }
+                    ]
+                },
+                {
+                    "tasks": [
+                        {
+                            "lastStatus": "RUNNING",
+                            "containers": [
+                                {
+                                    "networkBindings": [
+                                        {"containerPort": 8000, "hostPort": 32770}
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ]
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32770
+            assert mock_ecs.describe_tasks.call_count == 2
+            mock_sleep.assert_called()
+
+    def test_returns_none_after_max_attempts(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [{"networkBindings": []}],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test", max_attempts=3) is None
+            assert mock_ecs.describe_tasks.call_count == 3
+
+    def test_filters_by_container_port(self, mock_env_vars_premium):
+        """A second port mapping that is NOT containerPort 8000 must be ignored."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 9000, "hostPort": 32700},
+                                    {"containerPort": 8000, "hostPort": 32769},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32769
+
+    def test_raises_on_container_port_mismatch(self, mock_env_vars_premium):
+        """Bindings present but none matching the expected containerPort is
+        permanent config drift — must raise so the caller counts an error
+        rather than silently skipping every row."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 9000, "hostPort": 32700},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            with pytest.raises(RuntimeError, match="containerPort mismatch"):
+                get_host_port_for_instance("i-test")
+            # Must stop polling on first observation; not loop max_attempts.
+            assert mock_ecs.describe_tasks.call_count == 1
+
+    def test_skips_non_running_task(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value="ci-arn",
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            mock_ecs = self._ecs_client(mock_boto3)
+            mock_ecs.list_tasks.return_value = {"taskArns": ["t1", "t2"]}
+            mock_ecs.describe_tasks.return_value = {
+                "tasks": [
+                    {
+                        "lastStatus": "STOPPED",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 8000, "hostPort": 99999}
+                                ]
+                            }
+                        ],
+                    },
+                    {
+                        "lastStatus": "RUNNING",
+                        "containers": [
+                            {
+                                "networkBindings": [
+                                    {"containerPort": 8000, "hostPort": 32777}
+                                ]
+                            }
+                        ],
+                    },
+                ]
+            }
+
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-test") == 32777
+
+    def test_returns_none_when_no_container_instance_mapping(
+        self, mock_env_vars_premium
+    ):
+        """get_ecs_container_instance_id returning None (e.g. terminated EC2)
+        should drain attempts and return None, not raise."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.get_ecs_container_instance_id",
+            return_value=None,
+        ), patch(
+            "premium_manager.time.sleep"
+        ):
+            from premium_manager import get_host_port_for_instance
+
+            assert get_host_port_for_instance("i-gone", max_attempts=2) is None
+
+
+class TestGetRegisteredPortsForInstance:
+    """get_registered_ports_for_instance returns the full set of (Port)
+    entries for instance_id in target_group_arn."""
+
+    def test_returns_all_ports_for_instance(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": [
+                    {"Target": {"Id": "i-test", "Port": 32768}},
+                    {"Target": {"Id": "i-test", "Port": 32769}},
+                    {"Target": {"Id": "i-test", "Port": 32770}},
+                ]
+            }
+
+            from premium_manager import get_registered_ports_for_instance
+
+            ports = get_registered_ports_for_instance("tg-arn", "i-test")
+            assert sorted(ports) == [32768, 32769, 32770]
+
+    def test_filters_other_instances(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+            mock_elbv2.describe_target_health.return_value = {
+                "TargetHealthDescriptions": [
+                    {"Target": {"Id": "i-test", "Port": 32768}},
+                    {"Target": {"Id": "i-other", "Port": 32769}},
+                ]
+            }
+
+            from premium_manager import get_registered_ports_for_instance
+
+            assert get_registered_ports_for_instance("tg-arn", "i-test") == [32768]
+
+
+class TestReconcilePremiumTargetGroupPorts:
+    """reconcile_premium_target_group_ports compares each per-user TG's
+    registered ports against the actual host port and converges drift."""
+
+    def _make_row(self, user_id, instance_id, tg_arn):
+        return MockRow(
+            {
+                "user_id": user_id,
+                "instance_id": instance_id,
+                "target_group_arn": tg_arn,
+            }
+        )
+
+    def test_disabled_via_kill_switch(self, mock_env_vars_premium):
+        env = {**mock_env_vars_premium, "RECONCILE_PREMIUM_TG_PORTS_ENABLED": "false"}
+        with patch.dict("os.environ", env, clear=False), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_conn, patch("boto3.client") as mock_boto3:
+            from premium_manager import reconcile_premium_target_group_ports
+
+            result = reconcile_premium_target_group_ports()
+
+            assert result == {"disabled": True}
+            mock_conn.assert_not_called()
+            mock_boto3.assert_not_called()
+
+    def test_converged_no_drift_is_noop(self, mock_env_vars_premium):
+        """registered == actual_port: zero register/deregister calls."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=8000
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[8000],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["assignments_scanned"] == 1
+            assert summary["drift_detected"] == 0
+            assert summary["drift_fixed"] == 0
+            mock_elbv2.register_targets.assert_not_called()
+            mock_elbv2.deregister_targets.assert_not_called()
+
+    def test_drift_detected_and_fixed(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=32769
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["drift_detected"] == 1
+            assert summary["drift_fixed"] == 1
+            mock_elbv2.register_targets.assert_called_once_with(
+                TargetGroupArn="arn:tg/premium-12-tg",
+                Targets=[{"Id": "i-aaa", "Port": 32769}],
+            )
+            mock_elbv2.deregister_targets.assert_called_once_with(
+                TargetGroupArn="arn:tg/premium-12-tg",
+                Targets=[{"Id": "i-aaa", "Port": 32768}],
+            )
+
+    def test_register_then_deregister_order(self, mock_env_vars_premium):
+        """The reconciler must register first, then deregister, so the TG
+        is never empty mid-transition."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=32769
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            reconcile_premium_target_group_ports()
+
+            method_names = [call[0] for call in mock_elbv2.method_calls]
+            register_idx = method_names.index("register_targets")
+            deregister_idx = method_names.index("deregister_targets")
+            assert register_idx < deregister_idx
+
+    def test_partial_fix_both_ports_registered(self, mock_env_vars_premium):
+        """registered=[old, new], actual=new: no extra register; only
+        deregister old."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=32769
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768, 32769],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["drift_fixed"] == 1
+            mock_elbv2.register_targets.assert_not_called()
+            mock_elbv2.deregister_targets.assert_called_once_with(
+                TargetGroupArn="arn:tg/premium-12-tg",
+                Targets=[{"Id": "i-aaa", "Port": 32768}],
+            )
+
+    def test_multiple_stale_ports_all_deregistered(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=40000
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            return_value=[32768, 32769, 32770],
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            reconcile_premium_target_group_ports()
+
+            assert mock_elbv2.register_targets.call_count == 1
+            assert mock_elbv2.deregister_targets.call_count == 3
+
+    def test_skips_when_target_group_missing(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=False
+        ), patch(
+            "premium_manager.get_host_port_for_instance"
+        ) as mock_host_port:
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/gone")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["skipped_missing_tg"] == 1
+            assert summary["drift_detected"] == 0
+            mock_host_port.assert_not_called()
+            mock_elbv2.register_targets.assert_not_called()
+
+    def test_skips_when_host_port_unresolved(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance", return_value=None
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/premium-12-tg")]]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["skipped_no_host_port"] == 1
+            mock_elbv2.register_targets.assert_not_called()
+            mock_elbv2.deregister_targets.assert_not_called()
+
+    def test_iam_deny_per_row_increments_errors_and_continues(
+        self, mock_env_vars_premium
+    ):
+        """First row's describe_target_health raises; second row's
+        succeeds. Errors counted once; second row still processed."""
+
+        def host_port_side_effect(instance_id, *a, **kw):
+            return 32769
+
+        def registered_side_effect(tg, iid):
+            if iid == "i-aaa":
+                raise Exception("AccessDeniedException")
+            return [32768]
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.get_host_port_for_instance",
+            side_effect=host_port_side_effect,
+        ), patch(
+            "premium_manager.get_registered_ports_for_instance",
+            side_effect=registered_side_effect,
+        ):
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[
+                    [
+                        self._make_row(12, "i-aaa", "arn:tg/premium-12-tg"),
+                        self._make_row(13, "i-bbb", "arn:tg/premium-13-tg"),
+                    ]
+                ]
+            )
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["errors"] == 1
+            assert summary["drift_fixed"] == 1
+            assert summary["assignments_scanned"] == 2
+
+    def test_db_read_failure_returns_errors_summary(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection",
+            side_effect=Exception("RDS connection refused"),
+        ):
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            assert summary["errors"] == 1
+            assert summary["drift_detected"] == 0
+            assert summary["assignments_scanned"] == 0
+
+
+class TestHandleScheduledMonitoringReconcile:
+    """handle_scheduled_monitoring must invoke the reconciler after
+    cleanup_ghost_ecs_registrations and propagate drift counts into
+    publish_premium_metrics."""
+
+    @staticmethod
+    def _lock_ctx(acquired: bool):
+        mock = MagicMock()
+        mock.return_value.__enter__.return_value = acquired
+        mock.return_value.__exit__.return_value = False
+        return mock
+
+    def _common_patches(self, mock_env_vars_premium, call_order, reconcile_summary):
+        return {
+            "env": patch.dict("os.environ", mock_env_vars_premium),
+            "lock": patch("premium_manager.distributed_lock", new=self._lock_ctx(True)),
+            "active": patch(
+                "premium_manager.count_active_premium_users", return_value=0
+            ),
+            "total": patch("premium_manager.count_total_premium_users", return_value=0),
+            "instances": patch(
+                "premium_manager.get_all_premium_instances_with_states",
+                return_value=[],
+            ),
+            "assigned": patch(
+                "premium_manager.get_assigned_users_for_instance", return_value=[]
+            ),
+            "scale": patch("premium_manager.scale_down_if_possible"),
+            "desired": patch("premium_manager.update_premium_service_desired_count"),
+            "cleanup_standby": patch(
+                "premium_manager.cleanup_failed_standby_instances"
+            ),
+            "register_orphans": patch(
+                "premium_manager.register_orphaned_stopped_instances"
+            ),
+            "terminate_aged": patch("premium_manager.terminate_aged_stopped_instances"),
+            "standby_count": patch("premium_manager.get_standby_count", return_value=0),
+            "finalize": patch(
+                "premium_manager.finalize_expired_pending_releases",
+                return_value=[],
+                side_effect=lambda: call_order.append("finalize") or [],
+            ),
+            "ghost": patch(
+                "premium_manager.cleanup_ghost_ecs_registrations",
+                side_effect=lambda: call_order.append("ghost"),
+            ),
+            "reconcile": patch(
+                "premium_manager.reconcile_premium_target_group_ports",
+                side_effect=lambda: call_order.append("reconcile") or reconcile_summary,
+            ),
+            "publish": patch(
+                "premium_manager.publish_premium_metrics",
+                side_effect=lambda **kw: call_order.append(("publish", kw)),
+            ),
+            "orphaned_ec2": patch("premium_manager.cleanup_orphaned_ec2_instances"),
+            "fix_shared": patch(
+                "premium_manager.fix_incorrect_is_shared_flags",
+                return_value={"fixed_count": 0},
+            ),
+            "shared_opt": patch(
+                "premium_manager.process_shared_instance_optimization",
+                return_value={
+                    "migrations_performed": 0,
+                    "shared_instances_found": 0,
+                },
+            ),
+        }
+
+    def _run(self, mock_env_vars_premium, call_order, reconcile_summary):
+        patches = self._common_patches(
+            mock_env_vars_premium, call_order, reconcile_summary
+        )
+        ctx_managers = [p for p in patches.values()]
+        for cm in ctx_managers:
+            cm.__enter__()
+        try:
+            from premium_manager import handle_scheduled_monitoring
+
+            return handle_scheduled_monitoring({"source": "test"}, None)
+        finally:
+            for cm in reversed(ctx_managers):
+                cm.__exit__(None, None, None)
+
+    def test_reconcile_runs_after_ghost_cleanup(self, mock_env_vars_premium):
+        call_order: list = []
+        result = self._run(
+            mock_env_vars_premium,
+            call_order,
+            {"drift_detected": 0, "drift_fixed": 0},
+        )
+
+        assert result["statusCode"] == 200
+        ghost_idx = call_order.index("ghost")
+        reconcile_idx = call_order.index("reconcile")
+        finalize_idx = call_order.index("finalize")
+        assert ghost_idx < reconcile_idx
+        assert finalize_idx < reconcile_idx
+
+    def test_publish_metrics_runs_after_reconcile_with_drift_kwargs(
+        self, mock_env_vars_premium
+    ):
+        call_order: list = []
+        self._run(
+            mock_env_vars_premium,
+            call_order,
+            {"drift_detected": 3, "drift_fixed": 2},
+        )
+
+        publish_calls = [c for c in call_order if isinstance(c, tuple)]
+        assert len(publish_calls) == 1
+        kwargs = publish_calls[0][1]
+        assert kwargs["tg_port_drift_detected"] == 3
+        assert kwargs["tg_port_drift_fixed"] == 2
+
+        reconcile_idx = call_order.index("reconcile")
+        publish_idx = call_order.index(publish_calls[0])
+        assert reconcile_idx < publish_idx
+
+    def test_reconcile_exception_does_not_break_monitor(self, mock_env_vars_premium):
+        """If the reconciler raises, the monitor still returns 200 and
+        publish_premium_metrics still runs with drift kwargs defaulting
+        to 0."""
+        call_order: list = []
+        patches = self._common_patches(
+            mock_env_vars_premium, call_order, {"drift_detected": 0, "drift_fixed": 0}
+        )
+        patches["reconcile"] = patch(
+            "premium_manager.reconcile_premium_target_group_ports",
+            side_effect=RuntimeError("kaboom"),
+        )
+        ctx_managers = [p for p in patches.values()]
+        for cm in ctx_managers:
+            cm.__enter__()
+        try:
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+        finally:
+            for cm in reversed(ctx_managers):
+                cm.__exit__(None, None, None)
+
+        assert result["statusCode"] == 200
+        publish_calls = [c for c in call_order if isinstance(c, tuple)]
+        assert len(publish_calls) == 1
+        # reconcile_summary fell back to {"errors": 1}; drift kwargs default to 0.
+        assert publish_calls[0][1]["tg_port_drift_detected"] == 0
+        assert publish_calls[0][1]["tg_port_drift_fixed"] == 0
+
+
+class TestMigrateUserToDedicatedInstanceOrder:
+    """The dedicated-to-dedicated migration branch must register the new
+    instance before deregistering the old, so the TG is never empty
+    across the swap."""
+
+    def test_dedicated_branch_registers_before_deregisters(self, mock_env_vars_premium):
+        from aws_constants import PremiumAssignment
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.can_migrate_user", return_value=True, create=True
+        ), patch(
+            "premium_manager.try_reserve_instance_for_migration",
+            return_value=True,
+        ), patch(
+            "premium_manager.target_group_exists", return_value=True
+        ), patch(
+            "premium_manager.trigger_experiment_sync", return_value=True
+        ), patch(
+            "premium_user_utils.can_migrate_user", return_value=True
+        ):
+            mock_elbv2 = MagicMock()
+            mock_boto3.return_value = mock_elbv2
+
+            mock_connection = setup_db_mock(
+                fetchone_values=[
+                    MockRow(
+                        {
+                            "instance_id": "i-old",
+                            "target_group_arn": "arn:tg/premium-12-tg",
+                            "alb_rule_arn": "arn:rule/r1",
+                            "active_workflow_count": 0,
+                        }
+                    ),
+                ]
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import migrate_user_to_dedicated_instance
+
+            # old_instance_id is not AUTOSCALING_POOL → dedicated branch
+            assert PremiumAssignment.AUTOSCALING_POOL != "i-old"
+            migrate_user_to_dedicated_instance(12, "i-new")
+
+            method_names = [call[0] for call in mock_elbv2.method_calls]
+            register_idx = method_names.index("register_targets")
+            deregister_idx = method_names.index("deregister_targets")
+            assert register_idx < deregister_idx, (
+                "register_targets must precede deregister_targets in "
+                "migrate.dedicated"
+            )
+
+
+class TestPublishPremiumMetricsDriftKwargs:
+    """publish_premium_metrics emits TargetGroupPortDriftDetected and
+    TargetGroupPortDriftFixed; kwargs default to 0 for back-compat."""
+
+    def test_emits_drift_metrics_with_values(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_cw = MagicMock()
+            mock_boto3.return_value = mock_cw
+
+            from premium_manager import publish_premium_metrics
+
+            publish_premium_metrics(
+                active_users=1,
+                idle_users=2,
+                running_instances=3,
+                idle_instances=4,
+                tg_port_drift_detected=5,
+                tg_port_drift_fixed=6,
+            )
+
+            args, kwargs = mock_cw.put_metric_data.call_args
+            metric_data = kwargs["MetricData"]
+            metric_by_name = {m["MetricName"]: m["Value"] for m in metric_data}
+            assert metric_by_name["TargetGroupPortDriftDetected"] == 5
+            assert metric_by_name["TargetGroupPortDriftFixed"] == 6
+
+    def test_drift_metrics_default_to_zero(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_cw = MagicMock()
+            mock_boto3.return_value = mock_cw
+
+            from premium_manager import publish_premium_metrics
+
+            publish_premium_metrics(
+                active_users=0,
+                idle_users=0,
+                running_instances=0,
+                idle_instances=0,
+            )
+
+            args, kwargs = mock_cw.put_metric_data.call_args
+            metric_by_name = {m["MetricName"]: m["Value"] for m in kwargs["MetricData"]}
+            assert metric_by_name["TargetGroupPortDriftDetected"] == 0
+            assert metric_by_name["TargetGroupPortDriftFixed"] == 0

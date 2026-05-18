@@ -8,6 +8,13 @@
 - **Conservative scaling** keeps `max(1, active_users + 1)` instances running and requires `idle_instances >= 2` before stopping any
 - **Frontend integration** provides auto-assignment on login, inactivity monitoring (1h warning, 2h release), heartbeat-based activity tracking, and leader-tab polling while on a shared instance
 
+> **Sister document:**
+> This file focuses on the **system architecture** — Manager / Cleanup
+> Lambda split, frontend lifecycle, and operational diagnostics (log
+> playbook). For the **assignment flow** — 5-tier priority cascade,
+> standby pool, migration, and release paths — see
+> [PREMIUM_USER_ASSIGNMENT.md](./PREMIUM_USER_ASSIGNMENT.md).
+
 ---
 
 ## Key Architectural Principles
@@ -64,11 +71,11 @@ graph TB
     E --> H
     F --> H
 
-    style C fill:#90EE90
-    style D fill:#87CEEB
-    style J fill:#FFB6C1
-    style E fill:#DDA0DD
-    style F fill:#DDA0DD
+    style C fill:#90EE90,color:#1a1a1a
+    style D fill:#87CEEB,color:#1a1a1a
+    style J fill:#FFB6C1,color:#1a1a1a
+    style E fill:#DDA0DD,color:#1a1a1a
+    style F fill:#DDA0DD,color:#1a1a1a
 ```
 
 ### Key Constraints Satisfied
@@ -361,6 +368,8 @@ The authoritative reference. Branches are explicit; toast text matches the strin
 | Toast strings and variants | `PremiumNotificationManager.tsx` |
 | Leader-tab election | `frontend/src/utils/crossTabSync.ts` -- localStorage key `"premium_poll_leader"`, 2s heartbeat, 5s timeout |
 | Poll config | constants in `PremiumAssignmentContext.tsx`: `INITIAL_POLL_INTERVAL_MS=30000`, `MAX_POLL_INTERVAL_MS=60000`, `MAX_POLL_ATTEMPTS=40`, `BACKOFF_MULTIPLIER=1.5`, `ERROR_BACKOFF_MULTIPLIER=2` |
+| Polling gate | `shouldPoll()` in `PremiumAssignmentContext.tsx`: polls while premium+leader+assignment exists and the assignment is not dedicated-and-healthy. Re-enables polling while `instanceUnreachable` is true so a backend reassignment to shared or to a new instance is still caught |
+| Unreachable detection + probe config | `unreachableMachineReducer` and constants in `PremiumAssignmentContext.tsx`: `INITIAL_PROBE_DELAY_MS=30000`, `MAX_PROBE_DELAY_MS=300000`, `PROBE_BACKOFF_MULTIPLIER=2`, `MAX_FAILED_PROBES=5` |
 | Inactivity thresholds | 1h/2h hardcoded in context; countdown length `INACTIVITY_WARNING_DURATION_MINUTES=60` and `WARNING_UPDATE_INTERVAL_MS=60000` from `frontend/src/const/Subscription.ts` |
 | Heartbeat retry | `HEARTBEAT_MAX_RETRIES=3`, `HEARTBEAT_RETRY_DELAY_MS=1000`; delay between attempts is `DELAY * (attempt + 1)` |
 | 401 session-expired UI | `InactivityWarning.tsx` -- AxiosError + status 401 path, 2 s setTimeout then `performLogout()` |
@@ -392,6 +401,9 @@ Two premium users **can** share the same dedicated-class EC2 -- the uniqueness c
 | Persistent info toast "Please wait while your dedicated premium resource is being prepared." from login, no success toast follows | `assignmentResult.assigned=true && is_shared=true`, OR response was 202 with `retry_after`, OR `/assign` returned an `autoscaling-pool` assignment | No premium instance had spare capacity at assign time: either (a) all running instances already have users so the least-loaded was picked (is_shared=true on a real instance), (b) scaling was initiated and the Lambda returned 202+retry_after, or (c) launching instances exist and response is 202 |
 | Info toast is showing AND the tab is the leader AND poll attempts are incrementing | Leader-tab polling loop is live: re-POSTing `/assign` on exponential backoff | User is on shared / autoscaling-pool / retry state; poll will promote to dedicated once any premium instance frees up or finishes launching |
 | Info toast is showing AND no polling is happening in any tab | Shared state with polling suppressed | Either (a) `assignmentResult` is null so the `state.assignmentResult != null` gate blocks polling -- this is the hard-error path, or (b) no tab has won leader election (storage unavailable / all tabs closed simultaneously) |
+| Dedicated assignment in DB, warning snackbar "Your dedicated premium instance is temporarily unreachable. Retrying..." | `instanceUnreachable=true`, `isUnreachableTerminal=false`. Half-open probe armed on leader tab with exponential backoff | `handlePremiumRoutingError()` fired on a premium-routed request. The circuit flipped `premiumAssigned=false`, broadcast `PREMIUM_INSTANCE_UNREACHABLE` to peer tabs, and will re-arm `premiumAssigned=true` ahead of the next user-driven request |
+| Same snackbar upgraded to "unresponsive after multiple attempts. Please reload the page or contact support" with a Retry action | `instanceUnreachable=true`, `isUnreachableTerminal=true`. Probe budget exhausted at `MAX_FAILED_PROBES=5` | Five consecutive probes returned 5xx. Auto-re-arm is disabled; only `retryUnreachableProbe()` (Retry button) or a backend reassignment can clear the state |
+| Snackbar was showing, disappeared without a reload | `instanceUnreachable` cleared | Either (a) a real request returned 2xx with unrotated routing ID and axios emitted `premiumReachable`, or (b) polling observed a backend reassignment (new `instance_id` or drop to `is_shared=true`) |
 | Info toast persists for more than ~30 minutes with no promotion | Polling capped out, or backend has no capacity to give | `MAX_POLL_ATTEMPTS=40` at capped 60s interval is roughly 30-40 minutes of wall time. Upstream: premium ASG cannot scale further (instance quota, scaling lock stuck, ghost ECS registrations consuming slots) |
 | Error toast "No premium instance available after extended wait..." | Polling loop stopped after exceeding 40 attempts | Same as above, but the loop has now given up; user will not auto-retry without a new login or re-mount |
 | Warning toast "Premium assignment issue: {err}. Falling back to shared resources." | `/assign` returned `assigned=false` with **no** `retry_after` and no `scaling_in_progress` | Hard error from Lambda: scaling lock held + no launching instances, or an exception inside `assign_premium_user()`. `isRetryableError` is false so `assignmentResult` stays null and polling never starts |
@@ -431,7 +443,7 @@ The `handler()` function routes events based on type:
 | `POST action=release` | `release_premium_user()` | User release |
 | `POST action=update_activity` | `handle_activity_update()` | Heartbeat/activity update |
 
-#### Scheduled Monitoring: `handle_scheduled_monitoring()`
+#### Scheduled Monitoring
 
 Runs every 15 minutes. Step numbering matches the comments in the source. Some step numbers (8, 10) bundle related sub-operations:
 
@@ -455,7 +467,7 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 
 The scaling lock is always cleared in the `finally` block, even on error.
 
-#### scale_down_if_possible()
+#### Scale-Down (`scale_down_if_possible`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Scale down premium instances by stopping idle ones
@@ -478,6 +490,63 @@ Guards:
 - Only stops instances with ZERO assigned users
 - Deregisters from ECS before stopping to prevent ghost
   registrations
+
+> For the scale-up / scale-down asymmetry comparison, see
+> [PREMIUM_USER_ASSIGNMENT.md → 5. Scaling System (scale-up and scale-down)](./PREMIUM_USER_ASSIGNMENT.md#5-scaling-system-scale-up-and-scale-down).
+
+#### ECS Service Desired Count Sync (`update_premium_service_desired_count`)
+
+**File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
+**Purpose:** Keep the ECS service's `desiredCount` in sync with the actual
+number of premium EC2 instances that should be running ECS tasks.
+**Input:** None (reads state from ECS and EC2 APIs)
+**Output:** Calls `ecs.update_service()` when `desiredCount` diverges from the
+computed target; no-op when already in sync.
+**Calls:** `ecs.describe_services()` → `_list_premium_ecs_registered_ec2_ids()`
+→ `_list_premium_ec2_instances_running()` → `ecs.update_service()`
+
+**Why manual control instead of ECS Auto Scaling:**
+The premium tier uses Lambda-driven scaling (`scale_premium_instances_if_needed`,
+`scale_down_if_possible`) rather than ECS Application Auto Scaling. The ECS
+Auto Scaling target is commented out in `compute.tf`. Because EC2 instance
+start/stop decisions are made by the Lambda based on user assignment demand
+(not task-level metrics), the ECS service's `desiredCount` must be
+explicitly synchronized after every scaling action to match reality.
+
+**Desired count formula:**
+
+```
+desiredCount = registered_count + booting_count
+```
+
+| Component | Definition |
+|---|---|
+| `registered_count` | Number of EC2 instances currently registered as ECS container instances in the premium cluster (via `_list_premium_ecs_registered_ec2_ids()`) |
+| `booting_count` | Number of running premium EC2 instances that are **not yet** registered in ECS but were launched less than `ORPHAN_GRACE_PERIOD_MINUTES` (10 min) ago |
+
+The boot grace period prevents a race condition: when a stopped standby
+instance is started (Tier 3) or a new instance is created (Tier 5), there
+is a gap between the EC2 reaching `running` state and the ECS agent
+registering with the cluster. If `desiredCount` were dropped during this
+gap, ECS would cancel the pending task placement and never re-fire it once
+the agent registers — leaving the instance with no premium task and the
+user stuck on the waiting popup. The 10-minute grace is symmetric with
+`cleanup_orphaned_ec2_instances()`, which uses the same threshold before
+treating an unregistered instance as orphaned.
+
+**Call sites (5 locations):**
+
+| # | Caller | Context |
+|---|---|---|
+| 1 | `handle_scheduled_monitoring()` step 6 | After `scale_down_if_possible()` in the 15-min cycle |
+| 2 | `scale_down_if_possible()` | After stopping idle instances and converting to standby |
+| 3 | `scale_premium_instances_if_needed()` (success path) | After starting stopped instances or creating new ones |
+| 4 | `scale_premium_instances_if_needed()` (lock-held path) | When scaling was blocked by an existing lock |
+| 5 | `_handle_migrate_shared_users()` | Before each migration attempt in the retry loop, to ensure ECS has the correct task count for readiness checks |
+
+**Idempotency:** The function compares `running_premium_count` to the
+current `desiredCount` and only issues `update_service` when they differ,
+so repeated calls within the same cycle are safe.
 
 #### Terraform Configuration
 
@@ -684,14 +753,14 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** CloudWatch metrics-based locking:
 
-#### is_premium_scaling_in_progress()
+#### Scaling Lock Check (`is_premium_scaling_in_progress`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Check if a scaling operation is already running
 **Input:** None (reads CloudWatch metric)
 **Output:** True if lock set within last 15 minutes
 
-#### set_premium_scaling_lock()
+#### Scaling Lock Management (`set_premium_scaling_lock`)
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
 **Purpose:** Set or clear the scaling lock via CloudWatch
@@ -712,7 +781,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** Premium Cleanup reconciliation:
 
-#### reconcile_instance_states()
+#### Instance State Reconciliation (`reconcile_instance_states`)
 
 **File:** `infrastructure/terraform/premium_cleanup_package/premium_cleanup.py`
 **Purpose:** Sync DB instance states with actual AWS states
@@ -776,7 +845,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 | `ActivePremiumUsers` | Users with active assignments | Count |
 | `IdlePremiumUsers` | Total premium users - active users | Count |
 | `RunningInstances` | EC2 instances in "running" state | Count |
-| `IdleInstances` | Running instances with 0 assignments | Count |
+| `IdleInstances` | Running instances with 0 assigned users (see [Idle instance](./PREMIUM_USER_ASSIGNMENT.md#idle-instance) in the Glossary) | Count |
 | `ScalingInProgress` | Lock to prevent concurrent operations | None (0 or 1) |
 
 **Namespace:** `OptiNiSt/PremiumManager/{env_prefix}` where `env_prefix` is the Terraform `environment` variable (e.g. `staging`, `prod`).
@@ -900,8 +969,10 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry point, routes events by type |
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
-| `scale_down_if_possible()` | Conservative scaling algorithm |
-| `update_premium_service_desired_count()` | Sync ECS desired count |
+| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
+| `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
+| `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
+| `update_premium_service_desired_count()` | Sync ECS `desiredCount` to `registered + booting` instance count ([details](#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
 | `release_premium_user()` | Real-time user release (API) |
 | `handle_activity_update()` | Heartbeat/activity timestamp update (API) |
@@ -958,6 +1029,7 @@ The frontend components handle premium user experience including instance assign
 │  │   → Browser close/refresh handling (sendBeacon)               │    │
 │  │   → Exponential backoff polling for dedicated instance        │    │
 │  │   → Leader tab election for polling                           │    │
+│  │   → Unreachable-instance detection + half-open probe recovery │    │
 │  ├───────────────────────────────────────────────────────────────┤    │
 │  │                                                               │    │
 │  │  ┌─────────────────────────┐  ┌─────────────────────────────┐│    │
@@ -966,6 +1038,8 @@ The frontend components handle premium user experience including instance assign
 │  │  │                         │  │ → Success notifications     ││    │
 │  │  │ → Cleanup on unmount    │  │ → Preparation info toast    ││    │
 │  │  │ → Debug logging         │  │ → Error notifications       ││    │
+│  │  │                         │  │ → Unreachable warning +     ││    │
+│  │  │                         │  │   terminal Retry action     ││    │
 │  │  └─────────────────────────┘  └─────────────────────────────┘│    │
 │  │                                                               │    │
 │  │  ┌───────────────────────────────────────────────────────────┐│    │
@@ -1002,15 +1076,25 @@ interface PremiumAssignmentState {
   lastActivityTime: number
   heartbeatFailing: boolean
 }
+
+interface UnreachableMachineState {
+  instanceUnreachable: boolean
+  unreachableSince: number | null
+  failedProbes: number
+  isUnreachableTerminal: boolean
+}
 ```
+
+`UnreachableMachineState` is held in a separate `useReducer` (`unreachableMachineReducer`) and spread into the context value alongside `PremiumAssignmentState`. It is orthogonal to `heartbeatFailing`: a single 5xx can set both and they are not redundant (heartbeat failing tracks the session heartbeat path; `instanceUnreachable` tracks dedicated-instance reachability for any routed request).
 
 #### Context Value (Exported Functions)
 
 ```typescript
 // Functions exposed via usePremiumAssignment() hook:
 assign, release, getStatus, updateRoutingInfo,
-autoReleaseOnLogout, dismissInactivityWarning, recordActivity
-// Plus all PremiumAssignmentState fields via spread
+autoReleaseOnLogout, dismissInactivityWarning, recordActivity,
+retryUnreachableProbe
+// Plus PremiumAssignmentState and UnreachableMachineState fields via spread
 ```
 
 Note: `autoAssignOnLogin()` is internal only -- triggered by a `useEffect` when `isPremiumUser && currentUser`, not exposed via context.
@@ -1025,7 +1109,8 @@ Note: `autoAssignOnLogin()` is internal only -- triggered by a `useEffect` when 
 | **Auto-release at 2 hours** | Releases instance after extended inactivity |
 | **Heartbeat with retry** | `recordActivity()` makes up to 3 attempts with linear backoff between them (1s after attempt 1, 2s after attempt 2; a 3rd failure surfaces without a further delay) |
 | **Browser close handling** | Uses `navigator.sendBeacon` on `beforeunload` event |
-| **Polling with backoff** | If on shared instance, polls for dedicated with exponential backoff (1.5x multiplier, 30s initial, 60s max, 40 attempts max, leader tab only) |
+| **Polling with backoff** | If on shared instance, polls for dedicated with exponential backoff (1.5x multiplier, 30s initial, 60s max, 40 attempts max, leader tab only). Also polls while `instanceUnreachable` is true so backend reassignment (to shared or to a new instance) is caught during a degraded period |
+| **Unreachable detection and recovery** | Listens for `premiumUnreachable` / `premiumReachable` events from `RoutingService`. Tracks a degraded -> probing -> terminal lifecycle with exponential probe backoff (30s initial, 5min cap, `MAX_FAILED_PROBES=5`); surfaces a warning snackbar via `PremiumNotificationManager`. Cross-tab synced via `crossTabSync` and persisted to `localStorage` with a 1h TTL for new-tab hydration |
 
 #### Auto-Assignment Flow
 
@@ -1078,6 +1163,14 @@ from the backend cleanup timeout (3 hours). The frontend
 acts as the primary mechanism; the backend cleanup is a
 safety net.
 
+The `last_activity` column in `premium_user_assignments` is updated by:
+
+| # | Path | Function | Timing |
+|---|---|---|---|
+| 1 | Heartbeat API | `handle_activity_update()` → `update_user_activity_timestamp()` | On each `recordActivity()` call from frontend (user interaction / "Stay Active" click) |
+| 2 | API middleware | `_update_premium_user_activity_sync()` | On each authenticated API request from a premium user |
+| 3 | Schema default | `ON UPDATE CURRENT_TIMESTAMP` | Implicit; any row modification auto-updates the column |
+
 ### PremiumNotificationManager
 
 **File:** `frontend/src/components/Premium/PremiumNotificationManager.tsx`
@@ -1092,6 +1185,8 @@ Handles user notifications for premium assignment events using notistack.
 | No dedicated instance yet | `info` | "Please wait while your dedicated premium resource is being prepared." | Persistent |
 | Assignment error (non-scaling) | `warning` | "Premium assignment issue: {error}" | Auto-dismiss |
 | Scaling/retry errors | (suppressed) | N/A | Silently ignored |
+| Dedicated instance unreachable (non-terminal) | `warning` | "Your dedicated premium instance is temporarily unreachable. Retrying..." | Persistent; replaced on transition to terminal |
+| Dedicated instance unreachable (terminal, probe budget exhausted) | `warning` | "Your dedicated premium instance is unresponsive after multiple attempts. Please reload the page or contact support." | Persistent; includes a Retry action that calls `retryUnreachableProbe()` |
 
 Note: Scaling/retry errors are not filtered by substring. The manager sets an `isRetryableError` flag when the `/assign` response has `!assigned && (scaling_in_progress || retry_after != null)`; when that flag is true the warning toast is skipped entirely and the persistent "Please wait..." info toast covers the state instead.
 
@@ -1125,6 +1220,11 @@ Displays a warning when premium users have been inactive for 1 hour.
 
 The browser-close path also calls `POST /users/me/premium/release-beacon` directly via `navigator.sendBeacon` -- it has no wrapper function since it must run without axios during `beforeunload`.
 
+> For the `X-Routing-ID` / `X-User-Tier` header protocol and the
+> backend generation/validation flow, see
+> [ALB_ROUTING_ARCHITECTURE.md](./ALB_ROUTING_ARCHITECTURE.md).
+> `getRoutingInfo()` in the table above is the frontend-side wrapper.
+
 ### Frontend Files Summary
 
 | File | Purpose |
@@ -1137,6 +1237,8 @@ The browser-close path also calls `POST /users/me/premium/release-beacon` direct
 | `frontend/src/contexts/__tests__/PremiumHeartbeatRetry.test.ts` | Tests for heartbeat retry logic |
 | `frontend/src/contexts/__tests__/PremiumPollingBackoff.test.ts` | Tests for polling backoff behavior |
 | `frontend/src/contexts/__tests__/PremiumSleepDetection.test.ts` | Tests for sleep/wake detection |
+| `frontend/src/contexts/__tests__/PremiumInstanceUnreachable.test.ts` | Unit tests for the unreachable reducer and helper guards (`shouldPoll`, `shouldHydrateFromSnapshot`, probe backoff) |
+| `frontend/src/contexts/__tests__/PremiumUnreachableIntegration.test.tsx` | Integration tests covering the full unreachable -> probe -> recovery lifecycle through the provider |
 
 ---
 
@@ -1286,6 +1388,44 @@ Immediately converted ${K} idle instances to standby after user logout
 
 No frontend log (beacon is fire-and-forget before the tab unloads). Backend logs look identical to A.1.5 but via the `/release-beacon` endpoint rather than `DELETE /assign`.
 
+#### A.1.7 Dedicated instance unreachable then recovers
+
+Fires when a premium-routed request returns 5xx while the user has a dedicated assignment. All traces use `logPremiumUiEvent()`, which POSTs to `/users/me/premium/ui-event` -- search the `premium_manager` backend log group for `Premium UI event:` lines with the matching `user_id`.
+
+Expected sequence on a single unreachable -> recovery cycle (oldest first):
+
+```
+Premium UI event: ... event=instance_unreachable details={'instance_id': '${i-xxx}', 'url': '${path}', 'status': 503}
+Premium UI event: ... event=instance_unreachable_popup_shown details={'instance_id': '${i-xxx}', 'terminal': False}
+Premium UI event: ... event=instance_probe_armed details={'instance_id': '${i-xxx}', 'failed_probes': 0, 'delay_ms': 30000}
+Premium UI event: ... event=instance_reachable details={'instance_id': '${i-xxx}', 'duration_ms': ${N}}
+Premium UI event: ... event=instance_unreachable_popup_dismissed details={'instance_id': '${i-xxx}', 'reason': 'reachable'}
+```
+
+Browser console (axios interceptor): `Using free tier while premium instance provisions` fires once per 5xx that routed to the free-tier fallback.
+
+Progressive-degradation sequence when probes keep failing:
+
+```
+event=instance_unreachable                         (initial detection)
+event=instance_unreachable_popup_shown terminal=False
+event=instance_probe_armed failed_probes=0 delay_ms=30000
+event=instance_probe_failure failed_probes=1 is_terminal=False
+event=instance_probe_armed failed_probes=1 delay_ms=60000
+event=instance_probe_failure failed_probes=2 is_terminal=False
+...
+event=instance_probe_failure failed_probes=5 is_terminal=True
+event=instance_unreachable_popup_shown terminal=True      (snackbar variant swap)
+```
+
+After terminal, auto-re-arm is disabled. Only a Retry click or a backend reassignment clears the state:
+
+```
+event=instance_unreachable_manual_retry details={'instance_id': '${i-xxx}'}   (user clicked Retry)
+```
+
+**Verdict:** a single `instance_unreachable` followed within seconds by `instance_reachable` is a blip (cold-start, ALB reroute, or task restart-in-place). The **problem** pattern is (a) `instance_probe_failure` climbing to `failed_probes=5` and staying terminal, or (b) repeated unreachable/reachable cycles for the same `instance_id` within minutes -- points to flapping at the target-group or task layer.
+
 ### A.2 Heartbeat Retry: Is `Attempt 3/3` a Problem?
 
 This is the most-asked question and deserves its own subsection.
@@ -1326,6 +1466,8 @@ Note the log template is literal: it says `attempt N failed, retrying...`, not `
 | `No assignment found for user ${user_id}: ${error}` (on hard release) | `premium_manager.py` | User already had no assignment; idempotent release |
 | `No active assignment to release for user ${user_id} (may already be pending_release or removed)` | `premium_manager.py` | Same as above for the soft-release path |
 | `Failed to (load\|save\|clear) ${x} from localStorage: ...` | `RoutingService.ts` | Private mode / quota / SSR; routing headers still work from memory |
+| `Using free tier while premium instance provisions` | `axios.ts` | Single occurrence accompanies one `instance_unreachable` UI event; the circuit breaker will probe for recovery. Investigate only if the paired `instance_reachable` never arrives (see A.1.7) |
+| `Premium-(un)?reachable listener threw: ${e}` | `RoutingService.ts` | One listener crashed during dispatch; the pool continues delivering to others |
 | `Agent disconnected on ${i-xxx}, starting grace period` and its "within grace period" follow-up | `premium_manager.py` ghost ECS cleanup | 5-min grace before deregistering ECS container instance |
 | `Orphan ${i-xxx} running ${N}m, within grace period` | `premium_manager.py` orphan cleanup | 15-min grace before stopping orphan EC2 |
 | `Warning: Error closing database connection: ${e}` | both lambdas | Cleanup-path warning on teardown; does not affect the work already done |
@@ -1401,6 +1543,8 @@ These strings are individually benign but tell you something when they accumulat
 | `Reserved dedicated instance: ${i-xxx}` without a matching `Using dedicated running instance ${i-xxx} for user ${user_id}` shortly after | Reservation acquired but the code threw before converting to assignment -- leaks a slot |
 | `Failed to register standby for ${i-xxx}: ${error}` | Standby-pool accounting drifting from reality; standby count metric will be wrong |
 | `Fixed ${N} stale is_shared flags` with N > 0 on repeated cycles | Something upstream is setting `is_shared=true` on rows that should be `false` -- investigate the shared→dedicated promotion code path |
+| `event=instance_unreachable` / `event=instance_reachable` cycling for the same `instance_id` within minutes | ALB target-group or ECS task is flapping on that instance. Check target-group health events and `premium_manager` ghost-cleanup output for agent-disconnect grace starts on the same `i-xxx` |
+| `event=instance_probe_failure` reaching `is_terminal=True` for many users | Broader ALB or ECS incident -- the probe budget only exhausts when five consecutive routed requests 5xx, so this is rarely a single-user issue |
 
 ### A.6 "How to read a premium incident" checklist
 
@@ -1412,4 +1556,4 @@ When asked to diagnose a premium issue, walk this list in order:
 4. **Is the scaling lock stuck?** If you see `Scaling already in progress, skipping this run` in every monitor invocation for more than two cycles in a row, the lock was not cleared by a previous run (look for `Error in removing lock:` upstream).
 5. **For user-facing heartbeat issues**, apply the A.2 matrix: single retry log = ignore; repeated "failed after retries" for one user = check per-user ALB target; "failed after retries" across many users = backend incident.
 6. **For "user keeps getting shared instance"**, look for (a) `No dedicated instances available` on each assign, (b) `Inline migration not possible for user ${user_id}`, and (c) whether the hourly cleanup is running -- a stuck standby row can make the monitor think capacity is taken.
-
+7. **For "dedicated assignment exists but requests fail silently"**, grep `premium_manager` for `Premium UI event:` with `event=instance_unreachable` / `event=instance_probe_failure` for the user. An `instance_reachable` immediately after means the blip recovered; an escalation to `is_terminal=True` means the probe budget exhausted and the user is stuck until they click Retry or the backend reassigns them. Cross-reference with target-group health on the matching `instance_id` in the same window.
