@@ -369,7 +369,7 @@ The authoritative reference. Branches are explicit; toast text matches the strin
 | Leader-tab election | `frontend/src/utils/crossTabSync.ts` -- localStorage key `"premium_poll_leader"`, 2s heartbeat, 5s timeout |
 | Poll config | constants in `PremiumAssignmentContext.tsx`: `INITIAL_POLL_INTERVAL_MS=30000`, `MAX_POLL_INTERVAL_MS=60000`, `MAX_POLL_ATTEMPTS=40`, `BACKOFF_MULTIPLIER=1.5`, `ERROR_BACKOFF_MULTIPLIER=2` |
 | Polling gate | `shouldPoll()` in `PremiumAssignmentContext.tsx`: polls while premium+leader+assignment exists and the assignment is not dedicated-and-healthy. Re-enables polling while `instanceUnreachable` is true so a backend reassignment to shared or to a new instance is still caught |
-| Unreachable detection + probe config | `unreachableMachineReducer` and constants in `PremiumAssignmentContext.tsx`: `INITIAL_PROBE_DELAY_MS=30000`, `MAX_PROBE_DELAY_MS=300000`, `PROBE_BACKOFF_MULTIPLIER=2`, `MAX_FAILED_PROBES=5` |
+| Unreachable detection + probe config | `unreachableMachineReducer` and constants in `frontend/src/contexts/premium/unreachableConstants.ts`: `INITIAL_PROBE_DELAY_MS=30000`, `MAX_PROBE_DELAY_MS=300000`, `PROBE_BACKOFF_MULTIPLIER=2`, `MAX_FAILED_PROBES=5`, `DEDICATED_HANDOFF_GRACE_MS=15000` (single-shot suppression of the first 5xx after a shared → dedicated transition or dedicated reassignment, to avoid false-positive unreachable popups during ALB target-group warm-up) |
 | Inactivity thresholds | 1h/2h hardcoded in context; countdown length `INACTIVITY_WARNING_DURATION_MINUTES=60` and `WARNING_UPDATE_INTERVAL_MS=60000` from `frontend/src/const/Subscription.ts` |
 | Heartbeat retry | `HEARTBEAT_MAX_RETRIES=3`, `HEARTBEAT_RETRY_DELAY_MS=1000`; delay between attempts is `DELAY * (attempt + 1)` |
 | 401 session-expired UI | `InactivityWarning.tsx` -- AxiosError + status 401 path, 2 s setTimeout then `performLogout()` |
@@ -1181,7 +1181,7 @@ Handles user notifications for premium assignment events using notistack.
 
 | Event | Variant | Message | Behavior |
 |-------|---------|---------|----------|
-| Dedicated instance assigned | `success` | "Premium instance assigned successfully!" | Auto-dismiss |
+| Dedicated instance assigned | `success` | "Premium instance assigned successfully!" | Persistent so a transient warning popup during the dedicated ALB warm-up cannot visually overwrite the toast; user must click the default close "X" inherited from `SnackbarProvider` |
 | No dedicated instance yet | `info` | "Please wait while your dedicated premium resource is being prepared." | Persistent |
 | Assignment error (non-scaling) | `warning` | "Premium assignment issue: {error}" | Auto-dismiss |
 | Scaling/retry errors | (suppressed) | N/A | Silently ignored |
@@ -1425,6 +1425,20 @@ event=instance_unreachable_manual_retry details={'instance_id': '${i-xxx}'}   (u
 ```
 
 **Verdict:** a single `instance_unreachable` followed within seconds by `instance_reachable` is a blip (cold-start, ALB reroute, or task restart-in-place). The **problem** pattern is (a) `instance_probe_failure` climbing to `failed_probes=5` and staying terminal, or (b) repeated unreachable/reachable cycles for the same `instance_id` within minutes -- points to flapping at the target-group or task layer.
+
+#### A.1.7a Warm-up suppression: `instance_unreachable_warmup_suppressed`
+
+Within `DEDICATED_HANDOFF_GRACE_MS` (15s) of a shared → dedicated transition or a dedicated reassignment to a different `instance_id`, the **first** 5xx on a premium-routed request is suppressed: the unreachable state machine does not flip, the warning popup is not shown, and the user keeps reading the success toast. The grace is single-shot — a second 5xx within the same window is treated normally and will flip to unreachable.
+
+The trace looks like:
+
+```
+Premium UI event: ... event=instance_unreachable_warmup_suppressed details={'instance_id': '${i-xxx}', 'url': '${path}', 'status': 503}
+```
+
+Followed (in the healthy case) by an `instance_reachable` event the next time the user makes a successful premium-routed request.
+
+**Expected:** zero or one `instance_unreachable_warmup_suppressed` per migration. **Investigate** if you see two or more for the same `instance_id` (the grace is single-shot, so the second event means the new dedicated instance is genuinely flapping during warm-up, not just doing a one-shot ALB target-health blip).
 
 ### A.2 Heartbeat Retry: Is `Attempt 3/3` a Problem?
 

@@ -13,6 +13,24 @@ import { Button } from "@mui/material"
 import { logPremiumUiEvent } from "api/premium/PremiumAssignmentApi"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 
+const SS_NOTIFIED_INSTANCE_KEY = "premium_notified_instance_id"
+
+function ssGetNotifiedInstance(): string | null {
+  try {
+    return sessionStorage.getItem(SS_NOTIFIED_INSTANCE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function ssSetNotifiedInstance(instanceId: string): void {
+  try {
+    sessionStorage.setItem(SS_NOTIFIED_INSTANCE_KEY, instanceId)
+  } catch {
+    // sessionStorage unavailable (e.g., some private browsing modes)
+  }
+}
+
 const PremiumNotificationManager: FC = () => {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar()
   const {
@@ -40,32 +58,36 @@ const PremiumNotificationManager: FC = () => {
   const hasDedicatedInstance =
     assignmentResult?.assigned && !assignmentResult?.is_shared
 
-  // Show success notification when premium instance is assigned
+  // Fire once per session per instance_id. sessionStorage survives refresh;
+  // component state doesn't.
   useEffect(() => {
-    const hasNewInstance = assignmentResult?.instance_id !== lastAssignmentId
-    const wasWaiting = waitingKeyRef.current !== null
+    const instanceId = assignmentResult?.instance_id
+    const alreadyNotifiedThisSession =
+      instanceId != null && ssGetNotifiedInstance() === instanceId
+    const hasNewInstance = instanceId !== lastAssignmentId
 
     if (
       isPremiumUser &&
       hasDedicatedInstance &&
-      assignmentResult.instance_id &&
+      instanceId &&
       hasNewInstance &&
-      wasWaiting
+      !alreadyNotifiedThisSession
     ) {
       enqueueSnackbar(
         "Premium instance assigned successfully! " +
           "You now have dedicated compute resources.",
         {
           variant: "success",
-          autoHideDuration: 5000,
+          persist: true,
         },
       )
       logPremiumUiEvent("dedicated_instance_ready", {
-        instance_id: assignmentResult.instance_id,
+        instance_id: instanceId,
       })
 
+      ssSetNotifiedInstance(instanceId)
       setHasShownAssignmentSuccess(true)
-      setLastAssignmentId(assignmentResult.instance_id)
+      setLastAssignmentId(instanceId)
     }
   }, [
     isPremiumUser,
@@ -74,11 +96,10 @@ const PremiumNotificationManager: FC = () => {
     hasShownAssignmentSuccess,
     lastAssignmentId,
     enqueueSnackbar,
+    closeSnackbar,
   ])
 
-  // Show waiting snackbar when premium user does not have a dedicated instance.
-  // Two triggers: isAssigning (assignment API in flight) or assignmentResult
-  // shows a shared instance. Gate prevents flash on refresh before status check.
+  // `assignmentResult &&` gates on having fetched status — avoids a flash on refresh.
   useEffect(() => {
     const needsWaiting =
       isAssigning || (assignmentResult && !hasDedicatedInstance)
