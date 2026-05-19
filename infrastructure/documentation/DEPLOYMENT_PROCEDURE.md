@@ -156,26 +156,39 @@ terraform apply -var-file=environments/<ENV>.tfvars
 
 Skip this step if only Lambda or infrastructure code changed.
 
+#### 2a. Initialize Terraform for the target environment
+
+The build script reads configuration values (domain, port, protocol, ECR repository URL) from Terraform outputs via `terraform output`. Before running the script, ensure Terraform is initialized for the correct environment:
+
 ```bash
 export AWS_PROFILE=optinist
+cd infrastructure/terraform
+
+# Initialize with the target environment's backend
+# <ENV> = production | development
+terraform init -backend-config=backends/<ENV>.hcl -reconfigure
+```
+
+> **Note:** You do **not** need to run `terraform apply` at this point — `terraform init` connects to the remote state backend where existing outputs are already stored. However, the target environment must have been provisioned at least once previously (i.e., `terraform apply` was run at some point) so that outputs such as `environment`, `ecr_repository_url`, `domain_name`, `domain_port`, and `domain_protocol` exist in the state.
+
+#### 2b. Run the build script
+
+```bash
 cd infrastructure/scripts
-./ecr_build_push.sh
+./ecr_build_push.sh --tag {VERSION}  # Tag is automatically generated if omitted
 ```
 
 The script automatically:
 
-1. Reads infrastructure configuration from Terraform outputs
-2. Builds frontend with correct environment variables
-3. Builds and tags Docker image
-4. Pushes to the ECR repository for the active environment
+1. Reads infrastructure configuration from Terraform outputs (`terraform -chdir=../terraform output`)
+2. Retrieves Firebase config from AWS Secrets Manager
+3. Builds frontend with correct environment variables (`.env.production`)
+4. Builds and tags Docker image
+5. Pushes to the ECR repository for the active environment
 
 > For details on ECR repository isolation, image tagging, and rollback, see [INFRA_DEPLOYMENT_PROCEDURE.md — ECR Repository Management](INFRA_DEPLOYMENT_PROCEDURE.md#ecr-repository-management).
 
-**If Terraform outputs aren't available**, the script prompts you for:
-
-- Frontend Host: `araya-optinist.com` (or ALB DNS for development)
-- Frontend Protocol: `https` (production) / `http` (development)
-- Frontend Port: `443` (production) / `80` (development)
+> **If Terraform outputs are not available** (e.g., `terraform init` was not run or the state has no outputs), the script will **exit with an error**. Follow step 2a above to resolve this.
 
 ### Step 3: Force ECS Redeployment (after Docker image push)
 
@@ -340,6 +353,7 @@ Update version numbers in the following files before building:
 | ----------------------- | ----------------------- |
 | `pyproject.toml`        | `[tool.poetry] version` |
 | `frontend/package.json` | `version`               |
+| `docs/conf.py`          | `release`               |
 
 **Version Format:** Use semantic versioning `X.Y.Z` (e.g., `2.4.0`)
 
@@ -557,6 +571,7 @@ For hotfixes, perform focused testing:
    - User can login
    - Basic workflow execution works
 3. **Run automated tests:**
+
    ```bash
     # test for backend only
     pytest studio/tests/ -x# Stop on first failure for faster feedback
@@ -580,7 +595,7 @@ git push origin main
 # Deploy to production
 export AWS_PROFILE=optinist
 cd infrastructure/scripts
-./ecr_build_push.sh
+./ecr_build_push.sh --tag {VERSION}-hotfix
 ```
 
 #### 5. Sync Hotfix to develop-main
