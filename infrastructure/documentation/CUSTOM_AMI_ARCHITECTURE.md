@@ -250,7 +250,76 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 
 ## Operational Procedures
 
-### Procedure A: Initial Setup (First-Time Deployment)
+### Procedure A: Pre-Deployment Version Check
+
+Before bumping `custom_ami_version` or running `terraform apply`, confirm the currently active version using the methods below. This check is referenced by [Procedure B](#procedure-b-initial-setup-first-time-deployment) and [Procedure C](#procedure-c-ami-content-fix--rebuild).
+
+#### Method 1: Check tfvars (Local Source of Truth)
+
+The `custom_ami_version` value set in the tfvars file is the version that Terraform will use on next `apply`.
+
+```bash
+grep custom_ami_version infrastructure/terraform/environments/<env>.tfvars
+# Example output: custom_ami_version = "1.0.2"
+```
+
+#### Method 2: Query Image Builder Pipeline (AWS Source of Truth)
+
+Retrieve the version currently deployed in AWS by inspecting the pipeline's recipe.
+
+```bash
+# 1. Get pipeline ARN from Terraform output
+PIPELINE_ARN=$(terraform output -raw image_builder_pipeline_arn)
+
+# 2. Get the recipe ARN linked to the pipeline
+RECIPE_ARN=$(aws imagebuilder get-image-pipeline \
+  --image-pipeline-arn "$PIPELINE_ARN" \
+  --region ap-northeast-1 \
+  --query 'imagePipeline.imageRecipeArn' --output text)
+
+# 3. Get the recipe version
+aws imagebuilder get-image-recipe \
+  --image-recipe-arn "$RECIPE_ARN" \
+  --region ap-northeast-1 \
+  --query 'imageRecipe.version' --output text
+# Example output: 1.0.2
+```
+
+#### Method 3: List All Component Versions
+
+View all component versions that have been created (useful for audit or identifying stale versions).
+
+```bash
+aws imagebuilder list-components \
+  --owner Self \
+  --region ap-northeast-1 \
+  --query 'componentVersionList[].name' --output table
+# Example output:
+# |        name                         |
+# | dev-optinist-packages-v1-0-0        |
+# | dev-optinist-packages-v1-0-1        |
+# | dev-optinist-validate-v1-0-0        |
+# | dev-optinist-validate-v1-0-1        |
+```
+
+The version is encoded in the component name suffix (dots replaced with hyphens: `v1-0-1` → version `1.0.1`).
+
+#### Method 4: AWS Console
+
+1. **EC2 Image Builder** → **Image pipelines** → `{env_prefix}-ami-pipeline`
+2. Click the pipeline → **Image Recipe** tab → version is shown in the recipe name and metadata
+3. Alternatively: **Components** tab → component names include the version suffix (e.g., `{env_prefix}-packages-v1-0-1`)
+
+#### Summary: Where to Check
+
+| What | Where | Command / Location |
+|------|-------|--------------------|
+| Version to be deployed next | tfvars file | `grep custom_ami_version <env>.tfvars` |
+| Version currently active in AWS | Pipeline → Recipe | `aws imagebuilder get-image-recipe` (see Method 2) |
+| All versions ever created | Components list | `aws imagebuilder list-components --owner Self` |
+| Visual confirmation | AWS Console | EC2 Image Builder → Image pipelines → Recipe |
+
+### Procedure B: Initial Setup (First-Time Deployment)
 
 This procedure enables the custom AMI feature, builds the first AMI via Image Builder, and switches all launch templates to use it.
 
@@ -259,6 +328,10 @@ This procedure enables the custom AMI feature, builds the first AMI via Image Bu
 │ Step 1: Enable Feature Flag                              │
 │    → Set use_custom_ami = true in terraform.tfvars       │
 │    → Set custom_ami_version = "1.0.0"                    │
+│                                                          │
+│    ℹ Before setting custom_ami_version, verify the       │
+│      current version state.                              │
+│      See: Procedure A (Pre-Deployment Version Check)     │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -306,11 +379,25 @@ This procedure enables the custom AMI feature, builds the first AMI via Image Bu
 ┌──────────────────────────────────────────────────────────┐
 │ Step 6: terraform apply                                  │
 │    → Launch templates pick up new AMI from SSM           │
-│    → Free-tier ASG: instance_refresh performs             │
-│      rolling replacement                                 │
-│    → Premium: new instances use custom AMI via            │
-│      launch template $Latest                             │
-│    → Background: Terraform recreates instance            │
+│                                                          │
+│    ⚠ A new AMI only takes effect on instances that are   │
+│    recreated from the updated launch template.           │
+│    terraform apply handles replacement per tier:         │
+│                                                          │
+│    → Free (ASG): instance_refresh triggers rolling       │
+│      replacement automatically                           │
+│    → Premium (Terraform-managed initial instance):       │
+│      force-recreated by Terraform                        │
+│    → Background: force-recreated by Terraform            │
+│                                                          │
+│    → Premium (Lambda-created per-user instances):        │
+│      NOT replaced by terraform apply. They continue      │
+│      on the old AMI until terminated. Options:           │
+│      a) Wait for next user login cycle (natural          │
+│         termination + Lambda creates replacement)        │
+│      b) Manually terminate via Console/CLI; Lambda       │
+│         creates new instances from updated template      │
+│         on next user assignment                          │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -319,7 +406,7 @@ This procedure enables the custom AMI feature, builds the first AMI via Image Bu
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Procedure B: AMI Content Fix / Rebuild
+### Procedure C: AMI Content Fix / Rebuild
 
 When the pre-baked package set changes (component YAML files modified), a version bump and AMI rebuild are required.
 
@@ -329,6 +416,9 @@ When the pre-baked package set changes (component YAML files modified), a versio
 │    → Modify component YAML files as needed               │
 │    → Bump custom_ami_version in terraform.tfvars         │
 │      (e.g., "1.0.0" → "1.0.1")                          │
+│                                                          │
+│    ℹ Before bumping, verify the current version.         │
+│      See: Procedure A (Pre-Deployment Version Check)     │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -340,17 +430,21 @@ When the pre-baked package set changes (component YAML files modified), a versio
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ Step 3: Trigger Build                                    │
-│    → Same as Procedure A Step 3                          │
+│    → Same as Procedure B Step 3                          │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ Step 4: Find AMI ID + Update SSM ⚠                       │
-│    → Same as Procedure A Steps 4-5                       │
+│    → Same as Procedure B Steps 4-5                       │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ Step 5: terraform apply                                  │
 │    → Launch templates pick up new AMI                    │
+│    → Instance replacement: same as Procedure B Step 6    │
+│      (ASG rolling replacement, Terraform force-recreates │
+│      premium-initial and background instances;           │
+│      Lambda-created premium instances are NOT replaced)  │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -359,7 +453,7 @@ When the pre-baked package set changes (component YAML files modified), a versio
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Procedure C: Monthly Automated AMI Rebuild (Cron)
+### Procedure D: Monthly Automated AMI Rebuild (Cron)
 
 The build pipeline runs automatically on the 1st of each month at 03:00 UTC (12:00 JST) to keep the custom AMI patched.
 
@@ -374,7 +468,7 @@ The build pipeline runs automatically on the 1st of each month at 03:00 UTC (12:
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ Manual: Find AMI ID + Update SSM ⚠                       │
-│    → Same as Procedure A Steps 4-5                       │
+│    → Same as Procedure B Steps 4-5                       │
 │                                                          │
 │    ⚠ Currently requires manual intervention.             │
 │    The cron builds an AMI, but it is NOT automatically   │
@@ -388,13 +482,14 @@ The build pipeline runs automatically on the 1st of each month at 03:00 UTC (12:
 ┌──────────────────────────────────────────────────────────┐
 │ Manual: terraform apply                                  │
 │    → Launch templates pick up new AMI                    │
-│    → Existing running instances are NOT affected         │
-│    → New instances (premium cold starts, ASG scaling)    │
-│      use the updated AMI                                 │
+│    → Instance replacement: same as Procedure B Step 6    │
+│      (ASG rolling replacement, Terraform force-recreates │
+│      premium-initial and background instances;           │
+│      Lambda-created premium instances are NOT replaced)  │
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Procedure D: Rollback to Stock AMI
+### Procedure E: Rollback to Stock AMI
 
 If the custom AMI causes issues, revert to the stock ECS-optimized AMI:
 
@@ -586,12 +681,20 @@ The following aspects of the current implementation are provisional and planned 
 
 ### 2. Active Instance Replacement
 
-**Current state:** After switching AMI, existing running instances continue on the old AMI until naturally replaced:
-- Free tier: ASG `instance_refresh` performs rolling replacement
-- Premium: instances are replaced on next user assignment cycle or termination
-- Background: Terraform recreates the instance on `apply`
+**Current state:** `terraform apply` triggers instance replacement for most tiers automatically when the AMI changes (see Procedure B Step 6 for full detail):
 
-**Consideration:** No forced replacement mechanism exists for premium instances currently in use. They will pick up the new AMI on next cold start.
+| Tier | Replacement Mechanism | Automatic? |
+|------|-----------------------|------------|
+| Free (ASG) | `instance_refresh` rolling replacement | Yes |
+| Premium (Terraform-managed initial) | Terraform force-recreates (`create_before_destroy`) | Yes |
+| Background | Terraform force-recreates (`create_before_destroy`) | Yes |
+| Premium (Lambda-created per-user) | Not replaced by `terraform apply` | **No** |
+
+**Lambda-created premium instances** are the only tier not automatically replaced. They continue on the old AMI until terminated. Options:
+- Wait for natural termination (next user login cycle replaces the instance)
+- Manually terminate via Console/CLI — Lambda creates a replacement from the updated launch template on next user assignment
+
+**Consideration:** No forced replacement mechanism exists for Lambda-created premium instances currently in use. A future improvement could add an automated sweep that terminates idle per-user instances after an AMI update.
 
 ### 3. ECR Image Pre-Pull at Bake Time
 
