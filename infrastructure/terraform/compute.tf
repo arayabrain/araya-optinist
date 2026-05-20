@@ -857,11 +857,10 @@ resource "aws_ecs_task_definition" "premium" {
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
-      # linuxParameters = {
-      #   maxSwap    = 32768  # Max swap in MiB (matches 32GB host swap on EBS)
-      #   swappiness = 20     # Only swap under memory pressure (host also set to 20)
-      # }
-      # NOTE: Uncomment after Stage 2 (swap enabled on instances)
+      linuxParameters = {
+        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
+        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+      }
 
       portMappings = [
         {
