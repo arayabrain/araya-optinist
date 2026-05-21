@@ -220,6 +220,16 @@ variable "asg_desired_capacity" {
   default     = 1
 }
 
+variable "asg_health_check_type" {
+  description = "ASG health check type. Override to 'EC2' for diagnostic runs (e.g. issue #625 repro) that should not self-evict when the ALB declares the target unhealthy. Production stays on the 'ELB' default."
+  type        = string
+  default     = "ELB"
+  validation {
+    condition     = contains(["ELB", "EC2"], var.asg_health_check_type)
+    error_message = "asg_health_check_type must be either ELB or EC2."
+  }
+}
+
 # Instance type configuration
 variable "free_instance_type" {
   description = "Instance type for free tier instances"

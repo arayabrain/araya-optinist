@@ -218,7 +218,7 @@ resource "aws_autoscaling_group" "main" {
   name                      = "${local.env_prefix}-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns         = [aws_lb_target_group.autoscaling.arn]
-  health_check_type         = "ELB"
+  health_check_type         = var.asg_health_check_type
   health_check_grace_period = 900
   default_cooldown          = 300
 
