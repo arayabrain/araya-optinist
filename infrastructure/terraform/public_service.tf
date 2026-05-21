@@ -103,7 +103,8 @@ resource "aws_autoscaling_group" "public" {
   vpc_zone_identifier = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns   = [aws_lb_target_group.public.arn]
   health_check_type   = "ELB"
-  # Cold boot includes ECR pull, lifespan, and startup-sync; 300s flaps.
+  # Cold boot (ECR pull + container start + ASGI lifespan + startup-sync S3
+  # warm) routinely takes >5 min; 300s tripped premature unhealthy replacements.
   health_check_grace_period = 900
   default_cooldown          = 300
 
@@ -116,7 +117,9 @@ resource "aws_autoscaling_group" "public" {
     version = "$Latest"
   }
 
-  force_delete              = true
+  # force_delete=false so ASG-level removals respect the TG deregistration_delay
+  # (in-flight streaming responses get the 600s drain we promise above).
+  force_delete              = false
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
 
@@ -214,16 +217,12 @@ resource "aws_ecs_task_definition" "public" {
         { name = "PYTHONUNBUFFERED", value = "1" },
         { name = "OPTINIST_DIR", value = "/app/studio_data" },
 
-        { name = "SUBSCRIPTION_PLANS_CONFIG", value = jsonencode(var.subscription_plans) },
-        { name = "STRIPE_CALLBACK_URL", value = "${var.frontend_protocol}://${local.effective_frontend_domain}" },
-        { name = "STRIPE_SECRET_KEY", value = var.stripe_secret_key },
-        { name = "STRIPE_WEBHOOK_SECRET", value = var.stripe_webhook_secret },
+        # Stripe / subscriptions / premium-manager vars omitted: their routers
+        # are gated out on INSTANCE_MODE=public, so the secrets aren't read.
         { name = "ROUTING_SECRET_KEY", value = var.routing_secret_key },
 
         { name = "INTERNAL_API_SECRET", value = random_password.internal_api_secret.result },
-        { name = "ALB_DNS_NAME", value = aws_lb.autoscaling.dns_name },
         { name = "UVICORN_WORKERS", value = "1" },
-        { name = "PREMIUM_MANAGER_FUNCTION_NAME", value = "${var.environment}-premium-manager" },
       ]
 
       secrets = [
@@ -350,4 +349,12 @@ output "public_task_definition_arn" {
 output "public_target_group_arn" {
   description = "ARN of the public target group"
   value       = aws_lb_target_group.public.arn
+}
+
+# wait_for_capacity_timeout=0 means `terraform apply` returns before targets
+# are healthy. Use this output to verify the public tier is serving traffic
+# before relying on the listener default-action flip.
+output "public_tg_health_check_command" {
+  description = "Run this after `terraform apply` to confirm public targets are healthy"
+  value       = "aws elbv2 describe-target-health --target-group-arn ${aws_lb_target_group.public.arn} --query 'TargetHealthDescriptions[*].[Target.Id,TargetHealth.State]' --output table"
 }

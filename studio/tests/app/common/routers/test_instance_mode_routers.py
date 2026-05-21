@@ -1,10 +1,10 @@
 """
 Tests for INSTANCE_MODE=public router gating.
 
-Verifies that `_register_routers(app, "public")` mounts only the
-public-safe routers (dataview.public_router, internal.router,
-outputs.router) and skips all auth/workflow routers, while default
-mode registers the full set.
+Verifies that `_register_routers(app, "public")` mounts the public-safe
+routers (auth.router, dataview.public_router, internal.router, outputs.router
+— auth is on every tier so logins survive a free-tier outage) and skips
+the workflow/optinist routers, while default mode registers the full set.
 """
 
 from fastapi import FastAPI

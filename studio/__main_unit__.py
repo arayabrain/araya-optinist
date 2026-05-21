@@ -103,30 +103,22 @@ async def lifespan(app: FastAPI):
 
     # Only the public tier serves the published-experiment cache, so only it warms it.
     instance_mode = os.environ.get("INSTANCE_MODE", "default")
-    if not MODE.IS_STANDALONE and instance_mode == "public":
+    if _should_run_startup_sync(instance_mode, MODE.IS_STANDALONE):
         import asyncio
 
         from studio.app.common.core.storage.startup_leader import (
-            release_startup_leader,
-            try_become_startup_leader,
+            startup_sync_leader_lock,
         )
 
         async def _startup_sync():
-            """Only one worker out of N should perform startup sync."""
+            """One leader across the ASG performs sync; others stand down."""
             try:
                 await asyncio.sleep(5)
-
-                # Leader election: only 1 worker syncs
-                if not try_become_startup_leader():
-                    logger.info("Startup sync deferred to leader worker")
-                    return
-
-                try:
-                    # Run startup sync
+                with startup_sync_leader_lock() as acquired:
+                    if not acquired:
+                        logger.info("Startup sync deferred to leader task")
+                        return
                     await PublishedExperimentSyncJob.run_startup_sync()
-                finally:
-                    # Always release leader file, even on error
-                    release_startup_leader()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
 
@@ -201,8 +193,19 @@ async def health_check():
 add_pagination(app)
 
 
+def _should_run_startup_sync(instance_mode: str, is_standalone: bool) -> bool:
+    """Startup sync warms the public tier's cache; other tiers shouldn't run it."""
+    if is_standalone:
+        return False
+    return instance_mode == "public"
+
+
 def _register_routers(app: FastAPI, instance_mode: str) -> None:
-    """Register routers, gating auth/workflow routers on instance_mode."""
+    """Register routers; workflow/optinist routers are gated on instance_mode.
+
+    Public-safe routers (auth, public dataview, internal, outputs) are mounted
+    on every tier so logins and published-data reads survive a free-tier outage.
+    """
     # Mounted on every tier; auth is here so logins survive a free-tier outage.
     app.include_router(dataview.public_router)
     app.include_router(internal.router)  # Internal secret auth, not JWT.

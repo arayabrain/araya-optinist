@@ -2636,9 +2636,11 @@ def create_alb_rule(
 
     for attempt in range(1, max_retries + 1):
         priority = get_next_available_priority(listener_arn, start_priority)
-        assert (
-            priority <= MAX_PREMIUM_PRIORITY
-        ), f"Premium ALB rule priority {priority} exceeds MAX_PREMIUM_PRIORITY."
+        if priority > MAX_PREMIUM_PRIORITY:
+            raise ValueError(
+                f"Premium ALB rule priority {priority} exceeds "
+                f"MAX_PREMIUM_PRIORITY ({MAX_PREMIUM_PRIORITY})."
+            )
         try:
             response = elbv2.create_rule(
                 ListenerArn=listener_arn,
@@ -2676,8 +2678,15 @@ def get_next_available_priority(
         Next available priority number in [start_priority, max_priority]
 
     Raises:
+        ValueError: If start_priority > max_priority
         Exception: If no priorities available in the allowed range
     """
+    if start_priority > max_priority:
+        raise ValueError(
+            f"start_priority ({start_priority}) cannot exceed "
+            f"max_priority ({max_priority})."
+        )
+
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
