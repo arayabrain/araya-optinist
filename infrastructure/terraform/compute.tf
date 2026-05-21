@@ -10,7 +10,8 @@ resource "aws_lb" "autoscaling" {
   subnets            = [aws_subnet.public1.id, aws_subnet.public2.id]
 
   enable_deletion_protection = false
-  idle_timeout               = 180 # Increased to accommodate premium instance cold starts
+  # Long timeout for streaming cold-cache S3 fallbacks; pair with TG deregistration_delay.
+  idle_timeout = 600
 
   # Enable access logs for detailed monitoring
   access_logs {
@@ -51,7 +52,10 @@ resource "aws_lb_listener" "autoscaling" {
 }
 
 
-# HTTPS listener (or HTTP on 8080 for dev without custom domain)
+# Default action lands on public; authenticated traffic is steered to free
+# by the Authorization-header rule and a few overrides. To change the default
+# safely under load, apply listener rules first with `terraform apply -target=...`
+# (a depends_on back to the rules would cycle with their listener_arn refs).
 resource "aws_lb_listener" "autoscaling_https" {
   load_balancer_arn = aws_lb.autoscaling.arn
   port              = var.enable_custom_domain ? "443" : "8080"
@@ -61,7 +65,7 @@ resource "aws_lb_listener" "autoscaling_https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.autoscaling.arn
+    target_group_arn = aws_lb_target_group.public.arn
   }
 }
 

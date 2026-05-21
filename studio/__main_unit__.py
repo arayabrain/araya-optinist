@@ -101,10 +101,9 @@ async def lifespan(app: FastAPI):
     # (e.g., when using cron)
     disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
 
-    # Startup sync runs on ALL containers (including API workers
-    # with disabled scheduler) to ensure published experiments are
-    # available locally
-    if not MODE.IS_STANDALONE:
+    # Only the public tier serves the published-experiment cache, so only it warms it.
+    instance_mode = os.environ.get("INSTANCE_MODE", "default")
+    if not MODE.IS_STANDALONE and instance_mode == "public":
         import asyncio
 
         from studio.app.common.core.storage.startup_leader import (
@@ -201,39 +200,51 @@ async def health_check():
 
 add_pagination(app)
 
-# common routers
-app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
-app.include_router(auth.router)
-app.include_router(internal.router)  # Uses internal secret auth, not JWT
-app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
-app.include_router(files.router, dependencies=[Depends(get_current_user)])
-app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
-app.include_router(logs.router, dependencies=[Depends(get_current_user)])
-app.include_router(
-    outputs.router, dependencies=[Depends(get_current_user_with_dataview_outputs_check)]
-)  # NOTE: The outputs router uses the unique get_current_user.
-app.include_router(params.router, dependencies=[Depends(get_current_user)])
-app.include_router(run.router, dependencies=[Depends(get_current_user)])
-app.include_router(
-    storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
-)
-app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
-app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
-app.include_router(users_me.beacon_router)
-app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
-app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
-app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
-app.include_router(dataview.public_router)
-app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
-app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
-app.include_router(subscriptions.webhook_router)
-app.include_router(registrations.router)
 
-# optinist routers
-app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
-app.include_router(mat.router, dependencies=[Depends(get_current_user)])
-app.include_router(nwb.router, dependencies=[Depends(get_current_user)])
-app.include_router(roi.router, dependencies=[Depends(get_current_user)])
+def _register_routers(app: FastAPI, instance_mode: str) -> None:
+    """Register routers, gating auth/workflow routers on instance_mode."""
+    # Mounted on every tier; auth is here so logins survive a free-tier outage.
+    app.include_router(dataview.public_router)
+    app.include_router(internal.router)  # Internal secret auth, not JWT.
+    app.include_router(
+        outputs.router,
+        dependencies=[Depends(get_current_user_with_dataview_outputs_check)],
+    )
+    app.include_router(auth.router)
+
+    if instance_mode == "public":
+        return
+
+    app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
+    app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
+    app.include_router(files.router, dependencies=[Depends(get_current_user)])
+    app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
+    app.include_router(logs.router, dependencies=[Depends(get_current_user)])
+    app.include_router(params.router, dependencies=[Depends(get_current_user)])
+    app.include_router(run.router, dependencies=[Depends(get_current_user)])
+    app.include_router(
+        storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
+    )
+    app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
+    app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
+    app.include_router(users_me.beacon_router)
+    app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
+    app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
+    app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
+    app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
+    app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
+    app.include_router(subscriptions.webhook_router)
+    app.include_router(registrations.router)
+
+    # optinist routers
+    app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
+    app.include_router(mat.router, dependencies=[Depends(get_current_user)])
+    app.include_router(nwb.router, dependencies=[Depends(get_current_user)])
+    app.include_router(roi.router, dependencies=[Depends(get_current_user)])
+
+
+INSTANCE_MODE = os.environ.get("INSTANCE_MODE", "default")
+_register_routers(app, INSTANCE_MODE)
 
 
 def skip_dependencies():

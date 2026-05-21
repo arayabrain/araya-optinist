@@ -302,6 +302,47 @@ resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
   }
 }
 
+resource "aws_cloudwatch_metric_alarm" "free_tg_unhealthy_hosts" {
+  alarm_name          = "${local.env_prefix}-free-tg-unhealthy-hosts"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = "60"
+  statistic           = "Maximum"
+  threshold           = "0"
+  alarm_description   = "Free TG has unhealthy targets — workflow instance may be failing health checks."
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    LoadBalancer = aws_lb.autoscaling.arn_suffix
+    TargetGroup  = aws_lb_target_group.autoscaling.arn_suffix
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "public_tg_unhealthy_hosts" {
+  alarm_name          = "${local.env_prefix}-public-tg-unhealthy-hosts"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = "60"
+  statistic           = "Maximum"
+  threshold           = "0"
+  alarm_description   = "Public TG has unhealthy targets — SPA delivery or public-dataview API at risk."
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    LoadBalancer = aws_lb.autoscaling.arn_suffix
+    TargetGroup  = aws_lb_target_group.public.arn_suffix
+  }
+}
+
+# Premium TG alarms are emitted by the premium-manager Lambda per-user;
+# static alarms here would not match the dynamic TG ARNs.
+
 # CloudWatch Dashboard for monitoring both Free and Premium tiers
 resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = "${local.env_prefix}-monitoring"
