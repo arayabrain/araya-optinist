@@ -31,10 +31,12 @@ export const LeftSidebarContainer: FC<LeftSidebarContainerProps> = ({
         overflow: "hidden",
         paddingTop: 0,
         paddingLeft: 1,
-        transition: "width 0.3s ease-in-out, margin-right 0.3s ease-in-out",
+        transition:
+          "width 0.3s cubic-bezier(0.4, 0, 0.2, 1), margin-right 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
         position: "relative",
       }}
     >
+      {/* Collapsed state: Menu icon */}
       <Box
         sx={{
           position: "absolute",
@@ -42,7 +44,9 @@ export const LeftSidebarContainer: FC<LeftSidebarContainerProps> = ({
           left: 8,
           opacity: isOpen ? 0 : 1,
           visibility: isOpen ? "hidden" : "visible",
-          transition: "opacity 0.2s ease-in-out, visibility 0.2s ease-in-out",
+          transition:
+            "opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          transitionDelay: isOpen ? "0s" : "0.1s",
           pointerEvents: isOpen ? "none" : "auto",
         }}
       >
@@ -65,21 +69,27 @@ export const LeftSidebarContainer: FC<LeftSidebarContainerProps> = ({
           </IconButton>
         </Tooltip>
       </Box>
+
+      {/* Expanded state: Sidebar content */}
       <Box
         sx={{
           display: "flex",
           flexDirection: "column",
           height: "100%",
-          transform: isOpen ? "translateX(0)" : "translateX(-100%)",
+          width: DRAWER_WIDTH,
+          transform: isOpen
+            ? "translateX(0)"
+            : `translateX(-${DRAWER_WIDTH}px)`,
           opacity: isOpen ? 1 : 0,
-          transition: "transform 0.3s ease-in-out, opacity 0.3s ease-in-out",
+          transition:
+            "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           pointerEvents: isOpen ? "auto" : "none",
         }}
       >
         <Box
           sx={{
             display: "flex",
-            justifyContent: "flex-start",
+            justifyContent: "flex-end",
             alignItems: "center",
             paddingY: 0,
             borderBottom: `1px solid ${grey[200]}`,

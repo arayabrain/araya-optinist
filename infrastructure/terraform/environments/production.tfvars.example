@@ -1,0 +1,165 @@
+# ============================================================================
+# Production Environment Configuration
+# ============================================================================
+# Copy this file to production.tfvars and fill in actual values.
+# NEVER commit production.tfvars — it is gitignored.
+
+# Environment parameterization
+environment           = "subscr"
+enable_custom_domain  = true
+vpc_cidr              = "10.1.0.0/16"
+s3_user_bucket_prefix = "optinist-user"
+s3_user_bucket_secret = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"
+
+# AWS configuration
+aws_region        = "ap-northeast-1"
+availability_zone = "ap-northeast-1a"
+key_name          = "subscr-optinist-for-cloud-key"
+
+frontend_domain   = "araya-optinist.com"
+frontend_protocol = "https"
+frontend_port     = "443"
+
+# Git branch
+git_repo   = "https://github.com/arayabrain/optinist-for-cloud.git"
+git_branch = "<BRANCH_NAME>"
+
+# ECR repository
+ecr_repository_url = "<AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com/optinist-for-cloud"
+
+# Database configuration
+mysql_root_password = "<PLACEHOLDER-generate-with-openssl-rand-base64-24>"
+mysql_database      = "studio"
+# Note: Changing username will require destroying and recreating the database
+mysql_user          = "<PLACEHOLDER-db-admin-username>"
+mysql_password      = "<PLACEHOLDER-generate-with-openssl-rand-base64-24>"
+
+USE_FIREBASE_TOKEN = True
+IS_STANDALONE      = False
+
+# Stripe configuration (LIVE mode keys)
+stripe_secret_key     = "sk_live_<PLACEHOLDER>"
+stripe_webhook_secret = "whsec_<PLACEHOLDER>"
+
+# OptiNiSt configuration
+optinist_secret_key  = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"
+routing_secret_key   = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"
+optinist_org_name    = "Araya"
+optinist_admin_name  = "Admin"
+optinist_admin_email = "<PLACEHOLDER-admin-email>"
+optinist_admin_uid   = "<PLACEHOLDER-firebase-admin-uid>"
+
+firebase_config_json = <<-EOT
+{
+  "apiKey": "<PLACEHOLDER>",
+  "authDomain": "<PLACEHOLDER>.firebaseapp.com",
+  "databaseURL": "",
+  "projectId": "<PLACEHOLDER>",
+  "storageBucket": "<PLACEHOLDER>.appspot.com",
+  "messagingSenderId": "<PLACEHOLDER>",
+  "appId": "<PLACEHOLDER>",
+  "measurementId": "<PLACEHOLDER>"
+}
+EOT
+
+firebase_private_json = <<-EOT
+{
+  "type": "service_account",
+  "project_id": "<PLACEHOLDER>",
+  "private_key_id": "<PLACEHOLDER>",
+  "private_key": "<PLACEHOLDER>",
+  "client_email": "<PLACEHOLDER>",
+  "client_id": "<PLACEHOLDER>",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "<PLACEHOLDER>",
+  "universe_domain": "googleapis.com"
+}
+EOT
+
+# ASG configuration
+asg_max_size = 3
+
+# EC2 Image Builder — Custom AMI (reduces instance boot from ~8 min to ~2 min)
+# Set to true after initial terraform apply to create the Image Builder pipeline.
+# See image_builder.tf for deployment workflow.
+use_custom_ami = false
+# custom_ami_version = "1.0.0"   # Bump to force a new AMI build
+
+# Test user configuration
+test_users = []
+
+# Subscription Plans Configuration
+subscription_plans = [
+  {
+    id                = 1
+    name              = "Free"
+    price             = 0
+    billing_cycle     = 1
+    currency          = 1
+    status            = 1
+    stripe_product_id = "<PLACEHOLDER-stripe-product-id>"
+    stripe_price_id   = "<PLACEHOLDER-stripe-price-id>"
+    storage_quota_gb  = 5
+    features = {
+      Free = [
+        {
+          text      = "Basic compute access with fair-use limitations"
+          isPremium = false
+        },
+        {
+          text      = "Standard support through documentation and community"
+          isPremium = false
+        },
+        {
+          text      = "Basic data storage of 5GB"
+          isPremium = false
+        },
+        {
+          text      = "Standard processing speed"
+          isPremium = false
+        }
+      ]
+    }
+  },
+  {
+    id                = 2
+    name              = "Premium"
+    price             = 2000
+    billing_cycle     = 1
+    currency          = 1
+    status            = 1
+    stripe_product_id = "<PLACEHOLDER-stripe-product-id>"
+    stripe_price_id   = "<PLACEHOLDER-stripe-price-id>"
+    storage_quota_gb  = 200
+    features = {
+      Premium = [
+        {
+          text      = "Basic compute access with fair-use limitations"
+          isPremium = false
+        },
+        {
+          text      = "Standard support through documentation and community"
+          isPremium = false
+        },
+        {
+          text      = "Priority compute access with guaranteed allocation"
+          isPremium = true
+        },
+        {
+          text      = "Upgraded data storage of 200GB"
+          isPremium = true
+        },
+        {
+          text      = "Enhanced support including direct assistance"
+          isPremium = true
+        },
+        {
+          text      = "Advanced features like extended job history"
+          isPremium = true
+        }
+      ]
+    }
+  }
+]

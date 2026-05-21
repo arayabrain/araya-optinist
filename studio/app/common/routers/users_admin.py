@@ -10,7 +10,9 @@ from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import (
     User,
     UserCreate,
+    UserCreateResponse,
     UserSearchOptions,
+    UserSubscriptionUpdate,
     UserUpdate,
 )
 
@@ -33,14 +35,14 @@ async def list_user(
     )
 
 
-@router.post("", response_model=User)
+@router.post("", response_model=UserCreateResponse)
 async def create_user(
     data: UserCreate,
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_admin_user),
 ):
     return await crud_users.create_user(
-        db, data, organization_id=current_admin.organization.id
+        db, data, organization_id=current_admin.organization.id, verified=True
     )
 
 
@@ -64,6 +66,21 @@ async def update_user(
 ):
     return await crud_users.update_user(
         db, user_id, data, organization_id=current_admin.organization.id
+    )
+
+
+@router.put("/{user_id}/subscription", response_model=User)
+async def update_user_subscription(
+    user_id: int,
+    data: UserSubscriptionUpdate,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_admin_user),
+):
+    return await crud_users.update_user_subscription_admin(
+        db,
+        user_id,
+        data,
+        admin_user=current_admin,
     )
 
 

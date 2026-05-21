@@ -1,10 +1,10 @@
-FROM --platform=linux/amd64 python:3.9-slim
+FROM --platform=linux/amd64 python:3.11-slim
 
 WORKDIR /app
 
 # install default packages
 RUN apt-get --allow-releaseinfo-change update && \
-    apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim \
+    apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim git \
         default-mysql-client
 
 # install conda & packages
@@ -33,6 +33,10 @@ RUN cd /tmp && \
 # cleaning apt
 RUN apt-get purge wget -y && \
     apt-get autoremove -y && apt-get clean
+
+# install optimization solver (after autoremove to prevent removal)
+RUN apt-get install --no-install-recommends -y coinor-cbc && \
+    apt-get clean
 
 # setup user profile
 RUN echo 'alias ll="ls -la --color=auto"' >> /root/.bashrc && \

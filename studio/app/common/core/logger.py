@@ -5,12 +5,13 @@ import os
 import platform
 import traceback
 from contextvars import ContextVar
-from datetime import datetime
 from typing import Optional
 
 import yaml
 
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.platform_metadata import ECS_TASK_ID
+from studio.app.common.core.utils.datetime_utils import get_current_datetime_formatted
 from studio.app.dir_path import DIRPATH
 
 LOGGING_CLIENT_ID_KEY = "client_id"
@@ -19,6 +20,8 @@ LOGGING_CLIENT_ID_KEY = "client_id"
 _client_id_context: ContextVar[Optional[str]] = ContextVar(
     LOGGING_CLIENT_ID_KEY, default=None
 )
+
+VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
 class LoggingConfigHelper:
@@ -169,6 +172,33 @@ class LoggingConfigHelper:
 
         return logging_config
 
+    @staticmethod
+    def _apply_log_level_override(logging_config: dict, log_level: str) -> dict:
+        """Override all logger and handler levels with the given level.
+
+        Applied once at startup; requires a process restart to change.
+        In ECS, LOG_LEVEL is set in the task definition (compute.tf /
+        background_service.tf). Locally, use --log-level or the env var.
+        """
+        level = log_level.upper()
+        if level not in VALID_LOG_LEVELS:
+            import warnings
+
+            warnings.warn(f"Invalid LOG_LEVEL '{log_level}', using YAML defaults")
+            return logging_config
+
+        if "root" in logging_config:
+            logging_config["root"]["level"] = level
+
+        for logger_cfg in logging_config.get("loggers", {}).values():
+            logger_cfg["level"] = level
+
+        for handler_cfg in logging_config.get("handlers", {}).values():
+            if "level" in handler_cfg:
+                handler_cfg["level"] = level
+
+        return logging_config
+
 
 class AppLogger:
     """
@@ -180,7 +210,8 @@ class AppLogger:
 
     class ClientIdFilter(logging.Filter):
         """
-        Logging filter to inject client_id from context into log records
+        Logging filter to inject client_id and ecs_task_id
+        from context into log records.
         """
 
         # Alternate text to log if client_id is not obtained
@@ -194,6 +225,7 @@ class AppLogger:
                 if client_id is not None
                 else __class__.NO_CLIENT_ID_DEFAULT_VALUE
             )
+            record.ecs_task_id = ECS_TASK_ID
             return True
 
     @classmethod
@@ -258,6 +290,10 @@ class AppLogger:
             if CLIENT_ID_FILTER_NAME not in handler_config["filters"]:
                 handler_config["filters"].append(CLIENT_ID_FILTER_NAME)
 
+        # NOTE: LOG_LEVEL env var controls the frontend log viewer filter,
+        # not the Python logging level. Python always uses YAML defaults
+        # (DEBUG for optinist/snakemake) so all logs reach CloudWatch.
+
         return logging_config
 
     @classmethod
@@ -300,7 +336,7 @@ class AppLogger:
             return uid
 
         if auto_refresh:
-            datetime_str = datetime.now().strftime(
+            datetime_str = get_current_datetime_formatted(
                 "%Y-%m-%d-%w"
             )  # Refresh by period (weekly)
             hash_source = f"{uid}-{datetime_str}"

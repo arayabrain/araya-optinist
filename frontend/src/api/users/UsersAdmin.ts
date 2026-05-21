@@ -5,6 +5,7 @@ import {
   UserDTO,
   ListUsersQueryDTO,
   UpdateUserDTO,
+  UpdateUserSubscriptionDTO,
   UserListDTO,
 } from "api/users/UsersApiDTO"
 import axios from "utils/axios"
@@ -32,6 +33,14 @@ export const updateUserApi = async (
   data: UpdateUserDTO,
 ): Promise<UserDTO> => {
   const response = await axios.put(`/admin/users/${id}`, data)
+  return response.data
+}
+
+export const updateUserSubscriptionApi = async (
+  id: number,
+  data: UpdateUserSubscriptionDTO,
+): Promise<UserDTO> => {
+  const response = await axios.put(`/admin/users/${id}/subscription`, data)
   return response.data
 }
 

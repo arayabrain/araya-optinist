@@ -5,6 +5,12 @@ from typing import Optional
 from fastapi import Query
 from pydantic import BaseModel, EmailStr, Field
 
+from studio.app.common.core.subscription.constants import (
+    PlanName,
+    SubscriptionStatus,
+    SubscriptionType,
+)
+
 password_regex = r"^(?=.*\d)(?=.*[!#$%&()*+,-./@_|])(?=.*[a-zA-Z]).{6,255}$"
 
 
@@ -35,10 +41,35 @@ class User(BaseModel):
     role_id: Optional[int]
     data_usage: Optional[int]
     attributes: Optional[dict]
+    subscription_plan_name: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_days_remaining: Optional[int] = None
+    storage_usage_bytes: Optional[int] = None
+    storage_quota_bytes: Optional[int] = None
+    storage_usage_percent: Optional[float] = None
+    subscription_expiration: Optional[datetime] = None
 
     @property
     def is_admin(self) -> bool:
         return self.role_id == UserRole.admin
+
+    @property
+    def has_active_subscription(self) -> bool:
+        """Check if user has an active paid subscription."""
+        return (
+            self.subscription_plan_name == PlanName.PREMIUM.value
+            and self.subscription_status
+            in [SubscriptionStatus.PREMIUM.value, SubscriptionStatus.LIMIT_GRACE.value]
+        )
+
+    @property
+    def subscription_type(self) -> str:
+        """Get current effective Subscription Type: 'premium' or 'free'."""
+        return (
+            SubscriptionType.PREMIUM.value
+            if self.has_active_subscription
+            else SubscriptionType.FREE.value
+        )
 
     @property
     def remote_bucket_name(self) -> str:
@@ -64,6 +95,21 @@ class UserUpdate(BaseModel):
     role_id: int
 
 
+class SubscriptionAuditSnapshot(BaseModel):
+    """Typed snapshot of subscription state for audit log old_value/new_value."""
+
+    plan_id: int
+    expiration: Optional[str] = None
+    storage_quota_bytes: int
+
+
+class UserSubscriptionUpdate(BaseModel):
+    plan_id: int
+    expiration: Optional[datetime] = None
+    storage_quota_bytes: int = Field(gt=0, lt=10 * 1024 * 1024 * 1024 * 1024)
+    reason: str = Field(min_length=1)
+
+
 class SelfUserUpdate(BaseModel):
     email: Optional[EmailStr]
     name: str
@@ -86,3 +132,7 @@ class UserInfo(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class UserCreateResponse(BaseModel):
+    user: User

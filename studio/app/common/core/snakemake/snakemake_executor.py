@@ -2,10 +2,22 @@ import asyncio
 import os
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from typing import Dict, List
 
-from snakemake import snakemake
+from snakemake.api import (
+    DAGSettings,
+    DeploymentMethod,
+    DeploymentSettings,
+    OutputSettings,
+    ResourceSettings,
+    SnakemakeApi,
+    StorageSettings,
+)
 
+from studio.app.common.core.cloud.storage_tracking import (
+    update_user_storage_after_workflow,
+)
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -16,7 +28,6 @@ from studio.app.common.core.logger_context_helpers import (
 )
 from studio.app.common.core.snakemake.smk import ForceRun, SmkParam
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
-from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteSyncAction,
@@ -34,24 +45,52 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
-def snakemake_execute(workspace_id: str, unique_id: str, params: SmkParam):
+def snakemake_execute(
+    workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
+):
+    """
+    Main entry point for Snakemake execution.
+
+    Args:
+        workspace_id: Workspace ID
+        unique_id: Unique ID for the workflow
+        params: Snakemake parameters
+        user_id: User ID (for tracking free tier workflow counts)
+    """
     client_id = get_client_id_for_subprocess()
 
-    with ProcessPoolExecutor(max_workers=1) as executor:
-        logger.info("start snakemake running process.")
+    try:
+        logger.info("Starting local execution mode")
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            logger.info("start snakemake running process.")
 
-        future = executor.submit(
-            _snakemake_execute_process,
-            workspace_id,
-            unique_id,
-            params,
-            client_id=client_id,
-        )
-        future_result = future.result()
+            future = executor.submit(
+                _snakemake_execute_process,
+                workspace_id,
+                unique_id,
+                params,
+                client_id=client_id,
+            )
+            future_result = future.result()
 
-        logger.info("finish snakemake running process. result: %s", future_result)
+        # Update user storage after workflow completion
+        asyncio.run(update_user_storage_after_workflow(workspace_id))
 
         return future_result
+
+    finally:
+        # Decrement workflow count in finally block to ensure it ALWAYS runs
+        # This prevents workflow count leaks when exceptions occur during execution
+        if user_id is not None:
+            try:
+                from studio.app.common.core.workflow.workflow_tracking import (
+                    decrement_workflow_count,
+                )
+
+                decrement_workflow_count(user_id)
+                logger.info(f"Decremented workflow count for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
 
 
 @with_client_id_context  # Automatically set client_id for logging
@@ -74,16 +113,62 @@ def _snakemake_execute_process(
         ]
     )
 
-    snakemake_result = snakemake(
-        DIRPATH.SNAKEMAKE_FILEPATH,
-        forceall=params.forceall,
-        cores=params.cores,
-        use_conda=params.use_conda,
-        conda_prefix=DIRPATH.SNAKEMAKE_CONDA_ENV_DIR,
-        workdir=smk_workdir,
-        configfiles=[SmkConfigReader.get_config_yaml_path(workspace_id, unique_id)],
-        log_handler=[smk_logger.log_handler],
-    )
+    # Use context manager for proper cleanup
+    cores = getattr(params, "cores", 1)
+
+    deployment_methods = []
+    if getattr(params, "use_conda", True):
+        deployment_methods.append(DeploymentMethod.CONDA)
+
+    # Use context manager for proper cleanup
+    with SnakemakeApi(
+        OutputSettings(
+            verbose=True,  # Print debugging output
+            show_failed_logs=True,  # Automatically display logs of failed jobs
+            debug_dag=True,  # Print candidate and selected jobs with wildcards
+            printshellcmds=True,  # Show shell commands
+        ),
+    ) as snakemake_api:
+        workflow_api = snakemake_api.workflow(
+            snakefile=Path(DIRPATH.SNAKEMAKE_FILEPATH),
+            workdir=Path(smk_workdir),
+            storage_settings=StorageSettings(),
+            resource_settings=ResourceSettings(cores=cores),
+            deployment_settings=DeploymentSettings(
+                deployment_method=deployment_methods,
+                conda_frontend="conda",
+                conda_prefix=DIRPATH.SNAKEMAKE_CONDA_ENV_DIR,
+            ),
+        )
+
+        logger.debug("Workflow API created successfully")
+        logger.debug("Creating DAG...")
+
+        forceall = getattr(params, "forceall", False)
+
+        dag_api = workflow_api.dag(
+            dag_settings=DAGSettings(
+                forceall=forceall,
+            )
+        )
+
+        logger.info("DAG created successfully")
+        logger.info("Starting workflow execution...")
+
+        snakemake_result = False
+
+        try:
+            dag_api.execute_workflow()
+
+            snakemake_result = True
+            logger.info("snakemake_execute succeeded.")
+        except Exception as e:
+            snakemake_result = False
+            logger.error(f"snakemake_execute failed: {e}")
+
+            # Logging errors via SmkStatusLogger to notify
+            #   the monitoring process (WorkflowMonitor) of the error occurrence
+            smk_logger.logger.error(e)
 
     if snakemake_result:
         logger.info("snakemake_execute succeeded.")
@@ -96,26 +181,46 @@ def _snakemake_execute_process(
     # Snakemake execution post process
     # ------------------------------------------------------------
 
+    # If workflow failed, delete the lock file BEFORE post-process
+    # so that WorkflowResult.observe_overall() can access remote storage
+    if not snakemake_result and RemoteStorageController.is_available():
+        RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
+    # Wait for post_process upload to release the lock
+    if snakemake_result and RemoteStorageController.is_available():
+        RemoteSyncLockFileUtil.wait_for_lock_release(workspace_id, unique_id)
+
     try:
         # Update workflow processing results
+        observe_success = False
         try:
             asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+            observe_success = True
         except Exception as e:
             logger.error(
                 f"snakemake_execute post process (WorkflowResult) failed: {e}",
                 exc_info=True,
             )
 
-        # Update experiment database record
-        if ExperimentRecordService.is_available():
+        # Update experiment database record if observe_overall() succeeded
+        if observe_success and ExperimentRecordService.is_available():
             ExperimentRecordService.regist_record_on_workflow_completed(
                 workspace_id, unique_id
             )
 
         # Data usage calculation
-        WorkspaceDataCapacityService.update_experiment_data_usage(
-            workspace_id, unique_id
-        )
+        if observe_success:
+            WorkspaceDataCapacityService.update_experiment_data_usage(
+                workspace_id, unique_id
+            )
+
+        if not observe_success:
+            logger.warning(
+                "Skipped experiment record registration and data usage update "
+                "due to observe_overall() failure. [workspace: %s] [unique_id: %s]",
+                workspace_id,
+                unique_id,
+            )
     except Exception as e:
         logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
@@ -123,9 +228,6 @@ def _snakemake_execute_process(
     if not snakemake_result:
         # Operate remote storage.
         if RemoteStorageController.is_available():
-            # force delete sync lock file
-            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
-
             remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
                 workspace_id, unique_id
             )
@@ -173,7 +275,6 @@ def delete_dependencies(
                 ),
             ]
         )
-        # logger.debug(pickle_filepath)
 
         if os.path.exists(pickle_filepath):
             os.remove(pickle_filepath)

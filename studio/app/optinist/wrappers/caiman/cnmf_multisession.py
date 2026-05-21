@@ -47,7 +47,7 @@ def caiman_cnmf_multisession(
         raise Exception(f"Set n_reg_files to a integer value gte 2. Now {n_reg_files}.")
     reg_file_rate = params.pop("reg_file_rate", 1.0)
     if reg_file_rate > 1.0:
-        logger.warn(
+        logger.warning(
             f"reg_file_rate {reg_file_rate}, should be lte 1. Using 1.0 instead."
         )
         reg_file_rate = 1.0
@@ -88,7 +88,7 @@ def caiman_cnmf_multisession(
         c, dview, n_processes = setup_cluster(
             backend="multiprocessing", n_processes=n_processes
         )
-    logger.info(f"n_processes: {n_processes}")
+    logger.debug(f"n_processes: {n_processes}")
 
     cnm_list = []
     templates = []
@@ -239,7 +239,7 @@ def caiman_cnmf_multisession(
     try:
         util_cleanup_image_memmap(mmap_paths)
     except Exception as e:
-        logger.error("Failed to cleanup memmap files.")
-        logger.error(e)
+        logger.warning("Failed to cleanup memmap files.")
+        logger.warning(e)
 
     return info

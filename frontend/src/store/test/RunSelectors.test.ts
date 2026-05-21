@@ -298,6 +298,11 @@ describe("RunSelectors", () => {
         value: "optinist",
         path: "session_description",
       },
+      timezone: {
+        type: "child",
+        value: expect.any(String),
+        path: "timezone",
+      },
       identifier: {
         type: "child",
         value: "optinist",
@@ -464,6 +469,8 @@ describe("RunSelectors", () => {
           label: "hoge.tif",
           path: ["/tmp/optinist/input/hoge/hoge.tif"],
           param: {},
+          hdf5Path: undefined,
+          matPath: undefined,
           fileType: "image",
         },
         style: { border: "1px solid #777", height: 120 },
@@ -476,6 +483,8 @@ describe("RunSelectors", () => {
           label: "suite2p_roi",
           type: "algorithm",
           path: "suite2p/suite2p_roi",
+          dataFilterParam: undefined,
+          draftDataFilterParam: undefined,
           param: {
             tau: { type: "child", value: 1, path: "tau" },
             fs: { type: "child", value: 10, path: "fs" },
@@ -543,6 +552,8 @@ describe("RunSelectors", () => {
           label: "suite2p_file_convert",
           type: "algorithm",
           path: "suite2p/suite2p_file_convert",
+          dataFilterParam: undefined,
+          draftDataFilterParam: undefined,
           param: {
             nplanes: { type: "child", value: 1, path: "nplanes" },
             nchannels: { type: "child", value: 1, path: "nchannels" },
@@ -639,7 +650,13 @@ describe("RunSelectors", () => {
   } as RootState
 
   const expectRunPostDataForceRunList = {
-    nwbParam: {},
+    nwbParam: {
+      timezone: {
+        type: "child",
+        value: expect.any(String),
+        path: "timezone",
+      },
+    },
     snakemakeParam: {},
     edgeDict: {
       "reactflow__edge-input_0input_0--image--ImageData-suite2p_file_convert_6fn2k01zphsuite2p_file_convert_6fn2k01zph--image--ImageData":
@@ -663,6 +680,8 @@ describe("RunSelectors", () => {
           label: "hoge.tif",
           path: ["/tmp/optinist/input/hoge/hoge.tif"],
           param: {},
+          hdf5Path: undefined,
+          matPath: undefined,
           fileType: "image",
         },
         style: { border: "1px solid #777", height: 120 },
@@ -675,6 +694,8 @@ describe("RunSelectors", () => {
           label: "suite2p_file_convert",
           type: "algorithm",
           path: "suite2p/suite2p_file_convert",
+          dataFilterParam: undefined,
+          draftDataFilterParam: undefined,
           param: {
             nplanes: { type: "child", value: 2, path: "nplanes" },
             nchannels: { type: "child", value: 1, path: "nchannels" },

@@ -4,9 +4,9 @@ import json
 import os
 import platform
 import subprocess
+from pathlib import Path
 from typing import Dict
 
-from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
@@ -63,10 +63,6 @@ class SmkUtils:
         elif details["type"] in [
             ProcessType.POST_PROCESS.type,
         ]:
-            return None
-
-        path = details.get("path")
-        if not path:
             return None
 
         wrapper = cls.dict2leaf(wrapper_dict, details["path"].split("/"))
@@ -134,7 +130,7 @@ class SmkUtils:
                 return hardware_arch
 
         except Exception as e:
-            logger.info("Failed to detect Apple Silicon: %s", e)
+            logger.warning("Failed to detect Apple Silicon: %s", e)
             return False
 
     @staticmethod
@@ -154,54 +150,36 @@ class SmkUtils:
                 modified_params["advanced"]["quality_evaluation_params"][
                     "use_cnn"
                 ] = False
-                logger.info("Disabled CNN usage in CaImAn parameters for Apple Silicon")
+                logger.debug(
+                    "Disabled CNN usage in CaImAn parameters for Apple Silicon"
+                )
 
         # Also check top-level parameters
         if "quality_evaluation_params" in modified_params:
             modified_params["quality_evaluation_params"]["use_cnn"] = False
-            logger.info("Disabled CNN usage in CaImAn parameters for Apple Silicon")
+            logger.debug("Disabled CNN usage in CaImAn parameters for Apple Silicon")
 
         return modified_params
 
     @staticmethod
-    def resolve_nwbfile_reference(rule_config: Rule, config: dict = None):
+    def resolve_nwbfile_reference(rule_config: Rule):
         """Resolve NWB template reference if necessary"""
         if hasattr(rule_config, "nwbfile"):
             if isinstance(rule_config.nwbfile, str) and rule_config.nwbfile.startswith(
                 "ref:"
             ):
-                # If config is provided (from snakemake context), use it directly
-                if config is not None:
-                    if "nwb_template" in config:
-                        template = config["nwb_template"]
-                        rule_config.nwbfile = template
-                    else:
-                        logger.error("NWB template not found in provided config")
-                        logger.error(f"Config keys available: {list(config.keys())}")
-                else:
-                    # Fallback to file reading for backwards compatibility
-                    output_path = join_filepath(
-                        [
-                            DIRPATH.OUTPUT_DIR,
-                            rule_config.output,
-                        ]
-                    )
-                    path_ids = ExptOutputPathIds(os.path.dirname(output_path))
-                    config = SmkConfigReader.read(
-                        path_ids.workspace_id,
-                        path_ids.unique_id,
-                    )
+                workflow_dirpath = str(Path(rule_config.output).parent.parent)
 
-                    if config and "nwb_template" in config:
-                        template = config["nwb_template"]
-                        rule_config.nwbfile = template
-                    else:
-                        logger.error(
-                            "NWB template not found in config:"
-                            f" {path_ids.workspace_id}/{path_ids.unique_id}"
-                        )
-                        config_keys = list(config.keys()) if config else "None"
-                        logger.error(f"Config keys available: {config_keys}")
+                config_path = join_filepath(
+                    [DIRPATH.OUTPUT_DIR, workflow_dirpath, DIRPATH.SNAKEMAKE_CONFIG_YML]
+                )
+                config = SmkConfigReader.read_from_path(config_path)
+
+                if "nwb_template" in config:
+                    template = config["nwb_template"]
+                    rule_config.nwbfile = template
+                else:
+                    logger.error(f"NWB template not found in config: {config_path}")
 
         return rule_config
 
@@ -306,9 +284,9 @@ class SmkInternalUtils:
         NOTE: This determination is defined as follows:
           - snakemake.deployment.conda.Env.create
         """
-        is_conda_env_exists = os.path.exists(
-            os.path.join(conda_env_dirpath, "env_setup_start")
-        ) and os.path.exists(os.path.join(conda_env_dirpath, "env_setup_done"))
+        is_conda_env_exists = (
+            os.path.exists(os.path.join(conda_env_dirpath, "env_setup_done"))
+        ) or (os.path.exists(f"{conda_env_dirpath}.env_setup_done"))
 
         return is_conda_env_exists
 

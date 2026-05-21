@@ -122,7 +122,6 @@ class OutputType:
     PIE: str = "pie"
 
 
-@dataclass
 class ProcessType:
     POST_PROCESS: NormalRun = NormalRun(
         id="post_process_0", type="post_process", label="post_process"

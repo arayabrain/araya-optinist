@@ -1,3 +1,5 @@
+import { AxiosError } from "axios"
+
 import { createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
@@ -13,6 +15,7 @@ import {
   LineData,
   PieData,
   PolarData,
+  StructuredData,
   getTimeSeriesInitDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesAllDataApi,
@@ -29,6 +32,7 @@ import {
   getPolarDataApi,
   getMatlabDataApi,
   MatlabData,
+  getStructuredDataApi,
   cancelRoiApi,
   addRoiApi,
   mergeRoiApi,
@@ -41,6 +45,38 @@ import {
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
+
+export interface RejectPayload {
+  message: string
+  status?: number
+}
+
+export const SYNC_IN_PROGRESS_MESSAGE = "Syncing from cloud storage..."
+
+export function getDisplayErrorMessage(
+  payload: RejectPayload | undefined,
+  fallback: string,
+): string {
+  if (payload?.status === 503) {
+    return SYNC_IN_PROGRESS_MESSAGE
+  }
+  return payload?.message ?? fallback
+}
+
+function extractErrorPayload(e: unknown): RejectPayload {
+  if (e instanceof AxiosError) {
+    const status = e.response?.status
+    const detail = (e.response?.data as { detail?: string })?.detail
+    return {
+      message: detail ?? e.message ?? "Request failed",
+      status,
+    }
+  }
+  if (e instanceof Error) {
+    return { message: e.message }
+  }
+  return { message: String(e) }
+}
 
 export const getTimeSeriesInitData = createAsyncThunk<
   {
@@ -121,19 +157,26 @@ export const getHeatMapData = createAsyncThunk<
 
 export const getImageData = createAsyncThunk<
   { data: ImageData; meta?: PlotMetaData },
-  { path: string; workspaceId: number; startIndex?: number; endIndex?: number }
+  {
+    path: string
+    workspaceId: number
+    uniqueId?: string
+    startIndex?: number
+    endIndex?: number
+  }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getImageData`,
-  async ({ path, startIndex, endIndex, workspaceId }, thunkAPI) => {
+  async ({ path, startIndex, endIndex, workspaceId, uniqueId }, thunkAPI) => {
     try {
       const response = await getImageDataApi(path, {
         workspaceId,
+        uniqueId,
         startIndex,
         endIndex,
       })
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -148,7 +191,7 @@ export const getCsvData = createAsyncThunk<
       const response = await getCsvDataApi(path, { workspaceId })
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -163,22 +206,26 @@ export const getMatlabData = createAsyncThunk<
       const response = await getMatlabDataApi(path, { workspaceId })
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
 
 export const getRoiData = createAsyncThunk<
   { data: RoiData; meta?: PlotMetaData },
-  { path: string; workspaceId: number; isFull?: boolean }
+  { path: string; workspaceId: number; uniqueId?: string; isFull?: boolean }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getRoiData`,
-  async ({ path, workspaceId, isFull }, thunkAPI) => {
+  async ({ path, workspaceId, uniqueId, isFull }, thunkAPI) => {
     try {
-      const response = await getRoiDataApi(path, { workspaceId }, isFull)
+      const response = await getRoiDataApi(
+        path,
+        { workspaceId, uniqueId },
+        isFull,
+      )
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -369,3 +416,31 @@ export const getPolarData = createAsyncThunk<
     return thunkAPI.rejectWithValue(e)
   }
 })
+
+export const getStructuredData = createAsyncThunk<
+  StructuredData,
+  {
+    workspaceId: string
+    uniqueId: string
+    nodeId: string
+    itemId: number
+    startIndex?: number
+    endIndex?: number
+  }
+>(
+  `${DISPLAY_DATA_SLICE_NAME}/getStructuredData`,
+  async ({ workspaceId, uniqueId, nodeId, startIndex, endIndex }, thunkAPI) => {
+    try {
+      const response = await getStructuredDataApi(
+        workspaceId,
+        uniqueId,
+        nodeId,
+        startIndex,
+        endIndex,
+      )
+      return response
+    } catch (e) {
+      return thunkAPI.rejectWithValue(e)
+    }
+  },
+)

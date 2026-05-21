@@ -1,0 +1,189 @@
+name: optinist-ecs-validate
+description: "Validate that all required packages are correctly installed in the OptiNiSt ECS AMI."
+schemaVersion: 1.0
+
+phases:
+  - name: build
+    steps:
+      - name: ValidateYumPackages
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Validating yum package installations ==="
+            - |
+              FAILED=0
+              for pkg in amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent; do
+                if rpm -q "$pkg" >/dev/null 2>&1 || which "$pkg" >/dev/null 2>&1; then
+                  echo "OK: $pkg"
+                else
+                  echo "FAIL: $pkg not found"
+                  FAILED=1
+                fi
+              done
+              if [ $FAILED -ne 0 ]; then
+                echo "One or more yum packages failed validation"
+                exit 1
+              fi
+              echo "All yum packages validated successfully"
+
+      - name: ValidateAWSCLIv2
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              echo "=== Validating AWS CLI v2 ==="
+              # Diagnostic: show what exists at expected paths
+              echo "Checking /usr/local/bin/aws:"
+              ls -la /usr/local/bin/aws 2>&1 || echo "  Not found at /usr/local/bin/aws"
+              echo "Checking /usr/local/aws-cli/:"
+              ls -la /usr/local/aws-cli/ 2>&1 || echo "  /usr/local/aws-cli/ not found"
+              echo "Checking which aws:"
+              which aws 2>&1 || echo "  aws not in PATH"
+              # Actual validation
+              if /usr/local/bin/aws --version 2>&1 | grep -q "aws-cli/2"; then
+                echo "OK: AWS CLI v2 found"
+                /usr/local/bin/aws --version
+              else
+                echo "FAIL: AWS CLI v2 not found or wrong version"
+                /usr/local/bin/aws --version 2>&1 || true
+                exit 1
+              fi
+
+      - name: ValidateDockerEnabled
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Validating Docker service ==="
+            - |
+              if systemctl is-enabled docker >/dev/null 2>&1; then
+                echo "OK: Docker service is enabled"
+              else
+                echo "Docker service is not enabled"
+                exit 1
+              fi
+
+      - name: ValidateBakeMarker
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Validating bake marker ==="
+            - |
+              if [ -f /etc/optinist-ami-baked ]; then
+                echo "OK: Bake marker found"
+                cat /etc/optinist-ami-baked
+              else
+                echo "Bake marker /etc/optinist-ami-baked not found"
+                exit 1
+              fi
+
+      - name: ValidateEFSUtils
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Validating EFS mount helper ==="
+            - |
+              if [ -f /usr/bin/mount.efs ] || [ -f /sbin/mount.efs ]; then
+                echo "OK: EFS mount helper found"
+              else
+                echo "EFS mount helper (mount.efs) not found"
+                exit 1
+              fi
+
+      - name: ValidateNoCredentialLeak
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "=== Validating no credential leak in AMI ==="
+              FAILED=0
+              # Check for AWS credential/config directories
+              for dir in /root/.aws /home/*/.aws; do
+                if [ -d "$dir" ]; then
+                  echo "FAIL: AWS credential directory found: $dir"
+                  FAILED=1
+                fi
+              done
+              # Check for AWS credential env vars in persistent files
+              if grep -rq 'AWS_ACCESS_KEY_ID\|AWS_SECRET_ACCESS_KEY\|AWS_SESSION_TOKEN' \
+                 /etc/environment /etc/profile.d/ 2>/dev/null; then
+                echo "FAIL: AWS credential env vars found in system files"
+                FAILED=1
+              fi
+              if [ $FAILED -ne 0 ]; then
+                echo "Credential leak detected — aborting AMI build"
+                exit 1
+              fi
+              echo "OK: No credential leak detected"
+
+  - name: test
+    steps:
+      - name: TestBakeMarkerPersisted
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Testing bake marker on fresh instance from AMI ==="
+            - |
+              if [ -f /etc/optinist-ami-baked ]; then
+                echo "OK: Bake marker persisted in AMI"
+                cat /etc/optinist-ami-baked
+              else
+                echo "Bake marker did not persist into AMI"
+                exit 1
+              fi
+
+      - name: TestDockerStarts
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Testing Docker can start ==="
+            - |
+              systemctl start docker
+              sleep 5
+              if systemctl is-active docker >/dev/null 2>&1; then
+                echo "OK: Docker started successfully"
+                docker --version
+              else
+                echo "Docker failed to start"
+                exit 1
+              fi
+              systemctl stop docker
+
+      - name: TestAWSCLIFunctional
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "=== Testing AWS CLI functionality ==="
+            - |
+              if /usr/local/bin/aws sts get-caller-identity >/dev/null 2>&1; then
+                echo "OK: AWS CLI can make API calls"
+              else
+                echo "WARN: AWS CLI API call failed (expected if no instance role during test)"
+              fi
+
+      - name: TestNoCredentialLeak
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "=== Testing no credential leak persisted in AMI ==="
+              FAILED=0
+              # Verify credential directories were not baked into the AMI
+              for dir in /root/.aws /home/*/.aws; do
+                if [ -d "$dir" ]; then
+                  echo "FAIL: AWS credential directory persisted in AMI: $dir"
+                  FAILED=1
+                fi
+              done
+              # Verify no credential env vars in persistent files
+              if grep -rq 'AWS_ACCESS_KEY_ID\|AWS_SECRET_ACCESS_KEY\|AWS_SESSION_TOKEN' \
+                 /etc/environment /etc/profile.d/ 2>/dev/null; then
+                echo "FAIL: AWS credential env vars persisted in AMI"
+                FAILED=1
+              fi
+              if [ $FAILED -ne 0 ]; then
+                echo "Credential leak persisted in AMI — build must be rejected"
+                exit 1
+              fi
+              echo "OK: No credential leak persisted in AMI"

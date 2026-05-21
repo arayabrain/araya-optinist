@@ -11,6 +11,7 @@ import shutil
 import pytest
 
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import (  # noqa: E402
     RemoteStorageController,
     RemoteStorageDeleter,
@@ -25,6 +26,8 @@ from studio.app.common.core.storage.remote_storage_controller import (  # noqa: 
 )
 from studio.app.dir_path import DIRPATH
 
+# Set test mode before getting bucket name at module level
+MODE.IS_TEST = True
 remote_bucket_name = _get_user_remote_bucket_name()
 workspace_id = "default"
 unique_id = "remote_storage_test"
@@ -246,3 +249,222 @@ async def test_RemoteStorageController_download_experiment():
         assert os.path.isfile(
             test_data_output_experiment_yaml
         ), "download_experiment failed.."
+
+
+@pytest.mark.asyncio
+async def test_RemoteStorageController_list_input_data_objects():
+    """Test list_input_data_objects returns correct format."""
+    if not RemoteStorageController.is_available():
+        print("RemoteStorageController is not available, skip this test.")
+        return
+
+    input_file_name = "mouse2p_short_image.tiff"
+
+    # First upload a file to ensure there's something to list
+    async with RemoteStorageSimpleWriter(
+        remote_bucket_name
+    ) as remote_storage_controller:
+        await remote_storage_controller.upload_input_data(workspace_id, input_file_name)
+
+    # Test list_input_data_objects
+    async with RemoteStorageSimpleReader(
+        remote_bucket_name
+    ) as remote_storage_controller:
+        objects = await remote_storage_controller.list_input_data_objects(workspace_id)
+
+        # Verify the result is a list
+        assert isinstance(objects, list), "list_input_data_objects should return a list"
+
+        # Verify at least one object exists
+        assert (
+            len(objects) > 0
+        ), "list_input_data_objects should return at least one object"
+
+        # Verify the format of the returned objects
+        for obj in objects:
+            assert "filename" in obj, "Each object should have 'filename'"
+            assert "size" in obj, "Each object should have 'size'"
+            assert "last_modified" in obj, "Each object should have 'last_modified'"
+            assert isinstance(obj["filename"], str), "'filename' should be a string"
+            assert isinstance(obj["size"], int), "'size' should be an integer"
+
+        # Verify our uploaded file is in the list
+        filenames = [obj["filename"] for obj in objects]
+        assert (
+            input_file_name in filenames
+        ), f"Uploaded file '{input_file_name}' should be in the list"
+
+    # Cleanup
+    async with RemoteStorageSimpleWriter(
+        remote_bucket_name
+    ) as remote_storage_controller:
+        await remote_storage_controller.delete_input_data(workspace_id, input_file_name)
+
+
+class TestSyncStatusOnPartialFailure:
+    """Verify sync status reflects actual operation result."""
+
+    @pytest.mark.asyncio
+    async def test_upload_experiment_false_result_marks_error_status(self):
+        """When upload_experiment returns False, status should be ERROR."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_controller = MagicMock()
+        mock_controller.upload_experiment = AsyncMock(return_value=False)
+
+        with patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_success",
+        ) as mock_success, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_error",
+        ) as mock_error, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_processing",
+        ) as mock_processing:
+            controller = RemoteStorageController.__new__(RemoteStorageController)
+            controller._RemoteStorageController__controller = mock_controller
+            controller._RemoteStorageController__remote_bucket_name = "test-bucket"
+
+            result = await controller.upload_experiment("ws1", "exp1", None)
+
+            assert result is False
+            mock_processing.assert_called_once()
+            mock_error.assert_called_once()
+            mock_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_upload_experiment_true_result_marks_success_status(self):
+        """When upload_experiment returns True, status should be SUCCESS."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_controller = MagicMock()
+        mock_controller.upload_experiment = AsyncMock(return_value=True)
+
+        with patch.object(
+            RemoteSyncStatusFileUtil, "create_sync_status_file_for_success"
+        ) as mock_success, patch.object(
+            RemoteSyncStatusFileUtil, "create_sync_status_file_for_error"
+        ) as mock_error, patch.object(
+            RemoteSyncStatusFileUtil, "create_sync_status_file_for_processing"
+        ) as mock_processing:
+            controller = RemoteStorageController.__new__(RemoteStorageController)
+            controller._RemoteStorageController__controller = mock_controller
+            controller._RemoteStorageController__remote_bucket_name = "test-bucket"
+
+            result = await controller.upload_experiment("ws1", "exp1", None)
+
+            assert result is True
+            mock_processing.assert_called_once()
+            mock_success.assert_called_once()
+            mock_error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_experiment_false_result_marks_error_status(self):
+        """When delete_experiment returns False, status should be ERROR."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_controller = MagicMock()
+        mock_controller.delete_experiment = AsyncMock(return_value=False)
+
+        with patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_success",
+        ) as mock_success, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_error",
+        ) as mock_error, patch.object(
+            RemoteSyncStatusFileUtil,
+            "create_sync_status_file_for_processing",
+        ) as mock_processing:
+            controller = RemoteStorageController.__new__(RemoteStorageController)
+            controller._RemoteStorageController__controller = mock_controller
+            controller._RemoteStorageController__remote_bucket_name = "test-bucket"
+
+            result = await controller.delete_experiment("ws1", "exp1")
+
+            assert result is False
+            mock_processing.assert_called_once()
+            mock_error.assert_called_once()
+            mock_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_experiment_true_result_marks_success_status(self):
+        """When delete_experiment returns True, status should be SUCCESS."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_controller = MagicMock()
+        mock_controller.delete_experiment = AsyncMock(return_value=True)
+
+        with patch.object(
+            RemoteSyncStatusFileUtil, "create_sync_status_file_for_success"
+        ) as mock_success, patch.object(
+            RemoteSyncStatusFileUtil, "create_sync_status_file_for_error"
+        ) as mock_error, patch.object(
+            RemoteSyncStatusFileUtil, "create_sync_status_file_for_processing"
+        ) as mock_processing:
+            controller = RemoteStorageController.__new__(RemoteStorageController)
+            controller._RemoteStorageController__controller = mock_controller
+            controller._RemoteStorageController__remote_bucket_name = "test-bucket"
+
+            result = await controller.delete_experiment("ws1", "exp1")
+
+            assert result is True
+            mock_processing.assert_called_once()
+            mock_success.assert_called_once()
+            mock_error.assert_not_called()
+
+
+# ============================================================================
+# create_user_bucket_name — deterministic generation
+# ============================================================================
+
+
+def test_create_user_bucket_name_is_deterministic(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    a = RemoteStorageController.create_user_bucket_name(id=42)
+    b = RemoteStorageController.create_user_bucket_name(id=42)
+    assert a == b
+
+
+def test_create_user_bucket_name_differs_per_id(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    a = RemoteStorageController.create_user_bucket_name(id=1)
+    b = RemoteStorageController.create_user_bucket_name(id=2)
+    assert a != b
+
+
+def test_create_user_bucket_name_respects_secret(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "secret-one")
+    a = RemoteStorageController.create_user_bucket_name(id=42)
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "secret-two")
+    b = RemoteStorageController.create_user_bucket_name(id=42)
+    assert a != b
+
+
+def test_create_user_bucket_name_uses_prefix_and_id(monkeypatch):
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    name = RemoteStorageController.create_user_bucket_name(
+        id=99, prefix="custom-prefix"
+    )
+    assert name.startswith("custom-prefix-99-")
+    # 10-char hex hash suffix
+    assert len(name.split("-")[-1]) == 10
+
+
+def test_create_user_bucket_name_within_s3_length_limit(monkeypatch):
+    """S3 bucket names must be <= 63 chars; check a large id."""
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    name = RemoteStorageController.create_user_bucket_name(
+        id=99999999, prefix="development-optinist-user"
+    )
+    assert len(name) <= 63
+
+
+def test_create_user_bucket_name_matches_s3_naming_rules(monkeypatch):
+    """S3 bucket names must be lowercase, alphanumeric, dots/hyphens only."""
+    import re
+
+    monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
+    name = RemoteStorageController.create_user_bucket_name(id=42)
+    assert re.fullmatch(r"[a-z0-9.\-]+", name)

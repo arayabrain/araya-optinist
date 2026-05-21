@@ -1,0 +1,884 @@
+# =============================
+# PREMIUM TIER LAMBDA FUNCTIONS
+# =============================
+
+# Premium Manager Lambda Function
+resource "aws_lambda_function" "premium_manager" {
+  filename      = "${path.module}/premium_manager.py.zip"
+  function_name = "${var.environment}-premium-manager"
+  role          = aws_iam_role.premium_manager_lambda.arn
+  handler       = "premium_manager.handler"
+  runtime       = "python3.11"
+  timeout       = 600
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
+
+  source_code_hash = data.archive_file.premium_manager_zip.output_base64sha256
+
+  environment {
+    variables = {
+      VPC_ID                       = aws_vpc.main.id
+      SUBNET_IDS                   = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID            = aws_security_group.ecs.id
+      ALB_ARN                      = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN             = aws_lb_listener.autoscaling_https.arn
+      AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
+      PREMIUM_INSTANCE_IDS         = join(",", aws_instance.premium[*].id)
+      PREMIUM_LAUNCH_TEMPLATE_ID   = aws_launch_template.premium.id
+      PREMIUM_INSTANCE_TYPE        = var.premium_instance_type
+      CLUSTER_NAME                 = aws_ecs_cluster.main.name
+      PREMIUM_SERVICE_NAME         = aws_ecs_service.premium.name
+      RDS_HOST                     = aws_db_proxy.main.endpoint
+      RDS_USER                     = var.mysql_user
+      RDS_PASSWORD                 = var.mysql_password
+      RDS_DATABASE                 = var.mysql_database
+      ROUTING_SECRET_KEY           = var.routing_secret_key
+      # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
+      PREMIUM_EXTRA_CAPACITY        = "1" # Extra instances for quick response
+      PREMIUM_STANDBY_POOL_SIZE     = "1" # Number of stopped instances to maintain
+      PREMIUM_IDLE_TIMEOUT_HOURS    = "3" # Hours before idle instances are converted to standby
+      PREMIUM_STOPPED_MAX_AGE_HOURS = "4" # Terminate stopped standby instances older than this
+
+      # Environment prefix for dynamic resource naming
+      ENV_PREFIX = var.environment
+
+      BACKEND_PORT = tostring(var.premium_backend_port)
+
+      # Internal API configuration for experiment sync after migration
+      ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
+      INTERNAL_API_SECRET = random_password.internal_api_secret.result
+
+      # Kill-switch for the per-user TG host-port reconciler. Set to
+      # "false" via terraform var to disable without redeploying code.
+      RECONCILE_PREMIUM_TG_PORTS_ENABLED = tostring(var.reconcile_premium_tg_ports_enabled)
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
+  }
+
+  tags = {
+    Name    = "Premium Manager Lambda"
+    Type    = "Premium-Lambda"
+    Service = "premium-tier"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.premium_manager_lambda_basic,
+    aws_cloudwatch_log_group.premium_manager_logs,
+    data.archive_file.premium_manager_zip
+  ]
+}
+
+# Migration Queue Processing Lambda Function
+
+# CloudWatch Log Groups
+
+# CloudWatch Events Rule for Migration Queue Processing (every 2 minutes)
+
+# CloudWatch Events Rule for Premium Manager (every 15 minutes)
+resource "aws_cloudwatch_event_rule" "premium_manager_schedule" {
+  name                = "${var.environment}-premium-manager-schedule"
+  description         = "Trigger premium manager every 15 minutes for monitoring and scaling"
+  schedule_expression = "rate(15 minutes)"
+  state               = "ENABLED"
+
+  tags = {
+    Name    = "Premium Manager Schedule"
+    Type    = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+# CloudWatch Events Target for Manager
+resource "aws_cloudwatch_event_target" "premium_manager_target" {
+  rule      = aws_cloudwatch_event_rule.premium_manager_schedule.name
+  target_id = "PremiumManagerTarget"
+  arn       = aws_lambda_function.premium_manager.arn
+
+  input = jsonencode({
+    source      = "aws.events"
+    detail-type = "Scheduled Event"
+    detail = {
+      action = "monitor"
+    }
+  })
+}
+
+# Lambda Permission for Manager CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_manager" {
+  statement_id  = "AllowExecutionFromCloudWatchManager"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_manager.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_manager_schedule.arn
+}
+
+# CloudWatch Events Rule for Premium Cleanup (every hour)
+resource "aws_cloudwatch_event_rule" "premium_cleanup_schedule" {
+  name                = "${var.environment}-premium-cleanup-schedule"
+  description         = "Trigger premium assignment cleanup every hour"
+  schedule_expression = "rate(1 hour)"
+  state               = "ENABLED"
+
+  tags = {
+    Name    = "Premium Cleanup Schedule"
+    Type    = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+# CloudWatch Events Target for Cleanup
+resource "aws_cloudwatch_event_target" "premium_cleanup_target" {
+  rule      = aws_cloudwatch_event_rule.premium_cleanup_schedule.name
+  target_id = "PremiumCleanupTarget"
+  arn       = aws_lambda_function.premium_cleanup.arn
+
+  input = jsonencode({
+    source      = "aws.events"
+    detail-type = "Scheduled Event"
+    detail = {
+      action = "cleanup"
+    }
+  })
+}
+
+# =======
+# Lambda
+# =======
+
+# Lambda Permission for Cleanup CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_cleanup" {
+  statement_id  = "AllowExecutionFromCloudWatchCleanup"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_cleanup.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_cleanup_schedule.arn
+}
+
+# ==========================================
+# EventBridge: EC2 State Change → Cleanup
+# ==========================================
+
+# Trigger cleanup Lambda when any EC2 instance enters shutting-down or
+# terminated state. EventBridge EC2 state-change events do not include
+# tags, so the Lambda checks premium tags and exits early for non-premium
+# instances. Manager-initiated terminations already clean up inline, so
+# those invocations are no-ops.
+
+resource "aws_cloudwatch_event_rule" "premium_ec2_state_change" {
+  name        = "${var.environment}-premium-ec2-state-change"
+  description = "Trigger cleanup on EC2 instance termination"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2"]
+    detail-type = ["EC2 Instance State-change Notification"]
+    detail = {
+      state = ["shutting-down", "terminated"]
+    }
+  })
+
+  tags = {
+    Name    = "Premium EC2 State Change"
+    Type    = "Premium-CloudWatch"
+    Service = "premium-tier"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "premium_ec2_state_change_target" {
+  rule      = aws_cloudwatch_event_rule.premium_ec2_state_change.name
+  target_id = "PremiumEC2StateChangeCleanup"
+  arn       = aws_lambda_function.premium_cleanup.arn
+
+  input_transformer {
+    input_paths = {
+      instance_id = "$.detail.instance-id"
+      state       = "$.detail.state"
+    }
+    input_template = "{\"action\":\"reconcile_instance\",\"instance_id\":<instance_id>,\"instance_state\":<state>,\"source\":\"ec2_state_change\"}"
+  }
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ec2_state_change" {
+  statement_id  = "AllowExecutionFromEC2StateChange"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.premium_cleanup.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.premium_ec2_state_change.arn
+}
+
+resource "null_resource" "install_dependencies" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/premium_manager && \
+      mkdir -p ${path.module}/.build/premium_manager && \
+      cp -p ${path.module}/premium_manager_package/*.py ${path.module}/.build/premium_manager/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_manager_package/requirements.txt -t ${path.module}/.build/premium_manager --no-cache-dir && \
+      cp -p ${path.module}/../aws_constants.py ${path.module}/.build/premium_manager/aws_constants.py && \
+      touch ${path.module}/.build/premium_manager/.installed
+    EOT
+  }
+
+  triggers = {
+    code_changes = sha256(join("", concat(
+      [for f in fileset("${path.module}/premium_manager_package", "*.py") :
+        filesha256("${path.module}/premium_manager_package/${f}")
+      ],
+      [
+        filesha256("${path.module}/../../studio/app/common/core/premium/premium_assignment_service.py"),
+        filesha256("${path.module}/../aws_constants.py"),
+      ]
+    )))
+    requirements_changes = filesha256("${path.module}/premium_manager_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/premium_manager/.installed") ? "present" : "missing"
+  }
+}
+
+# Create ZIP using archive_file
+data "archive_file" "premium_manager_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/premium_manager"
+  output_path = "${path.module}/premium_manager.py.zip"
+
+  depends_on = [null_resource.install_dependencies]
+}
+
+# CloudWatch Log Group for Premium Manager
+resource "aws_cloudwatch_log_group" "premium_manager_logs" {
+  name              = "/aws/lambda/${var.environment}-premium-manager"
+  retention_in_days = 30
+
+  tags = {
+    Name = "Premium Manager Logs"
+    Type = "Premium-CloudWatch"
+  }
+}
+
+# Premium Cleanup Lambda Function
+resource "aws_lambda_function" "premium_cleanup" {
+  filename      = "${path.module}/premium_cleanup.py.zip"
+  function_name = "${var.environment}-premium-cleanup"
+  role          = aws_iam_role.premium_manager_lambda.arn
+  handler       = "premium_cleanup.handler"
+  runtime       = "python3.11"
+  timeout       = 300
+  layers        = [aws_lambda_layer_version.aws_constants.arn]
+
+  source_code_hash = data.archive_file.premium_cleanup_zip.output_base64sha256
+
+  environment {
+    variables = {
+      VPC_ID                     = aws_vpc.main.id
+      SUBNET_IDS                 = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID          = aws_security_group.ecs.id
+      ALB_ARN                    = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN           = aws_lb_listener.autoscaling_https.arn
+      PREMIUM_INSTANCE_IDS       = join(",", aws_instance.premium[*].id)
+      PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
+      CLUSTER_NAME               = aws_ecs_cluster.main.name
+      PREMIUM_SERVICE_NAME       = aws_ecs_service.premium.name
+      RDS_HOST                   = aws_db_proxy.main.endpoint
+      RDS_USER                   = var.mysql_user
+      RDS_PASSWORD               = var.mysql_password
+      RDS_DATABASE               = var.mysql_database
+      ENV_PREFIX                 = var.environment
+      BACKEND_PORT               = tostring(var.premium_backend_port)
+      # Cleanup-specific settings
+      PREMIUM_IDLE_TIMEOUT_HOURS = "3"
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
+  }
+
+  tags = {
+    Name    = "Premium Cleanup Lambda"
+    Type    = "Premium-Lambda"
+    Service = "premium-tier"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.premium_manager_lambda_basic,
+    aws_cloudwatch_log_group.premium_cleanup_logs,
+    data.archive_file.premium_cleanup_zip
+  ]
+}
+
+resource "null_resource" "install_cleanup_dependencies" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/premium_cleanup && \
+      mkdir -p ${path.module}/.build/premium_cleanup && \
+      cp -p ${path.module}/premium_cleanup_package/*.py ${path.module}/.build/premium_cleanup/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/premium_cleanup_package/requirements.txt -t ${path.module}/.build/premium_cleanup --no-cache-dir && \
+      cp -p ${path.module}/../aws_constants.py ${path.module}/.build/premium_cleanup/aws_constants.py && \
+      touch ${path.module}/.build/premium_cleanup/.installed
+    EOT
+  }
+
+  triggers = {
+    code_changes = sha256(join("", concat(
+      [for f in fileset("${path.module}/premium_cleanup_package", "*.py") :
+        filesha256("${path.module}/premium_cleanup_package/${f}")
+      ],
+      [filesha256("${path.module}/../aws_constants.py")]
+    )))
+    requirements_changes = filesha256("${path.module}/premium_cleanup_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/premium_cleanup/.installed") ? "present" : "missing"
+  }
+}
+
+# Create ZIP file for premium cleanup Lambda
+data "archive_file" "premium_cleanup_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/premium_cleanup"
+  output_path = "${path.module}/premium_cleanup.py.zip"
+
+  depends_on = [null_resource.install_cleanup_dependencies]
+}
+
+# CloudWatch Log Group for Premium Cleanup
+resource "aws_cloudwatch_log_group" "premium_cleanup_logs" {
+  name              = "/aws/lambda/${var.environment}-premium-cleanup"
+  retention_in_days = 30
+
+  tags = {
+    Name = "Premium Cleanup Lambda Logs"
+    Type = "Premium-CloudWatch"
+  }
+}
+
+# ======================
+# PREMIUM TIER IAM ROLES
+# ======================
+
+
+# Premium Manager Lambda Role
+resource "aws_iam_role" "premium_manager_lambda" {
+  name = "${var.environment}-premium-manager-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "premium_manager_lambda_basic" {
+  role       = aws_iam_role.premium_manager_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "premium_manager_lambda_vpc" {
+  role       = aws_iam_role.premium_manager_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# Premium Manager Lambda Permissions
+resource "aws_iam_role_policy" "premium_manager_permissions" {
+  name = "${var.environment}-premium-manager-permissions"
+  role = aws_iam_role.premium_manager_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      # EC2 Describe actions (read-only, need wildcard)
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+          "ec2:DescribeSpotFleetInstances",
+          "ec2:DescribeSpotFleetRequests"
+        ]
+        Resource = "*"
+      },
+      # EC2 Management actions (scoped to premium instances by tag)
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:StopInstances",
+          "ec2:StartInstances",
+          "ec2:TerminateInstances"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/Service" = "premium-tier"
+          }
+        }
+      },
+      # EC2 CreateTags (needed by RunInstances TagSpecifications for instances and volumes)
+      {
+        Effect = "Allow"
+        Action = "ec2:CreateTags"
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+      },
+      # EC2 DeleteTags (scoped to ghost cleanup grace period tag only)
+      {
+        Effect   = "Allow"
+        Action   = "ec2:DeleteTags"
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["optinist:agent-disconnected-at"]
+          }
+        }
+      },
+      # EC2 RunInstances (requires multiple resource types)
+      {
+        Effect = "Allow"
+        Action = "ec2:RunInstances"
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*",
+          "arn:aws:ec2:${var.aws_region}::image/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:subnet/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:security-group/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key-pair/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:launch-template/*"
+        ]
+      },
+      # ECS Cluster-level actions
+      # Note: ListContainerInstances requires Resource="*" without conditions
+      # because the cluster context is passed as a parameter, not evaluated as a condition
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:ListTasks",
+          "ecs:ListContainerInstances",
+          "ecs:DeregisterContainerInstance"
+        ]
+        Resource = "*"
+      },
+      # ECS Service actions (scoped to specific services)
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:UpdateService"
+        ]
+        Resource = [
+          aws_ecs_service.premium.id,
+          aws_ecs_service.autoscaling.id
+        ]
+      },
+      # ECS Task actions (scoped to cluster)
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:DescribeContainerInstances"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.main.arn
+          }
+        }
+      },
+      # ELB Describe actions (read-only)
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeTargetHealth",
+          "elasticloadbalancing:DescribeRules"
+        ]
+        Resource = "*"
+      },
+      # ELB Management actions (scoped to this ALB)
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:CreateTargetGroup",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:CreateRule",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:ModifyTargetGroupAttributes",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:DeregisterTargets",
+          "elasticloadbalancing:AddTags",
+          "elasticloadbalancing:RemoveTags"
+        ]
+        Resource = [
+          aws_lb.autoscaling.arn,
+          "${aws_lb.autoscaling.arn}/*",
+          aws_lb_listener.autoscaling_https.arn,
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:listener-rule/*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/${var.environment}-*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/premium-*"
+        ]
+      },
+      # CloudWatch metrics (requires wildcard)
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "cloudwatch:GetMetricData"
+        ]
+        Resource = "*"
+      },
+      # ASG Describe (read-only)
+      {
+        Effect   = "Allow"
+        Action   = "autoscaling:DescribeAutoScalingGroups"
+        Resource = "*"
+      },
+      # RDS Describe (read-only)
+      {
+        Effect   = "Allow"
+        Action   = "rds:DescribeDBInstances"
+        Resource = "*"
+      },
+      # S3 access (already scoped)
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.app_storage.arn,
+          "${aws_s3_bucket.app_storage.arn}/*"
+        ]
+      },
+      # IAM PassRole (already scoped)
+      {
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = aws_iam_role.ecs_instance_role.arn
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ec2.amazonaws.com"
+          }
+        }
+      },
+      # Lambda self-invocation (already scoped)
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.premium_manager.arn
+      },
+      # SSM for clearing stale ECS agent checkpoints on instance start
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation",
+          "ssm:DescribeInstanceInformation"
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+# Spot Interruption Handler Lambda Role
+resource "aws_iam_role" "spot_interruption_handler" {
+  name = "${var.environment}-spot-interruption-handler-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "spot_interruption_handler_basic" {
+  role       = aws_iam_role.spot_interruption_handler.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Custom CloudWatch Metrics for Premium Tracking
+resource "aws_cloudwatch_log_metric_filter" "premium_assignments" {
+  name           = "premium-assignments"
+  log_group_name = aws_cloudwatch_log_group.premium_manager_logs.name
+  pattern        = "[timestamp, level=\"INFO\", message=\"Successfully assigned premium user*\"]"
+
+  metric_transformation {
+    name      = "ActiveAssignments"
+    namespace = "OptiNiSt/Premium/${var.environment}"
+    value     = "1"
+  }
+}
+
+
+# ======================
+# Cost tracker
+# ======================
+
+resource "null_resource" "install_cost_tracker_dependencies" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/cost_tracker && \
+      mkdir -p ${path.module}/.build/cost_tracker && \
+      cp -p ${path.module}/cost_tracker_package/*.py ${path.module}/.build/cost_tracker/ && \
+      /usr/bin/python3 -m pip install -r ${path.module}/cost_tracker_package/requirements.txt -t ${path.module}/.build/cost_tracker --no-cache-dir && \
+      cp -p ${path.module}/../aws_constants.py ${path.module}/.build/cost_tracker/aws_constants.py && \
+      touch ${path.module}/.build/cost_tracker/.installed
+    EOT
+  }
+
+  triggers = {
+    code_changes = sha256(join("", concat(
+      [for f in fileset("${path.module}/cost_tracker_package", "*.py") :
+        filesha256("${path.module}/cost_tracker_package/${f}")
+      ],
+      [filesha256("${path.module}/../aws_constants.py")]
+    )))
+    requirements_changes = filesha256("${path.module}/cost_tracker_package/requirements.txt")
+    installed_marker     = fileexists("${path.module}/.build/cost_tracker/.installed") ? "present" : "missing"
+  }
+}
+
+# Create ZIP using archive_file for cost tracker Lambda
+data "archive_file" "cost_tracker_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/cost_tracker"
+  output_path = "${path.module}/cost_tracker.py.zip"
+
+  depends_on = [null_resource.install_cost_tracker_dependencies]
+}
+
+# Cost Tracking Lambda Function
+resource "aws_lambda_function" "cost_tracker" {
+  filename         = "${path.module}/cost_tracker.py.zip"
+  function_name    = "${var.environment}-cost-tracker"
+  role             = aws_iam_role.cost_controller_lambda.arn
+  handler          = "cost_tracker.handler"
+  runtime          = "python3.11"
+  timeout          = 300
+  layers           = [aws_lambda_layer_version.aws_constants.arn]
+  source_code_hash = data.archive_file.cost_tracker_zip.output_base64sha256
+
+  environment {
+    variables = {
+      ASG_NAME            = aws_autoscaling_group.main.name
+      REGION              = var.aws_region
+      RDS_HOST            = aws_db_proxy.main.endpoint
+      RDS_USER            = var.mysql_user
+      RDS_PASSWORD        = var.mysql_password
+      RDS_DATABASE        = var.mysql_database
+      PREMIUM_HOURLY_RATE = "0.1088"
+      FREE_HOURLY_RATE    = "0.1088"
+      ENV_PREFIX          = var.environment
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.ecs.id]
+  }
+
+  tags = {
+    Name    = "Cost Tracker Lambda"
+    Service = "cost-monitoring"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.cost_controller_lambda_vpc,
+    aws_cloudwatch_log_group.cost_tracker_logs,
+    data.archive_file.cost_tracker_zip
+  ]
+}
+
+# CloudWatch Log Group for Cost Tracker
+resource "aws_cloudwatch_log_group" "cost_tracker_logs" {
+  name              = "/aws/lambda/${var.environment}-cost-tracker"
+  retention_in_days = 30
+
+  tags = {
+    Name    = "Cost Tracker Lambda Logs"
+    Service = "cost-monitoring"
+  }
+}
+
+# Cost Tracker Lambda Role (dedicated least-privilege role)
+resource "aws_iam_role" "cost_controller_lambda" {
+  name = "${var.environment}-cost-tracker-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "cost_controller_lambda_vpc" {
+  role       = aws_iam_role.cost_controller_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "cost_tracker_permissions" {
+  name = "${var.environment}-cost-tracker-permissions"
+  role = aws_iam_role.cost_controller_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "cloudwatch:GetMetricData"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "autoscaling:DescribeAutoScalingGroups"
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "ce:GetCostAndUsage"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# EventBridge rule to trigger cost tracker Lambda hourly
+resource "aws_cloudwatch_event_rule" "cost_tracker_schedule" {
+  name                = "${var.environment}-cost-tracker-schedule"
+  description         = "Trigger cost tracker Lambda hourly to publish cost metrics"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    Name    = "Cost Tracker Schedule"
+    Service = "cost-monitoring"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "cost_tracker" {
+  rule      = aws_cloudwatch_event_rule.cost_tracker_schedule.name
+  target_id = "CostTrackerLambda"
+  arn       = aws_lambda_function.cost_tracker.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_cost_tracker" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cost_tracker.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cost_tracker_schedule.arn
+}
+
+# Account-level cost alarm
+# Fires when projected monthly spend exceeds the budget set in tfvars
+resource "aws_cloudwatch_metric_alarm" "monthly_cost_high" {
+  alarm_name          = "${var.environment}-monthly-cost-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ExpectedMonthlyBudget"
+  namespace           = "OptiNiSt/CostTracking/${var.environment}"
+  period              = "86400"
+  statistic           = "Maximum"
+  threshold           = var.monthly_budget_usd
+  alarm_description   = "Projected monthly spend exceeds budget ($${var.monthly_budget_usd})"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  tags = {
+    Name    = "Monthly Cost Budget Alarm"
+    Service = "cost-monitoring"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "premium_cpu_high" {
+  alarm_name          = "${var.environment}-premium-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "80"
+  alarm_description   = "Premium ECS service CPU utilization is high"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    ServiceName = aws_ecs_service.premium.name
+    ClusterName = aws_ecs_cluster.main.name
+  }
+
+  tags = {
+    Name    = "Premium CPU High Alarm"
+    Service = "premium-monitoring"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "premium_memory_high" {
+  alarm_name          = "${var.environment}-premium-memory-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "3"
+  metric_name         = "MemoryUtilization"
+  namespace           = "AWS/ECS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "85"
+  alarm_description   = "Premium ECS service memory utilization is high"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    ServiceName = aws_ecs_service.premium.name
+    ClusterName = aws_ecs_cluster.main.name
+  }
+
+  tags = {
+    Name    = "Premium Memory High Alarm"
+    Service = "premium-monitoring"
+  }
+}
+
+output "premium_manager_lambda_arn" {
+  description = "ARN of the premium manager Lambda function"
+  value       = aws_lambda_function.premium_manager.arn
+}
+
+output "premium_cleanup_lambda_name" {
+  description = "Name of the premium cleanup Lambda function"
+  value       = aws_lambda_function.premium_cleanup.function_name
+}

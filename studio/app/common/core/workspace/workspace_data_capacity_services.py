@@ -29,7 +29,7 @@ class WorkspaceDataCapacityService:
     def update_experiment_data_usage(cls, workspace_id: str, unique_id: str):
         workflow_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
         if not os.path.exists(workflow_dir):
-            logger.error(f"'{workflow_dir}' does not exist")
+            logger.warning(f"'{workflow_dir}' does not exist")
             return
 
         data_usage = get_folder_size(workflow_dir)
@@ -44,7 +44,7 @@ class WorkspaceDataCapacityService:
         # Read experiment config
         config = ExptConfigReader.read(workspace_id, unique_id)
         if not config:
-            logger.error(f"[{workspace_id}/{unique_id}] does not exist")
+            logger.warning(f"[{workspace_id}/{unique_id}] does not exist")
             return
 
         # Make overwrite params
@@ -82,7 +82,7 @@ class WorkspaceDataCapacityService:
     ):
         workspace_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
         if not os.path.exists(workspace_dir):
-            logger.error(f"'{workspace_dir}' does not exist")
+            logger.warning(f"'{workspace_dir}' does not exist")
             return
 
         input_data_usage = get_folder_size(workspace_dir)
@@ -121,7 +121,7 @@ class WorkspaceDataCapacityService:
     ):
         folder = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])
         if not os.path.exists(folder):
-            logger.error(f"'{folder}' does not exist")
+            logger.warning(f"'{folder}' does not exist")
             return
         exp_records = []
 
@@ -130,8 +130,20 @@ class WorkspaceDataCapacityService:
                 unique_id = exp_folder.name
                 data_usage = get_folder_size(exp_folder.as_posix())
 
-                cls._update_exp_data_usage_yaml(workspace_id, unique_id, data_usage)
+                # Update yaml file - skip if experiment.yaml is invalid/corrupted
+                try:
+                    cls._update_exp_data_usage_yaml(workspace_id, unique_id, data_usage)
+                except (AssertionError, ValueError) as yaml_error:
+                    # Log warning if experiment.yaml is invalid but continue processing
+                    logger.warning(
+                        f"Skipping YAML update for experiment "
+                        f"{workspace_id}/{unique_id}: "
+                        f"Invalid or corrupted experiment.yaml file ({yaml_error}). "
+                        f"Data usage will still be tracked in database."
+                    )
 
+                # Add experiment record even if YAML update failed
+                # This ensures data usage is tracked in the database
                 exp_records.append(
                     ExperimentRecord(
                         workspace_id=workspace_id,
@@ -140,9 +152,7 @@ class WorkspaceDataCapacityService:
                     )
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to update Record information [{exp_folder}] [{e}]"
-                )
+                logger.error(f"Failed to process experiment [{exp_folder}] [{e}]")
 
         if cls.is_available():
             if delete_existing:
@@ -153,7 +163,7 @@ class WorkspaceDataCapacityService:
                     )
                 )
                 db.bulk_save_objects(exp_records)
-                logger.info(
+                logger.debug(
                     f"Deleted and recreated {len(exp_records)} experiment records "
                     f"for workspace [{workspace_id}]"
                 )
@@ -176,7 +186,7 @@ class WorkspaceDataCapacityService:
                         # Insert new record if it doesn't exist
                         db.add(exp_record)
 
-                logger.info(
+                logger.debug(
                     f"Updated/inserted {len(exp_records)} experiment records "
                     f"for workspace [{workspace_id}]"
                 )

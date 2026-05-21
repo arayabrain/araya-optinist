@@ -20,6 +20,10 @@ import {
   INITIAL_IMAGE_ELEMENT_NAME,
 } from "const/flowchart"
 import { WORKSPACE_TYPE } from "const/Workspace"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import {
   addAlgorithmNode,
@@ -268,9 +272,11 @@ export const flowElementSlice = createSlice({
       })
       .addMatcher(
         isAnyOf(
-          reproduceWorkflow.fulfilled,
           importWorkflowConfig.fulfilled,
           fetchWorkflow.fulfilled,
+          reproduceWorkflow.fulfilled,
+          privateDataviewReproduceWorkflow.fulfilled,
+          publicDataviewReproduceWorkflow.fulfilled,
         ),
         (state, action) => {
           state.flowPosition = initialFlowPosition
@@ -283,6 +289,7 @@ export const flowElementSlice = createSlice({
                   data: {
                     label: node.data?.label ?? "",
                     type: node.data?.type ?? "input",
+                    param: null,
                   },
                   style: DATA_NODE_STYLE,
                 }
@@ -292,6 +299,7 @@ export const flowElementSlice = createSlice({
                   data: {
                     label: node.data?.label ?? "",
                     type: node.data?.type ?? "algorithm",
+                    param: node.data?.param,
                   },
                   style: ALGO_NODE_STYLE,
                 }

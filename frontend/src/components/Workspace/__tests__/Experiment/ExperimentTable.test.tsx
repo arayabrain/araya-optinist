@@ -96,6 +96,9 @@ describe("ExperimentTable", () => {
             startedAt: "2023-09-17",
             hasNWB: true,
             data_usage: 0,
+            hasIntermediates: true,
+            hasOutputs: true,
+            hasInputs: true,
           },
           2: {
             uid: "2",
@@ -111,6 +114,9 @@ describe("ExperimentTable", () => {
             startedAt: "2023-09-15",
             hasNWB: true,
             data_usage: 0,
+            hasIntermediates: true,
+            hasOutputs: true,
+            hasInputs: true,
           },
         },
       } as Experiments,
@@ -132,6 +138,7 @@ describe("ExperimentTable", () => {
         line: {},
         pie: {},
         polar: {},
+        structured: {},
         loading: false,
         statusRoi: {
           temp_add_roi: [],
@@ -221,6 +228,7 @@ describe("ExperimentTable", () => {
       },
       user: {
         loading: false,
+        logoutGeneration: 0,
       },
       logsModal: {
         open: false,
@@ -233,6 +241,9 @@ describe("ExperimentTable", () => {
         functions: {},
         startedAt: "2023-09-17",
         hasNWB: true,
+        hasIntermediates: true,
+        hasOutputs: true,
+        hasInputs: true,
       },
       2: {
         uid: "2",
@@ -240,6 +251,9 @@ describe("ExperimentTable", () => {
         functions: {},
         startedAt: "2023-09-15",
         hasNWB: true,
+        hasIntermediates: true,
+        hasOutputs: true,
+        hasInputs: true,
       },
     })
   })

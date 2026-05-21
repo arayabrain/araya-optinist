@@ -1,6 +1,8 @@
 from studio.app.optinist.core.edit_ROI import EditRoiUtils
 from studio.app.dir_path import DIRPATH
 
+configfile: "snakemake.yaml"
+
 rule edit_ROI:
 	conda:
 		EditRoiUtils.conda(config)

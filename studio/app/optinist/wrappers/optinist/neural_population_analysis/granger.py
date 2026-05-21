@@ -65,7 +65,7 @@ def Granger(
     params = params["Granger"]  # remove nested dict
 
     if params["use_adfuller_test"]:
-        logger.info("Running adfuller test ")
+        logger.info("Running adfuller test")
 
         for i in tqdm(range(num_cell)):
             tp = adfuller(tX[:, i], **params["adfuller"])
@@ -115,7 +115,7 @@ def Granger(
     }
 
     if params["use_coint_test"]:
-        logger.info("Running cointegration test ")
+        logger.info("Running cointegration test")
 
         for i in tqdm(range(num_comb)):
             tp = coint(X[:, comb[i][0]], X[:, comb[i][1]], **params["coint"])
@@ -126,7 +126,7 @@ def Granger(
             cit["cit_crit_value"][i, :] = tp[2]
 
     #  Granger causality
-    logger.info("Running granger test ")
+    logger.info("Running granger test")
 
     if hasattr(params["Granger_maxlag"], "__iter__"):
         num_lag = len(params["Granger_maxlag"])

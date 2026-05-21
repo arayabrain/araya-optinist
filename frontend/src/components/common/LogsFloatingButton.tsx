@@ -5,6 +5,7 @@ import TerminalIcon from "@mui/icons-material/Terminal"
 import { Box, Fab, Tooltip } from "@mui/material"
 import { styled } from "@mui/material/styles"
 
+import { Z_INDEX } from "const/Layout"
 import { openLogsModal } from "store/slice/LogsModal/LogsModalSlice"
 import { AppDispatch } from "store/store"
 
@@ -30,7 +31,7 @@ const FloatingButtonContainer = styled(Box)({
   position: "fixed",
   bottom: 20,
   left: 20,
-  zIndex: 1000,
+  zIndex: Z_INDEX.HEADER,
 })
 
 const StyledFab = styled(Fab)(({ theme }) => ({

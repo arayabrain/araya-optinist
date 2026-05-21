@@ -24,6 +24,7 @@ type DeleteConfirmModalProps = {
   onSubmit: () => void
   titleSubmit: string
   description: string
+  warningItems?: string[]
   loading?: boolean
   iconType?: "warning" | "info"
 }
@@ -34,6 +35,7 @@ const DeleteConfirmModal: FC<DeleteConfirmModalProps> = ({
   loading,
   titleSubmit,
   description,
+  warningItems,
   iconType,
 }) => {
   useEffect(() => {
@@ -59,7 +61,20 @@ const DeleteConfirmModal: FC<DeleteConfirmModalProps> = ({
   }
 
   const content = (
-    <DialogContentText>
+    <DialogContentText component="div">
+      {warningItems && warningItems.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            {warningItems.map((item, index) => (
+              <li key={index}>
+                <Typography variant="body2" color="error">
+                  {item}
+                </Typography>
+              </li>
+            ))}
+          </ul>
+        </Box>
+      )}
       <Typography style={{ whiteSpace: "pre-wrap" }}>
         To continue, type <span style={{ fontWeight: 600 }}>DELETE</span> in the
         box below:

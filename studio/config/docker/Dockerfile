@@ -1,14 +1,14 @@
-FROM --platform=linux/amd64 python:3.9-slim
+FROM --platform=linux/amd64 python:3.11-slim
 
 WORKDIR /app
 
 # install default packages
 RUN apt-get --allow-releaseinfo-change update && \
-    apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim \
+    apt-get install --no-install-recommends -y sudo procps iproute2 iputils-ping telnet wget curl unzip less vim git \
         default-mysql-client
 
 # install conda & packages
-RUN apt-get install --no-install-recommends -y gcc g++ clang libgl1 libgl1-mesa-dev libopencv-dev && \
+RUN apt-get install --no-install-recommends -y gcc g++ clang clang libgl1 libgl1-mesa-dev libopencv-dev rsync && \
     apt-get autoremove -y && apt-get clean
 
 # Specify compiler (use clang)
@@ -34,6 +34,10 @@ RUN cd /tmp && \
 RUN apt-get purge wget -y && \
     apt-get autoremove -y && apt-get clean
 
+# install optimization solver (after autoremove to prevent removal)
+RUN apt-get install --no-install-recommends -y coinor-cbc && \
+    apt-get clean
+
 # setup user profile
 RUN echo 'alias ll="ls -la --color=auto"' >> /root/.bashrc && \
     echo 'set nu ic hls nowrap ts=4 sw=4 | syntax on' >> /root/.vimrc
@@ -53,7 +57,16 @@ RUN bash run_download_model_files.sh && rm run_download_model_files.sh
 COPY frontend/build /app/frontend/build
 COPY studio /app/studio
 COPY sample_data /app/sample_data
+COPY infrastructure/scripts /app/scripts
+COPY infrastructure/aws_constants.py /app/
+COPY infrastructure/terraform/premium_manager_package /app/terraform/premium_manager_package
+COPY infrastructure/terraform/premium_cleanup_package /app/terraform/premium_cleanup_package
+COPY infrastructure/terraform/free_manager_package /app/terraform/free_manager_package
+COPY infrastructure/terraform/free_cleanup_package /app/terraform/free_cleanup_package
+COPY infrastructure/terraform/common_user_manager_package /app/terraform/common_user_manager_package
 COPY main.py alembic.ini ./
+
+ENV OPTINIST_DIR=/app/studio_data
 
 # Copy the cloud-startup.sh script
 COPY cloud-startup.sh ./

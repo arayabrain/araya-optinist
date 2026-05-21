@@ -68,6 +68,7 @@ export async function getImageDataApi(
   path: string,
   params: {
     workspaceId: number
+    uniqueId?: string
     startIndex?: number
     endIndex?: number
   },
@@ -75,6 +76,7 @@ export async function getImageDataApi(
   const response = await axios.get(`${BASE_URL}/outputs/image/${path}`, {
     params: {
       workspace_id: params.workspaceId,
+      unique_id: params.uniqueId,
       start_index: params.startIndex,
       end_index: params.endIndex,
     },
@@ -112,10 +114,14 @@ export type RoiData = number[][][]
 
 export async function getRoiDataApi(
   path: string,
-  params: { workspaceId: number },
+  params: { workspaceId: number; uniqueId?: string },
   isFull?: boolean,
 ): Promise<{ data: RoiData; meta?: PlotMetaData }> {
-  const p = { workspace_id: params.workspaceId, isFull }
+  const p: Record<string, unknown> = {
+    workspace_id: params.workspaceId,
+    isFull,
+  }
+  if (params.uniqueId) p.unique_id = params.uniqueId
   if (!isFull) delete p.isFull
   const response = await axios.get(`${BASE_URL}/outputs/image/${path}`, {
     params: p,
@@ -254,6 +260,34 @@ export async function getHistogramDataApi(
   return response.data
 }
 
+export type StructuredData = {
+  data: number[] | number[][] | number[][][]
+  data_type: "timeseries" | "images" | "bar"
+  columns?: string[]
+  index?: (string | number)[]
+  total_frames?: number
+  dataset_path?: string
+}
+
+export async function getStructuredDataApi(
+  workspaceId: string,
+  uniqueId: string,
+  nodeId: string,
+  startIndex?: number,
+  endIndex?: number,
+): Promise<StructuredData> {
+  const response = await axios.get(
+    `${BASE_URL}/outputs/structured/${workspaceId}/${uniqueId}/${nodeId}`,
+    {
+      params: {
+        start_index: startIndex,
+        end_index: endIndex,
+      },
+    },
+  )
+  return response.data
+}
+
 export type PieData = number[][]
 
 export async function getPieDataApi(
@@ -261,4 +295,22 @@ export async function getPieDataApi(
 ): Promise<{ data: PieData; columns: string[] }> {
   const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
   return response.data
+}
+
+/**
+ * Fetch a thumbnail image with authentication and return as a blob URL.
+ * This is needed because <img> tags don't send auth headers.
+ */
+export async function getThumbnailBlobUrl(
+  workspaceId: number | string,
+  uniqueId: string,
+  thumbType: "input" | "roi",
+): Promise<string> {
+  const response = await axios.get(
+    `${BASE_URL}/outputs/thumbnail/${workspaceId}/${uniqueId}/${thumbType}`,
+    {
+      responseType: "blob",
+    },
+  )
+  return URL.createObjectURL(response.data)
 }

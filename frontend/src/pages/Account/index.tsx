@@ -11,21 +11,41 @@ import { useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
-import Edit from "@mui/icons-material/Edit"
+import { Edit, HelpOutline } from "@mui/icons-material"
 import {
   Box,
   Button,
+  FormControl,
   IconButton,
   Input,
+  MenuItem,
+  Select,
   styled,
+  Tooltip,
   Typography,
 } from "@mui/material"
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
-import { ROLE } from "@types"
+// import { ROLE } from "@types"
 import ChangePasswordModal from "components/Account/ChangePasswordModal"
 import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
+import {
+  DeletionPriority,
+  PlanName,
+  SubscriptionUserStatus,
+} from "const/Subscription"
+import {
+  getDeletionPriority,
+  getUserSubscription,
+  updateDeletionPriority,
+} from "store/slice/Subscriptions/SubscriptionActions"
+import {
+  selectDeletionPriority,
+  selectDeletionPriorityLoading,
+  selectUserSubscription,
+  selectUserSubscriptionLoading,
+} from "store/slice/Subscriptions/SubscriptionSelector"
 import {
   deleteMe,
   getMe,
@@ -39,12 +59,19 @@ import { convertBytes } from "utils"
 const Account = () => {
   const user = useSelector(selectCurrentUser)
   const loading = useSelector(selectLoading)
+  const userSubscription = useSelector(selectUserSubscription)
+  const subscriptionLoading = useSelector(selectUserSubscriptionLoading)
+  const deletionPriority = useSelector(selectDeletionPriority)
+  const deletionPriorityLoading = useSelector(selectDeletionPriorityLoading)
+
   const dispatch = useDispatch<AppDispatch>()
   const navigate = useNavigate()
+
   const [isDeleteConfirmModalOpen, setIsDeleteConfirmModalOpen] =
     useState(false)
   const [isChangePwModalOpen, setIsChangePwModalOpen] = useState(false)
   const [isEditName, setIsEditName] = useState(false)
+  const [isEditDeletionPriority, setIsEditDeletionPriority] = useState(false)
   const [isName, setIsName] = useState<string>()
 
   const ref = useRef<HTMLInputElement>(null)
@@ -62,8 +89,13 @@ const Account = () => {
   useEffect(() => {
     if (!user) return
     setIsName(user.name)
-    //eslint-disable-next-line
-  }, [])
+
+    // Fetch user subscription and deletion priority when user is loaded
+    if (user.id) {
+      dispatch(getUserSubscription())
+      dispatch(getDeletionPriority())
+    }
+  }, [user, dispatch])
 
   const handleCloseDeleteComfirmModal = () => {
     setIsDeleteConfirmModalOpen(false)
@@ -73,15 +105,47 @@ const Account = () => {
     setIsDeleteConfirmModalOpen(true)
   }
 
+  const isPremiumUser =
+    userSubscription &&
+    !userSubscription.is_expired &&
+    userSubscription.status === SubscriptionUserStatus.SUBSCRIBED
+
+  const getDeleteAccountDescription = () => {
+    if (isPremiumUser) {
+      return `You have an active ${userSubscription.plan_name} subscription.`
+    }
+    return "Delete account will erase all of your data."
+  }
+
+  const getDeleteAccountWarnings = (): string[] | undefined => {
+    if (isPremiumUser) {
+      return [
+        "Your subscription will be immediately canceled",
+        "You will not receive a refund for the remaining period",
+        "All your data (workspaces, experiments, files) will be permanently deleted",
+        "This action cannot be undone",
+      ]
+    }
+    return [
+      "All your data (workspaces, experiments, files) will be permanently deleted",
+      "This action cannot be undone",
+    ]
+  }
+
   const onConfirmDelete = async () => {
     if (!user) return
-    const data = await dispatch(deleteMe())
-    if (isRejectedWithValue(data)) {
+    try {
+      const data = await dispatch(deleteMe())
+      if (isRejectedWithValue(data)) {
+        handleClickVariant("error", "Account deleted failed!")
+      } else {
+        navigate("/login")
+      }
+    } catch {
       handleClickVariant("error", "Account deleted failed!")
-    } else {
-      navigate("/login")
+    } finally {
+      handleCloseDeleteComfirmModal()
     }
-    handleCloseDeleteComfirmModal()
   }
 
   const handleCloseChangePw = () => {
@@ -137,19 +201,27 @@ const Account = () => {
     setIsEditName(false)
   }
 
-  const getRole = (role?: number) => {
-    if (!role) return
-    let newRole = ""
-    switch (role) {
-      case ROLE.ADMIN:
-        newRole = "Admin"
-        break
-      case ROLE.OPERATOR:
-        newRole = "Operator"
-        break
-    }
-    return newRole
+  const onClickUpgrade = () => {
+    navigate("/subscription")
   }
+
+  const onClickManage = () => {
+    navigate("/subscription/manage")
+  }
+  // Not used in cloud implementation. Comment to remove ESLint warning.
+  // const getRole = (role?: number) => {
+  //   if (!role) return
+  //   let newRole = ""
+  //   switch (role) {
+  //     case ROLE.ADMIN:
+  //       newRole = "Admin"
+  //       break
+  //     case ROLE.OPERATOR:
+  //       newRole = "Operator"
+  //       break
+  //   }
+  //   return newRole
+  // }
 
   const handleName = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
@@ -163,6 +235,105 @@ const Account = () => {
     }
   }
 
+  const determineSubscriptionButtonStatus = () => {
+    if (!userSubscription) {
+      return SubscriptionUserStatus.FREE
+    } else if (userSubscription.is_expired) {
+      return SubscriptionUserStatus.EXPIRED
+    } else {
+      return SubscriptionUserStatus.SUBSCRIBED
+    }
+  }
+
+  // Updated function to handle showing both buttons for users with subscription records
+  const renderSubscriptionButtons = () => {
+    const status = determineSubscriptionButtonStatus()
+
+    // For users who never had a subscription (completely free users)
+    if (status === SubscriptionUserStatus.FREE) {
+      return (
+        <Button
+          variant="contained"
+          color="primary"
+          sx={{ ml: 2 }}
+          onClick={onClickUpgrade}
+          disabled={subscriptionLoading}
+        >
+          Upgrade
+        </Button>
+      )
+    }
+
+    // For users with subscription records (active or expired)
+    if (
+      status === SubscriptionUserStatus.SUBSCRIBED ||
+      status === SubscriptionUserStatus.EXPIRED
+    ) {
+      return (
+        <Box sx={{ ml: 2, display: "flex", gap: 1 }}>
+          {status === SubscriptionUserStatus.EXPIRED && (
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={onClickUpgrade}
+              disabled={subscriptionLoading}
+            >
+              Upgrade
+            </Button>
+          )}
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={onClickManage}
+            disabled={subscriptionLoading}
+          >
+            Manage
+          </Button>
+        </Box>
+      )
+    }
+
+    // Fallback for loading/error states
+    return null
+  }
+
+  // Helper function to format expiration date with server-validated expiration status
+  const getExpirationInfo = () => {
+    if (!userSubscription || !userSubscription.expiration) return null
+
+    const expirationDate = new Date(userSubscription.expiration)
+
+    if (
+      userSubscription.is_expired ||
+      userSubscription.status === SubscriptionUserStatus.CANCELED
+    ) {
+      return (
+        <Typography variant="caption" color="error" sx={{ ml: 1 }}>
+          (Expired on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    if (userSubscription.scheduled_downgrade) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Expires on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    // Show expiration date for all active paid subscriptions (not FREE tier)
+    if (userSubscription.status === SubscriptionUserStatus.SUBSCRIBED) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Renew on {expirationDate.toLocaleDateString()})
+        </Typography>
+      )
+    }
+
+    return null
+  }
+
   return (
     <AccountWrapper>
       <DeleteConfirmModal
@@ -170,8 +341,10 @@ const Account = () => {
         onClose={handleCloseDeleteComfirmModal}
         open={isDeleteConfirmModalOpen}
         onSubmit={onConfirmDelete}
-        description="Delete account will erase all of your data. "
+        description={getDeleteAccountDescription()}
+        warningItems={getDeleteAccountWarnings()}
         iconType="warning"
+        loading={loading}
       />
       <ChangePasswordModal
         onSubmit={onConfirmChangePw}
@@ -179,10 +352,6 @@ const Account = () => {
         onClose={handleCloseChangePw}
       />
       <Title>Account Profile</Title>
-      <BoxFlex>
-        <TitleData>Organization</TitleData>
-        <BoxData>{user?.organization?.name}</BoxData>
-      </BoxFlex>
       <BoxFlex>
         <TitleData>Name</TitleData>
         {isEditName ? (
@@ -210,16 +379,108 @@ const Account = () => {
         <BoxData>{user?.email}</BoxData>
       </BoxFlex>
       <BoxFlex>
-        <TitleData>Role</TitleData>
-        <BoxData>{getRole(user?.role_id)}</BoxData>
-      </BoxFlex>
-      <BoxFlex>
         <TitleData>Data size</TitleData>
         <BoxData>{convertBytes(user?.data_usage || 0)}</BoxData>
       </BoxFlex>
       <BoxFlex>
         <TitleData>Bucket name</TitleData>
         <BoxData>{user?.attributes?.remote_bucket_name || "-"}</BoxData>
+      </BoxFlex>
+      <BoxFlex>
+        <TitleData>Subscription</TitleData>
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+          }}
+        >
+          <BoxData>
+            {userSubscription?.plan_name && !userSubscription.is_expired
+              ? userSubscription.plan_name
+              : PlanName.FREE}
+          </BoxData>
+          {getExpirationInfo()}
+        </Box>
+        {renderSubscriptionButtons()}
+      </BoxFlex>
+      <BoxFlex>
+        <TitleData sx={{ display: "flex", alignItems: "center" }}>
+          Data Deletion Priority
+          <Tooltip
+            title={
+              <Box>
+                <Box>
+                  Controls which data is kept when expired subscription data is
+                  cleaned up.
+                </Box>
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
+                  <li>&quot;Preserve Outputs&quot;: keeps workflow results.</li>
+                  <li>
+                    &quot;Preserve Inputs&quot;: keeps uploaded source files.
+                  </li>
+                </Box>
+              </Box>
+            }
+            arrow
+          >
+            <HelpOutline
+              fontSize="small"
+              color="action"
+              sx={{ ml: 1, cursor: "pointer" }}
+            />
+          </Tooltip>
+        </TitleData>
+        {isEditDeletionPriority ? (
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <Select
+              value={deletionPriority || DeletionPriority.PRESERVE_OUTPUTS}
+              disabled={deletionPriorityLoading}
+              autoFocus
+              onBlur={() => setIsEditDeletionPriority(false)}
+              onChange={async (e) => {
+                const result = await dispatch(
+                  updateDeletionPriority(e.target.value as string),
+                )
+                if (isRejectedWithValue(result)) {
+                  handleClickVariant(
+                    "error",
+                    "Failed to update deletion priority",
+                  )
+                } else {
+                  handleClickVariant(
+                    "success",
+                    "Deletion priority updated successfully",
+                  )
+                }
+                setIsEditDeletionPriority(false)
+              }}
+            >
+              <MenuItem value={DeletionPriority.PRESERVE_OUTPUTS}>
+                Preserve Outputs
+              </MenuItem>
+              <MenuItem value={DeletionPriority.PRESERVE_INPUTS}>
+                Preserve Inputs
+              </MenuItem>
+            </Select>
+          </FormControl>
+        ) : (
+          <>
+            <BoxData>
+              {(deletionPriority || DeletionPriority.PRESERVE_OUTPUTS) ===
+              DeletionPriority.PRESERVE_OUTPUTS
+                ? "Preserve Outputs"
+                : "Preserve Inputs"}
+            </BoxData>
+            <IconButton
+              sx={{ ml: 1 }}
+              onClick={() => setIsEditDeletionPriority(true)}
+              disabled={deletionPriorityLoading}
+            >
+              <Edit />
+            </IconButton>
+          </>
+        )}
       </BoxFlex>
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>

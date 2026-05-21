@@ -48,8 +48,8 @@ def suite2p_file_convert(
         data_path_list.append(os.path.dirname(file_path))
         data_name_list.append(os.path.basename(file_path))
 
-    logger.info(data_path_list)
-    logger.info(data_name_list)
+    logger.debug(data_path_list)
+    logger.debug(data_name_list)
     # data pathと保存pathを指定
     db = {
         "data_path": data_path_list,

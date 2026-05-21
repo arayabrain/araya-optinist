@@ -119,7 +119,7 @@ def createMatrix(D, triggers, stims, duration):
             ]
 
         else:
-            logger.warn(
+            logger.warning(
                 "currently the number of condition category has to be less than 4"
             )
             return

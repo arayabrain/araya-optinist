@@ -1,0 +1,134 @@
+name: optinist-ecs-packages
+description: "Install system packages and AWS CLI v2 for OptiNiSt ECS instances. Eliminates ~4-6 min of yum install from every instance boot."
+schemaVersion: 1.0
+
+phases:
+  - name: build
+    steps:
+      - name: SystemUpdate
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Starting system package update"
+              yum update -y
+              echo "$(date): System update complete"
+
+      - name: InstallYumPackages
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Installing yum packages"
+              yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
+              echo "$(date): Yum packages installed"
+
+      - name: InstallAWSCLIv2
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Installing AWS CLI v2"
+              # Remove awscli v1 if present (no longer in AL2 repos)
+              yum remove -y awscli 2>/dev/null || true
+              # Ensure unzip is available (not always present on ECS-optimized AMI)
+              yum install -y unzip
+              # Install AWS CLI v2 standalone
+              curl -fSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+              cd /tmp && unzip -qo awscliv2.zip
+              /tmp/aws/install --update
+              rm -rf /tmp/aws /tmp/awscliv2.zip
+              # Verify v2 is installed
+              /usr/local/bin/aws --version
+              /usr/local/bin/aws --version 2>&1 | grep -q "aws-cli/2"
+              echo "$(date): AWS CLI v2 installed successfully"
+
+      - name: EnableDockerService
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Enabling Docker service"
+              systemctl enable docker
+              echo "$(date): Docker service enabled"
+
+      - name: CreateBakeMarker
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Creating bake marker file"
+              cat > /etc/optinist-ami-baked <<MARKER
+              BAKED_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              BAKED_BY=ec2-image-builder
+              PACKAGES=amazon-ssm-agent,mysql,amazon-efs-utils,nc,git,docker,amazon-cloudwatch-agent,awscli-v2
+              MARKER
+              chmod 644 /etc/optinist-ami-baked
+              echo "$(date): Bake marker created"
+
+      - name: CleanupYumCache
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Cleaning up yum cache to reduce AMI size"
+              yum clean all
+              rm -rf /var/cache/yum
+              echo "$(date): Cleanup complete"
+
+      # ---------------------------------------------------------------
+      # PlantTestCredentials + SanitizeCredentials form a paired test:
+      #   PlantTestCredentials creates dummy credential files, then
+      #   SanitizeCredentials removes them.  The subsequent
+      #   ValidateNoCredentialLeak step (in optinist-validate.yml)
+      #   confirms the removal succeeded.
+      #
+      # Without this synthetic canary, the validation step would only
+      # confirm "nothing is there when nothing was put there" — a
+      # vacuously true check that does not actually exercise the
+      # sanitization logic.
+      #
+      # The dummy values (AKIAIOSFODNN7EXAMPLE, etc.) are the
+      # well-known example keys from the AWS documentation and have
+      # no access to any real AWS resources.
+      # ---------------------------------------------------------------
+      - name: PlantTestCredentials
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Planting dummy credentials to verify SanitizeCredentials step"
+              mkdir -p /root/.aws
+              cat > /root/.aws/credentials <<'CRED'
+              [default]
+              aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+              aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+              CRED
+              echo "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE" >> /etc/environment
+              echo "$(date): Dummy credentials planted"
+
+      - name: SanitizeCredentials
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Sanitizing credentials and sensitive data from AMI"
+              # Remove AWS credentials/config for all users
+              # -rf / -f: no error if files/dirs do not exist (exit code 0)
+              rm -rf /root/.aws /home/*/.aws
+              # Remove AWS credential env vars from persistent files
+              sed -i '/^AWS_ACCESS_KEY_ID/d;/^AWS_SECRET_ACCESS_KEY/d;/^AWS_SESSION_TOKEN/d;/^AWS_DEFAULT_REGION/d;/^AWS_PROFILE/d' /etc/environment 2>/dev/null || true
+              rm -f /etc/profile.d/aws-*.sh
+              # Remove shell histories (may contain secrets typed interactively)
+              rm -f /root/.bash_history /home/*/.bash_history
+              # Remove non-default SSH authorized keys
+              rm -f /root/.ssh/authorized_keys
+              echo "$(date): Credential sanitization complete"

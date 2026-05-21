@@ -42,7 +42,12 @@ export async function downloadWorkflowConfigApi(
 export async function importWorkflowConfigApi(
   formData: FormData,
 ): Promise<WorkflowConfigDTO> {
-  const response = await axios.post(`${BASE_URL}/workflow/import`, formData)
+  const response = await axios.post(`${BASE_URL}/workflow/import`, formData, {
+    headers: {
+      // Let axios auto-detect Content-Type for multipart/form-data with boundary
+      "Content-Type": undefined,
+    },
+  })
   return response.data
 }
 

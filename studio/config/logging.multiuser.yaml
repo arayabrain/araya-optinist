@@ -3,10 +3,10 @@ disable_existing_loggers: false
 formatters:
   default:
     (): "uvicorn.logging.DefaultFormatter"
-    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (pid:%(process)d) (client:%(client_id)s) %(funcName)s():%(lineno)d - %(message)s"
+    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (pid:%(process)d) (task:%(ecs_task_id)s) (client:%(client_id)s) %(funcName)s():%(lineno)d - %(message)s"
   access:
     (): "uvicorn.logging.AccessFormatter"
-    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (pid:%(process)d) (client:%(client_id)s) %(funcName)s():%(lineno)d - %(message)s"
+    fmt: "%(asctime)s %(levelprefix)s [%(name)s] (pid:%(process)d) (task:%(ecs_task_id)s) (client:%(client_id)s) %(funcName)s():%(lineno)d - %(message)s"
 handlers:
   console:
     class: logging.StreamHandler
@@ -37,7 +37,7 @@ loggers:
   # sqlalchemy.engine:
   #   level: INFO
   snakemake:
-    level: INFO
+    level: DEBUG
     handlers: [rotating_file]
     propagate: false
 root:

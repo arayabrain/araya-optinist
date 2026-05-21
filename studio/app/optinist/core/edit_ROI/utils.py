@@ -1,10 +1,12 @@
 import os
+import tempfile
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
+import yaml
 from fastapi import HTTPException, status
-from snakemake import snakemake
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import LOGGING_CLIENT_ID_KEY, AppLogger
@@ -18,6 +20,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_condaenv_filepath
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.wrappers import edit_roi_wrapper_dict
@@ -94,20 +97,81 @@ class EditRoiUtils:
     @classmethod
     @with_client_id_context  # Automatically set client_id for logging
     def _execute_process(cls, filepath: str, client_id: str = None) -> bool:
-        result = snakemake(
-            DIRPATH.SNAKEMAKE_EDIT_ROI_FILEPATH,
-            use_conda=True,
-            cores=2,
-            workdir=f"{os.path.dirname(DIRPATH.STUDIO_DIR)}",
-            config={
+        # Lazy import snakemake modules to avoid Python version conflicts
+        snakemake_modules = _get_snakemake_modules()
+        SnakemakeApi = snakemake_modules["SnakemakeApi"]
+        OutputSettings = snakemake_modules["OutputSettings"]
+        StorageSettings = snakemake_modules["StorageSettings"]
+        ResourceSettings = snakemake_modules["ResourceSettings"]
+        DeploymentSettings = snakemake_modules["DeploymentSettings"]
+        DeploymentMethod = snakemake_modules["DeploymentMethod"]
+
+        # Create isolated temporary directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_workdir = Path(temp_dir)
+
+            # Create edit_ROI specific config file
+            config_data = {
                 "type": "EDIT_ROI",
                 "algo": cls.get_algo(filepath),
                 "file_path": filepath,
                 LOGGING_CLIENT_ID_KEY: client_id,
-            },
-        )
+            }
+
+            config_file = join_filepath([str(temp_workdir), "snakemake.yaml"])
+            with open(config_file, "w") as f:
+                yaml.dump(config_data, f)
+
+            # Use new SnakemakeApi pattern with isolated workdir
+            with SnakemakeApi(
+                OutputSettings(
+                    verbose=True,
+                    show_failed_logs=True,
+                ),
+            ) as snakemake_api:
+                workflow_api = snakemake_api.workflow(
+                    snakefile=Path(DIRPATH.SNAKEMAKE_EDIT_ROI_FILEPATH),
+                    workdir=temp_workdir,
+                    storage_settings=StorageSettings(),
+                    resource_settings=ResourceSettings(cores=2),
+                    deployment_settings=DeploymentSettings(
+                        deployment_method=[DeploymentMethod.CONDA],
+                        conda_frontend="conda",
+                        conda_prefix=DIRPATH.SNAKEMAKE_CONDA_ENV_DIR,
+                    ),
+                )
+
+                dag_api = workflow_api.dag()
+
+                try:
+                    dag_api.execute_workflow()
+                    result = True
+                except Exception as e:
+                    logger.error(f"edit_ROI snakemake execution failed: {e}")
+                    result = False
 
         return result
+
+
+def _get_snakemake_modules():
+    """Lazy import snakemake modules to avoid Python version conflicts in conda envs."""
+    from snakemake.api import (
+        DeploymentMethod,
+        DeploymentSettings,
+        OutputSettings,
+        ResourceSettings,
+        SnakemakeApi,
+        StorageSettings,
+    )
+
+    return {
+        "DeploymentMethod": DeploymentMethod,
+        "DeploymentSettings": DeploymentSettings,
+        "OutputSettings": OutputSettings,
+        "ResourceSettings": ResourceSettings,
+        "SnakemakeApi": SnakemakeApi,
+        "StorageSettings": StorageSettings,
+    }
 
 
 def create_ellipse_mask(shape: Tuple[int, int], roi_pos: RoiPos):

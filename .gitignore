@@ -15,6 +15,7 @@ Pipfile.lock
 .tox
 .snakemake
 .pytest_cache
+.claude
 
 studio/test_data/output
 docs/_build
@@ -25,3 +26,9 @@ tensorflow-*.whl
 
 .env*
 !*.env*.example
+
+# Terraform provisioner build artifacts (copied/installed by terraform apply)
+infrastructure/terraform/*/aws_constants.py
+infrastructure/terraform/aws_constants_layer/
+infrastructure/terraform/*_package/pymysql/
+infrastructure/terraform/*_package/pymysql-*.dist-info/
