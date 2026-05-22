@@ -219,8 +219,7 @@ resource "aws_ecs_task_definition" "public" {
         { name = "PYTHONUNBUFFERED", value = "1" },
         { name = "OPTINIST_DIR", value = "/app/studio_data" },
 
-        # Stripe / subscriptions / premium-manager vars omitted: their routers
-        # are gated out on INSTANCE_MODE=public, so the secrets aren't read.
+        # Stripe vars omitted: subscriptions router is gated out on public.
         { name = "ROUTING_SECRET_KEY", value = var.routing_secret_key },
 
         { name = "INTERNAL_API_SECRET", value = random_password.internal_api_secret.result },

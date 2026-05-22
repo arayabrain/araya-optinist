@@ -203,10 +203,13 @@ def _should_run_startup_sync(instance_mode: str, is_standalone: bool) -> bool:
 def _register_routers(app: FastAPI, instance_mode: str) -> None:
     """Register routers; workflow/optinist routers are gated on instance_mode.
 
-    Public-safe routers (auth, public dataview, internal, outputs) are mounted
-    on every tier so logins and published-data reads survive a free-tier outage.
+    Mounted on every tier so the SPA can bootstrap during a free-tier outage:
+    auth (login/refresh), users_me (the GET /users/me + premium-assign /
+    heartbeat / beacon set the SPA calls right after login), public dataview,
+    internal, outputs. Public-tier tasks still talk to the same RDS and
+    invoke the same premium-manager Lambda as free, so these routes work
+    identically whichever tier serves them.
     """
-    # Mounted on every tier; auth is here so logins survive a free-tier outage.
     app.include_router(dataview.public_router)
     app.include_router(internal.router)  # Internal secret auth, not JWT.
     app.include_router(
@@ -214,6 +217,8 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
         dependencies=[Depends(get_current_user_with_dataview_outputs_check)],
     )
     app.include_router(auth.router)
+    app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
+    app.include_router(users_me.beacon_router)
 
     if instance_mode == "public":
         return
@@ -229,8 +234,6 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
         storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
     )
     app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
-    app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
-    app.include_router(users_me.beacon_router)
     app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
     app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
     app.include_router(workspace.router, dependencies=[Depends(get_current_user)])

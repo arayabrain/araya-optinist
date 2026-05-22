@@ -1,6 +1,7 @@
 # ALB listener rules for the multi-tier split. Lower priority wins.
 # 100-199: premium dynamic rules (created by premium-manager Lambda)
-# 200-311: public-bound (system-internal sync, /api/public/*, /auth/*, assets)
+# 200-312: public-bound (system-internal sync, /api/public/*, /auth/*,
+#          /users/me/*, assets)
 # 315-320: free-bound (authenticated own-data, anonymous flows, Authorization catch-all)
 # default: public TG (see compute.tf)
 
@@ -91,6 +92,29 @@ resource "aws_lb_listener_rule" "auth_to_public" {
   condition {
     path_pattern {
       values = ["/auth/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.public.arn
+  }
+}
+
+# Bootstrap calls the SPA issues right after /auth/login: GET /users/me, the
+# premium-assign / heartbeat / beacon endpoints, etc. Without this rule those
+# requests would hit p320's Bearer catch-all and 503 during a free outage,
+# leaving the user with a valid JWT but an unusable app.
+resource "aws_lb_listener_rule" "users_me_to_public" {
+  listener_arn = aws_lb_listener.autoscaling_https.arn
+  priority     = 306
+
+  condition {
+    path_pattern {
+      values = [
+        "/users/me",
+        "/users/me/*",
+      ]
     }
   }
 

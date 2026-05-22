@@ -2,9 +2,10 @@
 Tests for INSTANCE_MODE=public router gating.
 
 Verifies that `_register_routers(app, "public")` mounts the public-safe
-routers (auth.router, dataview.public_router, internal.router, outputs.router
-— auth is on every tier so logins survive a free-tier outage) and skips
-the workflow/optinist routers, while default mode registers the full set.
+routers (auth.router, users_me.router + beacon_router, dataview.public_router,
+internal.router, outputs.router — these are on every tier so login + SPA
+bootstrap survive a free-tier outage) and skips the workflow/optinist routers,
+while default mode registers the full set.
 """
 
 from fastapi import FastAPI
@@ -40,6 +41,22 @@ class TestInstanceModePublic:
         paths = _registered_paths("public")
         assert any(p.startswith("/auth") for p in paths)
 
+    def test_users_me_router_is_registered_on_public(self):
+        # The SPA hits GET /users/me + the premium-assign endpoints right
+        # after /auth/login; both must survive a free outage.
+        paths = _registered_paths("public")
+        assert "/users/me" in paths
+        assert "/users/me/routing-info" in paths
+        assert "/users/me/premium/assign" in paths
+        assert "/users/me/premium/heartbeat" in paths
+        assert "/users/me/premium/status" in paths
+
+    def test_users_me_beacon_router_is_registered_on_public(self):
+        # navigator.sendBeacon target; needs to survive free outage so the
+        # 120s pending_release grace window starts even when free is down.
+        paths = _registered_paths("public")
+        assert "/users/me/premium/release-beacon" in paths
+
     def test_workflow_router_is_not_registered(self):
         paths = _registered_paths("public")
         assert not any(p.startswith("/workflow") for p in paths)
@@ -56,10 +73,6 @@ class TestInstanceModePublic:
             if p.startswith("/api/dataview") and not p.startswith("/api/public")
         ]
         assert non_public_dataview == []
-
-    def test_users_me_beacon_router_is_not_registered(self):
-        paths = _registered_paths("public")
-        assert not any(p.startswith("/users/me") for p in paths)
 
     def test_subscriptions_router_is_not_registered(self):
         paths = _registered_paths("public")
