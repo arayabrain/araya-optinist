@@ -219,6 +219,7 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
     app.include_router(auth.router)
     app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
     app.include_router(users_me.beacon_router)
+    app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
 
     if instance_mode == "public":
         return
@@ -226,7 +227,6 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
     app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
     app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
     app.include_router(files.router, dependencies=[Depends(get_current_user)])
-    app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
     app.include_router(logs.router, dependencies=[Depends(get_current_user)])
     app.include_router(params.router, dependencies=[Depends(get_current_user)])
     app.include_router(run.router, dependencies=[Depends(get_current_user)])

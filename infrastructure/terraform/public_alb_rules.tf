@@ -1,7 +1,7 @@
 # ALB listener rules for the multi-tier split. Lower priority wins.
 # 100-199: premium dynamic rules (created by premium-manager Lambda)
 # 200-312: public-bound (system-internal sync, /api/public/*, /auth/*,
-#          /users/me/*, assets)
+#          /users/me/*, /log-report/*, assets)
 # 315-320: free-bound (authenticated own-data, anonymous flows, Authorization catch-all)
 # default: public TG (see compute.tf)
 
@@ -115,6 +115,26 @@ resource "aws_lb_listener_rule" "users_me_to_public" {
         "/users/me",
         "/users/me/*",
       ]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.public.arn
+  }
+}
+
+# Frontend error reporting survives a free outage so client-side errors still
+# reach CloudWatch. The log *viewer* (/logs) stays on its owning tier (premium
+# via p100-199 routing-id, free via p320 Bearer catch-all) — users should never
+# see public-task logs mixed into their own.
+resource "aws_lb_listener_rule" "log_report_to_public" {
+  listener_arn = aws_lb_listener.autoscaling_https.arn
+  priority     = 307
+
+  condition {
+    path_pattern {
+      values = ["/log-report/*"]
     }
   }
 

@@ -57,6 +57,19 @@ class TestInstanceModePublic:
         paths = _registered_paths("public")
         assert "/users/me/premium/release-beacon" in paths
 
+    def test_log_report_router_is_registered_on_public(self):
+        # POST /log-report/frontend-errors survives free outage so client-side
+        # errors still reach CloudWatch.
+        paths = _registered_paths("public")
+        assert "/log-report/frontend-errors" in paths
+
+    def test_logs_router_is_not_registered_on_public(self):
+        # /logs viewer stays on its owning tier — premium via p100-199
+        # routing-id, free via p320 Bearer catch-all. Users should never see
+        # public-task logs mixed into their own.
+        paths = _registered_paths("public")
+        assert not any(p.startswith("/logs") for p in paths)
+
     def test_workflow_router_is_not_registered(self):
         paths = _registered_paths("public")
         assert not any(p.startswith("/workflow") for p in paths)
