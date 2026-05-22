@@ -1498,12 +1498,14 @@ class WebhookService:
 
         # 6. Sync storage quota to match the plan
         storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
-        rows_updated = db.execute(
-            update(UserStorageUsage)
-            .where(UserStorageUsage.user_id == user_id)
-            .values(storage_quota_bytes=storage_quota_bytes)
-        ).rowcount
-        if not rows_updated:
+        user_storage_usage = (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == user_id)
+            .first()
+        )
+        if user_storage_usage:
+            user_storage_usage.storage_quota_bytes = storage_quota_bytes
+        else:
             db.add(
                 UserStorageUsage(
                     user_id=user_id,
