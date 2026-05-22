@@ -122,6 +122,7 @@ resource "aws_lb_listener_rule" "static_assets_to_public" {
   }
 }
 
+# Split across two rules: ALB caps path_pattern values at 5 per rule.
 resource "aws_lb_listener_rule" "docs_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
   priority     = 311
@@ -129,13 +130,28 @@ resource "aws_lb_listener_rule" "docs_to_public" {
   condition {
     path_pattern {
       values = [
-        "/asset-manifest.json",
         "/docs",
         "/docs/*",
         "/openapi",
         "/redoc",
         "/health",
       ]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.public.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "asset_manifest_to_public" {
+  listener_arn = aws_lb_listener.autoscaling_https.arn
+  priority     = 312
+
+  condition {
+    path_pattern {
+      values = ["/asset-manifest.json"]
     }
   }
 

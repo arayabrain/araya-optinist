@@ -46,10 +46,12 @@ resource "aws_launch_template" "public" {
   }
 
   # Root volume sized for OS + image only; experiment cache lives on EFS.
+  # 30 GB matches the AMI's snapshot baseline (smaller fails CreateAutoScalingGroup);
+  # further shrink would require rebaking a thinner AMI.
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 25
+      volume_size = 30
       volume_type = "gp3"
       encrypted   = true
     }
