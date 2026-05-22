@@ -5,9 +5,29 @@
 # 315-320: free-bound (authenticated own-data, anonymous flows, Authorization catch-all)
 # default: public TG (see compute.tf)
 
+# Named priorities so changes are one-line edits and the relative ordering is
+# visible in one place. Keep gaps so new rules can slot in without renumbering.
+locals {
+  alb_priority = {
+    sync_experiment_to_public     = 200
+    sync_experiments_to_free      = 210
+    outputs_public_header         = 280
+    public_dataview_api           = 300
+    auth_to_public                = 305
+    users_me_to_public            = 306
+    log_report_to_public          = 307
+    static_assets_to_public       = 310
+    docs_to_public                = 311
+    asset_manifest_to_public      = 312
+    outputs_authenticated_to_free = 315
+    anonymous_flows_to_free       = 316
+    authenticated_to_free         = 320
+  }
+}
+
 resource "aws_lb_listener_rule" "sync_experiment_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 200
+  priority     = local.alb_priority.sync_experiment_to_public
 
   condition {
     path_pattern {
@@ -23,7 +43,7 @@ resource "aws_lb_listener_rule" "sync_experiment_to_public" {
 
 resource "aws_lb_listener_rule" "sync_experiments_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 210
+  priority     = local.alb_priority.sync_experiments_to_free
 
   condition {
     path_pattern {
@@ -43,7 +63,7 @@ resource "aws_lb_listener_rule" "sync_experiments_to_free" {
 # TODO: After #636 (path rename to /api/visualizations/*), update both rules together.
 resource "aws_lb_listener_rule" "outputs_public_header" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 280
+  priority     = local.alb_priority.outputs_public_header
 
   condition {
     path_pattern {
@@ -67,7 +87,7 @@ resource "aws_lb_listener_rule" "outputs_public_header" {
 # Bare path enumerated alongside the wildcard: ALB "*" requires a preceding "/".
 resource "aws_lb_listener_rule" "public_dataview_api" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 300
+  priority     = local.alb_priority.public_dataview_api
 
   condition {
     path_pattern {
@@ -87,7 +107,7 @@ resource "aws_lb_listener_rule" "public_dataview_api" {
 # Hosted on public so authentication survives a free-tier outage.
 resource "aws_lb_listener_rule" "auth_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 305
+  priority     = local.alb_priority.auth_to_public
 
   condition {
     path_pattern {
@@ -107,7 +127,7 @@ resource "aws_lb_listener_rule" "auth_to_public" {
 # leaving the user with a valid JWT but an unusable app.
 resource "aws_lb_listener_rule" "users_me_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 306
+  priority     = local.alb_priority.users_me_to_public
 
   condition {
     path_pattern {
@@ -130,7 +150,7 @@ resource "aws_lb_listener_rule" "users_me_to_public" {
 # see public-task logs mixed into their own.
 resource "aws_lb_listener_rule" "log_report_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 307
+  priority     = local.alb_priority.log_report_to_public
 
   condition {
     path_pattern {
@@ -146,7 +166,7 @@ resource "aws_lb_listener_rule" "log_report_to_public" {
 
 resource "aws_lb_listener_rule" "static_assets_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 310
+  priority     = local.alb_priority.static_assets_to_public
 
   condition {
     path_pattern {
@@ -169,7 +189,7 @@ resource "aws_lb_listener_rule" "static_assets_to_public" {
 # Split across two rules: ALB caps path_pattern values at 5 per rule.
 resource "aws_lb_listener_rule" "docs_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 311
+  priority     = local.alb_priority.docs_to_public
 
   condition {
     path_pattern {
@@ -191,7 +211,7 @@ resource "aws_lb_listener_rule" "docs_to_public" {
 
 resource "aws_lb_listener_rule" "asset_manifest_to_public" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 312
+  priority     = local.alb_priority.asset_manifest_to_public
 
   condition {
     path_pattern {
@@ -207,7 +227,7 @@ resource "aws_lb_listener_rule" "asset_manifest_to_public" {
 
 resource "aws_lb_listener_rule" "outputs_authenticated_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 315
+  priority     = local.alb_priority.outputs_authenticated_to_free
 
   condition {
     path_pattern {
@@ -224,7 +244,7 @@ resource "aws_lb_listener_rule" "outputs_authenticated_to_free" {
 # Anonymous flows (no Authorization header) — must precede the Bearer catch-all.
 resource "aws_lb_listener_rule" "anonymous_flows_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 316
+  priority     = local.alb_priority.anonymous_flows_to_free
 
   condition {
     path_pattern {
@@ -244,7 +264,7 @@ resource "aws_lb_listener_rule" "anonymous_flows_to_free" {
 # Catch-all for authenticated traffic; premium-tagged requests match earlier.
 resource "aws_lb_listener_rule" "authenticated_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = 320
+  priority     = local.alb_priority.authenticated_to_free
 
   condition {
     http_header {

@@ -226,16 +226,6 @@ resource "aws_ecs_task_definition" "public" {
         { name = "UVICORN_WORKERS", value = "1" },
       ]
 
-      secrets = [
-        {
-          name      = "AWS_ACCESS_KEY_ID"
-          valueFrom = "${aws_secretsmanager_secret.aws_credentials.arn}:AWS_ACCESS_KEY_ID::"
-        },
-        {
-          name      = "AWS_SECRET_ACCESS_KEY"
-          valueFrom = "${aws_secretsmanager_secret.aws_credentials.arn}:AWS_SECRET_ACCESS_KEY::"
-        },
-      ]
 
       mountPoints = [
         {

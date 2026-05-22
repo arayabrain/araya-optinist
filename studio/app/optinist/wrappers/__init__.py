@@ -1,11 +1,17 @@
 import os
 
-INSTANCE_MODE = os.environ.get("INSTANCE_MODE", "default")
+from studio.app.common.core.instance_mode import (
+    INSTANCE_MODE_DEFAULT,
+    INSTANCE_MODE_ENV,
+    INSTANCE_MODE_PUBLIC,
+)
+
+INSTANCE_MODE = os.environ.get(INSTANCE_MODE_ENV, INSTANCE_MODE_DEFAULT)
 
 wrapper_dict = {}
 
 # Skip heavy snakemake wrapper imports on instances that don't run workflows.
-if INSTANCE_MODE != "public":
+if INSTANCE_MODE != INSTANCE_MODE_PUBLIC:
     from studio.app.optinist.wrappers.caiman import caiman_wrapper_dict
 
     # from studio.app.optinist.wrappers.custom import custom_wrapper_dict

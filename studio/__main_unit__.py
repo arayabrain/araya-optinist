@@ -14,6 +14,11 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_current_user_with_dataview_outputs_check,
 )
+from studio.app.common.core.instance_mode import (
+    INSTANCE_MODE_DEFAULT,
+    INSTANCE_MODE_ENV,
+    INSTANCE_MODE_PUBLIC,
+)
 from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
@@ -102,7 +107,7 @@ async def lifespan(app: FastAPI):
     disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
 
     # Only the public tier serves the published-experiment cache, so only it warms it.
-    instance_mode = os.environ.get("INSTANCE_MODE", "default")
+    instance_mode = os.environ.get(INSTANCE_MODE_ENV, INSTANCE_MODE_DEFAULT)
     if _should_run_startup_sync(instance_mode, MODE.IS_STANDALONE):
         import asyncio
 
@@ -197,7 +202,7 @@ def _should_run_startup_sync(instance_mode: str, is_standalone: bool) -> bool:
     """Startup sync warms the public tier's cache; other tiers shouldn't run it."""
     if is_standalone:
         return False
-    return instance_mode == "public"
+    return instance_mode == INSTANCE_MODE_PUBLIC
 
 
 def _register_routers(app: FastAPI, instance_mode: str) -> None:
@@ -221,7 +226,7 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
     app.include_router(users_me.beacon_router)
     app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
 
-    if instance_mode == "public":
+    if instance_mode == INSTANCE_MODE_PUBLIC:
         return
 
     app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
@@ -249,7 +254,7 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
     app.include_router(roi.router, dependencies=[Depends(get_current_user)])
 
 
-INSTANCE_MODE = os.environ.get("INSTANCE_MODE", "default")
+INSTANCE_MODE = os.environ.get(INSTANCE_MODE_ENV, INSTANCE_MODE_DEFAULT)
 _register_routers(app, INSTANCE_MODE)
 
 

@@ -302,27 +302,19 @@ resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "free_tg_unhealthy_hosts" {
-  alarm_name          = "${local.env_prefix}-free-tg-unhealthy-hosts"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
-  metric_name         = "UnHealthyHostCount"
-  namespace           = "AWS/ApplicationELB"
-  period              = "60"
-  statistic           = "Maximum"
-  threshold           = "0"
-  alarm_description   = "Free TG has unhealthy targets — workflow instance may be failing health checks."
-  alarm_actions       = local.critical_alerts_actions
-  ok_actions          = local.critical_alerts_actions
-
-  dimensions = {
-    LoadBalancer = aws_lb.autoscaling.arn_suffix
-    TargetGroup  = aws_lb_target_group.autoscaling.arn_suffix
+resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
+  for_each = {
+    free = {
+      tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
+      description   = "Free TG has unhealthy targets — workflow instance may be failing health checks."
+    }
+    public = {
+      tg_arn_suffix = aws_lb_target_group.public.arn_suffix
+      description   = "Public TG has unhealthy targets — SPA delivery or public-dataview API at risk."
+    }
   }
-}
 
-resource "aws_cloudwatch_metric_alarm" "public_tg_unhealthy_hosts" {
-  alarm_name          = "${local.env_prefix}-public-tg-unhealthy-hosts"
+  alarm_name          = "${local.env_prefix}-${each.key}-tg-unhealthy-hosts"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "UnHealthyHostCount"
@@ -330,13 +322,13 @@ resource "aws_cloudwatch_metric_alarm" "public_tg_unhealthy_hosts" {
   period              = "60"
   statistic           = "Maximum"
   threshold           = "0"
-  alarm_description   = "Public TG has unhealthy targets — SPA delivery or public-dataview API at risk."
+  alarm_description   = each.value.description
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
-    TargetGroup  = aws_lb_target_group.public.arn_suffix
+    TargetGroup  = each.value.tg_arn_suffix
   }
 }
 
