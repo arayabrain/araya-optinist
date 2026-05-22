@@ -36,15 +36,17 @@ resource "aws_lb_listener_rule" "sync_experiments_to_free" {
   }
 }
 
-# Header is set by the frontend only on /public/* pages; carves public-dataview
-# visualization reads away from the authenticated own-data reads (p315).
-resource "aws_lb_listener_rule" "visualizations_public_header" {
+# Frontend sets DATAVIEW_PUBLIC_REQUEST on /outputs/* requests made from
+# /public/* pages (see frontend/src/utils/DataviewUtils.ts). Carves public-
+# dataview reads onto the public TG; own-data reads fall through to p315.
+# TODO: After #636 (path rename to /api/visualizations/*), update both rules together.
+resource "aws_lb_listener_rule" "outputs_public_header" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
   priority     = 280
 
   condition {
     path_pattern {
-      values = ["/api/visualizations/*"]
+      values = ["/outputs/*"]
     }
   }
 
@@ -143,13 +145,13 @@ resource "aws_lb_listener_rule" "docs_to_public" {
   }
 }
 
-resource "aws_lb_listener_rule" "visualizations_authenticated_to_free" {
+resource "aws_lb_listener_rule" "outputs_authenticated_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
   priority     = 315
 
   condition {
     path_pattern {
-      values = ["/api/visualizations/*"]
+      values = ["/outputs/*"]
     }
   }
 
