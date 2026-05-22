@@ -902,7 +902,7 @@ class TestSubscriptionLifecycleWebhooks:
         }
 
     def _setup_query_chain(self, mock_db, account, subscription, user):
-        """Sequential query results: account, subscription, user."""
+        """Sequential query results: account, subscription, storage, user."""
         mock_db.query.side_effect = [
             # 1. SubscriptionUserAccount by customer_id
             Mock(filter=Mock(return_value=Mock(first=Mock(return_value=account)))),
@@ -916,7 +916,9 @@ class TestSubscriptionLifecycleWebhooks:
                     )
                 )
             ),
-            # 3. User for cache invalidation
+            # 3. UserStorageUsage for quota sync
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
+            # 4. User for cache invalidation
             Mock(filter=Mock(return_value=Mock(first=Mock(return_value=user)))),
         ]
 

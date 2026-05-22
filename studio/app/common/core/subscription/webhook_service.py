@@ -1462,18 +1462,14 @@ class WebhookService:
                 "success": True,
                 "skipped": True,
                 "reason": "missing_expiration",
-                "message": (
-                    f"No period end in subscription: {stripe_subscription_id}"
-                ),
+                "message": (f"No period end in subscription: {stripe_subscription_id}"),
             }
 
         # 3. Derive plan from subscription metadata, default to premium
         metadata = subscription_data.get("metadata") or {}
         plan_id_raw = metadata.get("plan_id")
         try:
-            plan_id = (
-                int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
-            )
+            plan_id = int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
         except (TypeError, ValueError):
             plan_id = SubscriptionPlanIds.PREMIUM
 
@@ -1489,9 +1485,7 @@ class WebhookService:
         # past_due / unpaid / incomplete. Tier/billing state is derived from
         # `expiration` at read time, so a delinquent-but-synced row is still
         # shown correctly to the user. (We log stripe_status for visibility.)
-        cancel_at_period_end = bool(
-            subscription_data.get("cancel_at_period_end")
-        )
+        cancel_at_period_end = bool(subscription_data.get("cancel_at_period_end"))
         stripe_status = subscription_data.get("status")
         sync_status = SyncStatus.SYNCED
         subscription = (
@@ -1701,9 +1695,7 @@ class WebhookService:
 
                 case StripeWebhookEvent.BILLING_PORTAL_SESSION_CREATED:
                     # Informational only; nothing to mirror locally.
-                    logger.info(
-                        "Acknowledged billing_portal.session.created (no-op)"
-                    )
+                    logger.info("Acknowledged billing_portal.session.created (no-op)")
                     return {
                         "success": True,
                         "message": "Billing portal session acknowledged",
