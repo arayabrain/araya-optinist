@@ -1482,10 +1482,18 @@ class WebhookService:
             db, user_id, plan_id, expiration_date
         )
 
-        # 5. Mirror cancel_at_period_end -> scheduled_downgrade
+        # 5. Mirror cancel_at_period_end -> scheduled_downgrade and mark SYNCED.
+        # sync_status tracks whether the local DB reflects Stripe's current
+        # state (sync success), NOT billing health: a subscription we
+        # successfully mirrored is SYNCED even when Stripe reports
+        # past_due / unpaid / incomplete. Tier/billing state is derived from
+        # `expiration` at read time, so a delinquent-but-synced row is still
+        # shown correctly to the user. (We log stripe_status for visibility.)
         cancel_at_period_end = bool(
             subscription_data.get("cancel_at_period_end")
         )
+        stripe_status = subscription_data.get("status")
+        sync_status = SyncStatus.SYNCED
         subscription = (
             db.query(UserSubscription)
             .filter(UserSubscription.user_id == user_id)
@@ -1494,6 +1502,7 @@ class WebhookService:
         )
         if subscription:
             subscription.scheduled_downgrade = cancel_at_period_end
+            subscription.sync_status = sync_status
             subscription.updated_at = SubscriptionService.get_current_datetime()
 
         # 6. Sync storage quota to match the plan
@@ -1524,6 +1533,7 @@ class WebhookService:
         logger.info(
             f"Webhook: Synced subscription.{event_label} for user {user_id} "
             f"(plan_id={plan_id}, expiration={expiration_date}, "
+            f"stripe_status={stripe_status}, sync_status={sync_status}, "
             f"scheduled_downgrade={cancel_at_period_end})"
         )
         return {
@@ -1532,6 +1542,7 @@ class WebhookService:
             "plan_id": plan_id,
             "expiration": expiration_date,
             "scheduled_downgrade": cancel_at_period_end,
+            "sync_status": sync_status,
             "message": f"Subscription {event_label} synced",
         }
 

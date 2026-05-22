@@ -945,6 +945,9 @@ class TestSubscriptionLifecycleWebhooks:
         assert result["user_id"] == 42
         assert result["plan_id"] == 2
         assert result["scheduled_downgrade"] is False
+        # status="active" -> SYNCED
+        assert result["sync_status"] == SyncStatus.SYNCED
+        assert mock_subscription.sync_status == SyncStatus.SYNCED
         mock_upsert.assert_called_once()
         upsert_args = mock_upsert.call_args[0]
         assert upsert_args[1] == 42  # user_id
@@ -977,6 +980,37 @@ class TestSubscriptionLifecycleWebhooks:
         assert result["success"] is True
         assert result["scheduled_downgrade"] is True
         assert mock_subscription.scheduled_downgrade is True
+
+    def test_updated_past_due_still_marked_synced(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A successfully-mirrored delinquent subscription is SYNCED.
+
+        sync_status reflects DB<->Stripe sync success, not billing health, so
+        a past_due/unpaid/incomplete status that we wrote to the DB is still
+        SYNCED. Billing state is derived from `expiration` at read time.
+        """
+        subscription_event["status"] = "past_due"
+        mock_subscription = Mock()
+        mock_subscription.scheduled_downgrade = False
+        mock_subscription.sync_status = None
+        mock_subscription.updated_at = None
+        self._setup_query_chain(
+            mock_db, mock_user_account, mock_subscription, mock_user
+        )
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["sync_status"] == SyncStatus.SYNCED
+        assert mock_subscription.sync_status == SyncStatus.SYNCED
 
     def test_subscription_event_acknowledged_when_no_account(
         self, mock_db, subscription_event
