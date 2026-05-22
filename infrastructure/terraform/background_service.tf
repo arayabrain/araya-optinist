@@ -282,17 +282,6 @@ resource "aws_ecs_task_definition" "background" {
           value = "${var.environment}-premium-manager"
         },
       ]
-      secrets = [
-        {
-          name      = "AWS_ACCESS_KEY_ID"
-          valueFrom = "${aws_secretsmanager_secret.aws_credentials.arn}:AWS_ACCESS_KEY_ID::"
-        },
-        {
-          name      = "AWS_SECRET_ACCESS_KEY"
-          valueFrom = "${aws_secretsmanager_secret.aws_credentials.arn}:AWS_SECRET_ACCESS_KEY::"
-        },
-      ]
-
       mountPoints = [
         {
           sourceVolume  = "${var.environment}-background-optinist-cloud-snmk-volume"
