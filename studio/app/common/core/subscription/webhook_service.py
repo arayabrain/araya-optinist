@@ -1581,9 +1581,14 @@ class WebhookService:
         this the per-user EC2/ALB resources stay attached to a now-free user
         until logout / tab-close / stale-sweep. Best-effort: logs but does
         not raise, so a release failure never blocks webhook acknowledgement.
+
+        Uses a short timeout so a slow/hung release Lambda cannot stall the
+        webhook response (and trigger Stripe retries). If it times out, the
+        periodic premium-expiration sweep releases the assignment later.
         """
         # Local import avoids any import cycle with the subscription package.
         from studio.app.common.core.premium.premium_assignment_service import (
+            WEBHOOK_RELEASE_TIMEOUT_SECONDS,
             premium_assignment_service,
         )
 
@@ -1610,12 +1615,24 @@ class WebhookService:
 
         try:
             result = await premium_assignment_service.release_premium_user(
-                user_id=user.id, user_uid=user.uid, hard=True
+                user_id=user.id,
+                user_uid=user.uid,
+                hard=True,
+                timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
             )
-            logger.info(
-                f"Webhook: Released premium assignment for user {user.id} on "
-                f"subscription delete: {result.get('message')}"
-            )
+            if result.get("success"):
+                logger.info(
+                    f"Webhook: Released premium assignment for user {user.id} "
+                    f"on subscription delete: {result.get('message')}"
+                )
+            else:
+                # Not released in-band (e.g. timed out). The background sweep
+                # will release it; acknowledge the webhook regardless.
+                logger.warning(
+                    f"Webhook: Premium release not confirmed for user "
+                    f"{user.id}: {result.get('message')}; "
+                    "deferring to background sweep"
+                )
         except Exception as e:
             logger.error(
                 f"Webhook: Failed to release premium assignment for user "

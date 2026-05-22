@@ -1064,8 +1064,9 @@ class TestSubscriptionLifecycleWebhooks:
     async def test_release_premium_assignment_on_delete(
         self, mock_db, mock_user_account, mock_user, subscription_event
     ):
-        """The delete path hard-releases the user's premium assignment."""
+        """The delete path hard-releases with the short webhook timeout."""
         from studio.app.common.core.premium.premium_assignment_service import (
+            WEBHOOK_RELEASE_TIMEOUT_SECONDS,
             premium_assignment_service,
         )
 
@@ -1089,8 +1090,45 @@ class TestSubscriptionLifecycleWebhooks:
             )
 
         mock_release.assert_awaited_once_with(
-            user_id=42, user_uid="user_uid_42", hard=True
+            user_id=42,
+            user_uid="user_uid_42",
+            hard=True,
+            timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
         )
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_continues_on_timeout(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A fail-open (timed-out) release must not raise; webhook still acks."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+        timed_out = {
+            "success": False,
+            "timed_out": True,
+            "message": "Release timed out",
+        }
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(return_value=timed_out),
+        ) as mock_release:
+            # Must not raise even though release reports failure.
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+        mock_release.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_release_premium_assignment_no_account_is_noop(
