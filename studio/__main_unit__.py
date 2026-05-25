@@ -26,6 +26,9 @@ from studio.app.common.core.middleware import (
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
+from studio.app.common.core.middleware.spa_routing_middleware import (
+    INDEX_HTML_CACHE_HEADERS,
+)
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
@@ -316,10 +319,14 @@ build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
 @app.get("/")
 async def root(request: Request):
     if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
-        return build_templates.TemplateResponse("index.html", {"request": request})
+        return build_templates.TemplateResponse(
+            "index.html", {"request": request}, headers=INDEX_HTML_CACHE_HEADERS
+        )
     else:
         return public_templates.TemplateResponse(
-            "no-built-pages.html", {"request": request}
+            "no-built-pages.html",
+            {"request": request},
+            headers=INDEX_HTML_CACHE_HEADERS,
         )
 
 
