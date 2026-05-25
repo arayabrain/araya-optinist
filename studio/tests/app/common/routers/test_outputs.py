@@ -23,7 +23,7 @@ timeseries_dirpath = (
 
 
 def test_inittimedata(client):
-    response = client.get(f"/outputs/inittimedata/{timeseries_dirpath}")
+    response = client.get(f"/api/visualizations/inittimedata/{timeseries_dirpath}")
     data = response.json()
 
     assert response.status_code == 200
@@ -44,7 +44,9 @@ def test_inittimedata(client):
 
 def test_timedata(client):
     index = 0
-    response = client.get(f"/outputs/timedata/{timeseries_dirpath}/?index={index}")
+    response = client.get(
+        f"/api/visualizations/timedata/{timeseries_dirpath}/?index={index}"
+    )
     data = response.json()
 
     assert response.status_code == 200
@@ -57,7 +59,9 @@ def test_timedata(client):
     assert data["data"]["0"]["0"] == 479.916595459
 
     index = 1
-    response = client.get(f"/outputs/timedata/{timeseries_dirpath}/?index={index}")
+    response = client.get(
+        f"/api/visualizations/timedata/{timeseries_dirpath}/?index={index}"
+    )
     data = response.json()
 
     assert response.status_code == 200
@@ -67,7 +71,7 @@ def test_timedata(client):
 
 
 def test_alltimedata(client):
-    response = client.get(f"/outputs/alltimedata/{timeseries_dirpath}")
+    response = client.get(f"/api/visualizations/alltimedata/{timeseries_dirpath}")
     data = response.json()
 
     assert response.status_code == 200
@@ -95,7 +99,7 @@ if not os.path.exists(input_dst) or not os.path.samefile(input_src, input_dst):
 
 def test_image(client):
     response = client.get(
-        f"/outputs/image/{tif_filepath}?workspace_id={tif_workspace_id}"
+        f"/api/visualizations/image/{tif_filepath}?workspace_id={tif_workspace_id}"
     )
     data = response.json()
 

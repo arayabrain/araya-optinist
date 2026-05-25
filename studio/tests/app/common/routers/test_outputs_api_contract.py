@@ -8,14 +8,14 @@ Frontend interfaces are defined in:
   frontend/src/api/outputs/Outputs.ts
 
 Tested endpoints:
-  - GET  /outputs/inittimedata/{path}  -> TimeSeriesData response
-  - GET  /outputs/timedata/{path}      -> TimeSeriesData response
-  - GET  /outputs/alltimedata/{path}   -> TimeSeriesData response
-  - GET  /outputs/data/{path}          -> HeatMapData/ScatterData/BarData response
-  - GET  /outputs/image/{path}         -> ImageData response
-  - GET  /outputs/csv/{path}           -> CsvData response
-  - GET  /outputs/matlab/{path}        -> MatlabData response
-  - GET  /outputs/html/{path}          -> HTMLData response
+  - GET /api/visualizations/inittimedata/{path} -> TimeSeriesData response
+  - GET /api/visualizations/timedata/{path}     -> TimeSeriesData response
+  - GET /api/visualizations/alltimedata/{path}  -> TimeSeriesData response
+  - GET /api/visualizations/data/{path}     -> HeatMapData/ScatterData/BarData response
+  - GET /api/visualizations/image/{path}        -> ImageData response
+  - GET /api/visualizations/csv/{path}          -> CsvData response
+  - GET /api/visualizations/matlab/{path}       -> MatlabData response
+  - GET /api/visualizations/html/{path}         -> HTMLData response
 """
 
 # ============================================================================
