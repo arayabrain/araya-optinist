@@ -195,4 +195,37 @@ describe("initChunkReloadHandler", () => {
       jest.useRealTimers()
     }
   })
+
+  it("stops propagation on matched chunk-load rejections", () => {
+    initChunkReloadHandler()
+    const downstream = jest.fn()
+    window.addEventListener("unhandledrejection", downstream)
+    try {
+      const error = new Error("Loading chunk 5 failed.")
+      error.name = "ChunkLoadError"
+      const event = new Event("unhandledrejection") as PromiseRejectionEvent
+      Object.defineProperty(event, "reason", { value: error })
+      window.dispatchEvent(event)
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      expect(downstream).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener("unhandledrejection", downstream)
+    }
+  })
+
+  it("removes its window listeners on _resetForTesting", () => {
+    initChunkReloadHandler()
+    _resetForTesting()
+    // Sink absorbs the event so jsdom doesn't surface it as uncaught.
+    const sink = jest.fn()
+    window.addEventListener("error", sink)
+    try {
+      const error = new Error("Loading chunk 8 failed.")
+      error.name = "ChunkLoadError"
+      window.dispatchEvent(new ErrorEvent("error", { error }))
+      expect(reloadMock).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener("error", sink)
+    }
+  })
 })

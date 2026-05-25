@@ -8,6 +8,9 @@ const _originalWarn = console.warn.bind(console)
 
 let _initialized = false
 let _guardClearTimer: ReturnType<typeof setTimeout> | null = null
+let _errorListener: ((event: ErrorEvent) => void) | null = null
+let _rejectionListener: ((event: PromiseRejectionEvent) => void) | null = null
+let _loadListener: (() => void) | null = null
 
 export function isChunkLoadError(value: unknown): boolean {
   if (!value) return false
@@ -55,20 +58,24 @@ export function initChunkReloadHandler() {
   if (_initialized) return
   _initialized = true
 
-  window.addEventListener("error", (event) => {
+  _errorListener = (event) => {
     if (isChunkLoadError(event.error) || isChunkLoadError(event.message)) {
       triggerChunkReload()
     }
-  })
+  }
+  window.addEventListener("error", _errorListener)
 
-  window.addEventListener("unhandledrejection", (event) => {
+  _rejectionListener = (event) => {
     if (isChunkLoadError(event.reason)) {
+      // Block errorReporter's later listener from shipping deploy-time noise.
+      event.stopImmediatePropagation()
       triggerChunkReload()
     }
-  })
+  }
+  window.addEventListener("unhandledrejection", _rejectionListener)
 
   // Delay the clear so a chunk failure firing just after `load` can't bypass the guard.
-  window.addEventListener("load", () => {
+  _loadListener = () => {
     _guardClearTimer = setTimeout(() => {
       try {
         sessionStorage.removeItem(RELOAD_FLAG_KEY)
@@ -76,7 +83,8 @@ export function initChunkReloadHandler() {
         // No-op.
       }
     }, GUARD_CLEAR_DELAY_MS)
-  })
+  }
+  window.addEventListener("load", _loadListener)
 }
 
 export function _resetForTesting() {
@@ -84,6 +92,18 @@ export function _resetForTesting() {
   if (_guardClearTimer) {
     clearTimeout(_guardClearTimer)
     _guardClearTimer = null
+  }
+  if (_errorListener) {
+    window.removeEventListener("error", _errorListener)
+    _errorListener = null
+  }
+  if (_rejectionListener) {
+    window.removeEventListener("unhandledrejection", _rejectionListener)
+    _rejectionListener = null
+  }
+  if (_loadListener) {
+    window.removeEventListener("load", _loadListener)
+    _loadListener = null
   }
   try {
     sessionStorage.removeItem(RELOAD_FLAG_KEY)
