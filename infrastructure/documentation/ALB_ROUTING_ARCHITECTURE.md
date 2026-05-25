@@ -8,6 +8,7 @@
 - **Backend validation** regenerates routing IDs from JWT and rejects mismatches with 403
 - **Immediate tier changes** via webhook-triggered cache invalidation (no TTL delay)
 - **503 fallback** automatically retries on free tier when premium instance is unavailable, and raises a user-visible warning plus a half-open circuit that re-probes the instance for recovery
+- **Static rule band** (priorities 200-320) splits unauthenticated, bootstrap, and public-dataview traffic onto the public tier, with the listener default action serving the SPA shell from public
 
 ---
 
@@ -76,6 +77,34 @@ sequenceDiagram
 | 503 fallback to free | No | No | Yes - Strip headers, retry, emit `premiumUnreachable` event |
 | Detect instance recovery | No | No | Yes - Half-open probe + `premiumReachable` event |
 | Surface degraded state | No | No | Yes - Warning snackbar with terminal retry action |
+
+---
+
+## Static Listener Rule Band (Tier Split)
+
+Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager Lambda). The static rules below, defined in `infrastructure/terraform/public_alb_rules.tf`, split the remaining traffic between the public tier and the free tier. Lower priority numbers win; the listener default action is the final fallback.
+
+| Priority | Rule | Target | Match |
+|---|---|---|---|
+| 100-199 | premium dynamic rules | Premium instance | `X-Routing-ID` + `X-User-Tier` (Lambda-created) |
+| 200 | `sync_experiment_to_public` | Public | `/system-internal/sync-experiment/*` |
+| 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |
+| 280 | `outputs_public_header` | Public | `/outputs/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
+| 300 | `public_dataview_api` | Public | `/api/public/dataview`, `/api/public/dataview/*` |
+| 305 | `auth_to_public` | Public | `/auth/*` |
+| 306 | `users_me_to_public` | Public | `/users/me`, `/users/me/*` |
+| 307 | `log_report_to_public` | Public | `/log-report/*` |
+| 310 | `static_assets_to_public` | Public | `/static/*`, `/images/*`, `/favicon.ico`, `/manifest.json`, `/robots.txt` |
+| 311 | `docs_to_public` | Public | `/docs`, `/docs/*`, `/openapi`, `/redoc`, `/health` |
+| 312 | `asset_manifest_to_public` | Public | `/asset-manifest.json` |
+| 315 | `outputs_authenticated_to_free` | Free | `/outputs/*` (own-data reads) |
+| 316 | `anonymous_flows_to_free` | Free | `/api/register/*`, `/api/subsc/webhooks/*` |
+| 320 | `authenticated_to_free` | Free | `Authorization: Bearer *` |
+| default | listener default action | Public | no rule match (SPA document requests) |
+
+**Why bootstrap routes go to public:** `auth`, `users_me`, and `log-report` are served from the public tier so login, the post-login bootstrap calls, and client-error reporting keep working when the free tier is scaled to zero. Without these rules those requests would hit the priority-320 Bearer catch-all and 503 during a free outage.
+
+**Why the default action is public:** open-ended SPA routes (e.g. `/workspaces/15`) cannot be enumerated as rules. A browser document request carries `Accept: text/html` and no `Authorization` header, so it misses every rule and falls through to the default action, which serves the static SPA shell from public via `SPARoutingMiddleware`. See `PUBLIC_INSTANCE_ARCHITECTURE.md`.
 
 ---
 
