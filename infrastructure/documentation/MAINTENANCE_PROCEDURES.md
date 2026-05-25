@@ -423,6 +423,7 @@ When an alarm fires, follow the procedure for that alarm category.
 |---|---|---|
 | `subscr-optinist-load-average-high` | EC2 CPU > 80% (2 periods) | Check if user workloads are unusually heavy. May need larger instances. |
 | `subscr-optinist-high-iowait` | I/O wait > 30% (2 periods) | Check EFS throughput, disk-heavy operations. Consider EFS provisioned throughput. |
+| `subscr-optinist-ebs-queue-length-high` | EBS I/O queue > 8 (2 of 3 min) | Disk saturation — check for heavy Snakemake I/O. Sustained saturation can fail health checks and evict the instance. |
 
 ### RDS Alarms
 
@@ -443,8 +444,11 @@ When an alarm fires, follow the procedure for that alarm category.
 
 | Alarm | Threshold | Action |
 |---|---|---|
-| `subscr-optinist-alb-5xx-errors` | > 10 5XX errors (2 periods of 60s) | **HIGH PRIORITY.** Check ECS task health, recent deployments, application logs. |
-| `subscr-optinist-alb-response-time-high` | Avg > 5s (2 periods) | Check RDS performance, ECS resource utilization, heavy user workloads. |
+| `subscr-optinist-alb-5xx-errors` | >= 20 5XX errors in 5 min | **HIGH PRIORITY.** A sustained error storm. Check ECS task health, recent deployments, application logs. |
+| `subscr-optinist-free-tg-response-time-high` | p95 > 10s for 25 of 30 min | Persistent (not transient) latency. Check RDS, ECS utilization, heavy workloads. |
+| `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/public-dataview latency. Check public instance health and cold-cache reads. |
+| `subscr-optinist-free-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Free workflow instance failing health checks. Check ECS task and EBS I/O. |
+| `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / public-dataview at risk. Check public ASG instances. |
 
 ### Background Service Alarms
 
@@ -466,12 +470,13 @@ When an alarm fires, follow the procedure for that alarm category.
 |---|---|---|
 | `subscr-premium-cpu-high` | CPU > 80% (2 periods) | Check premium user workload. May need larger instance type. |
 | `subscr-premium-memory-high` | Memory > 85% (3 periods) | Check for memory-intensive workflows. Review premium task definition limits. |
+| `subscr-premium-<user_id>-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Created/deleted per-user by the premium-manager Lambda. That user's dedicated instance is failing health checks. |
 
 ---
 
 ## Reference: Critical Alert Configuration
 
-Critical CloudWatch alarms send email notifications to `optinist-support@araya.org` via an SNS topic (`subscr-optinist-critical-alerts`, defined in `monitoring.tf`). Both `alarm_actions` and `ok_actions` are wired so the team is notified when an alarm fires and when it recovers.
+Critical CloudWatch alarms send email notifications to `optinist-support@araya.org` via an SNS topic (`subscr-optinist-critical-alerts`, defined in `monitoring.tf`). Most alarms wire both `alarm_actions` and `ok_actions`, so the team is notified when an alarm fires and when it recovers. The ALB 5XX and response-time alarms wire only `alarm_actions` (no recovery email) and treat missing data as not-breaching, to suppress the OK/INSUFFICIENT_DATA flapping that sparse traffic would otherwise generate.
 
 **Note:** After the initial `terraform apply`, AWS sends a confirmation email to the subscription endpoint. The subscription must be confirmed before alerts are delivered.
 
@@ -485,8 +490,12 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 | `subscr-optinist-rds-storage-low` | `monitoring.tf` | Database could become read-only if storage is exhausted |
 | `subscr-optinist-rds-cpu-high` | `monitoring.tf` | Database overloaded, queries slow or timing out |
 | `subscr-optinist-rds-connections-high` | `monitoring.tf` | Connection exhaustion → application errors |
-| `subscr-optinist-alb-5xx-errors` | `monitoring.tf` | Users are seeing server errors |
-| `subscr-optinist-alb-response-time-high` | `monitoring.tf` | Users experiencing >5s response times |
+| `subscr-optinist-alb-5xx-errors` | `monitoring.tf` | Sustained 5XX storm — users seeing server errors |
+| `subscr-optinist-free-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the free tier |
+| `subscr-optinist-public-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the public tier |
+| `subscr-optinist-free-tg-unhealthy-hosts` | `monitoring.tf` | Free workflow instance down |
+| `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / public-dataview at risk |
+| `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
 | `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
 

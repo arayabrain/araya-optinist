@@ -22,16 +22,19 @@ resource "aws_lambda_function" "premium_manager" {
       ALB_ARN                      = aws_lb.autoscaling.arn
       ALB_LISTENER_ARN             = aws_lb_listener.autoscaling_https.arn
       AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
-      PREMIUM_INSTANCE_IDS         = join(",", aws_instance.premium[*].id)
-      PREMIUM_LAUNCH_TEMPLATE_ID   = aws_launch_template.premium.id
-      PREMIUM_INSTANCE_TYPE        = var.premium_instance_type
-      CLUSTER_NAME                 = aws_ecs_cluster.main.name
-      PREMIUM_SERVICE_NAME         = aws_ecs_service.premium.name
-      RDS_HOST                     = aws_db_proxy.main.endpoint
-      RDS_USER                     = var.mysql_user
-      RDS_PASSWORD                 = var.mysql_password
-      RDS_DATABASE                 = var.mysql_database
-      ROUTING_SECRET_KEY           = var.routing_secret_key
+      # SNS topic wired into the per-user TG UnHealthyHostCount alarms the
+      # Lambda creates. Empty outside production (no critical-alerts topic).
+      CRITICAL_ALERTS_TOPIC_ARN  = try(local.critical_alerts_actions[0], "")
+      PREMIUM_INSTANCE_IDS       = join(",", aws_instance.premium[*].id)
+      PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
+      PREMIUM_INSTANCE_TYPE      = var.premium_instance_type
+      CLUSTER_NAME               = aws_ecs_cluster.main.name
+      PREMIUM_SERVICE_NAME       = aws_ecs_service.premium.name
+      RDS_HOST                   = aws_db_proxy.main.endpoint
+      RDS_USER                   = var.mysql_user
+      RDS_PASSWORD               = var.mysql_password
+      RDS_DATABASE               = var.mysql_database
+      ROUTING_SECRET_KEY         = var.routing_secret_key
       # Dynamic capacity settings (use existing ABSOLUTE_MAX + minimal new ones)
       PREMIUM_EXTRA_CAPACITY        = "1" # Extra instances for quick response
       PREMIUM_STANDBY_POOL_SIZE     = "1" # Number of stopped instances to maintain
@@ -531,6 +534,16 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
         Action = [
           "cloudwatch:PutMetricData",
           "cloudwatch:GetMetricData"
+        ]
+        Resource = "*"
+      },
+      # CloudWatch alarms for per-user premium target groups
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricAlarm",
+          "cloudwatch:DeleteAlarms",
+          "cloudwatch:DescribeAlarms"
         ]
         Resource = "*"
       },

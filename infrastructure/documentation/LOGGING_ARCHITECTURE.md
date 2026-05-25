@@ -435,12 +435,17 @@ Logs to stdout (captured by ECS awslogs driver). Covers:
 
 Configured in `ecs-user-data.sh`, publishes to `CWAgent` namespace:
 
-| Metric                | Type       | Collection Interval |
-|-----------------------|------------|---------------------|
-| `mem_used_percent`    | Memory     | Default (60s)       |
-| `cpu_usage_idle`      | CPU        | Default (60s)       |
-| `cpu_usage_iowait`    | CPU        | Default (60s)       |
-| `procstat` (all)      | Per-process| 60s                 |
+| Metric                     | Type   | Collection Interval |
+|----------------------------|--------|---------------------|
+| `mem_used_percent`         | Memory | Default (60s)       |
+| `cpu_usage_idle`           | CPU    | Default (60s)       |
+| `cpu_usage_iowait`         | CPU    | Default (60s)       |
+| `diskio_iops_in_progress`  | Disk   | Default (60s)       |
+| `diskio_io_time`           | Disk   | Default (60s)       |
+
+Every metric carries an `AutoScalingGroupName` dimension (`append_dimensions`)
+and is rolled up to the ASG level (`aggregation_dimensions`). Without this,
+the host-only dimension would never match the ASG-scoped alarms below.
 
 Also collects `/proc/loadavg` to log group `/aws/ec2/loadavg`.
 
@@ -677,19 +682,26 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 | `subscr-optinist-memory-low`       | MemoryUtilization         | < 10%        | AWS/ECS                |
 | `subscr-optinist-load-average-high`| CPUUtilization            | > 80%        | AWS/EC2                |
 | `subscr-optinist-high-iowait`      | cpu_usage_iowait          | > 30%        | CWAgent                |
+| `subscr-optinist-ebs-queue-length-high` | diskio_iops_in_progress | > 8 (2/3 min) | CWAgent              |
 | `subscr-optinist-rds-cpu-high`     | CPUUtilization            | > 80%        | AWS/RDS                |
 | `subscr-optinist-rds-connections-high` | DatabaseConnections   | > 80         | AWS/RDS                |
 | `subscr-optinist-rds-storage-low`  | FreeStorageSpace          | < 10 GB      | AWS/RDS                |
 | `subscr-optinist-efs-burst-credits-low` | BurstCreditBalance   | < 1 TB       | AWS/EFS                |
 | `subscr-optinist-efs-throughput-high` | PercentIOLimit         | > 80%        | AWS/EFS                |
-| `subscr-optinist-alb-5xx-errors`   | HTTPCode_Target_5XX_Count | > 10/min     | AWS/ApplicationELB     |
-| `subscr-optinist-alb-response-time-high` | TargetResponseTime  | > 5s         | AWS/ApplicationELB     |
+| `subscr-optinist-alb-5xx-errors`   | HTTPCode_Target_5XX_Count | >= 20 / 5 min | AWS/ApplicationELB    |
+| `subscr-optinist-free-tg-response-time-high` | TargetResponseTime | p95 > 10s (25/30 min) | AWS/ApplicationELB |
+| `subscr-optinist-public-tg-response-time-high` | TargetResponseTime | p95 > 5s (25/30 min) | AWS/ApplicationELB |
+| `subscr-optinist-free-tg-unhealthy-hosts`   | UnHealthyHostCount  | > 0          | AWS/ApplicationELB     |
+| `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount  | > 0          | AWS/ApplicationELB     |
+| `subscr-premium-<user_id>-tg-unhealthy-hosts` | UnHealthyHostCount | > 0 (created per-user by the premium-manager Lambda) | AWS/ApplicationELB |
 | `subscr-background-task-stopped`   | RunningTaskCount          | < 1          | ECS/ContainerInsights  |
 | `subscr-background-cpu-high`       | CpuUtilized               | > 400 units  | ECS/ContainerInsights  |
 | `subscr-background-memory-high`    | MemoryUtilized            | > 600 MB     | ECS/ContainerInsights  |
 | `subscr-monthly-cost-high` | TotalMonthlyCost          | > $500/day   | OptiNiSt/Cost          |
 | `subscr-premium-cpu-high`          | CPUUtilization            | > 80%        | AWS/ECS                |
 | `subscr-premium-memory-high`       | MemoryUtilization         | > 85%        | AWS/ECS                |
+
+**Alarm name prefixes differ by who creates them.** Terraform-managed alarms use the `subscr-optinist-` prefix (Terraform `local.env_prefix` = `<environment>-optinist`). Premium alarms created by the premium-manager/cleanup Lambdas use the bare `subscr-` prefix (the Lambdas' `ENV_PREFIX` = `<environment>`, matching their instance and target-group naming). When listing alarms, filter on `subscr-` to catch both; `subscr-optinist-` alone will miss every per-user premium alarm.
 
 ### CloudWatch Dashboard
 
