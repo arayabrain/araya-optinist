@@ -171,6 +171,10 @@ variable "subscription_plans" {
     stripe_product_id = string
     stripe_price_id   = string
     storage_quota_gb  = number
+    display_order     = optional(number, 0)
+    is_featured       = optional(bool, false)
+    tier              = optional(string)
+    is_hidden         = optional(bool, false)
     features = map(list(object({
       text      = string
       isPremium = bool

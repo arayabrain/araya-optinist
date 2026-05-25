@@ -82,6 +82,7 @@ class SubscriptionService:
             db.query(SubscriptionPlans)
             .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
             .filter(SubscriptionPlans.is_hidden.is_(False))
+            .order_by(SubscriptionPlans.display_order)
             .all()
         )
 
