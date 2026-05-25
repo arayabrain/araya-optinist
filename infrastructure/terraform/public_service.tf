@@ -143,7 +143,7 @@ resource "aws_autoscaling_group" "public" {
 }
 
 resource "aws_ecs_task_definition" "public" {
-  family                   = "${local.env_prefix}-public-optinist-cloud-taskdef"
+  family                   = "${var.environment}-public-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   # Reserves ~750 MiB for ECS/CW/SSM agents and kernel on a 2 GiB host.
@@ -174,6 +174,8 @@ resource "aws_ecs_task_definition" "public" {
         }
       ]
 
+      # Many of these vars are duplicated in compute.tf and background_service.tf;
+      # a shared value must be changed in all three task definitions.
       environment = [
         { name = "ENV_PREFIX", value = var.environment },
         { name = "AWS_DEFAULT_REGION", value = var.aws_region },
@@ -276,13 +278,13 @@ resource "aws_ecs_task_definition" "public" {
   }
 
   tags = {
-    Name = "${local.env_prefix}-public-optinist-cloud-taskdef"
+    Name = "${var.environment}-public-optinist-cloud-taskdef"
     Tier = "public"
   }
 }
 
 resource "aws_ecs_service" "public" {
-  name            = "${local.env_prefix}-public-optinist-cloud-service"
+  name            = "${var.environment}-public-optinist-cloud-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.public.arn
   desired_count   = var.public_asg_desired_capacity
@@ -312,13 +314,13 @@ resource "aws_ecs_service" "public" {
   ]
 
   tags = {
-    Name = "${local.env_prefix}-public-optinist-cloud-service"
+    Name = "${var.environment}-public-optinist-cloud-service"
     Tier = "public"
   }
 }
 
 resource "aws_cloudwatch_log_group" "public_optinist" {
-  name              = "/ecs/${local.env_prefix}-public-optinist-cloud-taskdef"
+  name              = "/ecs/${var.environment}-public-optinist-cloud-taskdef"
   retention_in_days = 30
 
   tags = {

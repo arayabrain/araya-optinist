@@ -208,15 +208,13 @@ def _should_run_startup_sync(instance_mode: str, is_standalone: bool) -> bool:
     return instance_mode == INSTANCE_MODE_PUBLIC
 
 
-def _register_routers(app: FastAPI, instance_mode: str) -> None:
-    """Register routers; workflow/optinist routers are gated on instance_mode.
-
-    Mounted on every tier so the SPA can bootstrap during a free-tier outage:
-    auth (login/refresh), users_me (the GET /users/me + premium-assign /
-    heartbeat / beacon set the SPA calls right after login), public dataview,
-    internal, outputs. Public-tier tasks still talk to the same RDS and
-    invoke the same premium-manager Lambda as free, so these routes work
-    identically whichever tier serves them.
+def _register_public_routers(app: FastAPI) -> None:
+    """Routers mounted on every tier so the SPA can bootstrap during a
+    free-tier outage: auth (login/refresh), users_me (the GET /users/me +
+    premium-assign / heartbeat / beacon set the SPA calls right after login),
+    public dataview, internal, outputs. Public-tier tasks still talk to the
+    same RDS and invoke the same premium-manager Lambda as free, so these
+    routes work identically whichever tier serves them.
     """
     app.include_router(dataview.public_router)
     app.include_router(internal.router)  # Internal secret auth, not JWT.
@@ -229,9 +227,9 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
     app.include_router(users_me.beacon_router)
     app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
 
-    if instance_mode == INSTANCE_MODE_PUBLIC:
-        return
 
+def _register_authenticated_routers(app: FastAPI) -> None:
+    """Workflow/optinist routers gated out of the public tier."""
     app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
     app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
     app.include_router(files.router, dependencies=[Depends(get_current_user)])
@@ -255,6 +253,13 @@ def _register_routers(app: FastAPI, instance_mode: str) -> None:
     app.include_router(mat.router, dependencies=[Depends(get_current_user)])
     app.include_router(nwb.router, dependencies=[Depends(get_current_user)])
     app.include_router(roi.router, dependencies=[Depends(get_current_user)])
+
+
+def _register_routers(app: FastAPI, instance_mode: str) -> None:
+    _register_public_routers(app)
+    if instance_mode == INSTANCE_MODE_PUBLIC:
+        return
+    _register_authenticated_routers(app)
 
 
 INSTANCE_MODE = os.environ.get(INSTANCE_MODE_ENV, INSTANCE_MODE_DEFAULT)
