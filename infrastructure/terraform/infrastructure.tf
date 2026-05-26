@@ -540,6 +540,32 @@ resource "aws_efs_access_point" "published_data" {
   }
 }
 
+# Separate subtree for the on-demand-synced raw input cache, kept off the lean
+# root EBS and isolated from the output cache so it can be swept independently.
+resource "aws_efs_access_point" "published_data_input" {
+  file_system_id = aws_efs_file_system.published_data.id
+
+  # Pin all access through this point to uid/gid 1000 so the container's writes
+  # and the cleanup Lambda's deletes share one owner.
+  posix_user {
+    uid = 1000
+    gid = 1000
+  }
+
+  root_directory {
+    path = "/input-cache"
+    creation_info {
+      owner_gid   = 1000
+      owner_uid   = 1000
+      permissions = "755"
+    }
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-published-data-input-ap"
+  }
+}
+
 # =========
 # Databases
 # =========
