@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 
 from studio.app.common.core.utils.file_reader import Reader
 from studio.app.common.core.utils.filepath_creater import (
@@ -77,6 +78,31 @@ class SmkStatusLogger:
             has_error = False
 
         return WorkflowErrorInfo(has_error=has_error, error_log=error_log)
+
+    @classmethod
+    def record_external_error(
+        cls, workspace_id: str, unique_id: str, message: str
+    ) -> None:
+        """
+        Append a terminal error to the workflow error log from outside the
+        snakemake worker process.
+
+        Used when the worker is terminated before it can log its own failure
+        (e.g. OOM-killed under the container memory cap). Appends rather than
+        truncates, so any error the worker managed to write before dying is
+        preserved. Once written, get_error_content() reports has_error=True and
+        WorkflowResult.observe() surfaces the run as errored on the next poll,
+        rather than leaving it stuck in "running".
+        """
+        log_file_path = cls.__get_error_log_file_path(workspace_id, unique_id)
+        create_directory(os.path.dirname(log_file_path))
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(log_file_path, "a") as f:
+                f.write(f"{timestamp} : ERROR - {message}\n")
+        except Exception as e:
+            print("[Exception][Logger]", e)
 
     def __init__(self, workspace_id, unique_id):
         self.workspace_id = workspace_id

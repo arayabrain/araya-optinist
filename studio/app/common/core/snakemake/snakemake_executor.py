@@ -2,6 +2,7 @@ import asyncio
 import os
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Dict, List
 
@@ -61,17 +62,33 @@ def snakemake_execute(
 
     try:
         logger.info("Starting local execution mode")
-        with ProcessPoolExecutor(max_workers=1) as executor:
-            logger.info("start snakemake running process.")
+        try:
+            with ProcessPoolExecutor(max_workers=1) as executor:
+                logger.info("start snakemake running process.")
 
-            future = executor.submit(
-                _snakemake_execute_process,
-                workspace_id,
-                unique_id,
-                params,
-                client_id=client_id,
+                future = executor.submit(
+                    _snakemake_execute_process,
+                    workspace_id,
+                    unique_id,
+                    params,
+                    client_id=client_id,
+                )
+                future_result = future.result()
+        except BrokenProcessPool as e:
+            # Phase A (#643): the worker process was terminated mid-run before
+            # it could return a result -- most commonly an OOM-kill once the
+            # workflow exhausted the container memory cap (+ bounded swap).
+            # Because the worker died, the failure-handling tail inside
+            # _snakemake_execute_process never ran, so without this the run
+            # would stay "running" until WorkflowMonitor's ~2h timeout.
+            # Surface the failure here so it appears immediately and in
+            # isolation (only this run fails; the API stays up).
+            logger.error(
+                "snakemake worker process terminated unexpectedly "
+                f"(likely out-of-memory): {e}"
             )
-            future_result = future.result()
+            _surface_terminated_workflow(workspace_id, unique_id)
+            return False
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
@@ -93,6 +110,70 @@ def snakemake_execute(
                 logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
 
 
+def _surface_terminated_workflow(workspace_id: str, unique_id: str) -> None:
+    """
+    Record a workflow failure from the parent process when the execution worker
+    was killed (e.g. OOM) and could not record its own failure.
+
+    Mirrors the failure-handling tail of `_snakemake_execute_process` so the run
+    transitions out of "running" immediately:
+      1. Write a terminal error to the workflow error log, so that
+         WorkflowResult.observe() reports the run as errored on the next poll.
+      2. Release the remote-sync lock so observe_overall() can read remote
+         storage (matches the failed-run branch in the worker).
+      3. Run observe_overall() now to flip the experiment/node status to error.
+      4. Force the remote sync status file into an error state.
+
+    Every step is best-effort and isolated so one failure cannot mask another.
+    """
+    error_message = (
+        "Workflow execution was terminated unexpectedly, most likely because it "
+        "exceeded the available memory (out-of-memory). Try reducing the input "
+        "data size or splitting the workflow into smaller steps."
+    )
+
+    # 1. Record the error so observe() reports has_error=True.
+    try:
+        SmkStatusLogger.record_external_error(workspace_id, unique_id, error_message)
+    except Exception as e:
+        logger.error(
+            f"Failed to record terminated-workflow error: {e}", exc_info=True
+        )
+
+    # 2. Release the sync lock (mirrors the failed-run branch in the worker).
+    if RemoteStorageController.is_available():
+        try:
+            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+        except Exception as e:
+            logger.error(f"Failed to delete sync lock file: {e}", exc_info=True)
+
+    # 3. Update workflow/experiment status now so the run is not stuck "running".
+    try:
+        asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+    except Exception as e:
+        logger.error(
+            f"Failed to update workflow result after termination: {e}",
+            exc_info=True,
+        )
+
+    # 4. Force the remote sync status file into an error state.
+    if RemoteStorageController.is_available():
+        try:
+            remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
+                workspace_id, unique_id
+            )
+            RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                RemoteSyncAction.UPLOAD,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to write error sync status file: {e}", exc_info=True
+            )
+
+
 @with_client_id_context  # Automatically set client_id for logging
 def _snakemake_execute_process(
     workspace_id: str,
@@ -103,6 +184,31 @@ def _snakemake_execute_process(
     # ------------------------------------------------------------
     # Snakemake execution process
     # ------------------------------------------------------------
+
+    # --- Phase A (#643): protect the API from this workflow's resource use.
+    # This child process -- and the snakemake / suite2p processes it spawns,
+    # which inherit these settings -- is made the first OOM-killer victim and
+    # de-prioritized, so a memory spike kills the workflow in isolation rather
+    # than uvicorn/the API. The idle-class IO priority is what lets the bounded
+    # container swap (see compute.tf linuxParameters) be used as a completion
+    # cushion for borderline-large runs without its swap I/O starving the API
+    # event loop and stalling /health.
+    try:
+        with open("/proc/self/oom_score_adj", "w") as _oom:
+            _oom.write("800")  # range -1000..1000; higher = killed first
+    except OSError:
+        pass
+    try:
+        os.nice(10)  # lower CPU priority -- keep the API event loop responsive
+    except OSError:
+        pass
+    try:
+        import psutil
+
+        psutil.Process().ionice(psutil.IOPRIO_CLASS_IDLE)  # lowest IO priority
+    except Exception:
+        pass
+    # --- end Phase A ---
 
     smk_logger = SmkStatusLogger(workspace_id, unique_id)
     smk_workdir = join_filepath(

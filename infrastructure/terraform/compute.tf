@@ -74,9 +74,16 @@ resource "aws_lb_target_group" "autoscaling" {
   target_type = "instance"
 
   health_check {
-    enabled             = true
-    healthy_threshold   = 2
-    unhealthy_threshold = 5
+    enabled           = true
+    healthy_threshold = 2
+    # Phase A (#643): with interval=60 this tolerates 8 min of failing checks
+    # before the task is evicted -- covering the worst-case window in which a
+    # bounded-swap workflow could briefly slow /health (a 4 GB swap budget on
+    # gp3 drains in a few minutes) plus an OOM-kill/restart -- so a transient
+    # spike can't evict an otherwise-healthy API. ASG health_check_type=ELB
+    # (grace 900s) + the ECS service (desired_count=1) relaunch a task that is
+    # genuinely killed.
+    unhealthy_threshold = 8
     interval            = 60
     matcher             = "200"
     path                = "/health"
@@ -593,9 +600,23 @@ resource "aws_ecs_task_definition" "autoscaling" {
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
+      # Phase A (#643): bound (do not eliminate) container swap. The original
+      # incident let a workflow spill into the full 32 GB swap volume and
+      # thrash the gp3 disk for ~25 min, which stalled /health and took the
+      # whole site down. Capping maxSwap gives borderline-large runs a limited
+      # cushion to finish (RAM 6656 MiB + this swap budget), while guaranteeing
+      # a runaway run is OOM-killed in isolation once it exhausts that budget --
+      # rather than thrashing indefinitely. Low swappiness keeps pages resident
+      # under normal load so /health stays fast; the workflow child is also
+      # de-prioritized (nice + idle-class ionice, see snakemake_executor.py) so
+      # its swap I/O cannot starve the API event loop.
+      # TUNING KNOB: raise maxSwap to complete larger runs (more thrash risk);
+      # lower it toward 0 to prioritise strict /health protection. Validate any
+      # change against the issue-625 suite2p load (/health must stay at 0
+      # failures for the whole run).
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        maxSwap    = 4096
+        swappiness = 10
       }
 
       portMappings = [
@@ -768,6 +789,16 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
+        },
+        # Phase A (#643): fewer uvicorn workers on the memory-constrained free
+        # instance. Each worker loads the full app (~hundreds of MB resident),
+        # so dropping the default 5 -> 2 frees ~0.5-1 GB of RAM for the workflow
+        # -- letting more runs complete entirely in memory (no swap) -- while
+        # still leaving ample capacity for the API's mostly-async, low-
+        # concurrency free-tier load.
+        {
+          name  = "UVICORN_WORKERS"
+          value = "2"
         },
       ]
       mountPoints = [
