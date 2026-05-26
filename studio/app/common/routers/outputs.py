@@ -908,6 +908,7 @@ async def get_structured_data(
     node_id: str,
     start_index: Optional[int] = 0,
     end_index: Optional[int] = 10,
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     try:
         config = WorkflowConfigReader.read(workspace_id, unique_id)
@@ -925,6 +926,13 @@ async def get_structured_data(
         raise HTTPException(status_code=400, detail="Node has no file path")
 
     full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
+    if not os.path.exists(full_path):
+        # Input data is synced lazily to keep the cache lean; fetch it on demand
+        # before giving up, as the other outputs endpoints do.
+        await _ensure_visualization_synced(
+            join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id]),
+            remote_bucket_name,
+        )
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 

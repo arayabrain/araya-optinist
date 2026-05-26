@@ -329,3 +329,43 @@ def test_structured_3d_default_pagination(client):
     assert data["data_type"] == "images"
     assert len(data["data"]) == 10
     assert data["total_frames"] == 10
+
+
+@pytest.mark.asyncio
+async def test_structured_missing_input_triggers_on_demand_sync():
+    """A missing input must trigger an on-demand sync before 404, so public
+    viewers get the lazily-synced input data (mirrors the other endpoints)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from studio.app.common.routers.outputs import get_structured_data
+
+    node = MagicMock()
+    node.data.path = "lazy_input.h5"
+    node.data.hdf5Path = "x"
+    node.data.matPath = None
+    config = MagicMock()
+    config.nodeDict.get.return_value = node
+
+    with patch(
+        "studio.app.common.routers.outputs.WorkflowConfigReader.read",
+        return_value=config,
+    ), patch(
+        "studio.app.common.routers.outputs.os.path.exists", return_value=False
+    ), patch(
+        "studio.app.common.routers.outputs._ensure_visualization_synced",
+        new_callable=AsyncMock,
+    ) as mock_sync:
+        with pytest.raises(HTTPException) as exc:
+            await get_structured_data(
+                workspace_id="6",
+                unique_id="abc123",
+                node_id="n",
+                remote_bucket_name="bucket-x",
+            )
+
+    # The fix: sync is attempted (with the experiment's output dir) before 404.
+    mock_sync.assert_awaited_once()
+    assert mock_sync.await_args.args[1] == "bucket-x"
+    assert exc.value.status_code == 404
