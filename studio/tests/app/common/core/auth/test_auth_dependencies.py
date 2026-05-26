@@ -146,7 +146,9 @@ class TestGetOutputsRemoteBucketName:
     async def test_returns_user_bucket_when_no_workspace_id(self):
         """Authenticated user should get their own bucket
         when workspace can't be determined"""
-        mock_req = create_mock_request("/outputs/image/some/path/without/workspace")
+        mock_req = create_mock_request(
+            "/api/visualizations/image/some/path/without/workspace"
+        )
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.remote_bucket_name = "user-bucket-123"
@@ -168,7 +170,7 @@ class TestGetOutputsRemoteBucketName:
         from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 
         mock_req = create_mock_request(
-            "/outputs/image//app/studio_data/output/123/abc123/file.json"
+            "/api/visualizations/image//app/studio_data/output/123/abc123/file.json"
         )
         mock_db = MagicMock()
         mock_user = MagicMock()
@@ -208,7 +210,7 @@ class TestGetOutputsRemoteBucketName:
         from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 
         mock_req = create_mock_request(
-            "/outputs/image//app/studio_data/output/999/abc123/file.json"
+            "/api/visualizations/image//app/studio_data/output/999/abc123/file.json"
         )
         mock_db = MagicMock()
         mock_user = MagicMock()
@@ -244,7 +246,7 @@ class TestGetOutputsRemoteBucketName:
         from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 
         mock_req = create_mock_request(
-            "/outputs/image//app/studio_data/output/999/abc123/file.json"
+            "/api/visualizations/image//app/studio_data/output/999/abc123/file.json"
         )
         mock_db = MagicMock()
         mock_user = MagicMock()
@@ -293,7 +295,7 @@ class TestGetOutputsRemoteBucketName:
         from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 
         mock_req = create_mock_request(
-            "/outputs/image//app/studio_data/output/123/abc123/file.json"
+            "/api/visualizations/image//app/studio_data/output/123/abc123/file.json"
         )
         mock_db = MagicMock()
 
@@ -329,7 +331,7 @@ class TestGetOutputsRemoteBucketName:
             RemoteStorageType,
         )
 
-        mock_req = create_mock_request("/outputs/image/some/invalid/path")
+        mock_req = create_mock_request("/api/visualizations/image/some/invalid/path")
         mock_db = MagicMock()
 
         # Create a mock ExptOutputPathIds with None values (invalid path)
@@ -358,7 +360,7 @@ class TestGetOutputsRemoteBucketName:
         from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 
         mock_req = create_mock_request(
-            "/outputs/image/some/path", {"workspace_id": "456"}
+            "/api/visualizations/image/some/path", {"workspace_id": "456"}
         )
         mock_db = MagicMock()
 
@@ -396,7 +398,7 @@ class TestGetOutputsRemoteBucketName:
         # URL path doesn't contain full DIRPATH.OUTPUT_DIR prefix
         # Both workspace_id and unique_id in query params
         mock_req = create_mock_request(
-            "/outputs/image/7/tutorial2/cell_roi.json",
+            "/api/visualizations/image/7/tutorial2/cell_roi.json",
             {"workspace_id": "7", "unique_id": "tutorial2"},
         )
         mock_db = MagicMock()

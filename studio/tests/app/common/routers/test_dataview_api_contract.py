@@ -434,7 +434,7 @@ def test_contract_public_request_header_detection():
     """
     Contract test: Backend correctly detects public request header.
 
-    When frontend sends DATAVIEW_PUBLIC_REQUEST header on /outputs/* URLs,
+    When frontend sends DATAVIEW_PUBLIC_REQUEST header on /api/visualizations/* URLs,
     backend should recognize it as a public data request.
     """
     from unittest.mock import MagicMock
@@ -444,7 +444,7 @@ def test_contract_public_request_header_detection():
     # Mock request with public header
     mock_request = MagicMock()
     mock_request.headers = {"dataview_public_request": "true"}  # lowercase in headers
-    mock_request.url.path = "/outputs/image/some/path"
+    mock_request.url.path = "/api/visualizations/image/some/path"
 
     result = DataviewService.is_dataview_public_outputs_request(mock_request)
 
@@ -453,7 +453,7 @@ def test_contract_public_request_header_detection():
 
 def test_contract_public_request_requires_outputs_path():
     """
-    Contract test: Public request header only valid for /outputs/* paths.
+    Contract test: Public request header only valid for /api/visualizations/* paths.
 
     The DATAVIEW_PUBLIC_REQUEST header is only recognized on outputs endpoints.
     Other endpoints require normal authentication.
@@ -469,7 +469,7 @@ def test_contract_public_request_requires_outputs_path():
 
     result = DataviewService.is_dataview_public_outputs_request(mock_request)
 
-    assert not result, "Public header should only work on /outputs/* paths"
+    assert not result, "Public header should only work on /api/visualizations/* paths"
 
 
 def test_contract_publish_status_values():

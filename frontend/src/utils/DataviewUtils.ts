@@ -7,7 +7,7 @@ export const isDataviewPublicOutputsRequest = (url: string): boolean => {
   const isPublicDataviewPage = path === "/public" || path.startsWith("/public/")
 
   // Checks whether the request is to the outputs API
-  const isOutputsApi = !!url && url.includes("/outputs/")
+  const isOutputsApi = !!url && url.includes("/api/visualizations/")
 
   return isPublicDataviewPage && isOutputsApi
 }

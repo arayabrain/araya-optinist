@@ -15,7 +15,7 @@ import { LegendClickEvent } from "plotly.js"
 
 import { LinearProgress, Typography } from "@mui/material"
 
-import { TimeSeriesData } from "api/outputs/Outputs"
+import { TimeSeriesData } from "api/visualizations/Outputs"
 import {
   DialogContext,
   useRoisSelected,
