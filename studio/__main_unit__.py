@@ -257,7 +257,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["x-user-tier", "x-routing-id"],
+    # Routing headers issued by SecureRoutingMiddleware.
+    # Canonical definitions: infrastructure/aws_constants.py (RoutingHeaders class)
+    expose_headers=["x-user-tier", "x-routing-id", "x-served-by-instance"],
 )
 
 app.add_middleware(SPARoutingMiddleware)

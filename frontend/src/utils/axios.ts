@@ -20,6 +20,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   _retryWithoutPremium?: boolean
   _hadPremiumHeaders?: boolean
   _outgoingRoutingId?: string
+  _outgoingInstanceId?: string
   _premiumSentAt?: number
 }
 
@@ -56,6 +57,10 @@ axios.interceptors.request.use(
         ;(config as CustomAxiosRequestConfig)._outgoingRoutingId =
           outgoingRoutingId
         ;(config as CustomAxiosRequestConfig)._premiumSentAt = Date.now()
+        const instanceId = routingService.getPremiumInstanceId()
+        if (instanceId) {
+          ;(config as CustomAxiosRequestConfig)._outgoingInstanceId = instanceId
+        }
       }
     }
 
@@ -240,6 +245,7 @@ const handlePremiumRoutingError = async (
   // Strip premium markers — retry is shared-tier, must not emit reachable.
   delete retryConfig._hadPremiumHeaders
   delete retryConfig._outgoingRoutingId
+  delete retryConfig._outgoingInstanceId
   delete retryConfig._premiumSentAt
 
   try {
@@ -253,6 +259,41 @@ const handlePremiumRoutingError = async (
   }
 }
 
+/**
+ * Determines whether a successful response confirms the premium
+ * dedicated instance is reachable.
+ *
+ * Returns true only when ALL of:
+ *  1. The request carried premium routing headers
+ *  2. The routing-id was NOT rotated (same user identity)
+ *  3. The serving instance matches the expected dedicated instance
+ *     (or the expected instance is unknown — startup race fallback)
+ */
+function shouldEmitPremiumReachable(
+  res: AxiosResponse,
+  cfg: CustomAxiosRequestConfig | undefined,
+): boolean {
+  if (!cfg?._hadPremiumHeaders) return false
+
+  const routingIdHeader = RoutingHeaders.ROUTING_ID.toLowerCase()
+  const routingId = res.headers[routingIdHeader]
+  const routingIdRotated =
+    typeof routingId === "string" && routingId !== cfg._outgoingRoutingId
+  if (routingIdRotated) return false
+
+  // Instance identity check — closes the ALB fallback gap (issue #566).
+  const outgoingInstanceId = cfg._outgoingInstanceId
+  if (outgoingInstanceId) {
+    const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()
+    const servedByInstance = res.headers[servedByHeader]
+    if (servedByInstance !== outgoingInstanceId) return false
+  }
+  // If outgoingInstanceId is unset (startup race before assignment API returned),
+  // fall back to routing-id-only check — no regression for that path.
+
+  return true
+}
+
 axios.interceptors.response.use(
   async (res) => {
     // Extract routing headers from backend response
@@ -263,18 +304,13 @@ axios.interceptors.response.use(
       routingService.updateRoutingToken(routingId)
     }
 
-    // Rotated routing_id means a different instance served us — inconclusive about the one we probed.
     const cfg = res.config as CustomAxiosRequestConfig | undefined
-    if (cfg?._hadPremiumHeaders) {
-      const rotated =
-        typeof routingId === "string" && routingId !== cfg._outgoingRoutingId
-      if (!rotated) {
-        routingService.emitPremiumReachable({
-          url: cfg.url,
-          status: res.status,
-          sentAt: cfg._premiumSentAt,
-        })
-      }
+    if (shouldEmitPremiumReachable(res, cfg)) {
+      routingService.emitPremiumReachable({
+        url: cfg!.url,
+        status: res.status,
+        sentAt: cfg!._premiumSentAt,
+      })
     }
     return res
   },

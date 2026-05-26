@@ -40,6 +40,7 @@ const mockEmitPremiumReachable = jest.fn<
   void,
   [{ url?: string; status?: number; sentAt?: number }]
 >()
+const mockGetPremiumInstanceId = jest.fn<string | null, []>(() => null)
 
 const mockIsDataviewPublicOutputsRequest = jest.fn<boolean, [string]>(
   () => false,
@@ -64,6 +65,7 @@ jest.mock("utils/routing/RoutingService", () => ({
     setPremiumAssigned: mockSetPremiumAssigned,
     emitPremiumUnreachable: mockEmitPremiumUnreachable,
     emitPremiumReachable: mockEmitPremiumReachable,
+    getPremiumInstanceId: mockGetPremiumInstanceId,
   },
 }))
 
@@ -323,5 +325,102 @@ describe("axios premium-routing interceptors", () => {
     // interceptor on retry (it goes through axiosLibrary), so no reachable
     // signal is emitted. This pins the existing behaviour.
     expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
+  // --- Instance identity (X-Served-By-Instance) tests ---
+
+  it("does NOT emit reachable when routing-id matches but x-served-by-instance mismatches (ALB fallback detection)", async () => {
+    // Core fix for issue #566: if the dedicated instance is down, ALB may
+    // fall back to the shared backend. Routing-id matches (it's UID-based)
+    // but x-served-by-instance differs. Must NOT emit reachable.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
+
+    responses.set("/fallback", {
+      status: 200,
+      data: {},
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "different-instance-hash",
+      },
+    })
+    await axiosInstance.get("/fallback")
+
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
+  it("emits reachable when both routing-id and instance-id match", async () => {
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
+
+    responses.set("/match", {
+      status: 200,
+      data: {},
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "expected-instance-hash",
+      },
+    })
+    await axiosInstance.get("/match")
+
+    expect(mockEmitPremiumReachable).toHaveBeenCalledTimes(1)
+  })
+
+  it("emits reachable when _outgoingInstanceId is unset (startup race — backward compat)", async () => {
+    // Before the assignment API returns, getPremiumInstanceId() returns null.
+    // In this case, fall back to the routing-id-only check — same as before
+    // the fix, no regression.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue(null)
+
+    responses.set("/startup-race", {
+      status: 200,
+      data: {},
+      headers: { "x-routing-id": "rid-outgoing" },
+    })
+    await axiosInstance.get("/startup-race")
+
+    expect(mockEmitPremiumReachable).toHaveBeenCalledTimes(1)
+  })
+
+  it("on 503 premium fallback, strips _outgoingInstanceId on the retry config", async () => {
+    mockGetRoutingHeaders.mockImplementation(() => ({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    }))
+    mockGetPremiumInstanceId.mockReturnValue("my-instance-hash")
+    mockRequiresPremiumRouting.mockReturnValue(true)
+
+    let callCount = 0
+    responses.set("/svc2", () => {
+      callCount += 1
+      if (callCount === 1) {
+        return { status: 503, data: { detail: "no premium" } }
+      }
+      return { status: 200, data: { ok: true }, headers: {} }
+    })
+
+    mockGetRoutingHeaders
+      .mockReturnValueOnce({
+        "X-Routing-ID": "rid-outgoing",
+        "X-User-Tier": "premium",
+      })
+      .mockReturnValue({})
+
+    await axiosInstance.get("/svc2")
+
+    // The retry must have _outgoingInstanceId stripped.
+    expect(recorded).toHaveLength(2)
+    const retryConfig = recorded[1].config as Record<string, unknown>
+    expect(retryConfig._outgoingInstanceId).toBeUndefined()
   })
 })

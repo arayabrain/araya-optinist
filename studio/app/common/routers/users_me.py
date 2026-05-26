@@ -10,6 +10,10 @@ from studio.app.common.core.cloud.cloud_utils import (
 )
 from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.secure_routing_middleware import (
+    ROUTING_SECRET_KEY,
+    generate_instance_hash,
+)
 from studio.app.common.core.middleware.user_activity_middleware import (
     increment_heartbeat_failures,
     invalidate_activity_cache,
@@ -105,9 +109,15 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
         )
 
         if result["success"]:
+            instance_id = result.get("instance_id")
             response = {
                 "message": result["message"],
-                "instance_id": result.get("instance_id"),
+                "instance_id": instance_id,
+                "instance_id_hash": (
+                    generate_instance_hash(instance_id, ROUTING_SECRET_KEY)
+                    if instance_id
+                    else None
+                ),
                 "assigned": True,
                 "is_shared": result.get("is_shared", False),
                 "assignment_source": result.get("assignment_source"),
@@ -334,6 +344,11 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
             status_info.get("is_shared") if status_info else None,
             status_info.get("instance_id") if status_info else None,
         )
+
+        if status_info and status_info.get("instance_id"):
+            status_info["instance_id_hash"] = generate_instance_hash(
+                status_info["instance_id"], ROUTING_SECRET_KEY
+            )
 
         return {
             "user_id": current_user.uid,
