@@ -10,6 +10,7 @@ import pytest
 from studio.app.common.core.auth.auth_dependencies import (
     _get_user_remote_bucket_name,
     get_current_user_for_dataview_outputs,
+    get_current_user_with_dataview_outputs_check,
     get_outputs_remote_bucket_name,
 )
 
@@ -489,3 +490,88 @@ class TestGetUserRemoteBucketName:
                 result = _get_user_remote_bucket_name(None)
 
         assert result == "default-bucket"
+
+
+class TestOutputsAuthReleasesConnection:
+    """Outputs auth deps must return the pooled DB connection before the route
+    streams the file, so a slow download doesn't pin a connection."""
+
+    _DS = "studio.app.common.core.auth.auth_dependencies.DataviewService."
+
+    @pytest.mark.asyncio
+    async def test_bucket_name_closes_db(self):
+        mock_req = create_mock_request("/outputs/image/some/path/without/workspace")
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.remote_bucket_name = "user-bucket-123"
+
+        with patch("studio.app.dir_path.DIRPATH") as mock_dirpath:
+            mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
+            await get_outputs_remote_bucket_name(
+                req=mock_req, current_user=mock_user, db=mock_db
+            )
+
+        mock_db.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_public_allowed_returns_and_closes_db(self):
+        mock_db = MagicMock()
+        with patch(
+            self._DS + "is_dataview_public_outputs_request", return_value=True
+        ), patch(
+            self._DS + "validate_dataview_public_outputs_request", return_value=True
+        ):
+            result = await get_current_user_with_dataview_outputs_check(
+                req=MagicMock(),
+                res=MagicMock(),
+                ex_token=None,
+                credential=None,
+                db=mock_db,
+            )
+
+        assert result is None
+        mock_db.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_public_denied_raises_403_and_closes_db(self):
+        from fastapi import HTTPException
+
+        mock_db = MagicMock()
+        with patch(
+            self._DS + "is_dataview_public_outputs_request", return_value=True
+        ), patch(
+            self._DS + "validate_dataview_public_outputs_request", return_value=False
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user_with_dataview_outputs_check(
+                    req=MagicMock(),
+                    res=MagicMock(),
+                    ex_token=None,
+                    credential=None,
+                    db=mock_db,
+                )
+
+        assert exc.value.status_code == 403
+        mock_db.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_authenticated_returns_user_and_closes_db(self):
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        with patch(
+            self._DS + "is_dataview_public_outputs_request", return_value=False
+        ), patch(
+            "studio.app.common.core.auth.auth_dependencies.get_current_user",
+            new_callable=AsyncMock,
+            return_value=mock_user,
+        ):
+            result = await get_current_user_with_dataview_outputs_check(
+                req=MagicMock(),
+                res=MagicMock(),
+                ex_token="valid_token",
+                credential=None,
+                db=mock_db,
+            )
+
+        assert result == mock_user
+        mock_db.close.assert_called_once()

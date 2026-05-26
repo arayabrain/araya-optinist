@@ -70,6 +70,7 @@ if TYPE_CHECKING:
 DEFAULT_DEVELOPMENT_CAPACITY = 3  # Fallback capacity for dev/testing
 DEFAULT_IDLE_TIMEOUT_HOURS = 3  # Hours before idle instances become standby
 STICKY_SESSION_DURATION_SECONDS = 300  # Match ALB target group stickiness settings
+MAX_PREMIUM_PRIORITY = 199  # Reserve 200+ for non-premium tier routing.
 
 # MySQL GET_LOCK names for preventing concurrent instance creation
 CREATE_STANDBY_LOCK = "create_standby_lock"
@@ -2635,6 +2636,11 @@ def create_alb_rule(
 
     for attempt in range(1, max_retries + 1):
         priority = get_next_available_priority(listener_arn, start_priority)
+        if priority > MAX_PREMIUM_PRIORITY:
+            raise ValueError(
+                f"Premium ALB rule priority {priority} exceeds "
+                f"MAX_PREMIUM_PRIORITY ({MAX_PREMIUM_PRIORITY})."
+            )
         try:
             response = elbv2.create_rule(
                 ListenerArn=listener_arn,
@@ -2655,20 +2661,32 @@ def create_alb_rule(
                 raise
 
 
-def get_next_available_priority(listener_arn: str, start_priority: int = 100) -> int:
+def get_next_available_priority(
+    listener_arn: str,
+    start_priority: int = 100,
+    max_priority: int = MAX_PREMIUM_PRIORITY,
+) -> int:
     """
     Find next available ALB rule priority by querying existing rules.
 
     Args:
         listener_arn: ALB listener ARN to check
         start_priority: Starting priority to search from (default: 100)
+        max_priority: Hard cap on returned priority.
 
     Returns:
-        Next available priority number
+        Next available priority number in [start_priority, max_priority]
 
     Raises:
-        Exception: If no priorities available (all 1-50000 used)
+        ValueError: If start_priority > max_priority
+        Exception: If no priorities available in the allowed range
     """
+    if start_priority > max_priority:
+        raise ValueError(
+            f"start_priority ({start_priority}) cannot exceed "
+            f"max_priority ({max_priority})."
+        )
+
     elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
 
     try:
@@ -2696,10 +2714,10 @@ def get_next_available_priority(listener_arn: str, start_priority: int = 100) ->
         priority = start_priority
         while priority in used_priorities:
             priority += 1
-            if priority > 50000:
+            if priority > max_priority:
                 raise Exception(
-                    f"No available ALB rule priorities. All priorities "
-                    f"from {start_priority} to 50000 are in use."
+                    f"No available ALB rule priorities in "
+                    f"[{start_priority}, {max_priority}]."
                 )
 
         print(f"Allocated priority {priority} for new ALB rule")

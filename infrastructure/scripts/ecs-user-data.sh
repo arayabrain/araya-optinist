@@ -228,10 +228,12 @@ docker pull "${ecr_repository_url}:latest" || {
     exit 1
 }
 
-# EFS setup
-mkdir -p /mnt/efs
-echo "${efs_id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
-mount -a || echo "EFS will retry"
+# Optional EFS mount; skipped when efs_id is empty.
+if [ -n "${efs_id}" ]; then
+    mkdir -p /mnt/efs
+    echo "${efs_id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
+    mount -a || echo "EFS will retry"
+fi
 
 # Test DB connection (non-blocking)
 nc -z ${db_host} 3306 && echo "DB accessible" || echo "DB will be available"
