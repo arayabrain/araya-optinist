@@ -927,12 +927,18 @@ async def get_structured_data(
 
     full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
     if not os.path.exists(full_path):
-        # Input data is synced lazily to keep the cache lean; fetch it on demand
-        # before giving up, as the other outputs endpoints do.
-        await _ensure_visualization_synced(
-            join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id]),
-            remote_bucket_name,
-        )
+        # Inputs are cleared independently of outputs, so re-fetch keyed on the
+        # file itself, not the experiment's output-sync status.
+        try:
+            await RemoteStorageDownloadUtils.ensure_input_file_synced(
+                workspace_id, file_path, remote_bucket_name
+            )
+        except Exception as e:
+            logger.error(f"Failed to sync input data: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to sync input file from cloud storage",
+            )
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 

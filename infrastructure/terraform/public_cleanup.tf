@@ -17,8 +17,11 @@ resource "aws_lambda_function" "public_cleanup" {
   role             = aws_iam_role.public_cleanup_lambda.arn
   handler          = "public_cleanup.handler"
   runtime          = "python3.11"
-  timeout          = 300
   source_code_hash = data.archive_file.public_cleanup_zip.output_base64sha256
+
+  # Deletes are one EFS round-trip per file, so a large day's cache can outrun a
+  # short timeout; use the Lambda max for headroom.
+  timeout = 900
 
   environment {
     variables = {
@@ -112,6 +115,33 @@ resource "aws_cloudwatch_log_group" "public_cleanup_logs" {
   tags = {
     Name = "Public Cleanup Logs"
     Type = "Public-CloudWatch"
+  }
+}
+
+# Fires on a failed run: Lambda crash/timeout, or the handler raising on a
+# non-zero delete-error count. notBreaching covers the gaps between daily runs.
+resource "aws_cloudwatch_metric_alarm" "public_cleanup_errors" {
+  alarm_name          = "${var.environment}-public-cleanup-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = "86400"
+  statistic           = "Sum"
+  threshold           = "0"
+  alarm_description   = "Public cleanup Lambda reported errors on its last run"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    FunctionName = aws_lambda_function.public_cleanup.function_name
+  }
+
+  tags = {
+    Name    = "Public Cleanup Errors Alarm"
+    Type    = "Public-CloudWatch"
+    Service = "public"
   }
 }
 
