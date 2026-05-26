@@ -185,8 +185,9 @@ resource "aws_ecs_task_definition" "public" {
 
         { name = "INSTANCE_MODE", value = "public" },
 
-        { name = "SQLALCHEMY_POOL_SIZE", value = "2" },
-        { name = "SQLALCHEMY_MAX_OVERFLOW", value = "2" },
+        # Blast-radius cap for the internet-facing tier on the shared RDS Proxy.
+        { name = "SQLALCHEMY_POOL_SIZE", value = "8" },
+        { name = "SQLALCHEMY_MAX_OVERFLOW", value = "8" },
 
         { name = "UVICORN_ACCESS_LOG", value = "1" },
 

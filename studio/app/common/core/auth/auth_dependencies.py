@@ -144,6 +144,9 @@ async def get_current_user_with_dataview_outputs_check(
         is_allowed_access = DataviewService.validate_dataview_public_outputs_request(
             req, db
         )
+        # Return the pooled connection now; the route then streams a file and a
+        # slow output download must not keep a DB connection checked out.
+        db.close()
 
         if is_allowed_access:
             # To access public resources, skip authentication (return)
@@ -155,7 +158,9 @@ async def get_current_user_with_dataview_outputs_check(
             )
 
     # Fallback to get_current_user()
-    return await get_current_user(res, req, ex_token, credential, db)
+    user = await get_current_user(res, req, ex_token, credential, db)
+    db.close()
+    return user
 
 
 async def get_current_user_for_dataview_outputs(
@@ -373,6 +378,8 @@ async def get_outputs_remote_bucket_name(
         return getattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY)
 
     bucket_name = await _resolve_outputs_remote_bucket_name(req, current_user, db)
+    # Return the pooled connection before download.
+    db.close()
 
     # Cache in request state for subsequent calls within this request
     setattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY, bucket_name)
