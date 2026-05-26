@@ -39,7 +39,7 @@ import {
   deleteRoiApi,
   commitRoiApi,
   getStatusRoi,
-} from "api/outputs/Outputs"
+} from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
   PlotMetaData,

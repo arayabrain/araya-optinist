@@ -5,7 +5,7 @@ These tests verify that API responses match the frontend TypeScript interfaces.
 This ensures the backend and frontend stay in sync and prevents contract mismatches.
 
 Frontend interfaces are defined in:
-  frontend/src/api/outputs/Outputs.ts
+  frontend/src/api/visualizations/Outputs.ts
 
 Tested endpoints:
   - GET /api/visualizations/inittimedata/{path} -> TimeSeriesData response
