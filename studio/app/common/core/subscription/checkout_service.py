@@ -5,6 +5,7 @@ import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -337,26 +338,59 @@ class CheckoutService:
         )
 
         if existing_subscription:
-            # Update existing subscription
-            existing_subscription.plan_id = plan_id
-            existing_subscription.sync_status = SyncStatus.SYNCED
-            existing_subscription.expiration = expiration_date
-            existing_subscription.scheduled_downgrade = False
-            existing_subscription.updated_at = (
-                SubscriptionService.get_current_datetime()
+            return CheckoutService._apply_subscription_update(
+                existing_subscription, plan_id, expiration_date
             )
-            return existing_subscription.id
-        else:
-            # Create new subscription
-            new_subscription = UserSubscription(
-                plan_id=plan_id,
-                user_id=user_id,
-                expiration=expiration_date,
-                sync_status=SyncStatus.SYNCED,
-            )
-            db.add(new_subscription)
-            db.flush()  # Get ID without committing
+
+        # Create new subscription. `subscription_users.user_id` is unique, and
+        # SELECT ... FOR UPDATE does not lock a row that doesn't exist yet, so
+        # concurrent webhook deliveries (e.g. checkout.session.completed racing
+        # customer.subscription.created) can both reach this branch and one will
+        # hit an IntegrityError. Guard the insert with a SAVEPOINT and, on
+        # conflict, fall back to selecting + updating the row that the other
+        # delivery just created. This makes the upsert idempotent and avoids a
+        # spurious 500 -> Stripe retry.
+        try:
+            with db.begin_nested():
+                new_subscription = UserSubscription(
+                    plan_id=plan_id,
+                    user_id=user_id,
+                    expiration=expiration_date,
+                    sync_status=SyncStatus.SYNCED,
+                )
+                db.add(new_subscription)
+                db.flush()  # Get ID without committing
             return new_subscription.id
+        except IntegrityError:
+            logger.warning(
+                "Concurrent insert detected for subscription_users "
+                f"user_id={user_id}; falling back to update"
+            )
+            existing_subscription = (
+                db.query(UserSubscription)
+                .filter(UserSubscription.user_id == user_id)
+                .with_for_update()
+                .first()
+            )
+            if existing_subscription is None:
+                # The conflict implies a row exists; if we still can't find it,
+                # surface the original error rather than silently swallowing it.
+                raise
+            return CheckoutService._apply_subscription_update(
+                existing_subscription, plan_id, expiration_date
+            )
+
+    @staticmethod
+    def _apply_subscription_update(
+        subscription, plan_id: int, expiration_date: datetime
+    ) -> int:
+        """Apply the standard field updates to an existing subscription row."""
+        subscription.plan_id = plan_id
+        subscription.sync_status = SyncStatus.SYNCED
+        subscription.expiration = expiration_date
+        subscription.scheduled_downgrade = False
+        subscription.updated_at = SubscriptionService.get_current_datetime()
+        return subscription.id
 
     @staticmethod
     def get_subscription_account(

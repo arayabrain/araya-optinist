@@ -142,6 +142,9 @@ class PremiumExpirationSweepJob:
                     UserSubscription.expiration <= grace_cutoff,
                     ~has_active_sub,
                 )
+                # Oldest expirations first so the per-run cap is deterministic
+                # and never starves long-expired assignments.
+                .order_by(UserSubscription.expiration.asc())
                 .limit(PremiumExpirationSweep.MAX_RELEASES_PER_RUN)
                 .all()
             )

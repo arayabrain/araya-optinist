@@ -17,6 +17,7 @@ def _self_returning_query(rows):
     q = MagicMock()
     q.join.return_value = q
     q.filter.return_value = q
+    q.order_by.return_value = q
     q.limit.return_value = q
     q.all.return_value = rows
     return q
