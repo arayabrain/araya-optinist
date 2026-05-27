@@ -506,10 +506,15 @@ async def validate_checkout_session(
                 message="An internal error occurred. Please contact support.",
             )
 
-        # Find user by email
-        user = db.query(UserModel).filter(UserModel.email == customer_email).first()
+        # Find user by email (filter active users to avoid matching
+        # soft-deleted accounts that were re-registered with the same email)
+        user = (
+            db.query(UserModel)
+            .filter(UserModel.email == customer_email, UserModel.active.is_(True))
+            .first()
+        )
         if not user:
-            logger.error(f"No user found with email {customer_email}")
+            logger.error(f"No active user found with email {customer_email}")
             return CheckoutValidationResponse(
                 status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message="An internal error occurred. Please contact support.",
