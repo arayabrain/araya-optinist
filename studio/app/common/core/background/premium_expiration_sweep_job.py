@@ -73,7 +73,12 @@ class PremiumExpirationSweepJob:
                     hard=True,
                     timeout=PremiumExpirationSweep.RELEASE_TIMEOUT_SECONDS,
                 )
-                if result.get("success"):
+                release_confirmed = (
+                    result.get("success")
+                    and result.get("lambda_success", True)
+                    and not result.get("timed_out")
+                )
+                if release_confirmed:
                     processed += 1
                     logger.info(
                         f"Premium expiration sweep: released user {user_id} "
