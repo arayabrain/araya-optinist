@@ -30,7 +30,7 @@ class TestInstanceModePublic:
     def test_outputs_router_is_registered(self):
         # Public carve-out lives in the auth dependency, not in registration.
         paths = _registered_paths("public")
-        assert any(p.startswith("/outputs") for p in paths)
+        assert any(p.startswith("/api/visualizations") for p in paths)
 
     def test_internal_router_is_registered(self):
         paths = _registered_paths("public")
@@ -99,15 +99,15 @@ class TestInstanceModePublic:
             ), f"{prefix} should not be registered in INSTANCE_MODE=public"
 
     def test_roi_edit_endpoints_are_not_registered(self):
-        # roi.router shares prefix "/outputs"; assert each endpoint explicitly.
+        # roi.router shares prefix "/api/visualizations"; assert each explicitly.
         paths = _registered_paths("public")
         roi_endpoints = (
-            "/outputs/image/{filepath:path}/status",
-            "/outputs/image/{filepath:path}/add_roi",
-            "/outputs/image/{filepath:path}/merge_roi",
-            "/outputs/image/{filepath:path}/delete_roi",
-            "/outputs/image/{filepath:path}/commit_edit",
-            "/outputs/image/{filepath:path}/cancel_edit",
+            "/api/visualizations/image/{filepath:path}/status",
+            "/api/visualizations/image/{filepath:path}/add_roi",
+            "/api/visualizations/image/{filepath:path}/merge_roi",
+            "/api/visualizations/image/{filepath:path}/delete_roi",
+            "/api/visualizations/image/{filepath:path}/commit_edit",
+            "/api/visualizations/image/{filepath:path}/cancel_edit",
         )
         for endpoint in roi_endpoints:
             assert endpoint not in paths, (
