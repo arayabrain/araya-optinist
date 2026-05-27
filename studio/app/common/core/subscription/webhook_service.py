@@ -1620,17 +1620,29 @@ class WebhookService:
                 hard=True,
                 timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
             )
-            if result.get("success"):
+            # `success` is True for any non-timeout response because the service
+            # never blocks logout; the real Lambda outcome lives in
+            # `lambda_success`. Only treat the release as confirmed when both
+            # are true and no warnings were reported.
+            confirmed = (
+                result.get("success")
+                and result.get("lambda_success", True)
+                and not result.get("timed_out")
+            )
+            if confirmed:
                 logger.info(
                     f"Webhook: Released premium assignment for user {user.id} "
                     f"on subscription delete: {result.get('message')}"
                 )
             else:
-                # Not released in-band (e.g. timed out). The background sweep
-                # will release it; acknowledge the webhook regardless.
+                # Not released in-band (timeout, Lambda-reported failure, or
+                # warnings). The background sweep will release it; acknowledge
+                # the webhook regardless.
                 logger.warning(
                     f"Webhook: Premium release not confirmed for user "
                     f"{user.id}: {result.get('message')}; "
+                    f"warnings={result.get('warnings')}, "
+                    f"timed_out={result.get('timed_out', False)}; "
                     "deferring to background sweep"
                 )
         except Exception as e:
