@@ -176,8 +176,8 @@ class PublishValidator:
 
 class DataviewService:
     DATAVIEW_PUBLIC_REQUEST_KEY = "DATAVIEW_PUBLIC_REQUEST"
-    OUTPUTS_URL_PREFIX = r"^/outputs/[^/]+/"
-    OUTPUTS_IMAGE_URL_PREFIX = r"^/outputs/image/"
+    OUTPUTS_URL_PREFIX = r"^/api/visualizations/[^/]+/"
+    OUTPUTS_IMAGE_URL_PREFIX = r"^/api/visualizations/image/"
 
     @classmethod
     def find_dataview_record(

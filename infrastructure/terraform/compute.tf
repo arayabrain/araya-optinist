@@ -611,6 +611,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
         }
       ]
 
+      # Many of these vars are duplicated in public_service.tf and background_service.tf;
+      # a shared value must be changed in all three task definitions.
       environment = [
         {
           name  = "ENV_PREFIX"
@@ -864,6 +866,8 @@ resource "aws_ecs_task_definition" "premium" {
         }
       ]
 
+      # Many of these vars are duplicated in public_service.tf and background_service.tf;
+      # a shared value must be changed in all three task definitions.
       environment = [
         {
           name  = "ENV_PREFIX"
