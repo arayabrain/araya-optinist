@@ -30,6 +30,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    EnvironmentConfig,
     InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
@@ -48,6 +49,18 @@ if TYPE_CHECKING:
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
 
 
+_cloudwatch_client: "CloudWatchClient | None" = None
+
+
+def _get_cloudwatch_client() -> "CloudWatchClient":
+    """Reuse one CloudWatch client across calls within a warm Lambda container."""
+    global _cloudwatch_client
+    if _cloudwatch_client is None:
+        _cloudwatch_client = boto3.client("cloudwatch")
+    return _cloudwatch_client
+
+
+# Mirrored in premium_manager.py — keep both in sync if the alarm naming changes.
 def _premium_tg_alarm_name(tg_arn: str) -> str | None:
     """Derive the per-TG alarm name from a TG ARN.
 
@@ -58,7 +71,7 @@ def _premium_tg_alarm_name(tg_arn: str) -> str | None:
     parts = suffix.split("/")
     if len(parts) < 2:
         return None
-    return f"{PremiumInstanceConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
 
 
 def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
@@ -71,7 +84,7 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     if not alarm_name:
         return
     try:
-        cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
+        cloudwatch = _get_cloudwatch_client()
         cloudwatch.delete_alarms(AlarmNames=[alarm_name])
     except Exception as e:
         print(f"Warning: Failed to delete unhealthy-host alarm {alarm_name}: {e}")

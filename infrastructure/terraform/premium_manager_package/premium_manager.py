@@ -2576,7 +2576,19 @@ def _tg_arn_suffix(tg_arn: str) -> str:
     return tg_arn[idx + 1 :] if idx != -1 else tg_arn
 
 
-def _premium_tg_alarm_name(tg_arn: str) -> Optional[str]:
+_cloudwatch_client: Optional["CloudWatchClient"] = None
+
+
+def _get_cloudwatch_client() -> "CloudWatchClient":
+    """Reuse one CloudWatch client across calls within a warm Lambda container."""
+    global _cloudwatch_client
+    if _cloudwatch_client is None:
+        _cloudwatch_client = boto3.client("cloudwatch")
+    return _cloudwatch_client
+
+
+# Mirrored in premium_cleanup.py — keep both in sync if the alarm naming changes.
+def _premium_tg_alarm_name(tg_arn: str) -> str | None:
     """Derive the per-TG alarm name (e.g. subscr-premium-123-tg-unhealthy-hosts)."""
     parts = _tg_arn_suffix(tg_arn).split("/")
     if len(parts) < 2:
@@ -2596,7 +2608,7 @@ def _ensure_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     topic_arn = os.environ.get("CRITICAL_ALERTS_TOPIC_ARN", "")
     actions = [topic_arn] if topic_arn else []
     try:
-        cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
+        cloudwatch = _get_cloudwatch_client()
         cloudwatch.put_metric_alarm(
             AlarmName=alarm_name,
             ComparisonOperator="GreaterThanThreshold",
@@ -2633,7 +2645,7 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     if not alarm_name:
         return
     try:
-        cloudwatch: "CloudWatchClient" = boto3.client("cloudwatch")
+        cloudwatch = _get_cloudwatch_client()
         cloudwatch.delete_alarms(AlarmNames=[alarm_name])
     except Exception as e:
         print(f"WARNING: Failed to delete unhealthy-host alarm {alarm_name}: {e}")

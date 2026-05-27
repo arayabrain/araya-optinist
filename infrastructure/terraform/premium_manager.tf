@@ -545,7 +545,7 @@ resource "aws_iam_role_policy" "premium_manager_permissions" {
           "cloudwatch:DeleteAlarms",
           "cloudwatch:DescribeAlarms"
         ]
-        Resource = "*"
+        Resource = "arn:aws:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:${var.environment}-premium-*-unhealthy-hosts"
       },
       # ASG Describe (read-only)
       {
