@@ -7,6 +7,7 @@ import pytest
 from studio.app.common.core.background.premium_expiration_sweep_job import (
     PremiumExpirationSweepJob,
 )
+from studio.app.common.core.subscription.constants import PremiumExpirationSweep
 
 MODULE = "studio.app.common.core.background.premium_expiration_sweep_job"
 
@@ -52,8 +53,13 @@ class TestRun:
             await PremiumExpirationSweepJob.run()
 
         assert mock_release.await_count == 2
-        mock_release.assert_any_await(user_id=1, user_uid="uid_a", hard=True)
-        mock_release.assert_any_await(user_id=2, user_uid="uid_b", hard=True)
+        timeout = PremiumExpirationSweep.RELEASE_TIMEOUT_SECONDS
+        mock_release.assert_any_await(
+            user_id=1, user_uid="uid_a", hard=True, timeout=timeout
+        )
+        mock_release.assert_any_await(
+            user_id=2, user_uid="uid_b", hard=True, timeout=timeout
+        )
 
     @patch.object(PremiumExpirationSweepJob, "_find_dangling_assignments")
     @pytest.mark.asyncio

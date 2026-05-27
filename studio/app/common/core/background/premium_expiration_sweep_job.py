@@ -68,7 +68,10 @@ class PremiumExpirationSweepJob:
         for user_id, user_uid in candidates:
             try:
                 result = await premium_assignment_service.release_premium_user(
-                    user_id=user_id, user_uid=user_uid, hard=True
+                    user_id=user_id,
+                    user_uid=user_uid,
+                    hard=True,
+                    timeout=PremiumExpirationSweep.RELEASE_TIMEOUT_SECONDS,
                 )
                 if result.get("success"):
                     processed += 1

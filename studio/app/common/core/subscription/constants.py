@@ -474,6 +474,11 @@ class PremiumExpirationSweep:
     JOB_ID = "premium_expiration_sweep"
     JOB_INTERVAL_MINUTES = 60  # Hourly backstop
     MAX_RELEASES_PER_RUN = 50  # Bound work per run
+    # Short per-release timeout so one slow/hung Lambda can't stall the whole
+    # sweep. This is a backstop: a skipped release is retried next run.
+    # Worst case per run ~= MAX_RELEASES_PER_RUN * RELEASE_TIMEOUT_SECONDS,
+    # which stays well under JOB_INTERVAL_MINUTES.
+    RELEASE_TIMEOUT_SECONDS = 15
 
 
 class S3Pagination:
