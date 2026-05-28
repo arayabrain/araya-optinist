@@ -996,6 +996,92 @@ class TestSubscriptionLifecycleWebhooks:
         mock_upsert.assert_not_called()
         mock_db.commit.assert_not_called()
 
+    # --- P2: handle_subscription_updated ---
+
+    def test_dispatch_updated_routes_to_handler(self, mock_db, subscription_event):
+        """dispatch routes `updated` to handle_subscription_updated."""
+        with patch.object(
+            WebhookService,
+            "handle_subscription_updated",
+            return_value={"success": True},
+        ) as mock_updated:
+            result = WebhookService.dispatch_webhook_event(
+                mock_db, "customer.subscription.updated", subscription_event
+            )
+        assert result["success"] is True
+        mock_updated.assert_called_once_with(mock_db, subscription_event)
+
+    def test_subscription_updated_mirrors_scheduled_downgrade(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """`updated` with cancel_at_period_end=True flips scheduled_downgrade."""
+        subscription_event["cancel_at_period_end"] = True
+
+        mock_subscription = Mock()
+        mock_subscription.scheduled_downgrade = False
+        mock_subscription.updated_at = None
+
+        # Query side_effect: account, subscription re-query (override path),
+        # then user (cache invalidation).
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["scheduled_downgrade"] is True
+        assert mock_subscription.scheduled_downgrade is True
+        assert mock_subscription.updated_at is not None
+
+    def test_updated_past_due_still_marked_synced(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A successfully-mirrored past_due subscription stays SYNCED.
+
+        sync_status tracks DB<->Stripe sync success, not billing health: a
+        past_due event we wrote to the DB is still SYNCED. Tier is derived
+        from `expiration` at read time.
+        """
+        subscription_event["status"] = "past_due"
+        # cancel_at_period_end stays False (fixture default) -> helper skips
+        # the subscription re-query, so the query chain is just account + user.
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        # The upsert ran (mirrored); sync_status is set to SYNCED by
+        # CheckoutService.create_or_update_subscription regardless of the
+        # Stripe status field.
+        mock_upsert.assert_called_once()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

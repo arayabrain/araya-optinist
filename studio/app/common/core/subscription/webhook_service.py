@@ -1479,7 +1479,28 @@ class WebhookService:
             db, user_id, plan_id, expiration_date
         )
 
-        # 5. Sync storage quota to the plan
+        # 5. Mirror cancel_at_period_end -> scheduled_downgrade. The upsert
+        # set scheduled_downgrade=False unconditionally; only override when
+        # the event carries cancel_at_period_end=True, so the common (no-
+        # cancel) case avoids an extra query. This is the P2 addition that
+        # captures Stripe-initiated downgrades (proration, payment-method-
+        # failure auto-cancel, plan change at period end).
+        cancel_at_period_end = bool(
+            subscription_data.get("cancel_at_period_end")
+        )
+        if cancel_at_period_end:
+            subscription = (
+                db.query(UserSubscription)
+                .filter(UserSubscription.user_id == user_id)
+                .first()
+            )
+            if subscription is not None:
+                subscription.scheduled_downgrade = True
+                subscription.updated_at = (
+                    SubscriptionService.get_current_datetime()
+                )
+
+        # 6. Sync storage quota to the plan
         storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
         rows_updated = db.execute(
             update(UserStorageUsage)
@@ -1497,20 +1518,22 @@ class WebhookService:
 
         db.commit()
 
-        # 6. Invalidate tier cache so the GUI reflects the change promptly
+        # 7. Invalidate tier cache so the GUI reflects the change promptly
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             invalidate_user_tier_cache(user.uid)
 
         logger.info(
             f"Webhook: Synced subscription.{event_label} for user {user_id} "
-            f"(plan_id={plan_id}, expiration={expiration_date})"
+            f"(plan_id={plan_id}, expiration={expiration_date}, "
+            f"scheduled_downgrade={cancel_at_period_end})"
         )
         return {
             "success": True,
             "user_id": user_id,
             "plan_id": plan_id,
             "expiration": expiration_date,
+            "scheduled_downgrade": cancel_at_period_end,
             "message": f"Subscription {event_label} synced",
         }
 
@@ -1528,6 +1551,24 @@ class WebhookService:
         """
         return WebhookService._sync_subscription_from_event(
             db, subscription_data, event_label="created"
+        )
+
+    @staticmethod
+    def handle_subscription_updated(
+        db: Session, subscription_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle customer.subscription.updated webhook (issue #629, Problem 2).
+
+        Mirrors Stripe-initiated subscription changes into local state:
+        - plan + expiration (via the shared upsert), and
+        - cancel_at_period_end -> scheduled_downgrade (when scheduling a
+          downgrade), so a Stripe-initiated change (proration, plan change,
+          payment-method-failure auto-cancel, etc.) does not silently drift
+          from Stripe.
+        """
+        return WebhookService._sync_subscription_from_event(
+            db, subscription_data, event_label="updated"
         )
 
     @staticmethod
@@ -1562,6 +1603,10 @@ class WebhookService:
                 case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_CREATED:
                     logger.info("Handling customer.subscription.created")
                     return WebhookService.handle_subscription_created(db, data)
+
+                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_UPDATED:
+                    logger.info("Handling customer.subscription.updated")
+                    return WebhookService.handle_subscription_updated(db, data)
 
                 case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED:
                     logger.info("Handling customer.subscription.deleted")
