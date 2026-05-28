@@ -218,6 +218,14 @@ class S3StorageController(BaseRemoteStorageController):
         Returns:
             True if file was downloaded, False if skipped
         """
+        # NFS keeps a negative-dentry cache that stat() doesn't bypass — a peer
+        # that just released the InputFileLock may have a fresh file on the
+        # server we still see as missing. READDIR via listdir invalidates it.
+        try:
+            os.listdir(os.path.dirname(local_file_path))
+        except OSError:
+            pass
+
         if os.path.isfile(local_file_path):
             local_size = os.path.getsize(local_file_path)
             if local_size == file_size:

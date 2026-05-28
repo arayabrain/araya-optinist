@@ -1083,3 +1083,74 @@ class TestS3DownloadInputDataLocking:
 async def _acquire_then_release(lock_cls, ws: str, fn: str) -> None:
     async with lock_cls.acquire(ws, fn):
         pass
+
+
+class TestDownloadS3RefreshesParentDir:
+    """_download_s3_with_update_check forces an NFS dentry refresh on the
+    parent dir before checking for the file, so a peer process's writes on
+    EFS are visible after we acquire the cross-instance lock."""
+
+    def setup_method(self):
+        self.controller = S3StorageController("test-bucket")
+
+    @pytest.mark.asyncio
+    async def test_listdir_called_before_existence_check(self, tmp_path):
+        """os.listdir on the parent runs before os.path.isfile."""
+        final_path = str(tmp_path / "data.bin")
+        order = []
+
+        real_listdir = os.listdir
+        real_isfile = os.path.isfile
+
+        def tracking_listdir(p):
+            order.append(("listdir", p))
+            return real_listdir(p)
+
+        def tracking_isfile(p):
+            order.append(("isfile", p))
+            return real_isfile(p)
+
+        async def fake_download(bucket, key, dest):
+            with open(dest, "wb") as f:
+                f.write(b"x")
+
+        mock_client = MagicMock()
+        mock_client.download_file = AsyncMock(side_effect=fake_download)
+
+        with patch(
+            "studio.app.common.core.storage.s3_storage_controller.os.listdir",
+            side_effect=tracking_listdir,
+        ), patch(
+            "studio.app.common.core.storage.s3_storage_controller.os.path.isfile",
+            side_effect=tracking_isfile,
+        ):
+            await self.controller._download_s3_with_update_check(
+                mock_client, "s3/key/data.bin", final_path, file_size=1
+            )
+
+        # listdir must be the first FS observation, before any isfile check.
+        first_listdir = next(i for i, (op, _) in enumerate(order) if op == "listdir")
+        first_isfile = next(
+            (i for i, (op, _) in enumerate(order) if op == "isfile"), None
+        )
+        assert first_isfile is None or first_listdir < first_isfile
+
+    @pytest.mark.asyncio
+    async def test_missing_parent_dir_is_tolerated(self, tmp_path):
+        """If the parent dir doesn't exist yet, the refresh swallows OSError."""
+        final_path = str(tmp_path / "nonexistent-dir" / "data.bin")
+
+        async def fake_download(bucket, key, dest):
+            with open(dest, "wb") as f:
+                f.write(b"x")
+
+        mock_client = MagicMock()
+        mock_client.download_file = AsyncMock(side_effect=fake_download)
+
+        # Must not raise even though parent dir doesn't exist at entry.
+        result = await self.controller._download_s3_with_update_check(
+            mock_client, "s3/key/data.bin", final_path, file_size=1
+        )
+
+        assert result is True
+        assert os.path.isfile(final_path)

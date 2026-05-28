@@ -416,7 +416,7 @@ class InputFileLock:
 
     LOCKS_DIRNAME = ".locks"
     LOCK_WAIT_MAX_SECONDS = 300
-    LOCK_WAIT_POLL_INTERVAL = 1.0
+    LOCK_WAIT_POLL_INTERVAL = 0.1
 
     @classmethod
     def _lock_path(cls, workspace_id: str, filename: str) -> str:
