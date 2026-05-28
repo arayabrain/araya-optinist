@@ -1459,18 +1459,14 @@ class WebhookService:
                 "success": True,
                 "skipped": True,
                 "reason": "missing_expiration",
-                "message": (
-                    f"No period end in subscription: {stripe_subscription_id}"
-                ),
+                "message": (f"No period end in subscription: {stripe_subscription_id}"),
             }
 
         # 3. Derive plan from subscription metadata, default to premium
         metadata = subscription_data.get("metadata") or {}
         plan_id_raw = metadata.get("plan_id")
         try:
-            plan_id = (
-                int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
-            )
+            plan_id = int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
         except (TypeError, ValueError):
             plan_id = SubscriptionPlanIds.PREMIUM
 
