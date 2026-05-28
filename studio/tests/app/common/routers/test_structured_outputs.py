@@ -331,3 +331,97 @@ def test_structured_3d_default_pagination(client):
     assert data["data_type"] == "images"
     assert len(data["data"]) == 10
     assert data["total_frames"] == 10
+
+
+@pytest.mark.asyncio
+async def test_structured_missing_input_triggers_on_demand_sync():
+    """A missing input must trigger an on-demand input-file sync before 404, so
+    public viewers get the lazily-synced input data (mirrors the csv/image
+    endpoints)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from studio.app.common.routers.outputs import get_structured_data
+
+    node = MagicMock()
+    node.data.path = "lazy_input.h5"
+    node.data.hdf5Path = "x"
+    node.data.matPath = None
+    config = MagicMock()
+    config.nodeDict.get.return_value = node
+
+    with patch(
+        "studio.app.common.routers.outputs.WorkflowConfigReader.read",
+        return_value=config,
+    ), patch(
+        "studio.app.common.routers.outputs.os.path.exists", return_value=False
+    ), patch(
+        "studio.app.common.routers.outputs.RemoteStorageDownloadUtils."
+        "ensure_input_file_synced",
+        new_callable=AsyncMock,
+    ) as mock_sync:
+        with pytest.raises(HTTPException) as exc:
+            await get_structured_data(
+                workspace_id="6",
+                unique_id="abc123",
+                node_id="n",
+                remote_bucket_name="bucket-x",
+            )
+
+    # Sync is keyed on the input file + bucket, then 404 if still missing.
+    mock_sync.assert_awaited_once_with("6", "lazy_input.h5", "bucket-x")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_structured_missing_input_resyncs_via_download_layer():
+    """Regression: a missing input is re-fetched by downloading the input file
+    itself, independent of the experiment's output-sync status. Routing the
+    re-fetch through the output-sync path left inputs permanently 404 once the
+    input cache was wiped while the output stayed marked synced."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from studio.app.common.routers.outputs import get_structured_data
+
+    node = MagicMock()
+    node.data.path = "wiped_input.h5"
+    node.data.hdf5Path = "x"
+    node.data.matPath = None
+    config = MagicMock()
+    config.nodeDict.get.return_value = node
+
+    rsc = "studio.app.common.core.storage.remote_storage_controller"
+    with patch(
+        "studio.app.common.routers.outputs.WorkflowConfigReader.read",
+        return_value=config,
+    ), patch(
+        "studio.app.common.routers.outputs.os.path.exists", return_value=False
+    ), patch(
+        # Output marked fully synced: must NOT gate the input re-fetch.
+        "studio.app.common.routers.outputs.RemoteSyncStatusFileUtil."
+        "check_sync_status_unsynced",
+        return_value=False,
+    ), patch(
+        f"{rsc}.os.path.exists", return_value=False
+    ), patch(
+        f"{rsc}.RemoteStorageController"
+    ) as mock_controller_cls:
+        mock_controller_cls.is_available.return_value = True
+        mock_controller_cls.return_value.download_input_data = AsyncMock(
+            return_value=True
+        )
+        with pytest.raises(HTTPException) as exc:
+            await get_structured_data(
+                workspace_id="6",
+                unique_id="abc123",
+                node_id="n",
+                remote_bucket_name="bucket-x",
+            )
+
+    mock_controller_cls.return_value.download_input_data.assert_awaited_once_with(
+        "6", "wiped_input.h5"
+    )
+    assert exc.value.status_code == 404
