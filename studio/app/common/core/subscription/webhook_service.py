@@ -1404,6 +1404,133 @@ class WebhookService:
         return webhook_secret
 
     @staticmethod
+    def _sync_subscription_from_event(
+        db: Session, subscription_data: Dict[str, Any], event_label: str
+    ) -> Dict[str, Any]:
+        """
+        Mirror a Stripe ``customer.subscription.*`` event into local state
+        (issue #629, Problem 1 — activation fallback).
+
+        Upserts ``subscription_users`` (plan + expiration), syncs the storage
+        quota, and invalidates the tier cache so the next ``/users/me`` call
+        reflects the change. Acknowledges without a DB write when the
+        customer cannot be mapped or the event has no period end, so Stripe
+        does not retry.
+        """
+        customer_id = subscription_data.get("customer")
+        stripe_subscription_id = subscription_data.get("id")
+        logger.info(
+            f"Webhook: Handling customer.subscription.{event_label} for "
+            f"customer {customer_id} (subscription {stripe_subscription_id})"
+        )
+
+        # 1. Map Stripe customer -> local user account
+        user_account = (
+            db.query(SubscriptionUserAccount)
+            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
+            .first()
+        )
+        if not user_account:
+            logger.warning(
+                f"Webhook: No user account for customer_id {customer_id}; "
+                f"acknowledging subscription.{event_label} without DB change"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "missing_user_account",
+                "message": f"No user account for customer: {customer_id}",
+            }
+        user_id = user_account.user_id
+
+        # 2. Derive expiration from the event payload (trial overrides period)
+        trial_end = subscription_data.get("trial_end")
+        current_period_end = subscription_data.get("current_period_end")
+        if trial_end:
+            expiration_date = datetime_from_timestamp(trial_end)
+        elif current_period_end:
+            expiration_date = datetime_from_timestamp(current_period_end)
+        else:
+            logger.warning(
+                f"Webhook: No period end in subscription {stripe_subscription_id}; "
+                f"acknowledging subscription.{event_label} without DB change"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "missing_expiration",
+                "message": (
+                    f"No period end in subscription: {stripe_subscription_id}"
+                ),
+            }
+
+        # 3. Derive plan from subscription metadata, default to premium
+        metadata = subscription_data.get("metadata") or {}
+        plan_id_raw = metadata.get("plan_id")
+        try:
+            plan_id = (
+                int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
+            )
+        except (TypeError, ValueError):
+            plan_id = SubscriptionPlanIds.PREMIUM
+
+        # 4. Upsert subscription_users (lock-safe, idempotent helper)
+        CheckoutService.create_or_update_subscription(
+            db, user_id, plan_id, expiration_date
+        )
+
+        # 5. Sync storage quota to the plan
+        storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
+        rows_updated = db.execute(
+            update(UserStorageUsage)
+            .where(UserStorageUsage.user_id == user_id)
+            .values(storage_quota_bytes=storage_quota_bytes)
+        ).rowcount
+        if not rows_updated:
+            db.add(
+                UserStorageUsage(
+                    user_id=user_id,
+                    storage_usage_bytes=0,
+                    storage_quota_bytes=storage_quota_bytes,
+                )
+            )
+
+        db.commit()
+
+        # 6. Invalidate tier cache so the GUI reflects the change promptly
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            invalidate_user_tier_cache(user.uid)
+
+        logger.info(
+            f"Webhook: Synced subscription.{event_label} for user {user_id} "
+            f"(plan_id={plan_id}, expiration={expiration_date})"
+        )
+        return {
+            "success": True,
+            "user_id": user_id,
+            "plan_id": plan_id,
+            "expiration": expiration_date,
+            "message": f"Subscription {event_label} synced",
+        }
+
+    @staticmethod
+    def handle_subscription_created(
+        db: Session, subscription_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle customer.subscription.created webhook (issue #629, Problem 1).
+
+        Activates the subscription locally so the user is no longer stuck on
+        "Activation Pending" when activation cannot complete through
+        ``checkout.session.completed`` alone (delayed, partial failure, or
+        not delivered).
+        """
+        return WebhookService._sync_subscription_from_event(
+            db, subscription_data, event_label="created"
+        )
+
+    @staticmethod
     def dispatch_webhook_event(
         db: Session, event_type: str, data: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -1431,6 +1558,10 @@ class WebhookService:
                         "success": True,
                         "message": "Payment failed event processed",
                     }
+
+                case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_CREATED:
+                    logger.info("Handling customer.subscription.created")
+                    return WebhookService.handle_subscription_created(db, data)
 
                 case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED:
                     logger.info("Handling customer.subscription.deleted")

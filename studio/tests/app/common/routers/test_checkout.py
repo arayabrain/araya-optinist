@@ -4,9 +4,11 @@ import os
 # Set environment variables before other imports
 os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake_key_for_testing"
 
+from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 
@@ -127,6 +129,81 @@ class TestCheckoutIntegration:
 
         # Should fail signature verification
         assert response.status_code == 400
+
+
+class TestCreateOrUpdateSubscriptionConcurrency:
+    """create_or_update_subscription idempotency under concurrent inserts.
+
+    Guards the race in issue #629 where checkout.session.completed and
+    customer.subscription.created can both reach the INSERT branch and one
+    hits the unique constraint on subscription_users.user_id. The handler
+    catches IntegrityError and falls back to selecting + updating the row
+    the racing delivery created.
+    """
+
+    @staticmethod
+    def _mock_db(existing_first, existing_after_conflict):
+        """db whose SELECT...FOR UPDATE returns existing_first, then
+        existing_after_conflict on the post-conflict re-select."""
+        from unittest.mock import MagicMock
+
+        db = Mock()
+        first = Mock(side_effect=[existing_first, existing_after_conflict])
+        db.query.return_value.filter.return_value.with_for_update.return_value.first = (
+            first
+        )
+        # begin_nested() as a context manager that does NOT suppress exceptions.
+        cm = MagicMock()
+        cm.__enter__.return_value = cm
+        cm.__exit__.return_value = False
+        db.begin_nested.return_value = cm
+        db.add = Mock()
+        return db
+
+    def test_concurrent_insert_falls_back_to_update(self):
+        """A unique-constraint conflict on insert re-selects and updates."""
+        from studio.app.common.core.subscription.checkout_service import (
+            CheckoutService,
+        )
+
+        existing_row = Mock()
+        existing_row.id = 555
+        db = self._mock_db(existing_first=None, existing_after_conflict=existing_row)
+        # The insert flush raises a unique-violation IntegrityError.
+        db.flush = Mock(
+            side_effect=IntegrityError("INSERT", {}, Exception("duplicate user_id"))
+        )
+
+        expiration = datetime.now() + timedelta(days=30)
+        with patch.object(
+            SubscriptionService, "get_current_datetime", return_value=datetime.now()
+        ):
+            result_id = CheckoutService.create_or_update_subscription(
+                db, user_id=42, plan_id=2, expiration_date=expiration
+            )
+
+        # Fell back to updating the row the racing delivery created.
+        assert result_id == 555
+        assert existing_row.plan_id == 2
+        assert existing_row.expiration == expiration
+        assert existing_row.scheduled_downgrade is False
+
+    def test_other_integrity_error_is_not_swallowed(self):
+        """If no row exists even after the conflict, the error is re-raised."""
+        from studio.app.common.core.subscription.checkout_service import (
+            CheckoutService,
+        )
+
+        db = self._mock_db(existing_first=None, existing_after_conflict=None)
+        db.flush = Mock(
+            side_effect=IntegrityError("INSERT", {}, Exception("some other constraint"))
+        )
+
+        expiration = datetime.now() + timedelta(days=30)
+        with pytest.raises(IntegrityError):
+            CheckoutService.create_or_update_subscription(
+                db, user_id=42, plan_id=2, expiration_date=expiration
+            )
 
 
 if __name__ == "__main__":
