@@ -162,9 +162,7 @@ class TestCreateOrUpdateSubscriptionConcurrency:
 
     def test_concurrent_insert_falls_back_to_update(self):
         """A unique-constraint conflict on insert re-selects and updates."""
-        from studio.app.common.core.subscription.checkout_service import (
-            CheckoutService,
-        )
+        from studio.app.common.core.subscription.checkout_service import CheckoutService
 
         existing_row = Mock()
         existing_row.id = 555
@@ -190,9 +188,7 @@ class TestCreateOrUpdateSubscriptionConcurrency:
 
     def test_other_integrity_error_is_not_swallowed(self):
         """If no row exists even after the conflict, the error is re-raised."""
-        from studio.app.common.core.subscription.checkout_service import (
-            CheckoutService,
-        )
+        from studio.app.common.core.subscription.checkout_service import CheckoutService
 
         db = self._mock_db(existing_first=None, existing_after_conflict=None)
         db.flush = Mock(
