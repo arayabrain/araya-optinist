@@ -506,10 +506,21 @@ async def validate_checkout_session(
                 message="An internal error occurred. Please contact support.",
             )
 
-        # Find user by email
-        user = db.query(UserModel).filter(UserModel.email == customer_email).first()
+        # Find user by email. Filter active=True so a soft-deleted user
+        # (active=0) with the same email doesn't shadow the new active user
+        # after a re-registration — get_user_subscription only matches active
+        # users, so resolving to the inactive row would always return None
+        # and the UI would stay on "Activation Pending" (issue #629 P5).
+        user = (
+            db.query(UserModel)
+            .filter(
+                UserModel.email == customer_email,
+                UserModel.active.is_(True),
+            )
+            .first()
+        )
         if not user:
-            logger.error(f"No user found with email {customer_email}")
+            logger.error(f"No active user found with email {customer_email}")
             return CheckoutValidationResponse(
                 status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message="An internal error occurred. Please contact support.",
