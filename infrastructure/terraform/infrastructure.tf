@@ -494,6 +494,52 @@ resource "aws_efs_access_point" "snmk" {
   }
 }
 
+# Persistent cache for published experiments served by the public tier.
+# Kept separate from snmk (workflow scratch) so each can be deleted alone.
+resource "aws_efs_file_system" "published_data" {
+  creation_token   = "${local.env_prefix}-public-published-data"
+  performance_mode = "generalPurpose"
+  throughput_mode  = "bursting"
+  encrypted        = true
+
+  lifecycle_policy {
+    transition_to_ia = "AFTER_7_DAYS"
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-published-data"
+  }
+}
+
+resource "aws_efs_mount_target" "published_data_private1" {
+  file_system_id  = aws_efs_file_system.published_data.id
+  subnet_id       = aws_subnet.private1.id
+  security_groups = [aws_security_group.efs.id]
+}
+
+resource "aws_efs_mount_target" "published_data_private2" {
+  file_system_id  = aws_efs_file_system.published_data.id
+  subnet_id       = aws_subnet.private2.id
+  security_groups = [aws_security_group.efs.id]
+}
+
+resource "aws_efs_access_point" "published_data" {
+  file_system_id = aws_efs_file_system.published_data.id
+
+  root_directory {
+    path = "/"
+    creation_info {
+      owner_gid   = 1000
+      owner_uid   = 1000
+      permissions = "755"
+    }
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-published-data-ap"
+  }
+}
+
 # =========
 # Databases
 # =========

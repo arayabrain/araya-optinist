@@ -90,7 +90,8 @@ class DatabaseConfig(BaseSettings):
     MYSQL_SSL_MODE: str = Field(default="", env="MYSQL_SSL_MODE")
     DATABASE_URL: str = Field(default=None)
 
-    POOL_SIZE: int = Field(default=5)
+    POOL_SIZE: int = Field(default=5, env="SQLALCHEMY_POOL_SIZE")
+    MAX_OVERFLOW: int = Field(default=20, env="SQLALCHEMY_MAX_OVERFLOW")
 
     @validator("DATABASE_URL", pre=True)
     def assemble_db_connection(cls, v: Optional[str], values: Dict[str, Any]) -> Any:

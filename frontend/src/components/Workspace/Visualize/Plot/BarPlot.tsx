@@ -10,7 +10,7 @@ import MenuItem from "@mui/material/MenuItem"
 import Select, { SelectChangeEvent } from "@mui/material/Select"
 import Typography from "@mui/material/Typography"
 
-import { BarData } from "api/outputs/Outputs"
+import { BarData } from "api/visualizations/Outputs"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { getBarData } from "store/slice/DisplayData/DisplayDataActions"
 import {

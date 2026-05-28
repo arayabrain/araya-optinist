@@ -30,6 +30,7 @@ import pymysql
 from aws_constants import (
     DatabaseConfig,
     ECSTaskStatus,
+    EnvironmentConfig,
     InstanceState,
     PremiumAssignment,
     PremiumInstanceConfig,
@@ -42,9 +43,51 @@ from aws_constants import (
 DEFAULT_STALE_ASSIGNMENT_TIMEOUT_HOURS = 2
 
 if TYPE_CHECKING:
+    from mypy_boto3_cloudwatch import CloudWatchClient
     from mypy_boto3_ec2 import EC2Client
     from mypy_boto3_ecs import ECSClient
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
+
+
+_cloudwatch_client: "CloudWatchClient | None" = None
+
+
+def _get_cloudwatch_client() -> "CloudWatchClient":
+    """Reuse one CloudWatch client across calls within a warm Lambda container."""
+    global _cloudwatch_client
+    if _cloudwatch_client is None:
+        _cloudwatch_client = boto3.client("cloudwatch")
+    return _cloudwatch_client
+
+
+# Mirrored in premium_manager.py — keep both in sync if the alarm naming changes.
+def _premium_tg_alarm_name(tg_arn: str) -> str | None:
+    """Derive the per-TG alarm name from a TG ARN.
+
+    Must match the name used at alarm creation so deletion targets it.
+    """
+    idx = tg_arn.find(":targetgroup/")
+    suffix = tg_arn[idx + 1 :] if idx != -1 else tg_arn
+    parts = suffix.split("/")
+    if len(parts) < 2:
+        return None
+    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+
+
+def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
+    """Best-effort delete of a per-TG UnHealthyHostCount alarm.
+
+    Idempotent: delete_alarms ignores names that do not exist, so this is safe
+    for any TG ARN (the shared autoscaling TG simply has no matching alarm).
+    """
+    alarm_name = _premium_tg_alarm_name(tg_arn)
+    if not alarm_name:
+        return
+    try:
+        cloudwatch = _get_cloudwatch_client()
+        cloudwatch.delete_alarms(AlarmNames=[alarm_name])
+    except Exception as e:
+        print(f"Warning: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
 
 
 def _cleanup_assignment_alb_resources(
@@ -74,6 +117,7 @@ def _cleanup_assignment_alb_resources(
         and target_group_arn != autoscaling_tg_arn
     ):
         try:
+            _delete_premium_tg_unhealthy_alarm(target_group_arn)
             elbv2.delete_target_group(TargetGroupArn=target_group_arn)
             print(f"Deleted target group for user {user_id}: {target_group_arn}")
         except Exception as e:
@@ -445,6 +489,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
                 if target_group_arn and target_group_arn != autoscaling_tg_arn:
                     try:
+                        _delete_premium_tg_unhealthy_alarm(target_group_arn)
                         elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                         target_groups_deleted += 1
                         print(f"Deleted target group: {target_group_arn}")
@@ -577,6 +622,7 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                             tg_arn = action.get("TargetGroupArn")
                             if tg_arn:
                                 try:
+                                    _delete_premium_tg_unhealthy_alarm(tg_arn)
                                     elbv2.delete_target_group(TargetGroupArn=tg_arn)
                                     target_groups_deleted += 1
                                     print(f"Deleted target group {tg_arn}")

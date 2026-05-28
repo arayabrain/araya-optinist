@@ -18,9 +18,12 @@ export async function getTimeSeriesInitDataApi(
   std: TimeSeriesData
   meta?: PlotMetaData
 }> {
-  const response = await axios.get(`${BASE_URL}/outputs/inittimedata/${path}`, {
-    params: isFull ? { isFull } : undefined,
-  })
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/inittimedata/${path}`,
+    {
+      params: isFull ? { isFull } : undefined,
+    },
+  )
   return response.data
 }
 
@@ -34,9 +37,12 @@ export async function getTimeSeriesDataByIdApi(
   std: TimeSeriesData
   meta?: PlotMetaData
 }> {
-  const response = await axios.get(`${BASE_URL}/outputs/timedata/${path}`, {
-    params: isFull ? { index, isFull } : { index },
-  })
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/timedata/${path}`,
+    {
+      params: isFull ? { index, isFull } : { index },
+    },
+  )
   return response.data
 }
 
@@ -46,7 +52,9 @@ export async function getTimeSeriesAllDataApi(path: string): Promise<{
   std: TimeSeriesData
   meta?: PlotMetaData
 }> {
-  const response = await axios.get(`${BASE_URL}/outputs/alltimedata/${path}`)
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/alltimedata/${path}`,
+  )
   return response.data
 }
 
@@ -58,7 +66,9 @@ export async function getHeatMapDataApi(path: string): Promise<{
   index: string[]
   meta?: PlotMetaData
 }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`)
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+  )
   return response.data
 }
 
@@ -73,14 +83,17 @@ export async function getImageDataApi(
     endIndex?: number
   },
 ): Promise<{ data: ImageData; meta?: PlotMetaData }> {
-  const response = await axios.get(`${BASE_URL}/outputs/image/${path}`, {
-    params: {
-      workspace_id: params.workspaceId,
-      unique_id: params.uniqueId,
-      start_index: params.startIndex,
-      end_index: params.endIndex,
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/image/${path}`,
+    {
+      params: {
+        workspace_id: params.workspaceId,
+        unique_id: params.uniqueId,
+        start_index: params.startIndex,
+        end_index: params.endIndex,
+      },
     },
-  })
+  )
   return response.data
 }
 
@@ -90,9 +103,12 @@ export async function getCsvDataApi(
   path: string,
   params: { workspaceId: number },
 ): Promise<{ data: CsvData; meta?: PlotMetaData }> {
-  const response = await axios.get(`${BASE_URL}/outputs/csv/${path}`, {
-    params: { workspace_id: params.workspaceId },
-  })
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/csv/${path}`,
+    {
+      params: { workspace_id: params.workspaceId },
+    },
+  )
 
   return response.data
 }
@@ -103,9 +119,12 @@ export async function getMatlabDataApi(
   path: string,
   params: { workspaceId: number },
 ): Promise<{ data: MatlabData; meta?: PlotMetaData }> {
-  const response = await axios.get(`${BASE_URL}/outputs/matlab/${path}`, {
-    params: { workspace_id: params.workspaceId },
-  })
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/matlab/${path}`,
+    {
+      params: { workspace_id: params.workspaceId },
+    },
+  )
 
   return response.data
 }
@@ -123,9 +142,12 @@ export async function getRoiDataApi(
   }
   if (params.uniqueId) p.unique_id = params.uniqueId
   if (!isFull) delete p.isFull
-  const response = await axios.get(`${BASE_URL}/outputs/image/${path}`, {
-    params: p,
-  })
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/image/${path}`,
+    {
+      params: p,
+    },
+  )
   return response.data
 }
 
@@ -138,7 +160,10 @@ export type ScatterData = {
 export async function getScatterDataApi(
   path: string,
 ): Promise<{ data: ScatterData; meta?: PlotMetaData }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -154,7 +179,10 @@ export async function getBarDataApi(path: string): Promise<{
   index: string[]
   meta?: PlotMetaData
 }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -163,7 +191,10 @@ export type HTMLData = string
 export async function getHTMLDataApi(
   path: string,
 ): Promise<{ data: HTMLData; meta?: PlotMetaData }> {
-  const response = await axios.get(`${BASE_URL}/outputs/html/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/html/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -173,7 +204,7 @@ export async function addRoiApi(
   data: { posx: number; posy: number; sizex: number; sizey: number },
 ): Promise<{ data: HTMLData; meta?: PlotMetaData }> {
   const response = await axios.post(
-    `${BASE_URL}/outputs/image/${path}/add_roi?workspace_id=${workspaceId}`,
+    `${BASE_URL}/api/visualizations/image/${path}/add_roi?workspace_id=${workspaceId}`,
     data,
   )
   return response.data
@@ -185,7 +216,7 @@ export async function mergeRoiApi(
   data: { ids: number[] },
 ): Promise<{ data: HTMLData; meta?: PlotMetaData }> {
   const response = await axios.post(
-    `${BASE_URL}/outputs/image/${path}/merge_roi?workspace_id=${workspaceId}`,
+    `${BASE_URL}/api/visualizations/image/${path}/merge_roi?workspace_id=${workspaceId}`,
     data,
   )
   return response.data
@@ -197,7 +228,7 @@ export async function deleteRoiApi(
   data: { ids: number[] },
 ): Promise<{ data: HTMLData; meta?: PlotMetaData }> {
   const response = await axios.post(
-    `${BASE_URL}/outputs/image/${path}/delete_roi?workspace_id=${workspaceId}`,
+    `${BASE_URL}/api/visualizations/image/${path}/delete_roi?workspace_id=${workspaceId}`,
     data,
   )
   return response.data
@@ -208,7 +239,7 @@ export async function commitRoiApi(
   workspace_id: number,
 ): Promise<boolean> {
   const response = await axios.post(
-    `${BASE_URL}/outputs/image/${path}/commit_edit?workspace_id=${workspace_id}`,
+    `${BASE_URL}/api/visualizations/image/${path}/commit_edit?workspace_id=${workspace_id}`,
   )
   return response.data
 }
@@ -218,7 +249,7 @@ export async function cancelRoiApi(
   workspace_id: number,
 ): Promise<{ data: HTMLData; meta?: PlotMetaData }> {
   const response = await axios.post(
-    `${BASE_URL}/outputs/image/${path}/cancel_edit?workspace_id=${workspace_id}`,
+    `${BASE_URL}/api/visualizations/image/${path}/cancel_edit?workspace_id=${workspace_id}`,
   )
   return response.data
 }
@@ -228,7 +259,7 @@ export async function getStatusRoi(
   workspace_id: number,
 ): Promise<StatusROI> {
   const response = await axios.post(
-    `${BASE_URL}/outputs/image/${path}/status?workspace_id=${workspace_id}`,
+    `${BASE_URL}/api/visualizations/image/${path}/status?workspace_id=${workspace_id}`,
   )
   return response.data
 }
@@ -238,7 +269,10 @@ export type LineData = number[][]
 export async function getLineDataApi(
   path: string,
 ): Promise<{ data: LineData; columns: number[]; index: number[] }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -247,7 +281,10 @@ export type PolarData = number[][]
 export async function getPolarDataApi(
   path: string,
 ): Promise<{ data: PolarData; columns: number[]; index: number[] }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -256,7 +293,10 @@ export type HistogramData = number[][]
 export async function getHistogramDataApi(
   path: string,
 ): Promise<{ data: HistogramData }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -277,7 +317,7 @@ export async function getStructuredDataApi(
   endIndex?: number,
 ): Promise<StructuredData> {
   const response = await axios.get(
-    `${BASE_URL}/outputs/structured/${workspaceId}/${uniqueId}/${nodeId}`,
+    `${BASE_URL}/api/visualizations/structured/${workspaceId}/${uniqueId}/${nodeId}`,
     {
       params: {
         start_index: startIndex,
@@ -293,7 +333,10 @@ export type PieData = number[][]
 export async function getPieDataApi(
   path: string,
 ): Promise<{ data: PieData; columns: string[] }> {
-  const response = await axios.get(`${BASE_URL}/outputs/data/${path}`, {})
+  const response = await axios.get(
+    `${BASE_URL}/api/visualizations/data/${path}`,
+    {},
+  )
   return response.data
 }
 
@@ -307,7 +350,7 @@ export async function getThumbnailBlobUrl(
   thumbType: "input" | "roi",
 ): Promise<string> {
   const response = await axios.get(
-    `${BASE_URL}/outputs/thumbnail/${workspaceId}/${uniqueId}/${thumbType}`,
+    `${BASE_URL}/api/visualizations/thumbnail/${workspaceId}/${uniqueId}/${thumbType}`,
     {
       responseType: "blob",
     },
