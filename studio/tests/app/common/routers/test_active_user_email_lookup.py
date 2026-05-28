@@ -31,9 +31,9 @@ def _assert_email_and_active_filters(filter_call):
     """Assert .filter(...) received BOTH an email condition and an active one."""
     assert filter_call.called, "User lookup did not reach the filter call"
     args = filter_call.call_args.args
-    assert len(args) == 2, (
-        f"Expected 2 filter conditions (email + active), got {len(args)}: {args}"
-    )
+    assert (
+        len(args) == 2
+    ), f"Expected 2 filter conditions (email + active), got {len(args)}: {args}"
     arg_strs = [str(a).lower() for a in args]
     assert any("email" in s for s in arg_strs), f"No email filter present: {arg_strs}"
     assert any("active" in s for s in arg_strs), f"No active filter present: {arg_strs}"
@@ -79,9 +79,7 @@ class TestScheduleReleasedActiveFilter:
         from studio.app.common.core.subscription.webhook_service import WebhookService
 
         # Stripe.Subscription.retrieve: dict-like with items.data[0].current_period_end.
-        stripe_subscription = {
-            "items": {"data": [{"current_period_end": 2000000000}]}
-        }
+        stripe_subscription = {"items": {"data": [{"current_period_end": 2000000000}]}}
         stripe_customer = {"email": "repeat@example.com"}
 
         mock_db = Mock()
