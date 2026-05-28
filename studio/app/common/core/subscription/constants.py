@@ -460,6 +460,21 @@ class ExpirationDeletion:
     METRIC_ERRORS = "ExpirationDeletionErrors"
 
 
+class PremiumExpirationSweep:
+    """Constants for the premium expiration -> release backstop sweep job.
+
+    Safety net for the event-driven path: releases dangling premium
+    assignments for users whose subscription expired past the grace period
+    when no Stripe ``customer.subscription.deleted`` event released them
+    (e.g. a missed webhook, or a local expiration applied via direct DB
+    UPDATE such as test 600-17b).
+    """
+
+    JOB_ID = "premium_expiration_sweep"
+    JOB_INTERVAL_MINUTES = 60  # Hourly backstop
+    MAX_RELEASES_PER_RUN = 50  # Bound work per run
+
+
 class S3Pagination:
     """Constants for S3 pagination and streaming"""
 
