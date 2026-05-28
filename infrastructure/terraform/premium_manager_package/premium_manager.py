@@ -2484,6 +2484,7 @@ def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -
                                     )
                                     if tg_arn and tg_arn != autoscaling_tg:
                                         try:
+                                            _delete_premium_tg_unhealthy_alarm(tg_arn)
                                             elbv2.delete_target_group(
                                                 TargetGroupArn=tg_arn
                                             )
@@ -2562,6 +2563,94 @@ def _enable_sticky_sessions(
         print(f"WARNING: Failed to enable sticky sessions on {target_group_arn}: {e}")
 
 
+def _alb_arn_suffix(alb_arn: str) -> str:
+    """ALB ARN -> CloudWatch LoadBalancer dimension value (app/name/hash)."""
+    marker = ":loadbalancer/"
+    idx = alb_arn.find(marker)
+    return alb_arn[idx + len(marker) :] if idx != -1 else alb_arn
+
+
+def _tg_arn_suffix(tg_arn: str) -> str:
+    """Target group ARN -> CloudWatch TargetGroup dimension value."""
+    idx = tg_arn.find(":targetgroup/")
+    return tg_arn[idx + 1 :] if idx != -1 else tg_arn
+
+
+_cloudwatch_client: Optional["CloudWatchClient"] = None
+
+
+def _get_cloudwatch_client() -> "CloudWatchClient":
+    """Reuse one CloudWatch client across calls within a warm Lambda container."""
+    global _cloudwatch_client
+    if _cloudwatch_client is None:
+        _cloudwatch_client = boto3.client("cloudwatch")
+    return _cloudwatch_client
+
+
+# Mirrored in premium_cleanup.py — keep both in sync if the alarm naming changes.
+def _premium_tg_alarm_name(tg_arn: str) -> str | None:
+    """Derive the per-TG alarm name (e.g. subscr-premium-123-tg-unhealthy-hosts)."""
+    parts = _tg_arn_suffix(tg_arn).split("/")
+    if len(parts) < 2:
+        return None
+    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+
+
+def _ensure_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
+    """Create/update an UnHealthyHostCount alarm for a premium user's TG.
+
+    Best-effort: a failure here must not block provisioning.
+    """
+    alb_arn = os.environ.get("ALB_ARN")
+    alarm_name = _premium_tg_alarm_name(tg_arn)
+    if not alb_arn or not alarm_name:
+        return
+    topic_arn = os.environ.get("CRITICAL_ALERTS_TOPIC_ARN", "")
+    actions = [topic_arn] if topic_arn else []
+    try:
+        cloudwatch = _get_cloudwatch_client()
+        cloudwatch.put_metric_alarm(
+            AlarmName=alarm_name,
+            ComparisonOperator="GreaterThanThreshold",
+            EvaluationPeriods=2,
+            MetricName="UnHealthyHostCount",
+            Namespace="AWS/ApplicationELB",
+            Period=60,
+            Statistic="Maximum",
+            Threshold=0,
+            AlarmDescription=(
+                "Premium TG has unhealthy targets — the user's dedicated "
+                "instance may be failing health checks."
+            ),
+            AlarmActions=actions,
+            OKActions=actions,
+            TreatMissingData="missing",
+            Dimensions=[
+                {"Name": "LoadBalancer", "Value": _alb_arn_suffix(alb_arn)},
+                {"Name": "TargetGroup", "Value": _tg_arn_suffix(tg_arn)},
+            ],
+        )
+    except Exception as e:
+        print(f"WARNING: Failed to create unhealthy-host alarm {alarm_name}: {e}")
+
+
+def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
+    """Best-effort delete of a per-TG UnHealthyHostCount alarm.
+
+    Idempotent: delete_alarms ignores names that do not exist, so this is safe
+    to call for any TG ARN (including the shared autoscaling TG, whose derived
+    name will simply not match an existing alarm).
+    """
+    alarm_name = _premium_tg_alarm_name(tg_arn)
+    if not alarm_name:
+        return
+    try:
+        cloudwatch = _get_cloudwatch_client()
+        cloudwatch.delete_alarms(AlarmNames=[alarm_name])
+    except Exception as e:
+        print(f"WARNING: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
+
+
 def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
     """
     Create a new target group for a premium user, or return existing one if
@@ -2599,6 +2688,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
         )
         tg_arn = response["TargetGroups"][0]["TargetGroupArn"]
         _enable_sticky_sessions(elbv2, tg_arn)
+        _ensure_premium_tg_unhealthy_alarm(tg_arn)
         return tg_arn
 
     except Exception as e:
@@ -2611,6 +2701,7 @@ def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
                 response = elbv2.describe_target_groups(Names=[target_group_name])
                 existing_arn = response["TargetGroups"][0]["TargetGroupArn"]
                 _enable_sticky_sessions(elbv2, existing_arn)
+                _ensure_premium_tg_unhealthy_alarm(existing_arn)
                 print(f"Found existing target group: {existing_arn}")
                 return existing_arn
             except Exception as describe_error:
@@ -3437,6 +3528,7 @@ def assign_premium_user(
                         f"({old_arn}) before creating new one"
                     )
                     try:
+                        _delete_premium_tg_unhealthy_alarm(old_arn)
                         elbv2.delete_target_group(TargetGroupArn=old_arn)
                     except Exception as del_err:
                         print(f"Warning: could not delete orphaned TG: {del_err}")
@@ -3469,6 +3561,7 @@ def assign_premium_user(
                 "TargetGroupArn"
             ]
             _enable_sticky_sessions(elbv2, target_group_arn)
+            _ensure_premium_tg_unhealthy_alarm(target_group_arn)
 
             # 8. Register instance to target group
             print(
@@ -3602,6 +3695,7 @@ def assign_premium_user(
         try:
             # Clean up target group if created (skip placeholder markers)
             if target_group_arn and target_group_arn != PremiumAssignment.RESERVING:
+                _delete_premium_tg_unhealthy_alarm(target_group_arn)
                 elbv2.delete_target_group(TargetGroupArn=target_group_arn)
                 print(f"Cleaned up target group after error: {target_group_arn}")
         except Exception as cleanup_error:
@@ -4491,6 +4585,7 @@ def _teardown_alb_resources(user_id, rule_arn, target_group_arn):
         and target_group_arn != autoscaling_tg_arn
     ):
         try:
+            _delete_premium_tg_unhealthy_alarm(target_group_arn)
             elbv2.delete_target_group(TargetGroupArn=target_group_arn)
             print(f"Deleted target group: {target_group_arn}")
         except Exception as tg_error:

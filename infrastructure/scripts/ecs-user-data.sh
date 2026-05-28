@@ -130,6 +130,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
 {
     "metrics": {
         "namespace": "CWAgent",
+        "append_dimensions": {
+            "AutoScalingGroupName": "$${aws:AutoScalingGroupName}"
+        },
+        "aggregation_dimensions": [
+            ["AutoScalingGroupName"]
+        ],
         "metrics_collected": {
             "mem": {
                 "measurement": [
@@ -142,6 +148,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "cpu_usage_iowait"
                 ],
                 "totalcpu": true
+            },
+            "diskio": {
+                "measurement": [
+                    "iops_in_progress",
+                    "io_time"
+                ]
             }
         }
     },
