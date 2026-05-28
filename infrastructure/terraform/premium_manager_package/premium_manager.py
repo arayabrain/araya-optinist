@@ -1027,14 +1027,12 @@ def count_total_premium_users():
             with connection.cursor() as cursor:
                 # First try to query using subscription tables if they exist
                 try:
-                    cursor.execute(
-                        """SELECT COUNT(DISTINCT su.user_id) as count
+                    cursor.execute("""SELECT COUNT(DISTINCT su.user_id) as count
                            FROM subscription_users su
                            JOIN subscription_plans sp ON su.plan_id = sp.id
                            WHERE sp.name = 'Premium'
                            AND su.expiration > NOW()
-                           AND su.sync_status = 'synced'"""
-                    )
+                           AND su.sync_status = 'synced'""")
                     result = cursor.fetchone()
                     if result and result["count"] > 0:
                         total_premium = result["count"]
@@ -1051,11 +1049,9 @@ def count_total_premium_users():
                 # Fallback: Try to count from premium_user_assignments
                 # (real users, not standby)
                 try:
-                    cursor.execute(
-                        """SELECT COUNT(DISTINCT user_id) as count
+                    cursor.execute("""SELECT COUNT(DISTINCT user_id) as count
                            FROM premium_user_assignments
-                           WHERE status = 'active' AND is_standby = 0"""
-                    )
+                           WHERE status = 'active' AND is_standby = 0""")
                     result = cursor.fetchone()
                     active_assignments = result["count"] if result else 0
 
@@ -1159,10 +1155,8 @@ def get_standby_count():
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT COUNT(*) as count FROM premium_user_assignments
-                       WHERE is_standby = 1 AND status = 'active'"""
-                )
+                cursor.execute("""SELECT COUNT(*) as count FROM premium_user_assignments
+                       WHERE is_standby = 1 AND status = 'active'""")
                 result = cursor.fetchone()
                 return result["count"] if result else 0
     except Exception as e:
@@ -1200,13 +1194,11 @@ def get_available_standby_instances():
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT instance_id, standby_created_at
+                cursor.execute("""SELECT instance_id, standby_created_at
                         FROM premium_user_assignments
                        WHERE is_standby = 1 AND status = 'active'
                        ORDER BY standby_created_at ASC
-                       """
-                )
+                       """)
                 db_standby_instances = cursor.fetchall()
 
         # Filter to only include instances that are actually stopped in AWS
@@ -3745,7 +3737,6 @@ def assign_premium_user(
             ),
         }
 
-
     # Serialize concurrent assign calls for the same user_id.
     # Without this lock, two concurrent calls can both pass the
     # "existing assignment?" check and race through TG creation,
@@ -3777,9 +3768,7 @@ def assign_premium_user(
                                 "instance_id": existing["instance_id"],
                                 "target_group_arn": existing["target_group_arn"],
                                 "rule_arn": existing["alb_rule_arn"],
-                                "is_shared": bool(
-                                    existing.get("is_shared", False)
-                                ),
+                                "is_shared": bool(existing.get("is_shared", False)),
                                 "assignment_source": "existing",
                             }
                         ),
@@ -3800,10 +3789,15 @@ def assign_premium_user(
             }
 
         return _assign_premium_user_impl(
-            user_id, event, user_uid,
-            ec2, elbv2, backend_port, vpc_id, alb_listener_arn,
+            user_id,
+            event,
+            user_uid,
+            ec2,
+            elbv2,
+            backend_port,
+            vpc_id,
+            alb_listener_arn,
         )
-
 
 
 def invoke_migration_async():
@@ -4907,12 +4901,10 @@ def get_standby_pool_count():
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT instance_state, COUNT(*) as count
+                cursor.execute("""SELECT instance_state, COUNT(*) as count
                        FROM premium_user_assignments
                        WHERE is_standby = 1 AND status = 'active'
-                       GROUP BY instance_state"""
-                )
+                       GROUP BY instance_state""")
                 results = cursor.fetchall()
 
                 status_counts = {
@@ -5065,12 +5057,10 @@ def terminate_aged_stopped_instances():
         # Get stopped standby instances with fallback timestamp from the database
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT instance_id, standby_created_at
+                cursor.execute("""SELECT instance_id, standby_created_at
                        FROM premium_user_assignments
                        WHERE is_standby = 1 AND status = 'active'
-                         AND instance_state = 'stopped'"""
-                )
+                         AND instance_state = 'stopped'""")
                 standby_rows = cursor.fetchall()
 
         if not standby_rows:
@@ -5264,10 +5254,8 @@ def cleanup_failed_standby_instances():
         # Get all standby assignments from database
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT instance_id FROM premium_user_assignments
-                       WHERE is_standby = 1 AND status = 'active'"""
-                )
+                cursor.execute("""SELECT instance_id FROM premium_user_assignments
+                       WHERE is_standby = 1 AND status = 'active'""")
                 db_standby_instances = [row["instance_id"] for row in cursor.fetchall()]
 
                 # Remove database entries for instances that no longer exist
