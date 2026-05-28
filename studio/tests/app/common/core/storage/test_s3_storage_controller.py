@@ -4,6 +4,8 @@ Unit tests for S3StorageController class.
 Tests S3 operations including download_experiment with sync_mode filtering.
 """
 
+import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -124,6 +126,8 @@ class TestS3StorageControllerDownloadExperiment:
         ), patch(
             "os.makedirs"
         ), patch(
+            "os.replace"
+        ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
@@ -167,6 +171,8 @@ class TestS3StorageControllerDownloadExperiment:
             "os.path.isdir", return_value=False
         ), patch(
             "os.makedirs"
+        ), patch(
+            "os.replace"
         ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
@@ -223,6 +229,8 @@ class TestS3StorageControllerDownloadExperiment:
         ), patch(
             "os.makedirs"
         ), patch(
+            "os.replace"
+        ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
@@ -270,6 +278,8 @@ class TestS3StorageControllerDownloadExperiment:
             "os.path.isdir", return_value=False
         ), patch(
             "os.makedirs"
+        ), patch(
+            "os.replace"
         ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
@@ -329,6 +339,8 @@ class TestS3StorageControllerDownloadExperiment:
         ), patch(
             "os.makedirs"
         ), patch(
+            "os.replace"
+        ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
@@ -381,6 +393,8 @@ class TestS3StorageControllerDownloadExperiment:
         ), patch(
             "os.makedirs"
         ), patch(
+            "os.replace"
+        ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
             mock_dirpath.OUTPUT_DIR = "/app/studio_data/output"
@@ -423,6 +437,8 @@ class TestS3StorageControllerDownloadExperiment:
             "os.path.isdir", return_value=False
         ), patch(
             "os.makedirs"
+        ), patch(
+            "os.replace"
         ), patch(
             "studio.app.common.core.storage.s3_storage_controller.DIRPATH"
         ) as mock_dirpath:
@@ -875,3 +891,195 @@ class TestValidateExperimentInS3:
         assert result["valid"] is False
         # Both 0-byte -> found_files empty -> "No objects found"
         assert result["error"] is not None
+
+
+class TestDownloadS3AtomicRename:
+    """_download_s3_with_update_check writes to a tmp path then atomic-renames."""
+
+    def setup_method(self):
+        self.controller = S3StorageController("test-bucket")
+
+    @pytest.mark.asyncio
+    async def test_writes_via_tmp_then_replaces(self, tmp_path):
+        """Successful download lands at the final path; no tmp left behind."""
+        final_path = str(tmp_path / "sub" / "data.bin")
+        payload = b"hello-s3"
+
+        async def fake_download(bucket, key, dest):
+            # Simulate s3transfer writing the object body to the given dest.
+            with open(dest, "wb") as f:
+                f.write(payload)
+
+        mock_client = MagicMock()
+        mock_client.download_file = AsyncMock(side_effect=fake_download)
+
+        result = await self.controller._download_s3_with_update_check(
+            mock_client, "s3/key/data.bin", final_path, file_size=len(payload)
+        )
+
+        assert result is True
+        # The call to download_file received a tmp path, not the final path.
+        called_dest = mock_client.download_file.call_args.args[2]
+        assert called_dest != final_path
+        assert called_dest.startswith(final_path + ".tmp.")
+        # Final file is in place with the full payload.
+        assert open(final_path, "rb").read() == payload
+        # Tmp file was renamed away, not left behind.
+        assert not os.path.exists(called_dest)
+
+    @pytest.mark.asyncio
+    async def test_download_failure_cleans_up_tmp_and_no_final(self, tmp_path):
+        """If S3 raises mid-download, tmp is removed and final path stays absent."""
+        final_path = str(tmp_path / "data.bin")
+        observed_tmp = {}
+
+        async def failing_download(bucket, key, dest):
+            # Simulate partial write before the transfer raises.
+            with open(dest, "wb") as f:
+                f.write(b"partial")
+            observed_tmp["path"] = dest
+            raise RuntimeError("s3 boom")
+
+        mock_client = MagicMock()
+        mock_client.download_file = AsyncMock(side_effect=failing_download)
+
+        with pytest.raises(RuntimeError, match="s3 boom"):
+            await self.controller._download_s3_with_update_check(
+                mock_client, "s3/key/data.bin", final_path, file_size=7
+            )
+
+        assert not os.path.exists(final_path), "no partial file at the final path"
+        assert not os.path.exists(observed_tmp["path"]), "tmp must be cleaned up"
+
+    @pytest.mark.asyncio
+    async def test_skip_when_local_size_matches(self, tmp_path):
+        """Existing local file with matching size short-circuits — no S3 call."""
+        final_path = str(tmp_path / "data.bin")
+        with open(final_path, "wb") as f:
+            f.write(b"xxxxx")
+
+        mock_client = MagicMock()
+        mock_client.download_file = AsyncMock()
+
+        result = await self.controller._download_s3_with_update_check(
+            mock_client, "s3/key/data.bin", final_path, file_size=5
+        )
+
+        assert result is False
+        mock_client.download_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_overwrites_when_local_size_mismatches(self, tmp_path):
+        """Existing file with wrong size is overwritten via tmp+rename."""
+        final_path = str(tmp_path / "data.bin")
+        with open(final_path, "wb") as f:
+            f.write(b"stale")
+
+        new_payload = b"fresh-content"
+
+        async def fake_download(bucket, key, dest):
+            with open(dest, "wb") as f:
+                f.write(new_payload)
+
+        mock_client = MagicMock()
+        mock_client.download_file = AsyncMock(side_effect=fake_download)
+
+        result = await self.controller._download_s3_with_update_check(
+            mock_client, "s3/key/data.bin", final_path, file_size=len(new_payload)
+        )
+
+        assert result is True
+        assert open(final_path, "rb").read() == new_payload
+
+
+class TestS3DownloadInputDataLocking:
+    """download_input_data takes the per-(workspace, file) InputFileLock so
+    concurrent callers across paths (ensure_input_file_synced,
+    download_experiment, download_thumbnail_source) are serialized."""
+
+    @pytest.fixture(autouse=True)
+    def fast_lock_poll(self, monkeypatch):
+        from studio.app.common.core.storage.remote_storage_controller import (
+            InputFileLock,
+        )
+
+        monkeypatch.setattr(InputFileLock, "LOCK_WAIT_POLL_INTERVAL", 0.01)
+
+    @pytest.fixture
+    def input_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "studio.app.common.core.storage."
+            "remote_storage_controller.DIRPATH.INPUT_DIR",
+            str(tmp_path),
+        )
+        return str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_blocks_while_lock_held(self, input_dir):
+        """If another caller holds the lock for (ws, fn), download_input_data
+        cannot make progress until it is released."""
+        from studio.app.common.core.storage.remote_storage_controller import (
+            InputFileLock,
+        )
+
+        controller = S3StorageController("test-bucket")
+
+        # Patch __get_s3_client to a sentinel that would raise if reached —
+        # the lock should block before we ever touch S3.
+        unreachable_client = MagicMock(
+            side_effect=AssertionError("S3 client must not be reached")
+        )
+        with patch.object(
+            controller,
+            "_S3StorageController__get_s3_client",
+            new=unreachable_client,
+        ):
+            async with InputFileLock.acquire("ws1", "data.tif"):
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        controller.download_input_data("ws1", "data.tif"),
+                        timeout=0.3,
+                    )
+
+        # After releasing, the lock file should exist (acquire creates it,
+        # release does not delete it).
+        assert os.path.exists(os.path.join(input_dir, "ws1", ".locks", "data.tif.lock"))
+
+    @pytest.mark.asyncio
+    async def test_releases_lock_on_error(self, input_dir):
+        """If the body raises, the lock must be released so the next caller
+        is not parked."""
+        from studio.app.common.core.storage.remote_storage_controller import (
+            InputFileLock,
+        )
+
+        controller = S3StorageController("test-bucket")
+
+        class BoomClient:
+            def __call__(self):
+                return self
+
+            async def __aenter__(self):
+                raise RuntimeError("s3 boom")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        with patch.object(
+            controller,
+            "_S3StorageController__get_s3_client",
+            new=BoomClient(),
+        ):
+            with pytest.raises(RuntimeError, match="s3 boom"):
+                await controller.download_input_data("ws1", "data.tif")
+
+        # A fresh acquire should not hang.
+        await asyncio.wait_for(
+            _acquire_then_release(InputFileLock, "ws1", "data.tif"),
+            timeout=1.0,
+        )
+
+
+async def _acquire_then_release(lock_cls, ws: str, fn: str) -> None:
+    async with lock_cls.acquire(ws, fn):
+        pass

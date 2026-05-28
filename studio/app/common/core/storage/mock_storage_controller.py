@@ -7,6 +7,7 @@ from typing import Dict, List
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    InputFileLock,
     RemoteExperimentSyncMode,
     StorageDirectoryType,
 )
@@ -90,25 +91,28 @@ class MockStorageController(BaseRemoteStorageController):
             workspace_id, filename
         )
 
-        if os.path.isfile(input_data_local_path):
-            logger.debug(f"skip download input data: {input_data_remote_path}")
-            return False
+        async with InputFileLock.acquire(workspace_id, filename):
+            if os.path.isfile(input_data_local_path):
+                logger.debug(f"skip download input data: {input_data_remote_path}")
+                return False
 
-        if not os.path.isfile(input_data_remote_path):
-            logger.warning("remote path is not exists. [%s]", input_data_remote_path)
-            return False
+            if not os.path.isfile(input_data_remote_path):
+                logger.warning(
+                    "remote path is not exists. [%s]", input_data_remote_path
+                )
+                return False
 
-        logger.debug(
-            "download input data from remote storage (mock). [%s -> %s]",
-            input_data_remote_path,
-            input_data_local_path,
-        )
+            logger.debug(
+                "download input data from remote storage (mock). [%s -> %s]",
+                input_data_remote_path,
+                input_data_local_path,
+            )
 
-        # ----------------------------------------
-        # exec downloading
-        # ----------------------------------------
+            # ----------------------------------------
+            # exec downloading
+            # ----------------------------------------
 
-        shutil.copy(input_data_remote_path, input_data_local_path)
+            shutil.copy(input_data_remote_path, input_data_local_path)
 
         return True
 

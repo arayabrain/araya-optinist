@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import time
+import uuid
 from subprocess import CalledProcessError
 from typing import TYPE_CHECKING, Dict, List
 
@@ -22,6 +23,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.file_filter import FileSyncFilter
 from studio.app.common.core.storage.remote_storage_controller import (
     BaseRemoteStorageController,
+    InputFileLock,
     RemoteExperimentNotFoundError,
     RemoteExperimentSyncMode,
     RemoteStorageBucketNotFoundError,
@@ -233,7 +235,20 @@ class S3StorageController(BaseRemoteStorageController):
 
         os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
 
-        await s3_client.download_file(self.bucket_name, s3_file_path, local_file_path)
+        # Download to a sibling tmp path then atomic-rename, so a concurrent
+        # reader on shared storage (e.g. EFS) never sees a partial file at
+        # local_file_path. rename(2) is atomic within a single filesystem.
+        tmp_path = f"{local_file_path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        try:
+            await s3_client.download_file(self.bucket_name, s3_file_path, tmp_path)
+            os.replace(tmp_path, local_file_path)
+        except BaseException:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
 
         logger.debug(
             f"Finish download data from S3 [{self.bucket_name}] " f"{s3_file_path}"
@@ -314,42 +329,44 @@ class S3StorageController(BaseRemoteStorageController):
 
         MAX_DOWNLOAD_FILES = 1000
 
-        async with self.__get_s3_client() as __s3_client:
-            all_s3_objects = await self._list_s3_objects_paginated(
-                __s3_client, input_data_remote_path, max_files=MAX_DOWNLOAD_FILES
-            )
-
-            if not all_s3_objects:
-                logger.warning(
-                    "Remote data does not exist. [%s] [%s]",
-                    self.bucket_name,
-                    input_data_remote_path,
+        # Serialize same-(workspace, file) downloads across EFS-shared processes.
+        async with InputFileLock.acquire(workspace_id, filename):
+            async with self.__get_s3_client() as __s3_client:
+                all_s3_objects = await self._list_s3_objects_paginated(
+                    __s3_client, input_data_remote_path, max_files=MAX_DOWNLOAD_FILES
                 )
-                return False
 
-            # Sort by directory depth (shallower files first)
-            all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
+                if not all_s3_objects:
+                    logger.warning(
+                        "Remote data does not exist. [%s] [%s]",
+                        self.bucket_name,
+                        input_data_remote_path,
+                    )
+                    return False
 
-            target_files_count = len(all_s3_objects)
-            s3_prefix = __class__.make_s3_input_prefix()
+                # Sort by directory depth (shallower files first)
+                all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
 
-            for index, s3_object in enumerate(all_s3_objects):
-                s3_file_path = s3_object["Key"]
-                file_size = s3_object["Size"]
+                target_files_count = len(all_s3_objects)
+                s3_prefix = __class__.make_s3_input_prefix()
 
-                # Compute local path from S3 path
-                # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
-                # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
-                relative_path = s3_file_path.replace(s3_prefix, "")
-                local_file_path = os.path.join(DIRPATH.INPUT_DIR, relative_path)
+                for index, s3_object in enumerate(all_s3_objects):
+                    s3_file_path = s3_object["Key"]
+                    file_size = s3_object["Size"]
 
-                await self._download_s3_with_update_check(
-                    __s3_client,
-                    s3_file_path,
-                    local_file_path,
-                    file_size,
-                    progress_info=f"({index+1}/{target_files_count})",
-                )
+                    # Compute local path from S3 path
+                    # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
+                    # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
+                    relative_path = s3_file_path.replace(s3_prefix, "")
+                    local_file_path = os.path.join(DIRPATH.INPUT_DIR, relative_path)
+
+                    await self._download_s3_with_update_check(
+                        __s3_client,
+                        s3_file_path,
+                        local_file_path,
+                        file_size,
+                        progress_info=f"({index+1}/{target_files_count})",
+                    )
 
         return True
 
