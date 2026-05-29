@@ -9,19 +9,19 @@
 # visible in one place. Keep gaps so new rules can slot in without renumbering.
 locals {
   alb_priority = {
-    sync_experiment_to_public     = 200
-    sync_experiments_to_free      = 210
-    outputs_public_header         = 280
-    public_dataview_api           = 300
-    auth_to_public                = 305
-    users_me_to_public            = 306
-    log_report_to_public          = 307
-    static_assets_to_public       = 310
-    docs_to_public                = 311
-    asset_manifest_to_public      = 312
-    outputs_authenticated_to_free = 315
-    anonymous_flows_to_free       = 316
-    authenticated_to_free         = 320
+    sync_experiment_to_public            = 200
+    sync_experiments_to_free             = 210
+    visualizations_public_header         = 280
+    public_dataview_api                  = 300
+    auth_to_public                       = 305
+    users_me_to_public                   = 306
+    log_report_to_public                 = 307
+    static_assets_to_public              = 310
+    docs_to_public                       = 311
+    asset_manifest_to_public             = 312
+    visualizations_authenticated_to_free = 315
+    anonymous_flows_to_free              = 316
+    authenticated_to_free                = 320
   }
 }
 
@@ -57,17 +57,15 @@ resource "aws_lb_listener_rule" "sync_experiments_to_free" {
   }
 }
 
-# Frontend sets DATAVIEW_PUBLIC_REQUEST on /outputs/* requests made from
-# /public/* pages (see frontend/src/utils/DataviewUtils.ts). Carves public-
-# dataview reads onto the public TG; own-data reads fall through to p315.
-# TODO: After #636 (path rename to /api/visualizations/*), update both rules together.
-resource "aws_lb_listener_rule" "outputs_public_header" {
+# Header is set by the frontend only on /public/* pages; carves public-dataview
+# visualization reads away from the authenticated own-data reads (p315).
+resource "aws_lb_listener_rule" "visualizations_public_header" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = local.alb_priority.outputs_public_header
+  priority     = local.alb_priority.visualizations_public_header
 
   condition {
     path_pattern {
-      values = ["/outputs/*"]
+      values = ["/api/visualizations/*"]
     }
   }
 
@@ -225,13 +223,13 @@ resource "aws_lb_listener_rule" "asset_manifest_to_public" {
   }
 }
 
-resource "aws_lb_listener_rule" "outputs_authenticated_to_free" {
+resource "aws_lb_listener_rule" "visualizations_authenticated_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = local.alb_priority.outputs_authenticated_to_free
+  priority     = local.alb_priority.visualizations_authenticated_to_free
 
   condition {
     path_pattern {
-      values = ["/outputs/*"]
+      values = ["/api/visualizations/*"]
     }
   }
 
@@ -249,7 +247,9 @@ resource "aws_lb_listener_rule" "anonymous_flows_to_free" {
   condition {
     path_pattern {
       values = [
+        "/api/register",
         "/api/register/*",
+        "/api/subsc/webhooks",
         "/api/subsc/webhooks/*",
       ]
     }
