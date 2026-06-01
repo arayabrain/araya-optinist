@@ -40,7 +40,7 @@ from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.routers.mat import MatGetter
 
-router = APIRouter(prefix="/outputs", tags=["outputs"])
+router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
 

@@ -207,7 +207,7 @@ def setup_structured_test_data():
 
 def test_structured_hdf5_2d_returns_timeseries(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
     )
     data = response.json()
 
@@ -223,7 +223,7 @@ def test_structured_hdf5_2d_returns_timeseries(client):
 
 def test_structured_hdf5_3d_returns_images(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
         params={"start_index": 0, "end_index": 10},
     )
     data = response.json()
@@ -240,7 +240,7 @@ def test_structured_hdf5_3d_returns_images(client):
 
 def test_structured_hdf5_3d_pagination(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
         params={"start_index": 2, "end_index": 5},
     )
     data = response.json()
@@ -253,7 +253,7 @@ def test_structured_hdf5_3d_pagination(client):
 
 def test_structured_hdf5_1d_returns_bar(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_1d_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_1d_node"
     )
     data = response.json()
 
@@ -268,28 +268,30 @@ def test_structured_hdf5_1d_returns_bar(client):
 
 def test_structured_missing_workflow(client):
     response = client.get(
-        "/outputs/structured/nonexistent_ws/nonexistent_uid/some_node"
+        "/api/visualizations/structured/nonexistent_ws/nonexistent_uid/some_node"
     )
     assert response.status_code == 404
 
 
 def test_structured_missing_node(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/nonexistent_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/nonexistent_node"
     )
     assert response.status_code == 404
 
 
 def test_structured_no_hdf5path_or_matpath(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/no_path_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/no_path_node"
     )
     assert response.status_code == 400
     assert "hdf5Path or matPath" in response.json()["detail"]
 
 
 def test_structured_mat_2d_returns_timeseries(client):
-    response = client.get(f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/mat_node")
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/mat_node"
+    )
     data = response.json()
 
     assert response.status_code == 200
@@ -304,7 +306,7 @@ def test_structured_mat_2d_returns_timeseries(client):
 
 def test_structured_missing_file(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/missing_file_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/missing_file_node"
     )
     assert response.status_code == 404
     assert "File not found" in response.json()["detail"]
@@ -312,7 +314,7 @@ def test_structured_missing_file(client):
 
 def test_structured_bad_dataset_path(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/bad_dataset_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/bad_dataset_node"
     )
     assert response.status_code == 404
     assert "Dataset not found" in response.json()["detail"]
@@ -321,7 +323,7 @@ def test_structured_bad_dataset_path(client):
 def test_structured_3d_default_pagination(client):
     """When start_index/end_index are omitted, defaults to 0-10."""
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node"
     )
     data = response.json()
 

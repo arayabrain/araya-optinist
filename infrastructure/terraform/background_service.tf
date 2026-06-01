@@ -118,6 +118,8 @@ resource "aws_ecs_task_definition" "background" {
 
       # No port mappings - background service doesn't serve HTTP
 
+      # Many of these vars are duplicated in compute.tf and public_service.tf;
+      # a shared value must be changed in all three task definitions.
       environment = [
         {
           name  = "ENV_PREFIX"

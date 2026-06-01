@@ -4,7 +4,7 @@ import CloudDownloadIcon from "@mui/icons-material/CloudDownload"
 import ImageIcon from "@mui/icons-material/Image"
 import { Box, CircularProgress, IconButton, Tooltip } from "@mui/material"
 
-import { getThumbnailBlobUrl } from "api/outputs/Outputs"
+import { getThumbnailBlobUrl } from "api/visualizations/Outputs"
 
 interface ThumbnailImageProps {
   workspaceId: number | string

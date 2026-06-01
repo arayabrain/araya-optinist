@@ -130,6 +130,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
 {
     "metrics": {
         "namespace": "CWAgent",
+        "append_dimensions": {
+            "AutoScalingGroupName": "$${aws:AutoScalingGroupName}"
+        },
+        "aggregation_dimensions": [
+            ["AutoScalingGroupName"]
+        ],
         "metrics_collected": {
             "mem": {
                 "measurement": [
@@ -142,6 +148,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "cpu_usage_iowait"
                 ],
                 "totalcpu": true
+            },
+            "diskio": {
+                "measurement": [
+                    "iops_in_progress",
+                    "io_time"
+                ]
             }
         }
     },
@@ -228,10 +240,12 @@ docker pull "${ecr_repository_url}:latest" || {
     exit 1
 }
 
-# EFS setup
-mkdir -p /mnt/efs
-echo "${efs_id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
-mount -a || echo "EFS will retry"
+# Optional EFS mount; skipped when efs_id is empty.
+if [ -n "${efs_id}" ]; then
+    mkdir -p /mnt/efs
+    echo "${efs_id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
+    mount -a || echo "EFS will retry"
+fi
 
 # Test DB connection (non-blocking)
 nc -z ${db_host} 3306 && echo "DB accessible" || echo "DB will be available"

@@ -212,7 +212,7 @@ sequenceDiagram
 ```
 ┌──────────────────────────────────────────────────────────┐
 │ 1. Frontend Request                                      │
-│    → GET /outputs/image/{filepath}?workspace_id=123      │
+│    → GET /api/visualizations/image/{filepath}?workspace_id=123      │
 │    → Headers: Authorization or DATAVIEW_PUBLIC_REQUEST    │
 └──────────────────────────────────────────────────────────┘
                          ↓

@@ -16,7 +16,7 @@ from studio.app.common.core.workspace.workspace_dependencies import is_workspace
 from studio.app.optinist.core.edit_ROI import EditROI, EditRoiUtils
 from studio.app.optinist.schemas.roi import RoiList, RoiPos, RoiStatus
 
-router = APIRouter(prefix="/outputs", tags=["outputs"])
+router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
 

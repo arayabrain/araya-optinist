@@ -255,6 +255,30 @@ variable "background_instance_type" {
   default     = "t3.micro"
 }
 
+variable "public_instance_type" {
+  description = "EC2 instance type for the public ASG (serves SPA shell and public dataview API; no workflows)"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "public_asg_min_size" {
+  description = "Minimum size of the public ASG. desired=min=2 provides HA on SPA delivery."
+  type        = number
+  default     = 2
+}
+
+variable "public_asg_max_size" {
+  description = "Maximum size of the public ASG."
+  type        = number
+  default     = 4
+}
+
+variable "public_asg_desired_capacity" {
+  description = "Desired capacity of the public ASG (also used for ECS service desired_count)."
+  type        = number
+  default     = 2
+}
+
 # Frontend domain configuration
 variable "frontend_domain" {
   description = "Custom domain name for the frontend application"

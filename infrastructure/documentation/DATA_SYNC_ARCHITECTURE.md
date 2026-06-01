@@ -105,7 +105,7 @@ Without sync, the user experiences empty experiment lists, "file not found" erro
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ 2. Frontend calls:                                        │
-│    → POST /outputs/sync/{workspace_id}/{unique_id}        │
+│    → POST /api/visualizations/sync/{workspace_id}/{unique_id}        │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -370,13 +370,13 @@ environment {
 |----------|---------------|
 | `POST /system-internal/sync-experiments/{user_id}` | Triggers background metadata sync |
 | `POST /system-internal/sync-experiment/{workspace_id}/{unique_id}` | Proactive single-experiment sync (background job) |
-| `POST /outputs/sync/{workspace_id}/{unique_id}` | Triggers visualization sync + background full sync |
-| `GET /outputs/inittimedata/{dirpath}` | On-demand sync before data access |
-| `GET /outputs/timedata/{dirpath}` | On-demand sync before data access |
-| `GET /outputs/alltimedata/{dirpath}` | On-demand sync before data access |
-| `GET /outputs/data/{filepath}` | On-demand sync before data access |
-| `GET /outputs/image/{filepath}` | On-demand sync before data access |
-| `POST /outputs/image/{filepath}/status` | On-demand sync for Edit ROI |
+| `POST /api/visualizations/sync/{workspace_id}/{unique_id}` | Triggers visualization sync + background full sync |
+| `GET /api/visualizations/inittimedata/{dirpath}` | On-demand sync before data access |
+| `GET /api/visualizations/timedata/{dirpath}` | On-demand sync before data access |
+| `GET /api/visualizations/alltimedata/{dirpath}` | On-demand sync before data access |
+| `GET /api/visualizations/data/{filepath}` | On-demand sync before data access |
+| `GET /api/visualizations/image/{filepath}` | On-demand sync before data access |
+| `POST /api/visualizations/image/{filepath}/status` | On-demand sync for Edit ROI |
 | `PATCH /experiments/{workspace_id}/{unique_id}/rename` | `ensure_synced_async()` before rename |
 | `DELETE /experiments/{workspace_id}/{unique_id}` | `ensure_synced_async()` before delete |
 | `POST /experiments/delete/{workspace_id}` | `ensure_synced_async()` before batch delete |
