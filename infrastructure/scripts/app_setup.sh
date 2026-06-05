@@ -256,7 +256,8 @@ echo "$(date): Starting database initialization"
 # Install MySQL client for database initialization
 echo "$(date): Installing MySQL client"
 if command -v yum &>/dev/null; then
-    yum install -y mysql python3-pip
+    # mariadb105 on AL2023; fall back to mysql on AL2 hosts
+    yum install -y mariadb105 python3-pip || yum install -y mysql python3-pip
 elif command -v apt-get &>/dev/null; then
     apt-get update
     apt-get install -y mysql-client-core-8.0 python3-pip

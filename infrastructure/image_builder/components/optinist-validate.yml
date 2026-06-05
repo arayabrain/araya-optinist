@@ -12,7 +12,7 @@ phases:
             - echo "=== Validating yum package installations ==="
             - |
               FAILED=0
-              for pkg in amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent; do
+              for pkg in amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent; do
                 if rpm -q "$pkg" >/dev/null 2>&1 || which "$pkg" >/dev/null 2>&1; then
                   echo "OK: $pkg"
                 else

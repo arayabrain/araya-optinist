@@ -68,6 +68,51 @@ resource "aws_subnet" "private2" {
 # ============
 # NAT Instance
 # ============
+locals {
+  nat_user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    # The iptables binary is not preinstalled on the AL2023 base AMI
+    yum install -y iptables-nft
+
+    # Enable IP forwarding (idempotent — only appends if not present)
+    grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
+    sysctl -p
+
+    # Detect the egress interface at boot — AL2023 uses predictable
+    # interface names (ens5/enX0 on Nitro), so eth0 cannot be assumed.
+    cat > /usr/local/sbin/configure-nat.sh << 'SCRIPT'
+    #!/bin/bash
+    set -e
+    IFACE=$(ip -o -4 route show to default | awk '{print $5; exit}')
+    iptables -P FORWARD ACCEPT
+    iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
+      || iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+    SCRIPT
+    chmod +x /usr/local/sbin/configure-nat.sh
+
+    # Run via a systemd service on every boot, not just first boot —
+    # iptables rules can be lost after stop/start cycles.
+    cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
+    [Unit]
+    Description=Configure NAT iptables rules
+    After=network.target
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/local/sbin/configure-nat.sh
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+
+    systemctl daemon-reload
+    systemctl enable nat-iptables.service
+    systemctl start nat-iptables.service
+  EOF
+}
+
 resource "aws_instance" "nat" {
   ami                    = data.aws_ami.nat_instance.id
   instance_type          = "t3.nano"
@@ -82,36 +127,7 @@ resource "aws_instance" "nat" {
     volume_type = "gp3"
   }
 
-  user_data = <<-EOF
-              #!/bin/bash
-              yum update -y
-
-              # Enable IP forwarding (idempotent — only appends if not present)
-              grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
-              sysctl -p
-
-              # Create a systemd service to configure NAT iptables on every boot.
-              # User data only runs on first boot, but iptables rules can be lost
-              # after stop/start cycles. This service ensures NAT forwarding works
-              # reliably on every boot.
-              cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
-              [Unit]
-              Description=Configure NAT iptables rules
-              After=network.target
-
-              [Service]
-              Type=oneshot
-              RemainAfterExit=yes
-              ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT && iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'
-
-              [Install]
-              WantedBy=multi-user.target
-              UNIT
-
-              systemctl daemon-reload
-              systemctl enable nat-iptables.service
-              systemctl start nat-iptables.service
-              EOF
+  user_data = local.nat_user_data
 
   tags = {
     Name = "${local.env_prefix}-nat-instance"
@@ -134,36 +150,7 @@ resource "aws_instance" "nat2" {
     volume_type = "gp3"
   }
 
-  user_data = <<-EOF
-              #!/bin/bash
-              yum update -y
-
-              # Enable IP forwarding (idempotent — only appends if not present)
-              grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
-              sysctl -p
-
-              # Create a systemd service to configure NAT iptables on every boot.
-              # User data only runs on first boot, but iptables rules can be lost
-              # after stop/start cycles. This service ensures NAT forwarding works
-              # reliably on every boot.
-              cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
-              [Unit]
-              Description=Configure NAT iptables rules
-              After=network.target
-
-              [Service]
-              Type=oneshot
-              RemainAfterExit=yes
-              ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT && iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'
-
-              [Install]
-              WantedBy=multi-user.target
-              UNIT
-
-              systemctl daemon-reload
-              systemctl enable nat-iptables.service
-              systemctl start nat-iptables.service
-              EOF
+  user_data = local.nat_user_data
 
   tags = {
     Name = "${local.env_prefix}-nat-instance-2"
@@ -198,7 +185,7 @@ data "aws_ami" "nat_instance" {
 
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*"]
+    values = ["al2023-ami-2023.*-x86_64"]
   }
 
   filter {

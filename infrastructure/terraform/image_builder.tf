@@ -10,6 +10,15 @@
 # Gated by var.use_custom_ami (default false).  When disabled, launch
 # templates fall back to the stock Amazon ECS-optimized AMI.
 
+# Recipe/component version — bump per environment to force a new AMI build.
+# Kept in git rather than tfvars so every apply uses the same version.
+locals {
+  custom_ami_version = {
+    development = "2.0.0"
+    subscr      = "2.0.0"
+  }[var.environment]
+}
+
 # =====================
 # IAM — Build Instance
 # =====================
@@ -135,12 +144,12 @@ resource "aws_iam_role_policy_attachment" "image_builder_lifecycle" {
 resource "aws_imagebuilder_component" "optinist_packages" {
   count = var.use_custom_ami ? 1 : 0
 
-  name        = "${local.env_prefix}-packages-v${replace(var.custom_ami_version, ".", "-")}"
+  name        = "${local.env_prefix}-packages-v${replace(local.custom_ami_version, ".", "-")}"
   platform    = "Linux"
-  version     = var.custom_ami_version
+  version     = local.custom_ami_version
   description = "Install system packages and AWS CLI v2 for OptiNiSt ECS instances"
 
-  supported_os_versions = ["Amazon Linux 2"]
+  supported_os_versions = ["Amazon Linux 2023"]
 
   data = file("${path.module}/../image_builder/components/optinist-packages.yml")
 
@@ -157,12 +166,12 @@ resource "aws_imagebuilder_component" "optinist_packages" {
 resource "aws_imagebuilder_component" "optinist_validate" {
   count = var.use_custom_ami ? 1 : 0
 
-  name        = "${local.env_prefix}-validate-v${replace(var.custom_ami_version, ".", "-")}"
+  name        = "${local.env_prefix}-validate-v${replace(local.custom_ami_version, ".", "-")}"
   platform    = "Linux"
-  version     = var.custom_ami_version
+  version     = local.custom_ami_version
   description = "Validate OptiNiSt ECS AMI package installations"
 
-  supported_os_versions = ["Amazon Linux 2"]
+  supported_os_versions = ["Amazon Linux 2023"]
 
   data = file("${path.module}/../image_builder/components/optinist-validate.yml")
 
@@ -182,9 +191,9 @@ resource "aws_imagebuilder_component" "optinist_validate" {
 resource "aws_imagebuilder_image_recipe" "optinist" {
   count = var.use_custom_ami ? 1 : 0
 
-  name         = "${local.env_prefix}-ecs-recipe-v${replace(var.custom_ami_version, ".", "-")}"
+  name         = "${local.env_prefix}-ecs-recipe-v${replace(local.custom_ami_version, ".", "-")}"
   parent_image = data.aws_ami.ecs_optimized.id
-  version      = var.custom_ami_version
+  version      = local.custom_ami_version
   description  = "ECS-optimized AMI with pre-installed OptiNiSt packages"
 
   component {

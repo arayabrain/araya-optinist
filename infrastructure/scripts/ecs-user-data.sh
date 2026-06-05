@@ -38,8 +38,8 @@ if [ -f /etc/optinist-ami-baked ]; then
 else
     echo "$(date): Stock AMI detected, installing packages"
     yum update -y
-    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
-    # Install AWS CLI v2 (awscli v1 package no longer available in AL2 repos)
+    yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent
+    # Install AWS CLI v2 (awscli v1 yum package no longer available)
     curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
     cd /tmp && unzip -qo awscliv2.zip
     /tmp/aws/install --update
@@ -62,7 +62,7 @@ if [ "$SWAP_SIZE_MB" -gt 0 ]; then
     # Strategy 1: Dedicated EBS swap volume (instant, preferred)
     if [ -n "$SWAP_DEVICE_NAME" ]; then
         # On Nitro instances (t3, m5, etc.), /dev/xvds may appear as /dev/nvme*n1.
-        # Amazon Linux 2 ECS AMI creates symlinks via udev rules (ec2-utils).
+        # The ECS-optimized AMI creates symlinks via udev rules (ec2-utils).
         if [ -b "$SWAP_DEVICE_NAME" ]; then
             SWAP_TARGET="$SWAP_DEVICE_NAME"
             echo "$(date): Found swap device at $SWAP_DEVICE_NAME"
@@ -70,8 +70,9 @@ if [ "$SWAP_SIZE_MB" -gt 0 ]; then
             echo "$(date): $SWAP_DEVICE_NAME not found, scanning NVMe devices..."
             for nvme_dev in /dev/nvme*n1; do
                 [ -b "$nvme_dev" ] || continue
+                # ebsnvme-id prints the attachment name without the /dev/ prefix
                 mapped_name=$(/sbin/ebsnvme-id -b "$nvme_dev" 2>/dev/null || true)
-                if [ "$mapped_name" = "$SWAP_DEVICE_NAME" ]; then
+                if [ "$mapped_name" = "$(basename "$SWAP_DEVICE_NAME")" ]; then
                     SWAP_TARGET="$nvme_dev"
                     echo "$(date): Found swap device at $nvme_dev (mapped from $SWAP_DEVICE_NAME)"
                     break

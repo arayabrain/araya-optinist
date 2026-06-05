@@ -31,7 +31,7 @@
 
 4. **Immutable Build Components and Recipes**
    - EC2 Image Builder components and recipes are immutable in AWS — content changes require a version bump
-   - `var.custom_ami_version` controls all version strings; bumping it forces Terraform to create new resources via `create_before_destroy`
+   - `local.custom_ami_version` (in `image_builder.tf`) controls all version strings; bumping it forces Terraform to create new resources via `create_before_destroy`. It is defined in git-tracked code, not tfvars, so every developer applies the same version
 
 5. **Encrypted AMI with Same-Account Distribution**
    - Recipe specifies `encrypted = true` (AWS-managed CMK) for the root EBS volume
@@ -137,7 +137,7 @@ if [ -f /etc/optinist-ami-baked ]; then
 else
     echo "$(date): Stock AMI detected, installing packages"
     yum update -y
-    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
+    yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent
     curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
     cd /tmp && unzip -qo awscliv2.zip
     /tmp/aws/install --update
@@ -147,8 +147,8 @@ fi
 ```
 
 **Package fix notes (also applied to stock AMI path):**
-- `mysql-client` removed — does not exist in Amazon Linux 2; `mysql` package provides the client binary
-- `awscli` v1 replaced — yum package no longer available in AL2 repos; standalone AWS CLI v2 installer used instead
+- `mariadb105` provides the MySQL client binary (`/usr/bin/mysql`) — Amazon Linux 2023 has no `mysql` or `mysql-client` package
+- `awscli` v1 replaced — yum package not available; standalone AWS CLI v2 installer used instead
 - `export PATH="/usr/local/bin:$PATH"` — required for pre-baked AMI because AWS CLI v2 installs to `/usr/local/bin`, which is not in the default PATH at user-data execution time
 
 **Swap setup optimization (dedicated EBS volume):**
@@ -181,7 +181,7 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 | Step | Action | Notes |
 |------|--------|-------|
 | `SystemUpdate` | `yum update -y` | Apply latest patches |
-| `InstallYumPackages` | `yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent` | Core packages |
+| `InstallYumPackages` | `yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent` | Core packages |
 | `InstallAWSCLIv2` | Remove awscli v1, install standalone v2, verify with `grep -q "aws-cli/2"` | Replaces broken v1 yum package |
 | `EnableDockerService` | `systemctl enable docker` | Enabled but NOT started (instance shuts down for snapshot) |
 | `CreateBakeMarker` | Write `/etc/optinist-ami-baked` with timestamp and package list | Detected by user-data at boot |
@@ -254,13 +254,17 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 
 Before bumping `custom_ami_version` or running `terraform apply`, confirm the currently active version using the methods below. This check is referenced by [Procedure B](#procedure-b-initial-setup-first-time-deployment) and [Procedure C](#procedure-c-ami-content-fix--rebuild).
 
-#### Method 1: Check tfvars (Local Source of Truth)
+#### Method 1: Check image_builder.tf (Git Source of Truth)
 
-The `custom_ami_version` value set in the tfvars file is the version that Terraform will use on next `apply`.
+The `local.custom_ami_version` map in `image_builder.tf` holds the per-environment version that Terraform will use on next `apply`.
 
 ```bash
-grep custom_ami_version infrastructure/terraform/environments/<env>.tfvars
-# Example output: custom_ami_version = "1.0.2"
+grep -A3 'custom_ami_version = {' infrastructure/terraform/image_builder.tf
+# Example output:
+#   custom_ami_version = {
+#     development = "2.0.0"
+#     subscr      = "2.0.0"
+#   }[var.environment]
 ```
 
 #### Method 2: Query Image Builder Pipeline (AWS Source of Truth)
@@ -314,7 +318,7 @@ The version is encoded in the component name suffix (dots replaced with hyphens:
 
 | What | Where | Command / Location |
 |------|-------|--------------------|
-| Version to be deployed next | tfvars file | `grep custom_ami_version <env>.tfvars` |
+| Version to be deployed next | `image_builder.tf` locals | `grep -A3 'custom_ami_version = {' image_builder.tf` |
 | Version currently active in AWS | Pipeline → Recipe | `aws imagebuilder get-image-recipe` (see Method 2) |
 | All versions ever created | Components list | `aws imagebuilder list-components --owner Self` |
 | Visual confirmation | AWS Console | EC2 Image Builder → Image pipelines → Recipe |
@@ -327,7 +331,7 @@ This procedure enables the custom AMI feature, builds the first AMI via Image Bu
 ┌──────────────────────────────────────────────────────────┐
 │ Step 1: Enable Feature Flag                              │
 │    → Set use_custom_ami = true in terraform.tfvars       │
-│    → Set custom_ami_version = "1.0.0"                    │
+│    → Set local.custom_ami_version (image_builder.tf)     │
 │                                                          │
 │    ℹ Before setting custom_ami_version, verify the       │
 │      current version state.                              │
@@ -414,7 +418,7 @@ When the pre-baked package set changes (component YAML files modified), a versio
 ┌──────────────────────────────────────────────────────────┐
 │ Step 1: Edit YAML and Bump Version                       │
 │    → Modify component YAML files as needed               │
-│    → Bump custom_ami_version in terraform.tfvars         │
+│    → Bump local.custom_ami_version in image_builder.tf   │
 │      (e.g., "1.0.0" → "1.0.1")                          │
 │                                                          │
 │    ℹ Before bumping, verify the current version.         │
@@ -529,7 +533,7 @@ cat /etc/optinist-ami-baked
 # Expected:
 #   BAKED_DATE=2026-04-21T11:16:57Z
 #   BAKED_BY=ec2-image-builder
-#   PACKAGES=amazon-ssm-agent,mysql,...
+#   PACKAGES=amazon-ssm-agent,mariadb105,...
 
 # 2. Confirm user-data skipped package installation
 grep "Pre-baked AMI detected" /var/log/ecs-setup.log
@@ -548,7 +552,7 @@ aws --version
 # Expected: aws-cli/2.x.x ...
 
 # 5. Verify packages
-rpm -q amazon-ssm-agent amazon-efs-utils amazon-cloudwatch-agent git docker
+rpm -q amazon-ssm-agent amazon-efs-utils amazon-cloudwatch-agent git docker mariadb105
 which mysql nc
 
 # 6. Confirm swap is on dedicated block device (free/premium tiers)
@@ -571,7 +575,8 @@ curl -s http://localhost:51678/v1/metadata | python -m json.tool
 | Variable | Type | Default | Purpose |
 |----------|------|---------|---------|
 | `use_custom_ami` | `bool` | `false` | Feature flag: enable/disable Image Builder and custom AMI usage |
-| `custom_ami_version` | `string` | `"1.0.0"` | Component and recipe version; bump to force new resources |
+
+The component/recipe version is intentionally **not** a variable: `local.custom_ami_version` in `image_builder.tf` maps each environment to its version. It lives in git-tracked code (not tfvars) so all developers apply the same value; bump it to force new components and a new recipe.
 
 ### AMI Build Pipeline Settings (EC2 Image Builder)
 
@@ -632,7 +637,7 @@ aws imagebuilder get-image \
 <timestamp>: Pre-baked AMI detected, skipping package installation
 BAKED_DATE=2026-04-21T03:15:22Z
 BAKED_BY=ec2-image-builder
-PACKAGES=amazon-ssm-agent,mysql,...
+PACKAGES=amazon-ssm-agent,mariadb105,...
 ```
 
 **Stock AMI fallback:**
@@ -770,11 +775,11 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |------|---------|
 | `infrastructure/terraform/compute.tf` | Custom AMI selection logic (`local.effective_ami_id`), free and premium launch templates |
 | `infrastructure/scripts/ecs-user-data.sh` | Bake marker detection and conditional package installation |
-| `infrastructure/terraform/image_builder.tf` | EC2 Image Builder Terraform resources (IAM, components, recipe, pipeline, lifecycle, SSM, outputs) |
+| `infrastructure/terraform/image_builder.tf` | EC2 Image Builder Terraform resources (IAM, components, recipe, pipeline, lifecycle, SSM, outputs) and `local.custom_ami_version` |
 | `infrastructure/image_builder/components/optinist-packages.yml` | Build component: package installation steps |
 | `infrastructure/image_builder/components/optinist-validate.yml` | Validate component: installation verification |
 | `infrastructure/terraform/background_service.tf` | Background launch template (uses `local.effective_ami_id`) |
-| `infrastructure/terraform/main.tf` | Variable definitions (`use_custom_ami`, `custom_ami_version`) |
+| `infrastructure/terraform/main.tf` | Variable definitions (`use_custom_ami`) |
 | `infrastructure/terraform/infrastructure.tf` | S3 lifecycle rule for `image-builder-logs/` |
 | `infrastructure/terraform/environments/development.tfvars.example` | Example tfvars with custom AMI settings |
 | `infrastructure/terraform/environments/production.tfvars.example` | Example tfvars with custom AMI settings |
