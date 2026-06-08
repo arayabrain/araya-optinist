@@ -1475,12 +1475,11 @@ class WebhookService:
             db, user_id, plan_id, expiration_date
         )
 
-        # 5. Mirror cancel_at_period_end -> scheduled_downgrade. The upsert
-        # set scheduled_downgrade=False unconditionally; only override when
-        # the event carries cancel_at_period_end=True, so the common (no-
-        # cancel) case avoids an extra query. This is the P2 addition that
-        # captures Stripe-initiated downgrades (proration, payment-method-
-        # failure auto-cancel, plan change at period end).
+        # 5. Mirror cancel_at_period_end -> scheduled_downgrade.
+        # Step 4's upsert (_apply_subscription_update) always resets
+        # scheduled_downgrade=False, so the False case is already handled.
+        # We only need a second query when cancel_at_period_end=True to
+        # flip it back on.
         cancel_at_period_end = bool(subscription_data.get("cancel_at_period_end"))
         if cancel_at_period_end:
             subscription = (
@@ -1494,12 +1493,14 @@ class WebhookService:
 
         # 6. Sync storage quota to the plan
         storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
-        rows_updated = db.execute(
-            update(UserStorageUsage)
-            .where(UserStorageUsage.user_id == user_id)
-            .values(storage_quota_bytes=storage_quota_bytes)
-        ).rowcount
-        if not rows_updated:
+        existing_usage = (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == user_id)
+            .first()
+        )
+        if existing_usage:
+            existing_usage.storage_quota_bytes = storage_quota_bytes
+        else:
             db.add(
                 UserStorageUsage(
                     user_id=user_id,
@@ -1631,7 +1632,7 @@ class WebhookService:
                     return WebhookService.handle_invoice_finalized(data)
 
                 case _:
-                    logger.info(f"Unhandled webhook event type: {event_type}")
+                    logger.warning(f"Unhandled webhook event type: {event_type}")
                     return {
                         "success": True,
                         "message": f"Unhandled event type: {event_type}",

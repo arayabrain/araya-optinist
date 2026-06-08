@@ -4,9 +4,16 @@ from unittest.mock import Mock, patch
 import pytest
 from sqlmodel import Session
 
-from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.constants import SyncStatus
-from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.subscription.checkout_service import (
+    CheckoutService,
+)
+from studio.app.common.core.subscription.constants import (
+    SubscriptionPlanIds,
+    SyncStatus,
+)
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionService,
+)
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
@@ -898,15 +905,19 @@ class TestSubscriptionLifecycleWebhooks:
             "customer": "cus_test123",
             "status": "active",
             "current_period_end": 2000000000,  # far-future unix timestamp
-            "metadata": {"plan_id": "2"},
+            "metadata": {"plan_id": str(SubscriptionPlanIds.PREMIUM)},
         }
 
     def _setup_query_chain(self, mock_db, account, user):
-        """Sequential query results: account lookup, then user (for cache)."""
+        """Sequential query results: account, storage usage, then user (cache)."""
+        mock_storage = Mock()
+        mock_storage.storage_quota_bytes = 214748364800
         mock_db.query.side_effect = [
             # 1. SubscriptionUserAccount by customer_id
             Mock(filter=Mock(return_value=Mock(first=Mock(return_value=account)))),
-            # 2. User for cache invalidation
+            # 2. UserStorageUsage by user_id (storage quota sync)
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_storage)))),
+            # 3. User for cache invalidation
             Mock(filter=Mock(return_value=Mock(first=Mock(return_value=user)))),
         ]
 
@@ -928,11 +939,11 @@ class TestSubscriptionLifecycleWebhooks:
 
         assert result["success"] is True
         assert result["user_id"] == 42
-        assert result["plan_id"] == 2
+        assert result["plan_id"] == SubscriptionPlanIds.PREMIUM
         mock_upsert.assert_called_once()
         upsert_args = mock_upsert.call_args[0]
         assert upsert_args[1] == 42  # user_id
-        assert upsert_args[2] == 2  # plan_id from metadata
+        assert upsert_args[2] == SubscriptionPlanIds.PREMIUM
         mock_db.commit.assert_called_once()
         mock_invalidate.assert_called_once_with("user_uid_42")
 
@@ -1021,8 +1032,11 @@ class TestSubscriptionLifecycleWebhooks:
         mock_subscription.scheduled_downgrade = False
         mock_subscription.updated_at = None
 
-        # Query side_effect: account, subscription re-query (override path),
-        # then user (cache invalidation).
+        mock_storage = Mock()
+        mock_storage.storage_quota_bytes = 214748364800
+
+        # Query side_effect: account, subscription re-query (cancel path),
+        # storage usage, then user (cache invalidation).
         mock_db.query.side_effect = [
             Mock(
                 filter=Mock(
@@ -1032,6 +1046,11 @@ class TestSubscriptionLifecycleWebhooks:
             Mock(
                 filter=Mock(
                     return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_storage))
                 )
             ),
             Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
@@ -1051,6 +1070,35 @@ class TestSubscriptionLifecycleWebhooks:
         assert result["scheduled_downgrade"] is True
         assert mock_subscription.scheduled_downgrade is True
         assert mock_subscription.updated_at is not None
+
+    def test_subscription_updated_resets_scheduled_downgrade_when_uncancelled(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """`updated` with cancel_at_period_end=False resets scheduled_downgrade.
+
+        When a user un-cancels in Stripe, the upsert in Step 4
+        (_apply_subscription_update) unconditionally sets
+        scheduled_downgrade=False, so the local state is corrected.
+        """
+        subscription_event["cancel_at_period_end"] = False
+        # cancel_at_period_end=False -> helper skips the subscription
+        # re-query, so the query chain is just account + user.
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["scheduled_downgrade"] is False
+        # Verify upsert was called (it resets scheduled_downgrade=False)
+        mock_upsert.assert_called_once()
 
     def test_updated_past_due_still_marked_synced(
         self, mock_db, mock_user_account, mock_user, subscription_event
