@@ -52,7 +52,8 @@ class PremiumExpirationSweepJob:
             candidates = cls._find_dangling_assignments()
         except Exception as e:
             logger.error(
-                f"Premium expiration sweep: failed to query candidates: {e}",
+                "Premium expiration sweep: failed to query candidates: %s",
+                e,
                 exc_info=True,
             )
             return
@@ -62,8 +63,8 @@ class PremiumExpirationSweepJob:
             return
 
         logger.info(
-            f"Premium expiration sweep: {len(candidates)} dangling "
-            f"assignment(s) to release"
+            "Premium expiration sweep: %d dangling assignment(s) to release",
+            len(candidates),
         )
 
         processed = 0
@@ -79,25 +80,31 @@ class PremiumExpirationSweepJob:
                 if result.get("success"):
                     processed += 1
                     logger.info(
-                        f"Premium expiration sweep: released user {user_id} "
-                        f"({result.get('message')})"
+                        "Premium expiration sweep: released user %s (%s)",
+                        user_id,
+                        result.get("message"),
                     )
                 else:
                     errors += 1
                     logger.warning(
                         "Premium expiration sweep: release returned failure for "
-                        f"user {user_id}: {result.get('message')}"
+                        "user %s: %s",
+                        user_id,
+                        result.get("message"),
                     )
             except Exception as e:
                 errors += 1
                 logger.error(
-                    f"Premium expiration sweep: error releasing user {user_id}: {e}",
+                    "Premium expiration sweep: error releasing user %s: %s",
+                    user_id,
+                    e,
                     exc_info=True,
                 )
 
         logger.info(
-            f"Premium expiration sweep completed: {processed} released, "
-            f"{errors} errors"
+            "Premium expiration sweep completed: %d released, %d errors",
+            processed,
+            errors,
         )
 
     @staticmethod
@@ -145,6 +152,7 @@ class PremiumExpirationSweepJob:
                     UserSubscription.expiration <= grace_cutoff,
                     ~has_active_sub,
                 )
+                .distinct()
                 # Oldest expirations first so the per-run cap is deterministic
                 # and never starves long-expired assignments.
                 .order_by(UserSubscription.expiration.asc())

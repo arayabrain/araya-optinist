@@ -1439,8 +1439,9 @@ class WebhookService:
         )
         if not row:
             logger.info(
-                f"Webhook: No user account/user for customer {customer_id}; "
-                "no premium assignment to release"
+                "Webhook: No user account/user for customer %s; "
+                "no premium assignment to release",
+                customer_id,
             )
             return
         user_account, user = row
@@ -1454,21 +1455,26 @@ class WebhookService:
             )
             if result.get("success"):
                 logger.info(
-                    f"Webhook: Released premium assignment for user {user.id} "
-                    f"on subscription delete: {result.get('message')}"
+                    "Webhook: Released premium assignment for user %s "
+                    "on subscription delete: %s",
+                    user.id,
+                    result.get("message"),
                 )
             else:
                 # Not released in-band (e.g. timed out). The background sweep
                 # will release it; acknowledge the webhook regardless.
                 logger.warning(
-                    f"Webhook: Premium release not confirmed for user "
-                    f"{user.id}: {result.get('message')}; "
-                    "deferring to background sweep"
+                    "Webhook: Premium release not confirmed for user "
+                    "%s: %s; deferring to background sweep",
+                    user.id,
+                    result.get("message"),
                 )
         except Exception as e:
             logger.error(
-                f"Webhook: Failed to release premium assignment for user "
-                f"{user_account.user_id}: {e}",
+                "Webhook: Failed to release premium assignment for user "
+                "%s: %s",
+                user_account.user_id,
+                e,
                 exc_info=True,
             )
 
