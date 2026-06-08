@@ -1471,8 +1471,7 @@ class WebhookService:
                 )
         except Exception as e:
             logger.error(
-                "Webhook: Failed to release premium assignment for user "
-                "%s: %s",
+                "Webhook: Failed to release premium assignment for user %s: %s",
                 user_account.user_id,
                 e,
                 exc_info=True,

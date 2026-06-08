@@ -913,9 +913,7 @@ class TestCustomerSubscriptionDeleted:
                 return_value=Mock(
                     filter=Mock(
                         return_value=Mock(
-                            first=Mock(
-                                return_value=(mock_user_account, mock_user)
-                            )
+                            first=Mock(return_value=(mock_user_account, mock_user))
                         )
                     )
                 )
@@ -952,9 +950,7 @@ class TestCustomerSubscriptionDeleted:
                 return_value=Mock(
                     filter=Mock(
                         return_value=Mock(
-                            first=Mock(
-                                return_value=(mock_user_account, mock_user)
-                            )
+                            first=Mock(return_value=(mock_user_account, mock_user))
                         )
                     )
                 )
@@ -989,9 +985,7 @@ class TestCustomerSubscriptionDeleted:
         mock_db.query.return_value = Mock(
             join=Mock(
                 return_value=Mock(
-                    filter=Mock(
-                        return_value=Mock(first=Mock(return_value=None))
-                    )
+                    filter=Mock(return_value=Mock(first=Mock(return_value=None)))
                 )
             )
         )
@@ -1019,9 +1013,7 @@ class TestCustomerSubscriptionDeleted:
                 return_value=Mock(
                     filter=Mock(
                         return_value=Mock(
-                            first=Mock(
-                                return_value=(mock_user_account, mock_user)
-                            )
+                            first=Mock(return_value=(mock_user_account, mock_user))
                         )
                     )
                 )

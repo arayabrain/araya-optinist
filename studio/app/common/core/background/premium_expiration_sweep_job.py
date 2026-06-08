@@ -22,6 +22,7 @@ from sqlalchemy import and_, exists
 from sqlalchemy.orm import aliased
 
 from studio.app.common.core.logger import AppLogger
+
 # Top-level import is safe here (no circular dependency).  webhook_service.py
 # must use a local import because it is itself imported by the subscription
 # package, but this background-job module has no such cycle.
