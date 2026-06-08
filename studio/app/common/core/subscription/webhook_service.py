@@ -615,7 +615,7 @@ class WebhookService:
             # Find user by email. Filter active=True so a soft-deleted user
             # (active=0) with the same email doesn't shadow the new active
             # user after a re-registration (issue #629 P5).
-            from studio.app.common.models.user import User  # Adjust import as needed
+            from studio.app.common.models.user import User
 
             user = (
                 db.query(User)

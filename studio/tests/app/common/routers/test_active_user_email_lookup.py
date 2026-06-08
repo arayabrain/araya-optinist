@@ -28,15 +28,26 @@ def _capture_user_filter(mock_db):
 
 
 def _assert_email_and_active_filters(filter_call):
-    """Assert .filter(...) received BOTH an email condition and an active one."""
+    """Assert .filter(...) received BOTH an email condition and an ``active IS true``.
+
+    Uses exact SQLAlchemy repr matching (``users.email = :email_1`` and
+    ``users.active IS true``) rather than loose substring checks, so we
+    don't get false positives from unrelated columns that happen to
+    contain "email" or "active", and we verify the condition is
+    ``IS true`` specifically (not ``IS false`` or ``== something_else``).
+    """
     assert filter_call.called, "User lookup did not reach the filter call"
     args = filter_call.call_args.args
     assert (
         len(args) == 2
     ), f"Expected 2 filter conditions (email + active), got {len(args)}: {args}"
     arg_strs = [str(a).lower() for a in args]
-    assert any("email" in s for s in arg_strs), f"No email filter present: {arg_strs}"
-    assert any("active" in s for s in arg_strs), f"No active filter present: {arg_strs}"
+    assert any(
+        "email" in s and "= :email" in s for s in arg_strs
+    ), f"No email equality filter present: {arg_strs}"
+    assert any(
+        s == "users.active is true" for s in arg_strs
+    ), f"No 'active IS true' filter present: {arg_strs}"
 
 
 class TestValidateCheckoutSessionActiveFilter:
