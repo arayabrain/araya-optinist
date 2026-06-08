@@ -93,11 +93,13 @@ build_frontend:
 	docker compose -f docker-compose.build.yml build studio-build-fe
 	docker compose -f docker-compose.build.yml run studio-build-fe
 
+ROOT_PY := *.py
+
 .PHONY: format
 format:
-	black studio *.py
-	isort studio *.py
-	flake8 studio *.py
+	black $(ROOT_PY) studio infrastructure --exclude infrastructure/terraform/.build
+	isort $(ROOT_PY) studio infrastructure --skip infrastructure/terraform/.build
+	flake8 $(ROOT_PY) studio infrastructure --exclude infrastructure/terraform/.build
 	codespell --skip="./dist,./frontend/node_modules,./logs"
 
 .PHONY: docs
