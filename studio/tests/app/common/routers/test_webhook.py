@@ -1048,11 +1048,7 @@ class TestSubscriptionLifecycleWebhooks:
                     return_value=Mock(first=Mock(return_value=mock_subscription))
                 )
             ),
-            Mock(
-                filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_storage))
-                )
-            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_storage)))),
             Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
         ]
 
