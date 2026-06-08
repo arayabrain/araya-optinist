@@ -22,6 +22,9 @@ from sqlalchemy import and_, exists
 from sqlalchemy.orm import aliased
 
 from studio.app.common.core.logger import AppLogger
+# Top-level import is safe here (no circular dependency).  webhook_service.py
+# must use a local import because it is itself imported by the subscription
+# package, but this background-job module has no such cycle.
 from studio.app.common.core.premium.premium_assignment_service import (
     premium_assignment_service,
 )
@@ -116,10 +119,13 @@ class PremiumExpirationSweepJob:
         )
 
         # Exclude users who have any currently-active subscription row.
+        # Correlate on PremiumUserAssignment.user_id (the outer entity) so the
+        # subquery remains correct even if the unique constraint on
+        # UserSubscription.user_id is ever relaxed.
         active_sub = aliased(UserSubscription)
         has_active_sub = exists().where(
             and_(
-                active_sub.user_id == UserSubscription.user_id,
+                active_sub.user_id == PremiumUserAssignment.user_id,
                 active_sub.expiration > current_time,
             )
         )
@@ -146,6 +152,10 @@ class PremiumExpirationSweepJob:
                 .all()
             )
 
+            # Defensive dedup: UserSubscription.user_id currently has a unique
+            # constraint so the JOIN cannot produce duplicates.  The dedup is
+            # kept as a safety net in case the constraint is ever relaxed (e.g.
+            # for subscription history tracking).
             seen = set()
             candidates: List[Tuple[int, str]] = []
             for user_id, user_uid in rows:

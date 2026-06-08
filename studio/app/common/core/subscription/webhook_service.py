@@ -1429,25 +1429,21 @@ class WebhookService:
         )
 
         customer_id = subscription_data.get("customer")
-        user_account = (
-            db.query(SubscriptionUserAccount)
+        # Single JOIN query to reduce DB round-trips on the latency-sensitive
+        # webhook path (was two sequential queries before).
+        row = (
+            db.query(SubscriptionUserAccount, User)
+            .join(User, User.id == SubscriptionUserAccount.user_id)
             .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
             .first()
         )
-        if not user_account:
+        if not row:
             logger.info(
-                f"Webhook: No user account for customer {customer_id}; "
+                f"Webhook: No user account/user for customer {customer_id}; "
                 "no premium assignment to release"
             )
             return
-
-        user = db.query(User).filter(User.id == user_account.user_id).first()
-        if not user:
-            logger.warning(
-                f"Webhook: User {user_account.user_id} not found; "
-                "cannot release premium assignment"
-            )
-            return
+        user_account, user = row
 
         try:
             result = await premium_assignment_service.release_premium_user(

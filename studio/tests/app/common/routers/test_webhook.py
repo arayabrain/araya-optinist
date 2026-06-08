@@ -907,16 +907,20 @@ class TestCustomerSubscriptionDeleted:
             premium_assignment_service,
         )
 
-        mock_db.query.side_effect = [
-            # account by customer_id
-            Mock(
-                filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_user_account))
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(
+                                return_value=(mock_user_account, mock_user)
+                            )
+                        )
+                    )
                 )
-            ),
-            # User by id
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
-        ]
+            )
+        )
         with patch.object(
             premium_assignment_service,
             "release_premium_user",
@@ -942,14 +946,20 @@ class TestCustomerSubscriptionDeleted:
             premium_assignment_service,
         )
 
-        mock_db.query.side_effect = [
-            Mock(
-                filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_user_account))
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(
+                                return_value=(mock_user_account, mock_user)
+                            )
+                        )
+                    )
                 )
-            ),
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
-        ]
+            )
+        )
         timed_out = {
             "success": False,
             "timed_out": True,
@@ -975,9 +985,16 @@ class TestCustomerSubscriptionDeleted:
             premium_assignment_service,
         )
 
-        mock_db.query.side_effect = [
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
-        ]
+        # JOIN query returns None -> no account/user found
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(first=Mock(return_value=None))
+                    )
+                )
+            )
+        )
         with patch.object(
             premium_assignment_service, "release_premium_user", new=AsyncMock()
         ) as mock_release:
@@ -996,14 +1013,20 @@ class TestCustomerSubscriptionDeleted:
             premium_assignment_service,
         )
 
-        mock_db.query.side_effect = [
-            Mock(
-                filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_user_account))
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(
+                                return_value=(mock_user_account, mock_user)
+                            )
+                        )
+                    )
                 )
-            ),
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
-        ]
+            )
+        )
         with patch.object(
             premium_assignment_service,
             "release_premium_user",
