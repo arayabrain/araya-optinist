@@ -1,5 +1,5 @@
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlmodel import Session
@@ -855,6 +855,197 @@ class TestCheckoutStorageQuotaUpdate:
 
         expected_quota = StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
         assert added_obj.storage_quota_bytes == expected_quota
+
+
+class TestCustomerSubscriptionDeleted:
+    """Tests for the release-on-delete webhook path (issue #629, P3).
+
+    Verifies that customer.subscription.deleted now releases the dangling
+    premium compute assignment via release_premium_user (in addition to the
+    existing DB-row expiration in handle_subscription_cancelled).
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.flush = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        return db
+
+    @pytest.fixture
+    def mock_user_account(self):
+        account = Mock()
+        account.user_id = 42
+        return account
+
+    @pytest.fixture
+    def mock_user(self):
+        user = Mock()
+        user.id = 42
+        user.uid = "user_uid_42"
+        return user
+
+    @pytest.fixture
+    def subscription_event(self):
+        """A customer.subscription.deleted event payload."""
+        return {
+            "id": "sub_stripe123",
+            "customer": "cus_test123",
+            "status": "canceled",
+        }
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_on_delete(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """The delete path hard-releases with the short webhook timeout."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+            premium_assignment_service,
+        )
+
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(return_value=(mock_user_account, mock_user))
+                        )
+                    )
+                )
+            )
+        )
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(return_value={"success": True, "message": "released"}),
+        ) as mock_release:
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+        mock_release.assert_awaited_once_with(
+            user_id=42,
+            user_uid="user_uid_42",
+            hard=True,
+            timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+        )
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_continues_on_timeout(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A fail-open (timed-out) release must not raise; webhook still acks."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(return_value=(mock_user_account, mock_user))
+                        )
+                    )
+                )
+            )
+        )
+        timed_out = {
+            "success": False,
+            "timed_out": True,
+            "message": "Release timed out",
+        }
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(return_value=timed_out),
+        ) as mock_release:
+            # Must not raise even though release reports failure.
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+        mock_release.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_no_account_is_noop(
+        self, mock_db, subscription_event
+    ):
+        """No local account -> nothing to release, no error."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        # JOIN query returns None -> no account/user found
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(return_value=Mock(first=Mock(return_value=None)))
+                )
+            )
+        )
+        with patch.object(
+            premium_assignment_service, "release_premium_user", new=AsyncMock()
+        ) as mock_release:
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+        mock_release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_release_failure_does_not_raise(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A release exception is swallowed so the webhook still acks."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(return_value=(mock_user_account, mock_user))
+                        )
+                    )
+                )
+            )
+        )
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(side_effect=Exception("Lambda boom")),
+        ):
+            # Must not raise.
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_delete_mirrors_and_releases(
+        self, mock_db, subscription_event
+    ):
+        """dispatch routes delete to the cancel handler AND the release helper."""
+        with patch.object(
+            WebhookService, "handle_subscription_cancelled"
+        ) as mock_cancel, patch.object(
+            WebhookService, "_release_premium_assignment", new=AsyncMock()
+        ) as mock_release:
+            result = await WebhookService.dispatch_webhook_event(
+                mock_db, "customer.subscription.deleted", subscription_event
+            )
+
+        assert result["success"] is True
+        mock_cancel.assert_called_once_with(mock_db, subscription_event)
+        mock_release.assert_awaited_once_with(mock_db, subscription_event)
 
 
 class TestSubscriptionLifecycleWebhooks:
