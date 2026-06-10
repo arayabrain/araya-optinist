@@ -1208,6 +1208,37 @@ class TestSubscriptionLifecycleWebhooks:
         mock_upsert.assert_not_called()
         mock_db.commit.assert_not_called()
 
+    def test_concurrent_storage_insert_falls_back_to_update(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """Duplicate storage insert (race with checkout) falls back."""
+        from sqlalchemy.exc import IntegrityError
+
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        # First execute() (UPDATE) returns 0 rows -> triggers INSERT path
+        # flush() raises IntegrityError -> falls back to second execute() (UPDATE)
+        mock_db.execute.return_value = Mock(rowcount=0)
+        mock_db.flush.side_effect = IntegrityError(
+            "Duplicate entry", params=None, orig=Exception()
+        )
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["user_id"] == 42
+        mock_db.rollback.assert_called_once()
+        # Two execute() calls: first UPDATE (0 rows), then fallback UPDATE
+        assert mock_db.execute.call_count == 2
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
