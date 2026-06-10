@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 
 
@@ -177,12 +178,15 @@ class TestCreateOrUpdateSubscriptionConcurrency:
             SubscriptionService, "get_current_datetime", return_value=datetime.now()
         ):
             result_id = CheckoutService.create_or_update_subscription(
-                db, user_id=42, plan_id=2, expiration_date=expiration
+                db,
+                user_id=42,
+                plan_id=SubscriptionPlanIds.PREMIUM,
+                expiration_date=expiration,
             )
 
         # Fell back to updating the row the racing delivery created.
         assert result_id == 555
-        assert existing_row.plan_id == 2
+        assert existing_row.plan_id == SubscriptionPlanIds.PREMIUM
         assert existing_row.expiration == expiration
         assert existing_row.scheduled_downgrade is False
 
@@ -198,7 +202,10 @@ class TestCreateOrUpdateSubscriptionConcurrency:
         expiration = datetime.now() + timedelta(days=30)
         with pytest.raises(IntegrityError):
             CheckoutService.create_or_update_subscription(
-                db, user_id=42, plan_id=2, expiration_date=expiration
+                db,
+                user_id=42,
+                plan_id=SubscriptionPlanIds.PREMIUM,
+                expiration_date=expiration,
             )
 
 

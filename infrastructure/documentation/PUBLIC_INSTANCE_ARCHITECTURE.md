@@ -67,6 +67,7 @@ graph TB
 | Authenticated workflow/optinist API | No - Gated out | Yes - Exclusive | No |
 | `/logs` viewer read | No | Yes - Owning tier only | No |
 | Startup published-experiment cache warm | Yes - Exclusive (leader-elected) | No | No |
+| Published input-cache cleanup (daily wipe) | Yes - via scheduled Lambda | No | No |
 | Background scheduler jobs | No - Disabled | No | Yes - Exclusive |
 
 ---
@@ -117,6 +118,38 @@ Defines the `INSTANCE_MODE` env var name and its values. `INSTANCE_MODE_PUBLIC` 
 
 ---
 
+## Published Input Cache and Daily Cleanup
+
+Published experiments are served from a cache on the shared **published-data EFS** filesystem rather than the lean root EBS, so both public tasks share one copy and it survives task replacement. Outputs and raw inputs sit under two separate EFS access points so they can be managed independently:
+
+| Cache | Access point root | Container mount | Lifecycle |
+|---|---|---|---|
+| Output | `/` | `/app/studio_data/output` | Long-lived; holds the `remote_sync_stat.json` markers |
+| Input | `/input-cache` | `/app/studio_data/input` | Wiped nightly; uid/gid 1000 so the container and the Lambda share one owner |
+
+Raw inputs are synced on demand the first time an input node is viewed, so they are pure cache -- anything deleted is re-pulled from S3 on next access. To bound EFS growth, the **public-cleanup** Lambda wipes the input cache nightly while leaving the output cache and its sync markers untouched: it mounts only the `/input-cache` access point and its IAM is scoped to that access point, so it cannot reach the output cache.
+
+```mermaid
+graph TB
+    SCHED[CloudWatch schedule<br/>cron 0 19 UTC = 04:00 JST] --> LAM[public-cleanup Lambda]
+    LAM --> WIPE[Mount /input-cache only<br/>snapshot dir, delete each entry]
+    WIPE --> Q{Any delete<br/>errors?}
+    Q -->|Yes| ALARM[Raise: Lambda Errors metric<br/>fires CloudWatch alarm]
+    Q -->|No| EMPTY[Input cache empty]
+    EMPTY --> REFETCH[Next viewer re-pulls a needed<br/>input on demand, keyed on the file]
+
+    style WIPE fill:#87CEEB
+    style ALARM fill:#FFB6C1
+    style EMPTY fill:#90EE90
+    style REFETCH fill:#90EE90
+```
+
+The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_image()` input branches -- calls `RemoteStorageDownloadUtils.ensure_input_file_synced()`, which downloads the single input file regardless of the experiment's output-sync status. That independence is what makes the daily wipe safe; see Edge Case 6 and `DATA_SYNC_ARCHITECTURE.md` for the status-gate interaction.
+
+**Configuration:** `INPUT_CACHE_PATH` (default `/mnt/input`) is the Lambda's EFS mount path; the schedule is `cron(0 19 * * ? *)`; the timeout is 900s because EFS deletes are one round-trip per file.
+
+---
+
 ## Edge Case Handling
 
 ### 1. Free Tier Scaled to Zero During Login
@@ -158,6 +191,14 @@ Defines the `INSTANCE_MODE` env var name and its values. `INSTANCE_MODE_PUBLIC` 
 
 **Solution (current):** Static assets route to public via dedicated ALB rules, and the SPA shell is served by `SPARoutingMiddleware`. This works but is not optimal; the canonical pattern (future work) is S3 + CloudFront for the shell and static assets with CloudFront mapping 403/404 to `/index.html`, leaving the ALB/ECS tiers for API traffic only.
 
+### 6. Input Cache Wiped While Output Still Marked Synced
+
+**Problem:** The nightly cleanup deletes a raw input, but the experiment's `remote_sync_stat.json` -- on the un-wiped output cache -- still reads `success`. Gating the input re-fetch on that status (as the output-visualization sync path does) would short-circuit and serve a permanent 404 for input-node data.
+
+**Solution:** Input re-fetch is decoupled from output-sync status:
+- `get_structured_data()` and the `get_csv()` / `get_image()` input branches call `RemoteStorageDownloadUtils.ensure_input_file_synced()`, which downloads the input file by name regardless of sync status.
+- A genuinely-absent input still returns 404; a remote-storage error returns 503.
+
 ---
 
 ## Monitoring and Metrics
@@ -167,6 +208,7 @@ Defines the `INSTANCE_MODE` env var name and its values. `INSTANCE_MODE_PUBLIC` 
 | Public access logs | `uvicorn.access` in `/ecs/<env>-public-optinist-cloud-taskdef` | Includes SPA shell document fetches, which resemble API hits |
 | Target health | `aws_lb_target_group.public` health check on `/health` | ASG uses ELB health checks with a 900s grace period |
 | Startup sync | application logs on the elected leader task | Non-leader tasks log "Startup sync deferred to leader task" |
+| Input-cache cleanup failures | `<env>-public-cleanup-errors` alarm on the Lambda `Errors` metric | Fires on a crash/timeout or a non-zero delete-error count; daily `Sum`, `notBreaching` between runs |
 
 Verify public targets are healthy after apply:
 
@@ -215,8 +257,12 @@ Stripe variables are intentionally omitted because the subscriptions router is g
 | Target group | `aws_lb_target_group.public` | `/health` check, 600s deregistration delay |
 | Launch template | `aws_launch_template.public` | `var.public_instance_type`, 30 GB gp3 root |
 | Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, `OldestInstance` policy |
-| Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mount |
+| Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mounts (output + input cache) |
 | ECS service | `aws_ecs_service.public` | EC2 launch type, `tier == public` placement constraint |
 | Log group | `aws_cloudwatch_log_group.public_optinist` | `/ecs/<env>-public-optinist-cloud-taskdef`, 30-day retention |
+| Input-cache access point | `aws_efs_access_point.published_data_input` | `/input-cache` subtree, uid/gid 1000; mounted at `/app/studio_data/input` |
+| Cleanup Lambda | `aws_lambda_function.public_cleanup` | Daily input-cache wipe; VPC + EFS-mounted, 900s timeout |
+| Cleanup schedule | `aws_cloudwatch_event_rule.public_cleanup_schedule` | `cron(0 19 * * ? *)` (04:00 JST) |
+| Cleanup errors alarm | `aws_cloudwatch_metric_alarm.public_cleanup_errors` | Lambda `Errors` > 0; wired to `local.critical_alerts_actions` |
 
 Public-bound ALB listener rules live in `infrastructure/terraform/public_alb_rules.tf`; see `ALB_ROUTING_ARCHITECTURE.md` for the full priority band.

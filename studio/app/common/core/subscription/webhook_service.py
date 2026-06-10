@@ -6,6 +6,7 @@ import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -612,14 +613,24 @@ class WebhookService:
                     status_code=400, detail=f"No email found for customer {customer_id}"
                 )
 
-            # Find user by email
-            from studio.app.common.models.user import User  # Adjust import as needed
+            # Find user by email. Filter active=True so a soft-deleted user
+            # (active=0) with the same email doesn't shadow the new active
+            # user after a re-registration (issue #629 P5).
+            from studio.app.common.models.user import User
 
-            user = db.query(User).filter(User.email == customer_email).first()
+            user = (
+                db.query(User)
+                .filter(
+                    User.email == customer_email,
+                    User.active.is_(True),
+                )
+                .first()
+            )
 
             if not user:
                 raise HTTPException(
-                    status_code=404, detail=f"No user found with email {customer_email}"
+                    status_code=404,
+                    detail=f"No active user found with email {customer_email}",
                 )
 
             # Find the plan by matching the price or metadata
@@ -1419,6 +1430,17 @@ class WebhookService:
         """
         customer_id = subscription_data.get("customer")
         stripe_subscription_id = subscription_data.get("id")
+        if not customer_id:
+            logger.warning(
+                f"Webhook: No customer ID in subscription.{event_label} event "
+                f"(subscription {stripe_subscription_id}); acknowledging"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "missing_customer_id",
+                "message": "No customer ID in subscription event",
+            }
         logger.info(
             f"Webhook: Handling customer.subscription.{event_label} for "
             f"customer {customer_id} (subscription {stripe_subscription_id})"
@@ -1469,6 +1491,11 @@ class WebhookService:
             plan_id = int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
         except (TypeError, ValueError):
             plan_id = SubscriptionPlanIds.PREMIUM
+        if not plan_id_raw:
+            logger.warning(
+                f"Webhook: No plan_id in subscription metadata for "
+                f"{stripe_subscription_id}; defaulting to PREMIUM"
+            )
 
         # 4. Upsert subscription_users (lock-safe, idempotent helper)
         CheckoutService.create_or_update_subscription(
@@ -1491,7 +1518,7 @@ class WebhookService:
                 subscription.scheduled_downgrade = True
                 subscription.updated_at = SubscriptionService.get_current_datetime()
 
-        # 6. Sync storage quota to the plan
+        # 6. Sync storage quota to the plan (idempotent under concurrent webhooks)
         storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
         existing_usage = (
             db.query(UserStorageUsage)
@@ -1501,13 +1528,30 @@ class WebhookService:
         if existing_usage:
             existing_usage.storage_quota_bytes = storage_quota_bytes
         else:
-            db.add(
-                UserStorageUsage(
-                    user_id=user_id,
-                    storage_usage_bytes=0,
-                    storage_quota_bytes=storage_quota_bytes,
+            try:
+                db.add(
+                    UserStorageUsage(
+                        user_id=user_id,
+                        storage_usage_bytes=0,
+                        storage_quota_bytes=storage_quota_bytes,
+                    )
                 )
-            )
+                db.flush()
+            except IntegrityError:
+                # checkout.session.completed already inserted the row;
+                # rollback the failed INSERT and re-query to update.
+                logger.warning(
+                    f"Webhook: Concurrent storage insert for user "
+                    f"{user_id}; falling back to update"
+                )
+                db.rollback()
+                existing_usage = (
+                    db.query(UserStorageUsage)
+                    .filter(UserStorageUsage.user_id == user_id)
+                    .first()
+                )
+                if existing_usage:
+                    existing_usage.storage_quota_bytes = storage_quota_bytes
 
         db.commit()
 
@@ -1542,9 +1586,21 @@ class WebhookService:
         ``checkout.session.completed`` alone (delayed, partial failure, or
         not delivered).
         """
-        return WebhookService._sync_subscription_from_event(
-            db, subscription_data, event_label="created"
-        )
+        try:
+            return WebhookService._sync_subscription_from_event(
+                db, subscription_data, event_label="created"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error handling subscription.created: {e}",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing subscription.created: {e}",
+            )
 
     @staticmethod
     def handle_subscription_updated(
@@ -1565,7 +1621,81 @@ class WebhookService:
         )
 
     @staticmethod
-    def dispatch_webhook_event(
+    async def _release_premium_assignment(
+        db: Session, subscription_data: Dict[str, Any]
+    ) -> None:
+        """
+        Release a dangling premium compute assignment when a subscription
+        ends (issue #629, Problem 3).
+
+        ``handle_subscription_cancelled`` only expires the DB row; without
+        this the per-user EC2/ALB resources stay attached to a now-free user
+        until logout / tab-close / the activity-based stale-sweep. Best-
+        effort: logs but does not raise, so a release failure can never
+        block webhook acknowledgement.
+
+        Uses a short timeout (``WEBHOOK_RELEASE_TIMEOUT_SECONDS``) so a
+        slow/hung release Lambda cannot stall the webhook response (which
+        would trigger Stripe retries). On timeout the call fails open and
+        the periodic premium-expiration sweep releases the assignment later.
+        """
+        # Local import avoids any import cycle with the subscription package.
+        from studio.app.common.core.premium.premium_assignment_service import (
+            WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+            premium_assignment_service,
+        )
+
+        customer_id = subscription_data.get("customer")
+        # Single JOIN query to reduce DB round-trips on the latency-sensitive
+        # webhook path (was two sequential queries before).
+        row = (
+            db.query(SubscriptionUserAccount, User)
+            .join(User, User.id == SubscriptionUserAccount.user_id)
+            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
+            .first()
+        )
+        if not row:
+            logger.info(
+                "Webhook: No user account/user for customer %s; "
+                "no premium assignment to release",
+                customer_id,
+            )
+            return
+        user_account, user = row
+
+        try:
+            result = await premium_assignment_service.release_premium_user(
+                user_id=user.id,
+                user_uid=user.uid,
+                hard=True,
+                timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+            )
+            if result.get("success"):
+                logger.info(
+                    "Webhook: Released premium assignment for user %s "
+                    "on subscription delete: %s",
+                    user.id,
+                    result.get("message"),
+                )
+            else:
+                # Not released in-band (e.g. timed out). The background sweep
+                # will release it; acknowledge the webhook regardless.
+                logger.warning(
+                    "Webhook: Premium release not confirmed for user "
+                    "%s: %s; deferring to background sweep",
+                    user.id,
+                    result.get("message"),
+                )
+        except Exception as e:
+            logger.error(
+                "Webhook: Failed to release premium assignment for user %s: %s",
+                user_account.user_id,
+                e,
+                exc_info=True,
+            )
+
+    @staticmethod
+    async def dispatch_webhook_event(
         db: Session, event_type: str, data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
@@ -1604,6 +1734,9 @@ class WebhookService:
                 case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED:
                     logger.info("Handling customer.subscription.deleted")
                     WebhookService.handle_subscription_cancelled(db, data)
+                    # Release the dangling premium compute assignment so a
+                    # now-free user does not keep a dedicated EC2/ALB.
+                    await WebhookService._release_premium_assignment(db, data)
                     return {
                         "success": True,
                         "message": "Subscription cancellation processed",

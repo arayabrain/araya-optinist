@@ -89,7 +89,7 @@ Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager
 | 100-199 | premium dynamic rules | Premium instance | `X-Routing-ID` + `X-User-Tier` (Lambda-created) |
 | 200 | `sync_experiment_to_public` | Public | `/system-internal/sync-experiment/*` |
 | 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |
-| 280 | `outputs_public_header` | Public | `/outputs/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
+| 280 | `visualizations_public_header` | Public | `/api/visualizations/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
 | 300 | `public_dataview_api` | Public | `/api/public/dataview`, `/api/public/dataview/*` |
 | 305 | `auth_to_public` | Public | `/auth/*` |
 | 306 | `users_me_to_public` | Public | `/users/me`, `/users/me/*` |
@@ -97,8 +97,8 @@ Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager
 | 310 | `static_assets_to_public` | Public | `/static/*`, `/images/*`, `/favicon.ico`, `/manifest.json`, `/robots.txt` |
 | 311 | `docs_to_public` | Public | `/docs`, `/docs/*`, `/openapi`, `/redoc`, `/health` |
 | 312 | `asset_manifest_to_public` | Public | `/asset-manifest.json` |
-| 315 | `outputs_authenticated_to_free` | Free | `/outputs/*` (own-data reads) |
-| 316 | `anonymous_flows_to_free` | Free | `/api/register/*`, `/api/subsc/webhooks/*` |
+| 315 | `visualizations_authenticated_to_free` | Free | `/api/visualizations/*` (own-data reads) |
+| 316 | `anonymous_flows_to_free` | Free | `/api/register`, `/api/register/*`, `/api/subsc/webhooks`, `/api/subsc/webhooks/*` |
 | 320 | `authenticated_to_free` | Free | `Authorization: Bearer *` |
 | default | listener default action | Public | no rule match (SPA document requests) |
 
