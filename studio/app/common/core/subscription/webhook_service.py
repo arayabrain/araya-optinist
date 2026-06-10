@@ -1429,6 +1429,17 @@ class WebhookService:
         """
         customer_id = subscription_data.get("customer")
         stripe_subscription_id = subscription_data.get("id")
+        if not customer_id:
+            logger.warning(
+                f"Webhook: No customer ID in subscription.{event_label} event "
+                f"(subscription {stripe_subscription_id}); acknowledging"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "missing_customer_id",
+                "message": "No customer ID in subscription event",
+            }
         logger.info(
             f"Webhook: Handling customer.subscription.{event_label} for "
             f"customer {customer_id} (subscription {stripe_subscription_id})"
@@ -1479,6 +1490,11 @@ class WebhookService:
             plan_id = int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
         except (TypeError, ValueError):
             plan_id = SubscriptionPlanIds.PREMIUM
+        if not plan_id_raw:
+            logger.warning(
+                f"Webhook: No plan_id in subscription metadata for "
+                f"{stripe_subscription_id}; defaulting to PREMIUM"
+            )
 
         # 4. Upsert subscription_users (lock-safe, idempotent helper)
         CheckoutService.create_or_update_subscription(
@@ -1532,9 +1548,21 @@ class WebhookService:
         ``checkout.session.completed`` alone (delayed, partial failure, or
         not delivered).
         """
-        return WebhookService._sync_subscription_from_event(
-            db, subscription_data, event_label="created"
-        )
+        try:
+            return WebhookService._sync_subscription_from_event(
+                db, subscription_data, event_label="created"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error handling subscription.created: {e}",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing subscription.created: {e}",
+            )
 
     @staticmethod
     async def _release_premium_assignment(
@@ -1677,7 +1705,7 @@ class WebhookService:
                     return WebhookService.handle_invoice_finalized(data)
 
                 case _:
-                    logger.info(f"Unhandled webhook event type: {event_type}")
+                    logger.warning(f"Unhandled webhook event type: {event_type}")
                     return {
                         "success": True,
                         "message": f"Unhandled event type: {event_type}",

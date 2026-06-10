@@ -1127,19 +1127,40 @@ class TestSubscriptionLifecycleWebhooks:
         mock_db.commit.assert_called_once()
         mock_invalidate.assert_called_once_with("user_uid_42")
 
-    def test_dispatch_created_routes_to_handler(self, mock_db, subscription_event):
+    @pytest.mark.asyncio
+    async def test_dispatch_created_routes_to_handler(
+        self, mock_db, subscription_event
+    ):
         """dispatch routes `created` to handle_subscription_created."""
         with patch.object(
             WebhookService,
             "handle_subscription_created",
             return_value={"success": True},
         ) as mock_created:
-            result = WebhookService.dispatch_webhook_event(
+            result = await WebhookService.dispatch_webhook_event(
                 mock_db, "customer.subscription.created", subscription_event
             )
 
         assert result["success"] is True
         mock_created.assert_called_once_with(mock_db, subscription_event)
+
+    def test_subscription_event_acknowledged_when_no_customer_id(
+        self, mock_db, subscription_event
+    ):
+        """Missing customer ID is acknowledged without a DB write."""
+        subscription_event.pop("customer")
+        with patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "missing_customer_id"
+        mock_upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
 
     def test_subscription_event_acknowledged_when_no_account(
         self, mock_db, subscription_event
