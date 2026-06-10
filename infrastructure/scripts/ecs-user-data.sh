@@ -38,7 +38,7 @@ if [ -f /etc/optinist-ami-baked ]; then
 else
     echo "$(date): Stock AMI detected, installing packages"
     yum update -y
-    yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent
+    yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent unzip
     # Install AWS CLI v2 (awscli v1 yum package no longer available)
     curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
     cd /tmp && unzip -qo awscliv2.zip

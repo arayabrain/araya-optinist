@@ -75,16 +75,20 @@ locals {
     # The iptables binary is not preinstalled on the AL2023 base AMI
     yum install -y iptables-nft
 
-    # Enable IP forwarding (idempotent — only appends if not present)
-    grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
-    sysctl -p
+    # Authoritative drop-in so a pre-existing sysctl.conf entry cannot win
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
+    sysctl --system
 
     # Detect the egress interface at boot — AL2023 uses predictable
     # interface names (ens5/enX0 on Nitro), so eth0 cannot be assumed.
     cat > /usr/local/sbin/configure-nat.sh << 'SCRIPT'
     #!/bin/bash
-    set -e
+    set -euo pipefail
     IFACE=$(ip -o -4 route show to default | awk '{print $5; exit}')
+    if [ -z "$IFACE" ]; then
+      echo "configure-nat: no default-route interface found" >&2
+      exit 1
+    fi
     iptables -P FORWARD ACCEPT
     iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
       || iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
@@ -96,7 +100,8 @@ locals {
     cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
     [Unit]
     Description=Configure NAT iptables rules
-    After=network.target
+    Wants=network-online.target
+    After=network-online.target
 
     [Service]
     Type=oneshot
