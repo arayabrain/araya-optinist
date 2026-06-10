@@ -754,7 +754,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
         logger.info(f"Processing event type: {event_type}")
 
-        WebhookService.dispatch_webhook_event(db, event_type, data)
+        await WebhookService.dispatch_webhook_event(db, event_type, data)
 
         logger.info(f"Successfully processed {event_type}")
         return {"received": True, "processed": event_type}

@@ -1414,7 +1414,81 @@ class WebhookService:
         return webhook_secret
 
     @staticmethod
-    def dispatch_webhook_event(
+    async def _release_premium_assignment(
+        db: Session, subscription_data: Dict[str, Any]
+    ) -> None:
+        """
+        Release a dangling premium compute assignment when a subscription
+        ends (issue #629, Problem 3).
+
+        ``handle_subscription_cancelled`` only expires the DB row; without
+        this the per-user EC2/ALB resources stay attached to a now-free user
+        until logout / tab-close / the activity-based stale-sweep. Best-
+        effort: logs but does not raise, so a release failure can never
+        block webhook acknowledgement.
+
+        Uses a short timeout (``WEBHOOK_RELEASE_TIMEOUT_SECONDS``) so a
+        slow/hung release Lambda cannot stall the webhook response (which
+        would trigger Stripe retries). On timeout the call fails open and
+        the periodic premium-expiration sweep releases the assignment later.
+        """
+        # Local import avoids any import cycle with the subscription package.
+        from studio.app.common.core.premium.premium_assignment_service import (
+            WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+            premium_assignment_service,
+        )
+
+        customer_id = subscription_data.get("customer")
+        # Single JOIN query to reduce DB round-trips on the latency-sensitive
+        # webhook path (was two sequential queries before).
+        row = (
+            db.query(SubscriptionUserAccount, User)
+            .join(User, User.id == SubscriptionUserAccount.user_id)
+            .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
+            .first()
+        )
+        if not row:
+            logger.info(
+                "Webhook: No user account/user for customer %s; "
+                "no premium assignment to release",
+                customer_id,
+            )
+            return
+        user_account, user = row
+
+        try:
+            result = await premium_assignment_service.release_premium_user(
+                user_id=user.id,
+                user_uid=user.uid,
+                hard=True,
+                timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+            )
+            if result.get("success"):
+                logger.info(
+                    "Webhook: Released premium assignment for user %s "
+                    "on subscription delete: %s",
+                    user.id,
+                    result.get("message"),
+                )
+            else:
+                # Not released in-band (e.g. timed out). The background sweep
+                # will release it; acknowledge the webhook regardless.
+                logger.warning(
+                    "Webhook: Premium release not confirmed for user "
+                    "%s: %s; deferring to background sweep",
+                    user.id,
+                    result.get("message"),
+                )
+        except Exception as e:
+            logger.error(
+                "Webhook: Failed to release premium assignment for user %s: %s",
+                user_account.user_id,
+                e,
+                exc_info=True,
+            )
+
+    @staticmethod
+    async def dispatch_webhook_event(
         db: Session, event_type: str, data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
@@ -1445,6 +1519,9 @@ class WebhookService:
                 case StripeWebhookEvent.CUSTOMER_SUBSCRIPTION_DELETED:
                     logger.info("Handling customer.subscription.deleted")
                     WebhookService.handle_subscription_cancelled(db, data)
+                    # Release the dangling premium compute assignment so a
+                    # now-free user does not keep a dedicated EC2/ALB.
+                    await WebhookService._release_premium_assignment(db, data)
                     return {
                         "success": True,
                         "message": "Subscription cancellation processed",
