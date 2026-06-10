@@ -1345,21 +1345,21 @@ class TestSubscriptionLifecycleWebhooks:
 
         mock_db.query.side_effect = [
             # 1. SubscriptionUserAccount by customer_id
-            Mock(filter=Mock(return_value=Mock(
-                first=Mock(return_value=mock_user_account)
-            ))),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
             # 2. UserStorageUsage -> None (triggers INSERT path)
-            Mock(filter=Mock(return_value=Mock(
-                first=Mock(return_value=None)
-            ))),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
             # 3. After rollback, re-query storage -> found
-            Mock(filter=Mock(return_value=Mock(
-                first=Mock(return_value=mock_storage_after)
-            ))),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_storage_after))
+                )
+            ),
             # 4. User for cache invalidation
-            Mock(filter=Mock(return_value=Mock(
-                first=Mock(return_value=mock_user)
-            ))),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
         ]
 
         with patch.object(
