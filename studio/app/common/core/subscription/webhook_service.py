@@ -612,14 +612,24 @@ class WebhookService:
                     status_code=400, detail=f"No email found for customer {customer_id}"
                 )
 
-            # Find user by email
-            from studio.app.common.models.user import User  # Adjust import as needed
+            # Find user by email. Filter active=True so a soft-deleted user
+            # (active=0) with the same email doesn't shadow the new active
+            # user after a re-registration (issue #629 P5).
+            from studio.app.common.models.user import User
 
-            user = db.query(User).filter(User.email == customer_email).first()
+            user = (
+                db.query(User)
+                .filter(
+                    User.email == customer_email,
+                    User.active.is_(True),
+                )
+                .first()
+            )
 
             if not user:
                 raise HTTPException(
-                    status_code=404, detail=f"No user found with email {customer_email}"
+                    status_code=404,
+                    detail=f"No active user found with email {customer_email}",
                 )
 
             # Find the plan by matching the price or metadata

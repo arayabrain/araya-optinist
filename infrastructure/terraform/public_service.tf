@@ -235,6 +235,13 @@ resource "aws_ecs_task_definition" "public" {
           sourceVolume  = "${local.env_prefix}-public-published-data-volume"
           containerPath = "/app/studio_data/output"
           readOnly      = false
+        },
+        {
+          # Raw inputs are synced on demand; keep them on shared EFS (not the
+          # lean root EBS) so both instances share one copy and it can be swept.
+          sourceVolume  = "${local.env_prefix}-public-input-cache-volume"
+          containerPath = "/app/studio_data/input"
+          readOnly      = false
         }
       ]
 
@@ -273,6 +280,19 @@ resource "aws_ecs_task_definition" "public" {
       transit_encryption = "ENABLED"
       authorization_config {
         access_point_id = aws_efs_access_point.published_data.id
+        iam             = "DISABLED"
+      }
+    }
+  }
+
+  volume {
+    name = "${local.env_prefix}-public-input-cache-volume"
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.published_data.id
+      root_directory     = "/"
+      transit_encryption = "ENABLED"
+      authorization_config {
+        access_point_id = aws_efs_access_point.published_data_input.id
         iam             = "DISABLED"
       }
     }
