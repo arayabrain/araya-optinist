@@ -83,6 +83,7 @@ graph TB
 |---------|-------|---------------------|
 | Custom AMI selection at deploy time | Terraform local | `local.effective_ami_id` in `compute.tf` |
 | Bake-aware boot logic (skip packages) | User-data script | `ecs-user-data.sh` |
+| ECS agent checkpoint clear (every boot) | User-data systemd unit | `ecs-clear-checkpoint.service` in `ecs-user-data.sh` |
 | Swap volume (instant swap setup) | Launch template EBS | `block_device_mappings` `/dev/xvds` in `compute.tf` |
 | AMI ID storage | SSM Parameter Store | `/${environment}/optinist/custom-ami-id` |
 | AMI build orchestration | EC2 Image Builder pipeline | `image_builder.tf` |
@@ -186,6 +187,7 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 | `EnableDockerService` | `systemctl enable docker` | Enabled but NOT started (instance shuts down for snapshot) |
 | `CreateBakeMarker` | Write `/etc/optinist-ami-baked` with timestamp and package list | Detected by user-data at boot |
 | `CleanupYumCache` | `yum clean all` + `rm -rf /var/cache/yum` | Reduces AMI snapshot size |
+| `CleanEcsAgentState` | Stop `ecs`, remove `agent.db` + `ecs_agent_data.json` | AMI artifact carries no container-instance identity (see Edge Case 6) |
 
 **AWSTOE error handling:** Each step uses a single `|` block with `set -e` at the top. This prevents error masking — AWSTOE evaluates the exit code of the **last** item in `commands`, so trailing `echo` statements would mask failures in preceding commands.
 
@@ -203,6 +205,7 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 | `ValidateDockerEnabled` | `systemctl is-enabled docker` |
 | `ValidateBakeMarker` | `test -f /etc/optinist-ami-baked` |
 | `ValidateEFSUtils` | Check `/usr/bin/mount.efs` or `/sbin/mount.efs` |
+| `ValidateEcsAgentStateCleaned` | Fail the build if `agent.db` / `ecs_agent_data.json` persist |
 
 **Test phase (fresh instance from AMI):**
 
@@ -245,6 +248,12 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 **Problem:** If the Image Builder pipeline fails, no custom AMI is available.
 
 **Solution:** The SSM parameter is initially set to the stock ECS-optimized AMI ID. Until a successful build overwrites it, all launch templates use the stock AMI. The user-data `else` branch handles stock AMI boot correctly.
+
+### 6. Stale ECS Agent Checkpoint on Stop/Start
+
+**Problem:** A stopped instance keeps `/var/lib/ecs/data/agent.db` across stop/start, but ECS deregisters the disconnected container instance while the instance is stopped. On restart the agent would resume the now-deregistered identity and never re-register, so its ECS task never places. This affects every tier that is stopped and started rather than terminated — notably the **background** instance (stopped nightly/weekends by the dev scheduler) and **premium** standby instances, neither of which is covered by a one-time bake-time clear alone.
+
+**Solution:** Two layers. At runtime, `ecs-user-data.sh` installs `ecs-clear-checkpoint.service`, a oneshot systemd unit ordered `Before=ecs.service` that removes `agent.db` (and the legacy `ecs_agent_data.json`) on **every boot**, so the agent always registers fresh. It is host-side and needs no orchestrator, which is why it covers the background instance (which has no managing Lambda). At bake time, `CleanEcsAgentState` removes the same files from the AMI artifact so a freshly built image carries no container-instance identity, and `ValidateEcsAgentStateCleaned` fails the build if they persist.
 
 ---
 
@@ -564,6 +573,10 @@ grep "swap" /var/log/ecs-setup.log
 # 7. Confirm ECS agent registered
 curl -s http://localhost:51678/v1/metadata | python -m json.tool
 # Expected: valid JSON with Cluster name matching expected cluster
+
+# 8. Confirm the checkpoint-clear unit is enabled (runs before ecs.service on every boot)
+systemctl is-enabled ecs-clear-checkpoint.service
+# Expected: enabled
 ```
 
 ---

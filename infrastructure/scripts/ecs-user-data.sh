@@ -20,7 +20,7 @@ After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=true
-ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db
+ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data.json
 
 [Install]
 WantedBy=multi-user.target

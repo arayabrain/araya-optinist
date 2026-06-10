@@ -132,3 +132,14 @@ phases:
               # Remove non-default SSH authorized keys
               rm -f /root/.ssh/authorized_keys
               echo "$(date): Credential sanitization complete"
+
+      - name: CleanEcsAgentState
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Clearing ECS agent checkpoint so the baked AMI carries no container-instance identity"
+              systemctl stop ecs 2>/dev/null || true
+              rm -rf /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data.json
+              echo "$(date): ECS agent state cleared"
