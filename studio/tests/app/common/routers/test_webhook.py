@@ -1216,12 +1216,12 @@ class TestSubscriptionLifecycleWebhooks:
 
         # Account lookup + user for cache invalidation
         mock_db.query.side_effect = [
-            Mock(filter=Mock(return_value=Mock(
-                first=Mock(return_value=mock_user_account)
-            ))),
-            Mock(filter=Mock(return_value=Mock(
-                first=Mock(return_value=mock_user)
-            ))),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
         ]
 
         # execute(UPDATE).rowcount = 0 -> triggers INSERT path
