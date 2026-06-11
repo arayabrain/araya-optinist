@@ -460,7 +460,7 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 9.   cleanup_excess_standby_instances()    - Trim standby pool to PREMIUM_STANDBY_POOL_SIZE
 10a. finalize_expired_pending_releases()   - Tear down ALB resources for assignments past soft-release grace
 10b. cleanup_ghost_ecs_registrations()     - Deregister ECS container instances whose EC2 is gone
-11.  cleanup_orphaned_ec2_instances()      - Stop premium-tagged EC2 not in the ECS cluster (15-min grace)
+11.  cleanup_orphaned_ec2_instances()      - Stop premium-tagged EC2 not in the ECS cluster (10-min launch-age grace)
 12.  fix_incorrect_is_shared_flags() then
      process_shared_instance_optimization() - Promote shared users to dedicated, or fire invoke_migration_async() if none free
 ```
@@ -717,7 +717,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 ┌──────────────────────────────────────────────────────────┐
 │ 11. cleanup_orphaned_ec2_instances()                     │
 │    → Stop premium-tagged EC2 not in ECS                  │
-│    → 15-minute grace period for booting instances        │
+│    → 10-minute launch-age grace for booting instances    │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -797,8 +797,8 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 **Problem:** EC2 instances stopped/terminated outside normal flow leave orphaned ECS registrations that confuse the ECS scheduler.
 
 **Solution:** Premium Manager's `cleanup_ghost_ecs_registrations()`:
-- Finds container instances with disconnected agents or stopped/terminated EC2
-- Force-deregisters them from the ECS cluster
+- Finds premium container instances with disconnected agents or stopped/terminated EC2
+- Stopped/terminated/unmapped instances are deregistered immediately; a running EC2 with a disconnected agent is tagged `optinist:agent-disconnected-at` on first sighting and deregistered only after `_AGENT_DISCONNECT_GRACE_SECONDS = 300` (5 minutes), with the tag cleared if the agent reconnects
 - Runs every 15 minutes as part of scheduled monitoring
 
 
@@ -808,8 +808,10 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** Premium Manager's `cleanup_orphaned_ec2_instances()`:
 - Finds premium-tagged EC2 instances not in the ECS cluster
-- 15-minute grace period (`ORPHAN_GRACE_PERIOD_MINUTES = 15`) to avoid stopping still-booting instances
-- Stops orphaned instances
+- `launch_time`-age grace (`ORPHAN_GRACE_PERIOD_MINUTES = 10` minutes) to avoid stopping still-booting instances; symmetric with the `booting_count` window in `update_premium_service_desired_count()`
+- Stops orphaned instances (and registers them as standby for later aged termination)
+
+> This and the ghost-CI cleanup (Edge Case 4) are independent timers measured from different events — agent-disconnect (300s) vs instance launch (10 min) — and both run in the same 15-minute cycle, so a single run can deregister a ghost container instance and stop the orphaned EC2 behind it.
 
 
 ### 6. Race Condition Between Manager and Cleanup
@@ -1483,7 +1485,7 @@ Note the log template is literal: it says `attempt N failed, retrying...`, not `
 | `Using free tier while premium instance provisions` | `axios.ts` | Single occurrence accompanies one `instance_unreachable` UI event; the circuit breaker will probe for recovery. Investigate only if the paired `instance_reachable` never arrives (see A.1.7) |
 | `Premium-(un)?reachable listener threw: ${e}` | `RoutingService.ts` | One listener crashed during dispatch; the pool continues delivering to others |
 | `Agent disconnected on ${i-xxx}, starting grace period` and its "within grace period" follow-up | `premium_manager.py` ghost ECS cleanup | 5-min grace before deregistering ECS container instance |
-| `Orphan ${i-xxx} running ${N}m, within grace period` | `premium_manager.py` orphan cleanup | 15-min grace before stopping orphan EC2 |
+| `Orphan ${i-xxx} running ${N}m, within grace period` | `premium_manager.py` orphan cleanup | 10-min launch-age grace before stopping orphan EC2 |
 | `Warning: Error closing database connection: ${e}` | both lambdas | Cleanup-path warning on teardown; does not affect the work already done |
 | `Transaction rolled back due to error: ${e}` | `premium_manager.py` | Expected when a `@with_transaction` path encounters an exception and rolls back cleanly |
 | `Conditions not met for auto-assignment: { isPremiumUser: false, ... }` | `PremiumAssignmentContext.tsx` | Non-premium user; the provider correctly short-circuits |
