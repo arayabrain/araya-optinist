@@ -86,9 +86,9 @@ asg_desired_capacity = 1
 
 # EC2 Image Builder — Custom AMI (reduces instance boot from ~8 min to ~2 min)
 # Set to true after initial terraform apply to create the Image Builder pipeline.
-# See image_builder.tf for deployment workflow.
+# See image_builder.tf for deployment workflow. The AMI version is tracked in
+# image_builder.tf (local.custom_ami_version), not here.
 use_custom_ami = false
-# custom_ami_version = "1.0.0"   # Bump to force a new AMI build
 
 # No test users initially
 test_users = []

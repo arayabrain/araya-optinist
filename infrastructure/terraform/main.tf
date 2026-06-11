@@ -334,12 +334,6 @@ variable "use_custom_ami" {
   default     = false
 }
 
-variable "custom_ami_version" {
-  description = "Image Builder recipe version string (bump to force a new AMI build)"
-  type        = string
-  default     = "1.0.0"
-}
-
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_elb_service_account" "main" {}
