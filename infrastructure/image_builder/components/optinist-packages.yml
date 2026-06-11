@@ -141,5 +141,5 @@ phases:
               set -e
               echo "$(date): Clearing ECS agent checkpoint so the baked AMI carries no container-instance identity"
               systemctl stop ecs 2>/dev/null || true
-              rm -rf /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data.json
+              rm -f /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data.json
               echo "$(date): ECS agent state cleared"

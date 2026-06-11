@@ -10,8 +10,9 @@ echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
 echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
 
-# Systemd service to clear stale ECS agent checkpoint on every boot.
-cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
+# Only premium standbys are reaped while stopped, so only they must wipe the stale checkpoint on boot to re-register.
+if [ "${tier}" = "premium" ]; then
+  cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
 [Unit]
 Description=Clear stale ECS agent checkpoint before startup
 Before=ecs.service
@@ -26,8 +27,9 @@ ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data
 WantedBy=multi-user.target
 UNIT_EOF
 
-systemctl daemon-reload
-systemctl enable ecs-clear-checkpoint.service
+  systemctl daemon-reload
+  systemctl enable ecs-clear-checkpoint.service
+fi
 
 # Install packages (skip if AMI is pre-baked by Image Builder)
 if [ -f /etc/optinist-ami-baked ]; then

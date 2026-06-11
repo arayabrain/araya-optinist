@@ -83,7 +83,7 @@ graph TB
 |---------|-------|---------------------|
 | Custom AMI selection at deploy time | Terraform local | `local.effective_ami_id` in `compute.tf` |
 | Bake-aware boot logic (skip packages) | User-data script | `ecs-user-data.sh` |
-| ECS agent checkpoint clear (every boot) | User-data systemd unit | `ecs-clear-checkpoint.service` in `ecs-user-data.sh` |
+| ECS agent checkpoint clear (premium boot only) | User-data systemd unit | `ecs-clear-checkpoint.service` in `ecs-user-data.sh` |
 | Swap volume (instant swap setup) | Launch template EBS | `block_device_mappings` `/dev/xvds` in `compute.tf` |
 | AMI ID storage | SSM Parameter Store | `/${environment}/optinist/custom-ami-id` |
 | AMI build orchestration | EC2 Image Builder pipeline | `image_builder.tf` |
@@ -249,11 +249,11 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 
 **Solution:** The SSM parameter is initially set to the stock ECS-optimized AMI ID. Until a successful build overwrites it, all launch templates use the stock AMI. The user-data `else` branch handles stock AMI boot correctly.
 
-### 6. Stale ECS Agent Checkpoint on Stop/Start
+### 6. Stale ECS Agent Checkpoint (Bake-time vs. Stop/Start)
 
-**Problem:** A stopped instance keeps `/var/lib/ecs/data/agent.db` across stop/start, but ECS deregisters the disconnected container instance while the instance is stopped. On restart the agent would resume the now-deregistered identity and never re-register, so its ECS task never places. This affects every tier that is stopped and started rather than terminated — notably the **background** instance (stopped nightly/weekends by the dev scheduler) and **premium** standby instances, neither of which is covered by a one-time bake-time clear alone.
+**Problem:** Two distinct cases. **(a)** An instance launched from a custom AMI inherits whatever `/var/lib/ecs/data/agent.db` was baked into the image, so without cleanup every instance from that image would register under the same container-instance identity. **(b)** The **premium** standby pool stops idle instances, and the premium manager deregisters their container instance while they are stopped (`cleanup_ghost_ecs_registrations()`, which is filtered to the premium tier); on restart the agent would resume the now-deregistered identity and never re-register, so its ECS task never places. Tiers that are stopped but **not** reaped — notably the **background** instance (stopped nightly by the dev scheduler, with no managing Lambda) — keep a still-valid registration and must *not* wipe it: doing so strands the old registration as a ghost and registers a fresh duplicate on every restart.
 
-**Solution:** Two layers. At runtime, `ecs-user-data.sh` installs `ecs-clear-checkpoint.service`, a oneshot systemd unit ordered `Before=ecs.service` that removes `agent.db` (and the legacy `ecs_agent_data.json`) on **every boot**, so the agent always registers fresh. It is host-side and needs no orchestrator, which is why it covers the background instance (which has no managing Lambda). At bake time, `CleanEcsAgentState` removes the same files from the AMI artifact so a freshly built image carries no container-instance identity, and `ValidateEcsAgentStateCleaned` fails the build if they persist.
+**Solution:** Two layers, each scoped to where it is needed. At **bake time**, `CleanEcsAgentState` removes `agent.db`/`ecs_agent_data.json` from the AMI artifact so a freshly built image carries no container-instance identity (case a), and `ValidateEcsAgentStateCleaned` fails the build if they persist. At **runtime**, `ecs-user-data.sh` installs `ecs-clear-checkpoint.service` — a oneshot unit ordered `Before=ecs.service` that wipes the checkpoint on every boot — **only on the premium tier** (case b). Every other tier, including background, keeps its identity across stop/start and reconnects to its existing registration instead of creating a ghost.
 
 ---
 
@@ -574,9 +574,9 @@ grep "swap" /var/log/ecs-setup.log
 curl -s http://localhost:51678/v1/metadata | python -m json.tool
 # Expected: valid JSON with Cluster name matching expected cluster
 
-# 8. Confirm the checkpoint-clear unit is enabled (runs before ecs.service on every boot)
+# 8. On a PREMIUM instance, confirm the checkpoint-clear unit is enabled (premium tier only)
 systemctl is-enabled ecs-clear-checkpoint.service
-# Expected: enabled
+# Expected: enabled on premium; not installed on other tiers (background, free, public)
 ```
 
 ---
