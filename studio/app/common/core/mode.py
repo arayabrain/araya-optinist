@@ -5,8 +5,8 @@ from studio.app.dir_path import DIRPATH
 
 class Mode(BaseSettings):
     # temporary change for debugging.
-    # IS_STANDALONE: bool = Field(default=False, env="IS_STANDALONE")
-    IS_STANDALONE: bool = Field(default=True, env="IS_STANDALONE")
+    IS_STANDALONE: bool = Field(default=False, env="IS_STANDALONE")
+    # IS_STANDALONE: bool = Field(default=True, env="IS_STANDALONE")
 
     IS_TEST: bool = Field(default=False, env="IS_TEST")
 
