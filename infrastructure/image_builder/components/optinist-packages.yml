@@ -22,7 +22,7 @@ phases:
             - |
               set -e
               echo "$(date): Installing yum packages"
-              yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
+              yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent
               echo "$(date): Yum packages installed"
 
       - name: InstallAWSCLIv2
@@ -32,7 +32,7 @@ phases:
             - |
               set -e
               echo "$(date): Installing AWS CLI v2"
-              # Remove awscli v1 if present (no longer in AL2 repos)
+              # Remove awscli v1 if present (standalone v2 is used instead)
               yum remove -y awscli 2>/dev/null || true
               # Ensure unzip is available (not always present on ECS-optimized AMI)
               yum install -y unzip
@@ -66,7 +66,7 @@ phases:
               cat > /etc/optinist-ami-baked <<MARKER
               BAKED_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
               BAKED_BY=ec2-image-builder
-              PACKAGES=amazon-ssm-agent,mysql,amazon-efs-utils,nc,git,docker,amazon-cloudwatch-agent,awscli-v2
+              PACKAGES=amazon-ssm-agent,mariadb105,amazon-efs-utils,nc,git,docker,amazon-cloudwatch-agent,awscli-v2
               MARKER
               chmod 644 /etc/optinist-ami-baked
               echo "$(date): Bake marker created"
@@ -132,3 +132,14 @@ phases:
               # Remove non-default SSH authorized keys
               rm -f /root/.ssh/authorized_keys
               echo "$(date): Credential sanitization complete"
+
+      - name: CleanEcsAgentState
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -e
+              echo "$(date): Clearing ECS agent checkpoint so the baked AMI carries no container-instance identity"
+              systemctl stop ecs 2>/dev/null || true
+              rm -f /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data.json
+              echo "$(date): ECS agent state cleared"
