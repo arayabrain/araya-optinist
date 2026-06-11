@@ -14,7 +14,7 @@
 # Kept in git rather than tfvars so every apply uses the same version.
 locals {
   custom_ami_version = {
-    development = "2.0.0"
+    development = "2.0.1"
     subscr      = "2.0.0"
   }[var.environment]
 }
