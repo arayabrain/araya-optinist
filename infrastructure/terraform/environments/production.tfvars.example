@@ -34,9 +34,6 @@ mysql_database      = "studio"
 mysql_user          = "<PLACEHOLDER-db-admin-username>"
 mysql_password      = "<PLACEHOLDER-generate-with-openssl-rand-base64-24>"
 
-USE_FIREBASE_TOKEN = True
-IS_STANDALONE      = False
-
 # Stripe configuration (LIVE mode keys)
 stripe_secret_key     = "sk_live_<PLACEHOLDER>"
 stripe_webhook_secret = "whsec_<PLACEHOLDER>"
