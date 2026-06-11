@@ -1511,22 +1511,23 @@ class WebhookService:
         ).rowcount
         if not rows_updated:
             try:
-                db.add(
-                    UserStorageUsage(
-                        user_id=user_id,
-                        storage_usage_bytes=0,
-                        storage_quota_bytes=storage_quota_bytes,
+                with db.begin_nested():
+                    db.add(
+                        UserStorageUsage(
+                            user_id=user_id,
+                            storage_usage_bytes=0,
+                            storage_quota_bytes=storage_quota_bytes,
+                        )
                     )
-                )
-                db.flush()
+                    db.flush()
             except IntegrityError:
                 # checkout.session.completed already inserted the row;
-                # rollback the failed INSERT and UPDATE instead.
+                # SAVEPOINT rolled back the INSERT only, outer transaction
+                # (including Step 4 subscription upsert) is preserved.
                 logger.warning(
                     f"Webhook: Concurrent storage insert for user {user_id}; "
                     f"falling back to update"
                 )
-                db.rollback()
                 db.execute(
                     update(UserStorageUsage)
                     .where(UserStorageUsage.user_id == user_id)

@@ -1214,11 +1214,24 @@ class TestSubscriptionLifecycleWebhooks:
         """Duplicate storage insert (race with checkout) falls back."""
         from sqlalchemy.exc import IntegrityError
 
-        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+        # Account lookup + user for cache invalidation
+        mock_db.query.side_effect = [
+            Mock(filter=Mock(return_value=Mock(
+                first=Mock(return_value=mock_user_account)
+            ))),
+            Mock(filter=Mock(return_value=Mock(
+                first=Mock(return_value=mock_user)
+            ))),
+        ]
 
-        # First execute() (UPDATE) returns 0 rows -> triggers INSERT path
-        # flush() raises IntegrityError -> falls back to second execute() (UPDATE)
+        # execute(UPDATE).rowcount = 0 -> triggers INSERT path
         mock_db.execute.return_value = Mock(rowcount=0)
+
+        # begin_nested() SAVEPOINT; flush raises IntegrityError
+        nested_cm = Mock()
+        nested_cm.__enter__ = Mock(return_value=None)
+        nested_cm.__exit__ = Mock(return_value=False)
+        mock_db.begin_nested.return_value = nested_cm
         mock_db.flush.side_effect = IntegrityError(
             "Duplicate entry", params=None, orig=Exception()
         )
@@ -1235,8 +1248,10 @@ class TestSubscriptionLifecycleWebhooks:
 
         assert result["success"] is True
         assert result["user_id"] == 42
-        mock_db.rollback.assert_called_once()
-        # Two execute() calls: first UPDATE (0 rows), then fallback UPDATE
+        # SAVEPOINT used, NOT full rollback
+        mock_db.begin_nested.assert_called_once()
+        mock_db.rollback.assert_not_called()
+        # execute() calls: initial UPDATE (0 rows) + fallback UPDATE
         assert mock_db.execute.call_count == 2
 
 
