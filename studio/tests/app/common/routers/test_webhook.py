@@ -1339,27 +1339,13 @@ class TestSubscriptionLifecycleWebhooks:
             # 1. SubscriptionUserAccount by customer_id
             Mock(
                 filter=Mock(
-                    return_value=Mock(
-                        first=Mock(return_value=mock_user_account)
-                    )
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
                 )
             ),
             # 2. UserStorageUsage -> None (triggers INSERT path)
-            Mock(
-                filter=Mock(
-                    return_value=Mock(
-                        first=Mock(return_value=None)
-                    )
-                )
-            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
             # 3. User for cache invalidation
-            Mock(
-                filter=Mock(
-                    return_value=Mock(
-                        first=Mock(return_value=mock_user)
-                    )
-                )
-            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
         ]
 
         # begin_nested() SAVEPOINT; flush raises IntegrityError
