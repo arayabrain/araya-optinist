@@ -1529,29 +1529,28 @@ class WebhookService:
             existing_usage.storage_quota_bytes = storage_quota_bytes
         else:
             try:
-                db.add(
-                    UserStorageUsage(
-                        user_id=user_id,
-                        storage_usage_bytes=0,
-                        storage_quota_bytes=storage_quota_bytes,
+                with db.begin_nested():
+                    db.add(
+                        UserStorageUsage(
+                            user_id=user_id,
+                            storage_usage_bytes=0,
+                            storage_quota_bytes=storage_quota_bytes,
+                        )
                     )
-                )
-                db.flush()
+                    db.flush()
             except IntegrityError:
                 # checkout.session.completed already inserted the row;
-                # rollback the failed INSERT and re-query to update.
+                # SAVEPOINT rolled back the INSERT only, outer transaction
+                # (including Step 4 subscription upsert) is preserved.
                 logger.warning(
                     f"Webhook: Concurrent storage insert for user "
                     f"{user_id}; falling back to update"
                 )
-                db.rollback()
-                existing_usage = (
-                    db.query(UserStorageUsage)
-                    .filter(UserStorageUsage.user_id == user_id)
-                    .first()
+                db.execute(
+                    update(UserStorageUsage)
+                    .where(UserStorageUsage.user_id == user_id)
+                    .values(storage_quota_bytes=storage_quota_bytes)
                 )
-                if existing_usage:
-                    existing_usage.storage_quota_bytes = storage_quota_bytes
 
         db.commit()
 

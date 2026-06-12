@@ -1334,33 +1334,42 @@ class TestSubscriptionLifecycleWebhooks:
         """Duplicate storage insert (race with checkout) falls back."""
         from sqlalchemy.exc import IntegrityError
 
-        # flush() raises IntegrityError -> falls back to re-query + update
-        mock_db.flush.side_effect = IntegrityError(
-            "Duplicate entry", params=None, orig=Exception()
-        )
-
-        # After rollback, re-query returns existing storage row
-        mock_storage_after = Mock()
-        mock_storage_after.storage_quota_bytes = 0
-
+        # Account lookup, storage (None), user for cache invalidation
         mock_db.query.side_effect = [
             # 1. SubscriptionUserAccount by customer_id
             Mock(
                 filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                    return_value=Mock(
+                        first=Mock(return_value=mock_user_account)
+                    )
                 )
             ),
             # 2. UserStorageUsage -> None (triggers INSERT path)
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
-            # 3. After rollback, re-query storage -> found
             Mock(
                 filter=Mock(
-                    return_value=Mock(first=Mock(return_value=mock_storage_after))
+                    return_value=Mock(
+                        first=Mock(return_value=None)
+                    )
                 )
             ),
-            # 4. User for cache invalidation
-            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+            # 3. User for cache invalidation
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        first=Mock(return_value=mock_user)
+                    )
+                )
+            ),
         ]
+
+        # begin_nested() SAVEPOINT; flush raises IntegrityError
+        nested_cm = Mock()
+        nested_cm.__enter__ = Mock(return_value=None)
+        nested_cm.__exit__ = Mock(return_value=False)
+        mock_db.begin_nested.return_value = nested_cm
+        mock_db.flush.side_effect = IntegrityError(
+            "Duplicate entry", params=None, orig=Exception()
+        )
 
         with patch.object(
             CheckoutService, "create_or_update_subscription", return_value=99
@@ -1374,7 +1383,11 @@ class TestSubscriptionLifecycleWebhooks:
 
         assert result["success"] is True
         assert result["user_id"] == 42
-        mock_db.rollback.assert_called_once()
+        # SAVEPOINT used, NOT full rollback
+        mock_db.begin_nested.assert_called_once()
+        mock_db.rollback.assert_not_called()
+        # execute() called once for fallback UPDATE
+        mock_db.execute.assert_called_once()
 
 
 if __name__ == "__main__":

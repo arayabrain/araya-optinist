@@ -383,7 +383,7 @@ class CheckoutService:
 
     @staticmethod
     def _apply_subscription_update(
-        subscription, plan_id: int, expiration_date: datetime
+        subscription: UserSubscription, plan_id: int, expiration_date: datetime
     ) -> int:
         """Apply the standard field updates to an existing subscription row."""
         subscription.plan_id = plan_id
