@@ -1,0 +1,35 @@
+# Credentials and environment files
+.env*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env*.example
+
+# Git
+.git
+.gitignore
+
+# IDE / editor
+.vscode
+.idea
+.DS_Store
+
+# Python artifacts
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+.tox
+
+# Documentation
+docs
+
+# Node modules (frontend has its own .dockerignore)
+frontend/node_modules
+
+# Claude Code
+.claude
+
+# Terraform state
+infrastructure/terraform/.terraform
+infrastructure/terraform/*.tfstate*
