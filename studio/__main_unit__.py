@@ -33,6 +33,7 @@ from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
     ExpirationDeletion,
+    PremiumExpirationSweep,
     StorageReconciliation,
     SyncStatusConstants,
 )
@@ -42,6 +43,9 @@ if not MODE.IS_STANDALONE:
     from studio.app.common.core.background.cleanup_job import DataCleanupJob
     from studio.app.common.core.background.expiration_lifecycle_job import (
         ExpirationLifecycleJob,
+    )
+    from studio.app.common.core.background.premium_expiration_sweep_job import (
+        PremiumExpirationSweepJob,
     )
     from studio.app.common.core.background.scheduler import BackgroundScheduler
     from studio.app.common.core.background.storage_reconciliation_job import (
@@ -163,6 +167,16 @@ async def lifespan(app: FastAPI):
             func=ExpirationLifecycleJob.run,
             interval_minutes=ExpirationDeletion.JOB_INTERVAL_MINUTES,
             job_id=ExpirationDeletion.JOB_ID,
+        )
+
+        # Backstop: release dangling premium assignments after expiration
+        # (covers missed customer.subscription.deleted events / direct DB
+        # expirations such as test 600-17b). Event-driven release in
+        # WebhookService is unchanged; this is purely a safety net.
+        BackgroundScheduler.add_job(
+            func=PremiumExpirationSweepJob.run,
+            interval_minutes=PremiumExpirationSweep.JOB_INTERVAL_MINUTES,
+            job_id=PremiumExpirationSweep.JOB_ID,
         )
 
         # Start scheduler

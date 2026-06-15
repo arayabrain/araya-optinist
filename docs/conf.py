@@ -19,7 +19,7 @@ from datetime import datetime
 project = "Araya-OptiNiSt Cloud"
 copyright = f"{datetime.now().year}, Araya Inc., OIST"
 author = "Araya Inc."
-release = "1.1.7"
+release = "1.1.8"
 
 # -- readthedocs -------------------------------------------------------------
 on_rtd = os.environ.get("READTHEDOCS", None) == "True"
