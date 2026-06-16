@@ -70,14 +70,15 @@ def generate_instance_hash(instance_id: str, secret_key: str) -> str:
     return signature[:16]
 
 
-def _get_instance_hash_cached(instance_id: str, secret_key: str) -> str:
+def get_instance_hash_cached(instance_id: str, secret_key: str) -> str:
     """Return cached instance hash, logging the mapping on first computation.
 
-    The mapping is logged exactly once per (instance_id, secret_key) pair so
-    that operators can trace an X-Served-By-Instance header value back to the
-    raw EC2 instance ID during incident investigation.  The raw instance ID
-    is safe to include in backend logs — the HMAC exists only to avoid
-    exposing it to the browser client.
+    The mapping is logged exactly once per instance_id so that operators can
+    trace an X-Served-By-Instance header value back to the raw EC2 instance ID
+    during incident investigation.  The secret_key is not included in the cache
+    key because ROUTING_SECRET_KEY is constant within a process.  The raw
+    instance ID is safe to include in backend logs — the HMAC exists only to
+    avoid exposing it to the browser client.
     """
     if instance_id in _instance_hash_cache:
         return _instance_hash_cache[instance_id]
@@ -292,7 +293,7 @@ class SecureRoutingMiddleware:
                 # to detect ALB fallback (issue #566).
                 instance_id = _get_instance_id()
                 if instance_id:
-                    instance_hash = _get_instance_hash_cached(
+                    instance_hash = get_instance_hash_cached(
                         instance_id, ROUTING_SECRET_KEY
                     )
                     headers.append((b"x-served-by-instance", instance_hash.encode()))

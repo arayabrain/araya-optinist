@@ -12,7 +12,7 @@ from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.secure_routing_middleware import (
     ROUTING_SECRET_KEY,
-    generate_instance_hash,
+    get_instance_hash_cached,
 )
 from studio.app.common.core.middleware.user_activity_middleware import (
     increment_heartbeat_failures,
@@ -114,7 +114,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
                 "message": result["message"],
                 "instance_id": instance_id,
                 "instance_id_hash": (
-                    generate_instance_hash(instance_id, ROUTING_SECRET_KEY)
+                    get_instance_hash_cached(instance_id, ROUTING_SECRET_KEY)
                     if instance_id
                     else None
                 ),
@@ -346,7 +346,7 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         )
 
         if status_info and status_info.get("instance_id"):
-            status_info["instance_id_hash"] = generate_instance_hash(
+            status_info["instance_id_hash"] = get_instance_hash_cached(
                 status_info["instance_id"], ROUTING_SECRET_KEY
             )
 
