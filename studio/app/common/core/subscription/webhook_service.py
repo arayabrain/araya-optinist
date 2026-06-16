@@ -1490,6 +1490,10 @@ class WebhookService:
         try:
             plan_id = int(plan_id_raw) if plan_id_raw else SubscriptionPlanIds.PREMIUM
         except (TypeError, ValueError):
+            logger.warning(
+                f"Webhook: Invalid plan_id '{plan_id_raw}' in subscription metadata for"
+                f" {stripe_subscription_id}; defaulting to PREMIUM"
+            )
             plan_id = SubscriptionPlanIds.PREMIUM
         if not plan_id_raw:
             logger.warning(
