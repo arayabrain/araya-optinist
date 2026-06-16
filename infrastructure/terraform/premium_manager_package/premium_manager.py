@@ -2623,13 +2623,16 @@ def _ensure_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
                 "instance may be failing health checks."
             ),
             AlarmActions=actions,
-            OKActions=actions,
+            # Ephemeral per-assign/release alarm; OK actions would page a
+            # "recovered" notice to the critical topic on every recreate.
+            OKActions=[],
             TreatMissingData="missing",
             Dimensions=[
                 {"Name": "LoadBalancer", "Value": _alb_arn_suffix(alb_arn)},
                 {"Name": "TargetGroup", "Value": _tg_arn_suffix(tg_arn)},
             ],
         )
+        print(f"[premium-alarm] action=create name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"WARNING: Failed to create unhealthy-host alarm {alarm_name}: {e}")
 
@@ -2647,6 +2650,7 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     try:
         cloudwatch = _get_cloudwatch_client()
         cloudwatch.delete_alarms(AlarmNames=[alarm_name])
+        print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"WARNING: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
 
