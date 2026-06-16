@@ -1,9 +1,25 @@
 export enum WORKSPACE_TYPE {
   DEFAULT = 0,
   NORMAL = 1,
+  BATCH = 2,
 }
 
 export const WORKSPACE_TYPE_LABEL: Record<WORKSPACE_TYPE, string> = {
   [WORKSPACE_TYPE.DEFAULT]: "Normal", // Same as NORMAL
   [WORKSPACE_TYPE.NORMAL]: "Normal",
+  [WORKSPACE_TYPE.BATCH]: "Batch",
 }
+
+export const ENABLE_BATCH_RUN_FEATURE =
+  process.env.REACT_APP_ENABLE_BATCH_RUN_FEATURE === "true"
+
+export const WORKSPACE_TYPE_OPTIONS = [
+  {
+    value: WORKSPACE_TYPE.NORMAL,
+    label: WORKSPACE_TYPE_LABEL[WORKSPACE_TYPE.NORMAL],
+  },
+  {
+    value: WORKSPACE_TYPE.BATCH,
+    label: WORKSPACE_TYPE_LABEL[WORKSPACE_TYPE.BATCH],
+  },
+]

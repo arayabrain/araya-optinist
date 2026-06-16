@@ -55,6 +55,7 @@ describe("RunButtons component", () => {
     algorithmNodeNotExist: false,
     handleCancelPipeline: jest.fn(),
     handleRunPipeline: jest.fn(),
+    handleBatchRunPipeline: jest.fn(),
     handleRunPipelineByUid: jest.fn(),
   }
 
@@ -75,6 +76,19 @@ describe("RunButtons component", () => {
         uid: "test-uid",
       },
       runBtn: RUN_BTN_OPTIONS.RUN_ALREADY,
+      workspace: {
+        currentWorkspace: {
+          type: 1, // WORKSPACE_TYPE.NORMAL
+        },
+      },
+      flowElement: {
+        flowNodes: [],
+        flowEdges: [],
+        flowPosition: { x: 0, y: 0, zoom: 1 },
+        elementCoord: {},
+        loading: false,
+      },
+      inputNode: {},
     })
   })
 

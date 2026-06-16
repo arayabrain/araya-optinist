@@ -87,6 +87,7 @@ def search_workspaces(
                 id=item.id,
                 name=item.name,
                 user_id=item.user_id,
+                type=item.type,
                 deleted=item.deleted,
                 input_data_usage=item.input_data_usage,
                 created_at=item.created_at,

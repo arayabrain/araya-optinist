@@ -185,6 +185,7 @@ def test_contract_workspace_serialization():
         display_number=1,
         name="Test Workspace",
         user=user,
+        type=0,
         shared_count=0,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
@@ -219,6 +220,7 @@ def test_contract_workspace_minimal_fields():
     workspace = Workspace(
         id=1,
         name="Minimal Workspace",
+        type=0,
         shared_count=0,
     )
 
@@ -238,6 +240,7 @@ def test_contract_workspace_with_null_user():
         id=1,
         name="Workspace Without User",
         user=None,
+        type=0,
         shared_count=0,
     )
 
@@ -254,6 +257,7 @@ def test_contract_workspace_shared_count_is_integer():
     workspace = Workspace(
         id=1,
         name="Shared Workspace",
+        type=0,
         shared_count=5,
     )
 
@@ -270,6 +274,7 @@ def test_contract_workspace_can_delete_is_boolean():
     workspace = Workspace(
         id=1,
         name="Deletable Workspace",
+        type=0,
         shared_count=0,
         canDelete=True,
     )
@@ -385,6 +390,7 @@ def test_contract_no_legacy_workspace_fields():
         display_number=1,
         name="Test Workspace",
         user=user,
+        type=0,
         shared_count=0,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
@@ -421,6 +427,7 @@ def test_contract_can_delete_is_camel_case():
     workspace = Workspace(
         id=1,
         name="Test Workspace",
+        type=0,
         shared_count=0,
         canDelete=True,
     )
@@ -445,6 +452,7 @@ def test_contract_workspace_id_is_integer():
     workspace = Workspace(
         id=123,
         name="Test Workspace",
+        type=0,
         shared_count=0,
     )
 
@@ -460,6 +468,7 @@ def test_contract_workspace_data_usage_is_integer():
     workspace = Workspace(
         id=1,
         name="Test Workspace",
+        type=0,
         shared_count=0,
         data_usage=1073741824,  # 1 GB in bytes
     )
@@ -477,6 +486,7 @@ def test_contract_workspace_display_number_is_integer():
         id=1,
         display_number=42,
         name="Test Workspace",
+        type=0,
         shared_count=0,
     )
 

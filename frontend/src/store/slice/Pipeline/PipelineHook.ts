@@ -17,20 +17,28 @@ import {
   pollRunResult,
   runByCurrentUid,
   cancelResult,
+  batchRun,
 } from "store/slice/Pipeline/PipelineActions"
 import {
   selectPipelineIsCanceled,
   selectPipelineIsStartedSuccess,
   selectPipelineLatestUid,
   selectPipelineStatus,
+  selectPipelineIsBatchRun,
 } from "store/slice/Pipeline/PipelineSelectors"
 import { RUN_STATUS } from "store/slice/Pipeline/PipelineType"
 import { handleWorkflowYamlError } from "store/slice/Pipeline/PipelineUtils"
 import { selectRunPostData } from "store/slice/Run/RunSelectors"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
-import { fetchWorkflow } from "store/slice/Workflow/WorkflowActions"
+import {
+  fetchWorkflow,
+  reproduceWorkflow,
+} from "store/slice/Workflow/WorkflowActions"
 import { getWorkspace } from "store/slice/Workspace/WorkspaceActions"
-import { selectIsWorkspaceOwner } from "store/slice/Workspace/WorkspaceSelector"
+import {
+  selectIsWorkspaceOwner,
+  selectCurrentWorkspaceId,
+} from "store/slice/Workspace/WorkspaceSelector"
 import {
   clearCurrentWorkspace,
   setActiveTab,
@@ -102,13 +110,15 @@ export function useRunPipeline() {
   const isCanceled = useSelector(selectPipelineIsCanceled)
   const isStartedSuccess = useSelector(selectPipelineIsStartedSuccess)
   const runDisabled = useIsRunDisabled()
+  const isBatchRun = useSelector(selectPipelineIsBatchRun)
+  const currentWorkspaceId = useSelector(selectCurrentWorkspaceId)
 
   const filePathIsUndefined = useSelector(selectFilePathIsUndefined)
   const algorithmNodeNotExist = useSelector(selectAlgorithmNodeNotExist)
   const runPostData = useSelector(selectRunPostData)
   const { enqueueSnackbar } = useSnackbar()
 
-  const handleRunPipeline = useCallback(
+  const prepareRunPostData = useCallback(
     (name: string) => {
       if (workspaceId) {
         if (!acquireWorkspaceLock(workspaceId, "run")) {
@@ -124,19 +134,28 @@ export function useRunPipeline() {
         }, LOCK_REFRESH_INTERVAL_MS)
       }
 
-      const newNodeDict = runPostData.nodeDict
+      const newNodeDict = { ...runPostData.nodeDict }
       Object.keys(newNodeDict).forEach((key) => {
         delete newNodeDict[key].data.dataFilterParam
         delete newNodeDict[key].data.draftDataFilterParam
       })
+      return {
+        name,
+        ...runPostData,
+        nodeDict: newNodeDict,
+        forceRunList: [],
+      }
+    },
+    [runPostData, workspaceId],
+  )
+
+  const handleRunPipeline = useCallback(
+    (name: string) => {
+      const runPostData = prepareRunPostData(name)
+      if (!runPostData) return
       dispatch(
         run({
-          runPostData: {
-            name,
-            ...runPostData,
-            nodeDict: newNodeDict,
-            forceRunList: [],
-          },
+          runPostData,
         }),
       )
         .unwrap()
@@ -152,7 +171,24 @@ export function useRunPipeline() {
           handleWorkflowYamlError(error, enqueueSnackbar)
         })
     },
-    [dispatch, enqueueSnackbar, runPostData, workspaceId],
+    [dispatch, enqueueSnackbar, prepareRunPostData, workspaceId],
+  )
+
+  const handleBatchRunPipeline = useCallback(
+    (name: string) => {
+      const runPostData = prepareRunPostData(name)
+      if (!runPostData) return
+      dispatch(
+        batchRun({
+          runPostData,
+        }),
+      )
+        .unwrap()
+        .catch((error) => {
+          handleWorkflowYamlError(error, enqueueSnackbar)
+        })
+    },
+    [dispatch, enqueueSnackbar, prepareRunPostData],
   )
 
   const handleRunPipelineByUid = useCallback(() => {
@@ -217,6 +253,13 @@ export function useRunPipeline() {
   // タブ移動による再レンダリングするたびにスナックバーが実行されてしまう挙動を回避するために前回の値を保持
   const [prevStatus, setPrevStatus] = useState(status)
 
+  // Handle batch run completion separately
+  const handleBatchRunCompletion = useCallback(() => {
+    if (uid && currentWorkspaceId) {
+      dispatch(reproduceWorkflow({ workspaceId: currentWorkspaceId, uid }))
+    }
+  }, [uid, currentWorkspaceId, dispatch])
+
   useEffect(() => {
     if (prevStatus !== status) {
       let isRunFinished = false
@@ -224,7 +267,15 @@ export function useRunPipeline() {
       if (status === RUN_STATUS.START_SUCCESS) {
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.FINISHED) {
-        enqueueSnackbar("Workflow finished", { variant: "success" })
+        // Show different message based on batch run flag
+        const message = isBatchRun ? "Batch run started" : "Workflow finished"
+        enqueueSnackbar(message, { variant: "success" })
+
+        // Update flowchart for batch run
+        if (isBatchRun) {
+          handleBatchRunCompletion()
+        }
+
         isRunFinished = true
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.ABORTED) {
@@ -252,7 +303,15 @@ export function useRunPipeline() {
 
       setPrevStatus(status)
     }
-  }, [dispatch, status, prevStatus, enqueueSnackbar, workspaceId])
+  }, [
+    dispatch,
+    status,
+    prevStatus,
+    enqueueSnackbar,
+    workspaceId,
+    isBatchRun,
+    handleBatchRunCompletion,
+  ])
 
   return {
     filePathIsUndefined,
@@ -261,6 +320,7 @@ export function useRunPipeline() {
     status,
     runDisabled,
     handleRunPipeline,
+    handleBatchRunPipeline,
     handleRunPipelineByUid,
     handleCancelPipeline,
   }
