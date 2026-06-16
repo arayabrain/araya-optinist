@@ -1615,9 +1615,21 @@ class WebhookService:
           payment-method-failure auto-cancel, etc.) does not silently drift
           from Stripe.
         """
-        return WebhookService._sync_subscription_from_event(
-            db, subscription_data, event_label="updated"
-        )
+        try:
+            return WebhookService._sync_subscription_from_event(
+                db, subscription_data, event_label="updated"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Webhook: Error handling subscription.updated: {e}",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing subscription.updated: {e}",
+            )
 
     @staticmethod
     async def _release_premium_assignment(

@@ -1326,6 +1326,31 @@ class TestSubscriptionLifecycleWebhooks:
         assert result["success"] is True
         mock_upsert.assert_called_once()
 
+    def test_subscription_updated_error_logs_traceback(
+        self, mock_db, mock_user_account, subscription_event
+    ):
+        """Errors in handle_subscription_updated log full traceback."""
+        from fastapi import HTTPException
+
+        mock_db.query.side_effect = [
+            # 1. SubscriptionUserAccount lookup succeeds
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+        ]
+
+        with patch.object(
+            CheckoutService,
+            "create_or_update_subscription",
+            side_effect=RuntimeError("db write failed"),
+        ), pytest.raises(HTTPException) as exc_info:
+            WebhookService.handle_subscription_updated(mock_db, subscription_event)
+
+        assert exc_info.value.status_code == 500
+        assert "subscription.updated" in exc_info.value.detail
+
     # --- Concurrency ---
 
     def test_concurrent_storage_insert_falls_back_to_update(
