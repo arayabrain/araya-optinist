@@ -49,7 +49,9 @@ Resources managed:
 - Background service EC2 instance (stop/start)
 - Premium EC2 instances (stop/start)
 - Free tier ASG (scale 0/1)
+- Public tier ASG (scale 0/2 — terminate/recreate, no stale checkpoint)
 - ECS services (desired_count 0/1 — prevents failed placement noise)
+- Public ECS service (desired_count 0/2)
 - Lambda schedule rules (disable/enable)
 - CloudWatch alarm actions (disable/enable)
 
@@ -289,6 +291,18 @@ def start_environment():
             max_size=int(os.environ.get("ASG_MAX_SIZE", "3")),
         )
 
+        # 5b. Scale up the public ASG. Terminate/recreate (not stop/start) so
+        #     each start gets fresh instances with no stale ECS-agent checkpoint.
+        public_asg = os.environ.get("PUBLIC_ASG_NAME")
+        if public_asg:
+            results["public_asg"] = with_retry(
+                scale_asg,
+                public_asg,
+                min_size=int(os.environ.get("PUBLIC_ASG_MIN_SIZE", "0")),
+                desired=int(os.environ.get("PUBLIC_ASG_DESIRED_CAPACITY", "0")),
+                max_size=int(os.environ.get("PUBLIC_ASG_MAX_SIZE", "0")),
+            )
+
         # 6. Restore ECS service desired counts (so tasks start scheduling
         #    once container instances register)
         ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
@@ -296,6 +310,20 @@ def start_environment():
             results.update(
                 update_ecs_services(
                     os.environ["CLUSTER_NAME"], ecs_services, desired_count=1
+                )
+            )
+
+        # 6b. Restore the public service to its HA desired count, not the
+        #     desired=1 used for the single-task services above.
+        public_service = os.environ.get("PUBLIC_ECS_SERVICE_NAME")
+        if public_service:
+            results.update(
+                update_ecs_services(
+                    os.environ["CLUSTER_NAME"],
+                    [public_service],
+                    desired_count=int(
+                        os.environ.get("PUBLIC_ASG_DESIRED_CAPACITY", "1")
+                    ),
                 )
             )
 
@@ -393,10 +421,24 @@ def stop_environment(stop_mode="destroy"):
             )
         )
 
+    # 3b. Scale down the public service (drain tasks before its ASG terminates).
+    public_service = os.environ.get("PUBLIC_ECS_SERVICE_NAME")
+    if public_service:
+        results.update(
+            update_ecs_services(
+                os.environ["CLUSTER_NAME"], [public_service], desired_count=0
+            )
+        )
+
     # 4. Scale down ASG (terminates free tier instances)
     results["asg"] = with_retry(
         scale_asg, os.environ["ASG_NAME"], min_size=0, desired=0
     )
+
+    # 4b. Scale down the public ASG (terminate instances).
+    public_asg = os.environ.get("PUBLIC_ASG_NAME")
+    if public_asg:
+        results["public_asg"] = with_retry(scale_asg, public_asg, min_size=0, desired=0)
 
     # 5. Stop base premium instances (Terraform-managed)
     premium_ids = [
