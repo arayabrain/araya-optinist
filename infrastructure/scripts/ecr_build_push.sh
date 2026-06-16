@@ -32,6 +32,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ===========================================
+# Guard: reject builds from a dirty worktree
+# ===========================================
+DIRTY_FILES=$(cd ../.. && git status --porcelain)
+if [ -n "$DIRTY_FILES" ]; then
+    echo "ERROR: Working tree is not clean. Commit or stash changes before building."
+    echo ""
+    echo "$DIRTY_FILES"
+    echo ""
+    echo "This check prevents uncommitted or untracked files from leaking into the Docker image."
+    exit 1
+fi
+
+# ===========================================
 # Detect environment and ECR target
 # ===========================================
 echo "Reading Terraform outputs..."
@@ -54,8 +67,11 @@ fi
 
 REPO_NAME=$(echo "$ECR_URI" | sed 's|.*/||')
 
-# Generate version tag
+# Generate version tag and full commit hash
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_COMMIT_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [ -n "$CUSTOM_TAG" ]; then
     VERSION_TAG="$CUSTOM_TAG"
 else
@@ -73,7 +89,9 @@ echo "  Environment : ${ENVIRONMENT}"
 echo "  ECR Repo    : ${REPO_NAME}"
 echo "  ECR URI     : ${ECR_URI}"
 echo "  Tags        : latest, ${VERSION_TAG}"
-echo "  Git commit  : ${GIT_SHA}"
+echo "  Git commit  : ${GIT_COMMIT_FULL} (${GIT_SHA})"
+echo "  Git branch  : ${GIT_BRANCH}"
+echo "  Build time  : ${BUILD_TIMESTAMP}"
 echo "============================================"
 echo ""
 
@@ -167,9 +185,13 @@ yarn install
 yarn build
 cd ..
 
-# Build the Docker image
+# Build the Docker image with embedded build metadata
 echo "Building autoscaling Docker image..."
-docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
+docker build -f studio/config/docker/Dockerfile \
+    --build-arg GIT_COMMIT="${GIT_COMMIT_FULL}" \
+    --build-arg GIT_BRANCH="${GIT_BRANCH}" \
+    --build-arg BUILD_TIMESTAMP="${BUILD_TIMESTAMP}" \
+    -t $REPO_NAME:$IMAGE_TAG .
 
 # Tag and push to ECR — both :latest (for ECS) and versioned (for history/rollback)
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
