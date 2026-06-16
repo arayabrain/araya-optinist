@@ -507,6 +507,33 @@ async def update_user(
         # create firebase user
         firebase_auth.update_user(user_db.uid, email=data.email)
 
+        # Sync email to Stripe customer if user has a subscription account
+        if data.email:
+            try:
+                import stripe
+
+                from studio.app.common.core.subscription.checkout_service import (
+                    CheckoutService,
+                )
+
+                stripe_account = CheckoutService.get_subscription_account(
+                    db, user_db.id
+                )
+                if stripe_account:
+                    stripe.Customer.modify(
+                        stripe_account.provider_customer_id,
+                        email=data.email,
+                    )
+                    logger.info(
+                        f"Synced email to Stripe customer "
+                        f"{stripe_account.provider_customer_id} "
+                        f"for user {user_db.id}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to sync email to Stripe for user {user_db.id}: {e}"
+                )
+
         db.commit()
 
         # Refresh user_db to ensure relationships are loaded

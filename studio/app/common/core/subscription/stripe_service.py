@@ -40,6 +40,73 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
         return None
 
 
+async def get_or_create_stripe_customer(
+    db: Session, user: User
+) -> stripe.Customer:
+    """Get or create a Stripe customer using a unified lookup strategy.
+
+    Lookup order:
+    1. Database (SubscriptionUserAccount by user_id) -> retrieve from Stripe
+    2. Stripe API (by email)
+    3. Create new customer
+
+    Always persists the customer ID to the database to prevent duplicates.
+    """
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
+
+    # 1. Check database first (most reliable — tied to user_id)
+    subscription_account = CheckoutService.get_subscription_account(db, user.id)
+    if subscription_account:
+        try:
+            customer = stripe.Customer.retrieve(
+                subscription_account.provider_customer_id
+            )
+            if not customer.get("deleted"):
+                return customer
+            logger.warning(
+                f"Stripe customer {subscription_account.provider_customer_id} "
+                f"was deleted for user {user.id}, falling through to lookup"
+            )
+        except stripe.error.StripeError as e:
+            logger.warning(
+                f"Failed to retrieve Stripe customer "
+                f"{subscription_account.provider_customer_id} "
+                f"for user {user.id}: {e}"
+            )
+
+    # 2. Fall back to Stripe API lookup by email
+    customer = await get_stripe_customer_by_email(user.email)
+    if customer:
+        # Persist to DB so future lookups use the fast path
+        provider_id = CheckoutService.get_or_create_stripe_provider(db)
+        CheckoutService.create_or_update_user_account(
+            db, user.id, provider_id, customer.id
+        )
+        db.commit()
+        logger.info(
+            f"Found existing Stripe customer {customer.id} by email "
+            f"for user {user.id}, persisted to DB"
+        )
+        return customer
+
+    # 3. Create new customer as last resort
+    customer = stripe.Customer.create(
+        email=user.email,
+        name=getattr(user, "name", ""),
+        metadata={"user_id": str(user.id)},
+    )
+    logger.info(f"Created new Stripe customer {customer.id} for user {user.id}")
+
+    # Persist to DB
+    provider_id = CheckoutService.get_or_create_stripe_provider(db)
+    CheckoutService.create_or_update_user_account(
+        db, user.id, provider_id, customer.id
+    )
+    db.commit()
+
+    return customer
+
+
 class StripeService:
     """Service class for Stripe API integration and payment provider operations.
 
@@ -93,7 +160,7 @@ class StripeService:
 
     @staticmethod
     async def get_default_payment_method(
-        user: User,
+        db: Session, user: User
     ) -> Optional[PaymentMethodResponse]:
         """
         Get user's default payment method
@@ -108,8 +175,8 @@ class StripeService:
                 f"with email {user.email}"
             )
 
-            # Find Stripe customer by email
-            stripe_customer = await get_stripe_customer_by_email(user.email)
+            # Find Stripe customer (DB first, then Stripe API)
+            stripe_customer = await get_or_create_stripe_customer(db, user)
 
             if not stripe_customer:
                 logger.info(f"No Stripe customer found for user {user.id}")
@@ -169,19 +236,12 @@ class StripeService:
             )
 
     @staticmethod
-    async def create_setup_intent(user: User) -> CreateSetupIntentResponse:
+    async def create_setup_intent(
+        db: Session, user: User
+    ) -> CreateSetupIntentResponse:
         try:
-            # Get or create Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
-
-            if not customer:
-                # Create new Stripe customer
-                customer = stripe.Customer.create(
-                    email=user.email,
-                    name=getattr(user, "name", ""),
-                    metadata={"user_id": str(user.id)},
-                )
-                logger.info(f"Created new Stripe customer for user {user.id}")
+            # Get or create Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Create SetupIntent
             setup_intent = stripe.SetupIntent.create(
@@ -208,14 +268,14 @@ class StripeService:
 
     @staticmethod
     async def update_default_payment_method(
-        user: User, payment_method_id: str
+        db: Session, user: User, payment_method_id: str
     ) -> UpdatePaymentMethodResponse:
         """
         Update the default payment method for a user's subscription
         """
         try:
-            # Get Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
+            # Get Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
             if not customer:
                 raise HTTPException(
                     status_code=404, detail="No Stripe customer found for user"
@@ -282,13 +342,15 @@ class StripeService:
             )
 
     @staticmethod
-    async def delete_payment_method(user: User, payment_method_id: str):
+    async def delete_payment_method(
+        db: Session, user: User, payment_method_id: str
+    ):
         """
         Delete a payment method (cannot delete if it's default for active subscriptions)
         """
         try:
-            # Get Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
+            # Get Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
             if not customer:
                 raise HTTPException(
                     status_code=404, detail="No Stripe customer found for user"
@@ -351,7 +413,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_get_user_payment_methods(user: User):
+    async def handle_get_user_payment_methods(db: Session, user: User):
         """
         Get user's payment methods with last 4 digits and card brand
         """
@@ -364,14 +426,8 @@ class StripeService:
                 f"Fetching payment methods for user {user.id} with email {user.email}"
             )
 
-            # Find Stripe customer by email
-            stripe_customers = stripe.Customer.list(email=user.email, limit=1)
-
-            if not stripe_customers.data:
-                logger.info(f"No Stripe customer found for user {user.email}")
-                return []
-
-            customer = stripe_customers.data[0]
+            # Find Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Get all payment methods for this customer (cards and link)
             result = []
@@ -461,12 +517,8 @@ class StripeService:
                     status_code=400, detail="User is already subscribed to this plan"
                 )
 
-            # Get Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
-            if not customer:
-                raise HTTPException(
-                    status_code=404, detail="No Stripe customer found for user"
-                )
+            # Get Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Get active or trial Stripe subscription
             # First try to find active subscription
@@ -609,12 +661,8 @@ class StripeService:
                 status_code=404, detail="No active subscription found to cancel"
             )
 
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
+        # Get Stripe customer (unified lookup)
+        customer = await get_or_create_stripe_customer(db, user)
 
         # Get active or trial Stripe subscription
         # First try to find active subscription

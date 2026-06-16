@@ -17,7 +17,7 @@ from studio.app.common.core.subscription.constants import (
 )
 from studio.app.common.core.subscription.stripe_service import (
     StripeService,
-    get_stripe_customer_by_email,
+    get_or_create_stripe_customer,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
@@ -301,12 +301,8 @@ async def reactivate_user_subscription(
 
         sub_data, current_plan = current_subscription_result
 
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(current_user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
+        # Get Stripe customer (unified lookup: DB first, then Stripe API)
+        customer = await get_or_create_stripe_customer(db, current_user)
 
         # Get active or trialing Stripe subscription
         # First try to find active subscription
@@ -380,9 +376,10 @@ async def reactivate_user_subscription(
 
 @router.get("/payment-methods/default", response_model=Optional[PaymentMethodResponse])
 async def get_user_default_payment_method(
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return await StripeService.get_default_payment_method(user)
+    return await StripeService.get_default_payment_method(db, user)
 
 
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
@@ -653,14 +650,8 @@ async def get_user_invoices(
 
         logger.debug(f"Fetching invoices for user {user_id} with email {user.email}")
 
-        # Find Stripe customer by email
-        stripe_customers = stripe.Customer.list(email=user.email, limit=1)
-
-        if not stripe_customers.data:
-            logger.info(f"No Stripe customer found for user {user_id}")
-            return []
-
-        customer = stripe_customers.data[0]
+        # Find Stripe customer (unified lookup: DB first, then Stripe API)
+        customer = await get_or_create_stripe_customer(db, current_user)
 
         # Get all invoices for this customer
         invoices = stripe.Invoice.list(

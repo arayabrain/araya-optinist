@@ -664,31 +664,15 @@ class CheckoutService:
             # Create Stripe checkout session using the price ID from the database
             try:
                 logger.debug("Initializing Stripe")
-                subscription_account = CheckoutService.get_subscription_account(
-                    db, user.id
+
+                # Unified customer lookup: DB first, then Stripe API, then
+                # create. Prevents duplicate Stripe customers.
+                from studio.app.common.core.subscription.stripe_service import (
+                    get_or_create_stripe_customer,
                 )
 
-                if subscription_account:
-                    customer_id = subscription_account.provider_customer_id
-                else:
-                    # Create new Stripe customer
-                    stripe_customer = stripe.Customer.create(
-                        email=user.email,
-                        name=getattr(user, "name", ""),
-                        metadata={"user_id": str(user.id)},
-                    )
-                    customer_id = stripe_customer.id
-
-                    # Save the customer to database to prevent duplicates
-                    provider_id = CheckoutService.get_or_create_stripe_provider(db)
-                    CheckoutService.create_or_update_user_account(
-                        db, user.id, provider_id, customer_id
-                    )
-                    db.commit()
-                    logger.debug(
-                        f"Created and saved new Stripe customer {customer_id} "
-                        f"for user {user.id}"
-                    )
+                stripe_customer = await get_or_create_stripe_customer(db, user)
+                customer_id = stripe_customer.id
 
                 # Check if user already has an active subscription in Stripe
                 # that wasn't synced to DB (e.g., server was down during
