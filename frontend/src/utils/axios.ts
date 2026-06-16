@@ -281,7 +281,7 @@ function shouldEmitPremiumReachable(
     typeof routingId === "string" && routingId !== cfg._outgoingRoutingId
   if (routingIdRotated) return false
 
-  // Instance identity check — closes the ALB fallback gap (issue #566).
+  // Instance identity check — closes the ALB fallback gap.
   const outgoingInstanceId = cfg._outgoingInstanceId
   if (outgoingInstanceId) {
     const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()

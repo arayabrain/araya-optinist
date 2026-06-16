@@ -330,7 +330,7 @@ describe("axios premium-routing interceptors", () => {
   // --- Instance identity (X-Served-By-Instance) tests ---
 
   it("does NOT emit reachable when routing-id matches but x-served-by-instance mismatches (ALB fallback detection)", async () => {
-    // Core fix for issue #566: if the dedicated instance is down, ALB may
+    // If the dedicated instance is down, ALB may
     // fall back to the shared backend. Routing-id matches (it's UID-based)
     // but x-served-by-instance differs. Must NOT emit reachable.
     mockGetRoutingHeaders.mockReturnValue({

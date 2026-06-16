@@ -630,8 +630,8 @@ describe("PremiumAssignmentProvider — unreachable state machine", () => {
     expect(ctxRef.current?.unreachable.state.isUnreachableTerminal).toBe(false)
   })
 
-  test("unreachable state persists without premiumReachable (ALB fallback contract — #566)", async () => {
-    // Issue #566 fix contract: when the dedicated instance is down and ALB
+  test("unreachable state persists without premiumReachable (ALB fallback contract)", async () => {
+    // ALB fallback contract: when the dedicated instance is down and ALB
     // falls back to the shared backend, shouldEmitPremiumReachable() in
     // axios.ts suppresses the reachable signal (x-served-by-instance
     // mismatch). The unreachable state machine must remain in DEGRADED —
@@ -692,7 +692,7 @@ describe("PremiumAssignmentProvider — unreachable state machine", () => {
     expect(ctxRef.current?.unreachable.state.unreachableSince).toBeNull()
   })
 
-  test("terminal unreachable state persists without premiumReachable (ALB fallback — #566)", async () => {
+  test("terminal unreachable state persists without premiumReachable (ALB fallback)", async () => {
     // Extension of the above: verify that terminal state (MAX_FAILED_PROBES
     // exhausted) is also not spuriously cleared by fallback responses.
     mockedGetStatus.mockResolvedValue(dedicatedStatus)

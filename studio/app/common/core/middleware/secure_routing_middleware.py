@@ -290,7 +290,7 @@ class SecureRoutingMiddleware:
 
                 # Add instance identity header for all authenticated responses.
                 # The frontend compares this against the expected instance hash
-                # to detect ALB fallback (issue #566).
+                # to detect ALB fallback.
                 instance_id = _get_instance_id()
                 if instance_id:
                     instance_hash = get_instance_hash_cached(
