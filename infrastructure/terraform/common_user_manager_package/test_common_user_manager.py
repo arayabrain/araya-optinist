@@ -55,6 +55,19 @@ def mock_boto3():
         yield mock_boto
 
 
+def split_boto3_clients(mock_boto3):
+    """Wire boto3.client to return a distinct mock per service name.
+
+    The Lambda creates separate elbv2 and cloudwatch clients; sharing one mock
+    would let an alarm delete on the wrong client pass undetected.
+    """
+    mock_elbv2 = MagicMock()
+    mock_cloudwatch = MagicMock()
+    clients = {"elbv2": mock_elbv2, "cloudwatch": mock_cloudwatch}
+    mock_boto3.client.side_effect = lambda service, *a, **k: clients[service]
+    return mock_elbv2, mock_cloudwatch
+
+
 class TestRecoverStaleWorkflowCounts:
     """Tests for recover_stale_workflow_counts function"""
 
@@ -173,8 +186,7 @@ class TestCheckPremiumUserInactivity:
             }
         ]
 
-        mock_elbv2 = MagicMock()
-        mock_boto3.client.return_value = mock_elbv2
+        mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
         result = common_user_manager.check_premium_user_inactivity()
 
@@ -183,8 +195,8 @@ class TestCheckPremiumUserInactivity:
         # Verify ALB cleanup was called
         mock_elbv2.delete_rule.assert_called_once()
         mock_elbv2.delete_target_group.assert_called_once()
-        # Verify the per-TG unhealthy-host alarm was cleaned up
-        mock_elbv2.delete_alarms.assert_called_once_with(
+        # Verify the per-TG unhealthy-host alarm was cleaned up on CloudWatch
+        mock_cloudwatch.delete_alarms.assert_called_once_with(
             AlarmNames=["test-premium-123-tg-unhealthy-hosts"]
         )
         # Verify database deletion
@@ -201,8 +213,7 @@ class TestCheckPremiumUserInactivity:
             }
         ]
 
-        mock_elbv2 = MagicMock()
-        mock_boto3.client.return_value = mock_elbv2
+        mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
         result = common_user_manager.check_premium_user_inactivity()
 
@@ -210,7 +221,7 @@ class TestCheckPremiumUserInactivity:
         # Verify ALB cleanup was NOT called for standby
         mock_elbv2.delete_rule.assert_not_called()
         mock_elbv2.delete_target_group.assert_not_called()
-        mock_elbv2.delete_alarms.assert_not_called()
+        mock_cloudwatch.delete_alarms.assert_not_called()
 
     def test_partial_failure(self, mock_db_connection, mock_boto3):
         """Test when some users fail to logout"""
@@ -240,10 +251,9 @@ class TestCheckPremiumUserInactivity:
             },
         ]
 
-        mock_elbv2 = MagicMock()
+        mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
         # First user succeeds, second fails
         mock_elbv2.delete_rule.side_effect = [None, Exception("ALB error")]
-        mock_boto3.client.return_value = mock_elbv2
 
         result = common_user_manager.check_premium_user_inactivity()
 

@@ -344,7 +344,7 @@ def check_free_user_inactivity() -> Dict[str, int]:
 
 
 # Mirrored in premium_manager.py & premium_cleanup.py — keep all three in sync.
-def _tg_unhealthy_alarm_name(tg_arn: str) -> "str | None":
+def _premium_tg_alarm_name(tg_arn: str) -> "str | None":
     """Derive the UnHealthyHostCount alarm name for a premium target group ARN."""
     idx = tg_arn.find(":targetgroup/")
     suffix = tg_arn[idx + 1 :] if idx != -1 else tg_arn
@@ -357,7 +357,7 @@ def _tg_unhealthy_alarm_name(tg_arn: str) -> "str | None":
 def _delete_tg_unhealthy_alarm(cw: Any, tg_arn: str) -> None:
     """Best-effort, idempotent delete of a target group's UnHealthyHostCount alarm."""
     try:
-        alarm_name = _tg_unhealthy_alarm_name(tg_arn)
+        alarm_name = _premium_tg_alarm_name(tg_arn)
         if alarm_name:
             cw.delete_alarms(AlarmNames=[alarm_name])
     except Exception as e:
