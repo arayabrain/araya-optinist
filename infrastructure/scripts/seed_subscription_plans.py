@@ -109,15 +109,20 @@ def main():
             existing = db.query(SubscriptionPlans).filter_by(id=plan_id).first()
 
             # Map tfvars fields to DB model fields
+            price = plan_data.get("price", 0)
             plan_fields = {
                 "name": plan_data.get("name"),
-                "price": plan_data.get("price", 0),
+                "price": price,
                 "billing_cycle": plan_data.get("billing_cycle", 1),
                 "currency": plan_data.get("currency", 1),
                 "status": bool(plan_data.get("status", 1)),
                 "stripe_product_id": plan_data.get("stripe_product_id"),
                 "stripe_price_id": plan_data.get("stripe_price_id"),
                 "features": plan_data.get("features"),
+                "display_order": plan_data.get("display_order", 0),
+                "is_featured": bool(plan_data.get("is_featured", False)),
+                "tier": plan_data.get("tier", "free" if price == 0 else "premium"),
+                "is_hidden": bool(plan_data.get("is_hidden", False)),
             }
 
             if existing:

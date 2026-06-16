@@ -32,7 +32,6 @@ from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jw
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
 from studio.app.common.core.mode import MODE
-from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 
 logger = AppLogger.get_logger()
 
@@ -128,7 +127,8 @@ def get_user_tier_cached(uid: str) -> str:
             subscription_data = SubscriptionService.get_user_subscription(db, user.id)
             if subscription_data:
                 _, plan = subscription_data
-                tier = "premium" if plan.id == SubscriptionPlanIds.PREMIUM else "free"
+                # Use actual tier from database for granular routing
+                tier = plan.tier if plan and plan.tier else "free"
             else:
                 tier = "free"
 

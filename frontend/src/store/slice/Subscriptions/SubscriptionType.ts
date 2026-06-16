@@ -1,12 +1,10 @@
 export const SUBSCRIPTION_SLICE_NAME = "subscription"
 
-// Feature interface for type safety
 export interface PlanFeature {
   text: string
   isPremium: boolean
 }
 
-// Updated SubscriptionPlan interface to match backend response
 export interface SubscriptionPlan {
   id: number
   name: string
@@ -16,6 +14,12 @@ export interface SubscriptionPlan {
   currency: number
   status: boolean
   created_at: string
+  tier?: string
+  display_order?: number
+  is_featured?: boolean
+  is_hidden?: boolean
+  stripe_product_id?: string
+  stripe_price_id?: string
 }
 
 export interface UserSubscription {

@@ -10,7 +10,6 @@ from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     DeletionPriority,
-    SubscriptionPlanType,
     SubscriptionStatusType,
     SubscriptionUserStatus,
     SyncStatus,
@@ -82,8 +81,67 @@ class SubscriptionService:
         return (
             db.query(SubscriptionPlans)
             .filter(SubscriptionPlans.status == SubscriptionStatusType.ACTIVE)
+            .filter(SubscriptionPlans.is_hidden.is_(False))
+            .order_by(SubscriptionPlans.display_order)
             .all()
         )
+
+    @staticmethod
+    def get_free_plan(
+        db: Session, active_only: bool = True
+    ) -> Optional[SubscriptionPlans]:
+        """
+        Get the free subscription plan (price = 0).
+
+        Data-driven approach: any plan with price = 0 is considered free.
+        No code changes needed when adding new plans.
+
+        Args:
+            db: Database session
+            active_only: If True, only return active plans
+
+        Returns:
+            SubscriptionPlans object or None if not found
+        """
+        query = db.query(SubscriptionPlans).filter(SubscriptionPlans.price == 0)
+
+        if active_only:
+            query = query.filter(
+                SubscriptionPlans.status == SubscriptionStatusType.ACTIVE
+            )
+
+        return query.first()
+
+    @classmethod
+    def get_free_plan_id(cls, db: Session) -> Optional[int]:
+        """
+        Get the ID of the free plan dynamically.
+
+        Returns:
+            Plan ID of the free plan (price = 0), or None if not found
+        """
+        free_plan = cls.get_free_plan(db)
+        return free_plan.id if free_plan else None
+
+    @classmethod
+    def get_default_plan_id(cls, db: Session) -> int:
+        """
+        Get the default plan ID (free plan) for new users.
+
+        Returns:
+            Plan ID of the free plan
+
+        Raises:
+            HTTPException if no free plan is found
+        """
+        plan_id = cls.get_free_plan_id(db)
+        if plan_id is None:
+            logger.error("No free plan found in database")
+            raise HTTPException(
+                status_code=500,
+                detail="System configuration error: No free plan available",
+            )
+        return plan_id
 
     @staticmethod
     def is_subscription_cancelled(db: Session, user_id: int) -> bool:
@@ -150,17 +208,50 @@ class SubscriptionService:
         return cancellation_id is not None
 
     @staticmethod
-    def get_subscription_status(plan_data_id: int, is_cancelled: bool) -> int:
-        # Determine status based on plan ID and cancellation state
+    def get_subscription_status(
+        db: Session, plan_data_id: int, is_cancelled: bool
+    ) -> int:
+        """
+        Determine subscription status based on plan price and cancellation state.
+
+        Data-driven approach: uses price to determine plan type.
+        - price = 0: FREE plan
+        - price > 0: SUBSCRIBED (paid plan)
+
+        No code changes needed when adding new plans to the database.
+
+        Args:
+            db: Database session
+            plan_data_id: Subscription plan ID
+            is_cancelled: Whether subscription is cancelled
+
+        Returns:
+            SubscriptionUserStatus enum value
+        """
+        # Check cancellation first
         if is_cancelled:
-            subscription_status = SubscriptionUserStatus.CANCELED
-        elif plan_data_id == SubscriptionPlanType.MONTHLY:
-            subscription_status = SubscriptionUserStatus.FREE
-        elif plan_data_id == SubscriptionPlanType.YEARLY:
-            subscription_status = SubscriptionUserStatus.SUBSCRIBED
+            return SubscriptionUserStatus.CANCELED
+
+        # Query plan from database
+        plan = (
+            db.query(SubscriptionPlans)
+            .filter(SubscriptionPlans.id == plan_data_id)
+            .first()
+        )
+
+        # If plan not found, default to FREE
+        if not plan:
+            logger.warning(
+                f"Plan ID {plan_data_id} not found in database, "
+                f"defaulting to FREE status"
+            )
+            return SubscriptionUserStatus.FREE
+
+        # Price-based logic: free = price 0, paid = price > 0
+        if plan.is_premium:
+            return SubscriptionUserStatus.SUBSCRIBED
         else:
-            subscription_status = SubscriptionUserStatus.FREE
-        return subscription_status
+            return SubscriptionUserStatus.FREE
 
     @staticmethod
     def get_plan_by_id(db: Session, plan_id: int) -> SubscriptionPlans:

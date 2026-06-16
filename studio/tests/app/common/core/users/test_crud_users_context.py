@@ -40,6 +40,10 @@ def mock_db():
     """Mock database session"""
     db = Mock()
     db.execute = Mock()
+    # Mock db.query(SubscriptionPlans).all() for pre-fetching plans
+    mock_query = Mock()
+    mock_query.all.return_value = []  # Return empty list of plans by default
+    db.query.return_value = mock_query
     return db
 
 
@@ -81,6 +85,7 @@ def create_query_result(
     storage_quota_bytes=5_000_000_000,
     subscription_expiration=None,
     subscription_plan_id=None,
+    subscription_plan_tier=None,
 ):
     """Helper to create query result tuple"""
     return (
@@ -92,6 +97,7 @@ def create_query_result(
         storage_quota_bytes,
         subscription_expiration,
         subscription_plan_id,
+        subscription_plan_tier,
     )
 
 

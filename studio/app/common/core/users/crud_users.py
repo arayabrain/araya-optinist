@@ -23,12 +23,10 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
+    SubscriptionType,
 )
 from studio.app.common.core.subscription.stripe_service import StripeService
-from studio.app.common.core.subscription.subscription_service import (
-    SubscriptionService,
-    SubscriptionUserStatus,
-)
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.models import Role as RoleModel
@@ -74,6 +72,33 @@ logger = AppLogger.get_logger()
 # across Workspace and ExperimentRecord tables.
 
 
+def _user_context_query():
+    """
+    Build the base select query with user context columns and joins.
+
+    Returns a reusable query with subscription, storage, and role info.
+    Both get_user_with_context() and list_user() use this to avoid duplication.
+    """
+    return (
+        select(
+            UserModel,
+            func.min(UserRoleModel.role_id),
+            func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label("data_usage"),
+            func.max(SubscriptionPlans.name).label("subscription_plan_name"),
+            UserStorageUsage.storage_usage_bytes,
+            UserStorageUsage.storage_quota_bytes,
+            func.max(UserSubscription.expiration).label("subscription_expiration"),
+            func.max(UserSubscription.plan_id).label("subscription_plan_id"),
+            func.max(SubscriptionPlans.tier).label("subscription_plan_tier"),
+        )
+        .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
+        .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
+        .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
+        .outerjoin(SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id)
+        .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
+    )
+
+
 def _transform_user_row(item) -> UserModel:
     """
     Transform a raw query result row into an enriched UserModel.
@@ -84,7 +109,7 @@ def _transform_user_row(item) -> UserModel:
     Args:
         item: Query result tuple containing:
             (user, role_id, data_usage, plan_name, storage_bytes, storage_quota,
-             expiration, plan_id)
+             expiration, plan_id, plan_tier)
 
     Returns:
         UserModel with additional attributes set via __dict__
@@ -98,6 +123,7 @@ def _transform_user_row(item) -> UserModel:
         storage_quota_bytes,
         subscription_expiration,
         subscription_plan_id,
+        subscription_plan_tier,
     ) = item
 
     # Basic attributes
@@ -114,9 +140,16 @@ def _transform_user_row(item) -> UserModel:
 
     user.__dict__["subscription_expiration"] = subscription_expiration
 
-    # Calculate subscription status and days remaining
+    # Calculate subscription status and days remaining using tier-based logic.
+    # This is data-driven: any plan with tier != SubscriptionType.FREE is treated
+    # as a paid plan, so new tiers (e.g., "enterprise") work without code changes.
     now = get_current_datetime()
-    if subscription_expiration and subscription_plan_id:
+    is_paid_tier = (
+        subscription_plan_tier
+        and subscription_plan_tier.lower() != SubscriptionType.FREE.value
+    )
+
+    if subscription_expiration and subscription_plan_id and is_paid_tier:
         # Make sure expiration is timezone-aware
         if subscription_expiration.tzinfo is None:
             subscription_expiration = subscription_expiration.replace(
@@ -125,30 +158,19 @@ def _transform_user_row(item) -> UserModel:
 
         days_remaining = (subscription_expiration - now).days
 
-        if subscription_plan_id == SubscriptionPlanIds.FREE:
-            user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
-            user.__dict__["subscription_days_remaining"] = None
-        elif subscription_plan_id == SubscriptionPlanIds.PREMIUM:
-            if days_remaining > 0:
-                user.__dict__["subscription_status"] = SubscriptionStatus.PREMIUM.value
-                user.__dict__["subscription_days_remaining"] = days_remaining
-            elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
-                user.__dict__[
-                    "subscription_status"
-                ] = SubscriptionStatus.LIMIT_GRACE.value
-                user.__dict__["subscription_days_remaining"] = (
-                    SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
-                )  # Days left in grace period
-            else:
-                user.__dict__["subscription_status"] = SubscriptionStatus.EXPIRED.value
-                user.__dict__["subscription_days_remaining"] = None
-        else:
+        if days_remaining > 0:
             user.__dict__["subscription_status"] = (
-                subscription_plan_name or PlanName.UNKNOWN.value
+                subscription_plan_name or SubscriptionStatus.PREMIUM.value
             )
+            user.__dict__["subscription_days_remaining"] = days_remaining
+        elif days_remaining >= -SubscriptionPeriods.GRACE_PERIOD_DAYS:
+            user.__dict__["subscription_status"] = SubscriptionStatus.LIMIT_GRACE.value
             user.__dict__["subscription_days_remaining"] = (
-                days_remaining if days_remaining > 0 else None
-            )
+                SubscriptionPeriods.GRACE_PERIOD_DAYS + days_remaining
+            )  # Days left in grace period
+        else:
+            user.__dict__["subscription_status"] = SubscriptionStatus.EXPIRED.value
+            user.__dict__["subscription_days_remaining"] = None
     else:
         user.__dict__["subscription_status"] = SubscriptionStatus.FREE.value
         user.__dict__["subscription_days_remaining"] = None
@@ -203,35 +225,10 @@ async def get_user(db: Session, user_id: int, organization_id: int) -> User:
 
 
 async def get_user_with_context(db: Session, user_id: int) -> User:
-    """
-    Get user with full context including subscription and storage information.
-
-    Optimized query: Uses UserStorageUsage.storage_usage_bytes as data_usage instead
-    of calculating SUM(Workspace.input_data_usage) + SUM(ExperimentRecord.data_usage)
-    via expensive subqueries. storage_usage_bytes is already tracked incrementally.
-    """
+    """Get user with full context including subscription and storage information."""
     try:
         query_result = db.execute(
-            select(
-                UserModel,
-                func.min(UserRoleModel.role_id),
-                # Use pre-tracked storage_usage_bytes as data_usage
-                func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label(
-                    "data_usage"
-                ),
-                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
-                UserStorageUsage.storage_usage_bytes,
-                UserStorageUsage.storage_quota_bytes,
-                func.max(UserSubscription.expiration).label("subscription_expiration"),
-                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
-            )
-            .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
-            .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
-            .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
-            .outerjoin(
-                SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
-            )
-            .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
+            _user_context_query()
             .filter(
                 UserModel.active.is_(True),
                 UserModel.id == user_id,
@@ -260,13 +257,7 @@ async def list_user(
     options: UserSearchOptions,
     sortOptions: SortOptions,
 ):
-    """
-    List users with pagination and full context including subscription/storage info.
-
-    Optimized query: Uses UserStorageUsage.storage_usage_bytes as data_usage instead
-    of calculating SUM(Workspace.input_data_usage) + SUM(ExperimentRecord.data_usage)
-    via expensive subqueries. storage_usage_bytes is already tracked incrementally.
-    """
+    """List users with pagination and full context (subscription/storage info)."""
     try:
         sa_sort_list = sortOptions.get_sa_sort_list(
             sa_table=UserModel,
@@ -274,26 +265,7 @@ async def list_user(
         )
         users = paginate(
             db,
-            query=select(
-                UserModel,
-                func.min(UserRoleModel.role_id),
-                # Use pre-tracked storage_usage_bytes as data_usage
-                func.coalesce(UserStorageUsage.storage_usage_bytes, 0).label(
-                    "data_usage"
-                ),
-                func.max(SubscriptionPlans.name).label("subscription_plan_name"),
-                UserStorageUsage.storage_usage_bytes,
-                UserStorageUsage.storage_quota_bytes,
-                func.max(UserSubscription.expiration).label("subscription_expiration"),
-                func.max(UserSubscription.plan_id).label("subscription_plan_id"),
-            )
-            .join(UserRoleModel, UserRoleModel.user_id == UserModel.id, isouter=True)
-            .join(RoleModel, RoleModel.id == UserRoleModel.role_id, isouter=True)
-            .outerjoin(UserSubscription, UserSubscription.user_id == UserModel.id)
-            .outerjoin(
-                SubscriptionPlans, SubscriptionPlans.id == UserSubscription.plan_id
-            )
-            .outerjoin(UserStorageUsage, UserStorageUsage.user_id == UserModel.id)
+            query=_user_context_query()
             .filter(
                 UserModel.active.is_(True),
                 UserModel.organization_id == organization_id,
@@ -408,11 +380,12 @@ async def create_user(
                     detail="Failed to create storage bucket for user.",
                 )
 
-        # Create subscription user record
+        # Create subscription user record with free plan
         # expiration is set to current time for free plan.
         # Since its non nullable and must have a value
+        free_plan_id = SubscriptionService.get_default_plan_id(db)
         subscription = UserSubscription(
-            plan_id=SubscriptionUserStatus.FREE,
+            plan_id=free_plan_id,
             user_id=user_db.id,
             expiration=SubscriptionService.get_current_datetime(),
         )

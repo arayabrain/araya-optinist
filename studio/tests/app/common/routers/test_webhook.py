@@ -5,7 +5,10 @@ import pytest
 from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.constants import SyncStatus
+from studio.app.common.core.subscription.constants import (
+    SubscriptionPlanIds,
+    SyncStatus,
+)
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -533,7 +536,7 @@ class TestWebhookCacheInvalidation:
         subscription = Mock()
         subscription.id = 1
         subscription.user_id = 123
-        subscription.plan_id = 1
+        subscription.plan_id = SubscriptionPlanIds.FREE
         subscription.expiration = get_current_datetime() + timedelta(days=5)
         subscription.sync_status = None
         subscription.updated_at = None

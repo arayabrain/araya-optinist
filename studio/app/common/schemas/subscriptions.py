@@ -20,6 +20,21 @@ class SubscriptionPlanResponse(BaseModel):
     currency: int = Field(..., description="1=USD, 2=JPY")
     status: bool = Field(..., description="True=Active, False=Inactive")
     created_at: datetime
+    tier: str = Field(
+        default="free",
+        description="Plan tier (e.g., 'free', 'premium', 'enterprise')",
+    )
+    display_order: int = Field(default=0, description="Display order for UI sorting")
+    is_featured: bool = Field(
+        default=False, description="Whether plan is featured in UI"
+    )
+    is_hidden: bool = Field(default=False, description="Whether plan is hidden from UI")
+    stripe_price_id: Optional[str] = Field(
+        None, description="Associated Stripe Price ID"
+    )
+    stripe_product_id: Optional[str] = Field(
+        None, description="Associated Stripe Product ID"
+    )
 
     @validator("features", pre=True)
     def parse_features(cls, v):
