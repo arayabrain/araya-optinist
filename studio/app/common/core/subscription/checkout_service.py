@@ -35,7 +35,6 @@ from studio.app.common.schemas.subscriptions import (
 )
 
 logger = AppLogger.get_logger()
-STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
 class CheckoutService:
@@ -729,6 +728,7 @@ class CheckoutService:
                 is_first_time_user = not (has_db_purchase or has_stripe_purchase)
 
                 # Prepare subscription parameters
+                stripe_callback_url = SubscriptionService.get_base_url()
                 subscription_params = {
                     "payment_method_types": [
                         PAYMENT_METHOD_TYPE_CARD,
@@ -742,10 +742,10 @@ class CheckoutService:
                     ],
                     "mode": "subscription",
                     "success_url": (
-                        f"{STRIPE_CALLBACK_URL}/subscription/thanks"
+                        f"{stripe_callback_url}/subscription/thanks"
                         "?session_id={CHECKOUT_SESSION_ID}"
                     ),
-                    "cancel_url": f"{STRIPE_CALLBACK_URL}/subscription",
+                    "cancel_url": f"{stripe_callback_url}/subscription",
                     "customer": customer_id,
                     "client_reference_id": str(user.id),
                     "metadata": {

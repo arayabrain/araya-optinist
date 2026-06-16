@@ -454,6 +454,31 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                     started_at=now,
                 )
                 session.add(usage_entry)
+            else:
+                # Existing assignment updated — ensure an open usage
+                # session exists.  After a logout/re-login cycle the
+                # previous InstanceUsageLog has ended_at set, so we
+                # need to start a new one for the current session.
+                from sqlalchemy import select
+
+                open_session = session.execute(
+                    select(InstanceUsageLog.id)
+                    .where(
+                        InstanceUsageLog.user_id == user_id,
+                        InstanceUsageLog.tier == TIER_FREE,
+                        InstanceUsageLog.ended_at.is_(None),
+                    )
+                    .limit(1)
+                ).scalar()
+
+                if open_session is None:
+                    usage_entry = InstanceUsageLog(
+                        user_id=user_id,
+                        instance_id=instance_id,
+                        tier=TIER_FREE,
+                        started_at=now,
+                    )
+                    session.add(usage_entry)
 
             session.commit()
             return True
