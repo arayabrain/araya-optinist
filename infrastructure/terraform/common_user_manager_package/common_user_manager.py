@@ -343,6 +343,7 @@ def check_free_user_inactivity() -> Dict[str, int]:
         return {"logged_out": 0, "error": str(e)}
 
 
+# Mirrored in premium_manager.py & premium_cleanup.py — keep all three in sync.
 def _tg_unhealthy_alarm_name(tg_arn: str) -> "str | None":
     """Derive the UnHealthyHostCount alarm name for a premium target group ARN."""
     idx = tg_arn.find(":targetgroup/")
