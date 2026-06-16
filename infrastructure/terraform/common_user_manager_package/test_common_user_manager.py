@@ -18,6 +18,7 @@ os.environ["RDS_PASSWORD"] = "test_password"
 os.environ["RDS_DATABASE"] = "test_db"
 os.environ["FREE_IDLE_TIMEOUT_HOURS"] = "2"
 os.environ["PREMIUM_IDLE_TIMEOUT_HOURS"] = "2"
+os.environ["ENV_PREFIX"] = "test"
 os.environ[
     "AUTOSCALING_TARGET_GROUP_ARN"
 ] = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/test/abc123"
@@ -160,10 +161,10 @@ class TestCheckPremiumUserInactivity:
         mock_context, mock_cursor = mock_db_connection
         mock_cursor.fetchall.return_value = [
             {
-                "user_id": "premium1",
+                "user_id": 123,
                 "target_group_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
-                    "targetgroup/premium1/xyz"
+                    "targetgroup/premium-123-tg/xyz"
                 ),
                 "alb_rule_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
@@ -182,6 +183,10 @@ class TestCheckPremiumUserInactivity:
         # Verify ALB cleanup was called
         mock_elbv2.delete_rule.assert_called_once()
         mock_elbv2.delete_target_group.assert_called_once()
+        # Verify the per-TG unhealthy-host alarm was cleaned up
+        mock_elbv2.delete_alarms.assert_called_once_with(
+            AlarmNames=["test-premium-123-tg-unhealthy-hosts"]
+        )
         # Verify database deletion
         mock_context.commit.assert_called_once()
 
@@ -205,16 +210,17 @@ class TestCheckPremiumUserInactivity:
         # Verify ALB cleanup was NOT called for standby
         mock_elbv2.delete_rule.assert_not_called()
         mock_elbv2.delete_target_group.assert_not_called()
+        mock_elbv2.delete_alarms.assert_not_called()
 
     def test_partial_failure(self, mock_db_connection, mock_boto3):
         """Test when some users fail to logout"""
         mock_context, mock_cursor = mock_db_connection
         mock_cursor.fetchall.return_value = [
             {
-                "user_id": "user1",
+                "user_id": 123,
                 "target_group_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
-                    "targetgroup/user1/xyz"
+                    "targetgroup/premium-123-tg/xyz"
                 ),
                 "alb_rule_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
@@ -222,10 +228,10 @@ class TestCheckPremiumUserInactivity:
                 ),
             },
             {
-                "user_id": "user2",
+                "user_id": 456,
                 "target_group_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
-                    "targetgroup/user2/xyz"
+                    "targetgroup/premium-456-tg/xyz"
                 ),
                 "alb_rule_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
