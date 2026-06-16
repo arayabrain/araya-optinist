@@ -119,6 +119,7 @@ class StripeWebhookEvent(StrEnum):
     CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
     INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
     CUSTOMER_SUBSCRIPTION_CREATED = "customer.subscription.created"
+    CUSTOMER_SUBSCRIPTION_UPDATED = "customer.subscription.updated"
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
     SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
