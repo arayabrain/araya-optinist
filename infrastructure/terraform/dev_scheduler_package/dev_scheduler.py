@@ -298,9 +298,9 @@ def start_environment():
             results["public_asg"] = with_retry(
                 scale_asg,
                 public_asg,
-                min_size=int(os.environ.get("PUBLIC_ASG_MIN_SIZE", "0")),
-                desired=int(os.environ.get("PUBLIC_ASG_DESIRED_CAPACITY", "0")),
-                max_size=int(os.environ.get("PUBLIC_ASG_MAX_SIZE", "0")),
+                min_size=int(os.environ["PUBLIC_ASG_MIN_SIZE"]),
+                desired=int(os.environ["PUBLIC_ASG_DESIRED_CAPACITY"]),
+                max_size=int(os.environ["PUBLIC_ASG_MAX_SIZE"]),
             )
 
         # 6. Restore ECS service desired counts (so tasks start scheduling
@@ -321,9 +321,7 @@ def start_environment():
                 update_ecs_services(
                     os.environ["CLUSTER_NAME"],
                     [public_service],
-                    desired_count=int(
-                        os.environ.get("PUBLIC_ASG_DESIRED_CAPACITY", "1")
-                    ),
+                    desired_count=int(os.environ["PUBLIC_ASG_DESIRED_CAPACITY"]),
                 )
             )
 

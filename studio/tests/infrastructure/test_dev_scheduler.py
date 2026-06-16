@@ -872,6 +872,18 @@ class TestStartEnvironment:
             "test-cluster", ["svc-public"], desired_count=2
         )
 
+    def test_start_raises_when_public_gated_on_but_size_var_missing(
+        self, patched, monkeypatch
+    ):
+        """Fail-fast: with PUBLIC_ASG_NAME set but a required size var absent,
+        start must raise rather than silently scaling public to 0."""
+        module, _, helpers = patched
+        monkeypatch.delenv("PUBLIC_ASG_MAX_SIZE", raising=False)
+        with pytest.raises(KeyError):
+            module.start_environment()
+        # clear_override still runs on the way out (try/finally).
+        helpers["clear_override"].assert_called_once()
+
     def test_start_skips_public_when_unset(self, patched, monkeypatch):
         """Back-compat: with the public env vars absent, start touches neither
         a public ASG nor a public service — only the free ASG and 3-service
