@@ -4214,9 +4214,7 @@ class TestPremiumTgUnhealthyAlarm:
             "CRITICAL_ALERTS_TOPIC_ARN": self.TOPIC_ARN,
         }
 
-    def test_create_pages_on_alarm_but_not_on_ok(
-        self, mock_env_vars_premium, capsys
-    ):
+    def test_create_pages_on_alarm_but_not_on_ok(self, mock_env_vars_premium, capsys):
         with patch.dict("os.environ", self._env(mock_env_vars_premium)):
             import premium_manager
 
@@ -4249,9 +4247,7 @@ class TestPremiumTgUnhealthyAlarm:
             assert kwargs["AlarmActions"] == []
             assert kwargs["OKActions"] == []
 
-    def test_delete_removes_alarm_by_derived_name(
-        self, mock_env_vars_premium, capsys
-    ):
+    def test_delete_removes_alarm_by_derived_name(self, mock_env_vars_premium, capsys):
         with patch.dict("os.environ", self._env(mock_env_vars_premium)):
             import premium_manager
 
