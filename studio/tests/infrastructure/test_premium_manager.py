@@ -4333,3 +4333,77 @@ class TestPublishPremiumMetricsDriftKwargs:
             metric_by_name = {m["MetricName"]: m["Value"] for m in kwargs["MetricData"]}
             assert metric_by_name["TargetGroupPortDriftDetected"] == 0
             assert metric_by_name["TargetGroupPortDriftFixed"] == 0
+
+
+class TestPremiumTgUnhealthyAlarm:
+    """Ephemeral per-user UnHealthyHostCount alarm, created on assign and
+    deleted on release. Because it is recreated on every assign/release, OK
+    actions are intentionally dropped so churn does not page "recovered" to
+    the critical SNS topic; alarm actions are kept so genuine health failures
+    still page."""
+
+    TG_ARN = (
+        "arn:aws:elasticloadbalancing:region:account:"
+        "targetgroup/premium-6120-tg/abc123"
+    )
+    ALB_ARN = (
+        "arn:aws:elasticloadbalancing:region:account:"
+        "loadbalancer/app/test-alb/def456"
+    )
+    TOPIC_ARN = "arn:aws:sns:region:account:test-optinist-critical-alerts"
+    EXPECTED_NAME = "test-premium-6120-tg-unhealthy-hosts"
+
+    def _env(self, base):
+        return {
+            **base,
+            "ALB_ARN": self.ALB_ARN,
+            "CRITICAL_ALERTS_TOPIC_ARN": self.TOPIC_ARN,
+        }
+
+    def test_create_pages_on_alarm_but_not_on_ok(self, mock_env_vars_premium, capsys):
+        with patch.dict("os.environ", self._env(mock_env_vars_premium)):
+            import premium_manager
+
+            mock_cw = MagicMock()
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                premium_manager._ensure_premium_tg_unhealthy_alarm(self.TG_ARN)
+
+            mock_cw.put_metric_alarm.assert_called_once()
+            kwargs = mock_cw.put_metric_alarm.call_args.kwargs
+            assert kwargs["AlarmName"] == self.EXPECTED_NAME
+            assert kwargs["AlarmActions"] == [self.TOPIC_ARN]
+            assert kwargs["OKActions"] == []
+            assert "[premium-alarm] action=create" in capsys.readouterr().out
+
+    def test_create_without_topic_wires_no_actions(self, mock_env_vars_premium):
+        env = self._env(mock_env_vars_premium)
+        env["CRITICAL_ALERTS_TOPIC_ARN"] = ""
+        with patch.dict("os.environ", env):
+            import premium_manager
+
+            mock_cw = MagicMock()
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                premium_manager._ensure_premium_tg_unhealthy_alarm(self.TG_ARN)
+
+            kwargs = mock_cw.put_metric_alarm.call_args.kwargs
+            assert kwargs["AlarmActions"] == []
+            assert kwargs["OKActions"] == []
+
+    def test_delete_removes_alarm_by_derived_name(self, mock_env_vars_premium, capsys):
+        with patch.dict("os.environ", self._env(mock_env_vars_premium)):
+            import premium_manager
+
+            mock_cw = MagicMock()
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                premium_manager._delete_premium_tg_unhealthy_alarm(self.TG_ARN)
+
+            mock_cw.delete_alarms.assert_called_once_with(
+                AlarmNames=[self.EXPECTED_NAME]
+            )
+            assert "[premium-alarm] action=delete" in capsys.readouterr().out

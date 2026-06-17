@@ -31,6 +31,11 @@ SCHEDULER_ENV = {
     "ASG_MAX_SIZE": "2",
     "CLUSTER_NAME": "test-cluster",
     "ECS_SERVICE_NAMES": json.dumps(["svc-a", "svc-b"]),
+    "PUBLIC_ASG_NAME": "test-public-asg",
+    "PUBLIC_ASG_MIN_SIZE": "2",
+    "PUBLIC_ASG_MAX_SIZE": "4",
+    "PUBLIC_ASG_DESIRED_CAPACITY": "2",
+    "PUBLIC_ECS_SERVICE_NAME": "svc-public",
     "SCHEDULE_RULE_NAMES": json.dumps(["rule-a"]),
     "DELAYED_RULE_NAMES": json.dumps(["delayed-a"]),
     "ALARM_PREFIX": "test-",
@@ -855,6 +860,42 @@ class TestStartEnvironment:
         # The error message should mention the ASG failure, not the proxy.
         assert "capacity" in str(exc_info.value)
 
+    def test_start_scales_public_asg_and_service_to_two(self, patched):
+        """Public scales up via its own ASG and its service restores to the
+        HA desired count (2), not the desired=1 used for the other services."""
+        module, _, helpers = patched
+        module.start_environment()
+        helpers["scale_asg"].assert_any_call(
+            "test-public-asg", min_size=2, desired=2, max_size=4
+        )
+        helpers["update_ecs_services"].assert_any_call(
+            "test-cluster", ["svc-public"], desired_count=2
+        )
+
+    def test_start_raises_when_public_gated_on_but_size_var_missing(
+        self, patched, monkeypatch
+    ):
+        """Fail-fast: with PUBLIC_ASG_NAME set but a required size var absent,
+        start must raise rather than silently scaling public to 0."""
+        module, _, helpers = patched
+        monkeypatch.delenv("PUBLIC_ASG_MAX_SIZE", raising=False)
+        with pytest.raises(KeyError):
+            module.start_environment()
+        # clear_override still runs on the way out (try/finally).
+        helpers["clear_override"].assert_called_once()
+
+    def test_start_skips_public_when_unset(self, patched, monkeypatch):
+        """Back-compat: with the public env vars absent, start touches neither
+        a public ASG nor a public service — only the free ASG and 3-service
+        restore run."""
+        module, _, helpers = patched
+        monkeypatch.delenv("PUBLIC_ASG_NAME", raising=False)
+        monkeypatch.delenv("PUBLIC_ECS_SERVICE_NAME", raising=False)
+        result = module.start_environment()
+        assert result["statusCode"] == 200
+        assert helpers["scale_asg"].call_count == 1
+        assert helpers["update_ecs_services"].call_count == 1
+
 
 # ===========================================================================
 # stop_environment
@@ -944,6 +985,26 @@ class TestStopEnvironment:
         result = module.stop_environment(stop_mode="destroy")
         assert result["statusCode"] == 200
         assert result["results"]["rds"] == "already_deleting"
+
+    def test_stop_scales_public_asg_and_service_to_zero(self, patched):
+        """Public service drains to 0 and the public ASG terminates (desired=0
+        and min=0) so no instances linger."""
+        module, _, helpers = patched
+        module.stop_environment(stop_mode="stop")
+        helpers["update_ecs_services"].assert_any_call(
+            "test-cluster", ["svc-public"], desired_count=0
+        )
+        helpers["scale_asg"].assert_any_call("test-public-asg", min_size=0, desired=0)
+
+    def test_stop_skips_public_when_unset(self, patched, monkeypatch):
+        """Back-compat: with the public env vars absent, stop scales only the
+        free ASG and the 3-service set."""
+        module, _, helpers = patched
+        monkeypatch.delenv("PUBLIC_ASG_NAME", raising=False)
+        monkeypatch.delenv("PUBLIC_ECS_SERVICE_NAME", raising=False)
+        module.stop_environment(stop_mode="stop")
+        assert helpers["scale_asg"].call_count == 1
+        assert helpers["update_ecs_services"].call_count == 1
 
 
 # ===========================================================================

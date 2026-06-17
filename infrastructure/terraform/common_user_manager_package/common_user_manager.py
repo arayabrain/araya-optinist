@@ -23,6 +23,7 @@ import pymysql
 # Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
 from aws_constants import (
     DatabaseConfig,
+    EnvironmentConfig,
     InstanceState,
     PremiumAssignment,
     SubscriptionType,
@@ -344,6 +345,27 @@ def check_free_user_inactivity() -> Dict[str, int]:
         return {"logged_out": 0, "error": str(e)}
 
 
+# Mirrored in premium_manager.py & premium_cleanup.py — keep all three in sync.
+def _premium_tg_alarm_name(tg_arn: str) -> "str | None":
+    """Derive the UnHealthyHostCount alarm name for a premium target group ARN."""
+    idx = tg_arn.find(":targetgroup/")
+    suffix = tg_arn[idx + 1 :] if idx != -1 else tg_arn
+    parts = suffix.split("/")
+    if len(parts) < 2:
+        return None
+    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+
+
+def _delete_tg_unhealthy_alarm(cw: Any, tg_arn: str) -> None:
+    """Best-effort, idempotent delete of a target group's UnHealthyHostCount alarm."""
+    try:
+        alarm_name = _premium_tg_alarm_name(tg_arn)
+        if alarm_name:
+            cw.delete_alarms(AlarmNames=[alarm_name])
+    except Exception as e:
+        print(f"WARNING: Failed to delete unhealthy-host alarm for {tg_arn}: {e}")
+
+
 def check_premium_user_inactivity() -> Dict[str, int]:
     """Check and logout inactive premium users"""
     try:
@@ -353,6 +375,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
             )
         )
         elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+        cw = boto3.client("cloudwatch")
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -421,6 +444,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                                 print(
                                     f"Target group already deleted for user {user_id}"
                                 )
+                            _delete_tg_unhealthy_alarm(cw, user["target_group_arn"])
 
                         logged_out += 1
 
