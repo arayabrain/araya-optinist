@@ -10,6 +10,8 @@ import {
   FormatMarquee,
   Audience,
   PublicRepository,
+  Pricing,
+  Publications,
   CTA,
   Footer,
 } from "pages/LandingPage/components"
@@ -35,6 +37,8 @@ export const LandingPage = () => {
         <FormatMarquee />
         <Audience />
         <PublicRepository />
+        <Pricing />
+        <Publications />
         <CTA />
       </Main>
       <Footer />

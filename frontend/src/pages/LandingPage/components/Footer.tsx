@@ -81,6 +81,16 @@ export const Footer = () => {
               <span>Araya Inc.</span>
             </CompanyLink>
           </CompanyLine>
+          {/* TODO: replace href with the final RDX Privacy Policy URL. */}
+          <LegalLinks>
+            <LegalLink
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Privacy Policy
+            </LegalLink>
+          </LegalLinks>
           <FooterCopyright>
             &copy; 2025 ARAYA OptiNiSt. Built for Science.
           </FooterCopyright>
@@ -200,4 +210,21 @@ const CompanyLink = styled("a")({
 const FooterCopyright = styled(Typography)({
   fontSize: FONT_SIZE.SMALL,
   color: TEXT_COLOR.SECONDARY,
+})
+
+const LegalLinks = styled(Box)({
+  display: "flex",
+  gap: "1rem",
+  justifyContent: "center",
+  flexWrap: "wrap",
+})
+
+const LegalLink = styled("a")({
+  fontSize: FONT_SIZE.SMALL,
+  color: TEXT_COLOR.SECONDARY,
+  textDecoration: "underline",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: TEXT_COLOR.ACCENT,
+  },
 })

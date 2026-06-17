@@ -19,6 +19,17 @@ export const Header = () => {
 
   return (
     <HeaderWrapper>
+      <TrustBar>
+        Built on{" "}
+        <TrustBarLink
+          href="https://github.com/oist/optinist"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          OptiNiSt
+        </TrustBarLink>{" "}
+        by ARAYA and OIST (Okinawa Institute of Science and Technology)
+      </TrustBar>
       <HeaderContainer>
         <Logo>
           <LogoIcon>
@@ -173,4 +184,29 @@ const PrimaryButton = styled("button")({
   ...BUTTON_BASE,
   height: 40,
   padding: "0 1.5rem",
+})
+
+const TrustBar = styled(Box)({
+  backgroundColor: "#0f172a",
+  color: TEXT_COLOR.WHITE_SOFT,
+  fontSize: FONT_SIZE.SMALL,
+  fontWeight: FONT_WEIGHT.REGULAR,
+  letterSpacing: LETTER_SPACING.WIDE,
+  textAlign: "center",
+  padding: "0.4rem 1rem",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.25rem",
+  flexWrap: "wrap",
+})
+
+const TrustBarLink = styled("a")({
+  color: TEXT_COLOR.WHITE,
+  fontWeight: FONT_WEIGHT.BOLD,
+  textDecoration: "underline",
+  textUnderlineOffset: 2,
+  "&:hover": {
+    textDecoration: "none",
+  },
 })

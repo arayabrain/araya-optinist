@@ -73,17 +73,6 @@ export const PublicRepository = () => {
               methods to their own data and contribute to a growing collection
               of directly comparable results.
             </PublicRepoBody>
-            <Attribution>
-              Built on{" "}
-              <a
-                href="https://github.com/oist/optinist"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                OptiNiSt
-              </a>{" "}
-              by ARAYA and OIST (Okinawa Institute of Science and Technology)
-            </Attribution>
             <PublicRepoBenefits>
               {benefits.map((benefit, index) => (
                 <PublicRepoBenefit key={index}>
@@ -210,19 +199,6 @@ const PublicRepoBody = styled(Typography)({
   margin: 0,
   lineHeight: LINE_HEIGHT.NORMAL,
   fontSize: FONT_SIZE.BODY,
-})
-
-const Attribution = styled(Typography)({
-  fontSize: FONT_SIZE.SMALL,
-  color: TEXT_COLOR.WHITE_MUTED,
-  fontStyle: "italic",
-  "& a": {
-    color: TEXT_COLOR.WHITE_SOFT,
-    textDecoration: "underline",
-    "&:hover": {
-      color: TEXT_COLOR.WHITE,
-    },
-  },
 })
 
 const PublicRepoBenefits = styled(Box)({
