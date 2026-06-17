@@ -481,9 +481,13 @@ def reap_terminated_ecs_registrations() -> Dict[str, int]:
             )
             container_instances.extend(desc.get("containerInstances", []))
 
-        ec2_ids = [
-            ci["ec2InstanceId"] for ci in container_instances if ci.get("ec2InstanceId")
-        ]
+        ec2_ids = list(
+            {
+                ci["ec2InstanceId"]
+                for ci in container_instances
+                if ci.get("ec2InstanceId")
+            }
+        )
         ec2_state_by_id: Dict[str, str] = {}
 
         def _record(reservations):
@@ -493,14 +497,15 @@ def reap_terminated_ecs_registrations() -> Dict[str, int]:
                     if inst_id:
                         ec2_state_by_id[inst_id] = instance["State"]["Name"]
 
-        if ec2_ids:
+        for i in range(0, len(ec2_ids), 100):
+            chunk = ec2_ids[i : i + 100]
             try:
-                resp = ec2.describe_instances(InstanceIds=ec2_ids)
+                resp = ec2.describe_instances(InstanceIds=chunk)
                 _record(resp.get("Reservations", []))
             except ClientError as e:
                 if e.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
                     raise
-                for ec2_id in ec2_ids:
+                for ec2_id in chunk:
                     try:
                         resp = ec2.describe_instances(InstanceIds=[ec2_id])
                         _record(resp.get("Reservations", []))

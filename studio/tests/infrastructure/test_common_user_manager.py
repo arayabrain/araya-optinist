@@ -551,6 +551,98 @@ class TestReapTerminatedECSRegistrations:
             == "arn-b"
         )
 
+    def test_dedupes_shared_ec2(self, mock_env_vars_common):
+        """Two CIs on the same EC2 (dual-CI) collapse to one describe_instances
+        ID; both CIs on a terminated EC2 are still reaped."""
+        cis = [
+            {"containerInstanceArn": "arn-a", "ec2InstanceId": "i-shared"},
+            {"containerInstanceArn": "arn-b", "ec2InstanceId": "i-shared"},
+        ]
+        mock_ecs = MagicMock()
+        mock_ec2 = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"containerInstanceArns": ["arn-a", "arn-b"]}
+        ]
+        mock_ecs.get_paginator.return_value = paginator
+        mock_ecs.describe_container_instances.return_value = {"containerInstances": cis}
+        mock_ec2.describe_instances.return_value = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-shared", "State": {"Name": "terminated"}}
+                    ]
+                }
+            ]
+        }
+
+        def _client(service, *a, **k):
+            return {"ecs": mock_ecs, "ec2": mock_ec2}[service]
+
+        env = {**mock_env_vars_common, "CLUSTER_NAME": "test-cluster"}
+        with patch.dict("os.environ", env):
+            import common_user_manager
+
+            with patch.object(common_user_manager.boto3, "client", side_effect=_client):
+                result = common_user_manager.reap_terminated_ecs_registrations()
+
+        mock_ec2.describe_instances.assert_called_once()
+        assert mock_ec2.describe_instances.call_args.kwargs["InstanceIds"] == [
+            "i-shared"
+        ]
+        assert result["deregistered"] == 2
+
+    def test_chunks_describe_instances_over_100(self, mock_env_vars_common):
+        """describe_instances is chunked at 100 IDs so a large cluster cannot
+        exceed the EC2 max-IDs-per-request limit."""
+        cis = [
+            {"containerInstanceArn": f"arn-{n}", "ec2InstanceId": f"i-{n}"}
+            for n in range(150)
+        ]
+        mock_ecs = MagicMock()
+        mock_ec2 = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"containerInstanceArns": [ci["containerInstanceArn"] for ci in cis]}
+        ]
+        mock_ecs.get_paginator.return_value = paginator
+        by_arn = {ci["containerInstanceArn"]: ci for ci in cis}
+
+        def _describe_cis(cluster, containerInstances):
+            return {"containerInstances": [by_arn[a] for a in containerInstances]}
+
+        mock_ecs.describe_container_instances.side_effect = _describe_cis
+
+        chunk_sizes = []
+
+        def _describe(InstanceIds):
+            chunk_sizes.append(len(InstanceIds))
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": iid, "State": {"Name": "running"}}
+                            for iid in InstanceIds
+                        ]
+                    }
+                ]
+            }
+
+        mock_ec2.describe_instances.side_effect = _describe
+
+        def _client(service, *a, **k):
+            return {"ecs": mock_ecs, "ec2": mock_ec2}[service]
+
+        env = {**mock_env_vars_common, "CLUSTER_NAME": "test-cluster"}
+        with patch.dict("os.environ", env):
+            import common_user_manager
+
+            with patch.object(common_user_manager.boto3, "client", side_effect=_client):
+                result = common_user_manager.reap_terminated_ecs_registrations()
+
+        assert sorted(chunk_sizes, reverse=True) == [100, 50]
+        assert result["deregistered"] == 0
+
 
 class TestGetRequiredEnvVar:
     """Environment variable validation tests."""
