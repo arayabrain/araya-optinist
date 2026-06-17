@@ -268,6 +268,14 @@ const handlePremiumRoutingError = async (
  *  2. The routing-id was NOT rotated (same user identity)
  *  3. The serving instance matches the expected dedicated instance
  *     (or the expected instance is unknown — startup race fallback)
+ *
+ * Note: SecureRoutingMiddleware attaches x-served-by-instance to every
+ * authenticated response.
+ * The only paths that skip the middleware are unauthenticated endpoints
+ * (SKIP_AUTH_PATHS: /health, /auth/login, /auth/refresh) and requests with
+ * missing/invalid JWT — none of which are routed through the dedicated instance.
+ * Therefore, a legitimate dedicated-instance 200 will always carry the header,
+ * and no false-negative ("sticky snackbar") can occur on the premium API surface.
  */
 function shouldEmitPremiumReachable(
   res: AxiosResponse,
