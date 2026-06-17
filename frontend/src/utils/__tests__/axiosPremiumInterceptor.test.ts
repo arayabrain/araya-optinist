@@ -183,12 +183,16 @@ describe("axios premium-routing interceptors", () => {
       "X-Routing-ID": "rid-outgoing",
       "X-User-Tier": "premium",
     })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
 
     const before = Date.now()
     responses.set("/ok", {
       status: 200,
       data: {},
-      headers: { "x-routing-id": "rid-outgoing" },
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "expected-instance-hash",
+      },
     })
     await axiosInstance.get("/ok")
     const after = Date.now()
@@ -226,13 +230,18 @@ describe("axios premium-routing interceptors", () => {
     // Edge case: when the response carries no x-routing-id at all, the
     // rotation check (routingId !== _outgoingRoutingId) resolves to false
     // because typeof undefined !== "string". We treat that as "not rotated"
-    // and still emit reachable.
+    // and still emit reachable — provided instance identity matches.
     mockGetRoutingHeaders.mockReturnValue({
       "X-Routing-ID": "rid-outgoing",
       "X-User-Tier": "premium",
     })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
 
-    responses.set("/no-rid", { status: 200, data: {}, headers: {} })
+    responses.set("/no-rid", {
+      status: 200,
+      data: {},
+      headers: { "x-served-by-instance": "expected-instance-hash" },
+    })
     await axiosInstance.get("/no-rid")
 
     expect(mockUpdateRoutingToken).not.toHaveBeenCalled()
@@ -372,10 +381,11 @@ describe("axios premium-routing interceptors", () => {
     expect(mockEmitPremiumReachable).toHaveBeenCalledTimes(1)
   })
 
-  it("emits reachable when _outgoingInstanceId is unset (startup race — backward compat)", async () => {
+  it("does NOT emit reachable when _outgoingInstanceId is unset (startup race — cannot verify instance)", async () => {
     // Before the assignment API returns, getPremiumInstanceId() returns null.
-    // In this case, fall back to the routing-id-only check — same as before
-    // the fix, no regression.
+    // Without a known instance ID, we cannot verify which instance served
+    // the response — suppress reachable to prevent false-positives when
+    // premiumAssigned=true but premiumInstanceId=null (desync guard).
     mockGetRoutingHeaders.mockReturnValue({
       "X-Routing-ID": "rid-outgoing",
       "X-User-Tier": "premium",
@@ -389,7 +399,7 @@ describe("axios premium-routing interceptors", () => {
     })
     await axiosInstance.get("/startup-race")
 
-    expect(mockEmitPremiumReachable).toHaveBeenCalledTimes(1)
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
   })
 
   it("on 503 premium fallback, strips _outgoingInstanceId on the retry config", async () => {

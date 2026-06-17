@@ -266,16 +266,22 @@ const handlePremiumRoutingError = async (
  * Returns true only when ALL of:
  *  1. The request carried premium routing headers
  *  2. The routing-id was NOT rotated (same user identity)
- *  3. The serving instance matches the expected dedicated instance
- *     (or the expected instance is unknown — startup race fallback)
+ *  3. The expected instance ID is known (not null/undefined)
+ *  4. The serving instance matches the expected dedicated instance
+ *
+ * When the expected instance ID is unknown (e.g. startup race before the
+ * assignment API returns, or backend returned instance_id_hash=null),
+ * this function returns false — we cannot verify which instance served
+ * the response. This closes the desync gap where premiumAssigned=true
+ * with premiumInstanceId=null would silently revert to routing-id-only
+ * matching.
  *
  * Note: SecureRoutingMiddleware attaches x-served-by-instance to every
- * authenticated response.
- * The only paths that skip the middleware are unauthenticated endpoints
- * (SKIP_AUTH_PATHS: /health, /auth/login, /auth/refresh) and requests with
- * missing/invalid JWT — none of which are routed through the dedicated instance.
- * Therefore, a legitimate dedicated-instance 200 will always carry the header,
- * and no false-negative ("sticky snackbar") can occur on the premium API surface.
+ * authenticated response. The only paths that skip the middleware are
+ * unauthenticated endpoints (SKIP_AUTH_PATHS: /health, /auth/login,
+ * /auth/refresh) and requests with missing/invalid JWT — none of which
+ * are routed through the dedicated instance. Therefore, a legitimate
+ * dedicated-instance 200 will always carry the header.
  */
 function shouldEmitPremiumReachable(
   res: AxiosResponse,
@@ -290,14 +296,15 @@ function shouldEmitPremiumReachable(
   if (routingIdRotated) return false
 
   // Instance identity check — closes the ALB fallback gap.
+  // When the instance ID is unknown (startup race or backend returned null hash),
+  // don't emit reachable — we cannot verify which instance served the response.
+  // This prevents premiumAssigned=true + premiumInstanceId=null from silently
+  // reverting to the routing-id-only check that caused false-positives.
   const outgoingInstanceId = cfg._outgoingInstanceId
-  if (outgoingInstanceId) {
-    const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()
-    const servedByInstance = res.headers[servedByHeader]
-    if (servedByInstance !== outgoingInstanceId) return false
-  }
-  // If outgoingInstanceId is unset (startup race before assignment API returned),
-  // fall back to routing-id-only check — no regression for that path.
+  if (!outgoingInstanceId) return false
+  const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()
+  const servedByInstance = res.headers[servedByHeader]
+  if (servedByInstance !== outgoingInstanceId) return false
 
   return true
 }

@@ -110,6 +110,12 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
 
         if result["success"]:
             instance_id = result.get("instance_id")
+            if not instance_id:
+                logger.warning(
+                    "[premium-assign] user=%s assigned=True but instance_id "
+                    "is absent — frontend cannot verify instance identity",
+                    current_user.id,
+                )
             response = {
                 "message": result["message"],
                 "instance_id": instance_id,
