@@ -1,6 +1,7 @@
 """Tests for common_user_manager Lambda function."""
 
 import json
+import os
 from unittest.mock import MagicMock, Mock, patch
 
 
@@ -309,10 +310,13 @@ class TestHandler:
             "common_user_manager.check_free_user_inactivity"
         ) as mock_free, patch(
             "common_user_manager.check_premium_user_inactivity"
-        ) as mock_premium:
+        ) as mock_premium, patch(
+            "common_user_manager.reap_terminated_ecs_registrations"
+        ) as mock_reap:
             mock_recover.return_value = {"recovered": 2}
             mock_free.return_value = {"logged_out": 1}
             mock_premium.return_value = {"logged_out": 0}
+            mock_reap.return_value = {"deregistered": 0}
 
             from common_user_manager import handler
 
@@ -328,6 +332,7 @@ class TestHandler:
             mock_recover.assert_called_once()
             mock_free.assert_called_once()
             mock_premium.assert_called_once()
+            mock_reap.assert_called_once()
 
     def test_handler_error_returns_500(self, mock_env_vars_common):
         """Unhandled exception returns 500."""
@@ -347,6 +352,204 @@ class TestHandler:
             assert result["statusCode"] == 500
             body = json.loads(result["body"])
             assert "Unexpected crash" in body["error"]
+
+
+class TestHandlerGhostReap:
+    """Handler gates the ghost reaper on CLUSTER_NAME being set."""
+
+    def _patches(self):
+        return (
+            patch(
+                "common_user_manager.recover_stale_workflow_counts",
+                return_value={"recovered": 0},
+            ),
+            patch(
+                "common_user_manager.check_free_user_inactivity",
+                return_value={"logged_out": 0},
+            ),
+            patch(
+                "common_user_manager.check_premium_user_inactivity",
+                return_value={"logged_out": 0},
+            ),
+            patch(
+                "common_user_manager.reap_terminated_ecs_registrations",
+                return_value={"deregistered": 1},
+            ),
+        )
+
+    def test_reap_runs_when_cluster_set(self, mock_env_vars_common):
+        env = {**mock_env_vars_common, "CLUSTER_NAME": "test-cluster"}
+        p_recover, p_free, p_premium, p_reap = self._patches()
+        with patch.dict(
+            "os.environ", env
+        ), p_recover, p_free, p_premium, p_reap as mock_reap:
+            from common_user_manager import handler
+
+            result = handler({"source": "aws.events"}, MagicMock())
+
+            assert result["statusCode"] == 200
+            mock_reap.assert_called_once()
+
+    def test_reap_skipped_when_cluster_unset(self, mock_env_vars_common):
+        p_recover, p_free, p_premium, p_reap = self._patches()
+        with patch.dict(
+            "os.environ", mock_env_vars_common
+        ), p_recover, p_free, p_premium, p_reap as mock_reap:
+            os.environ.pop("CLUSTER_NAME", None)
+
+            from common_user_manager import handler
+
+            result = handler({"source": "aws.events"}, MagicMock())
+
+            assert result["statusCode"] == 200
+            mock_reap.assert_not_called()
+
+
+class TestReapTerminatedECSRegistrations:
+    """Tier-independent terminated-EC2 ghost reaper."""
+
+    def _run(self, container_instances, ec2_states, mock_env_vars_common):
+        """Invoke the reaper with mocked ECS/EC2; return (ecs_mock, result)."""
+        mock_ecs = MagicMock()
+        mock_ec2 = MagicMock()
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                "containerInstanceArns": [
+                    ci["containerInstanceArn"] for ci in container_instances
+                ]
+            }
+        ]
+        mock_ecs.get_paginator.return_value = paginator
+        mock_ecs.describe_container_instances.return_value = {
+            "containerInstances": container_instances
+        }
+        mock_ec2.describe_instances.return_value = {
+            "Reservations": [
+                {"Instances": [{"InstanceId": iid, "State": {"Name": state}}]}
+                for iid, state in ec2_states.items()
+            ]
+        }
+
+        def _client(service, *a, **k):
+            return {"ecs": mock_ecs, "ec2": mock_ec2}[service]
+
+        env = {**mock_env_vars_common, "CLUSTER_NAME": "test-cluster"}
+        with patch.dict("os.environ", env):
+            import common_user_manager
+
+            with patch.object(common_user_manager.boto3, "client", side_effect=_client):
+                result = common_user_manager.reap_terminated_ecs_registrations()
+        return mock_ecs, result
+
+    def test_reaps_terminated_shutting_down_nomap_and_gone(self, mock_env_vars_common):
+        cis = [
+            {"containerInstanceArn": "arn-term", "ec2InstanceId": "i-term"},
+            {"containerInstanceArn": "arn-shut", "ec2InstanceId": "i-shut"},
+            {"containerInstanceArn": "arn-nomap"},
+            {"containerInstanceArn": "arn-gone", "ec2InstanceId": "i-gone"},
+        ]
+        # i-gone deliberately omitted from states → resolves as nonexistent.
+        states = {"i-term": "terminated", "i-shut": "shutting-down"}
+        mock_ecs, result = self._run(cis, states, mock_env_vars_common)
+
+        assert result["deregistered"] == 4
+        reaped = {
+            c.kwargs["containerInstance"]
+            for c in mock_ecs.deregister_container_instance.call_args_list
+        }
+        assert reaped == {"arn-term", "arn-shut", "arn-nomap", "arn-gone"}
+        for c in mock_ecs.deregister_container_instance.call_args_list:
+            assert c.kwargs["force"] is True
+
+    def test_does_not_reap_stopped(self, mock_env_vars_common):
+        """Regression guard (PR #676): a stopped instance must survive so it
+        reconnects on the next restart."""
+        cis = [{"containerInstanceArn": "arn-stop", "ec2InstanceId": "i-stop"}]
+        mock_ecs, result = self._run(cis, {"i-stop": "stopped"}, mock_env_vars_common)
+
+        assert result["deregistered"] == 0
+        mock_ecs.deregister_container_instance.assert_not_called()
+
+    def test_does_not_reap_running(self, mock_env_vars_common):
+        cis = [
+            {
+                "containerInstanceArn": "arn-run",
+                "ec2InstanceId": "i-run",
+                "agentConnected": True,
+                "status": "ACTIVE",
+            }
+        ]
+        mock_ecs, result = self._run(cis, {"i-run": "running"}, mock_env_vars_common)
+
+        assert result["deregistered"] == 0
+        mock_ecs.deregister_container_instance.assert_not_called()
+
+    def test_missing_cluster_name_is_noop(self, mock_env_vars_common):
+        with patch.dict("os.environ", mock_env_vars_common):
+            os.environ.pop("CLUSTER_NAME", None)
+            import common_user_manager
+
+            with patch.object(common_user_manager.boto3, "client") as mock_client:
+                result = common_user_manager.reap_terminated_ecs_registrations()
+
+        assert result["deregistered"] == 0
+        mock_client.assert_not_called()
+
+    def test_batch_notfound_falls_back_per_id(self, mock_env_vars_common):
+        from botocore.exceptions import ClientError
+
+        cis = [
+            {"containerInstanceArn": "arn-a", "ec2InstanceId": "i-a"},
+            {"containerInstanceArn": "arn-b", "ec2InstanceId": "i-b"},
+        ]
+        mock_ecs = MagicMock()
+        mock_ec2 = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"containerInstanceArns": ["arn-a", "arn-b"]}
+        ]
+        mock_ecs.get_paginator.return_value = paginator
+        mock_ecs.describe_container_instances.return_value = {"containerInstances": cis}
+        notfound = ClientError(
+            {"Error": {"Code": "InvalidInstanceID.NotFound"}}, "DescribeInstances"
+        )
+
+        def _describe(InstanceIds):
+            if len(InstanceIds) > 1:
+                raise notfound
+            if InstanceIds == ["i-a"]:
+                return {
+                    "Reservations": [
+                        {
+                            "Instances": [
+                                {"InstanceId": "i-a", "State": {"Name": "running"}}
+                            ]
+                        }
+                    ]
+                }
+            raise notfound
+
+        mock_ec2.describe_instances.side_effect = _describe
+
+        def _client(service, *a, **k):
+            return {"ecs": mock_ecs, "ec2": mock_ec2}[service]
+
+        env = {**mock_env_vars_common, "CLUSTER_NAME": "test-cluster"}
+        with patch.dict("os.environ", env):
+            import common_user_manager
+
+            with patch.object(common_user_manager.boto3, "client", side_effect=_client):
+                result = common_user_manager.reap_terminated_ecs_registrations()
+
+        # i-a running → kept; i-b NotFound → gone → reaped.
+        assert result["deregistered"] == 1
+        mock_ecs.deregister_container_instance.assert_called_once()
+        assert (
+            mock_ecs.deregister_container_instance.call_args.kwargs["containerInstance"]
+            == "arn-b"
+        )
 
 
 class TestGetRequiredEnvVar:
