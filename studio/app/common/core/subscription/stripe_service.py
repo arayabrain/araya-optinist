@@ -40,9 +40,7 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
         return None
 
 
-async def get_or_create_stripe_customer(
-    db: Session, user: User
-) -> stripe.Customer:
+async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Customer:
     """Get or create a Stripe customer using a unified lookup strategy.
 
     Lookup order:
@@ -99,9 +97,7 @@ async def get_or_create_stripe_customer(
 
     # Persist to DB
     provider_id = CheckoutService.get_or_create_stripe_provider(db)
-    CheckoutService.create_or_update_user_account(
-        db, user.id, provider_id, customer.id
-    )
+    CheckoutService.create_or_update_user_account(db, user.id, provider_id, customer.id)
     db.commit()
 
     return customer
@@ -236,9 +232,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def create_setup_intent(
-        db: Session, user: User
-    ) -> CreateSetupIntentResponse:
+    async def create_setup_intent(db: Session, user: User) -> CreateSetupIntentResponse:
         try:
             # Get or create Stripe customer (unified lookup)
             customer = await get_or_create_stripe_customer(db, user)
@@ -342,9 +336,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def delete_payment_method(
-        db: Session, user: User, payment_method_id: str
-    ):
+    async def delete_payment_method(db: Session, user: User, payment_method_id: str):
         """
         Delete a payment method (cannot delete if it's default for active subscriptions)
         """
