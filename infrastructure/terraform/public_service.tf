@@ -139,6 +139,7 @@ resource "aws_autoscaling_group" "public" {
 
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [desired_capacity]
   }
 }
 
