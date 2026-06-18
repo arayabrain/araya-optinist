@@ -207,7 +207,7 @@ def setup_structured_test_data():
 
 def test_structured_hdf5_2d_returns_timeseries(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
     )
     data = response.json()
 
@@ -223,7 +223,7 @@ def test_structured_hdf5_2d_returns_timeseries(client):
 
 def test_structured_hdf5_3d_returns_images(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
         params={"start_index": 0, "end_index": 10},
     )
     data = response.json()
@@ -240,7 +240,7 @@ def test_structured_hdf5_3d_returns_images(client):
 
 def test_structured_hdf5_3d_pagination(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
         params={"start_index": 2, "end_index": 5},
     )
     data = response.json()
@@ -253,7 +253,7 @@ def test_structured_hdf5_3d_pagination(client):
 
 def test_structured_hdf5_1d_returns_bar(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_1d_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_1d_node"
     )
     data = response.json()
 
@@ -268,28 +268,30 @@ def test_structured_hdf5_1d_returns_bar(client):
 
 def test_structured_missing_workflow(client):
     response = client.get(
-        "/outputs/structured/nonexistent_ws/nonexistent_uid/some_node"
+        "/api/visualizations/structured/nonexistent_ws/nonexistent_uid/some_node"
     )
     assert response.status_code == 404
 
 
 def test_structured_missing_node(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/nonexistent_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/nonexistent_node"
     )
     assert response.status_code == 404
 
 
 def test_structured_no_hdf5path_or_matpath(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/no_path_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/no_path_node"
     )
     assert response.status_code == 400
     assert "hdf5Path or matPath" in response.json()["detail"]
 
 
 def test_structured_mat_2d_returns_timeseries(client):
-    response = client.get(f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/mat_node")
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/mat_node"
+    )
     data = response.json()
 
     assert response.status_code == 200
@@ -304,7 +306,7 @@ def test_structured_mat_2d_returns_timeseries(client):
 
 def test_structured_missing_file(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/missing_file_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/missing_file_node"
     )
     assert response.status_code == 404
     assert "File not found" in response.json()["detail"]
@@ -312,7 +314,7 @@ def test_structured_missing_file(client):
 
 def test_structured_bad_dataset_path(client):
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/bad_dataset_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/bad_dataset_node"
     )
     assert response.status_code == 404
     assert "Dataset not found" in response.json()["detail"]
@@ -321,7 +323,7 @@ def test_structured_bad_dataset_path(client):
 def test_structured_3d_default_pagination(client):
     """When start_index/end_index are omitted, defaults to 0-10."""
     response = client.get(
-        f"/outputs/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node"
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node"
     )
     data = response.json()
 
@@ -329,3 +331,97 @@ def test_structured_3d_default_pagination(client):
     assert data["data_type"] == "images"
     assert len(data["data"]) == 10
     assert data["total_frames"] == 10
+
+
+@pytest.mark.asyncio
+async def test_structured_missing_input_triggers_on_demand_sync():
+    """A missing input must trigger an on-demand input-file sync before 404, so
+    public viewers get the lazily-synced input data (mirrors the csv/image
+    endpoints)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from studio.app.common.routers.outputs import get_structured_data
+
+    node = MagicMock()
+    node.data.path = "lazy_input.h5"
+    node.data.hdf5Path = "x"
+    node.data.matPath = None
+    config = MagicMock()
+    config.nodeDict.get.return_value = node
+
+    with patch(
+        "studio.app.common.routers.outputs.WorkflowConfigReader.read",
+        return_value=config,
+    ), patch(
+        "studio.app.common.routers.outputs.os.path.exists", return_value=False
+    ), patch(
+        "studio.app.common.routers.outputs.RemoteStorageDownloadUtils."
+        "ensure_input_file_synced",
+        new_callable=AsyncMock,
+    ) as mock_sync:
+        with pytest.raises(HTTPException) as exc:
+            await get_structured_data(
+                workspace_id="6",
+                unique_id="abc123",
+                node_id="n",
+                remote_bucket_name="bucket-x",
+            )
+
+    # Sync is keyed on the input file + bucket, then 404 if still missing.
+    mock_sync.assert_awaited_once_with("6", "lazy_input.h5", "bucket-x")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_structured_missing_input_resyncs_via_download_layer():
+    """Regression: a missing input is re-fetched by downloading the input file
+    itself, independent of the experiment's output-sync status. Routing the
+    re-fetch through the output-sync path left inputs permanently 404 once the
+    input cache was wiped while the output stayed marked synced."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from studio.app.common.routers.outputs import get_structured_data
+
+    node = MagicMock()
+    node.data.path = "wiped_input.h5"
+    node.data.hdf5Path = "x"
+    node.data.matPath = None
+    config = MagicMock()
+    config.nodeDict.get.return_value = node
+
+    rsc = "studio.app.common.core.storage.remote_storage_controller"
+    with patch(
+        "studio.app.common.routers.outputs.WorkflowConfigReader.read",
+        return_value=config,
+    ), patch(
+        "studio.app.common.routers.outputs.os.path.exists", return_value=False
+    ), patch(
+        # Output marked fully synced: must NOT gate the input re-fetch.
+        "studio.app.common.routers.outputs.RemoteSyncStatusFileUtil."
+        "check_sync_status_unsynced",
+        return_value=False,
+    ), patch(
+        f"{rsc}.os.path.exists", return_value=False
+    ), patch(
+        f"{rsc}.RemoteStorageController"
+    ) as mock_controller_cls:
+        mock_controller_cls.is_available.return_value = True
+        mock_controller_cls.return_value.download_input_data = AsyncMock(
+            return_value=True
+        )
+        with pytest.raises(HTTPException) as exc:
+            await get_structured_data(
+                workspace_id="6",
+                unique_id="abc123",
+                node_id="n",
+                remote_bucket_name="bucket-x",
+            )
+
+    mock_controller_cls.return_value.download_input_data.assert_awaited_once_with(
+        "6", "wiped_input.h5"
+    )
+    assert exc.value.status_code == 404

@@ -424,4 +424,46 @@ describe("RoutingService", () => {
       expect(unreachable).toHaveBeenCalledWith({ status: 503, sentAt: 2222 })
     })
   })
+
+  describe("premiumInstanceId", () => {
+    test("setPremiumInstanceId / getPremiumInstanceId round-trip", () => {
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+
+      routingService.setPremiumInstanceId("abc123hash")
+      expect(routingService.getPremiumInstanceId()).toBe("abc123hash")
+
+      routingService.setPremiumInstanceId(null)
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+    })
+
+    test("persists instance ID to localStorage", () => {
+      routingService.setPremiumInstanceId("hash-from-api")
+      expect(localStorageMock.getItem("premium_instance_id")).toBe(
+        "hash-from-api",
+      )
+    })
+
+    test("clears instance ID from localStorage when set to null", () => {
+      routingService.setPremiumInstanceId("hash-from-api")
+      routingService.setPremiumInstanceId(null)
+      expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+    })
+
+    test("loads instance ID from localStorage on initialization", () => {
+      localStorageMock.setItem("premium_instance_id", "stored-hash")
+
+      const newService = new RoutingService()
+      expect(newService.getPremiumInstanceId()).toBe("stored-hash")
+    })
+
+    test("clearRoutingInfo clears premium instance ID", () => {
+      routingService.setPremiumInstanceId("hash-from-api")
+      expect(routingService.getPremiumInstanceId()).toBe("hash-from-api")
+
+      routingService.clearRoutingInfo()
+
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+      expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+    })
+  })
 })

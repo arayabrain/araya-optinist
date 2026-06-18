@@ -10,8 +10,9 @@ echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
 echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
 
-# Systemd service to clear stale ECS agent checkpoint on every boot.
-cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
+# Only premium standbys are reaped while stopped, so only they must wipe the stale checkpoint on boot to re-register.
+if [ "${tier}" = "premium" ]; then
+  cat > /etc/systemd/system/ecs-clear-checkpoint.service << 'UNIT_EOF'
 [Unit]
 Description=Clear stale ECS agent checkpoint before startup
 Before=ecs.service
@@ -20,14 +21,15 @@ After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=true
-ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db
+ExecStart=/bin/rm -f /var/lib/ecs/data/agent.db /var/lib/ecs/data/ecs_agent_data.json
 
 [Install]
 WantedBy=multi-user.target
 UNIT_EOF
 
-systemctl daemon-reload
-systemctl enable ecs-clear-checkpoint.service
+  systemctl daemon-reload
+  systemctl enable ecs-clear-checkpoint.service
+fi
 
 # Install packages (skip if AMI is pre-baked by Image Builder)
 if [ -f /etc/optinist-ami-baked ]; then
@@ -38,8 +40,8 @@ if [ -f /etc/optinist-ami-baked ]; then
 else
     echo "$(date): Stock AMI detected, installing packages"
     yum update -y
-    yum install -y amazon-ssm-agent mysql amazon-efs-utils nc git docker amazon-cloudwatch-agent
-    # Install AWS CLI v2 (awscli v1 package no longer available in AL2 repos)
+    yum install -y amazon-ssm-agent mariadb105 amazon-efs-utils nc git docker amazon-cloudwatch-agent unzip
+    # Install AWS CLI v2 (awscli v1 yum package no longer available)
     curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
     cd /tmp && unzip -qo awscliv2.zip
     /tmp/aws/install --update
@@ -62,7 +64,7 @@ if [ "$SWAP_SIZE_MB" -gt 0 ]; then
     # Strategy 1: Dedicated EBS swap volume (instant, preferred)
     if [ -n "$SWAP_DEVICE_NAME" ]; then
         # On Nitro instances (t3, m5, etc.), /dev/xvds may appear as /dev/nvme*n1.
-        # Amazon Linux 2 ECS AMI creates symlinks via udev rules (ec2-utils).
+        # The ECS-optimized AMI creates symlinks via udev rules (ec2-utils).
         if [ -b "$SWAP_DEVICE_NAME" ]; then
             SWAP_TARGET="$SWAP_DEVICE_NAME"
             echo "$(date): Found swap device at $SWAP_DEVICE_NAME"
@@ -70,8 +72,9 @@ if [ "$SWAP_SIZE_MB" -gt 0 ]; then
             echo "$(date): $SWAP_DEVICE_NAME not found, scanning NVMe devices..."
             for nvme_dev in /dev/nvme*n1; do
                 [ -b "$nvme_dev" ] || continue
+                # ebsnvme-id prints the attachment name without the /dev/ prefix
                 mapped_name=$(/sbin/ebsnvme-id -b "$nvme_dev" 2>/dev/null || true)
-                if [ "$mapped_name" = "$SWAP_DEVICE_NAME" ]; then
+                if [ "$mapped_name" = "$(basename "$SWAP_DEVICE_NAME")" ]; then
                     SWAP_TARGET="$nvme_dev"
                     echo "$(date): Found swap device at $nvme_dev (mapped from $SWAP_DEVICE_NAME)"
                     break
@@ -130,6 +133,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
 {
     "metrics": {
         "namespace": "CWAgent",
+        "append_dimensions": {
+            "AutoScalingGroupName": "$${aws:AutoScalingGroupName}"
+        },
+        "aggregation_dimensions": [
+            ["AutoScalingGroupName"]
+        ],
         "metrics_collected": {
             "mem": {
                 "measurement": [
@@ -142,6 +151,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "cpu_usage_iowait"
                 ],
                 "totalcpu": true
+            },
+            "diskio": {
+                "measurement": [
+                    "iops_in_progress",
+                    "io_time"
+                ]
             }
         }
     },
@@ -228,10 +243,12 @@ docker pull "${ecr_repository_url}:latest" || {
     exit 1
 }
 
-# EFS setup
-mkdir -p /mnt/efs
-echo "${efs_id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
-mount -a || echo "EFS will retry"
+# Optional EFS mount; skipped when efs_id is empty.
+if [ -n "${efs_id}" ]; then
+    mkdir -p /mnt/efs
+    echo "${efs_id}.efs.ap-northeast-1.amazonaws.com:/ /mnt/efs efs tls,_netdev" >> /etc/fstab
+    mount -a || echo "EFS will retry"
+fi
 
 # Test DB connection (non-blocking)
 nc -z ${db_host} 3306 && echo "DB accessible" || echo "DB will be available"

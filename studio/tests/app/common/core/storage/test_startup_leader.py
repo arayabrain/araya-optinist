@@ -1,138 +1,121 @@
-"""
-Unit tests for startup leader election.
+"""Tests for the MySQL GET_LOCK-based leader election used by startup sync."""
 
-Tests try_become_startup_leader and release_startup_leader using
-AtomicClaimFile under the hood.
-"""
-
-import json
-import os
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from studio.app.common.core.storage.startup_leader import (
-    _LEADER_FILE,
-    release_startup_leader,
-    try_become_startup_leader,
+    _LEADER_LOCK_NAME,
+    startup_sync_leader_lock,
 )
 
 
-@pytest.fixture(autouse=True)
-def clean_leader_file():
-    """Ensure leader file is removed before/after each test."""
-    if os.path.exists(_LEADER_FILE):
-        os.remove(_LEADER_FILE)
-    yield
-    if os.path.exists(_LEADER_FILE):
-        os.remove(_LEADER_FILE)
+def _scoped_session_mock(get_lock_result):
+    """Build a session_scope context manager whose `db.execute()` returns
+    `get_lock_result` for GET_LOCK and a no-op for RELEASE_LOCK.
+    """
+    db = MagicMock()
+    get_lock_row = MagicMock()
+    get_lock_row.scalar.return_value = get_lock_result
+    release_row = MagicMock()
+
+    def execute(sql, params=None):
+        # Distinguish GET_LOCK vs RELEASE_LOCK by inspecting the bound text.
+        return get_lock_row if "GET_LOCK" in str(sql) else release_row
+
+    db.execute.side_effect = execute
+
+    @contextmanager
+    def session_scope():
+        yield db
+
+    return session_scope, db
 
 
-class TestTryBecomeStartupLeader:
-    """Leader election: only one process wins."""
+class TestStartupSyncLeaderLock:
+    def test_acquires_lock_and_releases_on_normal_exit(self):
+        session_scope, db = _scoped_session_mock(get_lock_result=1)
+        with patch(
+            "studio.app.common.core.storage.startup_leader.session_scope",
+            new=session_scope,
+        ):
+            with startup_sync_leader_lock() as acquired:
+                assert acquired is True
 
-    def test_first_caller_becomes_leader(self):
-        assert try_become_startup_leader() is True
+        # Two calls: GET_LOCK on entry, RELEASE_LOCK on exit.
+        sql_strings = [str(call.args[0]) for call in db.execute.call_args_list]
+        assert any("GET_LOCK" in s for s in sql_strings)
+        assert any("RELEASE_LOCK" in s for s in sql_strings)
 
-    def test_leader_file_created(self):
-        try_become_startup_leader()
-        assert os.path.isfile(_LEADER_FILE)
+    def test_does_not_release_when_not_acquired(self):
+        session_scope, db = _scoped_session_mock(get_lock_result=0)
+        with patch(
+            "studio.app.common.core.storage.startup_leader.session_scope",
+            new=session_scope,
+        ):
+            with startup_sync_leader_lock() as acquired:
+                assert acquired is False
 
-    def test_leader_file_contains_role(self):
-        try_become_startup_leader()
-        with open(_LEADER_FILE) as f:
-            data = json.load(f)
-        assert data["role"] == "startup_leader"
-        assert data["pid"] == os.getpid()
+        sql_strings = [str(call.args[0]) for call in db.execute.call_args_list]
+        assert any("GET_LOCK" in s for s in sql_strings)
+        assert not any("RELEASE_LOCK" in s for s in sql_strings)
 
-    def test_second_caller_deferred(self):
-        """Second call returns False when first leader is still alive."""
-        assert try_become_startup_leader() is True
-        assert try_become_startup_leader() is False
+    def test_releases_lock_when_block_raises(self):
+        session_scope, db = _scoped_session_mock(get_lock_result=1)
+        with patch(
+            "studio.app.common.core.storage.startup_leader.session_scope",
+            new=session_scope,
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                with startup_sync_leader_lock() as acquired:
+                    assert acquired is True
+                    raise RuntimeError("boom")
 
-    def test_stale_leader_allows_new_election(self):
-        """Stale leader (dead PID) is cleaned up, new leader elected."""
-        # Create a stale leader file with a dead PID
-        import socket
-        from datetime import datetime, timezone
+        sql_strings = [str(call.args[0]) for call in db.execute.call_args_list]
+        assert any("RELEASE_LOCK" in s for s in sql_strings)
 
-        from studio.app.common.core.storage.atomic_claim_file import _compute_expiry
+    def test_null_return_treated_as_not_acquired(self):
+        # MySQL GET_LOCK returns NULL on internal errors (lock service down,
+        # killed connection, etc.). Must NOT yield True and must NOT release.
+        session_scope, db = _scoped_session_mock(get_lock_result=None)
+        with patch(
+            "studio.app.common.core.storage.startup_leader.session_scope",
+            new=session_scope,
+        ):
+            with startup_sync_leader_lock() as acquired:
+                assert acquired is False
 
-        stale = {
-            "role": "startup_leader",
-            "pid": 999999999,
-            "hostname": socket.gethostname(),
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "expires_at": _compute_expiry(15),
-        }
-        os.makedirs(os.path.dirname(_LEADER_FILE), exist_ok=True)
-        with open(_LEADER_FILE, "w") as f:
-            json.dump(stale, f)
+        sql_strings = [str(call.args[0]) for call in db.execute.call_args_list]
+        assert not any("RELEASE_LOCK" in s for s in sql_strings)
 
-        # New process should win
-        assert try_become_startup_leader() is True
+    def test_get_lock_called_with_correct_name_and_timeout(self):
+        session_scope, db = _scoped_session_mock(get_lock_result=1)
+        with patch(
+            "studio.app.common.core.storage.startup_leader.session_scope",
+            new=session_scope,
+        ):
+            with startup_sync_leader_lock():
+                pass
 
+        get_lock_call = next(
+            c for c in db.execute.call_args_list if "GET_LOCK" in str(c.args[0])
+        )
+        # Bound parameters live in args[1]; non-blocking acquisition uses timeout=0.
+        params = get_lock_call.args[1]
+        assert params == {"name": _LEADER_LOCK_NAME, "timeout": 0}
 
-class TestReleaseStartupLeader:
-    """release_startup_leader removes the leader file."""
+    def test_release_lock_called_with_correct_name(self):
+        session_scope, db = _scoped_session_mock(get_lock_result=1)
+        with patch(
+            "studio.app.common.core.storage.startup_leader.session_scope",
+            new=session_scope,
+        ):
+            with startup_sync_leader_lock():
+                pass
 
-    def test_release_after_election(self):
-        try_become_startup_leader()
-        assert os.path.isfile(_LEADER_FILE)
-        release_startup_leader()
-        assert not os.path.isfile(_LEADER_FILE)
-
-    def test_release_without_election_no_error(self):
-        release_startup_leader()  # Should not raise
-
-    def test_full_lifecycle(self):
-        """Acquire -> release -> re-acquire."""
-        assert try_become_startup_leader() is True
-        release_startup_leader()
-        assert try_become_startup_leader() is True
-
-
-class TestTimedExpiry:
-    """Tests for time-based leader expiry (Gap #16)."""
-
-    def test_expired_leader_allows_new_election(self):
-        """Leader file past 15-minute timeout is treated as stale."""
-        import socket
-        from datetime import datetime, timedelta, timezone
-
-        # Create a leader file with an expired timestamp (16 minutes ago)
-        expired_time = datetime.now(timezone.utc) - timedelta(minutes=16)
-        stale = {
-            "role": "startup_leader",
-            "pid": os.getpid(),  # Use current PID so it's not detected as dead
-            "hostname": socket.gethostname(),
-            "started_at": expired_time.isoformat(),
-            "expires_at": expired_time.isoformat(),  # Already expired
-        }
-        os.makedirs(os.path.dirname(_LEADER_FILE), exist_ok=True)
-        with open(_LEADER_FILE, "w") as f:
-            json.dump(stale, f)
-
-        # Should win because the existing leader is expired
-        assert try_become_startup_leader() is True
-
-    def test_non_expired_leader_blocks_new_election(self):
-        """Leader file within 15-minute timeout blocks new election."""
-        import socket
-        from datetime import datetime, timezone
-
-        from studio.app.common.core.storage.atomic_claim_file import _compute_expiry
-
-        # Create a leader file with a valid (non-expired) timestamp
-        current = {
-            "role": "startup_leader",
-            "pid": os.getpid(),
-            "hostname": socket.gethostname(),
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "expires_at": _compute_expiry(15),
-        }
-        os.makedirs(os.path.dirname(_LEADER_FILE), exist_ok=True)
-        with open(_LEADER_FILE, "w") as f:
-            json.dump(current, f)
-
-        # Should be blocked since leader is still valid
-        assert try_become_startup_leader() is False
+        release_call = next(
+            c for c in db.execute.call_args_list if "RELEASE_LOCK" in str(c.args[0])
+        )
+        params = release_call.args[1]
+        assert params == {"name": _LEADER_LOCK_NAME}

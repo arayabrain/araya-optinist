@@ -5,8 +5,8 @@ on:
     branches:
       - main
       - develop-main
-      - develop-feature
-      - develop-subscription
+      - future
+      - "future/**"
     paths-ignore:
       - "docs/**"
 

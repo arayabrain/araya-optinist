@@ -1,6 +1,16 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# === AWS CREDENTIAL DIAGNOSTIC (remove after investigation of #612) ===
+echo "=== AWS CREDENTIAL DIAGNOSTIC ==="
+echo "AWS_ACCESS_KEY_ID set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "YES (${AWS_ACCESS_KEY_ID:0:4}...)" || echo "NO")"
+echo "AWS_SECRET_ACCESS_KEY set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "YES" || echo "NO")"
+echo "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-NOT SET}"
+echo "Calling sts get-caller-identity..."
+aws sts get-caller-identity --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>&1 || echo "STS CALL FAILED"
+echo "=== END DIAGNOSTIC ==="
+# === END DIAGNOSTIC ===
+
 # Map infrastructure environment variables (DB_*) to application expected variables (MYSQL_*)
 # This allows the application's config.py to find the correct environment variables
 # while maintaining infrastructure naming conventions

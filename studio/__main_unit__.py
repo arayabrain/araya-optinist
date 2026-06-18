@@ -14,6 +14,11 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_current_user_with_dataview_outputs_check,
 )
+from studio.app.common.core.instance_mode import (
+    INSTANCE_MODE_DEFAULT,
+    INSTANCE_MODE_ENV,
+    INSTANCE_MODE_PUBLIC,
+)
 from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
@@ -21,10 +26,14 @@ from studio.app.common.core.middleware import (
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
+from studio.app.common.core.middleware.spa_routing_middleware import (
+    INDEX_HTML_CACHE_HEADERS,
+)
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
     ExpirationDeletion,
+    PremiumExpirationSweep,
     StorageReconciliation,
     SyncStatusConstants,
 )
@@ -34,6 +43,9 @@ if not MODE.IS_STANDALONE:
     from studio.app.common.core.background.cleanup_job import DataCleanupJob
     from studio.app.common.core.background.expiration_lifecycle_job import (
         ExpirationLifecycleJob,
+    )
+    from studio.app.common.core.background.premium_expiration_sweep_job import (
+        PremiumExpirationSweepJob,
     )
     from studio.app.common.core.background.scheduler import BackgroundScheduler
     from studio.app.common.core.background.storage_reconciliation_job import (
@@ -101,33 +113,24 @@ async def lifespan(app: FastAPI):
     # (e.g., when using cron)
     disable_scheduler = os.environ.get("DISABLE_BACKGROUND_SCHEDULER", "0") == "1"
 
-    # Startup sync runs on ALL containers (including API workers
-    # with disabled scheduler) to ensure published experiments are
-    # available locally
-    if not MODE.IS_STANDALONE:
+    # Only the public tier serves the published-experiment cache, so only it warms it.
+    instance_mode = os.environ.get(INSTANCE_MODE_ENV, INSTANCE_MODE_DEFAULT)
+    if _should_run_startup_sync(instance_mode, MODE.IS_STANDALONE):
         import asyncio
 
         from studio.app.common.core.storage.startup_leader import (
-            release_startup_leader,
-            try_become_startup_leader,
+            startup_sync_leader_lock,
         )
 
         async def _startup_sync():
-            """Only one worker out of N should perform startup sync."""
+            """One leader across the ASG performs sync; others stand down."""
             try:
                 await asyncio.sleep(5)
-
-                # Leader election: only 1 worker syncs
-                if not try_become_startup_leader():
-                    logger.info("Startup sync deferred to leader worker")
-                    return
-
-                try:
-                    # Run startup sync
+                with startup_sync_leader_lock() as acquired:
+                    if not acquired:
+                        logger.info("Startup sync deferred to leader task")
+                        return
                     await PublishedExperimentSyncJob.run_startup_sync()
-                finally:
-                    # Always release leader file, even on error
-                    release_startup_leader()
             except Exception as e:
                 logger.error(f"Startup sync error: {e}", exc_info=True)
 
@@ -166,6 +169,16 @@ async def lifespan(app: FastAPI):
             job_id=ExpirationDeletion.JOB_ID,
         )
 
+        # Backstop: release dangling premium assignments after expiration
+        # (covers missed customer.subscription.deleted events / direct DB
+        # expirations such as test 600-17b). Event-driven release in
+        # WebhookService is unchanged; this is purely a safety net.
+        BackgroundScheduler.add_job(
+            func=PremiumExpirationSweepJob.run,
+            interval_minutes=PremiumExpirationSweep.JOB_INTERVAL_MINUTES,
+            job_id=PremiumExpirationSweep.JOB_ID,
+        )
+
         # Start scheduler
         BackgroundScheduler.start()
         logger.info("Background job scheduler started")
@@ -201,39 +214,70 @@ async def health_check():
 
 add_pagination(app)
 
-# common routers
-app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
-app.include_router(auth.router)
-app.include_router(internal.router)  # Uses internal secret auth, not JWT
-app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
-app.include_router(files.router, dependencies=[Depends(get_current_user)])
-app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
-app.include_router(logs.router, dependencies=[Depends(get_current_user)])
-app.include_router(
-    outputs.router, dependencies=[Depends(get_current_user_with_dataview_outputs_check)]
-)  # NOTE: The outputs router uses the unique get_current_user.
-app.include_router(params.router, dependencies=[Depends(get_current_user)])
-app.include_router(run.router, dependencies=[Depends(get_current_user)])
-app.include_router(
-    storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
-)
-app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
-app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
-app.include_router(users_me.beacon_router)
-app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
-app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
-app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
-app.include_router(dataview.public_router)
-app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
-app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
-app.include_router(subscriptions.webhook_router)
-app.include_router(registrations.router)
 
-# optinist routers
-app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
-app.include_router(mat.router, dependencies=[Depends(get_current_user)])
-app.include_router(nwb.router, dependencies=[Depends(get_current_user)])
-app.include_router(roi.router, dependencies=[Depends(get_current_user)])
+def _should_run_startup_sync(instance_mode: str, is_standalone: bool) -> bool:
+    """Startup sync warms the public tier's cache; other tiers shouldn't run it."""
+    if is_standalone:
+        return False
+    return instance_mode == INSTANCE_MODE_PUBLIC
+
+
+def _register_public_routers(app: FastAPI) -> None:
+    """Routers mounted on every tier so the SPA can bootstrap during a
+    free-tier outage: auth (login/refresh), users_me (the GET /users/me +
+    premium-assign / heartbeat / beacon set the SPA calls right after login),
+    public dataview, internal, outputs. Public-tier tasks still talk to the
+    same RDS and invoke the same premium-manager Lambda as free, so these
+    routes work identically whichever tier serves them.
+    """
+    app.include_router(dataview.public_router)
+    app.include_router(internal.router)  # Internal secret auth, not JWT.
+    app.include_router(
+        outputs.router,
+        dependencies=[Depends(get_current_user_with_dataview_outputs_check)],
+    )
+    app.include_router(auth.router)
+    app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
+    app.include_router(users_me.beacon_router)
+    app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
+
+
+def _register_authenticated_routers(app: FastAPI) -> None:
+    """Workflow/optinist routers gated out of the public tier."""
+    app.include_router(algolist.router, dependencies=[Depends(get_current_user)])
+    app.include_router(experiment.router, dependencies=[Depends(get_current_user)])
+    app.include_router(files.router, dependencies=[Depends(get_current_user)])
+    app.include_router(logs.router, dependencies=[Depends(get_current_user)])
+    app.include_router(params.router, dependencies=[Depends(get_current_user)])
+    app.include_router(run.router, dependencies=[Depends(get_current_user)])
+    app.include_router(
+        storage_limit_alerts.router, dependencies=[Depends(get_current_user)]
+    )
+    app.include_router(users_admin.router, dependencies=[Depends(get_admin_user)])
+    app.include_router(users_search.router, dependencies=[Depends(get_current_user)])
+    app.include_router(workflow.router, dependencies=[Depends(get_current_user)])
+    app.include_router(workspace.router, dependencies=[Depends(get_current_user)])
+    app.include_router(dataview.router, dependencies=[Depends(get_current_user)])
+    app.include_router(subscriptions.router, dependencies=[Depends(get_current_user)])
+    app.include_router(subscriptions.webhook_router)
+    app.include_router(registrations.router)
+
+    # optinist routers
+    app.include_router(hdf5.router, dependencies=[Depends(get_current_user)])
+    app.include_router(mat.router, dependencies=[Depends(get_current_user)])
+    app.include_router(nwb.router, dependencies=[Depends(get_current_user)])
+    app.include_router(roi.router, dependencies=[Depends(get_current_user)])
+
+
+def _register_routers(app: FastAPI, instance_mode: str) -> None:
+    _register_public_routers(app)
+    if instance_mode == INSTANCE_MODE_PUBLIC:
+        return
+    _register_authenticated_routers(app)
+
+
+INSTANCE_MODE = os.environ.get(INSTANCE_MODE_ENV, INSTANCE_MODE_DEFAULT)
+_register_routers(app, INSTANCE_MODE)
 
 
 def skip_dependencies():
@@ -257,7 +301,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["x-user-tier", "x-routing-id"],
+    # Routing headers issued by SecureRoutingMiddleware.
+    # Canonical definitions: infrastructure/aws_constants.py (RoutingHeaders class)
+    expose_headers=["x-user-tier", "x-routing-id", "x-served-by-instance"],
 )
 
 app.add_middleware(SPARoutingMiddleware)
@@ -294,10 +340,14 @@ build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
 @app.get("/")
 async def root(request: Request):
     if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
-        return build_templates.TemplateResponse("index.html", {"request": request})
+        return build_templates.TemplateResponse(
+            "index.html", {"request": request}, headers=INDEX_HTML_CACHE_HEADERS
+        )
     else:
         return public_templates.TemplateResponse(
-            "no-built-pages.html", {"request": request}
+            "no-built-pages.html",
+            {"request": request},
+            headers=INDEX_HTML_CACHE_HEADERS,
         )
 
 

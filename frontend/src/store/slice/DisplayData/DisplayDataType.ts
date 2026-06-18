@@ -13,7 +13,7 @@ import {
   PolarData,
   MatlabData,
   StructuredData,
-} from "api/outputs/Outputs"
+} from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 
 export const DISPLAY_DATA_SLICE_NAME = "displayData"
