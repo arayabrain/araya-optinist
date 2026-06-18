@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from contextlib import asynccontextmanager
 
@@ -207,13 +208,14 @@ app = FastAPI(docs_url="/docs", openapi_url="/openapi", lifespan=lifespan)
 
 def _load_build_info() -> dict:
     """Load build metadata written by the Dockerfile at build time."""
-    import json
-
     build_info_path = os.path.join(DIRPATH.ROOT_DIR, "BUILD_INFO")
     try:
         with open(build_info_path, "r") as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.debug(f"Could not load BUILD_INFO: {e}")
         return {}
 
 
@@ -223,10 +225,7 @@ _BUILD_INFO = _load_build_info()
 @app.get("/health")
 async def health_check():
     try:
-        response = {"status": "healthy"}
-        if _BUILD_INFO:
-            response["build"] = _BUILD_INFO
-        return response
+        return {"status": "healthy"}
     except Exception as e:
         logger.error(f"Exception in health check: {str(e)}")
         return {

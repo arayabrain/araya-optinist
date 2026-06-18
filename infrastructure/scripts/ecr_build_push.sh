@@ -34,13 +34,14 @@ done
 # ===========================================
 # Guard: reject builds from a dirty worktree
 # ===========================================
-DIRTY_FILES=$(cd ../.. && git status --porcelain)
+DIRTY_FILES=$(git -C "$(git rev-parse --show-toplevel)" status --porcelain)
 if [ -n "$DIRTY_FILES" ]; then
     echo "ERROR: Working tree is not clean. Commit or stash changes before building."
     echo ""
     echo "$DIRTY_FILES"
     echo ""
-    echo "This check prevents uncommitted or untracked files from leaking into the Docker image."
+    echo "This check ensures builds are reproducible from a clean commit."
+    echo "Note: .gitignored secrets (.env, firebase JSONs) are excluded by .dockerignore, not this check."
     exit 1
 fi
 

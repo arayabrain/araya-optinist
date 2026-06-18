@@ -82,5 +82,4 @@ LABEL org.opencontainers.image.revision="${GIT_COMMIT}" \
       org.opencontainers.image.created="${BUILD_TIMESTAMP}" \
       org.opencontainers.image.source="https://github.com/arayabrain/araya-optinist"
 
-RUN printf '{"git_commit":"%s","git_branch":"%s","build_timestamp":"%s"}\n' \
-    "$GIT_COMMIT" "$GIT_BRANCH" "$BUILD_TIMESTAMP" > /app/BUILD_INFO
+RUN python3 -c "import json,os,sys; json.dump({'git_commit':os.environ.get('GIT_COMMIT','unknown'),'git_branch':os.environ.get('GIT_BRANCH','unknown'),'build_timestamp':os.environ.get('BUILD_TIMESTAMP','unknown')}, sys.stdout)" > /app/BUILD_INFO
