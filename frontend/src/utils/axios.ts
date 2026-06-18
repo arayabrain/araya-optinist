@@ -20,6 +20,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   _retryWithoutPremium?: boolean
   _hadPremiumHeaders?: boolean
   _outgoingRoutingId?: string
+  _outgoingInstanceId?: string
   _premiumSentAt?: number
 }
 
@@ -56,6 +57,10 @@ axios.interceptors.request.use(
         ;(config as CustomAxiosRequestConfig)._outgoingRoutingId =
           outgoingRoutingId
         ;(config as CustomAxiosRequestConfig)._premiumSentAt = Date.now()
+        const instanceId = routingService.getPremiumInstanceId()
+        if (instanceId) {
+          ;(config as CustomAxiosRequestConfig)._outgoingInstanceId = instanceId
+        }
       }
     }
 
@@ -242,6 +247,7 @@ const handlePremiumRoutingError = async (
   // Strip premium markers — retry is shared-tier, must not emit reachable.
   delete retryConfig._hadPremiumHeaders
   delete retryConfig._outgoingRoutingId
+  delete retryConfig._outgoingInstanceId
   delete retryConfig._premiumSentAt
 
   try {
@@ -255,6 +261,56 @@ const handlePremiumRoutingError = async (
   }
 }
 
+/**
+ * Determines whether a successful response confirms the premium
+ * dedicated instance is reachable.
+ *
+ * Returns true only when ALL of:
+ *  1. The request carried premium routing headers
+ *  2. The routing-id was NOT rotated (same user identity)
+ *  3. The expected instance ID is known (not null/undefined)
+ *  4. The serving instance matches the expected dedicated instance
+ *
+ * When the expected instance ID is unknown (e.g. startup race before the
+ * assignment API returns, or backend returned instance_id_hash=null),
+ * this function returns false — we cannot verify which instance served
+ * the response. This closes the desync gap where premiumAssigned=true
+ * with premiumInstanceId=null would silently revert to routing-id-only
+ * matching.
+ *
+ * Note: SecureRoutingMiddleware attaches x-served-by-instance to every
+ * authenticated response. The only paths that skip the middleware are
+ * unauthenticated endpoints (SKIP_AUTH_PATHS: /health, /auth/login,
+ * /auth/refresh) and requests with missing/invalid JWT — none of which
+ * are routed through the dedicated instance. Therefore, a legitimate
+ * dedicated-instance 200 will always carry the header.
+ */
+function shouldEmitPremiumReachable(
+  res: AxiosResponse,
+  cfg: CustomAxiosRequestConfig | undefined,
+): boolean {
+  if (!cfg?._hadPremiumHeaders) return false
+
+  const routingIdHeader = RoutingHeaders.ROUTING_ID.toLowerCase()
+  const routingId = res.headers[routingIdHeader]
+  const routingIdRotated =
+    typeof routingId === "string" && routingId !== cfg._outgoingRoutingId
+  if (routingIdRotated) return false
+
+  // Instance identity check — closes the ALB fallback gap.
+  // When the instance ID is unknown (startup race or backend returned null hash),
+  // don't emit reachable — we cannot verify which instance served the response.
+  // This prevents premiumAssigned=true + premiumInstanceId=null from silently
+  // reverting to the routing-id-only check that caused false-positives.
+  const outgoingInstanceId = cfg._outgoingInstanceId
+  if (!outgoingInstanceId) return false
+  const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()
+  const servedByInstance = res.headers[servedByHeader]
+  if (servedByInstance !== outgoingInstanceId) return false
+
+  return true
+}
+
 axios.interceptors.response.use(
   async (res) => {
     // Extract routing headers from backend response
@@ -265,18 +321,13 @@ axios.interceptors.response.use(
       routingService.updateRoutingToken(routingId)
     }
 
-    // Rotated routing_id means a different instance served us — inconclusive about the one we probed.
     const cfg = res.config as CustomAxiosRequestConfig | undefined
-    if (cfg?._hadPremiumHeaders) {
-      const rotated =
-        typeof routingId === "string" && routingId !== cfg._outgoingRoutingId
-      if (!rotated) {
-        routingService.emitPremiumReachable({
-          url: cfg.url,
-          status: res.status,
-          sentAt: cfg._premiumSentAt,
-        })
-      }
+    if (shouldEmitPremiumReachable(res, cfg)) {
+      routingService.emitPremiumReachable({
+        url: cfg!.url,
+        status: res.status,
+        sentAt: cfg!._premiumSentAt,
+      })
     }
     return res
   },

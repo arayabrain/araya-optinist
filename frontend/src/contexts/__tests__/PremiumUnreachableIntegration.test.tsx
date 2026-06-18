@@ -630,6 +630,106 @@ describe("PremiumAssignmentProvider — unreachable state machine", () => {
     expect(ctxRef.current?.unreachable.state.isUnreachableTerminal).toBe(false)
   })
 
+  test("unreachable state persists without premiumReachable (ALB fallback contract)", async () => {
+    // ALB fallback contract: when the dedicated instance is down and ALB
+    // falls back to the shared backend, shouldEmitPremiumReachable() in
+    // axios.ts suppresses the reachable signal (x-served-by-instance
+    // mismatch). The unreachable state machine must remain in DEGRADED —
+    // no spurious CLEAR dispatch.
+    //
+    // This integration test verifies the Provider-level invariant: only a
+    // genuine emitPremiumReachable (from a response where instance identity
+    // actually matched) can transition out of the unreachable state. Fallback
+    // 2xx responses that bypass the reachable signal leave the state intact.
+    mockedGetStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+    })
+
+    // Enter DEGRADED: dedicated instance returned 503.
+    act(() => {
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 503,
+        sentAt: 1000,
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+    const since = ctxRef.current?.unreachable.state.unreachableSince
+
+    // Simulate fallback 2xx responses arriving from the shared backend.
+    // shouldEmitPremiumReachable() suppresses the reachable signal because
+    // x-served-by-instance does not match the expected instance hash.
+    // No emitPremiumReachable is called here — that is the fix.
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // State must remain DEGRADED — fallback responses did NOT clear it.
+    expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    expect(ctxRef.current?.unreachable.state.unreachableSince).toBe(since)
+
+    // Only when the dedicated instance actually recovers (instance identity
+    // matches again) does the axios interceptor call emitPremiumReachable,
+    // clearing the state.
+    act(() => {
+      routingService.emitPremiumReachable({
+        url: "/api/recovered",
+        status: 200,
+        sentAt: 5000,
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(false)
+    })
+    expect(ctxRef.current?.unreachable.state.failedProbes).toBe(0)
+    expect(ctxRef.current?.unreachable.state.unreachableSince).toBeNull()
+  })
+
+  test("terminal unreachable state persists without premiumReachable (ALB fallback)", async () => {
+    // Extension of the above: verify that terminal state (MAX_FAILED_PROBES
+    // exhausted) is also not spuriously cleared by fallback responses.
+    mockedGetStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+    })
+
+    // Drive straight to terminal via cross-tab sync (fast path).
+    act(() => {
+      fireTabSync("PREMIUM_INSTANCE_UNREACHABLE", {
+        instance_id: "inst-A",
+        unreachable_since: 5000,
+        failed_probes: MAX_FAILED_PROBES,
+        is_terminal: true,
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.isUnreachableTerminal).toBe(true)
+    })
+
+    // Allow async work to flush — no emitPremiumReachable is called
+    // (simulating continued ALB fallback with instance-id mismatch).
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Terminal state must persist.
+    expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    expect(ctxRef.current?.unreachable.state.isUnreachableTerminal).toBe(true)
+    expect(ctxRef.current?.unreachable.state.failedProbes).toBe(
+      MAX_FAILED_PROBES,
+    )
+  })
+
   test("non-dedicated assignment clears unreachable state via mirror effect", async () => {
     mockedGetStatus.mockResolvedValue(dedicatedStatus)
     const ctxRef = renderProvider()

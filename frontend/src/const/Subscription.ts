@@ -112,4 +112,6 @@ export const RoutingHeaders = {
   ROUTING_ID: "X-Routing-ID",
   // User subscription tier indicator
   USER_TIER: "X-User-Tier",
+  // HMAC hash of the serving EC2 instance ID (for ALB fallback detection)
+  SERVED_BY_INSTANCE: "X-Served-By-Instance",
 } as const
