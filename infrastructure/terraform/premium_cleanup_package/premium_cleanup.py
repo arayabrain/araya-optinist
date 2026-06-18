@@ -86,6 +86,7 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     try:
         cloudwatch = _get_cloudwatch_client()
         cloudwatch.delete_alarms(AlarmNames=[alarm_name])
+        print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"Warning: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
 

@@ -115,7 +115,7 @@ data "aws_ami" "ecs_optimized" {
 
   filter {
     name   = "name"
-    values = ["amzn2-ami-ecs-hvm-*-x86_64-ebs"]
+    values = ["al2023-ami-ecs-hvm-*-x86_64"]
   }
 
   filter {
@@ -300,7 +300,7 @@ resource "aws_autoscaling_group" "main" {
     strategy = "Rolling"
     preferences {
       instance_warmup        = 300
-      min_healthy_percentage = 0
+      min_healthy_percentage = 50
     }
   }
 

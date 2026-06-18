@@ -62,11 +62,13 @@ export class RoutingService {
   private routingToken: string | null = null
   private storedTier: UserTier | null = null
   private premiumAssigned: boolean = false
+  private premiumInstanceId: string | null = null
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
   private readonly STORAGE_KEY = "routing_id"
   private readonly TIER_STORAGE_KEY = "routing_tier"
   private readonly PREMIUM_ASSIGNED_KEY = "premium_assigned"
+  private readonly PREMIUM_INSTANCE_ID_KEY = "premium_instance_id"
   private unreachableListeners: Set<PremiumUnreachableListener> = new Set()
   private reachableListeners: Set<PremiumReachableListener> = new Set()
 
@@ -75,6 +77,7 @@ export class RoutingService {
     this.loadTokenFromStorage()
     this.loadTierFromStorage()
     this.loadPremiumAssignedFromStorage()
+    this.loadPremiumInstanceIdFromStorage()
   }
 
   /**
@@ -138,10 +141,12 @@ export class RoutingService {
     this.routingToken = null
     this.storedTier = null
     this.premiumAssigned = false
+    this.premiumInstanceId = null
     this.lastFetch = 0
     this.clearTokenFromStorage()
     this.clearTierFromStorage()
     this.clearPremiumAssignedFromStorage()
+    this.clearPremiumInstanceIdFromStorage()
   }
 
   /**
@@ -158,6 +163,26 @@ export class RoutingService {
    */
   isPremiumAssigned(): boolean {
     return this.premiumAssigned
+  }
+
+  /**
+   * Set the HMAC hash of the assigned premium instance ID.
+   * Used by the axios interceptor to detect ALB fallback responses.
+   */
+  setPremiumInstanceId(id: string | null): void {
+    this.premiumInstanceId = id
+    if (id) {
+      this.savePremiumInstanceIdToStorage(id)
+    } else {
+      this.clearPremiumInstanceIdFromStorage()
+    }
+  }
+
+  /**
+   * Get the stored premium instance ID hash
+   */
+  getPremiumInstanceId(): string | null {
+    return this.premiumInstanceId
   }
 
   // Pure notifier — telemetry lives in listeners so tests can emit without side effects.
@@ -363,6 +388,36 @@ export class RoutingService {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn("Failed to clear premium assigned from localStorage:", e)
+    }
+  }
+
+  private loadPremiumInstanceIdFromStorage(): void {
+    try {
+      const id = localStorage.getItem(this.PREMIUM_INSTANCE_ID_KEY)
+      if (id) {
+        this.premiumInstanceId = id
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to load premium instance ID from localStorage:", e)
+    }
+  }
+
+  private savePremiumInstanceIdToStorage(id: string): void {
+    try {
+      localStorage.setItem(this.PREMIUM_INSTANCE_ID_KEY, id)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to save premium instance ID to localStorage:", e)
+    }
+  }
+
+  private clearPremiumInstanceIdFromStorage(): void {
+    try {
+      localStorage.removeItem(this.PREMIUM_INSTANCE_ID_KEY)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to clear premium instance ID from localStorage:", e)
     }
   }
 }

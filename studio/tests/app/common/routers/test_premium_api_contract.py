@@ -42,6 +42,7 @@ PREMIUM_ASSIGNMENT_REQUIRED_FIELDS = {
 
 PREMIUM_ASSIGNMENT_OPTIONAL_FIELDS = {
     "instance_id": str,
+    "instance_id_hash": str,
     "retry_after": (int, float),
     "scaling_in_progress": bool,
     "is_shared": bool,
@@ -75,6 +76,7 @@ PREMIUM_STATUS_OPTIONAL_FIELDS = {
 # PremiumAssignment (nested in PremiumStatusResult)
 PREMIUM_ASSIGNMENT_NESTED_FIELDS = {
     "instance_id": str,
+    "instance_id_hash": str,
     "assigned_at": str,
     "status": str,
     "is_shared": bool,

@@ -17,6 +17,7 @@ export interface RoutingInfo {
 export interface PremiumAssignmentResult {
   message: string
   instance_id?: string
+  instance_id_hash?: string
   assigned: boolean
   retry_after?: number
   scaling_in_progress?: boolean
@@ -32,6 +33,7 @@ export interface PremiumReleaseResult {
 
 export interface PremiumAssignment {
   instance_id: string
+  instance_id_hash?: string
   assigned_at: string
   status: string
   is_shared: boolean

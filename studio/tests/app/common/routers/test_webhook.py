@@ -1,11 +1,14 @@
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
-from studio.app.common.core.subscription.constants import SyncStatus
+from studio.app.common.core.subscription.constants import (
+    SubscriptionPlanIds,
+    SyncStatus,
+)
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -855,6 +858,547 @@ class TestCheckoutStorageQuotaUpdate:
 
         expected_quota = StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
         assert added_obj.storage_quota_bytes == expected_quota
+
+
+class TestCustomerSubscriptionDeleted:
+    """Tests for the release-on-delete webhook path (issue #629, P3).
+
+    Verifies that customer.subscription.deleted now releases the dangling
+    premium compute assignment via release_premium_user (in addition to the
+    existing DB-row expiration in handle_subscription_cancelled).
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.flush = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        return db
+
+    @pytest.fixture
+    def mock_user_account(self):
+        account = Mock()
+        account.user_id = 42
+        return account
+
+    @pytest.fixture
+    def mock_user(self):
+        user = Mock()
+        user.id = 42
+        user.uid = "user_uid_42"
+        return user
+
+    @pytest.fixture
+    def subscription_event(self):
+        """A customer.subscription.deleted event payload."""
+        return {
+            "id": "sub_stripe123",
+            "customer": "cus_test123",
+            "status": "canceled",
+        }
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_on_delete(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """The delete path hard-releases with the short webhook timeout."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+            premium_assignment_service,
+        )
+
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(return_value=(mock_user_account, mock_user))
+                        )
+                    )
+                )
+            )
+        )
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(return_value={"success": True, "message": "released"}),
+        ) as mock_release:
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+        mock_release.assert_awaited_once_with(
+            user_id=42,
+            user_uid="user_uid_42",
+            hard=True,
+            timeout=WEBHOOK_RELEASE_TIMEOUT_SECONDS,
+        )
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_continues_on_timeout(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A fail-open (timed-out) release must not raise; webhook still acks."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(return_value=(mock_user_account, mock_user))
+                        )
+                    )
+                )
+            )
+        )
+        timed_out = {
+            "success": False,
+            "timed_out": True,
+            "message": "Release timed out",
+        }
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(return_value=timed_out),
+        ) as mock_release:
+            # Must not raise even though release reports failure.
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+        mock_release.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_release_premium_assignment_no_account_is_noop(
+        self, mock_db, subscription_event
+    ):
+        """No local account -> nothing to release, no error."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        # JOIN query returns None -> no account/user found
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(return_value=Mock(first=Mock(return_value=None)))
+                )
+            )
+        )
+        with patch.object(
+            premium_assignment_service, "release_premium_user", new=AsyncMock()
+        ) as mock_release:
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+        mock_release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_release_failure_does_not_raise(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A release exception is swallowed so the webhook still acks."""
+        from studio.app.common.core.premium.premium_assignment_service import (
+            premium_assignment_service,
+        )
+
+        # Single JOIN query: SubscriptionUserAccount + User by customer_id
+        mock_db.query.return_value = Mock(
+            join=Mock(
+                return_value=Mock(
+                    filter=Mock(
+                        return_value=Mock(
+                            first=Mock(return_value=(mock_user_account, mock_user))
+                        )
+                    )
+                )
+            )
+        )
+        with patch.object(
+            premium_assignment_service,
+            "release_premium_user",
+            new=AsyncMock(side_effect=Exception("Lambda boom")),
+        ):
+            # Must not raise.
+            await WebhookService._release_premium_assignment(
+                mock_db, subscription_event
+            )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_delete_mirrors_and_releases(
+        self, mock_db, subscription_event
+    ):
+        """dispatch routes delete to the cancel handler AND the release helper."""
+        with patch.object(
+            WebhookService, "handle_subscription_cancelled"
+        ) as mock_cancel, patch.object(
+            WebhookService, "_release_premium_assignment", new=AsyncMock()
+        ) as mock_release:
+            result = await WebhookService.dispatch_webhook_event(
+                mock_db, "customer.subscription.deleted", subscription_event
+            )
+
+        assert result["success"] is True
+        mock_cancel.assert_called_once_with(mock_db, subscription_event)
+        mock_release.assert_awaited_once_with(mock_db, subscription_event)
+
+
+class TestSubscriptionLifecycleWebhooks:
+    """Tests for customer.subscription.created handling (issue #629, P1).
+
+    Verifies that the new `created` webhook activates a subscription
+    end-to-end so users are no longer stuck on "Activation Pending" when
+    `checkout.session.completed` can't complete the activation on its own.
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.flush = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        db.execute = Mock()
+        return db
+
+    @pytest.fixture
+    def mock_user_account(self):
+        account = Mock()
+        account.user_id = 42
+        account.provider_customer_id = "cus_test123"
+        return account
+
+    @pytest.fixture
+    def mock_user(self):
+        user = Mock()
+        user.id = 42
+        user.uid = "user_uid_42"
+        return user
+
+    @pytest.fixture
+    def subscription_event(self):
+        """A customer.subscription.created event payload (event['data']['object'])."""
+        return {
+            "id": "sub_stripe123",
+            "customer": "cus_test123",
+            "status": "active",
+            "current_period_end": 2000000000,  # far-future unix timestamp
+            "metadata": {"plan_id": str(SubscriptionPlanIds.PREMIUM)},
+        }
+
+    def _setup_query_chain(self, mock_db, account, user):
+        """Sequential query results: account, storage usage, then user (cache)."""
+        mock_storage = Mock()
+        mock_storage.storage_quota_bytes = 214748364800
+        mock_db.query.side_effect = [
+            # 1. SubscriptionUserAccount by customer_id
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=account)))),
+            # 2. UserStorageUsage by user_id (storage quota sync)
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_storage)))),
+            # 3. User for cache invalidation
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=user)))),
+        ]
+
+    def test_subscription_created_activates_subscription(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """`created` upserts subscription_users and invalidates the tier cache."""
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ) as mock_invalidate:
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["user_id"] == 42
+        assert result["plan_id"] == SubscriptionPlanIds.PREMIUM
+        mock_upsert.assert_called_once()
+        upsert_args = mock_upsert.call_args[0]
+        assert upsert_args[1] == 42  # user_id
+        assert upsert_args[2] == SubscriptionPlanIds.PREMIUM
+        mock_db.commit.assert_called_once()
+        mock_invalidate.assert_called_once_with("user_uid_42")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_created_routes_to_handler(
+        self, mock_db, subscription_event
+    ):
+        """dispatch routes `created` to handle_subscription_created."""
+        with patch.object(
+            WebhookService,
+            "handle_subscription_created",
+            return_value={"success": True},
+        ) as mock_created:
+            result = await WebhookService.dispatch_webhook_event(
+                mock_db, "customer.subscription.created", subscription_event
+            )
+
+        assert result["success"] is True
+        mock_created.assert_called_once_with(mock_db, subscription_event)
+
+    def test_subscription_event_acknowledged_when_no_customer_id(
+        self, mock_db, subscription_event
+    ):
+        """Missing customer ID is acknowledged without a DB write."""
+        subscription_event.pop("customer")
+        with patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "missing_customer_id"
+        mock_upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
+    def test_subscription_event_acknowledged_when_no_account(
+        self, mock_db, subscription_event
+    ):
+        """Unknown customer is acknowledged without a DB write (no Stripe retries)."""
+        mock_db.query.side_effect = [
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
+        ]
+        with patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "missing_user_account"
+        mock_upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
+    def test_subscription_event_acknowledged_when_no_period_end(
+        self, mock_db, mock_user_account, subscription_event
+    ):
+        """Missing expiration is acknowledged without a DB write."""
+        subscription_event.pop("current_period_end")
+        subscription_event.pop("trial_end", None)
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+        ]
+        with patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "missing_expiration"
+        mock_upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
+    # --- P2: handle_subscription_updated ---
+
+    @pytest.mark.asyncio
+    async def test_dispatch_updated_routes_to_handler(
+        self, mock_db, subscription_event
+    ):
+        """dispatch routes `updated` to handle_subscription_updated."""
+        with patch.object(
+            WebhookService,
+            "handle_subscription_updated",
+            return_value={"success": True},
+        ) as mock_updated:
+            result = await WebhookService.dispatch_webhook_event(
+                mock_db, "customer.subscription.updated", subscription_event
+            )
+        assert result["success"] is True
+        mock_updated.assert_called_once_with(mock_db, subscription_event)
+
+    def test_subscription_updated_mirrors_scheduled_downgrade(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """`updated` with cancel_at_period_end=True flips scheduled_downgrade."""
+        subscription_event["cancel_at_period_end"] = True
+
+        mock_subscription = Mock()
+        mock_subscription.scheduled_downgrade = False
+        mock_subscription.updated_at = None
+
+        mock_storage = Mock()
+        mock_storage.storage_quota_bytes = 214748364800
+
+        # Query side_effect: account, subscription re-query (cancel path),
+        # storage usage, then user (cache invalidation).
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_storage)))),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["scheduled_downgrade"] is True
+        assert mock_subscription.scheduled_downgrade is True
+        assert mock_subscription.updated_at is not None
+
+    def test_subscription_updated_resets_scheduled_downgrade_when_uncancelled(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """`updated` with cancel_at_period_end=False resets scheduled_downgrade.
+
+        When a user un-cancels in Stripe, the upsert in Step 4
+        (_apply_subscription_update) unconditionally sets
+        scheduled_downgrade=False, so the local state is corrected.
+        """
+        subscription_event["cancel_at_period_end"] = False
+        # cancel_at_period_end=False -> helper skips the subscription
+        # re-query, so the query chain is just account + user.
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["scheduled_downgrade"] is False
+        mock_upsert.assert_called_once()
+
+    def test_updated_past_due_still_marked_synced(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A past_due subscription stays SYNCED after mirroring."""
+        subscription_event["status"] = "past_due"
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        mock_upsert.assert_called_once()
+
+    def test_subscription_updated_error_logs_traceback(
+        self, mock_db, mock_user_account, subscription_event
+    ):
+        """Errors in handle_subscription_updated log full traceback."""
+        from fastapi import HTTPException
+
+        mock_db.query.side_effect = [
+            # 1. SubscriptionUserAccount lookup succeeds
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+        ]
+
+        with patch.object(
+            CheckoutService,
+            "create_or_update_subscription",
+            side_effect=RuntimeError("db write failed"),
+        ), pytest.raises(HTTPException) as exc_info:
+            WebhookService.handle_subscription_updated(mock_db, subscription_event)
+
+        assert exc_info.value.status_code == 500
+        assert "subscription.updated" in exc_info.value.detail
+
+    # --- Concurrency ---
+
+    def test_concurrent_storage_insert_falls_back_to_update(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """Duplicate storage insert (race with checkout) falls back."""
+        from sqlalchemy.exc import IntegrityError
+
+        # Account lookup, storage (None), user for cache invalidation
+        mock_db.query.side_effect = [
+            # 1. SubscriptionUserAccount by customer_id
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            # 2. UserStorageUsage -> None (triggers INSERT path)
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=None)))),
+            # 3. User for cache invalidation
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        # begin_nested() SAVEPOINT; flush raises IntegrityError
+        nested_cm = Mock()
+        nested_cm.__enter__ = Mock(return_value=None)
+        nested_cm.__exit__ = Mock(return_value=False)
+        mock_db.begin_nested.return_value = nested_cm
+        mock_db.flush.side_effect = IntegrityError(
+            "Duplicate entry", params=None, orig=Exception()
+        )
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert result["user_id"] == 42
+        # SAVEPOINT used, NOT full rollback
+        mock_db.begin_nested.assert_called_once()
+        mock_db.rollback.assert_not_called()
+        # execute() called once for fallback UPDATE
+        mock_db.execute.assert_called_once()
 
 
 if __name__ == "__main__":

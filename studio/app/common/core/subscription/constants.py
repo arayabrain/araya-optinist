@@ -118,6 +118,8 @@ class StripeWebhookEvent(StrEnum):
 
     CHECKOUT_SESSION_COMPLETED = "checkout.session.completed"
     INVOICE_PAYMENT_FAILED = "invoice.payment_failed"
+    CUSTOMER_SUBSCRIPTION_CREATED = "customer.subscription.created"
+    CUSTOMER_SUBSCRIPTION_UPDATED = "customer.subscription.updated"
     CUSTOMER_SUBSCRIPTION_DELETED = "customer.subscription.deleted"
     SUBSCRIPTION_SCHEDULE_RELEASED = "subscription_schedule.released"
     INVOICE_PAYMENT_SUCCEEDED = "invoice.payment_succeeded"
@@ -458,6 +460,26 @@ class ExpirationDeletion:
     METRIC_NAMESPACE_BASE = "OptiNiSt/BackgroundJobs"
     METRIC_PROCESSED = "ExpirationDeletionProcessed"
     METRIC_ERRORS = "ExpirationDeletionErrors"
+
+
+class PremiumExpirationSweep:
+    """Constants for the premium expiration -> release backstop sweep job.
+
+    Safety net for the event-driven path: releases dangling premium
+    assignments for users whose subscription expired past the grace period
+    when no Stripe ``customer.subscription.deleted`` event released them
+    (e.g. a missed webhook, or a local expiration applied via direct DB
+    UPDATE such as test 600-17b).
+    """
+
+    JOB_ID = "premium_expiration_sweep"
+    JOB_INTERVAL_MINUTES = 60  # Hourly backstop
+    MAX_RELEASES_PER_RUN = 50  # Bound work per run
+    # Short per-release timeout so one slow/hung Lambda can't stall the whole
+    # sweep. This is a backstop: a skipped release is retried next run.
+    # Worst case per run ~= MAX_RELEASES_PER_RUN * RELEASE_TIMEOUT_SECONDS,
+    # which stays well under JOB_INTERVAL_MINUTES.
+    RELEASE_TIMEOUT_SECONDS = 15
 
 
 class S3Pagination:

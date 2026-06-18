@@ -35,6 +35,10 @@ class PremiumStatusCheckError(Exception):
 LAMBDA_TIMEOUT_SECONDS = 60
 LAMBDA_MAX_RETRIES = 2
 LAMBDA_RETRY_BASE_DELAY_SECONDS = 2
+# Short bound for latency-sensitive callers (e.g. the Stripe webhook path),
+# which must respond quickly. Cleanup that exceeds this is handled by the
+# periodic premium-expiration sweep, so failing open here is safe.
+WEBHOOK_RELEASE_TIMEOUT_SECONDS = 10
 
 
 class PremiumAssignmentService:
@@ -314,7 +318,12 @@ class PremiumAssignmentService:
             }
 
     async def release_premium_user(
-        self, user_id: int, user_uid: str, *, hard: bool = False
+        self,
+        user_id: int,
+        user_uid: str,
+        *,
+        hard: bool = False,
+        timeout: float = LAMBDA_TIMEOUT_SECONDS,
     ) -> Dict[str, any]:
         """
         Release a premium user from their assigned instance and clear rate limiting.
@@ -325,12 +334,17 @@ class PremiumAssignmentService:
             hard: If True, immediately delete assignment + ALB resources.
                   If False (default), soft-release with grace period so a
                   page refresh can restore the assignment instantly.
+            timeout: Max seconds to wait for the release Lambda before failing
+                  open. Latency-sensitive callers (e.g. the Stripe webhook)
+                  should pass a short value (see WEBHOOK_RELEASE_TIMEOUT_SECONDS);
+                  defaults to LAMBDA_TIMEOUT_SECONDS for logout/beacon/sweep.
 
         Returns:
             Dict containing release result:
             - success: bool
             - message: str
             - released_instance: str (if successful)
+            - timed_out: bool (present and True if the Lambda call timed out)
         """
         try:
             release_type = "hard" if hard else "soft"
@@ -369,9 +383,32 @@ class PremiumAssignmentService:
                 )
                 return response
 
-            # Run in thread pool to avoid blocking
+            # Run in thread pool with a bounded timeout so a slow/hung Lambda
+            # cannot stall the caller indefinitely (e.g. the Stripe webhook
+            # path, where this would otherwise risk webhook timeouts/retries).
+            # Fail open on timeout: the assignment may not be torn down yet,
+            # but the periodic premium-expiration sweep is the backstop that
+            # will release it.
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, invoke_lambda)
+            try:
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, invoke_lambda),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Release Lambda timed out after {timeout}s for user "
+                    f"{user_id}; deferring to background cleanup"
+                )
+                return {
+                    "success": False,
+                    "timed_out": True,
+                    "message": (
+                        f"Release timed out after {timeout}s; "
+                        "will be retried by the background sweep"
+                    ),
+                    "warnings": [f"Release Lambda timed out after {timeout}s"],
+                }
 
             # Parse the response
             response_payload = json.loads(response["Payload"].read())
