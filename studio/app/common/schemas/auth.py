@@ -11,7 +11,7 @@ class Token(BaseModel):
 
 
 class RefreshToken(BaseModel):
-    refresh_token: Optional[str]
+    refresh_token: Optional[str] = None
 
 
 class UserAuth(BaseModel):
