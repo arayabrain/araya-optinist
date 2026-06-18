@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aws_constants import ECSTaskStatus, PremiumInstanceConfig
+from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
@@ -1674,6 +1674,50 @@ class TestStartStandbyInstance:
             )
             mock_connection.commit.assert_called()
 
+            # The state UPDATE must be scoped to the standby placeholder row
+            # (is_standby = 1), not the regular-assignment guard (is_standby = 0).
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            update_calls = [
+                c
+                for c in mock_cursor.execute.call_args_list
+                if "UPDATE premium_user_assignments" in c.args[0]
+            ]
+            assert len(update_calls) == 1
+            sql, params = update_calls[0].args
+            assert "is_standby = 1" in sql
+            assert "is_standby = 0" not in sql
+            assert params == (InstanceState.RUNNING, "i-standby1")
+
+    def test_updates_standby_placeholder_row(self, mock_env_vars_premium):
+        """State UPDATE commits even when the only matching DB row is the
+        standby placeholder (is_standby = 1)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.check_instance_readiness_with_retry",
+            return_value=True,
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+            mock_ec2.get_waiter.return_value = MagicMock()
+
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import start_standby_instance
+
+            result = start_standby_instance("i-standby1")
+
+            assert result is True
+            mock_connection.commit.assert_called()
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            update_sql = mock_cursor.execute.call_args.args[0]
+            assert "UPDATE premium_user_assignments" in update_sql
+            assert "is_standby = 1" in update_sql
+            assert "is_standby = 0" not in update_sql
+
     def test_readiness_fails(self, mock_env_vars_premium):
         """ECS task not ready after start returns False without DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -1719,6 +1763,156 @@ class TestStartStandbyInstance:
 
             result = start_standby_instance("i-standby2")
             assert result is False
+
+
+class TestStandbyReplenishmentAsync:
+    """invoke_standby_replenishment_async + create_standby dispatch + cascade."""
+
+    def test_skips_when_lock_held(self, mock_env_vars_premium):
+        """Creation lock held -> no Lambda self-invoke."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "is_creation_lock_held", return_value=True
+            ), patch("boto3.client") as mock_boto3:
+                premium_manager.invoke_standby_replenishment_async()
+                mock_boto3.assert_not_called()
+
+    def test_invokes_lambda_when_lock_free(self, mock_env_vars_premium):
+        """Lock free -> self-invoke with Event + create_standby action."""
+        env = {**mock_env_vars_premium, "AWS_LAMBDA_FUNCTION_NAME": "premium-manager"}
+        with patch.dict("os.environ", env):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "is_creation_lock_held", return_value=False
+            ), patch("boto3.client") as mock_boto3:
+                mock_lambda = MagicMock()
+                mock_boto3.return_value = mock_lambda
+
+                premium_manager.invoke_standby_replenishment_async()
+
+                mock_lambda.invoke.assert_called_once()
+                kwargs = mock_lambda.invoke.call_args.kwargs
+                assert kwargs["FunctionName"] == "premium-manager"
+                assert kwargs["InvocationType"] == "Event"
+                assert json.loads(kwargs["Payload"])["action"] == "create_standby"
+
+    def test_no_op_when_function_name_absent(self, mock_env_vars_premium):
+        """AWS_LAMBDA_FUNCTION_NAME absent -> warning, no invoke, no exception."""
+        env = {
+            k: v
+            for k, v in mock_env_vars_premium.items()
+            if k != "AWS_LAMBDA_FUNCTION_NAME"
+        }
+        with patch.dict("os.environ", env, clear=True):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "is_creation_lock_held", return_value=False
+            ), patch("boto3.client") as mock_boto3:
+                mock_lambda = MagicMock()
+                mock_boto3.return_value = mock_lambda
+
+                premium_manager.invoke_standby_replenishment_async()
+
+                mock_lambda.invoke.assert_not_called()
+
+    def test_handler_routes_create_standby_action(self, mock_env_vars_premium):
+        """handler dispatches action=create_standby to create_and_stop_standby."""
+        mock_context = MagicMock()
+        mock_context.function_name = "premium-manager"
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager,
+                "create_and_stop_standby_instance",
+                return_value="i-newstandby",
+            ) as mock_create:
+                result = premium_manager.handler(
+                    {"action": "create_standby"}, mock_context
+                )
+
+                mock_create.assert_called_once_with()
+                assert result["statusCode"] == 200
+                body = json.loads(result["body"])
+                assert body["created_instance_id"] == "i-newstandby"
+
+    def test_tier3_cascade_uses_async_replenishment(self, mock_env_vars_premium):
+        """Standby start succeeds -> async replenishment fires and the blocking
+        create_and_stop_standby_instance is never called from the assign path."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "restore_pending_release", return_value=None
+            ), patch.object(
+                premium_manager, "get_existing_user_assignment", return_value=None
+            ), patch.object(
+                premium_manager, "register_orphaned_stopped_instances"
+            ), patch.object(
+                premium_manager,
+                "get_all_premium_instances_with_states",
+                return_value=[],
+            ), patch.object(
+                premium_manager, "count_active_premium_users", return_value=0
+            ), patch.object(
+                premium_manager,
+                "get_available_standby_instances",
+                return_value=[{"instance_id": "i-standby1"}],
+            ), patch.object(
+                premium_manager, "start_standby_instance", return_value=True
+            ), patch.object(
+                premium_manager, "invoke_standby_replenishment_async"
+            ) as mock_replenish, patch.object(
+                premium_manager, "create_and_stop_standby_instance"
+            ) as mock_create_stop, patch.object(
+                premium_manager, "_enable_sticky_sessions"
+            ), patch.object(
+                premium_manager, "_ensure_premium_tg_unhealthy_alarm"
+            ), patch.object(
+                premium_manager,
+                "cleanup_duplicate_rules_for_routing_id",
+                return_value=0,
+            ), patch.object(
+                premium_manager,
+                "create_alb_rule",
+                return_value={"Rules": [{"RuleArn": "arn:rule"}]},
+            ), patch.object(
+                premium_manager, "store_user_assignment"
+            ), patch.object(
+                premium_manager, "update_user_activity", return_value=True
+            ), patch(
+                "premium_manager.pymysql.connect"
+            ) as mock_pymysql, patch(
+                "boto3.client"
+            ) as mock_boto3:
+                mock_pymysql.return_value = setup_db_mock()
+
+                mock_elbv2 = MagicMock()
+                mock_elbv2.describe_target_groups.return_value = {"TargetGroups": []}
+                mock_elbv2.create_target_group.return_value = {
+                    "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/standby"}]
+                }
+
+                def boto3_client_side_effect(service):
+                    if service == "elbv2":
+                        return mock_elbv2
+                    return MagicMock()
+
+                mock_boto3.side_effect = boto3_client_side_effect
+
+                result = premium_manager.assign_premium_user(
+                    12345, {"tier": "premium"}, "firebase_uid_cascade"
+                )
+
+                assert result["statusCode"] == 200
+                body = json.loads(result["body"])
+                assert body["assignment_source"] == "standby"
+                mock_replenish.assert_called_once_with()
+                mock_create_stop.assert_not_called()
 
 
 class TestDesiredCountReservesBootingStandbys:
@@ -3971,6 +4165,7 @@ class TestHandleScheduledMonitoringReconcile:
             ),
             "terminate_aged": patch("premium_manager.terminate_aged_stopped_instances"),
             "standby_count": patch("premium_manager.get_standby_count", return_value=0),
+            "replenish": patch("premium_manager.invoke_standby_replenishment_async"),
             "finalize": patch(
                 "premium_manager.finalize_expired_pending_releases",
                 return_value=[],
@@ -4081,6 +4276,65 @@ class TestHandleScheduledMonitoringReconcile:
         # reconcile_summary fell back to {"errors": 1}; drift kwargs default to 0.
         assert publish_calls[0][1]["tg_port_drift_detected"] == 0
         assert publish_calls[0][1]["tg_port_drift_fixed"] == 0
+
+
+class TestScheduledMonitoringStandbyConvergence:
+    """handle_scheduled_monitoring must converge the standby pool toward
+    target: replenish when below, trim when above, do nothing at target.
+    This is the backstop for the best-effort async create on the assign path."""
+
+    def _run(self, mock_env_vars_premium, standby_count, pool_size):
+        base = TestHandleScheduledMonitoringReconcile()
+        patches = base._common_patches(
+            mock_env_vars_premium, [], {"drift_detected": 0, "drift_fixed": 0}
+        )
+        patches["env"] = patch.dict(
+            "os.environ",
+            {**mock_env_vars_premium, "PREMIUM_STANDBY_POOL_SIZE": str(pool_size)},
+        )
+        patches["standby_count"] = patch(
+            "premium_manager.get_standby_count", return_value=standby_count
+        )
+        replenish = MagicMock()
+        trim = MagicMock()
+        patches["replenish"] = patch(
+            "premium_manager.invoke_standby_replenishment_async", replenish
+        )
+        patches["trim"] = patch(
+            "premium_manager.cleanup_excess_standby_instances", trim
+        )
+        ctx_managers = list(patches.values())
+        for cm in ctx_managers:
+            cm.__enter__()
+        try:
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+        finally:
+            for cm in reversed(ctx_managers):
+                cm.__exit__(None, None, None)
+        return result, replenish, trim
+
+    def test_replenishes_when_below_target(self, mock_env_vars_premium):
+        """standby_count < pool_size -> async replenishment, no trim."""
+        result, replenish, trim = self._run(mock_env_vars_premium, 0, 2)
+        assert result["statusCode"] == 200
+        replenish.assert_called_once_with()
+        trim.assert_not_called()
+
+    def test_no_action_when_at_target(self, mock_env_vars_premium):
+        """standby_count == pool_size -> neither replenish nor trim."""
+        result, replenish, trim = self._run(mock_env_vars_premium, 2, 2)
+        assert result["statusCode"] == 200
+        replenish.assert_not_called()
+        trim.assert_not_called()
+
+    def test_trims_when_above_target(self, mock_env_vars_premium):
+        """standby_count > pool_size -> trim excess, no replenish."""
+        result, replenish, trim = self._run(mock_env_vars_premium, 3, 2)
+        assert result["statusCode"] == 200
+        trim.assert_called_once_with(1)
+        replenish.assert_not_called()
 
 
 class TestMigrateUserToDedicatedInstanceOrder:

@@ -1772,14 +1772,16 @@ def start_standby_instance(instance_id: str):
             )
             return False
 
-        # Update state in database (only for non-standby assignments)
+        # The only row for this instance now is its standby placeholder
+        # (is_standby = 1); scope the update to it so a stray regular
+        # assignment row for the same instance can never be touched.
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
                        SET instance_state = %s,
                            last_state_check = NOW()
-                       WHERE instance_id = %s AND is_standby = 0""",
+                       WHERE instance_id = %s AND is_standby = 1""",
                     (InstanceState.RUNNING, instance_id),
                 )
                 connection.commit()  # Commit the state update
@@ -2111,13 +2113,22 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # PREMIUM_STOPPED_MAX_AGE_HOURS
             terminate_aged_stopped_instances()
 
-            # 9. Trim standby pool if it exceeds target size
+            # 9. Converge standby pool toward target size. Trimming excess
+            # was always here; the replenish branch is the backstop for the
+            # best-effort async create on the assign path, so a dropped or
+            # lock-skipped invocation can't leave the pool depleted.
             standby_count = get_standby_count()
             standby_pool_size = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
             if standby_count > standby_pool_size:
                 excess = standby_count - standby_pool_size
                 print(f"Standby pool has {excess} excess instances, trimming")
                 cleanup_excess_standby_instances(excess)
+            elif standby_count < standby_pool_size:
+                print(
+                    f"Standby pool below target "
+                    f"({standby_count}/{standby_pool_size}), replenishing"
+                )
+                invoke_standby_replenishment_async()
 
             # 10a. Finalize expired pending_release assignments
             try:
@@ -2327,6 +2338,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     print(f"Lambda context: {context.function_name if context else 'No context'}")
 
     try:
+        # Handle async standby replenishment invocation
+        if event.get("action") == "create_standby":
+            print("Running async standby replenishment...")
+            instance_id = create_and_stop_standby_instance()
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"created_instance_id": instance_id}),
+            }
+
         # Handle async migration invocation
         if event.get("action") == "migrate_shared_users":
             return _handle_migrate_shared_users(event)
@@ -3255,9 +3275,9 @@ def assign_premium_user(
 
             # Start the standby instance
             if start_standby_instance(standby_instance_id):
-                # Create replacement standby instance asynchronously
-                print("Creating replacement standby instance")
-                create_and_stop_standby_instance()  # Create a single standby
+                # Create replacement standby instance asynchronously so the
+                # 3-5 min create/stop chain does not block this assignment.
+                invoke_standby_replenishment_async()
 
                 # Proceed with assignment to the started instance
                 instance_to_use = {"instance_id": standby_instance_id}
@@ -3772,6 +3792,42 @@ def invoke_migration_async():
 
     except Exception as e:
         print(f"Warning: Failed to trigger async migration: {str(e)}")
+        # Don't fail the main request if async invocation fails
+
+
+def invoke_standby_replenishment_async():
+    """
+    Invoke this Lambda asynchronously to create one replacement standby.
+    Skips invocation if a standby-creation Lambda already holds the lock.
+    """
+    if is_creation_lock_held(CREATE_STANDBY_LOCK):
+        print("Standby creation Lambda already running, skipping async replenishment")
+        return
+
+    try:
+        lambda_client: "LambdaClient" = boto3.client("lambda")
+        function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+
+        if not function_name:
+            print(
+                "Warning: Cannot invoke async standby replenishment "
+                "- function name not available"
+            )
+            return
+
+        lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="Event",  # Async invocation
+            Payload=json.dumps({"action": "create_standby"}),
+        )
+
+        print(
+            f"Triggered async standby replenishment via "
+            f"Lambda function: {function_name}"
+        )
+
+    except Exception as e:
+        print(f"Warning: Failed to trigger async standby replenishment: {str(e)}")
         # Don't fail the main request if async invocation fails
 
 
