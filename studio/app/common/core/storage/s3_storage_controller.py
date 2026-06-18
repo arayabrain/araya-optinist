@@ -857,10 +857,6 @@ class S3StorageController(BaseRemoteStorageController):
                     check=True,
                 )
 
-                assert (
-                    cmd_ret.returncode == 0
-                ), f"Fail aws_s3_sync_command. {cmd_ret.stderr}"
-
             except CalledProcessError as e:
                 logger.error(e)
                 logger.error(e.stderr)
