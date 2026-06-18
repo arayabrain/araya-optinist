@@ -30,7 +30,7 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
-async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
+async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
     """Get Stripe customer by email"""
     try:
         stripe_customers = stripe.Customer.list(email=email, limit=1)
@@ -73,7 +73,7 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
             )
 
     # 2. Fall back to Stripe API lookup by email
-    customer = await get_stripe_customer_by_email(user.email)
+    customer = await _get_stripe_customer_by_email(user.email)
     if customer:
         # Persist to DB so future lookups use the fast path
         provider_id = CheckoutService.get_or_create_stripe_provider(db)
@@ -174,10 +174,6 @@ class StripeService:
             # Find Stripe customer (DB first, then Stripe API)
             stripe_customer = await get_or_create_stripe_customer(db, user)
 
-            if not stripe_customer:
-                logger.info(f"No Stripe customer found for user {user.id}")
-                return None
-
             # Get default payment method
             default_pm_id = stripe_customer.invoice_settings.default_payment_method
             if not default_pm_id:
@@ -270,10 +266,6 @@ class StripeService:
         try:
             # Get Stripe customer (unified lookup)
             customer = await get_or_create_stripe_customer(db, user)
-            if not customer:
-                raise HTTPException(
-                    status_code=404, detail="No Stripe customer found for user"
-                )
 
             # Verify the payment method exists and belongs to this customer
             try:
@@ -343,10 +335,6 @@ class StripeService:
         try:
             # Get Stripe customer (unified lookup)
             customer = await get_or_create_stripe_customer(db, user)
-            if not customer:
-                raise HTTPException(
-                    status_code=404, detail="No Stripe customer found for user"
-                )
 
             # Verify the payment method exists and belongs to this customer
             try:

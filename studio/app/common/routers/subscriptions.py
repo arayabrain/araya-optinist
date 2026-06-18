@@ -384,9 +384,10 @@ async def get_user_default_payment_method(
 
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
 async def get_user_payment_methods(
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # return await StripeService.handle_get_user_payment_methods(user)
+    # return await StripeService.handle_get_user_payment_methods(db, user)
     """
     This endpoint is currently not in use
     """
@@ -398,9 +399,10 @@ async def get_user_payment_methods(
 
 @router.post("/payment-methods/setup-intent", response_model=CreateSetupIntentResponse)
 async def setup_intent(
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # await StripeService.create_setup_intent(user)
+    # await StripeService.create_setup_intent(db, user)
     """
     This endpoint is currently not in use
     """
@@ -413,10 +415,11 @@ async def setup_intent(
 @router.put("/payment-methods", response_model=UpdatePaymentMethodResponse)
 async def update_default_payment_method(
     payment_method_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     # return await StripeService.update_default_payment_method(
-    #     user, payment_method_id
+    #     db, user, payment_method_id
     # )
     """
     This endpoint is currently not in use
@@ -430,9 +433,10 @@ async def update_default_payment_method(
 @router.delete("/payment-methods/{payment_method_id}")
 async def delete_payment_method(
     payment_method_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # return await StripeService.delete_payment_method(user, payment_method_id)
+    # return await StripeService.delete_payment_method(db, user, payment_method_id)
     """
     This endpoint is currently not in use
     """
