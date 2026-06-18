@@ -228,7 +228,7 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
     expect(routingService.isPremiumAssigned()).toBe(true)
   })
 
-  test("polling success on shared→dedicated calls fetchBeaconToken (PR #623 fix)", async () => {
+  test("polling success on shared→dedicated calls getBeaconTokenApi", async () => {
     // Before the fix, the polling success path set assignmentResult and
     // restored routing but did NOT call getBeaconTokenApi(). This left
     // beaconTokenRef stale and skipped the routing probe that would
@@ -245,7 +245,7 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
       expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
     })
 
-    // autoAssignOnLogin path calls fetchBeaconToken once for the shared assignment.
+    // autoAssignOnLogin path calls getBeaconTokenApi once for the shared assignment.
     const callsAfterMount = mockGetBeaconTokenApi.mock.calls.length
     expect(callsAfterMount).toBeGreaterThanOrEqual(1)
 
@@ -259,9 +259,9 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
       expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
     })
 
-    // The fix: fetchBeaconToken must be called again after polling detects
+    // The fix: getBeaconTokenApi must be called again after polling detects
     // the dedicated instance — this is the beacon-token acquisition +
-    // routing probe that was missing before PR #623.
+    // routing probe that was missing before this fix.
     expect(mockGetBeaconTokenApi.mock.calls.length).toBeGreaterThan(
       callsAfterMount,
     )
