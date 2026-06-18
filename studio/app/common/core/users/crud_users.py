@@ -727,6 +727,7 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         # Step 2: Cancel Stripe subscription (reversible)
         # ----------------------------------------
         try:
+            SubscriptionService._ensure_stripe_initialized()
             await StripeService.handle_cancel_user_subscription(db, user_db)
             deletion_record.step = DeletionStep.STRIPE_CANCELLED.value
             db.commit()
@@ -901,6 +902,7 @@ async def resume_deletion_from_step(record: UserDeletionRecord, db: Session) -> 
 
     if current_order < _get_step_order(DeletionStep.STRIPE_CANCELLED):
         try:
+            SubscriptionService._ensure_stripe_initialized()
             await StripeService.handle_cancel_user_subscription(db, user_db)
             record.step = DeletionStep.STRIPE_CANCELLED.value
             db.commit()

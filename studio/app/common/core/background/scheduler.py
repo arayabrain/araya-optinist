@@ -153,6 +153,7 @@ class BackgroundScheduler:
             trigger=IntervalTrigger(minutes=interval_minutes),
             id=job_id,
             replace_existing=True,
+            misfire_grace_time=60,
             **kwargs,
         )
 

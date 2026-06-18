@@ -73,6 +73,7 @@ const statusToAssignmentResult = (
 ): PremiumAssignmentResult => ({
   message,
   instance_id: assignment.instance_id,
+  instance_id_hash: assignment.instance_id_hash,
   assigned: true,
   is_shared: assignment.is_shared,
   assignment_source: assignment.assignment_source,
@@ -379,6 +380,7 @@ export const PremiumAssignmentProvider: React.FC<{
 
         if (result.assigned) {
           routingService.setPremiumAssigned(true)
+          routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
           try {
             const tokenRes = await getBeaconTokenApi()
             beaconTokenRef.current = tokenRes.data.token
@@ -516,6 +518,9 @@ export const PremiumAssignmentProvider: React.FC<{
           isRetryableError: false,
         }))
         routingService.setPremiumAssigned(true)
+        routingService.setPremiumInstanceId(
+          assignmentResult.instance_id_hash ?? null,
+        )
         try {
           const tokenRes = await getBeaconTokenApi()
           beaconTokenRef.current = tokenRes.data.token
@@ -541,6 +546,9 @@ export const PremiumAssignmentProvider: React.FC<{
           error: null,
         }))
         routingService.setPremiumAssigned(true)
+        routingService.setPremiumInstanceId(
+          assignmentResponse.instance_id_hash ?? null,
+        )
         try {
           const tokenRes = await getBeaconTokenApi()
           beaconTokenRef.current = tokenRes.data.token
@@ -605,6 +613,7 @@ export const PremiumAssignmentProvider: React.FC<{
       statusResult: null,
     }))
     routingService.setPremiumAssigned(false)
+    routingService.setPremiumInstanceId(null)
   }, [])
 
   // Inactivity monitoring for premium users
@@ -817,6 +826,7 @@ export const PremiumAssignmentProvider: React.FC<{
           }))
           // Restore routing: an earlier 502/503 may have flipped premiumAssigned off.
           routingService.setPremiumAssigned(true)
+          routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
         } else {

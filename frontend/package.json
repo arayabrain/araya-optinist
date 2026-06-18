@@ -1,6 +1,6 @@
 {
   "name": "araya-optinist",
-  "version": "1.1.6",
+  "version": "1.1.8",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -33,7 +33,6 @@
     "axios": "^1.6.0",
     "buffer": "^6.0.3",
     "colormap": "^2.3.2",
-    "firebase": "^12.5.0",
     "flexlayout-react": "^0.7.13",
     "lodash": "^4.17.21",
     "moment": "^2.29.4",

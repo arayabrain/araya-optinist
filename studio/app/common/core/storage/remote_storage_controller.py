@@ -1,8 +1,11 @@
+import asyncio
+import fcntl
 import json
 import os
 import shutil
 import time
 from abc import ABCMeta, abstractmethod
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import Enum
@@ -403,6 +406,58 @@ class RemoteSyncLockFileUtil:
             f"after {elapsed:.1f}s, proceeding anyway"
         )
         return False
+
+
+class InputFileLock:
+    """Per-(workspace, file) flock so concurrent processes sharing INPUT_DIR
+    over EFS don't redundantly download the same input. On timeout we fall
+    through unlocked — tmp+rename in the download keeps partial reads
+    impossible regardless."""
+
+    LOCKS_DIRNAME = ".locks"
+    LOCK_WAIT_MAX_SECONDS = 300
+    LOCK_WAIT_POLL_INTERVAL = 0.1
+
+    @classmethod
+    def _lock_path(cls, workspace_id: str, filename: str) -> str:
+        return join_filepath(
+            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, f"{filename}.lock"]
+        )
+
+    @classmethod
+    @asynccontextmanager
+    async def acquire(cls, workspace_id: str, filename: str):
+        lock_path = cls._lock_path(workspace_id, filename)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+
+        fd = await asyncio.to_thread(os.open, lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+
+            def _try_lock() -> bool:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except BlockingIOError:
+                    return False
+
+            start = time.monotonic()
+            while True:
+                if await asyncio.to_thread(_try_lock):
+                    break
+                elapsed = time.monotonic() - start
+                if elapsed >= cls.LOCK_WAIT_MAX_SECONDS:
+                    logger.warning(
+                        f"InputFileLock acquire timeout after {elapsed:.1f}s "
+                        f"for {workspace_id}/{filename}; proceeding without "
+                        "exclusive lock"
+                    )
+                    break
+                await asyncio.sleep(cls.LOCK_WAIT_POLL_INTERVAL)
+
+            yield
+        finally:
+            # close releases the flock; off-loop in case it blocks on NFS.
+            await asyncio.to_thread(os.close, fd)
 
 
 class BaseRemoteStorageController(metaclass=ABCMeta):
@@ -1154,11 +1209,12 @@ class RemoteStorageDownloadUtils:
 
         logger.info(f"On-demand sync for input file: {workspace_id}/{filename}")
 
+        # Lock is held inside download_input_data, covering all entry points.
         controller = RemoteStorageController(remote_bucket_name)
         downloaded = await controller.download_input_data(workspace_id, filename)
         if not downloaded:
             logger.warning(
-                f"Input file not found in remote storage: {workspace_id}/{filename}"
+                f"Input file not found in remote storage: " f"{workspace_id}/{filename}"
             )
             return False
         return os.path.exists(input_path)
