@@ -25,10 +25,16 @@ logger = AppLogger.get_logger()
 def _extract_firebase_error(error: HTTPError) -> str:
     # The raw HTTPError string embeds the request URL with the Firebase API key,
     # so read the error code from the wrapped response body instead of logging it.
-    try:
-        return json.loads(error.args[1])["error"]["message"]
-    except (IndexError, KeyError, ValueError, TypeError):
-        return "authentication failed"
+    bodies = []
+    if len(error.args) > 1:
+        bodies.append(error.args[1])
+    bodies.append(getattr(error, "strerror", None))
+    for body in bodies:
+        try:
+            return json.loads(body)["error"]["message"]
+        except (KeyError, ValueError, TypeError):
+            continue
+    return "authentication failed"
 
 
 async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserModel]:

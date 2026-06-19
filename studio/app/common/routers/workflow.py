@@ -109,7 +109,7 @@ async def fetch_last_experiment(
             logger.debug(f"No previous experiment in workspace {workspace_id}")
         else:
             logger.error(e, exc_info=True)
-        raise e
+        raise
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
