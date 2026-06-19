@@ -200,7 +200,9 @@ const handleUnauthorizedError = async (
 
     if (
       axiosLibrary.isAxiosError(e) &&
-      (e?.response?.status === 400 || e?.response?.status === 401)
+      (e?.response?.status === 400 ||
+        e?.response?.status === 401 ||
+        e?.response?.status === 422)
     ) {
       // eslint-disable-next-line no-console
       console.error("Invalid refresh token, logging out")

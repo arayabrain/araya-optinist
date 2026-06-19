@@ -1,4 +1,4 @@
-import { getRefreshToken } from "utils/auth/AuthUtils"
+import { getRefreshToken, logout } from "utils/auth/AuthUtils"
 import axios from "utils/axios"
 
 export type LoginDTO = {
@@ -22,8 +22,13 @@ export const loginApi = async (data: LoginDTO): Promise<TokenDTO> => {
 }
 
 export const refreshTokenApi = async (): Promise<AccessTokenDTO> => {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) {
+    await logout()
+    throw new Error("No stored refresh token; re-login required")
+  }
   const response = await axios.post("/auth/refresh", {
-    refresh_token: getRefreshToken(),
+    refresh_token: refreshToken,
   })
   return response.data
 }
