@@ -203,7 +203,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(docs_url="/docs", openapi_url="/openapi", lifespan=lifespan)
 
 
-
 @app.get("/health")
 async def health_check():
     try:
