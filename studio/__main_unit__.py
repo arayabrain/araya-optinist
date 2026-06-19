@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 from contextlib import asynccontextmanager
 
@@ -81,7 +80,7 @@ from studio.app.common.routers import (
 )
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.routers import hdf5, mat, nwb, roi
-from studio.app.version import Version
+from studio.app.version import BuildInfo, Version
 
 logger = AppLogger.get_logger()
 
@@ -99,16 +98,14 @@ async def lifespan(app: FastAPI):
     remote_storage_type = RemoteStorageType.get_activated_type()
 
     logger = AppLogger.get_logger()
-    build_commit = _BUILD_INFO.get("git_commit", "N/A")
-    build_time = _BUILD_INFO.get("build_timestamp", "N/A")
 
     logger.info(
         f'"Studio" application startup complete.\n'
         f"    # Platform: {platform.platform()}\n"
         f"    # Python Version: {sys_version}\n"
         f"    # App Version: {Version.APP_VERSION}\n"
-        f"    # Git Commit: {build_commit}\n"
-        f"    # Build Time: {build_time}\n"
+        f"    # Git Commit: {BuildInfo.GIT_COMMIT}\n"
+        f"    # Build Time: {BuildInfo.BUILD_TIMESTAMP}\n"
         f"    # Env:DATA_DIR: {DIRPATH.DATA_DIR}\n"
         f"    # Mode: {mode}\n"
         f"    # REMOTE_STORAGE_TYPE: {remote_storage_type}\n"
@@ -205,21 +202,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(docs_url="/docs", openapi_url="/openapi", lifespan=lifespan)
 
-
-def _load_build_info() -> dict:
-    """Load build metadata written by the Dockerfile at build time."""
-    build_info_path = os.path.join(DIRPATH.ROOT_DIR, "BUILD_INFO")
-    try:
-        with open(build_info_path, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        logger.debug(f"Could not load BUILD_INFO: {e}")
-        return {}
-
-
-_BUILD_INFO = _load_build_info()
 
 
 @app.get("/health")
