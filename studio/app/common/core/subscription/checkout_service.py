@@ -230,9 +230,7 @@ class CheckoutService:
             )
             existing_by_customer.user_id = user_id
             existing_by_customer.provider_id = provider_id
-            existing_by_customer.updated_at = (
-                SubscriptionService.get_current_datetime()
-            )
+            existing_by_customer.updated_at = SubscriptionService.get_current_datetime()
             return existing_by_customer
 
         # No existing record — create new
