@@ -1,0 +1,37 @@
+# Credentials and environment files
+.env*
+**/.env
+**/.env.*
+
+# Firebase service-account credentials (written at runtime from Secrets Manager)
+studio/config/auth/*.json
+!studio/config/auth/*.example.json
+
+# Git
+.git
+.gitignore
+
+# IDE / editor
+.vscode
+.idea
+**/.DS_Store
+
+# Python artifacts
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.pytest_cache
+.tox
+
+# Documentation
+docs
+
+# Node modules (frontend has its own .dockerignore)
+frontend/node_modules
+
+# Claude Code
+.claude
+
+# Terraform state
+infrastructure/terraform/.terraform
+infrastructure/terraform/*.tfstate*
