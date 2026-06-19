@@ -4019,16 +4019,31 @@ def get_ecs_container_instance_id(
             cluster=cluster_name, containerInstances=container_instance_arns
         )
 
-        for container_instance in describe_response.get("containerInstances", []):
-            if container_instance.get("ec2InstanceId") == ec2_instance_id:
-                container_instance_id = container_instance.get("containerInstanceArn")
-                print(f" Found ECS container instance: {container_instance_id}")
-                print(
-                    f"[premium-ecs-map] ec2={ec2_instance_id} "
-                    f"cluster={cluster_name} "
-                    f"result={container_instance_id} reason=found"
-                )
-                return container_instance_id
+        matches = [
+            ci
+            for ci in describe_response.get("containerInstances", [])
+            if ci.get("ec2InstanceId") == ec2_instance_id
+        ]
+        # Prefer the live CI; a fresh CI can overlay a disconnected ghost on one EC2.
+        chosen = next(
+            (
+                ci
+                for ci in matches
+                if ci.get("agentConnected") and ci.get("status") == "ACTIVE"
+            ),
+            matches[0] if matches else None,
+        )
+
+        if chosen:
+            container_instance_id = chosen.get("containerInstanceArn")
+            print(f" Found ECS container instance: {container_instance_id}")
+            print(
+                f"[premium-ecs-map] ec2={ec2_instance_id} "
+                f"cluster={cluster_name} "
+                f"result={container_instance_id} reason=found "
+                f"agent_connected={chosen.get('agentConnected')}"
+            )
+            return container_instance_id
 
         print(f"No ECS container instance found for EC2 instance " f"{ec2_instance_id}")
         print(
@@ -5541,6 +5556,14 @@ def cleanup_ghost_ecs_registrations():
 
         container_instances = describe_response.get("containerInstances", [])
 
+        ec2_with_live_ci = {
+            ci["ec2InstanceId"]
+            for ci in container_instances
+            if ci.get("agentConnected")
+            and ci.get("status") == "ACTIVE"
+            and ci.get("ec2InstanceId")
+        }
+
         # Batched describe_instances has no partial-result mode
         # — any unknown ID fails the call.
         ec2_ids = [
@@ -5629,7 +5652,19 @@ def cleanup_ghost_ecs_registrations():
                 reconnected_ec2_ids.append(ec2_instance_id)
                 continue
 
-            # EC2 alive + agent disconnected — apply grace period.
+            # Disconnected CI sharing its EC2 with a live CI is superseded; reap now.
+            if ec2_instance_id in ec2_with_live_ci:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": "superseded by live container instance on same EC2",
+                        "status": status,
+                    }
+                )
+                continue
+
+            # EC2 alive + agent disconnected, no live sibling — apply grace period.
             tags = ec2_tags_by_id.get(ec2_instance_id, {})
             first_seen = tags.get(_DISCONNECT_TAG_KEY)
 

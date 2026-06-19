@@ -3575,6 +3575,152 @@ class TestCleanupGhostECSRegistrations:
             )
             mock_ec2.describe_instances.assert_not_called()
 
+    def test_superseded_sibling_deregistered_immediately(self, mock_env_vars_premium):
+        """Disconnected CI sharing an EC2 with a live CI is reaped with no
+        grace; the live sibling is left untouched (dual-CI case)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            live_arn = "arn:aws:ecs:r:a:ci/live"
+            ghost_arn = "arn:aws:ecs:r:a:ci/ghost"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [live_arn, ghost_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": ghost_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-shared",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ghost_arn,
+                force=True,
+            )
+            # The live sibling's EC2 must not be tagged for a disconnect grace.
+            mock_ec2.create_tags.assert_not_called()
+
+
+class TestGetEcsContainerInstanceIdPrefersLive:
+    """get_ecs_container_instance_id must resolve the live CI when a fresh
+    CI overlays a disconnected ghost on the same EC2 (dual-CI case)."""
+
+    def _ecs(self, mock_boto3):
+        mock_ecs = MagicMock()
+        mock_boto3.return_value = mock_ecs
+        return mock_ecs
+
+    def test_prefers_connected_active_ci(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            ghost_arn = "arn:aws:ecs:r:a:ci/ghost"
+            live_arn = "arn:aws:ecs:r:a:ci/live"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ghost_arn, live_arn]
+            }
+            # Ghost listed first to prove order does not decide the winner.
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ghost_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+
+            from premium_manager import get_ecs_container_instance_id
+
+            result = get_ecs_container_instance_id("i-shared", "test-cluster")
+            assert result == live_arn
+
+    def test_single_ci_unchanged(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            arn = "arn:aws:ecs:r:a:ci/only"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": arn,
+                        "ec2InstanceId": "i-solo",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import get_ecs_container_instance_id
+
+            result = get_ecs_container_instance_id("i-solo", "test-cluster")
+            assert result == arn
+
+    def test_no_match_returns_none(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": ["arn:aws:ecs:r:a:ci/other"]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": "arn:aws:ecs:r:a:ci/other",
+                        "ec2InstanceId": "i-different",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import get_ecs_container_instance_id
+
+            result = get_ecs_container_instance_id("i-missing", "test-cluster")
+            assert result is None
+
 
 class TestGetHostPortForInstance:
     """get_host_port_for_instance polls describe_tasks → networkBindings,
