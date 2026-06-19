@@ -180,7 +180,12 @@ class CheckoutService:
         db: Session, user_id: int, provider_id: int, customer_id: str
     ) -> SubscriptionUserAccount:
         """
-        Create or update user account with payment provider
+        Create or update user account with payment provider.
+
+        Handles re-registration: if a user deletes their account and
+        re-registers with the same email, the Stripe customer ID is reused.
+        The old row (from the deleted user) is reassigned to the new user_id
+        to satisfy the unique constraint on provider_customer_id.
 
         Args:
             db: Database session
@@ -191,6 +196,7 @@ class CheckoutService:
         Returns:
             SubscriptionUserAccount object
         """
+        # Check if this user already has an account
         user_account = (
             db.query(SubscriptionUserAccount)
             .filter(
@@ -200,17 +206,42 @@ class CheckoutService:
             .first()
         )
 
-        if not user_account:
-            user_account = SubscriptionUserAccount(
-                user_id=user_id,
-                provider_id=provider_id,
-                provider_customer_id=customer_id,
-            )
-            db.add(user_account)
-        else:
+        if user_account:
             user_account.provider_customer_id = customer_id
             user_account.updated_at = SubscriptionService.get_current_datetime()
+            return user_account
 
+        # Check if this Stripe customer ID already exists (e.g., from a
+        # deleted user who re-registered with the same email). Reassign
+        # the row to the new user instead of creating a duplicate.
+        existing_by_customer = (
+            db.query(SubscriptionUserAccount)
+            .filter(
+                SubscriptionUserAccount.provider_customer_id == customer_id,
+            )
+            .first()
+        )
+
+        if existing_by_customer:
+            logger.info(
+                f"Reassigning Stripe customer {customer_id} from "
+                f"user {existing_by_customer.user_id} to user {user_id} "
+                f"(re-registration)"
+            )
+            existing_by_customer.user_id = user_id
+            existing_by_customer.provider_id = provider_id
+            existing_by_customer.updated_at = (
+                SubscriptionService.get_current_datetime()
+            )
+            return existing_by_customer
+
+        # No existing record — create new
+        user_account = SubscriptionUserAccount(
+            user_id=user_id,
+            provider_id=provider_id,
+            provider_customer_id=customer_id,
+        )
+        db.add(user_account)
         return user_account
 
     @staticmethod
