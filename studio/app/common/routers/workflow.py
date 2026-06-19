@@ -104,7 +104,11 @@ async def fetch_last_experiment(
             )
 
     except HTTPException as e:
-        logger.error(e, exc_info=True)
+        # A workspace with no previous run is an expected state, not an error.
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.debug(f"No previous experiment in workspace {workspace_id}")
+        else:
+            logger.error(e, exc_info=True)
         raise e
     except RemoteStorageLockError as e:
         logger.error(e)

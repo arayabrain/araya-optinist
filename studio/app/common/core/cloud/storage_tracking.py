@@ -513,8 +513,10 @@ async def _calculate_live_storage_usage(
             return await _calculate_local_user_storage(user_id)
 
     except Exception as e:
+        # Use repr(e) so the exception type is visible even when str(e) is empty.
         logger.error(
-            f"Failed to calculate live storage usage for " f"user {user_id}: {e}"
+            f"Failed to calculate live storage usage for user {user_id}: {e!r}",
+            exc_info=True,
         )
         return 0
 

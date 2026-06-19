@@ -22,6 +22,15 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
+def _extract_firebase_error(error: HTTPError) -> str:
+    # The raw HTTPError string embeds the request URL with the Firebase API key,
+    # so read the error code from the wrapped response body instead of logging it.
+    try:
+        return json.loads(error.args[1])["error"]["message"]
+    except (IndexError, KeyError, ValueError, TypeError):
+        return "authentication failed"
+
+
 async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserModel]:
     try:
         user = pyrebase_app.auth().sign_in_with_email_and_password(
@@ -70,11 +79,12 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
         raise
 
     except (HTTPError, AssertionError) as e:
-        logger.warning(e)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        message = _extract_firebase_error(e) if isinstance(e, HTTPError) else str(e)
+        logger.warning(f"Authentication failed: {message}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
     except Exception as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
@@ -101,14 +111,14 @@ async def send_reset_password_mail(db: Session, email: str):
         pyrebase_app.auth().send_password_reset_email(email)
         return JSONResponse(content=None, status_code=status.HTTP_200_OK)
     except HTTPError as e:
-        logger.warning(e)
-        err = json.loads(e.strerror)
+        message = _extract_firebase_error(e)
+        logger.warning(f"Password reset failed: {message}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=err.get("error").get("message"),
+            detail=message,
         )
     except Exception as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -136,11 +146,12 @@ async def login_with_uid(db: Session, uid: str, current_user: User) -> Token:
         return token
 
     except (HTTPError, AssertionError) as e:
-        logger.warning(e)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        message = _extract_firebase_error(e) if isinstance(e, HTTPError) else str(e)
+        logger.warning(f"Authentication failed: {message}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
     except Exception as e:
-        logger.error(e)
+        logger.error(e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
