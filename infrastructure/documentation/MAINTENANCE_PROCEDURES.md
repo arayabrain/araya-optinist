@@ -293,12 +293,12 @@ aws secretsmanager list-secrets \
 **Secrets to review:**
 - `subscr-optinist/database/config` — Database credentials
 - `subscr-optinist/app/config` — Application secrets
-- `subscr-optinist-cloud-credentials` — AWS access keys for S3
+- `subscr-optinist-cloud-credentials` — AWS access keys for S3 (legacy; no longer read by containers, which authenticate via the ECS Task Role)
 - `subscr-optinist/firebase/private-key` — Firebase service account key
 - `subscr-optinist/firebase/config` — Firebase configuration
 - `subscr-optinist/stripe/config` — Stripe payment configuration
 
-**Procedure:** Update the secret value in Secrets Manager, then force a new ECS deployment so containers pick up the new credentials.
+**Procedure:** Update the secret value in Secrets Manager, then force a new ECS deployment so containers pick up the new credentials at startup. (Exception: `*-cloud-credentials` is no longer consumed by containers — they use the ECS Task Role — so rotating it does not require an ECS redeploy.)
 
 ### 2. Capacity Planning Review
 
