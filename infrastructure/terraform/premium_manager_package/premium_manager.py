@@ -2859,11 +2859,11 @@ def _assign_premium_user_impl(
 ) -> Dict[str, Any]:
     """Core premium user assignment logic.
 
-    Called from assign_premium_user AFTER releasing the per-user
-    distributed lock.  Lightweight pre-checks (restore_pending_release,
-    get_existing_user_assignment) run inside the lock scope; this
-    function handles the heavy EC2/ECS operations outside the lock
-    to keep lock hold time under ~5 s (issue #630).
+    Called from assign_premium_user UNDER the per-user distributed
+    lock to prevent concurrent calls from corrupting ALB resources
+    (issue #630).  The lock uses ASSIGN_LOCK_TIMEOUT_SECONDS (10 s)
+    so the 409 fallback is reliably reachable within the Lambda
+    invocation timeout (60 s).
     """
     # Restore pending_release if user refreshed (beacon fired but user is back)
     try:
@@ -3776,11 +3776,15 @@ def assign_premium_user(
         }
 
     # Serialize concurrent assign calls for the same user_id.
-    # Lock scope is intentionally narrow: only lightweight DB checks
-    # run under the lock.  The heavy EC2/ECS operations in
-    # _assign_premium_user_impl run OUTSIDE the lock to keep hold
-    # time under ~5 s and ensure the 409 fallback is reachable
-    # within the Lambda invocation timeout (issue #630).
+    # Without this lock, two concurrent calls can both pass the
+    # "existing assignment?" check and race through TG creation,
+    # causing the second call's orphan-cleanup to delete the first
+    # call's freshly-created target group (issue #630).
+    #
+    # The entire _assign_premium_user_impl runs under the lock.
+    # Lock timeout is short (ASSIGN_LOCK_TIMEOUT_SECONDS = 10) so
+    # the 409 fallback is reliably reachable within the Lambda
+    # invocation timeout (60 s).
     lock_name = f"{ASSIGN_USER_LOCK_PREFIX}{user_id}"
     with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
         if not acquired:
@@ -3827,56 +3831,17 @@ def assign_premium_user(
                 ),
             }
 
-        # ── Under lock: lightweight pre-check only ──
-
-        # Restore pending_release if user refreshed (beacon fired
-        # but user is back).  restore_pending_release validates
-        # instance state internally (returns None for stopped/
-        # terminated instances), so early return is safe here.
-        try:
-            restored = restore_pending_release(user_id)
-            if restored:
-                print(
-                    f"Restored pending_release for user {user_id} -> "
-                    f"instance {restored.get('instance_id')} (under lock)"
-                )
-                return {
-                    "statusCode": 200,
-                    "body": json.dumps(
-                        {
-                            "message": "Premium assignment restored",
-                            "instance_id": restored.get("instance_id"),
-                            "target_group_arn": restored.get("target_group_arn"),
-                            "rule_arn": restored.get("alb_rule_arn"),
-                            "assigned": True,
-                            "is_shared": bool(restored.get("is_shared", False)),
-                            "assignment_source": "restored_from_pending_release",
-                        }
-                    ),
-                }
-        except Exception as restore_error:
-            print(f"Pending release restore check failed: {str(restore_error)}")
-
-        # NOTE: We intentionally do NOT check get_existing_user_assignment
-        # here.  That check requires instance-state handling (restart
-        # stopped instances, clean up terminated ones) which is done
-        # properly by _assign_premium_user_impl below.
-        #
-        # Lock is released when the `with` block exits below.
-        # Long-running EC2/ECS operations proceed without holding
-        # the lock.
-
-    # ── Outside lock: heavy operations ──
-    return _assign_premium_user_impl(
-        user_id,
-        event,
-        user_uid,
-        ec2,
-        elbv2,
-        backend_port,
-        vpc_id,
-        alb_listener_arn,
-    )
+        # ── Under lock: full assignment logic ──
+        return _assign_premium_user_impl(
+            user_id,
+            event,
+            user_uid,
+            ec2,
+            elbv2,
+            backend_port,
+            vpc_id,
+            alb_listener_arn,
+        )
 
 
 def invoke_migration_async():

@@ -63,8 +63,6 @@ class TestPremiumManagerEvents:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
-                    # restore_pending_release (in assign_premium_user): no pending row
-                    None,
                     # restore_pending_release (in _assign_premium_user_impl): no pending
                     None,
                     # get_existing_user_assignment: no existing assignment
@@ -1212,9 +1210,6 @@ class TestConcurrentAssignLock:
             "premium_manager.distributed_lock",
             new=lock_mock,
         ), patch(
-            "premium_manager.restore_pending_release",
-            return_value=None,
-        ), patch(
             "premium_manager._assign_premium_user_impl",
             return_value=impl_response,
         ):
@@ -1231,41 +1226,9 @@ class TestConcurrentAssignLock:
                 timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
             )
 
-    def test_lock_acquired_restored_returns_200(self, mock_env_vars_premium):
-        """When the lock is acquired and restore_pending_release finds
-        a restorable assignment, return 200 immediately without calling
-        _assign_premium_user_impl."""
-        restored = {
-            "instance_id": "i-restored",
-            "target_group_arn": "arn:tg/restored",
-            "alb_rule_arn": "arn:rule/restored",
-            "is_shared": 0,
-        }
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(True),
-        ), patch(
-            "premium_manager.restore_pending_release",
-            return_value=restored,
-        ), patch(
-            "premium_manager._assign_premium_user_impl",
-        ) as mock_impl:
-            from premium_manager import assign_premium_user
-
-            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
-
-            assert result["statusCode"] == 200
-            body = json.loads(result["body"])
-            assert body["instance_id"] == "i-restored"
-            assert body["assignment_source"] == "restored_from_pending_release"
-            mock_impl.assert_not_called()
-
-    def test_lock_acquired_no_restore_calls_impl(self, mock_env_vars_premium):
-        """When the lock is acquired but restore_pending_release returns
-        None, _assign_premium_user_impl is called OUTSIDE the lock
-        for full instance-state handling."""
+    def test_lock_acquired_calls_impl_under_lock(self, mock_env_vars_premium):
+        """When the lock is acquired, _assign_premium_user_impl is
+        called INSIDE the lock for full mutual exclusion."""
         impl_response = {
             "statusCode": 200,
             "body": json.dumps({"instance_id": "i-new", "assigned": True}),
@@ -1275,9 +1238,6 @@ class TestConcurrentAssignLock:
         ), patch(
             "premium_manager.distributed_lock",
             new=self._lock_ctx(True),
-        ), patch(
-            "premium_manager.restore_pending_release",
-            return_value=None,
         ), patch(
             "premium_manager._assign_premium_user_impl",
             return_value=impl_response,
