@@ -79,7 +79,7 @@ MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
 ASSIGN_USER_LOCK_PREFIX = "assign_user_"
 ASSIGN_LOCK_TIMEOUT_SECONDS = (
-    10  # Short timeout for per-user assign lock (lightweight checks only)
+    10  # Short acquisition timeout so 409 fallback is reachable within Lambda timeout
 )
 LOCK_TIMEOUT_SECONDS = 60
 
