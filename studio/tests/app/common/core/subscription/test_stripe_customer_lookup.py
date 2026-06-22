@@ -19,12 +19,8 @@ CRUD_MODULE = "studio.app.common.core.users.crud_users"
 
 def _set_locked_query_result(mock_db, value):
     """Set the return value for the FOR UPDATE query chain."""
-    (
-        mock_db.query.return_value
-        .filter.return_value
-        .with_for_update.return_value
-        .first.return_value
-    ) = value
+    chain = mock_db.query.return_value.filter.return_value
+    chain.with_for_update.return_value.first.return_value = value
 
 
 @pytest.fixture
