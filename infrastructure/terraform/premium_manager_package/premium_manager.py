@@ -78,7 +78,9 @@ CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
 ASSIGN_USER_LOCK_PREFIX = "assign_user_"
-ASSIGN_LOCK_TIMEOUT_SECONDS = 10  # Short timeout for per-user assign lock (lightweight checks only)
+ASSIGN_LOCK_TIMEOUT_SECONDS = (
+    10  # Short timeout for per-user assign lock (lightweight checks only)
+)
 LOCK_TIMEOUT_SECONDS = 60
 
 # Wait before first migration attempt to let instances boot
