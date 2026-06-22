@@ -63,7 +63,9 @@ class TestPremiumManagerEvents:
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
-                    # restore_pending_release: no pending_release row
+                    # restore_pending_release (in assign_premium_user): no pending row
+                    None,
+                    # restore_pending_release (in _assign_premium_user_impl): no pending
                     None,
                     # get_existing_user_assignment: no existing assignment
                     None,
@@ -1199,6 +1201,10 @@ class TestConcurrentAssignLock:
         """The lock name must include the user_id so different users
         do not block each other."""
         lock_mock = self._lock_ctx(True)
+        impl_response = {
+            "statusCode": 200,
+            "body": json.dumps({"instance_id": "i-impl", "assigned": True}),
+        }
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -1209,22 +1215,81 @@ class TestConcurrentAssignLock:
             "premium_manager.restore_pending_release",
             return_value=None,
         ), patch(
-            "premium_manager.get_existing_user_assignment",
-            return_value={
-                "instance_id": "i-exist",
-                "target_group_arn": "arn:tg/exist",
-                "alb_rule_arn": "arn:rule/exist",
-                "is_shared": 0,
-            },
-        ), patch(
-            "premium_manager.pymysql.connect",
-            return_value=setup_db_mock(fetchone_values=[None]),
+            "premium_manager._assign_premium_user_impl",
+            return_value=impl_response,
         ):
-            from premium_manager import ASSIGN_USER_LOCK_PREFIX, assign_premium_user
+            from premium_manager import (
+                ASSIGN_LOCK_TIMEOUT_SECONDS,
+                ASSIGN_USER_LOCK_PREFIX,
+                assign_premium_user,
+            )
 
             assign_premium_user(42, {"tier": "premium"}, "uid_42")
 
-            lock_mock.assert_called_once_with(f"{ASSIGN_USER_LOCK_PREFIX}42")
+            lock_mock.assert_called_once_with(
+                f"{ASSIGN_USER_LOCK_PREFIX}42",
+                timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
+            )
+
+    def test_lock_acquired_restored_returns_200(self, mock_env_vars_premium):
+        """When the lock is acquired and restore_pending_release finds
+        a restorable assignment, return 200 immediately without calling
+        _assign_premium_user_impl."""
+        restored = {
+            "instance_id": "i-restored",
+            "target_group_arn": "arn:tg/restored",
+            "alb_rule_arn": "arn:rule/restored",
+            "is_shared": 0,
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(True),
+        ), patch(
+            "premium_manager.restore_pending_release",
+            return_value=restored,
+        ), patch(
+            "premium_manager._assign_premium_user_impl",
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["instance_id"] == "i-restored"
+            assert body["assignment_source"] == "restored_from_pending_release"
+            mock_impl.assert_not_called()
+
+    def test_lock_acquired_no_restore_calls_impl(self, mock_env_vars_premium):
+        """When the lock is acquired but restore_pending_release returns
+        None, _assign_premium_user_impl is called OUTSIDE the lock
+        for full instance-state handling."""
+        impl_response = {
+            "statusCode": 200,
+            "body": json.dumps({"instance_id": "i-new", "assigned": True}),
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(True),
+        ), patch(
+            "premium_manager.restore_pending_release",
+            return_value=None,
+        ), patch(
+            "premium_manager._assign_premium_user_impl",
+            return_value=impl_response,
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["instance_id"] == "i-new"
+            mock_impl.assert_called_once()
 
 
 class TestDictCursorFix:
