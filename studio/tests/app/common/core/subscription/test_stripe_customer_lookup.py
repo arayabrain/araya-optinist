@@ -8,14 +8,23 @@ Tests cover:
 - update_user: Stripe email sync
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 STRIPE_MODULE = "studio.app.common.core.subscription.stripe_service"
 CHECKOUT_MODULE = "studio.app.common.core.subscription.checkout_service"
 CRUD_MODULE = "studio.app.common.core.users.crud_users"
+
+
+def _set_locked_query_result(mock_db, value):
+    """Set the return value for the FOR UPDATE query chain."""
+    (
+        mock_db.query.return_value
+        .filter.return_value
+        .with_for_update.return_value
+        .first.return_value
+    ) = value
 
 
 @pytest.fixture
@@ -64,9 +73,7 @@ class TestGetOrCreateStripeCustomer:
         mock_account = MagicMock()
         mock_account.provider_customer_id = "cus_test123"
 
-        mock_db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
-            mock_account
-        )
+        _set_locked_query_result(mock_db, mock_account)
 
         with patch(f"{STRIPE_MODULE}.stripe") as mock_stripe:
             mock_stripe.Customer.retrieve.return_value = mock_stripe_customer
@@ -89,9 +96,7 @@ class TestGetOrCreateStripeCustomer:
         mock_account = MagicMock()
         mock_account.provider_customer_id = "cus_deleted"
 
-        mock_db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
-            mock_account
-        )
+        _set_locked_query_result(mock_db, mock_account)
 
         deleted_customer = MagicMock()
         deleted_customer.get.return_value = True  # deleted
@@ -129,9 +134,7 @@ class TestGetOrCreateStripeCustomer:
             get_or_create_stripe_customer,
         )
 
-        mock_db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
-            None
-        )
+        _set_locked_query_result(mock_db, None)
 
         with (
             patch(
@@ -161,9 +164,7 @@ class TestGetOrCreateStripeCustomer:
             get_or_create_stripe_customer,
         )
 
-        mock_db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
-            None
-        )
+        _set_locked_query_result(mock_db, None)
 
         new_customer = MagicMock()
         new_customer.id = "cus_new"
