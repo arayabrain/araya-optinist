@@ -829,6 +829,19 @@ export const PremiumAssignmentProvider: React.FC<{
           routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
+
+          // Acquire beacon token (matches autoAssignOnLogin behavior).
+          // Also serves as a routing probe — if the dedicated instance is
+          // unreachable, the 502/503 handler will flip premiumAssigned off
+          // and emit unreachable, causing polling to resume automatically.
+          try {
+            const tokenRes = await getBeaconTokenApi()
+            beaconTokenRef.current = tokenRes.data.token
+          } catch {
+            // Non-critical; beacon will fail gracefully.
+            // If this was a 502/503, the axios interceptor already
+            // handled recovery (setPremiumAssigned(false) + retry).
+          }
         } else {
           if (assignment) {
             setState((prev) => {
