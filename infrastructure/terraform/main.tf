@@ -496,18 +496,6 @@ output "ssh_command" {
   value       = "ssh -i ${local_file.private_key.filename} ec2-user@<INSTANCE_IP>"
 }
 
-# Output the access key credentials
-output "optinist_cloud_user_access_key_id" {
-  description = "Access Key ID for subscr-optinist-cloud-user"
-  value       = aws_iam_access_key.subscr_optinist_cloud_user_access_key.id
-}
-
-output "optinist_cloud_user_secret_access_key" {
-  description = "Secret Access Key for subscr-optinist-cloud-user"
-  value       = aws_iam_access_key.subscr_optinist_cloud_user_access_key.secret
-  sensitive   = true
-}
-
 output "alb_arn" {
   description = "ARN of the main ALB for premium instance routing"
   value       = aws_lb.autoscaling.arn
