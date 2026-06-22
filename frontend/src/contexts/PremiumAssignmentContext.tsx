@@ -58,6 +58,11 @@ const MAX_POLL_INTERVAL_MS = 60000
 const MAX_POLL_ATTEMPTS = 40
 const BACKOFF_MULTIPLIER = 1.5
 const ERROR_BACKOFF_MULTIPLIER = 2
+// When polling returns assignment=null after a retryable assign response,
+// re-trigger assignPremiumInstance() every N polls instead of only polling
+// status. This handles the case where the assign API timed out without
+// actually creating an assignment (e.g., lock contention).
+const ASSIGN_RETRY_POLL_THRESHOLD = 3
 
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
@@ -782,13 +787,25 @@ export const PremiumAssignmentProvider: React.FC<{
       console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
       )
+      // If the original assign was retryable and no assignment was ever
+      // found, reset the attempt guard so the user can retry via page
+      // refresh or user gesture without closing the tab entirely.
+      if (state.assignmentResult && !state.assignmentResult.assigned) {
+        hasAttemptedRef.current = false
+        ssRemove(SS_HAS_ATTEMPTED)
+        // Allow re-assignment on the next user gesture (click/keydown).
+        needsReassignAfterReleaseRef.current = true
+      }
       setState((prev) => ({
         ...prev,
+        assignmentResult: null,
         error:
           "No premium instance available after extended wait. " +
           "Please try again later or contact support.",
         isRetryableError: false,
       }))
+      setPollAttempts(0)
+      setPollInterval(INITIAL_POLL_INTERVAL_MS)
       return
     }
 
@@ -864,6 +881,63 @@ export const PremiumAssignmentProvider: React.FC<{
             })
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
+
+            // If the original assign API returned a retryable error
+            // (scaling_in_progress / retry_after) but no assignment was
+            // actually created, status polling alone will never discover
+            // one.  Periodically re-call assignPremiumInstance() so the
+            // backend gets another chance to create the assignment.
+            const originalWasRetryable =
+              state.assignmentResult != null && !state.assignmentResult.assigned
+
+            if (
+              originalWasRetryable &&
+              pollAttempts > 0 &&
+              (pollAttempts + 1) % ASSIGN_RETRY_POLL_THRESHOLD === 0
+            ) {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[premium-poll] Re-triggering assign after ${pollAttempts + 1} null-status polls`,
+              )
+              try {
+                const reassignResult = await assignPremiumInstance()
+                if (reassignResult?.assigned) {
+                  // eslint-disable-next-line no-console
+                  console.log(
+                    "[premium-poll] Re-assign succeeded:",
+                    reassignResult.instance_id,
+                  )
+                  setState((prev) => ({
+                    ...prev,
+                    assignmentResult: reassignResult,
+                    error: null,
+                    isRetryableError: false,
+                  }))
+                  routingService.setPremiumAssigned(true)
+                  routingService.setPremiumInstanceId(
+                    reassignResult.instance_id_hash ?? null,
+                  )
+                  try {
+                    const tokenRes = await getBeaconTokenApi()
+                    beaconTokenRef.current = tokenRes.data.token
+                  } catch {
+                    // Non-critical; beacon will fail gracefully
+                  }
+                  setPollInterval(INITIAL_POLL_INTERVAL_MS)
+                  setPollAttempts(0)
+                  return
+                }
+                // Still retryable or non-retryable — fall through to
+                // continue polling with backoff.
+              } catch (retryError) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  "[premium-poll] Re-assign attempt failed:",
+                  retryError,
+                )
+                // Fall through to continue polling
+              }
+            }
           }
           // eslint-disable-next-line no-console
           console.warn(
