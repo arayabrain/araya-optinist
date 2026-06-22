@@ -766,6 +766,35 @@ export const PremiumAssignmentProvider: React.FC<{
     }
   }, [state.assignmentResult?.is_shared])
 
+  // Shared helper for the polling effect: finalize a dedicated assignment
+  // by updating state, restoring routing, acquiring the beacon token, and
+  // resetting the polling cadence.  Used by both the "status found dedicated"
+  // path and the "re-trigger assign succeeded" path to avoid duplication.
+  const finalizeDedicatedAssignment = async (
+    result: PremiumAssignmentResult,
+    statusResult?: PremiumStatusResult | null,
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      assignmentResult: result,
+      ...(statusResult !== undefined ? { statusResult } : {}),
+      error: null,
+      isRetryableError: false,
+    }))
+    routingService.setPremiumAssigned(true)
+    routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
+    try {
+      const tokenRes = await getBeaconTokenApi()
+      beaconTokenRef.current = tokenRes.data.token
+    } catch {
+      // Non-critical; beacon will fail gracefully.
+      // If this was a 502/503, the axios interceptor already
+      // handled recovery (setPremiumAssigned(false) + retry).
+    }
+    setPollInterval(INITIAL_POLL_INTERVAL_MS)
+    setPollAttempts(0)
+  }
+
   // Poll runs while unreachable so a backend reassignment is caught; a poll result alone never clears unreachable (only a real response does).
   useEffect(() => {
     if (
@@ -834,31 +863,10 @@ export const PremiumAssignmentProvider: React.FC<{
             "Premium instance now available",
           )
           // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
-          setState((prev) => ({
-            ...prev,
-            assignmentResult: result,
-            statusResult: status,
-            error: null,
-            isRetryableError: false,
-          }))
-          // Restore routing: an earlier 502/503 may have flipped premiumAssigned off.
-          routingService.setPremiumAssigned(true)
-          routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
-          setPollInterval(INITIAL_POLL_INTERVAL_MS)
-          setPollAttempts(0)
-
-          // Acquire beacon token (matches autoAssignOnLogin behavior).
           // Also serves as a routing probe — if the dedicated instance is
           // unreachable, the 502/503 handler will flip premiumAssigned off
           // and emit unreachable, causing polling to resume automatically.
-          try {
-            const tokenRes = await getBeaconTokenApi()
-            beaconTokenRef.current = tokenRes.data.token
-          } catch {
-            // Non-critical; beacon will fail gracefully.
-            // If this was a 502/503, the axios interceptor already
-            // handled recovery (setPremiumAssigned(false) + retry).
-          }
+          await finalizeDedicatedAssignment(result, status)
         } else {
           if (assignment) {
             setState((prev) => {
@@ -887,6 +895,9 @@ export const PremiumAssignmentProvider: React.FC<{
             // actually created, status polling alone will never discover
             // one.  Periodically re-call assignPremiumInstance() so the
             // backend gets another chance to create the assignment.
+            // NOTE: state.assignmentResult is read from the closure and
+            // must remain in this effect's dependency array (see
+            // deps below) to stay fresh across re-renders.
             const originalWasRetryable =
               state.assignmentResult != null && !state.assignmentResult.assigned
 
@@ -907,24 +918,7 @@ export const PremiumAssignmentProvider: React.FC<{
                     "[premium-poll] Re-assign succeeded:",
                     reassignResult.instance_id,
                   )
-                  setState((prev) => ({
-                    ...prev,
-                    assignmentResult: reassignResult,
-                    error: null,
-                    isRetryableError: false,
-                  }))
-                  routingService.setPremiumAssigned(true)
-                  routingService.setPremiumInstanceId(
-                    reassignResult.instance_id_hash ?? null,
-                  )
-                  try {
-                    const tokenRes = await getBeaconTokenApi()
-                    beaconTokenRef.current = tokenRes.data.token
-                  } catch {
-                    // Non-critical; beacon will fail gracefully
-                  }
-                  setPollInterval(INITIAL_POLL_INTERVAL_MS)
-                  setPollAttempts(0)
+                  await finalizeDedicatedAssignment(reassignResult)
                   return
                 }
                 // Still retryable or non-retryable — fall through to
