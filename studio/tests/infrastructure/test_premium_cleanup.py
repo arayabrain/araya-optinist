@@ -1116,3 +1116,70 @@ class TestGetAllPremiumInstancesEnvFilter:
 
             result = get_all_premium_instances_with_states()
             assert len(result) == 0
+
+
+class TestGetEcsContainerInstanceArnPrefersLive:
+    """_get_ecs_container_instance_arn must resolve the live CI when a fresh
+    CI overlays a disconnected ghost on the same EC2 (dual-CI case)."""
+
+    def _ecs(self, mock_boto3):
+        mock_ecs = MagicMock()
+        mock_boto3.return_value = mock_ecs
+        return mock_ecs
+
+    def test_prefers_connected_active_ci(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            ghost_arn = "arn:aws:ecs:r:a:ci/ghost"
+            live_arn = "arn:aws:ecs:r:a:ci/live"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ghost_arn, live_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ghost_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+
+            from premium_cleanup import _get_ecs_container_instance_arn
+
+            result = _get_ecs_container_instance_arn("i-shared", "test-cluster")
+            assert result == live_arn
+
+    def test_single_ci_unchanged(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            arn = "arn:aws:ecs:r:a:ci/only"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": arn,
+                        "ec2InstanceId": "i-solo",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_cleanup import _get_ecs_container_instance_arn
+
+            result = _get_ecs_container_instance_arn("i-solo", "test-cluster")
+            assert result == arn

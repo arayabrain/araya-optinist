@@ -172,6 +172,13 @@ export const PremiumAssignmentProvider: React.FC<{
   // StrictMode double-invocations without triggering extra renders.
   const hasAttemptedRef = useRef(ssRead(SS_HAS_ATTEMPTED) === "true")
 
+  // Bumped to re-fire the auto-assign effect after inactivity release.
+  // Unlike hasAttemptedRef (which is also false on initial mount), this ref
+  // is only true after an explicit inactivity release — preventing the
+  // duplicate-/assign regression.
+  const [autoAssignGeneration, setAutoAssignGeneration] = useState(0)
+  const needsReassignAfterReleaseRef = useRef(false)
+
   // Polling state with backoff
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
   const [pollAttempts, setPollAttempts] = useState(() => {
@@ -643,6 +650,13 @@ export const PremiumAssignmentProvider: React.FC<{
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
         autoReleaseOnLogout()
+        // Notify other tabs so they can also re-prime for reassignment.
+        tabSync.broadcastPremiumReleased()
+        // Reset the assignment guard so autoAssignOnLogin can run again.
+        hasAttemptedRef.current = false
+        ssRemove(SS_HAS_ATTEMPTED)
+        // Flag that the next user gesture should trigger reassignment.
+        needsReassignAfterReleaseRef.current = true
       } else if (
         timeSinceLastActivity >= oneHourMs &&
         !showInactivityWarningRef.current
@@ -698,9 +712,33 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+      // Allow this tab to reassign on next user gesture.
+      hasAttemptedRef.current = false
+      ssRemove(SS_HAS_ATTEMPTED)
+      needsReassignAfterReleaseRef.current = true
     })
     return unsubscribe
   }, [])
+
+  // Re-fire auto-assign after inactivity auto-release when user resumes activity.
+  // Guarded by needsReassignAfterReleaseRef (not hasAttemptedRef) so that
+  // normal initial-mount clicks never bump the counter — avoiding the
+  // duplicate-/assign.
+  useEffect(() => {
+    if (!isPremiumUser) return
+    const onActivity = () => {
+      if (needsReassignAfterReleaseRef.current) {
+        needsReassignAfterReleaseRef.current = false
+        setAutoAssignGeneration((g) => g + 1)
+      }
+    }
+    window.addEventListener("pointerdown", onActivity)
+    window.addEventListener("keydown", onActivity)
+    return () => {
+      window.removeEventListener("pointerdown", onActivity)
+      window.removeEventListener("keydown", onActivity)
+    }
+  }, [isPremiumUser])
 
   // Auto-assign when premium user is detected
   useEffect(() => {
@@ -713,7 +751,7 @@ export const PremiumAssignmentProvider: React.FC<{
         hasCurrentUser: !!currentUser,
       })
     }
-  }, [isPremiumUser, currentUser, autoAssignOnLogin])
+  }, [isPremiumUser, currentUser, autoAssignOnLogin, autoAssignGeneration])
 
   // Reset polling state when user changes or gets a dedicated instance
   useEffect(() => {
@@ -791,6 +829,19 @@ export const PremiumAssignmentProvider: React.FC<{
           routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
           setPollInterval(INITIAL_POLL_INTERVAL_MS)
           setPollAttempts(0)
+
+          // Acquire beacon token (matches autoAssignOnLogin behavior).
+          // Also serves as a routing probe — if the dedicated instance is
+          // unreachable, the 502/503 handler will flip premiumAssigned off
+          // and emit unreachable, causing polling to resume automatically.
+          try {
+            const tokenRes = await getBeaconTokenApi()
+            beaconTokenRef.current = tokenRes.data.token
+          } catch {
+            // Non-critical; beacon will fail gracefully.
+            // If this was a 502/503, the axios interceptor already
+            // handled recovery (setPremiumAssigned(false) + retry).
+          }
         } else {
           if (assignment) {
             setState((prev) => {

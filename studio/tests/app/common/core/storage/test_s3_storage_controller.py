@@ -1154,3 +1154,43 @@ class TestDownloadS3RefreshesParentDir:
 
         assert result is True
         assert os.path.isfile(final_path)
+
+
+class TestDownloadAllExperimentsMetasViaAwsCli:
+    """The aws-cli sync path must let the AWS CLI inherit the process
+    environment so the ECS Task Role's container credentials are used, rather
+    than passing a curated env= that pins the (now-removed) static keys."""
+
+    def setup_method(self):
+        self.controller = S3StorageController("test-bucket")
+
+    @pytest.mark.asyncio
+    async def test_aws_cli_subprocess_inherits_process_env(self):
+        """subprocess.run is called without a curated env=, so the AWS CLI
+        resolves credentials via the default chain (Task Role on ECS)."""
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        completed = MagicMock()
+        completed.returncode = 0
+        completed.stdout = ""  # no target files -> no downloads attempted
+
+        method = getattr(
+            self.controller,
+            "_S3StorageController__download_all_experiments_metas_via_aws_cli",
+        )
+        with patch.object(
+            self.controller,
+            "_S3StorageController__get_s3_client",
+            return_value=mock_client,
+        ), patch("subprocess.run", return_value=completed) as mock_run:
+            result = await method()
+
+        assert result is True
+        mock_run.assert_called_once()
+        # Regression guard: no curated env= is passed (the old one dropped
+        # AWS_CONTAINER_CREDENTIALS_RELATIVE_URI and injected None once the
+        # static keys were removed), so the child inherits os.environ.
+        assert "env" not in mock_run.call_args.kwargs
+        assert "aws s3 sync" in mock_run.call_args.args[0]

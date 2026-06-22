@@ -107,6 +107,7 @@ MOCK_ENV_VARS_COMMON = {
     "AUTOSCALING_TARGET_GROUP_ARN": (
         "arn:aws:elasticloadbalancing:region:account:" "targetgroup/asg"
     ),
+    "CLUSTER_NAME": "test-cluster",
     "FREE_IDLE_TIMEOUT_HOURS": "2",
     "PREMIUM_IDLE_TIMEOUT_HOURS": "2",
 }

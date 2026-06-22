@@ -304,8 +304,8 @@ Key fields for publishing:
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `S3_DEFAULT_BUCKET_NAME` | S3 bucket for published experiments | None (required) |
-| `AWS_ACCESS_KEY_ID` | AWS credentials (or IAM role) | None |
-| `AWS_SECRET_ACCESS_KEY` | AWS credentials (or IAM role) | None |
+| `AWS_ACCESS_KEY_ID` | Optional static AWS credentials (local/dev only; unset in ECS, which uses the Task Role) | None |
+| `AWS_SECRET_ACCESS_KEY` | Optional static AWS credentials (local/dev only; unset in ECS, which uses the Task Role) | None |
 | `AWS_REGION` | AWS region | None |
 
 ### HTTP Status Codes
