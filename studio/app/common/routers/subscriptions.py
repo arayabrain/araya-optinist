@@ -654,8 +654,15 @@ async def get_user_invoices(
 
         logger.debug(f"Fetching invoices for user {user_id} with email {user.email}")
 
-        # Find Stripe customer (unified lookup: DB first, then Stripe API)
-        customer = await get_or_create_stripe_customer(db, current_user)
+        # Find Stripe customer (read-only — don't create if missing)
+        from studio.app.common.core.subscription.stripe_service import (
+            get_stripe_customer,
+        )
+
+        customer = await get_stripe_customer(db, current_user)
+        if not customer:
+            logger.info(f"No Stripe customer found for user {user_id}")
+            return []
 
         # Get all invoices for this customer
         invoices = stripe.Invoice.list(

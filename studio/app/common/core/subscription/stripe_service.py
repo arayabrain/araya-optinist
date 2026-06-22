@@ -40,6 +40,50 @@ async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]
         return None
 
 
+async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Customer]:
+    """Get a Stripe customer WITHOUT creating one.
+
+    Use this for read-only endpoints (payment methods, invoices) where
+    creating a Stripe customer as a side effect is undesirable.
+
+    Returns None if no customer exists.
+    """
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
+
+    # 1. Check database first (most reliable — tied to user_id)
+    subscription_account = CheckoutService.get_subscription_account(db, user.id)
+    if subscription_account:
+        try:
+            customer = stripe.Customer.retrieve(
+                subscription_account.provider_customer_id
+            )
+            if not customer.get("deleted"):
+                return customer
+        except stripe.error.StripeError as e:
+            logger.warning(
+                f"Failed to retrieve Stripe customer "
+                f"{subscription_account.provider_customer_id} "
+                f"for user {user.id}: {e}"
+            )
+
+    # 2. Fall back to Stripe API lookup by email (no create)
+    customer = await _get_stripe_customer_by_email(user.email)
+    if customer:
+        # Persist to DB so future lookups use the fast path
+        provider_id = CheckoutService.get_or_create_stripe_provider(db)
+        CheckoutService.create_or_update_user_account(
+            db, user.id, provider_id, customer.id
+        )
+        db.commit()
+        logger.info(
+            f"Found existing Stripe customer {customer.id} by email "
+            f"for user {user.id}, persisted to DB"
+        )
+        return customer
+
+    return None
+
+
 async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Customer:
     """Get or create a Stripe customer using a unified lookup strategy.
 
@@ -49,11 +93,21 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     3. Create new customer
 
     Always persists the customer ID to the database to prevent duplicates.
+    Uses SELECT FOR UPDATE to prevent concurrent requests from creating
+    duplicate customers for the same user.
     """
     from studio.app.common.core.subscription.checkout_service import CheckoutService
+    from studio.app.common.models.subscription import SubscriptionUserAccount
 
-    # 1. Check database first (most reliable — tied to user_id)
-    subscription_account = CheckoutService.get_subscription_account(db, user.id)
+    # 1. Check database first with row lock to prevent race conditions.
+    #    If a row exists, the lock serializes concurrent requests for the
+    #    same user so only one can proceed at a time.
+    subscription_account = (
+        db.query(SubscriptionUserAccount)
+        .filter(SubscriptionUserAccount.user_id == user.id)
+        .with_for_update()
+        .first()
+    )
     if subscription_account:
         try:
             customer = stripe.Customer.retrieve(
@@ -75,11 +129,13 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     # 2. Fall back to Stripe API lookup by email
     customer = await _get_stripe_customer_by_email(user.email)
     if customer:
-        # Persist to DB so future lookups use the fast path
-        provider_id = CheckoutService.get_or_create_stripe_provider(db)
-        CheckoutService.create_or_update_user_account(
-            db, user.id, provider_id, customer.id
-        )
+        # Persist to DB inside a SAVEPOINT so a concurrent insert doesn't
+        # break the outer transaction.
+        with db.begin_nested():
+            provider_id = CheckoutService.get_or_create_stripe_provider(db)
+            CheckoutService.create_or_update_user_account(
+                db, user.id, provider_id, customer.id
+            )
         db.commit()
         logger.info(
             f"Found existing Stripe customer {customer.id} by email "
@@ -95,9 +151,12 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     )
     logger.info(f"Created new Stripe customer {customer.id} for user {user.id}")
 
-    # Persist to DB
-    provider_id = CheckoutService.get_or_create_stripe_provider(db)
-    CheckoutService.create_or_update_user_account(db, user.id, provider_id, customer.id)
+    # Persist to DB inside a SAVEPOINT
+    with db.begin_nested():
+        provider_id = CheckoutService.get_or_create_stripe_provider(db)
+        CheckoutService.create_or_update_user_account(
+            db, user.id, provider_id, customer.id
+        )
     db.commit()
 
     return customer
@@ -171,8 +230,11 @@ class StripeService:
                 f"with email {user.email}"
             )
 
-            # Find Stripe customer (DB first, then Stripe API)
-            stripe_customer = await get_or_create_stripe_customer(db, user)
+            # Find Stripe customer (read-only — don't create if missing)
+            stripe_customer = await get_stripe_customer(db, user)
+            if not stripe_customer:
+                logger.info(f"No Stripe customer found for user {user.id}")
+                return None
 
             # Get default payment method
             default_pm_id = stripe_customer.invoice_settings.default_payment_method
@@ -406,8 +468,11 @@ class StripeService:
                 f"Fetching payment methods for user {user.id} with email {user.email}"
             )
 
-            # Find Stripe customer (unified lookup)
-            customer = await get_or_create_stripe_customer(db, user)
+            # Find Stripe customer (read-only — don't create if missing)
+            customer = await get_stripe_customer(db, user)
+            if not customer:
+                logger.info(f"No Stripe customer found for user {user.id}")
+                return []
 
             # Get all payment methods for this customer (cards and link)
             result = []

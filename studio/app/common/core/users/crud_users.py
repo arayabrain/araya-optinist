@@ -509,13 +509,13 @@ async def update_user(
 
         # Sync email to Stripe customer if user has a subscription account
         if data.email:
+            import stripe
+
+            from studio.app.common.core.subscription.checkout_service import (
+                CheckoutService,
+            )
+
             try:
-                import stripe
-
-                from studio.app.common.core.subscription.checkout_service import (
-                    CheckoutService,
-                )
-
                 stripe_account = CheckoutService.get_subscription_account(
                     db, user_db.id
                 )
@@ -529,7 +529,7 @@ async def update_user(
                         f"{stripe_account.provider_customer_id} "
                         f"for user {user_db.id}"
                     )
-            except Exception as e:
+            except stripe.error.StripeError as e:
                 logger.warning(
                     f"Failed to sync email to Stripe for user {user_db.id}: {e}"
                 )

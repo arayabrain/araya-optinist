@@ -649,7 +649,7 @@ class WebhookService:
             if not user:
                 raise HTTPException(
                     status_code=404,
-                    detail=(f"No active user found for customer {customer_id}"),
+                    detail=f"No active user found for customer {customer_id}",
                 )
 
             # Find the plan by matching the price or metadata
