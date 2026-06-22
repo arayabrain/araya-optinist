@@ -2017,6 +2017,9 @@ class TestStandbyReplenishmentAsync:
             ), patch(
                 "premium_manager.pymysql.connect"
             ) as mock_pymysql, patch(
+                "premium_manager.distributed_lock",
+                new=_always_acquired_lock(),
+            ), patch(
                 "boto3.client"
             ) as mock_boto3:
                 mock_pymysql.return_value = setup_db_mock()
