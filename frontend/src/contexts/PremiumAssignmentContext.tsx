@@ -58,6 +58,11 @@ const MAX_POLL_INTERVAL_MS = 60000
 const MAX_POLL_ATTEMPTS = 40
 const BACKOFF_MULTIPLIER = 1.5
 const ERROR_BACKOFF_MULTIPLIER = 2
+// When polling returns assignment=null after a retryable assign response,
+// re-trigger assignPremiumInstance() every N polls instead of only polling
+// status. This handles the case where the assign API timed out without
+// actually creating an assignment (e.g., lock contention).
+const ASSIGN_RETRY_POLL_THRESHOLD = 3
 
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
@@ -761,6 +766,35 @@ export const PremiumAssignmentProvider: React.FC<{
     }
   }, [state.assignmentResult?.is_shared])
 
+  // Shared helper for the polling effect: finalize a dedicated assignment
+  // by updating state, restoring routing, acquiring the beacon token, and
+  // resetting the polling cadence.  Used by both the "status found dedicated"
+  // path and the "re-trigger assign succeeded" path to avoid duplication.
+  const finalizeDedicatedAssignment = async (
+    result: PremiumAssignmentResult,
+    statusResult?: PremiumStatusResult | null,
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      assignmentResult: result,
+      ...(statusResult !== undefined ? { statusResult } : {}),
+      error: null,
+      isRetryableError: false,
+    }))
+    routingService.setPremiumAssigned(true)
+    routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
+    try {
+      const tokenRes = await getBeaconTokenApi()
+      beaconTokenRef.current = tokenRes.data.token
+    } catch {
+      // Non-critical; beacon will fail gracefully.
+      // If this was a 502/503, the axios interceptor already
+      // handled recovery (setPremiumAssigned(false) + retry).
+    }
+    setPollInterval(INITIAL_POLL_INTERVAL_MS)
+    setPollAttempts(0)
+  }
+
   // Poll runs while unreachable so a backend reassignment is caught; a poll result alone never clears unreachable (only a real response does).
   useEffect(() => {
     if (
@@ -782,13 +816,25 @@ export const PremiumAssignmentProvider: React.FC<{
       console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
       )
+      // If the original assign was retryable and no assignment was ever
+      // found, reset the attempt guard so the user can retry via page
+      // refresh or user gesture without closing the tab entirely.
+      if (state.assignmentResult && !state.assignmentResult.assigned) {
+        hasAttemptedRef.current = false
+        ssRemove(SS_HAS_ATTEMPTED)
+        // Allow re-assignment on the next user gesture (click/keydown).
+        needsReassignAfterReleaseRef.current = true
+      }
       setState((prev) => ({
         ...prev,
+        assignmentResult: null,
         error:
           "No premium instance available after extended wait. " +
           "Please try again later or contact support.",
         isRetryableError: false,
       }))
+      setPollAttempts(0)
+      setPollInterval(INITIAL_POLL_INTERVAL_MS)
       return
     }
 
@@ -817,31 +863,10 @@ export const PremiumAssignmentProvider: React.FC<{
             "Premium instance now available",
           )
           // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
-          setState((prev) => ({
-            ...prev,
-            assignmentResult: result,
-            statusResult: status,
-            error: null,
-            isRetryableError: false,
-          }))
-          // Restore routing: an earlier 502/503 may have flipped premiumAssigned off.
-          routingService.setPremiumAssigned(true)
-          routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
-          setPollInterval(INITIAL_POLL_INTERVAL_MS)
-          setPollAttempts(0)
-
-          // Acquire beacon token (matches autoAssignOnLogin behavior).
           // Also serves as a routing probe — if the dedicated instance is
           // unreachable, the 502/503 handler will flip premiumAssigned off
           // and emit unreachable, causing polling to resume automatically.
-          try {
-            const tokenRes = await getBeaconTokenApi()
-            beaconTokenRef.current = tokenRes.data.token
-          } catch {
-            // Non-critical; beacon will fail gracefully.
-            // If this was a 502/503, the axios interceptor already
-            // handled recovery (setPremiumAssigned(false) + retry).
-          }
+          await finalizeDedicatedAssignment(result, status)
         } else {
           if (assignment) {
             setState((prev) => {
@@ -864,6 +889,49 @@ export const PremiumAssignmentProvider: React.FC<{
             })
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
+
+            // If the original assign API returned a retryable error
+            // (scaling_in_progress / retry_after) but no assignment was
+            // actually created, status polling alone will never discover
+            // one.  Periodically re-call assignPremiumInstance() so the
+            // backend gets another chance to create the assignment.
+            // NOTE: state.assignmentResult is read from the closure and
+            // must remain in this effect's dependency array (see
+            // deps below) to stay fresh across re-renders.
+            const originalWasRetryable =
+              state.assignmentResult != null && !state.assignmentResult.assigned
+
+            if (
+              originalWasRetryable &&
+              pollAttempts > 0 &&
+              (pollAttempts + 1) % ASSIGN_RETRY_POLL_THRESHOLD === 0
+            ) {
+              // eslint-disable-next-line no-console
+              console.log(
+                `[premium-poll] Re-triggering assign after ${pollAttempts + 1} null-status polls`,
+              )
+              try {
+                const reassignResult = await assignPremiumInstance()
+                if (reassignResult?.assigned) {
+                  // eslint-disable-next-line no-console
+                  console.log(
+                    "[premium-poll] Re-assign succeeded:",
+                    reassignResult.instance_id,
+                  )
+                  await finalizeDedicatedAssignment(reassignResult)
+                  return
+                }
+                // Still retryable or non-retryable — fall through to
+                // continue polling with backoff.
+              } catch (retryError) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  "[premium-poll] Re-assign attempt failed:",
+                  retryError,
+                )
+                // Fall through to continue polling
+              }
+            }
           }
           // eslint-disable-next-line no-console
           console.warn(
