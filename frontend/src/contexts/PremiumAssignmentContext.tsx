@@ -619,6 +619,7 @@ export const PremiumAssignmentProvider: React.FC<{
     }))
     routingService.setPremiumAssigned(false)
     routingService.setPremiumInstanceId(null)
+    routingService.clearRoutingToken()
   }, [])
 
   // Inactivity monitoring for premium users
@@ -717,6 +718,7 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+      routingService.clearRoutingToken()
       // Allow this tab to reassign on next user gesture.
       hasAttemptedRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)

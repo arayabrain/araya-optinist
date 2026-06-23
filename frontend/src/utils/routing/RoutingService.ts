@@ -150,6 +150,15 @@ export class RoutingService {
   }
 
   /**
+   * Clear only the routing token (not tier, routing info, or premium flags).
+   * Used on premium release to prevent stale token reuse on reassignment.
+   */
+  clearRoutingToken(): void {
+    this.routingToken = null
+    this.clearTokenFromStorage()
+  }
+
+  /**
    * Set whether premium assignment has been confirmed
    * Controls whether routing headers are actually sent
    */
