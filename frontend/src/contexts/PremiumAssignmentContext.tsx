@@ -816,10 +816,11 @@ export const PremiumAssignmentProvider: React.FC<{
       console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
       )
-      // If the original assign was retryable and no assignment was ever
-      // found, reset the attempt guard so the user can retry via page
-      // refresh or user gesture without closing the tab entirely.
-      if (state.assignmentResult && !state.assignmentResult.assigned) {
+      // Reset the attempt guard so the user can retry via page refresh
+      // or user gesture without closing the tab entirely.  Covers both
+      // the retryable-assign case (assigned:false) and the instance-lost
+      // case (assigned:true but status returned null).
+      if (state.assignmentResult) {
         hasAttemptedRef.current = false
         ssRemove(SS_HAS_ATTEMPTED)
         // Allow re-assignment on the next user gesture (click/keydown).
@@ -890,19 +891,22 @@ export const PremiumAssignmentProvider: React.FC<{
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
 
-            // If the original assign API returned a retryable error
-            // (scaling_in_progress / retry_after) but no assignment was
-            // actually created, status polling alone will never discover
-            // one.  Periodically re-call assignPremiumInstance() so the
-            // backend gets another chance to create the assignment.
+            // Re-trigger assignPremiumInstance() when status returns null
+            // and we have a stale assignmentResult. Two scenarios:
+            //  1. Original assign returned retryable error (assigned:false,
+            //     scaling_in_progress) — polling alone can't create one.
+            //  2. Instance was successfully assigned but later stopped/
+            //     terminated externally (assigned:true, but status now null)
+            //     — the tab silently fell back to free tier.
+            // In both cases, periodically re-call assign so the backend
+            // gets another chance to place the user on a live instance.
             // NOTE: state.assignmentResult is read from the closure and
             // must remain in this effect's dependency array (see
             // deps below) to stay fresh across re-renders.
-            const originalWasRetryable =
-              state.assignmentResult != null && !state.assignmentResult.assigned
+            const shouldRetriggerAssign = state.assignmentResult != null
 
             if (
-              originalWasRetryable &&
+              shouldRetriggerAssign &&
               pollAttempts > 0 &&
               (pollAttempts + 1) % ASSIGN_RETRY_POLL_THRESHOLD === 0
             ) {
