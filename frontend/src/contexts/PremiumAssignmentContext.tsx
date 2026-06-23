@@ -693,15 +693,19 @@ export const PremiumAssignmentProvider: React.FC<{
   }, [isPremiumUser, currentUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Sleep/wake detection callback (Cases 50-51)
+  // Send a backend heartbeat to keep the instance alive, but do NOT reset
+  // the frontend inactivity timer.  Device wake (e.g. macOS Power Nap) is
+  // not a user interaction — only explicit gestures ("Stay Active" button)
+  // should reset the 2h inactivity countdown.
   const handleDeviceWake = useCallback(() => {
     if (!isPremiumUser || !state.assignmentResult) return
-    recordActivity().catch((error) => {
+    sendPremiumHeartbeat().catch((error) => {
       // eslint-disable-next-line no-console
-      console.warn("Failed to record activity after wake:", error)
+      console.warn("Failed to send heartbeat after wake:", error)
     })
-  }, [isPremiumUser, state.assignmentResult, recordActivity])
+  }, [isPremiumUser, state.assignmentResult])
 
-  // Detect sleep/wake cycles and refresh activity status (Cases 50-51)
+  // Detect sleep/wake cycles and send backend heartbeat (Cases 50-51)
   useSleepDetection(handleDeviceWake, {
     enabled: isPremiumUser && !!state.assignmentResult,
   })
