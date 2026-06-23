@@ -207,12 +207,9 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
 
       it("should send heartbeat on wake without resetting inactivity timer", () => {
         let heartbeatSent = false
-        const lastActivityTime = Date.now()
-        const initialTime = lastActivityTime
 
         const sendHeartbeat = jest.fn().mockImplementation(() => {
           heartbeatSent = true
-          // NOTE: lastActivityTime is NOT updated — wake is not user activity
         })
 
         const simulator = new SleepDetectionSimulator(sendHeartbeat)
@@ -223,7 +220,6 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
 
         expect(sendHeartbeat).toHaveBeenCalled()
         expect(heartbeatSent).toBe(true)
-        expect(lastActivityTime).toBe(initialTime) // unchanged
         simulator.stop()
       })
     })
@@ -363,14 +359,10 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
 
   describe("Premium Context Integration", () => {
     it("should send heartbeat on wake without updating activity time", async () => {
-      const lastActivityTime = Date.now()
-      const initialTime = lastActivityTime
-
       let heartbeatCalled = false
 
       const handleDeviceWake = jest.fn(() => {
         heartbeatCalled = true
-        // NOTE: lastActivityTime is NOT updated — wake is not user activity
       })
 
       const simulator = new SleepDetectionSimulator(handleDeviceWake)
@@ -381,7 +373,6 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
 
       expect(handleDeviceWake).toHaveBeenCalled()
       expect(heartbeatCalled).toBe(true)
-      expect(lastActivityTime).toBe(initialTime) // unchanged
       simulator.stop()
     })
 
