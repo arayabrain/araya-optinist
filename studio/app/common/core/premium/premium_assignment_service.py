@@ -273,6 +273,23 @@ class PremiumAssignmentService:
                     "requires_retry": True,
                 }
 
+            elif status_code == 409:
+                # Another Lambda invocation is already assigning this user.
+                # The lock holder likely completed by now; retry promptly.
+                body = json.loads(response_payload.get("body", "{}"))
+                logger.warning(
+                    f"Concurrent assignment conflict for user {user_id}, " f"will retry"
+                )
+                return {
+                    "success": False,
+                    "message": body.get(
+                        "message",
+                        "Another assignment in progress. Please retry.",
+                    ),
+                    "requires_retry": True,
+                    "retry_after": 5,
+                }
+
             else:
                 # Assignment failed
                 body = json.loads(response_payload.get("body", "{}"))
