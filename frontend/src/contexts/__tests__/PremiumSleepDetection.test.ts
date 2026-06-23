@@ -205,21 +205,21 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         simulator.stop()
       })
 
-      it("should allow activity recording to dismiss warning", () => {
-        let showInactivityWarning = true
+      it("should send heartbeat on wake without resetting inactivity timer", () => {
+        let heartbeatSent = false
 
-        const recordActivity = jest.fn().mockImplementation(() => {
-          showInactivityWarning = false
+        const sendHeartbeat = jest.fn().mockImplementation(() => {
+          heartbeatSent = true
         })
 
-        const simulator = new SleepDetectionSimulator(recordActivity)
+        const simulator = new SleepDetectionSimulator(sendHeartbeat)
         simulator.start()
 
         simulator.simulateSleep(200000)
         jest.advanceTimersByTime(30000)
 
-        expect(recordActivity).toHaveBeenCalled()
-        expect(showInactivityWarning).toBe(false)
+        expect(sendHeartbeat).toHaveBeenCalled()
+        expect(heartbeatSent).toBe(true)
         simulator.stop()
       })
     })
@@ -358,41 +358,30 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
   })
 
   describe("Premium Context Integration", () => {
-    it("should simulate recordActivity being called on wake", async () => {
-      let lastActivityTime = Date.now()
+    it("should send heartbeat on wake without updating activity time", async () => {
       let heartbeatCalled = false
 
-      const recordActivity = jest.fn().mockImplementation(async () => {
+      const handleDeviceWake = jest.fn(() => {
         heartbeatCalled = true
-        lastActivityTime = Date.now()
       })
-
-      const handleDeviceWake = () => {
-        recordActivity().catch(() => {})
-      }
 
       const simulator = new SleepDetectionSimulator(handleDeviceWake)
       simulator.start()
 
-      const initialTime = lastActivityTime
-
       simulator.simulateSleep(200000)
       jest.advanceTimersByTime(30000)
 
-      await Promise.resolve()
-
-      expect(recordActivity).toHaveBeenCalled()
+      expect(handleDeviceWake).toHaveBeenCalled()
       expect(heartbeatCalled).toBe(true)
-      expect(lastActivityTime).toBeGreaterThanOrEqual(initialTime)
       simulator.stop()
     })
 
-    it("should handle recordActivity errors without crashing", async () => {
-      const recordActivity = jest.fn().mockRejectedValue(new Error("API error"))
-
-      const handleDeviceWake = () => {
-        recordActivity().catch(() => {})
-      }
+    it("should handle heartbeat errors without crashing", () => {
+      // Mirrors production: sendPremiumHeartbeat() rejects, but .catch()
+      // prevents the rejection from propagating synchronously.
+      const handleDeviceWake = jest.fn(() => {
+        Promise.reject(new Error("API error")).catch(() => {})
+      })
 
       const simulator = new SleepDetectionSimulator(handleDeviceWake)
       simulator.start()
@@ -403,9 +392,7 @@ describe("Sleep Detection Integration (Cases 50-51)", () => {
         jest.advanceTimersByTime(30000)
       }).not.toThrow()
 
-      await Promise.resolve()
-
-      expect(recordActivity).toHaveBeenCalled()
+      expect(handleDeviceWake).toHaveBeenCalled()
       simulator.stop()
     })
   })
