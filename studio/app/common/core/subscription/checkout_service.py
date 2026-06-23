@@ -196,7 +196,6 @@ class CheckoutService:
         Returns:
             SubscriptionUserAccount object
         """
-        # Check if this user already has an account
         user_account = (
             db.query(SubscriptionUserAccount)
             .filter(
@@ -233,7 +232,6 @@ class CheckoutService:
             existing_by_customer.updated_at = SubscriptionService.get_current_datetime()
             return existing_by_customer
 
-        # No existing record — create new
         user_account = SubscriptionUserAccount(
             user_id=user_id,
             provider_id=provider_id,

@@ -5,7 +5,6 @@ Tests cover:
 - get_or_create_stripe_customer: all 4 lookup paths
 - get_stripe_customer: read-only lookup (no create)
 - create_or_update_user_account: re-registration reassignment
-- update_user: Stripe email sync
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ import pytest
 
 STRIPE_MODULE = "studio.app.common.core.subscription.stripe_service"
 CHECKOUT_MODULE = "studio.app.common.core.subscription.checkout_service"
-CRUD_MODULE = "studio.app.common.core.users.crud_users"
 
 
 def _set_locked_query_result(mock_db, value):
@@ -241,31 +239,11 @@ class TestGetStripeCustomer:
                 f"{STRIPE_MODULE}._get_stripe_customer_by_email",
                 return_value=None,
             ),
+            patch(f"{STRIPE_MODULE}.stripe") as mock_stripe,
         ):
             result = await get_stripe_customer(mock_db, mock_user)
 
             assert result is None
-
-    @pytest.mark.asyncio
-    async def test_never_calls_stripe_create(self, mock_db, mock_user):
-        """Even when nothing is found, get_stripe_customer must NOT create."""
-        from studio.app.common.core.subscription.stripe_service import (
-            get_stripe_customer,
-        )
-
-        with (
-            patch(
-                f"{CHECKOUT_MODULE}.CheckoutService.get_subscription_account",
-                return_value=None,
-            ),
-            patch(
-                f"{STRIPE_MODULE}._get_stripe_customer_by_email",
-                return_value=None,
-            ),
-            patch(f"{STRIPE_MODULE}.stripe") as mock_stripe,
-        ):
-            await get_stripe_customer(mock_db, mock_user)
-
             mock_stripe.Customer.create.assert_not_called()
 
 
@@ -324,37 +302,3 @@ class TestCreateOrUpdateUserAccount:
         mock_db.add.assert_called_once()
         assert result.user_id == 300
         assert result.provider_customer_id == "cus_brand_new"
-
-
-# ---------------------------------------------------------------------------
-# update_user — Stripe email sync
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateUserStripeSync:
-    """Stripe email sync should use narrow exception handling."""
-
-    def test_syncs_email_to_stripe(self):
-        """When user has a subscription account, email is synced to Stripe."""
-        mock_account = MagicMock()
-        mock_account.provider_customer_id = "cus_sync"
-
-        with (
-            patch(
-                f"{CHECKOUT_MODULE}.CheckoutService.get_subscription_account",
-                return_value=mock_account,
-            ),
-            patch("stripe.Customer.modify") as mock_modify,
-        ):
-            mock_modify.return_value = MagicMock()
-
-            # Simulate the sync logic directly (import stripe locally
-            # the same way crud_users.py does)
-            import stripe
-
-            stripe.Customer.modify(
-                mock_account.provider_customer_id,
-                email="new@example.com",
-            )
-
-            mock_modify.assert_called_with("cus_sync", email="new@example.com")

@@ -40,11 +40,53 @@ async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]
         return None
 
 
+def _retrieve_if_active(account, user_id: int) -> Optional[stripe.Customer]:
+    """Retrieve from Stripe; return None if deleted or unreachable."""
+    try:
+        customer = stripe.Customer.retrieve(account.provider_customer_id)
+        if not customer.get("deleted"):
+            return customer
+        logger.warning(
+            f"Stripe customer {account.provider_customer_id} "
+            f"was deleted for user {user_id}, falling through to lookup"
+        )
+    except stripe.error.StripeError as e:
+        logger.warning(
+            f"Failed to retrieve Stripe customer "
+            f"{account.provider_customer_id} "
+            f"for user {user_id}: {e}"
+        )
+    return None
+
+
+def _persist_customer(db: Session, user: User, customer) -> None:
+    """Save Stripe customer to DB. Swallow IntegrityError from a concurrent insert."""
+    from sqlalchemy.exc import IntegrityError
+
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
+
+    try:
+        with db.begin_nested():
+            provider_id = CheckoutService.get_or_create_stripe_provider(db)
+            CheckoutService.create_or_update_user_account(
+                db, user.id, provider_id, customer.id
+            )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.info(
+            f"Concurrent insert for user {user.id} / customer {customer.id}, "
+            f"row already exists"
+        )
+
+
 async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Customer]:
     """Get a Stripe customer WITHOUT creating one.
 
     Use this for read-only endpoints (payment methods, invoices) where
     creating a Stripe customer as a side effect is undesirable.
+    May persist a discovered Stripe-to-user association to the database
+    for future lookups.
 
     Returns None if no customer exists.
     """
@@ -53,32 +95,14 @@ async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Custom
     # 1. Check database first (most reliable — tied to user_id)
     subscription_account = CheckoutService.get_subscription_account(db, user.id)
     if subscription_account:
-        try:
-            customer = stripe.Customer.retrieve(
-                subscription_account.provider_customer_id
-            )
-            if not customer.get("deleted"):
-                return customer
-        except stripe.error.StripeError as e:
-            logger.warning(
-                f"Failed to retrieve Stripe customer "
-                f"{subscription_account.provider_customer_id} "
-                f"for user {user.id}: {e}"
-            )
+        customer = _retrieve_if_active(subscription_account, user.id)
+        if customer:
+            return customer
 
     # 2. Fall back to Stripe API lookup by email (no create)
     customer = await _get_stripe_customer_by_email(user.email)
     if customer:
-        # Persist to DB so future lookups use the fast path
-        provider_id = CheckoutService.get_or_create_stripe_provider(db)
-        CheckoutService.create_or_update_user_account(
-            db, user.id, provider_id, customer.id
-        )
-        db.commit()
-        logger.info(
-            f"Found existing Stripe customer {customer.id} by email "
-            f"for user {user.id}, persisted to DB"
-        )
+        _persist_customer(db, user, customer)
         return customer
 
     return None
@@ -96,7 +120,6 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     Uses SELECT FOR UPDATE to prevent concurrent requests from creating
     duplicate customers for the same user.
     """
-    from studio.app.common.core.subscription.checkout_service import CheckoutService
     from studio.app.common.models.subscription import SubscriptionUserAccount
 
     # 1. Check database first with row lock to prevent race conditions.
@@ -109,38 +132,14 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
         .first()
     )
     if subscription_account:
-        try:
-            customer = stripe.Customer.retrieve(
-                subscription_account.provider_customer_id
-            )
-            if not customer.get("deleted"):
-                return customer
-            logger.warning(
-                f"Stripe customer {subscription_account.provider_customer_id} "
-                f"was deleted for user {user.id}, falling through to lookup"
-            )
-        except stripe.error.StripeError as e:
-            logger.warning(
-                f"Failed to retrieve Stripe customer "
-                f"{subscription_account.provider_customer_id} "
-                f"for user {user.id}: {e}"
-            )
+        customer = _retrieve_if_active(subscription_account, user.id)
+        if customer:
+            return customer
 
     # 2. Fall back to Stripe API lookup by email
     customer = await _get_stripe_customer_by_email(user.email)
     if customer:
-        # Persist to DB inside a SAVEPOINT so a concurrent insert doesn't
-        # break the outer transaction.
-        with db.begin_nested():
-            provider_id = CheckoutService.get_or_create_stripe_provider(db)
-            CheckoutService.create_or_update_user_account(
-                db, user.id, provider_id, customer.id
-            )
-        db.commit()
-        logger.info(
-            f"Found existing Stripe customer {customer.id} by email "
-            f"for user {user.id}, persisted to DB"
-        )
+        _persist_customer(db, user, customer)
         return customer
 
     # 3. Create new customer as last resort
@@ -151,13 +150,7 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     )
     logger.info(f"Created new Stripe customer {customer.id} for user {user.id}")
 
-    # Persist to DB inside a SAVEPOINT
-    with db.begin_nested():
-        provider_id = CheckoutService.get_or_create_stripe_provider(db)
-        CheckoutService.create_or_update_user_account(
-            db, user.id, provider_id, customer.id
-        )
-    db.commit()
+    _persist_customer(db, user, customer)
 
     return customer
 
