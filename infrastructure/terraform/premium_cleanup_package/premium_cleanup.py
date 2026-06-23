@@ -86,6 +86,7 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     try:
         cloudwatch = _get_cloudwatch_client()
         cloudwatch.delete_alarms(AlarmNames=[alarm_name])
+        print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"Warning: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
 
@@ -239,10 +240,21 @@ def _get_ecs_container_instance_arn(
         desc = ecs.describe_container_instances(
             cluster=cluster_name, containerInstances=arns
         )
-        for ci in desc.get("containerInstances", []):
-            if ci.get("ec2InstanceId") == ec2_instance_id:
-                return ci.get("containerInstanceArn")
-        return None
+        matches = [
+            ci
+            for ci in desc.get("containerInstances", [])
+            if ci.get("ec2InstanceId") == ec2_instance_id
+        ]
+        # Prefer the live CI; a fresh CI can overlay a disconnected ghost on one EC2.
+        chosen = next(
+            (
+                ci
+                for ci in matches
+                if ci.get("agentConnected") and ci.get("status") == "ACTIVE"
+            ),
+            matches[0] if matches else None,
+        )
+        return chosen.get("containerInstanceArn") if chosen else None
     except Exception as e:
         print(f"Error mapping EC2 to ECS container instance: " f"{str(e)}")
         return None

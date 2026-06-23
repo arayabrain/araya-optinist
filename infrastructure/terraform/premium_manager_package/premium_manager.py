@@ -77,6 +77,10 @@ CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
+ASSIGN_USER_LOCK_PREFIX = "assign_user_"
+ASSIGN_LOCK_TIMEOUT_SECONDS = (
+    10  # Short acquisition timeout so 409 fallback is reachable within Lambda timeout
+)
 LOCK_TIMEOUT_SECONDS = 60
 
 # Wait before first migration attempt to let instances boot
@@ -1772,14 +1776,16 @@ def start_standby_instance(instance_id: str):
             )
             return False
 
-        # Update state in database (only for non-standby assignments)
+        # The only row for this instance now is its standby placeholder
+        # (is_standby = 1); scope the update to it so a stray regular
+        # assignment row for the same instance can never be touched.
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """UPDATE premium_user_assignments
                        SET instance_state = %s,
                            last_state_check = NOW()
-                       WHERE instance_id = %s AND is_standby = 0""",
+                       WHERE instance_id = %s AND is_standby = 1""",
                     (InstanceState.RUNNING, instance_id),
                 )
                 connection.commit()  # Commit the state update
@@ -2111,13 +2117,22 @@ def handle_scheduled_monitoring(event: Dict[str, Any], context: Any) -> Dict[str
             # PREMIUM_STOPPED_MAX_AGE_HOURS
             terminate_aged_stopped_instances()
 
-            # 9. Trim standby pool if it exceeds target size
+            # 9. Converge standby pool toward target size. Trimming excess
+            # was always here; the replenish branch is the backstop for the
+            # best-effort async create on the assign path, so a dropped or
+            # lock-skipped invocation can't leave the pool depleted.
             standby_count = get_standby_count()
             standby_pool_size = int(os.environ.get("PREMIUM_STANDBY_POOL_SIZE", "1"))
             if standby_count > standby_pool_size:
                 excess = standby_count - standby_pool_size
                 print(f"Standby pool has {excess} excess instances, trimming")
                 cleanup_excess_standby_instances(excess)
+            elif standby_count < standby_pool_size:
+                print(
+                    f"Standby pool below target "
+                    f"({standby_count}/{standby_pool_size}), replenishing"
+                )
+                invoke_standby_replenishment_async()
 
             # 10a. Finalize expired pending_release assignments
             try:
@@ -2327,6 +2342,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     print(f"Lambda context: {context.function_name if context else 'No context'}")
 
     try:
+        # Handle async standby replenishment invocation
+        if event.get("action") == "create_standby":
+            print("Running async standby replenishment...")
+            instance_id = create_and_stop_standby_instance()
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"created_instance_id": instance_id}),
+            }
+
         # Handle async migration invocation
         if event.get("action") == "migrate_shared_users":
             return _handle_migrate_shared_users(event)
@@ -2623,13 +2647,16 @@ def _ensure_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
                 "instance may be failing health checks."
             ),
             AlarmActions=actions,
-            OKActions=actions,
+            # Ephemeral per-assign/release alarm; OK actions would page a
+            # "recovered" notice to the critical topic on every recreate.
+            OKActions=[],
             TreatMissingData="missing",
             Dimensions=[
                 {"Name": "LoadBalancer", "Value": _alb_arn_suffix(alb_arn)},
                 {"Name": "TargetGroup", "Value": _tg_arn_suffix(tg_arn)},
             ],
         )
+        print(f"[premium-alarm] action=create name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"WARNING: Failed to create unhealthy-host alarm {alarm_name}: {e}")
 
@@ -2647,6 +2674,7 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
     try:
         cloudwatch = _get_cloudwatch_client()
         cloudwatch.delete_alarms(AlarmNames=[alarm_name])
+        print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"WARNING: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
 
@@ -2819,30 +2847,24 @@ def get_next_available_priority(
         raise
 
 
-def assign_premium_user(
+def _assign_premium_user_impl(
     user_id: int,
     event: Dict[str, Any],
-    user_uid: Optional[str] = None,
+    user_uid: Optional[str],
+    ec2: "EC2Client",
+    elbv2: "ElasticLoadBalancingv2Client",
+    backend_port: int,
+    vpc_id: str,
+    alb_listener_arn: str,
 ) -> Dict[str, Any]:
-    """Enhanced assignment with standby pool support -
-    prefer stopped instances for fast startup"""
+    """Core premium user assignment logic.
 
-    ec2: "EC2Client" = boto3.client("ec2")
-    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
-    backend_port = PremiumInstanceConfig.get_backend_port()
-
-    try:
-        vpc_id = get_required_env_var("VPC_ID")
-        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
-    except ValueError as e:
-        print(f" Assignment failed - environment configuration error: {str(e)}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps(
-                {"error": "Configuration error", "message": str(e), "assigned": False}
-            ),
-        }
-
+    Called from assign_premium_user UNDER the per-user distributed
+    lock to prevent concurrent calls from corrupting ALB resources
+    (issue #630).  The lock uses ASSIGN_LOCK_TIMEOUT_SECONDS (10 s)
+    so the 409 fallback is reliably reachable within the Lambda
+    invocation timeout (60 s).
+    """
     # Restore pending_release if user refreshed (beacon fired but user is back)
     try:
         restored = restore_pending_release(user_id)
@@ -3251,9 +3273,9 @@ def assign_premium_user(
 
             # Start the standby instance
             if start_standby_instance(standby_instance_id):
-                # Create replacement standby instance asynchronously
-                print("Creating replacement standby instance")
-                create_and_stop_standby_instance()  # Create a single standby
+                # Create replacement standby instance asynchronously so the
+                # 3-5 min create/stop chain does not block this assignment.
+                invoke_standby_replenishment_async()
 
                 # Proceed with assignment to the started instance
                 instance_to_use = {"instance_id": standby_instance_id}
@@ -3729,6 +3751,99 @@ def assign_premium_user(
         raise
 
 
+def assign_premium_user(
+    user_id: int,
+    event: Dict[str, Any],
+    user_uid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Enhanced assignment with standby pool support -
+    prefer stopped instances for fast startup"""
+
+    ec2: "EC2Client" = boto3.client("ec2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    backend_port = PremiumInstanceConfig.get_backend_port()
+
+    try:
+        vpc_id = get_required_env_var("VPC_ID")
+        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
+    except ValueError as e:
+        print(f" Assignment failed - environment configuration error: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps(
+                {"error": "Configuration error", "message": str(e), "assigned": False}
+            ),
+        }
+
+    # Serialize concurrent assign calls for the same user_id.
+    # Without this lock, two concurrent calls can both pass the
+    # "existing assignment?" check and race through TG creation,
+    # causing the second call's orphan-cleanup to delete the first
+    # call's freshly-created target group (issue #630).
+    #
+    # The entire _assign_premium_user_impl runs under the lock.
+    # Lock timeout is short (ASSIGN_LOCK_TIMEOUT_SECONDS = 10) so
+    # the 409 fallback is reliably reachable within the Lambda
+    # invocation timeout (60 s).
+    lock_name = f"{ASSIGN_USER_LOCK_PREFIX}{user_id}"
+    with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
+        if not acquired:
+            # Lock timed out -- another invocation held it.
+            # Check whether that call stored a valid assignment
+            # before giving up.
+            print(
+                f"Per-user assign lock timed out for user {user_id}, "
+                f"checking for completed assignment"
+            )
+            try:
+                existing = get_existing_user_assignment(user_id)
+                if existing:
+                    print(
+                        f"Found assignment completed by concurrent invocation "
+                        f"for user {user_id}: {existing.get('instance_id')}"
+                    )
+                    return {
+                        "statusCode": 200,
+                        "body": json.dumps(
+                            {
+                                "message": f"User {user_id} already assigned to "
+                                f"instance {existing.get('instance_id')}",
+                                "instance_id": existing.get("instance_id"),
+                                "target_group_arn": existing.get("target_group_arn"),
+                                "rule_arn": existing.get("alb_rule_arn"),
+                                "is_shared": bool(existing.get("is_shared", False)),
+                                "assignment_source": "existing",
+                            }
+                        ),
+                    }
+            except Exception as fallback_err:
+                print(f"Fallback assignment check failed: {fallback_err}")
+
+            return {
+                "statusCode": 409,
+                "body": json.dumps(
+                    {
+                        "error": "Assignment in progress",
+                        "message": "Another assignment is in progress "
+                        "for this user. Please retry.",
+                        "assigned": False,
+                    }
+                ),
+            }
+
+        # ── Under lock: full assignment logic ──
+        return _assign_premium_user_impl(
+            user_id,
+            event,
+            user_uid,
+            ec2,
+            elbv2,
+            backend_port,
+            vpc_id,
+            alb_listener_arn,
+        )
+
+
 def invoke_migration_async():
     """
     Invoke this Lambda asynchronously for migration.
@@ -3768,6 +3883,42 @@ def invoke_migration_async():
 
     except Exception as e:
         print(f"Warning: Failed to trigger async migration: {str(e)}")
+        # Don't fail the main request if async invocation fails
+
+
+def invoke_standby_replenishment_async():
+    """
+    Invoke this Lambda asynchronously to create one replacement standby.
+    Skips invocation if a standby-creation Lambda already holds the lock.
+    """
+    if is_creation_lock_held(CREATE_STANDBY_LOCK):
+        print("Standby creation Lambda already running, skipping async replenishment")
+        return
+
+    try:
+        lambda_client: "LambdaClient" = boto3.client("lambda")
+        function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+
+        if not function_name:
+            print(
+                "Warning: Cannot invoke async standby replenishment "
+                "- function name not available"
+            )
+            return
+
+        lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="Event",  # Async invocation
+            Payload=json.dumps({"action": "create_standby"}),
+        )
+
+        print(
+            f"Triggered async standby replenishment via "
+            f"Lambda function: {function_name}"
+        )
+
+    except Exception as e:
+        print(f"Warning: Failed to trigger async standby replenishment: {str(e)}")
         # Don't fail the main request if async invocation fails
 
 
@@ -3959,16 +4110,31 @@ def get_ecs_container_instance_id(
             cluster=cluster_name, containerInstances=container_instance_arns
         )
 
-        for container_instance in describe_response.get("containerInstances", []):
-            if container_instance.get("ec2InstanceId") == ec2_instance_id:
-                container_instance_id = container_instance.get("containerInstanceArn")
-                print(f" Found ECS container instance: {container_instance_id}")
-                print(
-                    f"[premium-ecs-map] ec2={ec2_instance_id} "
-                    f"cluster={cluster_name} "
-                    f"result={container_instance_id} reason=found"
-                )
-                return container_instance_id
+        matches = [
+            ci
+            for ci in describe_response.get("containerInstances", [])
+            if ci.get("ec2InstanceId") == ec2_instance_id
+        ]
+        # Prefer the live CI; a fresh CI can overlay a disconnected ghost on one EC2.
+        chosen = next(
+            (
+                ci
+                for ci in matches
+                if ci.get("agentConnected") and ci.get("status") == "ACTIVE"
+            ),
+            matches[0] if matches else None,
+        )
+
+        if chosen:
+            container_instance_id = chosen.get("containerInstanceArn")
+            print(f" Found ECS container instance: {container_instance_id}")
+            print(
+                f"[premium-ecs-map] ec2={ec2_instance_id} "
+                f"cluster={cluster_name} "
+                f"result={container_instance_id} reason=found "
+                f"agent_connected={chosen.get('agentConnected')}"
+            )
+            return container_instance_id
 
         print(f"No ECS container instance found for EC2 instance " f"{ec2_instance_id}")
         print(
@@ -5481,6 +5647,14 @@ def cleanup_ghost_ecs_registrations():
 
         container_instances = describe_response.get("containerInstances", [])
 
+        ec2_with_live_ci = {
+            ci["ec2InstanceId"]
+            for ci in container_instances
+            if ci.get("agentConnected")
+            and ci.get("status") == "ACTIVE"
+            and ci.get("ec2InstanceId")
+        }
+
         # Batched describe_instances has no partial-result mode
         # — any unknown ID fails the call.
         ec2_ids = [
@@ -5569,7 +5743,19 @@ def cleanup_ghost_ecs_registrations():
                 reconnected_ec2_ids.append(ec2_instance_id)
                 continue
 
-            # EC2 alive + agent disconnected — apply grace period.
+            # Disconnected CI sharing its EC2 with a live CI is superseded; reap now.
+            if ec2_instance_id in ec2_with_live_ci:
+                ghost_instances.append(
+                    {
+                        "container_instance_arn": container_instance_arn,
+                        "ec2_instance_id": ec2_instance_id,
+                        "reason": "superseded by live container instance on same EC2",
+                        "status": status,
+                    }
+                )
+                continue
+
+            # EC2 alive + agent disconnected, no live sibling — apply grace period.
             tags = ec2_tags_by_id.get(ec2_instance_id, {})
             first_seen = tags.get(_DISCONNECT_TAG_KEY)
 

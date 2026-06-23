@@ -6,6 +6,7 @@
 #
 # Resources managed:
 #   - Free tier ASG (scale 0 <-> 1)
+#   - Public tier ASG (scale 0 <-> 2)
 #   - Background service EC2 instance (stop/start)
 #   - Premium EC2 instances (stop/start)
 #   - NAT instance (stop/start)
@@ -136,6 +137,12 @@ resource "aws_lambda_function" "dev_scheduler" {
         aws_ecs_service.premium.name,
         aws_ecs_service.background.name,
       ])
+
+      PUBLIC_ASG_NAME             = aws_autoscaling_group.public.name
+      PUBLIC_ASG_MIN_SIZE         = tostring(var.public_asg_min_size)
+      PUBLIC_ASG_MAX_SIZE         = tostring(var.public_asg_max_size)
+      PUBLIC_ASG_DESIRED_CAPACITY = tostring(var.public_asg_desired_capacity)
+      PUBLIC_ECS_SERVICE_NAME     = aws_ecs_service.public.name
     }
   }
 
@@ -285,13 +292,16 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         ]
         Resource = "*"
       },
-      # ASG management (scoped to specific ASG)
+      # ASG management (scoped to specific ASGs)
       {
         Effect = "Allow"
         Action = [
           "autoscaling:UpdateAutoScalingGroup",
         ]
-        Resource = aws_autoscaling_group.main.arn
+        Resource = [
+          aws_autoscaling_group.main.arn,
+          aws_autoscaling_group.public.arn,
+        ]
       },
       # EventBridge rule enable/disable (scoped to environment prefix)
       {
@@ -335,6 +345,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           aws_ecs_service.autoscaling.id,
           aws_ecs_service.premium.id,
           aws_ecs_service.background.id,
+          aws_ecs_service.public.id,
         ]
       },
     ]

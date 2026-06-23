@@ -110,19 +110,6 @@ resource "aws_cloudwatch_metric_alarm" "memory_low" {
   }
 }
 
-
-resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
-  name           = "user-cpu-usage"
-  log_group_name = aws_cloudwatch_log_group.ecs.name
-  pattern        = "[timestamp, level, user_id, cpu_usage]"
-
-  metric_transformation {
-    name      = "UserCPUUsage"
-    namespace = "OptiNiSt/Application/${var.environment}"
-    value     = "$cpu_usage"
-  }
-}
-
 # ==================================================
 # Load Average Monitoring
 # ==================================================
@@ -208,7 +195,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -226,7 +213,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -244,7 +231,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -533,7 +520,6 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["OptiNiSt/FreeUsers/${var.environment}", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
             ["OptiNiSt/Premium/${var.environment}", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
             ["OptiNiSt/Premium/${var.environment}", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
-            ["OptiNiSt/Application/${var.environment}", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]
@@ -610,9 +596,9 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU %", "yAxis" : "left" }],
-            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections", "yAxis" : "right" }],
-            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.identifier, { "label" : "RDS CPU %", "yAxis" : "left" }],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.identifier, { "label" : "RDS Connections", "yAxis" : "right" }],
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.identifier, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
             ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections", "yAxis" : "right" }],
             ["AWS/EFS", "PercentIOLimit", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS I/O Limit %", "yAxis" : "left" }],
             ["AWS/EFS", "BurstCreditBalance", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Burst Credits", "yAxis" : "right" }]

@@ -80,7 +80,7 @@ from studio.app.common.routers import (
 )
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.routers import hdf5, mat, nwb, roi
-from studio.app.version import Version
+from studio.app.version import BuildInfo, Version
 
 logger = AppLogger.get_logger()
 
@@ -98,11 +98,14 @@ async def lifespan(app: FastAPI):
     remote_storage_type = RemoteStorageType.get_activated_type()
 
     logger = AppLogger.get_logger()
+
     logger.info(
         f'"Studio" application startup complete.\n'
         f"    # Platform: {platform.platform()}\n"
         f"    # Python Version: {sys_version}\n"
         f"    # App Version: {Version.APP_VERSION}\n"
+        f"    # Git Commit: {BuildInfo.GIT_COMMIT}\n"
+        f"    # Build Time: {BuildInfo.BUILD_TIMESTAMP}\n"
         f"    # Env:DATA_DIR: {DIRPATH.DATA_DIR}\n"
         f"    # Mode: {mode}\n"
         f"    # REMOTE_STORAGE_TYPE: {remote_storage_type}\n"
@@ -301,7 +304,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["x-user-tier", "x-routing-id"],
+    # Routing headers issued by SecureRoutingMiddleware.
+    # Canonical definitions: infrastructure/aws_constants.py (RoutingHeaders class)
+    expose_headers=["x-user-tier", "x-routing-id", "x-served-by-instance"],
 )
 
 app.add_middleware(SPARoutingMiddleware)

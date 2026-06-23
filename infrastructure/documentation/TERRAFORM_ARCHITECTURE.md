@@ -216,7 +216,9 @@ The Docker image is shared across environments (single ECR repository). Without 
 
 ### IAM Permissions
 
-The ECS containers use IAM user credentials (injected as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars), not the ECS task role. The IAM user policy grants:
+ECS containers authenticate to AWS using the **ECS Task Role**, delivered by the ECS agent via `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` — not static IAM user keys. (Earlier task definitions injected `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from Secrets Manager; that injection has since been removed in favor of the Task Role.)
+
+A separate IAM user (`${var.environment}-optinist-cloud-user`) and its access key still exist in Terraform but are no longer injected into any container. Its policy is scoped, for example:
 
 ```hcl
 secretsmanager:GetSecretValue → ${var.environment}-optinist/*

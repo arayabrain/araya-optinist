@@ -69,6 +69,13 @@ resource "aws_lambda_function" "common_user_manager" {
       # User inactivity timeout configuration
       FREE_IDLE_TIMEOUT_HOURS    = "2" # Hours before free users are logged out
       PREMIUM_IDLE_TIMEOUT_HOURS = "2" # Hours before premium users are logged out
+
+      # Premium logout cleanup: skip the shared TG, and derive per-TG alarm names
+      AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
+      ENV_PREFIX                   = var.environment
+
+      # Ghost reaper: deregister container instances whose EC2 is terminated/gone
+      CLUSTER_NAME = aws_ecs_cluster.main.name
     }
   }
 
@@ -138,6 +145,50 @@ resource "aws_iam_role_policy" "common_user_manager_lambda_policy" {
           "cloudwatch:GetMetricData",
           "cloudwatch:GetMetricStatistics"
         ]
+        Resource = "*"
+      },
+      # Premium logout cleanup: delete the user's listener rule and target group
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:DeleteTargetGroup"
+        ]
+        Resource = [
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:listener-rule/*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${data.aws_caller_identity.current.account_id}:targetgroup/premium-*"
+        ]
+      },
+      # CloudWatch alarm cleanup for the per-user TGs deleted above
+      {
+        Effect   = "Allow"
+        Action   = "cloudwatch:DeleteAlarms"
+        Resource = "arn:aws:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:${var.environment}-premium-*-unhealthy-hosts"
+      },
+      # Ghost reaper: list/deregister container instances (cluster passed as param)
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:ListContainerInstances",
+          "ecs:DeregisterContainerInstance"
+        ]
+        Resource = "*"
+      },
+      # Ghost reaper: describe container instances, scoped to this cluster
+      {
+        Effect   = "Allow"
+        Action   = "ecs:DescribeContainerInstances"
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.main.arn
+          }
+        }
+      },
+      # Ghost reaper: resolve backing EC2 state (no resource-level support)
+      {
+        Effect   = "Allow"
+        Action   = "ec2:DescribeInstances"
         Resource = "*"
       }
     ]

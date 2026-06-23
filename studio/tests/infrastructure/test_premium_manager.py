@@ -5,11 +5,19 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aws_constants import ECSTaskStatus, PremiumInstanceConfig
+from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
 TEST_INSTANCE_ID = "i-testlambda123"
+
+
+def _always_acquired_lock():
+    """Mock distributed_lock that always grants the lock."""
+    mock = MagicMock()
+    mock.return_value.__enter__ = MagicMock(return_value=True)
+    mock.return_value.__exit__ = MagicMock(return_value=False)
+    return mock
 
 
 class TestPremiumManagerEvents:
@@ -46,11 +54,16 @@ class TestPremiumManagerEvents:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
-                    # restore_pending_release: no pending_release row
+                    # restore_pending_release (in _assign_premium_user_impl): no pending
                     None,
                     # get_existing_user_assignment: no existing assignment
                     None,
@@ -423,7 +436,10 @@ class TestEarlyCheckAndCleanup:
             "premium_manager.get_existing_user_assignment"
         ) as mock_get_existing, patch(
             "premium_manager.pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_get_existing.return_value = existing_assignment
             mock_connection = setup_db_mock(fetchone_values=[None])
             mock_pymysql.return_value = mock_connection
@@ -462,7 +478,12 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     None,
@@ -702,7 +723,10 @@ class TestEarlyCheckAndCleanup:
                 "boto3.client"
             ) as mock_boto3, patch(
                 "premium_manager.pymysql.connect"
-            ) as mock_pymysql:
+            ) as mock_pymysql, patch(
+                "premium_manager.distributed_lock",
+                new=_always_acquired_lock(),
+            ):
                 mock_get_existing.return_value = existing_autoscaling_assignment
                 mock_connection = setup_db_mock(fetchone_values=[None])
                 mock_pymysql.return_value = mock_connection
@@ -749,7 +773,10 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ), patch("premium_manager.restore_pending_release") as mock_restore:
+        ), patch("premium_manager.restore_pending_release") as mock_restore, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_restore.return_value = restored_assignment
 
             from premium_manager import assign_premium_user
@@ -793,7 +820,10 @@ class TestEarlyCheckAndCleanup:
             "premium_manager._update_instance_state_to_running"
         ) as mock_update_state, patch(
             "premium_manager.pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
             mock_connection = setup_db_mock(fetchone_values=[None])
@@ -866,7 +896,10 @@ class TestEarlyCheckAndCleanup:
             "premium_manager._update_instance_state_to_running"
         ), patch(
             "premium_manager.pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
             mock_connection = setup_db_mock(fetchone_values=[None])
@@ -959,7 +992,10 @@ class TestEarlyCheckAndCleanup:
                     "boto3.client"
                 ) as mock_boto3, patch(
                     "pymysql.connect"
-                ) as mock_pymysql:
+                ) as mock_pymysql, patch(
+                    "premium_manager.distributed_lock",
+                    new=_always_acquired_lock(),
+                ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
                         fetchone_values=[None] * 20,
@@ -1050,7 +1086,10 @@ class TestEarlyCheckAndCleanup:
                     "boto3.client"
                 ) as mock_boto3, patch(
                     "pymysql.connect"
-                ) as mock_pymysql:
+                ) as mock_pymysql, patch(
+                    "premium_manager.distributed_lock",
+                    new=_always_acquired_lock(),
+                ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
                         fetchone_values=[None] * 20,
@@ -1095,6 +1134,122 @@ class TestEarlyCheckAndCleanup:
             finally:
                 for p in patchers:
                     p.stop()
+
+
+class TestConcurrentAssignLock:
+    """Tests for per-user distributed lock on assign_premium_user (issue #630)."""
+
+    @staticmethod
+    def _lock_ctx(acquired: bool):
+        """Create a mock distributed_lock that returns *acquired*."""
+        mock = MagicMock()
+        mock.return_value.__enter__ = MagicMock(return_value=acquired)
+        mock.return_value.__exit__ = MagicMock(return_value=False)
+        return mock
+
+    def test_lock_not_acquired_no_existing_returns_409(self, mock_env_vars_premium):
+        """When the per-user lock times out and no completed assignment
+        exists, the Lambda returns 409 so the caller retries."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(False),
+        ), patch(
+            "premium_manager.get_existing_user_assignment",
+            return_value=None,
+        ):
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 409
+            body = json.loads(result["body"])
+            assert body["assigned"] is False
+            assert "in progress" in body["message"].lower()
+
+    def test_lock_not_acquired_existing_found_returns_200(self, mock_env_vars_premium):
+        """When the per-user lock times out but the winning call stored
+        an assignment, return 200 with the existing assignment."""
+        existing = {
+            "instance_id": "i-winner",
+            "target_group_arn": "arn:tg/winner",
+            "alb_rule_arn": "arn:rule/winner",
+            "is_shared": 0,
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(False),
+        ), patch(
+            "premium_manager.get_existing_user_assignment",
+            return_value=existing,
+        ):
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["instance_id"] == "i-winner"
+            assert body["assignment_source"] == "existing"
+
+    def test_lock_name_includes_user_id(self, mock_env_vars_premium):
+        """The lock name must include the user_id so different users
+        do not block each other."""
+        lock_mock = self._lock_ctx(True)
+        impl_response = {
+            "statusCode": 200,
+            "body": json.dumps({"instance_id": "i-impl", "assigned": True}),
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=lock_mock,
+        ), patch(
+            "premium_manager._assign_premium_user_impl",
+            return_value=impl_response,
+        ):
+            from premium_manager import (
+                ASSIGN_LOCK_TIMEOUT_SECONDS,
+                ASSIGN_USER_LOCK_PREFIX,
+                assign_premium_user,
+            )
+
+            assign_premium_user(42, {"tier": "premium"}, "uid_42")
+
+            lock_mock.assert_called_once_with(
+                f"{ASSIGN_USER_LOCK_PREFIX}42",
+                timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
+            )
+
+    def test_lock_acquired_calls_impl_under_lock(self, mock_env_vars_premium):
+        """When the lock is acquired, _assign_premium_user_impl is
+        called INSIDE the lock for full mutual exclusion."""
+        impl_response = {
+            "statusCode": 200,
+            "body": json.dumps({"instance_id": "i-new", "assigned": True}),
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(True),
+        ), patch(
+            "premium_manager._assign_premium_user_impl",
+            return_value=impl_response,
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["instance_id"] == "i-new"
+            mock_impl.assert_called_once()
 
 
 class TestDictCursorFix:
@@ -1674,6 +1829,50 @@ class TestStartStandbyInstance:
             )
             mock_connection.commit.assert_called()
 
+            # The state UPDATE must be scoped to the standby placeholder row
+            # (is_standby = 1), not the regular-assignment guard (is_standby = 0).
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            update_calls = [
+                c
+                for c in mock_cursor.execute.call_args_list
+                if "UPDATE premium_user_assignments" in c.args[0]
+            ]
+            assert len(update_calls) == 1
+            sql, params = update_calls[0].args
+            assert "is_standby = 1" in sql
+            assert "is_standby = 0" not in sql
+            assert params == (InstanceState.RUNNING, "i-standby1")
+
+    def test_updates_standby_placeholder_row(self, mock_env_vars_premium):
+        """State UPDATE commits even when the only matching DB row is the
+        standby placeholder (is_standby = 1)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.check_instance_readiness_with_retry",
+            return_value=True,
+        ):
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+            mock_ec2.get_waiter.return_value = MagicMock()
+
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+
+            from premium_manager import start_standby_instance
+
+            result = start_standby_instance("i-standby1")
+
+            assert result is True
+            mock_connection.commit.assert_called()
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            update_sql = mock_cursor.execute.call_args.args[0]
+            assert "UPDATE premium_user_assignments" in update_sql
+            assert "is_standby = 1" in update_sql
+            assert "is_standby = 0" not in update_sql
+
     def test_readiness_fails(self, mock_env_vars_premium):
         """ECS task not ready after start returns False without DB update."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -1719,6 +1918,159 @@ class TestStartStandbyInstance:
 
             result = start_standby_instance("i-standby2")
             assert result is False
+
+
+class TestStandbyReplenishmentAsync:
+    """invoke_standby_replenishment_async + create_standby dispatch + cascade."""
+
+    def test_skips_when_lock_held(self, mock_env_vars_premium):
+        """Creation lock held -> no Lambda self-invoke."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "is_creation_lock_held", return_value=True
+            ), patch("boto3.client") as mock_boto3:
+                premium_manager.invoke_standby_replenishment_async()
+                mock_boto3.assert_not_called()
+
+    def test_invokes_lambda_when_lock_free(self, mock_env_vars_premium):
+        """Lock free -> self-invoke with Event + create_standby action."""
+        env = {**mock_env_vars_premium, "AWS_LAMBDA_FUNCTION_NAME": "premium-manager"}
+        with patch.dict("os.environ", env):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "is_creation_lock_held", return_value=False
+            ), patch("boto3.client") as mock_boto3:
+                mock_lambda = MagicMock()
+                mock_boto3.return_value = mock_lambda
+
+                premium_manager.invoke_standby_replenishment_async()
+
+                mock_lambda.invoke.assert_called_once()
+                kwargs = mock_lambda.invoke.call_args.kwargs
+                assert kwargs["FunctionName"] == "premium-manager"
+                assert kwargs["InvocationType"] == "Event"
+                assert json.loads(kwargs["Payload"])["action"] == "create_standby"
+
+    def test_no_op_when_function_name_absent(self, mock_env_vars_premium):
+        """AWS_LAMBDA_FUNCTION_NAME absent -> warning, no invoke, no exception."""
+        env = {
+            k: v
+            for k, v in mock_env_vars_premium.items()
+            if k != "AWS_LAMBDA_FUNCTION_NAME"
+        }
+        with patch.dict("os.environ", env, clear=True):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "is_creation_lock_held", return_value=False
+            ), patch("boto3.client") as mock_boto3:
+                mock_lambda = MagicMock()
+                mock_boto3.return_value = mock_lambda
+
+                premium_manager.invoke_standby_replenishment_async()
+
+                mock_lambda.invoke.assert_not_called()
+
+    def test_handler_routes_create_standby_action(self, mock_env_vars_premium):
+        """handler dispatches action=create_standby to create_and_stop_standby."""
+        mock_context = MagicMock()
+        mock_context.function_name = "premium-manager"
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager,
+                "create_and_stop_standby_instance",
+                return_value="i-newstandby",
+            ) as mock_create:
+                result = premium_manager.handler(
+                    {"action": "create_standby"}, mock_context
+                )
+
+                mock_create.assert_called_once_with()
+                assert result["statusCode"] == 200
+                body = json.loads(result["body"])
+                assert body["created_instance_id"] == "i-newstandby"
+
+    def test_tier3_cascade_uses_async_replenishment(self, mock_env_vars_premium):
+        """Standby start succeeds -> async replenishment fires and the blocking
+        create_and_stop_standby_instance is never called from the assign path."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "restore_pending_release", return_value=None
+            ), patch.object(
+                premium_manager, "get_existing_user_assignment", return_value=None
+            ), patch.object(
+                premium_manager, "register_orphaned_stopped_instances"
+            ), patch.object(
+                premium_manager,
+                "get_all_premium_instances_with_states",
+                return_value=[],
+            ), patch.object(
+                premium_manager, "count_active_premium_users", return_value=0
+            ), patch.object(
+                premium_manager,
+                "get_available_standby_instances",
+                return_value=[{"instance_id": "i-standby1"}],
+            ), patch.object(
+                premium_manager, "start_standby_instance", return_value=True
+            ), patch.object(
+                premium_manager, "invoke_standby_replenishment_async"
+            ) as mock_replenish, patch.object(
+                premium_manager, "create_and_stop_standby_instance"
+            ) as mock_create_stop, patch.object(
+                premium_manager, "_enable_sticky_sessions"
+            ), patch.object(
+                premium_manager, "_ensure_premium_tg_unhealthy_alarm"
+            ), patch.object(
+                premium_manager,
+                "cleanup_duplicate_rules_for_routing_id",
+                return_value=0,
+            ), patch.object(
+                premium_manager,
+                "create_alb_rule",
+                return_value={"Rules": [{"RuleArn": "arn:rule"}]},
+            ), patch.object(
+                premium_manager, "store_user_assignment"
+            ), patch.object(
+                premium_manager, "update_user_activity", return_value=True
+            ), patch(
+                "premium_manager.pymysql.connect"
+            ) as mock_pymysql, patch(
+                "premium_manager.distributed_lock",
+                new=_always_acquired_lock(),
+            ), patch(
+                "boto3.client"
+            ) as mock_boto3:
+                mock_pymysql.return_value = setup_db_mock()
+
+                mock_elbv2 = MagicMock()
+                mock_elbv2.describe_target_groups.return_value = {"TargetGroups": []}
+                mock_elbv2.create_target_group.return_value = {
+                    "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/standby"}]
+                }
+
+                def boto3_client_side_effect(service):
+                    if service == "elbv2":
+                        return mock_elbv2
+                    return MagicMock()
+
+                mock_boto3.side_effect = boto3_client_side_effect
+
+                result = premium_manager.assign_premium_user(
+                    12345, {"tier": "premium"}, "firebase_uid_cascade"
+                )
+
+                assert result["statusCode"] == 200
+                body = json.loads(result["body"])
+                assert body["assignment_source"] == "standby"
+                mock_replenish.assert_called_once_with()
+                mock_create_stop.assert_not_called()
 
 
 class TestDesiredCountReservesBootingStandbys:
@@ -3381,6 +3733,152 @@ class TestCleanupGhostECSRegistrations:
             )
             mock_ec2.describe_instances.assert_not_called()
 
+    def test_superseded_sibling_deregistered_immediately(self, mock_env_vars_premium):
+        """Disconnected CI sharing an EC2 with a live CI is reaped with no
+        grace; the live sibling is left untouched (dual-CI case)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs, mock_ec2 = self._make_clients(mock_boto3)
+            live_arn = "arn:aws:ecs:r:a:ci/live"
+            ghost_arn = "arn:aws:ecs:r:a:ci/ghost"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [live_arn, ghost_arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": ghost_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-shared",
+                                "State": {"Name": "running"},
+                                "Tags": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            from premium_manager import cleanup_ghost_ecs_registrations
+
+            cleanup_ghost_ecs_registrations()
+
+            mock_ecs.deregister_container_instance.assert_called_once_with(
+                cluster="test-cluster",
+                containerInstance=ghost_arn,
+                force=True,
+            )
+            # The live sibling's EC2 must not be tagged for a disconnect grace.
+            mock_ec2.create_tags.assert_not_called()
+
+
+class TestGetEcsContainerInstanceIdPrefersLive:
+    """get_ecs_container_instance_id must resolve the live CI when a fresh
+    CI overlays a disconnected ghost on the same EC2 (dual-CI case)."""
+
+    def _ecs(self, mock_boto3):
+        mock_ecs = MagicMock()
+        mock_boto3.return_value = mock_ecs
+        return mock_ecs
+
+    def test_prefers_connected_active_ci(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            ghost_arn = "arn:aws:ecs:r:a:ci/ghost"
+            live_arn = "arn:aws:ecs:r:a:ci/live"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [ghost_arn, live_arn]
+            }
+            # Ghost listed first to prove order does not decide the winner.
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": ghost_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": False,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "containerInstanceArn": live_arn,
+                        "ec2InstanceId": "i-shared",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    },
+                ]
+            }
+
+            from premium_manager import get_ecs_container_instance_id
+
+            result = get_ecs_container_instance_id("i-shared", "test-cluster")
+            assert result == live_arn
+
+    def test_single_ci_unchanged(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            arn = "arn:aws:ecs:r:a:ci/only"
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": [arn]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": arn,
+                        "ec2InstanceId": "i-solo",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import get_ecs_container_instance_id
+
+            result = get_ecs_container_instance_id("i-solo", "test-cluster")
+            assert result == arn
+
+    def test_no_match_returns_none(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ecs = self._ecs(mock_boto3)
+            mock_ecs.list_container_instances.return_value = {
+                "containerInstanceArns": ["arn:aws:ecs:r:a:ci/other"]
+            }
+            mock_ecs.describe_container_instances.return_value = {
+                "containerInstances": [
+                    {
+                        "containerInstanceArn": "arn:aws:ecs:r:a:ci/other",
+                        "ec2InstanceId": "i-different",
+                        "agentConnected": True,
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+            from premium_manager import get_ecs_container_instance_id
+
+            result = get_ecs_container_instance_id("i-missing", "test-cluster")
+            assert result is None
+
 
 class TestGetHostPortForInstance:
     """get_host_port_for_instance polls describe_tasks → networkBindings,
@@ -3971,6 +4469,7 @@ class TestHandleScheduledMonitoringReconcile:
             ),
             "terminate_aged": patch("premium_manager.terminate_aged_stopped_instances"),
             "standby_count": patch("premium_manager.get_standby_count", return_value=0),
+            "replenish": patch("premium_manager.invoke_standby_replenishment_async"),
             "finalize": patch(
                 "premium_manager.finalize_expired_pending_releases",
                 return_value=[],
@@ -4083,6 +4582,65 @@ class TestHandleScheduledMonitoringReconcile:
         assert publish_calls[0][1]["tg_port_drift_fixed"] == 0
 
 
+class TestScheduledMonitoringStandbyConvergence:
+    """handle_scheduled_monitoring must converge the standby pool toward
+    target: replenish when below, trim when above, do nothing at target.
+    This is the backstop for the best-effort async create on the assign path."""
+
+    def _run(self, mock_env_vars_premium, standby_count, pool_size):
+        base = TestHandleScheduledMonitoringReconcile()
+        patches = base._common_patches(
+            mock_env_vars_premium, [], {"drift_detected": 0, "drift_fixed": 0}
+        )
+        patches["env"] = patch.dict(
+            "os.environ",
+            {**mock_env_vars_premium, "PREMIUM_STANDBY_POOL_SIZE": str(pool_size)},
+        )
+        patches["standby_count"] = patch(
+            "premium_manager.get_standby_count", return_value=standby_count
+        )
+        replenish = MagicMock()
+        trim = MagicMock()
+        patches["replenish"] = patch(
+            "premium_manager.invoke_standby_replenishment_async", replenish
+        )
+        patches["trim"] = patch(
+            "premium_manager.cleanup_excess_standby_instances", trim
+        )
+        ctx_managers = list(patches.values())
+        for cm in ctx_managers:
+            cm.__enter__()
+        try:
+            from premium_manager import handle_scheduled_monitoring
+
+            result = handle_scheduled_monitoring({"source": "test"}, None)
+        finally:
+            for cm in reversed(ctx_managers):
+                cm.__exit__(None, None, None)
+        return result, replenish, trim
+
+    def test_replenishes_when_below_target(self, mock_env_vars_premium):
+        """standby_count < pool_size -> async replenishment, no trim."""
+        result, replenish, trim = self._run(mock_env_vars_premium, 0, 2)
+        assert result["statusCode"] == 200
+        replenish.assert_called_once_with()
+        trim.assert_not_called()
+
+    def test_no_action_when_at_target(self, mock_env_vars_premium):
+        """standby_count == pool_size -> neither replenish nor trim."""
+        result, replenish, trim = self._run(mock_env_vars_premium, 2, 2)
+        assert result["statusCode"] == 200
+        replenish.assert_not_called()
+        trim.assert_not_called()
+
+    def test_trims_when_above_target(self, mock_env_vars_premium):
+        """standby_count > pool_size -> trim excess, no replenish."""
+        result, replenish, trim = self._run(mock_env_vars_premium, 3, 2)
+        assert result["statusCode"] == 200
+        trim.assert_called_once_with(1)
+        replenish.assert_not_called()
+
+
 class TestMigrateUserToDedicatedInstanceOrder:
     """The dedicated-to-dedicated migration branch must register the new
     instance before deregistering the old, so the TG is never empty
@@ -4187,3 +4745,77 @@ class TestPublishPremiumMetricsDriftKwargs:
             metric_by_name = {m["MetricName"]: m["Value"] for m in kwargs["MetricData"]}
             assert metric_by_name["TargetGroupPortDriftDetected"] == 0
             assert metric_by_name["TargetGroupPortDriftFixed"] == 0
+
+
+class TestPremiumTgUnhealthyAlarm:
+    """Ephemeral per-user UnHealthyHostCount alarm, created on assign and
+    deleted on release. Because it is recreated on every assign/release, OK
+    actions are intentionally dropped so churn does not page "recovered" to
+    the critical SNS topic; alarm actions are kept so genuine health failures
+    still page."""
+
+    TG_ARN = (
+        "arn:aws:elasticloadbalancing:region:account:"
+        "targetgroup/premium-6120-tg/abc123"
+    )
+    ALB_ARN = (
+        "arn:aws:elasticloadbalancing:region:account:"
+        "loadbalancer/app/test-alb/def456"
+    )
+    TOPIC_ARN = "arn:aws:sns:region:account:test-optinist-critical-alerts"
+    EXPECTED_NAME = "test-premium-6120-tg-unhealthy-hosts"
+
+    def _env(self, base):
+        return {
+            **base,
+            "ALB_ARN": self.ALB_ARN,
+            "CRITICAL_ALERTS_TOPIC_ARN": self.TOPIC_ARN,
+        }
+
+    def test_create_pages_on_alarm_but_not_on_ok(self, mock_env_vars_premium, capsys):
+        with patch.dict("os.environ", self._env(mock_env_vars_premium)):
+            import premium_manager
+
+            mock_cw = MagicMock()
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                premium_manager._ensure_premium_tg_unhealthy_alarm(self.TG_ARN)
+
+            mock_cw.put_metric_alarm.assert_called_once()
+            kwargs = mock_cw.put_metric_alarm.call_args.kwargs
+            assert kwargs["AlarmName"] == self.EXPECTED_NAME
+            assert kwargs["AlarmActions"] == [self.TOPIC_ARN]
+            assert kwargs["OKActions"] == []
+            assert "[premium-alarm] action=create" in capsys.readouterr().out
+
+    def test_create_without_topic_wires_no_actions(self, mock_env_vars_premium):
+        env = self._env(mock_env_vars_premium)
+        env["CRITICAL_ALERTS_TOPIC_ARN"] = ""
+        with patch.dict("os.environ", env):
+            import premium_manager
+
+            mock_cw = MagicMock()
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                premium_manager._ensure_premium_tg_unhealthy_alarm(self.TG_ARN)
+
+            kwargs = mock_cw.put_metric_alarm.call_args.kwargs
+            assert kwargs["AlarmActions"] == []
+            assert kwargs["OKActions"] == []
+
+    def test_delete_removes_alarm_by_derived_name(self, mock_env_vars_premium, capsys):
+        with patch.dict("os.environ", self._env(mock_env_vars_premium)):
+            import premium_manager
+
+            mock_cw = MagicMock()
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                premium_manager._delete_premium_tg_unhealthy_alarm(self.TG_ARN)
+
+            mock_cw.delete_alarms.assert_called_once_with(
+                AlarmNames=[self.EXPECTED_NAME]
+            )
+            assert "[premium-alarm] action=delete" in capsys.readouterr().out

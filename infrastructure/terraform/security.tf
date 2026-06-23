@@ -27,26 +27,6 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_iam_role_policy" "ecs_secrets_policy" {
-  name = "ecs-secrets-policy"
-  role = aws_iam_role.ecs_task_execution.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          aws_secretsmanager_secret.aws_credentials.arn
-        ]
-      }
-    ]
-  })
-}
-
 # ECS Task Role (for containers to call AWS services)
 # ------------------------------------------------------
 resource "aws_iam_role" "ecs_task" {
@@ -440,154 +420,6 @@ resource "aws_iam_role_policy" "ecs_instance_detailed_monitoring" {
   })
 }
 
-# IAM User for this OptiNiSt Cloud project (separate from other webapps)
-resource "aws_iam_user" "subscr_optinist_cloud_user" {
-  name = "${local.env_prefix}-cloud-user"
-  path = "/"
-}
-
-# IAM Policy for this OptiNiSt Cloud User
-resource "aws_iam_policy" "subscr_optinist_cloud_user_policy" {
-  name        = "${local.env_prefix}-cloud-user-policy"
-  description = "Policy for this OptiNiSt Cloud project"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:DescribeInstances",
-          "ecr:GetAuthorizationToken",
-          "ecr:DescribeRepositories",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:DescribeImages",
-          "ecr:GetRepositoryPolicy",
-          "cloudwatch:ListMetrics",
-          "cloudwatch:GetMetricStatistics",
-          "cloudwatch:DescribeAlarms",
-          "cloudwatch:PutMetricData",
-          "autoscaling:DescribeAutoScalingGroups",
-          "ecs:ListClusters",
-          "ecs:ListContainerInstances"
-        ]
-        Resource = "*"
-      },
-      # S3: Allow CRUD only on this environment's buckets
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket",
-          "s3:CreateBucket",
-          "s3:DeleteBucket"
-        ]
-        Resource = [
-          "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*",
-          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
-          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
-        ]
-      },
-      # S3: Explicitly deny CRUD on other environments' buckets
-      # This ensures no other attached policy can grant cross-environment S3 access
-      {
-        Sid    = "DenyS3CrossEnvironment"
-        Effect = "Deny"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket",
-          "s3:CreateBucket",
-          "s3:DeleteBucket"
-        ]
-        NotResource = [
-          "arn:aws:s3:::${local.env_prefix}-*",
-          "arn:aws:s3:::${local.env_prefix}-*/*",
-          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*",
-          "arn:aws:s3:::${var.s3_user_bucket_prefix}-*/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ecs:DescribeTasks",
-          "ecs:DescribeContainerInstances",
-          "ecs:ListTasks",
-          "ecs:DescribeClusters",
-          "ecs:DescribeServices",
-          "ecs:UpdateService"
-        ]
-        Resource = [
-          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${local.env_prefix}-*",
-          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${local.env_prefix}-*/*",
-          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${local.env_prefix}-*/*",
-          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:container-instance/${local.env_prefix}-*/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:GetLogEvents",
-          "logs:FilterLogEvents",
-          "logs:DescribeLogGroups",
-          "logs:DescribeLogStreams"
-        ]
-        Resource = [
-          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.environment}-*",
-          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.environment}-*:*",
-          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.environment}-*",
-          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.environment}-*:*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "autoscaling:SetDesiredCapacity",
-          "autoscaling:SuspendProcesses",
-          "autoscaling:ResumeProcesses"
-        ]
-        Resource = "arn:aws:autoscaling:${var.aws_region}:${data.aws_caller_identity.current.account_id}:autoScalingGroup:*:autoScalingGroupName/${local.env_prefix}-*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = "lambda:InvokeFunction"
-        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.environment}-*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = "iam:PassRole"
-        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.environment}-optinist/*"
-        ]
-      }
-    ]
-  })
-}
-
-# Attach policy to user
-resource "aws_iam_user_policy_attachment" "subscr_optinist_cloud_user_policy_attachment" {
-  user       = aws_iam_user.subscr_optinist_cloud_user.name
-  policy_arn = aws_iam_policy.subscr_optinist_cloud_user_policy.arn
-}
-
-# Create access key for the user
-resource "aws_iam_access_key" "subscr_optinist_cloud_user_access_key" {
-  user = aws_iam_user.subscr_optinist_cloud_user.name
-}
-
 # S3 access for ECS tasks (scoped to app storage bucket)
 resource "aws_iam_role_policy" "ecs_task_s3_access" {
   name = "${var.environment}-ecs-task-s3-access"
@@ -955,20 +787,6 @@ resource "aws_security_group" "vpc_endpoints" {
 # ==============================
 # AWS Secrets Manager for storing
 # ==============================
-# Store AWS credentials in Secrets Manager
-resource "aws_secretsmanager_secret" "aws_credentials" {
-  name        = "${local.env_prefix}-cloud-credentials"
-  description = "AWS credentials for optinist cloud user"
-}
-
-resource "aws_secretsmanager_secret_version" "aws_credentials" {
-  secret_id = aws_secretsmanager_secret.aws_credentials.id
-  secret_string = jsonencode({
-    AWS_ACCESS_KEY_ID     = aws_iam_access_key.subscr_optinist_cloud_user_access_key.id
-    AWS_SECRET_ACCESS_KEY = aws_iam_access_key.subscr_optinist_cloud_user_access_key.secret
-  })
-}
-
 # Store RDS credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "rds_credentials" {
   name = "${var.environment}-rds-credentials"

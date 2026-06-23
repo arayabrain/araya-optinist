@@ -71,3 +71,15 @@ ENV OPTINIST_DIR=/app/studio_data
 # Copy the cloud-startup.sh script
 COPY cloud-startup.sh ./
 RUN chmod +x cloud-startup.sh
+
+# Build metadata — placed last so the changing ARG values only
+# invalidate this layer, not the COPY layers above.
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_TIMESTAMP=unknown
+
+LABEL org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_TIMESTAMP}" \
+      org.opencontainers.image.source="https://github.com/arayabrain/araya-optinist"
+
+RUN python3 -c "import json,os,sys; json.dump({'git_commit':os.environ.get('GIT_COMMIT','unknown'),'git_branch':os.environ.get('GIT_BRANCH','unknown'),'build_timestamp':os.environ.get('BUILD_TIMESTAMP','unknown')}, sys.stdout)" > /app/BUILD_INFO

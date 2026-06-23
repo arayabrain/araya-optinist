@@ -34,9 +34,6 @@ mysql_database      = "studio"
 mysql_user          = "test_db_admin"
 mysql_password      = "<PLACEHOLDER-generate-new>"
 
-USE_FIREBASE_TOKEN = True
-IS_STANDALONE      = False
-
 # Stripe TEST mode keys
 stripe_secret_key     = "sk_test_<PLACEHOLDER>"
 stripe_webhook_secret = "whsec_test_<PLACEHOLDER>"
