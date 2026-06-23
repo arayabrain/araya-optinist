@@ -410,9 +410,10 @@ class TestRoutingIDValidation:
                     assert sent_messages[0]["status"] == 403
 
     @pytest.mark.asyncio
-    async def test_stale_routing_id_ignored_for_free_user(self):
-        """Test that a free-tier user carrying a stale x-routing-id is NOT
-        rejected — the header is harmlessly ignored (defense-in-depth for #659)."""
+    async def test_mismatched_routing_id_rejected_for_free_user(self):
+        """A free-tier user sending a mismatched x-routing-id (e.g. stolen
+        from a premium user) must be rejected with 403.  Unconditional
+        validation prevents tier-bypass via ALB header spoofing."""
         from studio.app.common.core.middleware.secure_routing_middleware import (
             SecureRoutingMiddleware,
         )
@@ -426,7 +427,7 @@ class TestRoutingIDValidation:
             "path": "/api/test",
             "headers": [
                 (b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode()),
-                (b"x-routing-id", b"stale_premium_routing_id"),
+                (b"x-routing-id", b"stolen_premium_routing_id"),
             ],
         }
 
@@ -434,9 +435,6 @@ class TestRoutingIDValidation:
 
         async def mock_send(message):
             sent_messages.append(message)
-
-        async def mock_receive():
-            return {"type": "http.request"}
 
         with patch.object(MODE, "IS_STANDALONE", False):
             with patch(
@@ -450,22 +448,11 @@ class TestRoutingIDValidation:
                     "get_user_tier_cached",
                     return_value=TEST_TIER_FREE,
                 ):
-                    # Mock the app to send a 200 response
-                    async def mock_app_impl(scope, receive, send):
-                        await send(
-                            {
-                                "type": "http.response.start",
-                                "status": 200,
-                                "headers": [],
-                            }
-                        )
+                    await middleware(scope, AsyncMock(), mock_send)
 
-                    middleware.app = mock_app_impl
-                    await middleware(scope, mock_receive, mock_send)
-
-                    # Should pass through (200), NOT be rejected (403)
-                    assert len(sent_messages) == 1
-                    assert sent_messages[0]["status"] == 200
+                    # Must be rejected with 403 — unconditional validation
+                    assert len(sent_messages) == 2
+                    assert sent_messages[0]["status"] == 403
 
     @pytest.mark.asyncio
     async def test_mismatched_routing_id_still_rejected_for_premium(self):

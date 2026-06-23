@@ -262,12 +262,11 @@ class SecureRoutingMiddleware:
         tier = get_user_tier_cached(uid)
 
         # Validate routing ID if present in request (detect header spoofing).
-        # Only enforce for premium users — the server only emits x-routing-id
-        # for premium tier, so validation is symmetric.  A free user carrying
-        # a stale header from a prior premium session is harmlessly ignored;
-        # the header conveys no routing authority for the free tier.
+        # Unconditional for all tiers — prevents a free-tier caller from
+        # attaching a stolen premium routing_id and being routed to a
+        # premium-dedicated instance by the ALB.
         routing_id_header = headers.get(b"x-routing-id", b"").decode()
-        if routing_id_header and tier == TIER_PREMIUM:
+        if routing_id_header:
             expected_routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
             if routing_id_header != expected_routing_id:
                 logger.warning(
