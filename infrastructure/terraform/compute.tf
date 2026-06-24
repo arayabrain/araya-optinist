@@ -598,12 +598,12 @@ resource "aws_ecs_task_definition" "autoscaling" {
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        # ponytail: swap capped at 4 GB (was 32 GB). 32 GB swap on gp3 caused
-        # minutes of I/O thrash that starved /health → site down. 4 GB limits
-        # the thrash window to seconds; oom_score_adj=1000 on the workflow child
-        # ensures it (not the API) is killed when the budget is exhausted.
-        # Total memory budget: 6656 MiB RAM + 4096 MiB swap ≈ 10.5 GB.
-        maxSwap    = 4096
+        # ponytail: swap capped at 16 GB (was 32 GB). 32 GB swap on gp3 caused
+        # minutes of I/O thrash that starved /health → site down. 16 GB is
+        # enough for suite2p on ~1 GB datasets while halving the thrash window.
+        # Once the Docker image is rebuilt with oom_score_adj=1000 on the
+        # workflow child (snakemake_executor.py), this can be lowered further.
+        maxSwap    = 16384
         swappiness = 10
       }
 
