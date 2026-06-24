@@ -858,9 +858,10 @@ resource "aws_ecs_task_definition" "premium" {
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        # ponytail: swap capped — see free-tier comment above.
-        maxSwap    = 4096
-        swappiness = 10
+        # Premium instances are dedicated per-user, so a heavy workflow
+        # can't take down other users. Keep full swap headroom.
+        maxSwap    = 32768
+        swappiness = 20
       }
 
       portMappings = [
