@@ -80,7 +80,7 @@ resource "aws_lb_target_group" "autoscaling" {
   health_check {
     enabled             = true
     healthy_threshold   = 2
-    unhealthy_threshold = 5
+    unhealthy_threshold = 6 # 6 × 60s = 360s grace; tolerates brief OOM-kill recovery
     interval            = 60
     matcher             = "200"
     path                = "/health"
@@ -598,8 +598,13 @@ resource "aws_ecs_task_definition" "autoscaling" {
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        # ponytail: swap capped at 4 GB (was 32 GB). 32 GB swap on gp3 caused
+        # minutes of I/O thrash that starved /health → site down. 4 GB limits
+        # the thrash window to seconds; oom_score_adj=1000 on the workflow child
+        # ensures it (not the API) is killed when the budget is exhausted.
+        # Total memory budget: 6656 MiB RAM + 4096 MiB swap ≈ 10.5 GB.
+        maxSwap    = 4096
+        swappiness = 10
       }
 
       portMappings = [
@@ -853,8 +858,9 @@ resource "aws_ecs_task_definition" "premium" {
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        # ponytail: swap capped — see free-tier comment above.
+        maxSwap    = 4096
+        swappiness = 10
       }
 
       portMappings = [

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import platform
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -45,6 +46,67 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
+def _workflow_child_init():
+    """Configure the workflow child process for safe OOM behavior.
+
+    Sets oom_score_adj=1000 so the kernel OOM-killer targets this process
+    (not the API server) when the container hits its memory limit.
+    Also lowers scheduling priority so health-check responses aren't starved.
+    """
+    if platform.system() != "Linux":
+        return
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+    except OSError:
+        pass
+    try:
+        os.nice(19)
+    except OSError:
+        pass
+
+
+def _recover_from_child_death(workspace_id: str, unique_id: str):
+    """Run post-process error handling after the child process was killed.
+
+    When the child is OOM-killed, _snakemake_execute_process's post-process
+    block never runs.  This replicates the critical parts: release locks,
+    update experiment status, and mark remote-sync as error.
+    """
+    try:
+        if RemoteStorageController.is_available():
+            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+    except Exception as e:
+        logger.error("Recovery: failed to delete sync lock: %s", e)
+
+    try:
+        asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+    except Exception as e:
+        logger.error("Recovery: observe_overall failed: %s", e)
+
+    try:
+        if ExperimentRecordService.is_available():
+            ExperimentRecordService.regist_record_on_workflow_completed(
+                workspace_id, unique_id
+            )
+    except Exception as e:
+        logger.error("Recovery: experiment record update failed: %s", e)
+
+    try:
+        if RemoteStorageController.is_available():
+            remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
+                workspace_id, unique_id
+            )
+            RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                RemoteSyncAction.UPLOAD,
+            )
+    except Exception as e:
+        logger.error("Recovery: sync status update failed: %s", e)
+
+
 def snakemake_execute(
     workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
 ):
@@ -61,7 +123,9 @@ def snakemake_execute(
 
     try:
         logger.info("Starting local execution mode")
-        with ProcessPoolExecutor(max_workers=1) as executor:
+        with ProcessPoolExecutor(
+            max_workers=1, initializer=_workflow_child_init
+        ) as executor:
             logger.info("start snakemake running process.")
 
             future = executor.submit(
@@ -71,7 +135,19 @@ def snakemake_execute(
                 params,
                 client_id=client_id,
             )
-            future_result = future.result()
+
+            try:
+                future_result = future.result()
+            except Exception as exc:
+                # Child was killed (OOM, SIGKILL, etc.) — post-process never ran.
+                # Run it here so the experiment doesn't stay stuck in "running".
+                logger.error(
+                    "Workflow child process died unexpectedly "
+                    "(likely OOM-killed): %s",
+                    exc,
+                )
+                future_result = False
+                _recover_from_child_death(workspace_id, unique_id)
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
