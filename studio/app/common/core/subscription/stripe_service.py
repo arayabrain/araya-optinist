@@ -30,7 +30,7 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
-async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
+async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
     """Get Stripe customer by email"""
     try:
         stripe_customers = stripe.Customer.list(email=email, limit=1)
@@ -38,6 +38,121 @@ async def get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
     except stripe.error.StripeError as e:
         logger.error(f"Error fetching Stripe customer: {str(e)}")
         return None
+
+
+def _retrieve_if_active(account, user_id: int) -> Optional[stripe.Customer]:
+    """Retrieve from Stripe; return None if deleted or unreachable."""
+    try:
+        customer = stripe.Customer.retrieve(account.provider_customer_id)
+        if not customer.get("deleted"):
+            return customer
+        logger.warning(
+            f"Stripe customer {account.provider_customer_id} "
+            f"was deleted for user {user_id}, falling through to lookup"
+        )
+    except stripe.error.StripeError as e:
+        logger.warning(
+            f"Failed to retrieve Stripe customer "
+            f"{account.provider_customer_id} "
+            f"for user {user_id}: {e}"
+        )
+    return None
+
+
+def _persist_customer(db: Session, user: User, customer) -> None:
+    """Save Stripe customer to DB. Swallow IntegrityError from a concurrent insert."""
+    from sqlalchemy.exc import IntegrityError
+
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
+
+    try:
+        with db.begin_nested():
+            provider_id = CheckoutService.get_or_create_stripe_provider(db)
+            CheckoutService.create_or_update_user_account(
+                db, user.id, provider_id, customer.id
+            )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.info(
+            f"Concurrent insert for user {user.id} / customer {customer.id}, "
+            f"row already exists"
+        )
+
+
+async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Customer]:
+    """Get a Stripe customer WITHOUT creating one.
+
+    Use this for read-only endpoints (payment methods, invoices) where
+    creating a Stripe customer as a side effect is undesirable.
+    May persist a discovered Stripe-to-user association to the database
+    for future lookups.
+
+    Returns None if no customer exists.
+    """
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
+
+    # 1. Check database first (most reliable — tied to user_id)
+    subscription_account = CheckoutService.get_subscription_account(db, user.id)
+    if subscription_account:
+        customer = _retrieve_if_active(subscription_account, user.id)
+        if customer:
+            return customer
+
+    # 2. Fall back to Stripe API lookup by email (no create)
+    customer = await _get_stripe_customer_by_email(user.email)
+    if customer:
+        _persist_customer(db, user, customer)
+        return customer
+
+    return None
+
+
+async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Customer:
+    """Get or create a Stripe customer using a unified lookup strategy.
+
+    Lookup order:
+    1. Database (SubscriptionUserAccount by user_id) -> retrieve from Stripe
+    2. Stripe API (by email)
+    3. Create new customer
+
+    Always persists the customer ID to the database to prevent duplicates.
+    Uses SELECT FOR UPDATE to prevent concurrent requests from creating
+    duplicate customers for the same user.
+    """
+    from studio.app.common.models.subscription import SubscriptionUserAccount
+
+    # 1. Check database first with row lock to prevent race conditions.
+    #    If a row exists, the lock serializes concurrent requests for the
+    #    same user so only one can proceed at a time.
+    subscription_account = (
+        db.query(SubscriptionUserAccount)
+        .filter(SubscriptionUserAccount.user_id == user.id)
+        .with_for_update()
+        .first()
+    )
+    if subscription_account:
+        customer = _retrieve_if_active(subscription_account, user.id)
+        if customer:
+            return customer
+
+    # 2. Fall back to Stripe API lookup by email
+    customer = await _get_stripe_customer_by_email(user.email)
+    if customer:
+        _persist_customer(db, user, customer)
+        return customer
+
+    # 3. Create new customer as last resort
+    customer = stripe.Customer.create(
+        email=user.email,
+        name=getattr(user, "name", ""),
+        metadata={"user_id": str(user.id)},
+    )
+    logger.info(f"Created new Stripe customer {customer.id} for user {user.id}")
+
+    _persist_customer(db, user, customer)
+
+    return customer
 
 
 class StripeService:
@@ -93,7 +208,7 @@ class StripeService:
 
     @staticmethod
     async def get_default_payment_method(
-        user: User,
+        db: Session, user: User
     ) -> Optional[PaymentMethodResponse]:
         """
         Get user's default payment method
@@ -108,9 +223,8 @@ class StripeService:
                 f"with email {user.email}"
             )
 
-            # Find Stripe customer by email
-            stripe_customer = await get_stripe_customer_by_email(user.email)
-
+            # Find Stripe customer (read-only — don't create if missing)
+            stripe_customer = await get_stripe_customer(db, user)
             if not stripe_customer:
                 logger.info(f"No Stripe customer found for user {user.id}")
                 return None
@@ -169,19 +283,10 @@ class StripeService:
             )
 
     @staticmethod
-    async def create_setup_intent(user: User) -> CreateSetupIntentResponse:
+    async def create_setup_intent(db: Session, user: User) -> CreateSetupIntentResponse:
         try:
-            # Get or create Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
-
-            if not customer:
-                # Create new Stripe customer
-                customer = stripe.Customer.create(
-                    email=user.email,
-                    name=getattr(user, "name", ""),
-                    metadata={"user_id": str(user.id)},
-                )
-                logger.info(f"Created new Stripe customer for user {user.id}")
+            # Get or create Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Create SetupIntent
             setup_intent = stripe.SetupIntent.create(
@@ -208,18 +313,14 @@ class StripeService:
 
     @staticmethod
     async def update_default_payment_method(
-        user: User, payment_method_id: str
+        db: Session, user: User, payment_method_id: str
     ) -> UpdatePaymentMethodResponse:
         """
         Update the default payment method for a user's subscription
         """
         try:
-            # Get Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
-            if not customer:
-                raise HTTPException(
-                    status_code=404, detail="No Stripe customer found for user"
-                )
+            # Get Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Verify the payment method exists and belongs to this customer
             try:
@@ -282,17 +383,13 @@ class StripeService:
             )
 
     @staticmethod
-    async def delete_payment_method(user: User, payment_method_id: str):
+    async def delete_payment_method(db: Session, user: User, payment_method_id: str):
         """
         Delete a payment method (cannot delete if it's default for active subscriptions)
         """
         try:
-            # Get Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
-            if not customer:
-                raise HTTPException(
-                    status_code=404, detail="No Stripe customer found for user"
-                )
+            # Get Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Verify the payment method exists and belongs to this customer
             try:
@@ -351,7 +448,7 @@ class StripeService:
             )
 
     @staticmethod
-    async def handle_get_user_payment_methods(user: User):
+    async def handle_get_user_payment_methods(db: Session, user: User):
         """
         Get user's payment methods with last 4 digits and card brand
         """
@@ -364,14 +461,11 @@ class StripeService:
                 f"Fetching payment methods for user {user.id} with email {user.email}"
             )
 
-            # Find Stripe customer by email
-            stripe_customers = stripe.Customer.list(email=user.email, limit=1)
-
-            if not stripe_customers.data:
-                logger.info(f"No Stripe customer found for user {user.email}")
+            # Find Stripe customer (read-only — don't create if missing)
+            customer = await get_stripe_customer(db, user)
+            if not customer:
+                logger.info(f"No Stripe customer found for user {user.id}")
                 return []
-
-            customer = stripe_customers.data[0]
 
             # Get all payment methods for this customer (cards and link)
             result = []
@@ -461,12 +555,8 @@ class StripeService:
                     status_code=400, detail="User is already subscribed to this plan"
                 )
 
-            # Get Stripe customer
-            customer = await get_stripe_customer_by_email(user.email)
-            if not customer:
-                raise HTTPException(
-                    status_code=404, detail="No Stripe customer found for user"
-                )
+            # Get Stripe customer (unified lookup)
+            customer = await get_or_create_stripe_customer(db, user)
 
             # Get active or trial Stripe subscription
             # First try to find active subscription
@@ -598,7 +688,7 @@ class StripeService:
 
     @staticmethod
     async def handle_cancel_user_subscription(
-        db: Session, user: User
+        db: Session, user: User, *, immediate: bool = False
     ) -> CancelSubscriptionResponse:
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
@@ -609,12 +699,8 @@ class StripeService:
                 status_code=404, detail="No active subscription found to cancel"
             )
 
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
+        # Get Stripe customer (unified lookup)
+        customer = await get_or_create_stripe_customer(db, user)
 
         # Get active or trial Stripe subscription
         # First try to find active subscription
@@ -657,29 +743,36 @@ class StripeService:
             except Exception as e:
                 logger.warning(f"Could not cancel schedule: {e}")
 
-        # Set subscription to cancel at period end
-        stripe.Subscription.modify(
-            stripe_subscription.id,
-            cancel_at_period_end=True,
-            metadata={
-                **stripe_subscription.metadata,
-                "cancellation_requested": "true",
-                "cancellation_requested_at": str(
-                    int(SubscriptionService.get_current_datetime().timestamp())
-                ),
-            },
-        )
+        if immediate:
+            # Account deletion: cancel now, no grace period
+            stripe.Subscription.cancel(stripe_subscription.id)
+        else:
+            # User-initiated cancel: keep access until period end
+            stripe.Subscription.modify(
+                stripe_subscription.id,
+                cancel_at_period_end=True,
+                metadata={
+                    **stripe_subscription.metadata,
+                    "cancellation_requested": "true",
+                    "cancellation_requested_at": str(
+                        int(SubscriptionService.get_current_datetime().timestamp())
+                    ),
+                },
+            )
 
         SubscriptionService.update_scheduled_downgrade(db, user.id, True)
 
         # Database will be updated via customer.subscription.updated webhook
 
         access_until_date = datetime_from_timestamp(current_period_end)
-        message = (
-            f"Subscription will be cancelled on "
-            f"{format_date_for_display(access_until_date)}. "
-            f"You will retain access until then."
-        )
+        if immediate:
+            message = "Subscription cancelled immediately."
+        else:
+            message = (
+                f"Subscription will be cancelled on "
+                f"{format_date_for_display(access_until_date)}. "
+                f"You will retain access until then."
+            )
 
         logger.info(
             f"Successfully scheduled cancellation for user {user.id} " f"at period end"
