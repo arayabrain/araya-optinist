@@ -688,7 +688,7 @@ class StripeService:
 
     @staticmethod
     async def handle_cancel_user_subscription(
-        db: Session, user: User
+        db: Session, user: User, *, immediate: bool = False
     ) -> CancelSubscriptionResponse:
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
@@ -743,29 +743,36 @@ class StripeService:
             except Exception as e:
                 logger.warning(f"Could not cancel schedule: {e}")
 
-        # Set subscription to cancel at period end
-        stripe.Subscription.modify(
-            stripe_subscription.id,
-            cancel_at_period_end=True,
-            metadata={
-                **stripe_subscription.metadata,
-                "cancellation_requested": "true",
-                "cancellation_requested_at": str(
-                    int(SubscriptionService.get_current_datetime().timestamp())
-                ),
-            },
-        )
+        if immediate:
+            # Account deletion: cancel now, no grace period
+            stripe.Subscription.cancel(stripe_subscription.id)
+        else:
+            # User-initiated cancel: keep access until period end
+            stripe.Subscription.modify(
+                stripe_subscription.id,
+                cancel_at_period_end=True,
+                metadata={
+                    **stripe_subscription.metadata,
+                    "cancellation_requested": "true",
+                    "cancellation_requested_at": str(
+                        int(SubscriptionService.get_current_datetime().timestamp())
+                    ),
+                },
+            )
 
         SubscriptionService.update_scheduled_downgrade(db, user.id, True)
 
         # Database will be updated via customer.subscription.updated webhook
 
         access_until_date = datetime_from_timestamp(current_period_end)
-        message = (
-            f"Subscription will be cancelled on "
-            f"{format_date_for_display(access_until_date)}. "
-            f"You will retain access until then."
-        )
+        if immediate:
+            message = "Subscription cancelled immediately."
+        else:
+            message = (
+                f"Subscription will be cancelled on "
+                f"{format_date_for_display(access_until_date)}. "
+                f"You will retain access until then."
+            )
 
         logger.info(
             f"Successfully scheduled cancellation for user {user.id} " f"at period end"
