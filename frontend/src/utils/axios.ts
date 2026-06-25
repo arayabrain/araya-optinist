@@ -322,17 +322,23 @@ axios.interceptors.response.use(
     if (routingId) {
       // Only update the routing token when:
       //  (a) the user is NOT in premium-assigned mode (initial token seeding), or
-      //  (b) the response came from the verified premium instance.
+      //  (b) the response came from the verified premium instance, or
+      //  (c) the current token is null (recovery from cleared state).
       // This prevents non-premium responses (free/public tier 200s after
       // 502/503 fallback) from overwriting the token while premiumAssigned
       // is true — breaking the feedback loop described in issue #605.
+      // Condition (c) ensures that (premiumAssigned=true, token=null) is
+      // never a permanent trap — any response carrying X-Routing-ID can
+      // re-seed a missing token. This is safe because the token value is
+      // deterministic (HMAC of UID) and identical across all backends.
       const isPremiumMode = routingService.isPremiumAssigned()
+      const tokenIsNull = routingService.getRoutingToken() == null
       const instanceVerified =
         cfg?._hadPremiumHeaders &&
         cfg._outgoingInstanceId &&
         res.headers[RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()] ===
           cfg._outgoingInstanceId
-      if (!isPremiumMode || instanceVerified) {
+      if (!isPremiumMode || tokenIsNull || instanceVerified) {
         routingService.updateRoutingToken(routingId)
       }
     }

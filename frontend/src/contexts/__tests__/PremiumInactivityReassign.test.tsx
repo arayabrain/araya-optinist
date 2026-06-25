@@ -369,8 +369,10 @@ describe("PremiumAssignmentProvider — inactivity re-assignment", () => {
       expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
     })
 
-    // Pre-seed routing token.
+    // Pre-seed routing state as it would be in production after assignment.
     localStorage.setItem("routing_id", "d0250e94fae8595c")
+    localStorage.setItem("premium_assigned", "true")
+    localStorage.setItem("premium_instance_id", "inst-hash-A")
 
     // Simulate receiving a PREMIUM_RELEASED broadcast from another tab.
     act(() => {
@@ -378,7 +380,11 @@ describe("PremiumAssignmentProvider — inactivity re-assignment", () => {
     })
 
     expect(ctxRef.current?.assignmentResult).toBeNull()
-    // Routing token must be cleared by the cross-tab handler.
+    // resetForRelease() must clear all three: token, assigned flag, and instance ID.
+    // Without this, the receiving tab enters (premiumAssigned=true, token=null)
+    // — an unrecoverable deadlock where the interceptor guard blocks re-seeding.
     expect(localStorage.getItem("routing_id")).toBeNull()
+    expect(localStorage.getItem("premium_assigned")).toBe("false")
+    expect(localStorage.getItem("premium_instance_id")).toBeNull()
   })
 })

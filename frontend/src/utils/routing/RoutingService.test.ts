@@ -243,6 +243,54 @@ describe("RoutingService", () => {
     })
   })
 
+  describe("resetForRelease", () => {
+    test("should clear premiumAssigned, instanceId, and token together", () => {
+      const premiumUser = createPremiumUser()
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(premiumUser)
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      routingService.resetForRelease()
+
+      expect(routingService.isPremiumAssigned()).toBe(false)
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+      expect(routingService.getRoutingToken()).toBeNull()
+      expect(localStorageMock.getItem("routing_id")).toBeNull()
+      expect(localStorageMock.getItem("premium_assigned")).toBe("false")
+      expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+      // Tier and routingInfo are preserved (user is still premium-subscribed)
+      expect(routingService.getUserTier()).toBe(UserTier.PREMIUM)
+    })
+
+    test("should make getRoutingHeaders return empty after release", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.setPremiumAssigned(true)
+
+      routingService.resetForRelease()
+
+      expect(routingService.getRoutingHeaders()).toEqual({})
+    })
+
+    test("should allow re-seeding after release (premiumAssigned=false path)", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+
+      routingService.resetForRelease()
+
+      // After release, premiumAssigned=false so interceptor can re-seed
+      expect(routingService.isPremiumAssigned()).toBe(false)
+      // Simulate re-seeding
+      routingService.updateRoutingToken("new-token")
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("new-hash")
+
+      expect(routingService.getRoutingToken()).toBe("new-token")
+      expect(routingService.isPremiumAssigned()).toBe(true)
+    })
+  })
+
   describe("clearRoutingInfo", () => {
     test("should clear all routing state including premiumAssigned", () => {
       const premiumUser = createPremiumUser()

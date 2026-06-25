@@ -42,6 +42,7 @@ const mockEmitPremiumReachable = jest.fn<
 >()
 const mockGetPremiumInstanceId = jest.fn<string | null, []>(() => null)
 const mockIsPremiumAssigned = jest.fn<boolean, []>(() => false)
+const mockGetRoutingToken = jest.fn<string | null, []>(() => null)
 
 const mockIsDataviewPublicOutputsRequest = jest.fn<boolean, [string]>(
   () => false,
@@ -68,6 +69,7 @@ jest.mock("utils/routing/RoutingService", () => ({
     emitPremiumReachable: mockEmitPremiumReachable,
     getPremiumInstanceId: mockGetPremiumInstanceId,
     isPremiumAssigned: mockIsPremiumAssigned,
+    getRoutingToken: mockGetRoutingToken,
   },
 }))
 
@@ -452,11 +454,12 @@ describe("axios premium-routing interceptors", () => {
     expect(mockUpdateRoutingToken).toHaveBeenCalledWith("new-token-from-public")
   })
 
-  it("does NOT update routing token when premiumAssigned is true and instance is unverified", async () => {
+  it("does NOT update routing token when premiumAssigned is true, token is present, and instance is unverified", async () => {
     // Simulates the stale-token overwrite scenario: premiumAssigned=true
     // but the response came from the free/public tier (no premium headers
-    // sent, or instance mismatch).
+    // sent, or instance mismatch). Token is already set, so no null-recovery.
     mockIsPremiumAssigned.mockReturnValue(true)
+    mockGetRoutingToken.mockReturnValue("existing-token")
     mockGetRoutingHeaders.mockReturnValue({})
 
     responses.set("/free-tier", {
@@ -490,10 +493,29 @@ describe("axios premium-routing interceptors", () => {
     expect(mockUpdateRoutingToken).toHaveBeenCalledWith("rid-outgoing")
   })
 
+  it("updates routing token when premiumAssigned is true but token is null (recovery from cleared state)", async () => {
+    // After resetForRelease(), premiumAssigned may briefly be true with
+    // token=null (e.g. cross-tab race). The null-token escape hatch ensures
+    // re-seeding is always possible, preventing a permanent deadlock.
+    mockIsPremiumAssigned.mockReturnValue(true)
+    mockGetRoutingToken.mockReturnValue(null)
+    mockGetRoutingHeaders.mockReturnValue({})
+
+    responses.set("/reseed", {
+      status: 200,
+      data: {},
+      headers: { "x-routing-id": "reseeded-token" },
+    })
+    await axiosInstance.get("/reseed")
+
+    expect(mockUpdateRoutingToken).toHaveBeenCalledWith("reseeded-token")
+  })
+
   it("does NOT update routing token when premiumAssigned is true and instance hash mismatches", async () => {
     // Premium headers were sent but the response came from a different
     // instance (ALB fallback to shared backend).
     mockIsPremiumAssigned.mockReturnValue(true)
+    mockGetRoutingToken.mockReturnValue("existing-token")
     mockGetRoutingHeaders.mockReturnValue({
       "X-Routing-ID": "rid-outgoing",
       "X-User-Tier": "premium",
