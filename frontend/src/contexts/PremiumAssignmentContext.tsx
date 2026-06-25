@@ -14,7 +14,7 @@ import React, {
   useRef,
 } from "react"
 import { flushSync } from "react-dom"
-import { useSelector } from "react-redux"
+import { useDispatch, useSelector } from "react-redux"
 
 import {
   assignPremiumInstance,
@@ -36,8 +36,10 @@ import {
   useInstanceUnreachableMachine,
 } from "contexts/premium/useInstanceUnreachableMachine"
 import { useSleepDetection } from "hooks/useSleepDetection"
+import { getMe } from "store/slice/User/UserActions"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
-import { RootState } from "store/store"
+import { AppDispatch, RootState } from "store/store"
+import { logout as authLogout } from "utils/auth/AuthUtils"
 import {
   CrossTabLeaderElection,
   syncActivityAcrossTabs,
@@ -63,6 +65,8 @@ const ERROR_BACKOFF_MULTIPLIER = 2
 // status. This handles the case where the assign API timed out without
 // actually creating an assignment (e.g., lock contention).
 const ASSIGN_RETRY_POLL_THRESHOLD = 3
+// 5 min poll to detect subscription expiry; lower if tighter detection needed
+const SUBSCRIPTION_CHECK_INTERVAL_MS = 5 * 60 * 1000
 
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
@@ -155,6 +159,7 @@ export const PremiumAssignmentProvider: React.FC<{
   children: React.ReactNode
 }> = ({ children }) => {
   const currentUser = useSelector((state: RootState) => state.user.currentUser)
+  const dispatch = useDispatch<AppDispatch>()
   // Track logout generation to detect stale closures
   const logoutGeneration = useSelector(selectLogoutGeneration)
 
@@ -209,6 +214,8 @@ export const PremiumAssignmentProvider: React.FC<{
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
+  // Track previous premium status to detect subscription expiry transition
+  const prevIsPremiumRef = useRef(false)
 
   const unreachable = useInstanceUnreachableMachine({
     assignment: state.assignmentResult,
@@ -226,11 +233,27 @@ export const PremiumAssignmentProvider: React.FC<{
     setState((prev) => ({ ...prev, isPremiumUser }))
   }, [isPremiumUser])
 
+  // Periodic subscription status refresh for premium users.
+  // Keeps Redux currentUser.subscription_status fresh so we can detect expiry.
+  useEffect(() => {
+    if (!isPremiumUser) return
+
+    const interval = setInterval(() => {
+      dispatch(getMe())
+    }, SUBSCRIPTION_CHECK_INTERVAL_MS)
+
+    return () => clearInterval(interval)
+  }, [isPremiumUser, dispatch])
+
   // Reset flag when user changes
   useEffect(() => {
     hasAttemptedRef.current = false
+    prevIsPremiumRef.current = isPremiumUser
     ssRemove(SS_HAS_ATTEMPTED)
     ssRemove(SS_POLL_ATTEMPTS)
+    // isPremiumUser intentionally excluded — this effect syncs refs on user
+    // identity change only; the auto-logout effect handles isPremiumUser transitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id])
 
   // Reset state when logout generation changes to prevent stale closures
@@ -252,6 +275,7 @@ export const PremiumAssignmentProvider: React.FC<{
       })
       unreachable.reset()
       hasAttemptedRef.current = false
+      prevIsPremiumRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)
       ssRemove(SS_POLL_ATTEMPTS)
     }
@@ -620,6 +644,20 @@ export const PremiumAssignmentProvider: React.FC<{
     routingService.setPremiumAssigned(false)
     routingService.setPremiumInstanceId(null)
   }, [])
+
+  // Auto-logout when subscription expires during an active session.
+  // Detects premium → non-premium transition and releases the instance.
+  useEffect(() => {
+    if (prevIsPremiumRef.current && !isPremiumUser && state.assignmentResult) {
+      // Subscription expired mid-session — release instance + force logout
+      autoReleaseOnLogout()
+      tabSync.broadcastLogout()
+      // Fire-and-forget: authLogout is async but redirect is intentionally not awaited —
+      // assignmentResult is already null and prevIsPremiumRef prevents re-trigger.
+      authLogout()
+    }
+    prevIsPremiumRef.current = isPremiumUser
+  }, [isPremiumUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Inactivity monitoring for premium users
   // Uses refs for lastActivityTime/showInactivityWarning to avoid interval churn
