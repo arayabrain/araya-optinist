@@ -714,7 +714,7 @@ async def get_user_subscription_plan(user_id: int) -> Dict[str, Any]:
             plan_name = getattr(user, "subscription_plan_name", PlanName.FREE)
             has_active = getattr(user, "has_active_subscription", False)
 
-            # Determine tier - Premium users should get priority even in grace period
+            # Determine tier from plan name
             is_premium = plan_name and plan_name.lower() == SubscriptionType.PREMIUM
             tier = SubscriptionType.PREMIUM if is_premium else SubscriptionType.FREE
 

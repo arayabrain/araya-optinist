@@ -257,8 +257,7 @@ export class RoutingService {
   private isPremiumUser(user: UserDTO): boolean {
     return (
       user.subscription_plan_name === PlanName.PREMIUM &&
-      (user.subscription_status === SubscriptionStatus.PREMIUM ||
-        user.subscription_status === SubscriptionStatus.LIMIT_GRACE)
+      user.subscription_status === SubscriptionStatus.PREMIUM
     )
   }
 

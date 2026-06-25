@@ -4,7 +4,7 @@
  * Covers:
  *  1. Periodic getMe() dispatch fires at 5-min interval for premium users.
  *  2. Auto-logout when premium → non-premium transition with active assignment.
- *  3. No auto-logout during grace period (Limit Grace is still premium).
+ *  3. Auto-logout when entering grace period (Limit Grace = free instance).
  */
 
 import React from "react"
@@ -242,7 +242,7 @@ describe("PremiumAssignmentProvider — subscription expiry auto-logout", () => 
     expect(ctxRef.current?.assignmentResult).toBeNull()
   })
 
-  test("no auto-logout during grace period (Limit Grace)", async () => {
+  test("auto-logout when entering grace period (Limit Grace)", async () => {
     mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
 
     const ctxRef: { current: Ctx | null } = { current: null }
@@ -253,7 +253,7 @@ describe("PremiumAssignmentProvider — subscription expiry auto-logout", () => 
       expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
     })
 
-    // Transition to grace period — still considered premium
+    // Transition to grace period — no longer considered premium
     mockUser.subscription_status = "Limit Grace"
 
     await act(async () => {
@@ -261,10 +261,10 @@ describe("PremiumAssignmentProvider — subscription expiry auto-logout", () => 
       await Promise.resolve()
     })
 
-    // Should NOT trigger auto-logout
-    expect(mockAuthLogout).not.toHaveBeenCalled()
-    expect(mockBroadcastLogout).not.toHaveBeenCalled()
-    // Assignment should still be active
-    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    // Should trigger auto-logout (grace period = free instance, not premium)
+    expect(mockAuthLogout).toHaveBeenCalledTimes(1)
+    expect(mockBroadcastLogout).toHaveBeenCalledTimes(1)
+    // Assignment should be cleared
+    expect(ctxRef.current?.assignmentResult).toBeNull()
   })
 })

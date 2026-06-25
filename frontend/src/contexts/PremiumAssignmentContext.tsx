@@ -225,8 +225,7 @@ export const PremiumAssignmentProvider: React.FC<{
   // Calculate premium user status
   const isPremiumUser =
     currentUser?.subscription_plan_name === PlanName.PREMIUM &&
-    (currentUser?.subscription_status === SubscriptionStatus.PREMIUM ||
-      currentUser?.subscription_status === SubscriptionStatus.LIMIT_GRACE)
+    currentUser?.subscription_status === SubscriptionStatus.PREMIUM
 
   // Update state when premium status changes
   useEffect(() => {
