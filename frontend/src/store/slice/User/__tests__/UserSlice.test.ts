@@ -218,6 +218,65 @@ describe("UserSlice", () => {
       expect(mockClearRoutingInfo).not.toHaveBeenCalled()
     })
   })
+
+  describe("login.fulfilled", () => {
+    const loginFulfilledAction = {
+      type: "user/login/fulfilled",
+      payload: {
+        access_token: "new_access_token",
+        refresh_token: "new_refresh_token",
+        ex_token: "new_ex_token",
+      },
+    }
+
+    it("should clear routing info before saving new tokens", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, loginFulfilledAction)
+
+      // clearRoutingInfo must be called
+      expect(mockClearRoutingInfo).toHaveBeenCalledTimes(1)
+      // tokens must be saved
+      expect(mockSaveToken).toHaveBeenCalledWith("new_access_token")
+      expect(mockSaveRefreshToken).toHaveBeenCalledWith("new_refresh_token")
+      expect(mockSaveExToken).toHaveBeenCalledWith("new_ex_token")
+
+      // clearRoutingInfo must be called BEFORE saveToken
+      const clearOrder = mockClearRoutingInfo.mock.invocationCallOrder[0]
+      const saveOrder = mockSaveToken.mock.invocationCallOrder[0]
+      expect(clearOrder).toBeLessThan(saveOrder)
+    })
+  })
+
+  describe("proxyLogin.fulfilled", () => {
+    // proxyLogin currently shares the same action type as login
+    // ("user/login"), so this test exercises the same isAnyOf matcher.
+    // An explicit test ensures coverage remains visible if the action
+    // types diverge in the future.
+    const proxyLoginFulfilledAction = {
+      type: "user/login/fulfilled",
+      payload: {
+        access_token: "proxy_access_token",
+        refresh_token: "proxy_refresh_token",
+        ex_token: "proxy_ex_token",
+      },
+    }
+
+    it("should clear routing info before saving new tokens", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, proxyLoginFulfilledAction)
+
+      expect(mockClearRoutingInfo).toHaveBeenCalledTimes(1)
+      expect(mockSaveToken).toHaveBeenCalledWith("proxy_access_token")
+      expect(mockSaveRefreshToken).toHaveBeenCalledWith("proxy_refresh_token")
+      expect(mockSaveExToken).toHaveBeenCalledWith("proxy_ex_token")
+
+      const clearOrder = mockClearRoutingInfo.mock.invocationCallOrder[0]
+      const saveOrder = mockSaveToken.mock.invocationCallOrder[0]
+      expect(clearOrder).toBeLessThan(saveOrder)
+    })
+  })
 })
 
 describe("selectLogoutGeneration", () => {
