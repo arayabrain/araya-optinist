@@ -617,8 +617,7 @@ export const PremiumAssignmentProvider: React.FC<{
       assignmentResult: null,
       statusResult: null,
     }))
-    routingService.setPremiumAssigned(false)
-    routingService.setPremiumInstanceId(null)
+    routingService.resetForRelease()
   }, [])
 
   // Inactivity monitoring for premium users
@@ -721,6 +720,12 @@ export const PremiumAssignmentProvider: React.FC<{
         assignmentResult: null,
         statusResult: null,
       }))
+      // Mirror the same-tab release path: clear assigned flag, instance ID,
+      // and token together. Without setPremiumAssigned(false), this tab's
+      // in-memory RoutingService stays premiumAssigned=true with token=null
+      // — an unrecoverable state where the interceptor guard blocks
+      // re-seeding and getRoutingHeaders() returns {}.
+      routingService.resetForRelease()
       // Allow this tab to reassign on next user gesture.
       hasAttemptedRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)

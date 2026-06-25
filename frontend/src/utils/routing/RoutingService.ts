@@ -150,6 +150,27 @@ export class RoutingService {
   }
 
   /**
+   * Clear only the routing token (not tier, routing info, or premium flags).
+   * Used on premium release to prevent stale token reuse on reassignment.
+   */
+  clearRoutingToken(): void {
+    this.routingToken = null
+    this.clearTokenFromStorage()
+  }
+
+  /**
+   * Reset routing state for a premium release.
+   * Clears premiumAssigned, premiumInstanceId, and routingToken together.
+   * Use this in both same-tab and cross-tab release paths to keep them
+   * in sync and prevent (premiumAssigned=true, token=null) deadlocks.
+   */
+  resetForRelease(): void {
+    this.setPremiumAssigned(false)
+    this.setPremiumInstanceId(null)
+    this.clearRoutingToken()
+  }
+
+  /**
    * Set whether premium assignment has been confirmed
    * Controls whether routing headers are actually sent
    */

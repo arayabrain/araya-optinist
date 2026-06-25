@@ -331,4 +331,60 @@ describe("PremiumAssignmentProvider — inactivity re-assignment", () => {
     // The DOM clicks must NOT have caused additional /assign calls.
     expect(mockAssignPremiumInstance).toHaveBeenCalledTimes(1)
   })
+
+  test("auto-release clears the routing token from localStorage (issue #605)", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Pre-seed routing token (the mocked APIs don't go through the real
+    // axios interceptor, so we simulate the token being set as it would
+    // be in production after the first premium-routed response).
+    localStorage.setItem("routing_id", "d0250e94fae8595c")
+
+    // Fast-forward 2h to trigger auto-release.
+    await act(async () => {
+      jest.advanceTimersByTime(2 * 60 * 60 * 1000 + 5000)
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult).toBeNull()
+    })
+
+    // Routing token must be cleared on release to prevent stale reuse.
+    expect(localStorage.getItem("routing_id")).toBeNull()
+  })
+
+  test("cross-tab PREMIUM_RELEASED clears routing token from localStorage (issue #605)", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Pre-seed routing state as it would be in production after assignment.
+    localStorage.setItem("routing_id", "d0250e94fae8595c")
+    localStorage.setItem("premium_assigned", "true")
+    localStorage.setItem("premium_instance_id", "inst-hash-A")
+
+    // Simulate receiving a PREMIUM_RELEASED broadcast from another tab.
+    act(() => {
+      firePremiumReleased()
+    })
+
+    expect(ctxRef.current?.assignmentResult).toBeNull()
+    // resetForRelease() must clear all three: token, assigned flag, and instance ID.
+    // Without this, the receiving tab enters (premiumAssigned=true, token=null)
+    // — an unrecoverable deadlock where the interceptor guard blocks re-seeding.
+    expect(localStorage.getItem("routing_id")).toBeNull()
+    expect(localStorage.getItem("premium_assigned")).toBe("false")
+    expect(localStorage.getItem("premium_instance_id")).toBeNull()
+  })
 })
