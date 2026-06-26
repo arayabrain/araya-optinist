@@ -116,8 +116,11 @@ Premium state is mounted for **all authenticated users** (`PremiumAssignmentProv
 
 ```
 currentUser.subscription_plan_name === PlanName.PREMIUM
-  AND (subscription_status === PREMIUM OR subscription_status === LIMIT_GRACE)
+  AND subscription_status === PREMIUM
 ```
+
+Note: `LIMIT_GRACE` is excluded — grace period users are moved to the free
+tier (auto-logout on transition) while retaining their 200 GB data quota.
 
 ### Sequence Overview
 
@@ -395,7 +398,7 @@ Two premium users **can** share the same dedicated-class EC2 -- the uniqueness c
 
 | Observed symptom | Implied state | Upstream cause |
 |---|---|---|
-| No toasts, no premium effects, no network calls to `/premium/*` | Inert provider path | `isPremiumUser` is false -- either `subscription_plan_name != PREMIUM`, or `subscription_status` is neither `PREMIUM` nor `LIMIT_GRACE` |
+| No toasts, no premium effects, no network calls to `/premium/*` | Inert provider path | `isPremiumUser` is false -- either `subscription_plan_name != PREMIUM`, or `subscription_status` is not `PREMIUM` (includes `LIMIT_GRACE`, `EXPIRED`, `FREE`) |
 | Console warn "Conditions not met for auto-assignment" | Provider mounted but gate failed | `currentUser` null at mount time, or `isPremiumUser` flipped false between mount and the useEffect firing |
 | Success toast "Premium instance assigned successfully..." at login | `/assign` returned `assigned=true, is_shared=false` on first call, OR `/status` found an existing dedicated assignment | A dedicated instance had zero active assignments at assign time and was picked up; or the user already had a live assignment from a prior session that survived in DB (cleanup hadn't run) |
 | Persistent info toast "Please wait while your dedicated premium resource is being prepared." from login, no success toast follows | `assignmentResult.assigned=true && is_shared=true`, OR response was 202 with `retry_after`, OR `/assign` returned an `autoscaling-pool` assignment | No premium instance had spare capacity at assign time: either (a) all running instances already have users so the least-loaded was picked (is_shared=true on a real instance), (b) scaling was initiated and the Lambda returned 202+retry_after, or (c) launching instances exist and response is 202 |
