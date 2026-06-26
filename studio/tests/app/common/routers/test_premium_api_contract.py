@@ -76,10 +76,14 @@ PREMIUM_STATUS_OPTIONAL_FIELDS = {
 # PremiumAssignment (nested in PremiumStatusResult)
 PREMIUM_ASSIGNMENT_NESTED_FIELDS = {
     "instance_id": str,
-    "instance_id_hash": str,
     "assigned_at": str,
     "status": str,
     "is_shared": bool,
+}
+
+# instance_id_hash is omitted for non-instance-pinned (autoscaling-pool) assignments
+PREMIUM_ASSIGNMENT_NESTED_OPTIONAL_FIELDS = {
+    "instance_id_hash": str,
 }
 
 # PremiumHeartbeatResult interface
@@ -322,6 +326,43 @@ async def test_contract_premium_assign_shared_instance(mock_premium_user):
         # Semantic validation for shared instance
         assert result["assigned"] is True
         assert result["is_shared"] is True
+        # Real-shared is pinned to one instance, so it keeps a verifiable hash.
+        assert isinstance(result["instance_id_hash"], str)
+
+
+@pytest.mark.asyncio
+async def test_contract_premium_assign_autoscaling_pool(mock_premium_user):
+    """
+    Contract test: an autoscaling-pool assignment is load-balanced across the
+    pool, not pinned to one instance, so instance_id_hash must be None — the
+    marker is not a real instance and its hash could never match x-served-by.
+    """
+    with patch(
+        "studio.app.common.routers.users_me.premium_assignment_service"
+    ) as mock_service:
+        mock_service.assign_premium_user = AsyncMock(
+            return_value={
+                "success": True,
+                "message": "Assigned to autoscaling pool",
+                "instance_id": "autoscaling-pool",
+                "is_shared": True,
+                "assignment_source": "autoscaling_temp",
+            }
+        )
+
+        from studio.app.common.routers.users_me import assign_premium_instance
+
+        result = await assign_premium_instance(current_user=mock_premium_user)
+
+        validate_contract(
+            result,
+            PREMIUM_ASSIGNMENT_REQUIRED_FIELDS,
+            PREMIUM_ASSIGNMENT_OPTIONAL_FIELDS,
+            context="PremiumAssignmentResult (autoscaling pool)",
+        )
+
+        assert result["is_shared"] is True
+        assert result["instance_id_hash"] is None
 
 
 # ============================================================================
@@ -428,11 +469,45 @@ async def test_contract_premium_status_with_assignment(mock_premium_user):
         validate_contract(
             result["assignment"],
             PREMIUM_ASSIGNMENT_NESTED_FIELDS,
+            PREMIUM_ASSIGNMENT_NESTED_OPTIONAL_FIELDS,
             context="PremiumAssignment (nested)",
         )
 
         # Semantic validation
         assert result["is_premium"] is True
+
+
+@pytest.mark.asyncio
+async def test_contract_premium_status_autoscaling_pool(mock_premium_user):
+    """
+    Contract test: a status response for an autoscaling-pool assignment omits
+    instance_id_hash (the pool marker is not a real, verifiable instance).
+    """
+    with patch(
+        "studio.app.common.routers.users_me.premium_assignment_service"
+    ) as mock_service:
+        mock_service.get_premium_user_status = AsyncMock(
+            return_value={
+                "instance_id": "autoscaling-pool",
+                "assigned_at": "2024-01-15T10:30:00Z",
+                "status": "active",
+                "is_shared": True,
+            }
+        )
+
+        from studio.app.common.routers.users_me import get_premium_assignment_status
+
+        result = await get_premium_assignment_status(current_user=mock_premium_user)
+
+        validate_contract(
+            result,
+            PREMIUM_STATUS_REQUIRED_FIELDS,
+            PREMIUM_STATUS_OPTIONAL_FIELDS,
+            context="PremiumStatusResult (autoscaling pool)",
+        )
+
+        assert result["assignment"] is not None
+        assert result["assignment"].get("instance_id_hash") is None
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,8 @@ class PremiumStatusCheckError(Exception):
 LAMBDA_TIMEOUT_SECONDS = 60
 LAMBDA_MAX_RETRIES = 2
 LAMBDA_RETRY_BASE_DELAY_SECONDS = 2
+# instance_id the Lambda returns for non-pinned autoscaling-pool assignments.
+AUTOSCALING_POOL_INSTANCE_ID = "autoscaling-pool"
 # Short bound for latency-sensitive callers (e.g. the Stripe webhook path),
 # which must respond quickly. Cleanup that exceeds this is handled by the
 # periodic premium-expiration sweep, so failing open here is safe.
