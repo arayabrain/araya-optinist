@@ -686,8 +686,8 @@ export const PremiumAssignmentProvider: React.FC<{
       // Subscription expired mid-session — release instance + force logout
       autoReleaseOnLogout()
       tabSync.broadcastLogout()
-      // Fire-and-forget: authLogout is async but redirect is intentionally not awaited —
-      // assignmentResult is already null and prevIsPremiumRef prevents re-trigger.
+      // Fire-and-forget: authLogout is async and redirect is intentionally not awaited.
+      // autoReleaseOnLogout schedules the state update; prevIsPremiumRef prevents re-trigger on subsequent renders.
       authLogout()
     }
     prevIsPremiumRef.current = isPremiumUser
