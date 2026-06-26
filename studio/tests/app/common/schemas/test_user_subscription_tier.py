@@ -5,8 +5,6 @@ Verifies that Limit Grace users are treated as free tier (no premium instance
 access), while retaining Premium plan name for data retention purposes.
 """
 
-import pytest
-
 from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionStatus,
