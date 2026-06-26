@@ -257,14 +257,14 @@ export const PremiumAssignmentProvider: React.FC<{
   // Periodic subscription status refresh for premium users.
   // Keeps Redux currentUser.subscription_status fresh so we can detect expiry.
   useEffect(() => {
-    if (!isPremiumUser) return
+    if (!isPremiumUser || !isTabLeader) return
 
     const interval = setInterval(() => {
       dispatch(getMe())
     }, SUBSCRIPTION_CHECK_INTERVAL_MS)
 
     return () => clearInterval(interval)
-  }, [isPremiumUser, dispatch])
+  }, [isPremiumUser, isTabLeader, dispatch])
 
   // Reset flag when user changes
   useEffect(() => {
