@@ -409,6 +409,95 @@ class TestRoutingIDValidation:
                     assert len(sent_messages) == 2
                     assert sent_messages[0]["status"] == 403
 
+    @pytest.mark.asyncio
+    async def test_mismatched_routing_id_rejected_for_free_user(self):
+        """A free-tier user sending a mismatched x-routing-id (e.g. stolen
+        from a premium user) must be rejected with 403.  Unconditional
+        validation prevents tier-bypass via ALB header spoofing."""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            SecureRoutingMiddleware,
+        )
+        from studio.app.common.core.mode import MODE
+
+        mock_app = AsyncMock()
+        middleware = SecureRoutingMiddleware(app=mock_app)
+
+        scope = {
+            "type": "http",
+            "path": "/api/test",
+            "headers": [
+                (b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode()),
+                (b"x-routing-id", b"stolen_premium_routing_id"),
+            ],
+        }
+
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
+
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_FREE,
+                ):
+                    await middleware(scope, AsyncMock(), mock_send)
+
+                    # Must be rejected with 403 — unconditional validation
+                    assert len(sent_messages) == 2
+                    assert sent_messages[0]["status"] == 403
+
+    @pytest.mark.asyncio
+    async def test_mismatched_routing_id_still_rejected_for_premium(self):
+        """Regression: premium users with mismatched routing IDs must still
+        be rejected with 403."""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            SecureRoutingMiddleware,
+        )
+        from studio.app.common.core.mode import MODE
+
+        mock_app = AsyncMock()
+        middleware = SecureRoutingMiddleware(app=mock_app)
+
+        scope = {
+            "type": "http",
+            "path": "/api/test",
+            "headers": [
+                (b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode()),
+                (b"x-routing-id", b"wrong_routing_id"),
+            ],
+        }
+
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
+
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_PREMIUM,
+                ):
+                    await middleware(scope, AsyncMock(), mock_send)
+
+                    # Should be rejected with 403
+                    assert len(sent_messages) == 2
+                    assert sent_messages[0]["status"] == 403
+
 
 class TestCacheInvalidation:
     """Test cache invalidation on subscription changes"""

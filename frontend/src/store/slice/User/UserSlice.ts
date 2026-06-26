@@ -86,6 +86,11 @@ export const userSlice = createSlice({
       .addMatcher(
         isAnyOf(login.fulfilled, proxyLogin.fulfilled),
         (_, action) => {
+          // Clear stale routing state BEFORE saving new tokens.
+          // Prevents a new session from inheriting routing-id/premium_assigned
+          // from a prior premium session that did not log out cleanly (#659).
+          routingService.clearRoutingInfo()
+
           saveToken(action.payload.access_token)
           saveRefreshToken(action.payload.refresh_token)
           saveExToken(action.payload.ex_token)

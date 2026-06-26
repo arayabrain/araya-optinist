@@ -8,6 +8,13 @@
  *  4. Normal assign (assigned: true) does NOT fire re-trigger (regression test).
  *  5. MAX_POLL_ATTEMPTS resets flags for retryable cases.
  *  6. User gesture recovery after MAX_POLL_ATTEMPTS exhaustion.
+ *  7. Instance-lost recovery: re-trigger fires when assigned instance is
+ *     stopped/terminated externally.
+ *  8. Instance-lost MAX_POLL_ATTEMPTS: flag reset enables user-gesture
+ *     recovery after stop/terminate exhausts polling.
+ *  9. Re-trigger stops after MAX_RETRIGGER_ATTEMPTS (bounded counter).
+ * 10. Release during poll prevents re-trigger (stale closure prevention).
+ * 11. Same-id restart: unreachable persists until confirmed reachable.
  */
 
 import React from "react"
@@ -440,5 +447,297 @@ describe("PremiumAssignmentProvider — re-trigger assign during polling", () =>
 
     // Error should be cleared.
     expect(ctxRef.current?.error).toBeNull()
+  })
+
+  test("instance-lost: re-trigger fires when assigned instance is stopped/terminated", async () => {
+    // autoAssignOnLogin: /status returns dedicated → state has assigned:true
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+    mockAssignPremiumInstance.mockResolvedValue(dedicatedAssignment)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Simulate instance stopped/terminated: status now returns null assignment.
+    mockGetPremiumStatus.mockResolvedValue(nullAssignmentStatus)
+    mockAssignPremiumInstance.mockClear()
+
+    // The new dedicated instance after re-assign.
+    const newDedicated: PremiumAssignmentResult = {
+      message: "dedicated",
+      instance_id: "inst-B",
+      instance_id_hash: "hash-B",
+      assigned: true,
+      is_shared: false,
+      assignment_source: "new",
+    }
+    mockAssignPremiumInstance.mockResolvedValue(newDedicated)
+
+    // Trigger the unreachable state so shouldPoll returns true even though
+    // we have a dedicated assignment. This simulates the 502/503 handler
+    // calling emitPremiumUnreachable() when the dead instance is hit.
+    act(() => {
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 502,
+        sentAt: Date.now(),
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+
+    // Poll 1: no re-trigger (pollAttempts=0)
+    await advanceOnePollCycle()
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+
+    // Poll 2: no re-trigger (pollAttempts=1)
+    await advanceOnePollCycle()
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+
+    // Poll 3: re-trigger fires (pollAttempts=2, (2+1)%3===0)
+    await advanceOnePollCycle()
+    expect(mockAssignPremiumInstance).toHaveBeenCalledTimes(1)
+
+    // State should reflect the new dedicated assignment.
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-B")
+    })
+
+    // Routing should be configured.
+    expect(routingService.isPremiumAssigned()).toBe(true)
+  })
+
+  test("instance-lost: MAX_POLL_ATTEMPTS resets flags for user-gesture recovery", async () => {
+    // autoAssignOnLogin: /status returns dedicated → state has assigned:true
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+    mockAssignPremiumInstance.mockResolvedValue(dedicatedAssignment)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+    })
+
+    // Simulate instance lost: status returns null.
+    mockGetPremiumStatus.mockResolvedValue(nullAssignmentStatus)
+    // Re-trigger assign also fails (keeps returning retryable).
+    mockAssignPremiumInstance.mockResolvedValue(retryableAssignment)
+
+    // Trigger unreachable to enable polling for the dedicated assignment.
+    act(() => {
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+
+    // Advance through all 40 poll cycles to reach MAX_POLL_ATTEMPTS.
+    for (let i = 0; i < 40; i++) {
+      await advanceOnePollCycle()
+    }
+
+    // State should show error and assignmentResult should be null.
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult).toBeNull()
+      expect(ctxRef.current?.error).toContain(
+        "No premium instance available after extended wait",
+      )
+    })
+
+    // hasAttempted should be cleared — user gesture can trigger recovery.
+    expect(sessionStorage.getItem("premium_hasAttempted")).toBeNull()
+
+    // Set up mocks for recovery: status returns a new dedicated instance.
+    const newDedicatedStatus: PremiumStatusResult = {
+      user_id: 1,
+      subscription_type: UserTier.PREMIUM,
+      is_premium: true,
+      assignment: {
+        instance_id: "inst-C",
+        is_shared: false,
+        assigned_at: "2026-06-23T00:00:00Z",
+        status: "active",
+      },
+    }
+    mockGetPremiumStatus.mockResolvedValue(newDedicatedStatus)
+
+    // Simulate user gesture (click) — should trigger fresh autoAssignOnLogin.
+    act(() => {
+      simulateClick()
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-C")
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+    })
+
+    expect(ctxRef.current?.error).toBeNull()
+  })
+
+  test("re-trigger stops after MAX_RETRIGGER_ATTEMPTS (bounded counter)", async () => {
+    // autoAssignOnLogin: retryable
+    mockGetPremiumStatus.mockResolvedValue(nullAssignmentStatus)
+    mockAssignPremiumInstance.mockResolvedValue(retryableAssignment)
+
+    renderProvider()
+
+    await waitFor(() => {
+      expect(mockAssignPremiumInstance).toHaveBeenCalledTimes(1)
+    })
+
+    // Clear to track only re-trigger calls.
+    mockAssignPremiumInstance.mockClear()
+    mockAssignPremiumInstance.mockResolvedValue(retryableAssignment)
+
+    // Re-trigger fires every 3 polls. With MAX_RETRIGGER_ATTEMPTS=5,
+    // re-triggers fire at polls 3, 6, 9, 12, 15 (retriggerCount 1-5)
+    // then stop. Advance 18 polls to exceed the limit.
+    for (let i = 0; i < 18; i++) {
+      await advanceOnePollCycle()
+    }
+
+    // Exactly 5 re-trigger calls should have fired.
+    expect(mockAssignPremiumInstance).toHaveBeenCalledTimes(5)
+
+    // Advance 3 more polls (poll 19-21) — no further re-triggers.
+    mockAssignPremiumInstance.mockClear()
+    for (let i = 0; i < 3; i++) {
+      await advanceOnePollCycle()
+    }
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+  })
+
+  test("release during poll prevents re-trigger (stale closure prevention)", async () => {
+    // Start with dedicated assignment (autoAssignOnLogin takes already-assigned path).
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Trigger unreachable → polling starts.
+    act(() => {
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 502,
+        sentAt: Date.now(),
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+
+    // Configure getPremiumStatus:
+    //  - Polls 1-2: return null normally (pollAttempts climbs to 2)
+    //  - Poll 3: fire cross-tab PREMIUM_RELEASED before returning null
+    // Poll 3 is where re-trigger would fire (pollAttempts=2, (2+1)%3=0).
+    // The release increments releaseGenerationRef synchronously, so the
+    // post-await liveness check detects the mismatch and bails before
+    // reaching the re-trigger section.
+    let statusCallCount = 0
+    mockGetPremiumStatus.mockImplementation(async () => {
+      statusCallCount++
+      if (statusCallCount === 3) {
+        const handlers = mockTabSyncHandlers.get("PREMIUM_RELEASED")
+        handlers?.forEach((h) => h({} as TabSyncMessage))
+      }
+      return nullAssignmentStatus
+    })
+
+    // Clear assign mock — no re-trigger calls expected.
+    mockAssignPremiumInstance.mockClear()
+    mockAssignPremiumInstance.mockResolvedValue(dedicatedAssignment)
+
+    // Advance 3 polls.
+    await advanceOnePollCycle() // poll 1 (normal)
+    await advanceOnePollCycle() // poll 2 (normal)
+    await advanceOnePollCycle() // poll 3 (release during status → bail)
+
+    // Without the liveness check, the stale closure would have read
+    // state.assignmentResult as non-null and fired assignPremiumInstance,
+    // resurrecting the released instance.
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+
+    // assignmentResult cleared by the PREMIUM_RELEASED handler.
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult).toBeNull()
+    })
+  })
+
+  test("same-id restart: unreachable persists until confirmed reachable", async () => {
+    // autoAssignOnLogin: dedicated inst-A (already-assigned path).
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Instance goes unreachable (stopped/crashed).
+    mockGetPremiumStatus.mockResolvedValue(nullAssignmentStatus)
+    mockAssignPremiumInstance.mockClear()
+
+    // Same instance restarted — same instance_id, different source.
+    const restartedSameInstance: PremiumAssignmentResult = {
+      message: "dedicated",
+      instance_id: "inst-A",
+      instance_id_hash: "hash-A",
+      assigned: true,
+      is_shared: false,
+      assignment_source: "restarted_instance",
+    }
+    mockAssignPremiumInstance.mockResolvedValue(restartedSameInstance)
+
+    // Trigger unreachable.
+    act(() => {
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 502,
+        sentAt: Date.now(),
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+
+    // Advance 3 polls → re-trigger fires → returns same inst-A.
+    await advanceOnePollCycle()
+    await advanceOnePollCycle()
+    await advanceOnePollCycle()
+
+    expect(mockAssignPremiumInstance).toHaveBeenCalledTimes(1)
+
+    // Assignment updates to the restarted instance.
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+      expect(ctxRef.current?.assignmentResult?.assignment_source).toBe(
+        "restarted_instance",
+      )
+    })
+
+    // Unreachable persists — same instance_id means the CLEAR branch
+    // in useInstanceUnreachableMachine is a no-op. The "unresponsive"
+    // snackbar stays visible until a real premium 200 fires
+    // emitPremiumReachable.
+    expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
   })
 })
