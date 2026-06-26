@@ -716,7 +716,9 @@ async def get_user_subscription_plan(user_id: int) -> Dict[str, Any]:
 
             # Determine tier from plan name and active status
             is_premium = bool(
-                has_active and plan_name and plan_name.lower() == SubscriptionType.PREMIUM
+                has_active
+                and plan_name
+                and plan_name.lower() == SubscriptionType.PREMIUM
             )
             tier = SubscriptionType.PREMIUM if is_premium else SubscriptionType.FREE
 
