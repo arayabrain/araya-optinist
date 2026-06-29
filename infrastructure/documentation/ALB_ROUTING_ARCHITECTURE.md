@@ -11,6 +11,14 @@
 - **Static rule band** (priorities 200-320) splits unauthenticated, bootstrap, and public-dataview traffic onto the public tier, with the listener default action serving the SPA shell from public
 - **Instance identity** (`X-Served-By-Instance`) uses a domain-separated HMAC of the EC2 instance ID to detect ALB fallback to the shared backend without exposing infrastructure details
 
+> **Sister document:**
+> This file focuses on the **routing mechanism** — HMAC generation, ALB
+> rule matching, backend validation, and 503 fallback. For the
+> **frontend-backend interaction lifecycle** — auto-assign, polling,
+> re-trigger, inactivity release, concurrent assignment protection,
+> session boundary state management, and circuit breaker — see
+> [PREMIUM_ROUTING_LIFECYCLE.md](./PREMIUM_ROUTING_LIFECYCLE.md).
+
 ---
 
 ## Key Architectural Principles
@@ -168,7 +176,8 @@ Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager
 
 - Request interceptor adds routing headers (skipped if `_retryWithoutPremium` is set) and tags the request with `_hadPremiumHeaders`, `_outgoingRoutingId`, `_outgoingInstanceId`, `_premiumSentAt` for the response-side correlation
 - `shouldEmitPremiumReachable()` - Pure function that determines whether a successful response confirms the dedicated instance is reachable. Returns true only when: (1) request carried premium headers, (2) routing-id was NOT rotated, and (3) `x-served-by-instance` matches the expected instance hash (or the expected hash is unknown — startup race fallback)
-- Response interceptor captures `x-routing-id` from backend responses and calls `shouldEmitPremiumReachable()` to gate the `premiumReachable` event
+- `isInstanceMismatch()` - Pure function that detects when a 200 OK response came from the wrong instance (ALB fallback after EventBridge cleanup). Returns true when: (1) request carried premium headers, (2) expected instance ID was known, (3) `x-served-by-instance` header is present, (4) header value differs from expected. Triggers `premiumUnreachable` and `setPremiumAssigned(false)` for recovery
+- Response interceptor captures `x-routing-id` from backend responses, calls `shouldEmitPremiumReachable()` to gate the `premiumReachable` event, and calls `isInstanceMismatch()` (when reachable check is false) to actively detect instance loss on 200 OK
 - `handlePremiumRoutingError()` - On 503: strips routing headers and all premium markers (including `_outgoingInstanceId`), retries on free tier, emits `premiumUnreachable` on the original (pre-retry) request
 
 ---
@@ -217,6 +226,7 @@ Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager
 - **Routing-ID rotation** -- if the response's routing ID differs from the one sent, the ALB served the retry from a different instance; reachability of the probed instance is inconclusive and no event fires.
 - **Instance identity mismatch** -- if `x-served-by-instance` differs from the expected instance hash stored in `premiumInstanceId`, the response came from a fallback backend (ALB rerouted to the shared instance). `premiumReachable` is suppressed even though the routing ID matches (routing IDs are UID-based, identical across all backends). This closes the false-positive gap where ALB fallback responses would spuriously clear the unreachable state (issue #566).
 - **Startup race** -- if `premiumInstanceId` is null (assignment API has not yet returned), the instance identity check is skipped and the routing-id-only check is used. This preserves backward compatibility during the brief window after login.
+- **200 OK from wrong instance** (issue #709, PR #710) -- when EventBridge cleanup completes before the user's next request (~2s), ALB falls through to the free-tier target group and returns 200 OK. `shouldEmitPremiumReachable()` correctly returns `false` (instance hash mismatch), but this passive detection alone does not trigger recovery. `isInstanceMismatch()` actively detects this scenario and fires `premiumUnreachable` + `setPremiumAssigned(false)`, entering the same recovery flow as the 502/503 path. The 200 OK response is still returned to the caller (the data is valid from the free-tier backend).
 - **Cross-tab sync** -- state transitions broadcast via `crossTabSync` (`PREMIUM_INSTANCE_UNREACHABLE`, `PREMIUM_INSTANCE_REACHABLE`, `PREMIUM_INSTANCE_PROBE_UPDATE`). Peer handlers apply state locally and do not re-broadcast, preventing echo loops.
 - **Snapshot recovery** -- a freshly opened tab hydrates from a `localStorage` snapshot (`premium_unreachable_snapshot`, 1 h TTL) gated on `instance_id` match so a snapshot from a prior assignment cannot be adopted.
 
@@ -276,11 +286,13 @@ openssl rand -hex 32
 | `cleanup_duplicate_rules_for_routing_id()` | `premium_manager.py` | Remove stale ALB rules for routing ID |
 | `getRoutingHeaders()` | `RoutingService.ts` | Return cached headers for requests |
 | `isPremiumAssigned()` | `RoutingService.ts` | Gate: only send headers when assigned |
-| `clearRoutingInfo()` | `RoutingService.ts` | Clear routing data on logout (incl. `premiumInstanceId`) |
+| `clearRoutingInfo()` | `RoutingService.ts` | Clear all routing data on login/logout (incl. `premiumInstanceId`, `user_tier`, `premium_unreachable_snapshot`) |
+| `resetForRelease()` | `RoutingService.ts` | Clear routing token, `premiumAssigned`, and `premiumInstanceId` on inactivity release (preserves `user_tier`) |
 | `setPremiumInstanceId()` / `getPremiumInstanceId()` | `RoutingService.ts` | Store/retrieve expected instance hash for ALB fallback detection |
 | `emitPremiumUnreachable()` | `RoutingService.ts` | Notify listeners that a premium-routed request failed |
 | `emitPremiumReachable()` | `RoutingService.ts` | Notify listeners that a premium-routed request succeeded with matching routing ID and instance identity |
 | `shouldEmitPremiumReachable()` | `axios.ts` | Pure function: three-way check (premium headers + routing-id match + instance-id match) |
+| `isInstanceMismatch()` | `axios.ts` | Pure function: four-way check (premium headers + instance-id known + header present + instance-id differs) — active detection of 200 OK from wrong instance |
 | `onPremiumUnreachable()` / `onPremiumReachable()` | `RoutingService.ts` | Subscribe to the pools above (returns an unsubscribe function) |
 | `handlePremiumRoutingError()` | `axios.ts` | 503 fallback to free tier, emits `premiumUnreachable` |
 | `unreachableMachineReducer()` | `PremiumAssignmentContext.tsx` | State machine driving the degraded / probing / terminal lifecycle |
