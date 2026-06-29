@@ -511,6 +511,90 @@ describe("axios premium-routing interceptors", () => {
     expect(mockUpdateRoutingToken).toHaveBeenCalledWith("reseeded-token")
   })
 
+  // --- Instance mismatch active detection (issue #709) ---
+
+  it("emits unreachable and clears premiumAssigned when 200 OK comes from wrong instance (instance mismatch detection)", async () => {
+    // When EventBridge cleanup deletes the per-user ALB rule before the
+    // user's next request, ALB falls through to free-tier → 200 OK from a
+    // different instance. The interceptor must actively detect this and
+    // trigger the recovery flow.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
+
+    responses.set("/wrong-instance-200", {
+      status: 200,
+      data: { ok: true },
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "free-tier-instance-hash",
+      },
+    })
+    const res = await axiosInstance.get("/wrong-instance-200")
+
+    // Response still resolves — no retry needed for 200.
+    expect(res.status).toBe(200)
+    expect(res.data).toEqual({ ok: true })
+
+    // Active detection: unreachable emitted, premiumAssigned cleared.
+    expect(mockEmitPremiumUnreachable).toHaveBeenCalledTimes(1)
+    expect(mockEmitPremiumUnreachable.mock.calls[0][0]).toMatchObject({
+      url: "/wrong-instance-200",
+      status: 200,
+    })
+    expect(mockSetPremiumAssigned).toHaveBeenCalledWith(false)
+
+    // Must NOT emit reachable — instance mismatch.
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
+  it("does NOT emit unreachable on instance mismatch when _outgoingInstanceId is unset (startup race)", async () => {
+    // Before the assignment API returns, getPremiumInstanceId() returns null.
+    // Without a known instance ID, we cannot distinguish a legitimate
+    // fallback from a startup race — suppress unreachable.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue(null)
+
+    responses.set("/startup-mismatch", {
+      status: 200,
+      data: {},
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "some-instance-hash",
+      },
+    })
+    await axiosInstance.get("/startup-mismatch")
+
+    expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
+  it("does NOT emit unreachable when x-served-by-instance header is absent", async () => {
+    // If the response lacks x-served-by-instance (e.g. edge case with
+    // middleware skip), we cannot determine instance identity — suppress.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
+
+    responses.set("/no-served-by", {
+      status: 200,
+      data: {},
+      headers: { "x-routing-id": "rid-outgoing" },
+    })
+    await axiosInstance.get("/no-served-by")
+
+    expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
+    // Also no reachable — instance cannot be verified without the header.
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
   it("does NOT update routing token when premiumAssigned is true and instance hash mismatches", async () => {
     // Premium headers were sent but the response came from a different
     // instance (ALB fallback to shared backend).
