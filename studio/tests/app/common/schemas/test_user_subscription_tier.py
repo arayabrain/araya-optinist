@@ -77,13 +77,9 @@ class TestGetUserSubscriptionPlan:
 
     @pytest.mark.asyncio
     async def test_limit_grace_user_is_not_premium(self):
-        from studio.app.common.core.cloud.cloud_utils import (
-            get_user_subscription_plan,
-        )
+        from studio.app.common.core.cloud.cloud_utils import get_user_subscription_plan
 
-        user = _make_user(
-            PlanName.PREMIUM.value, SubscriptionStatus.LIMIT_GRACE.value
-        )
+        user = _make_user(PlanName.PREMIUM.value, SubscriptionStatus.LIMIT_GRACE.value)
         scope_p, crud_p = self._patch_user(user)
         with scope_p, crud_p:
             result = await get_user_subscription_plan(user_id=1)
@@ -94,9 +90,7 @@ class TestGetUserSubscriptionPlan:
 
     @pytest.mark.asyncio
     async def test_active_premium_user_is_premium(self):
-        from studio.app.common.core.cloud.cloud_utils import (
-            get_user_subscription_plan,
-        )
+        from studio.app.common.core.cloud.cloud_utils import get_user_subscription_plan
 
         user = _make_user(PlanName.PREMIUM.value, SubscriptionStatus.PREMIUM.value)
         scope_p, crud_p = self._patch_user(user)
