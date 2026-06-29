@@ -475,6 +475,8 @@ async def test_contract_premium_status_with_assignment(mock_premium_user):
 
         # Semantic validation
         assert result["is_premium"] is True
+        # Pinned instance must always return a verifiable hash.
+        assert isinstance(result["assignment"]["instance_id_hash"], str)
 
 
 @pytest.mark.asyncio
