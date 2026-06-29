@@ -687,10 +687,14 @@ export const PremiumAssignmentProvider: React.FC<{
       autoReleaseOnLogout()
       tabSync.broadcastLogout()
       // Fire-and-forget: authLogout is async and redirect is intentionally not awaited.
-      // autoReleaseOnLogout schedules the state update; prevIsPremiumRef prevents re-trigger on subsequent renders.
-      authLogout()
+      // skipBackendLogout: autoReleaseOnLogout already released the instance via
+      // sendBeacon, so suppress the free-logout endpoint (user is now free tier).
+      // The ref update on the last line prevents re-trigger on subsequent renders.
+      authLogout({ skipBackendLogout: true })
     }
     prevIsPremiumRef.current = isPremiumUser
+    // tabSync.broadcastLogout and authLogout are stable module imports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPremiumUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Inactivity monitoring for premium users

@@ -267,4 +267,97 @@ describe("PremiumAssignmentProvider — subscription expiry auto-logout", () => 
     // Assignment should be cleared
     expect(ctxRef.current?.assignmentResult).toBeNull()
   })
+
+  test("auto-logout skips the free-logout endpoint (premium release path)", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+
+    const ctxRef: { current: Ctx | null } = { current: null }
+    const { rerender } = render(tree(ctxRef))
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    mockUser.subscription_status = "Expired"
+    await act(async () => {
+      rerender(tree(ctxRef))
+      await Promise.resolve()
+    })
+
+    // authLogout must be told to skip the backend free-logout call,
+    // otherwise both release-beacon AND /free/logout fire.
+    expect(mockAuthLogout).toHaveBeenCalledWith({ skipBackendLogout: true })
+  })
+
+  test("does NOT auto-logout when there is no active assignment", async () => {
+    // Status with no assignment → goes through the assign path.
+    mockGetPremiumStatus.mockResolvedValue({
+      user_id: 1,
+      subscription_type: UserTier.PREMIUM,
+      is_premium: true,
+    } as PremiumStatusResult)
+    // Assignment fails (non-retryable) so assignmentResult stays null.
+    mockAssignPremiumInstance.mockResolvedValue({
+      assigned: false,
+    } as PremiumAssignmentResult)
+
+    const ctxRef: { current: Ctx | null } = { current: null }
+    const { rerender } = render(tree(ctxRef))
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(ctxRef.current?.assignmentResult).toBeNull()
+
+    // Subscription expires, but with no assignment the auto-logout guard
+    // (state.assignmentResult) must prevent the forced logout.
+    mockUser.subscription_status = "Expired"
+    await act(async () => {
+      rerender(tree(ctxRef))
+      await Promise.resolve()
+    })
+
+    expect(mockAuthLogout).not.toHaveBeenCalled()
+    expect(mockBroadcastLogout).not.toHaveBeenCalled()
+  })
+
+  test("does NOT poll getMe() on non-leader tabs", async () => {
+    // Override leader election so this tab is a follower.
+    const crossTab = jest.requireMock("utils/crossTabSync") as {
+      CrossTabLeaderElection: new (
+        onLeader: () => void,
+        onFollower?: () => void,
+      ) => { getIsLeader(): boolean; destroy(): void }
+    }
+    const realImpl = crossTab.CrossTabLeaderElection
+    crossTab.CrossTabLeaderElection = class {
+      constructor() {
+        // never becomes leader
+      }
+      getIsLeader() {
+        return false
+      }
+      destroy() {}
+    } as typeof realImpl
+
+    try {
+      mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+      const ctxRef: { current: Ctx | null } = { current: null }
+      render(tree(ctxRef))
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      mockDispatchFn.mockClear()
+
+      // Advance well past the 5-min interval — no getMe() on a follower tab.
+      await act(async () => {
+        jest.advanceTimersByTime(11 * 60 * 1000)
+        await Promise.resolve()
+      })
+      expect(mockDispatchFn).not.toHaveBeenCalledWith(mockGetMeAction)
+    } finally {
+      crossTab.CrossTabLeaderElection = realImpl
+    }
+  })
 })
