@@ -9,7 +9,7 @@ When a premium subscription ends, users enter a **30-day grace period**. During 
 ## Grace Period
 
 - **Duration:** 30 days from the date the subscription ends.
-- **During the grace period:** All data remains accessible. Users should download or manually delete any data they want to manage before auto-deletion begins.
+- **During the grace period:** All data remains accessible with the 200 GB storage limit. Users are moved to the free/shared instance (premium compute access is revoked). Users should download or manually delete any data they want to manage before auto-deletion begins.
 - **After the grace period:** The system runs a daily background job that checks expired users and deletes data until storage is at or below 5 GB.
 
 ## Deletion Priority Setting

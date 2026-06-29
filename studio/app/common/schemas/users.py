@@ -58,8 +58,7 @@ class User(BaseModel):
         """Check if user has an active paid subscription."""
         return (
             self.subscription_plan_name == PlanName.PREMIUM.value
-            and self.subscription_status
-            in [SubscriptionStatus.PREMIUM.value, SubscriptionStatus.LIMIT_GRACE.value]
+            and self.subscription_status == SubscriptionStatus.PREMIUM.value
         )
 
     @property

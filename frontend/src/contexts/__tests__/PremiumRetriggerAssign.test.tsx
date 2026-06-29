@@ -50,9 +50,23 @@ const mockUser = {
   subscription_status: "Premium",
 }
 
+const mockDispatchFn = jest.fn(() => Promise.resolve())
+const mockLogoutFn = jest.fn()
+
 jest.mock("react-redux", () => ({
   useSelector: (selector: (s: unknown) => unknown) =>
     selector({ user: { currentUser: mockUser, logoutGeneration: 0 } }),
+  useDispatch: () => mockDispatchFn,
+}))
+
+jest.mock("store/slice/User/UserActions", () => ({
+  __esModule: true,
+  getMe: () => ({ type: "user/getMe" }),
+}))
+
+jest.mock("utils/auth/AuthUtils", () => ({
+  __esModule: true,
+  logout: mockLogoutFn,
 }))
 
 const mockAssignPremiumInstance = jest.fn<
@@ -100,6 +114,7 @@ jest.mock("utils/crossTabSync", () => ({
   __esModule: true,
   tabSync: {
     broadcast: () => {},
+    broadcastLogout: () => {},
     broadcastPremiumReleased: () => {},
     on: (type: TabSyncMessageType, handler: (m: TabSyncMessage) => void) => {
       if (!mockTabSyncHandlers.has(type))

@@ -148,14 +148,14 @@ describe("RoutingService", () => {
       expect(routingService.requiresPremiumRouting()).toBe(false)
     })
 
-    test("should identify Limit Grace user as premium", () => {
+    test("should identify Limit Grace user as free", () => {
       const graceUser = createPremiumUser({
         subscription_status: SubscriptionStatus.LIMIT_GRACE,
       })
       routingService.updateRoutingInfo(graceUser)
 
-      expect(routingService.getUserTier()).toBe(UserTier.PREMIUM)
-      expect(routingService.requiresPremiumRouting()).toBe(true)
+      expect(routingService.getUserTier()).toBe(UserTier.FREE)
+      expect(routingService.requiresPremiumRouting()).toBe(false)
     })
 
     test("should identify expired premium user as free", () => {

@@ -14,7 +14,7 @@ import React, {
   useRef,
 } from "react"
 import { flushSync } from "react-dom"
-import { useSelector } from "react-redux"
+import { useDispatch, useSelector } from "react-redux"
 
 import {
   assignPremiumInstance,
@@ -36,8 +36,10 @@ import {
   useInstanceUnreachableMachine,
 } from "contexts/premium/useInstanceUnreachableMachine"
 import { useSleepDetection } from "hooks/useSleepDetection"
+import { getMe } from "store/slice/User/UserActions"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
-import { RootState } from "store/store"
+import { AppDispatch, RootState } from "store/store"
+import { logout as authLogout } from "utils/auth/AuthUtils"
 import {
   CrossTabLeaderElection,
   syncActivityAcrossTabs,
@@ -68,6 +70,8 @@ const ASSIGN_RETRY_POLL_THRESHOLD = 3
 // resets pollAttempts to 0) cannot remove the overall ceiling.
 // Only reset when confirmed reachable (instanceUnreachable → false).
 const MAX_RETRIGGER_ATTEMPTS = 5
+// 5 min poll to detect subscription expiry; lower if tighter detection needed
+const SUBSCRIPTION_CHECK_INTERVAL_MS = 5 * 60 * 1000
 
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
@@ -160,6 +164,7 @@ export const PremiumAssignmentProvider: React.FC<{
   children: React.ReactNode
 }> = ({ children }) => {
   const currentUser = useSelector((state: RootState) => state.user.currentUser)
+  const dispatch = useDispatch<AppDispatch>()
   // Track logout generation to detect stale closures
   const logoutGeneration = useSelector(selectLogoutGeneration)
 
@@ -231,6 +236,8 @@ export const PremiumAssignmentProvider: React.FC<{
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
+  // Track previous premium status to detect subscription expiry transition
+  const prevIsPremiumRef = useRef(false)
 
   const unreachable = useInstanceUnreachableMachine({
     assignment: state.assignmentResult,
@@ -240,19 +247,34 @@ export const PremiumAssignmentProvider: React.FC<{
   // Calculate premium user status
   const isPremiumUser =
     currentUser?.subscription_plan_name === PlanName.PREMIUM &&
-    (currentUser?.subscription_status === SubscriptionStatus.PREMIUM ||
-      currentUser?.subscription_status === SubscriptionStatus.LIMIT_GRACE)
+    currentUser?.subscription_status === SubscriptionStatus.PREMIUM
 
   // Update state when premium status changes
   useEffect(() => {
     setState((prev) => ({ ...prev, isPremiumUser }))
   }, [isPremiumUser])
 
+  // Periodic subscription status refresh for premium users.
+  // Keeps Redux currentUser.subscription_status fresh so we can detect expiry.
+  useEffect(() => {
+    if (!isPremiumUser || !isTabLeader) return
+
+    const interval = setInterval(() => {
+      dispatch(getMe())
+    }, SUBSCRIPTION_CHECK_INTERVAL_MS)
+
+    return () => clearInterval(interval)
+  }, [isPremiumUser, isTabLeader, dispatch])
+
   // Reset flag when user changes
   useEffect(() => {
     hasAttemptedRef.current = false
+    prevIsPremiumRef.current = isPremiumUser
     ssRemove(SS_HAS_ATTEMPTED)
     ssRemove(SS_POLL_ATTEMPTS)
+    // isPremiumUser intentionally excluded — this effect syncs refs on user
+    // identity change only; the auto-logout effect handles isPremiumUser transitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id])
 
   // Reset state when logout generation changes to prevent stale closures
@@ -275,6 +297,7 @@ export const PremiumAssignmentProvider: React.FC<{
       })
       unreachable.reset()
       hasAttemptedRef.current = false
+      prevIsPremiumRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)
       ssRemove(SS_POLL_ATTEMPTS)
     }
@@ -655,6 +678,24 @@ export const PremiumAssignmentProvider: React.FC<{
     }))
     routingService.resetForRelease()
   }, [])
+
+  // Auto-logout when subscription expires during an active session.
+  // Detects premium → non-premium transition and releases the instance.
+  useEffect(() => {
+    if (prevIsPremiumRef.current && !isPremiumUser && state.assignmentResult) {
+      // Subscription expired mid-session — release instance + force logout
+      autoReleaseOnLogout()
+      tabSync.broadcastLogout()
+      // Fire-and-forget: authLogout is async and redirect is intentionally not awaited.
+      // skipBackendLogout: autoReleaseOnLogout already released the instance via
+      // sendBeacon, so suppress the free-logout endpoint (user is now free tier).
+      // The ref update on the last line prevents re-trigger on subsequent renders.
+      authLogout({ skipBackendLogout: true })
+    }
+    prevIsPremiumRef.current = isPremiumUser
+    // tabSync.broadcastLogout and authLogout are stable module imports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPremiumUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Inactivity monitoring for premium users
   // Uses refs for lastActivityTime/showInactivityWarning to avoid interval churn
