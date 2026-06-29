@@ -311,6 +311,35 @@ function shouldEmitPremiumReachable(
   return true
 }
 
+/**
+ * Detects when a successful response (200 OK) came from the wrong instance
+ * — indicating ALB fallback after EventBridge cleanup deleted the per-user
+ * rule and target group.
+ *
+ * Returns true only when ALL of:
+ *  1. The request carried premium routing headers
+ *  2. The expected instance ID was known at request time (not startup race)
+ *  3. The response carries an x-served-by-instance header
+ *  4. The serving instance differs from the expected dedicated instance
+ *
+ * When true, the caller should emit premiumUnreachable to trigger the
+ * recovery flow (polling /status + /assign). The warm-up grace period
+ * (DEDICATED_HANDOFF_GRACE_MS) is respected downstream by the
+ * useInstanceUnreachableMachine listener.
+ */
+function isInstanceMismatch(
+  res: AxiosResponse,
+  cfg: CustomAxiosRequestConfig | undefined,
+): boolean {
+  if (!cfg?._hadPremiumHeaders) return false
+  const outgoingInstanceId = cfg._outgoingInstanceId
+  if (!outgoingInstanceId) return false
+  const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()
+  const servedByInstance = res.headers[servedByHeader]
+  if (typeof servedByInstance !== "string") return false
+  return servedByInstance !== outgoingInstanceId
+}
+
 axios.interceptors.response.use(
   async (res) => {
     const cfg = res.config as CustomAxiosRequestConfig | undefined
@@ -345,6 +374,16 @@ axios.interceptors.response.use(
 
     if (shouldEmitPremiumReachable(res, cfg)) {
       routingService.emitPremiumReachable({
+        url: cfg!.url,
+        status: res.status,
+        sentAt: cfg!._premiumSentAt,
+      })
+    } else if (isInstanceMismatch(res, cfg)) {
+      // Active detection: 200 OK from wrong instance (ALB fallback after
+      // EventBridge cleanup). Stop sending premium headers to prevent
+      // further misrouted requests and trigger the recovery flow.
+      routingService.setPremiumAssigned(false)
+      routingService.emitPremiumUnreachable({
         url: cfg!.url,
         status: res.status,
         sentAt: cfg!._premiumSentAt,

@@ -20,6 +20,7 @@ from studio.app.common.core.middleware.user_activity_middleware import (
     mark_user_logged_out,
 )
 from studio.app.common.core.premium.premium_assignment_service import (
+    AUTOSCALING_POOL_INSTANCE_ID,
     premium_assignment_service,
 )
 from studio.app.common.core.subscription.constants import (
@@ -121,7 +122,7 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
                 "instance_id": instance_id,
                 "instance_id_hash": (
                     get_instance_hash_cached(instance_id, ROUTING_SECRET_KEY)
-                    if instance_id
+                    if instance_id and instance_id != AUTOSCALING_POOL_INSTANCE_ID
                     else None
                 ),
                 "assigned": True,
@@ -351,7 +352,11 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
             status_info.get("instance_id") if status_info else None,
         )
 
-        if status_info and status_info.get("instance_id"):
+        if (
+            status_info
+            and status_info.get("instance_id")
+            and status_info.get("instance_id") != AUTOSCALING_POOL_INSTANCE_ID
+        ):
             status_info["instance_id_hash"] = get_instance_hash_cached(
                 status_info["instance_id"], ROUTING_SECRET_KEY
             )
