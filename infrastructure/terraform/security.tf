@@ -88,13 +88,19 @@ resource "aws_iam_role_policy" "ecs_task_cloudwatch" {
         ]
         Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/*"
       },
-      # CloudWatch metrics (PutMetricData requires wildcard resource)
+      # CloudWatch metrics. PutMetricData requires Resource "*"; scope by
+      # namespace so the task can only publish its own OptiNiSt metrics.
       {
         Effect = "Allow"
         Action = [
           "cloudwatch:PutMetricData"
         ]
         Resource = "*"
+        Condition = {
+          StringLike = {
+            "cloudwatch:namespace" = "OptiNiSt/*/${var.environment}"
+          }
+        }
       }
     ]
   })

@@ -26,7 +26,7 @@ import sys
 
 
 def aws(region, *args):
-    """Run an aws CLI command, return parsed JSON ([] / {} on empty)."""
+    """Run an aws CLI command, return parsed JSON (None on empty output)."""
     cmd = ["aws", "--region", region, "--output", "json", *args]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
@@ -116,6 +116,13 @@ def main():
             name = s["serviceName"]
             desired, running = s["desiredCount"], s["runningCount"]
 
+            # Intentionally scaled to 0 -> not drift; report and skip.
+            if desired == 0:
+                rows.append(
+                    (name, desired, running, "—", "—", "IDLE", "scaled to 0")
+                )
+                continue
+
             # tag the task def points at (context only)
             td = aws(
                 region,
@@ -128,7 +135,8 @@ def main():
             )
             ref_tag = (td or "").rsplit(":", 1)[-1] if td else "?"
 
-            # Representative task: prefer RUNNING, else newest STOPPED.
+            # All RUNNING tasks (a row each); if none, the newest STOPPED
+            # task (one row) to surface a crash-loop image.
             run_arns = (
                 aws(
                     region,
@@ -256,7 +264,7 @@ def main():
                 print(f"  {ec2 or '?'}  ({arn.rsplit('/',1)[-1]})")
         return 1
 
-    print("OK: every service is running the target digest.")
+    print("OK: no drift (active services on the target digest).")
     return 0
 
 
