@@ -118,9 +118,7 @@ def main():
 
             # Intentionally scaled to 0 -> not drift; report and skip.
             if desired == 0:
-                rows.append(
-                    (name, desired, running, "—", "—", "IDLE", "scaled to 0")
-                )
+                rows.append((name, desired, running, "—", "—", "IDLE", "scaled to 0"))
                 continue
 
             # tag the task def points at (context only)
