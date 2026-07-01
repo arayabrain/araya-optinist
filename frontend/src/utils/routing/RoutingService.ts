@@ -263,8 +263,7 @@ export class RoutingService {
    */
   requiresPremiumRouting(): boolean {
     return (
-      this.routingInfo?.requires_premium_routing ||
-      false ||
+      (this.routingInfo?.requires_premium_routing ?? false) ||
       (this.premiumAssigned && this.routingToken != null)
     )
   }
