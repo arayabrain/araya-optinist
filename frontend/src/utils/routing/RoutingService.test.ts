@@ -211,6 +211,77 @@ describe("RoutingService", () => {
     })
   })
 
+  describe("requiresPremiumRouting", () => {
+    test("should return true when routingInfo indicates premium", () => {
+      routingService.updateRoutingInfo(createPremiumUser())
+      expect(routingService.requiresPremiumRouting()).toBe(true)
+    })
+
+    test("should return false when routingInfo indicates free", () => {
+      routingService.updateRoutingInfo(createFreeUser())
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return true when premiumAssigned and routingToken are set (no routingInfo)", () => {
+      // Simulates page reload: localStorage state survives but routingInfo is null
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("premium_assigned", "true")
+
+      const newService = new RoutingService()
+
+      expect(newService.requiresPremiumRouting()).toBe(true)
+    })
+
+    test("should return false when premiumAssigned but no routingToken", () => {
+      localStorageMock.setItem("premium_assigned", "true")
+
+      const newService = new RoutingService()
+
+      expect(newService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return false when routingToken exists but premiumAssigned is false", () => {
+      localStorageMock.setItem("routing_id", "stored-token")
+
+      const newService = new RoutingService()
+
+      expect(newService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return false after clearRoutingInfo", () => {
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+
+      routingService.clearRoutingInfo()
+
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return false after resetForRelease (premiumAssigned cleared)", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+
+      routingService.resetForRelease()
+
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should stay aligned with getRoutingHeaders — both true or both false", () => {
+      // After page reload with localStorage state
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("premium_assigned", "true")
+      localStorageMock.setItem("routing_tier", "premium")
+
+      const newService = new RoutingService()
+
+      const headersActive =
+        Object.keys(newService.getRoutingHeaders()).length > 0
+      const fallbackActive = newService.requiresPremiumRouting()
+      expect(headersActive).toBe(fallbackActive)
+    })
+  })
+
   describe("clearRoutingToken", () => {
     test("should clear token and localStorage but preserve tier and premiumAssigned", () => {
       const premiumUser = createPremiumUser()

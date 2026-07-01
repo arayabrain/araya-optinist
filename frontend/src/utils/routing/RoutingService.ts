@@ -251,10 +251,22 @@ export class RoutingService {
   }
 
   /**
-   * Check if user requires premium routing
+   * Check if user requires premium routing.
+   *
+   * Returns true when either:
+   *  - routingInfo (set by /users/me) indicates premium, OR
+   *  - localStorage-backed state shows premiumAssigned + routingToken
+   *    (survives page reload even when routingInfo is null).
+   *
+   * This must stay aligned with getRoutingHeaders() — if headers are
+   * being sent, the 503 fallback gate must also be open.
    */
   requiresPremiumRouting(): boolean {
-    return this.routingInfo?.requires_premium_routing || false
+    return (
+      this.routingInfo?.requires_premium_routing ||
+      false ||
+      (this.premiumAssigned && this.routingToken != null)
+    )
   }
 
   /**

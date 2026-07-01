@@ -457,7 +457,20 @@ On `beforeunload`:
 
 The stale localStorage data from the beacon path is handled by the login-time `clearRoutingInfo()` when the user next opens the app.
 
-### 4. `clearRoutingInfo()` vs `resetForRelease()` Scope
+### 4. Page Reload (No Login/Logout)
+
+On page reload (F5 / browser refresh), no session boundary event fires:
+- `login.fulfilled` does not dispatch → `clearRoutingInfo()` is not called
+- localStorage routing state survives (`routing_id`, `premium_assigned`, `routing_tier`, `premium_instance_id`)
+- In-memory `routingInfo` is lost (null until the next `/users/me` response)
+
+This means `getRoutingHeaders()` will immediately attach routing headers from localStorage, even if the dedicated instance is no longer available (e.g., after a system restart where the ALB target group has no healthy targets).
+
+Two safeguards address this:
+1. **`requiresPremiumRouting()` considers localStorage state** — The 503 fallback gate (`handlePremiumRoutingError`) activates when either `routingInfo.requires_premium_routing` is true OR `premiumAssigned && routingToken` are set from localStorage. This ensures the fallback fires on the first 503 after page reload, stripping routing headers and retrying on the shared backend. (Introduced in [PR #715](https://github.com/arayabrain/araya-optinist/pull/715) for [#715](https://github.com/arayabrain/araya-optinist/issues/715))
+2. **System-information endpoints skip routing** — `/is_standalone` (the first endpoint called on app load) sets `_retryWithoutPremium: true` at the call site, ensuring it always reaches the shared backend regardless of localStorage routing state. (Introduced in [PR #715](https://github.com/arayabrain/araya-optinist/pull/715))
+
+### 5. `clearRoutingInfo()` vs `resetForRelease()` Scope
 
 **File:** `frontend/src/utils/routing/RoutingService.ts`
 
@@ -600,6 +613,8 @@ When a premium user's assigned EC2 instance is stopped or terminated externally 
 
 Chain A was introduced in PR #704 (for #628). Chain B was introduced in PR #710 (for #709) to close the detection gap when EventBridge cleanup completes before the user's next request.
 
+**Page reload coverage:** Chain A also covers the scenario where a premium user reloads the page after a system restart (ALB target group unhealthy). On page reload, `routingInfo` is null but `premiumAssigned` and `routingToken` survive in localStorage. `requiresPremiumRouting()` considers both state sources, so the `handlePremiumRoutingError` gate activates correctly. Additionally, `/is_standalone` (the first endpoint on app load) sets `_retryWithoutPremium` at the call site, bypassing routing headers entirely. (Introduced in [PR #715](https://github.com/arayabrain/araya-optinist/pull/715) for [#715](https://github.com/arayabrain/araya-optinist/issues/715); see also [Session Boundary §4](#4-page-reload-no-loginlogout))
+
 **Key distinction from the retryable-assign re-trigger:** The original re-trigger mechanism (PR #701) was designed for cases where the initial assign failed to create an assignment (e.g., lock contention 409). The instance-loss re-trigger (PR #704) extends this to cases where the assign initially succeeded (`assigned: true`) but the assignment was later invalidated by external instance loss.
 
 **Same-id restart:** When the backend restarts the same instance (e.g., `assignment_source: "restarted_instance"`), the `instanceUnreachable` state remains `true` until a real premium 200 response passes `shouldEmitPremiumReachable()`. The snackbar persists during the warm-up period to avoid flashing.
@@ -671,7 +686,7 @@ Circuit breaker state transitions are broadcast via `crossTabSync`:
 | `isRetriggeringRef` | `useRef` | PremiumAssignmentContext | Set `true` before re-trigger call | Set `false` after re-trigger completes | Prevents overlapping assign calls during polling |
 | `premiumAssigned` | localStorage | RoutingService | `setPremiumAssigned(true)` on successful assign or probe arm | `setPremiumAssigned(false)` on release, 503 fallback, logout, or `resetForRelease()` | Controls whether axios attaches routing headers |
 | `premiumInstanceId` | localStorage | RoutingService | `setPremiumInstanceId(hash)` from assign/status API responses | `clearRoutingInfo()` on login/logout | Expected instance hash for ALB fallback detection |
-| `_retryWithoutPremium` | axios config | axios.ts | Set on 502/503 premium routing error | Per-request (not persisted) | Prevents routing header re-injection on free-tier retry |
+| `_retryWithoutPremium` | axios config | axios.ts | Set on 502/503 premium routing error; also set at call site for system-information endpoints (e.g. `/is_standalone`) | Per-request (not persisted) | Prevents routing header injection on free-tier retry and on endpoints that must always reach the shared backend |
 | `_hadPremiumHeaders` | axios config | axios.ts | Set when routing headers are attached to request | Per-request (not persisted) | Tags request for response-side reachability check |
 | `logoutGeneration` | Redux state | UserSlice | Incremented on logout | Never reset (monotonic) | Invalidates all closures captured before logout |
 
