@@ -93,6 +93,8 @@ describe("RoutingService", () => {
       const freeUser = createFreeUser()
       routingService.updateRoutingToken("abc123def456")
       routingService.updateRoutingInfo(freeUser)
+      // Note: updateRoutingInfo(freeUser) clears premiumAssigned;
+      // re-set it here to test header format independently of tier logic.
       routingService.setPremiumAssigned(true)
 
       const headers = routingService.getRoutingHeaders()
@@ -166,6 +168,60 @@ describe("RoutingService", () => {
 
       expect(routingService.getUserTier()).toBe(UserTier.FREE)
       expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should clear stale premiumAssigned on downgrade (premium → free)", () => {
+      // Setup: user was premium and assigned
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      // User's subscription expires — /users/me now returns free tier
+      routingService.updateRoutingInfo(createFreeUser())
+
+      // Stale assignment state should be cleared
+      expect(routingService.isPremiumAssigned()).toBe(false)
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+      expect(routingService.getRoutingHeaders()).toEqual({})
+      // localStorage cleaned up
+      expect(localStorageMock.getItem("premium_assigned")).toBe("false")
+      expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+    })
+
+    test("should NOT clear premiumAssigned when user is premium", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      routingService.updateRoutingInfo(createPremiumUser())
+
+      // Assignment state preserved for premium users
+      expect(routingService.isPremiumAssigned()).toBe(true)
+      expect(routingService.getPremiumInstanceId()).toBe("inst-hash")
+    })
+
+    test("should clear stale localStorage state after page reload when user has been downgraded", () => {
+      // Simulate stale localStorage from a previous premium session
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("premium_assigned", "true")
+      localStorageMock.setItem("premium_instance_id", "old-inst-hash")
+      localStorageMock.setItem("routing_tier", "premium")
+
+      // Page reload: constructor loads stale state
+      const reloadedService = new RoutingService()
+      // Before /users/me returns, stale state makes it look premium
+      expect(reloadedService.requiresPremiumRouting()).toBe(true)
+
+      // /users/me returns — user is now free tier (downgraded)
+      reloadedService.updateRoutingInfo(createFreeUser())
+
+      // Stale state cleared — correct for a free user
+      expect(reloadedService.requiresPremiumRouting()).toBe(false)
+      expect(reloadedService.isPremiumAssigned()).toBe(false)
+      expect(reloadedService.getPremiumInstanceId()).toBeNull()
+      expect(reloadedService.getRoutingHeaders()).toEqual({})
     })
   })
 
