@@ -595,6 +595,30 @@ describe("axios premium-routing interceptors", () => {
     expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
   })
 
+  it("skips premium routing headers when _retryWithoutPremium is set (e.g. /is_standalone)", async () => {
+    // Endpoints that set _retryWithoutPremium must never receive premium
+    // routing headers, even when localStorage contains stale routing state.
+    // This prevents ALB 503s on system-information endpoints after restart.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+
+    responses.set("/is_standalone", {
+      status: 200,
+      data: true,
+    })
+    await axiosInstance.get("/is_standalone", { _retryWithoutPremium: true })
+
+    expect(recorded).toHaveLength(1)
+    const reqHeaders = recorded[0].headers as Record<string, unknown>
+    expect(reqHeaders["X-Routing-ID"]).toBeUndefined()
+    expect(reqHeaders["X-User-Tier"]).toBeUndefined()
+
+    const reqConfig = recorded[0].config as Record<string, unknown>
+    expect(reqConfig._hadPremiumHeaders).toBeUndefined()
+  })
+
   it("does NOT update routing token when premiumAssigned is true and instance hash mismatches", async () => {
     // Premium headers were sent but the response came from a different
     // instance (ALB fallback to shared backend).
