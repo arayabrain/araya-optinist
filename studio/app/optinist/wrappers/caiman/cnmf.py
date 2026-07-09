@@ -135,16 +135,15 @@ def util_download_model_files():
     if not os.path.exists(model_dir):
         create_directory(join_filepath(model_dir))
 
-    if len(os.listdir(model_dir)) < len(model_files):
-        for model in model_files:
-            url = f"{base_url}/{model}"
-            file_path = join_filepath([model_dir, model])
-            if not os.path.exists(file_path):
-                logger.info(f"Downloading {model}")
-                response = requests.get(url)
-                response.raise_for_status()
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+    for model in model_files:
+        url = f"{base_url}/{model}"
+        file_path = join_filepath([model_dir, model])
+        if not os.path.exists(file_path):
+            logger.info(f"Downloading {model}")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            with open(file_path, "wb") as f:
+                f.write(response.content)
 
 
 def caiman_cnmf(
