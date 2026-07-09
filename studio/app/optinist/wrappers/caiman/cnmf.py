@@ -115,7 +115,9 @@ def util_download_model_files():
     download model files for component evaluation
     """
     # NOTE: We specify the version of the CaImAn to download.
-    base_url = "https://github.com/flatironinstitute/CaImAn/raw/v1.9.12/model"
+    base_url = (
+        "https://raw.githubusercontent.com/flatironinstitute/CaImAn/v1.9.12/model"
+    )
     model_files = [
         "cnn_model.h5",
         "cnn_model.h5.pb",
@@ -140,6 +142,7 @@ def util_download_model_files():
             if not os.path.exists(file_path):
                 logger.info(f"Downloading {model}")
                 response = requests.get(url)
+                response.raise_for_status()
                 with open(file_path, "wb") as f:
                     f.write(response.content)
 
