@@ -36,7 +36,7 @@ download_model_files() {
       FILE_PATH="$MODEL_DIR/$MODEL"
       if [ ! -f "$FILE_PATH" ]; then
           echo "Downloading $MODEL"
-          curl --fail --location --connect-timeout 10 --retry 5 --retry-delay 3 "$BASE_URL/$MODEL" -o "$FILE_PATH"
+          curl --fail --location --remove-on-error --connect-timeout 10 --retry 5 --retry-delay 3 "$BASE_URL/$MODEL" -o "$FILE_PATH"
       fi
   done
 }
