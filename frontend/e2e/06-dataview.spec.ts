@@ -41,6 +41,8 @@ async function hasDataRows(page: Page): Promise<boolean> {
 // size lookups swallow errors. On deployed envs (no docker) this silently
 // no-ops; users there have real buckets.
 function ensurePublishableAccount() {
+  const email = process.env.TEST_USER_EMAIL
+  if (!email) return
   try {
     execSync(
       `docker compose -f docker-compose.dev.multiuser.yml exec -T db sh -c ` +
@@ -51,7 +53,7 @@ function ensurePublishableAccount() {
         input: `UPDATE users SET attributes = JSON_SET(
              COALESCE(attributes, JSON_OBJECT()),
              '$.remote_bucket_name', 'e2e-local-placeholder')
-           WHERE email = '${process.env.TEST_USER_EMAIL}';`,
+           WHERE email = '${email.replace(/'/g, "''")}';`,
       },
     )
   } catch {

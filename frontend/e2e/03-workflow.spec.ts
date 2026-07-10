@@ -13,7 +13,8 @@ import {
 } from "./helpers"
 
 // Workflow page: sample data import, reproduce, runs, validation, tabs.
-// WF-04..06 (actual runs, 5-10 min each) are tagged @slow: RUN_SLOW=1 yarn test:e2e
+// WF-04..06 are tagged @slow (RUN_SLOW=1 yarn test:e2e); WF-05/06 run the
+// full pipeline (5-10 min each), WF-04's by-uid RUN finishes in seconds.
 // Run-without-input-file validation needs manual node wiring — not automated.
 
 test.describe("Workflow Execution", () => {

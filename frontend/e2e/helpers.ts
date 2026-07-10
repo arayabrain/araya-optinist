@@ -122,6 +122,11 @@ export function apiUrl(): string {
 // passed explicitly; the page must already be on the app origin
 async function apiHeaders(page: Page) {
   const token = await page.evaluate(() => localStorage.getItem("access_token"))
+  if (!token) {
+    throw new Error(
+      "No access_token in localStorage — is the storage state stale? Delete e2e/.auth and rerun.",
+    )
+  }
   return { Authorization: `Bearer ${token}` }
 }
 
@@ -136,6 +141,9 @@ export async function ensureWorkspaceId(
     `${apiUrl()}/workspaces?offset=0&limit=100`,
     { headers },
   )
+  if (!list.ok()) {
+    throw new Error(`GET /workspaces ${list.status()}: ${await list.text()}`)
+  }
   const { items } = await list.json()
   const found = items.find((w: { name: string }) => w.name === name)
   if (found) return found.id
@@ -143,6 +151,11 @@ export async function ensureWorkspaceId(
     headers,
     data: { name },
   })
+  if (!created.ok()) {
+    throw new Error(
+      `POST /workspace ${created.status()}: ${await created.text()}`,
+    )
+  }
   return (await created.json()).id
 }
 

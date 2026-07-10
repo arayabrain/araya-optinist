@@ -6,8 +6,8 @@ import { defineConfig } from "@playwright/test"
 // Load e2e/.env (KEY=VALUE lines) so credentials never live in the repo
 const envFile = path.join(__dirname, "e2e", ".env")
 if (fs.existsSync(envFile)) {
-  for (const line of fs.readFileSync(envFile, "utf-8").split("\n")) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/)
+  for (const line of fs.readFileSync(envFile, "utf-8").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
     if (match && !(match[1] in process.env)) {
       process.env[match[1]] = match[2]
     }

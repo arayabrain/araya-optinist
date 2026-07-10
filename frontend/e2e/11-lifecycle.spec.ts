@@ -75,7 +75,7 @@ function runInBackend(cmd: string, input?: string) {
   })
 }
 
-const userId = `(SELECT id FROM users WHERE email = '${USER.email}')`
+const userId = `(SELECT id FROM users WHERE email = '${USER.email.replace(/'/g, "''")}')`
 
 // Primes the cached value so the warning check agrees with the ballast even
 // before the login-time refresh has run (20-minute freshness window)
