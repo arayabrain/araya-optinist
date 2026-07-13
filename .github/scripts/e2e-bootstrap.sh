@@ -5,8 +5,36 @@ set -euo pipefail
 
 COMPOSE="docker compose -f docker-compose.dev.multiuser.yml"
 
-$COMPOSE exec -T -e SUBSCRIPTION_PLANS_CONFIG studio-dev-be \
+# DB_HOST beats MYSQL_SERVER in the seeder's URL builder, and the .env ships
+# the host-side value (localhost); inside the container the db is at db:3306
+$COMPOSE exec -T -e SUBSCRIPTION_PLANS_CONFIG -e DB_HOST=db -e DB_PORT=3306 \
+  studio-dev-be \
   poetry run python infrastructure/scripts/seed_subscription_plans.py
+
+# No migration seeds organization/roles; registration FK-fails without them
+$COMPOSE exec -T db sh -c \
+  'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"' <<SQL
+INSERT IGNORE INTO organization (id, name) VALUES (1, 'E2E CI');
+INSERT IGNORE INTO roles (id, role) VALUES (1, 'admin'), (20, 'operator');
+SQL
+
+# Dev Firebase persists between runs while the CI DB starts empty; a
+# leftover Firebase user makes registration 400 without creating the DB
+# row, so remove the CI users first and register them fresh each run
+$COMPOSE exec -T studio-dev-be poetry run python - \
+  "$TEST_USER_EMAIL" "$TEST_PREMIUM_EMAIL" "e2e_ci_lifecycle@test.com" <<'PY'
+import sys
+import firebase_admin
+from firebase_admin import auth, credentials
+cred = credentials.Certificate("studio/config/auth/firebase_private.json")
+firebase_admin.initialize_app(cred)
+for email in sys.argv[1:]:
+    try:
+        auth.delete_user(auth.get_user_by_email(email).uid)
+        print(f"deleted stale firebase user #{sys.argv.index(email)}")
+    except auth.UserNotFoundError:
+        pass
+PY
 
 verify_email() {
   $COMPOSE exec -T studio-dev-be poetry run python - <<PY
@@ -20,10 +48,13 @@ PY
 
 register() { # name email password
   # "already registered" is fine — the verify step self-heals partial users
-  curl -s -X POST http://localhost:8000/api/register \
+  # and is the hard gate; print the response so failures are diagnosable
+  local resp
+  resp=$(curl -s -w '\nHTTP %{http_code}' -X POST \
+    http://localhost:8000/api/register \
     -H 'Content-Type: application/json' \
-    -d "{\"name\":\"$1\",\"role_id\":20,\"email\":\"$2\",\"password\":\"$3\"}" \
-    > /dev/null || true
+    -d "{\"name\":\"$1\",\"role_id\":20,\"email\":\"$2\",\"password\":\"$3\"}")
+  echo "register $1: $resp"
   verify_email "$2"
 }
 

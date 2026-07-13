@@ -8,6 +8,7 @@ import {
   apiUrl,
   ensureTutorialRecords,
   login,
+  mockPremiumAssignment,
   openWorkspace,
   reproduceTutorial,
 } from "./helpers"
@@ -546,39 +547,6 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   // timers with the fake clock. This automates the manual "Triggering the
   // Inactivity Warning via DevTools" Date.now() override from the System
   // test sheet's Reference tab.
-  async function mockPremiumAssignment(page: Page) {
-    await page.route("**/users/me/premium/status", (route) =>
-      route.fulfill({
-        json: {
-          user_id: 0,
-          subscription_type: "premium",
-          is_premium: true,
-          assignment: {
-            instance_id: "i-e2e-fake",
-            assigned_at: new Date().toISOString(),
-            status: "active",
-            is_shared: false,
-            assignment_source: "existing",
-          },
-        },
-      }),
-    )
-    await page.route("**/users/me/premium/heartbeat", (route) =>
-      route.fulfill({
-        json: {
-          message: "ok",
-          updated: true,
-          user_id: 0,
-          user_tier: "premium",
-          assignment_active: true,
-        },
-      }),
-    )
-    await page.route("**/users/me/premium/beacon-token", (route) =>
-      route.fulfill({ json: { token: "e2e" } }),
-    )
-  }
-
   // Log in with the fake clock installed and wait until the (mocked)
   // assignment has been processed, so the inactivity interval is armed
   // before the clock jumps

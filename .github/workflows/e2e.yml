@@ -7,6 +7,12 @@ on:
   schedule:
     - cron: "0 0 * * 1" # Mondays 00:00 UTC = 09:00 JST
   workflow_dispatch:
+  push: # TEMPORARY: remove before merge — pre-merge testing only
+    branches:
+      - feature/e2e-release-tests
+    paths:
+      - ".github/workflows/e2e.yml"
+      - ".github/scripts/**"
 
 concurrency:
   group: e2e-release-tests
@@ -19,12 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write Firebase service account
+      - name: Write gitignored config (Firebase + studio .env)
         run: |
           mkdir -p studio/config/auth
           printf '%s' "$FIREBASE_PRIVATE_JSON" > studio/config/auth/firebase_private.json
+          printf '%s' "$FIREBASE_CONFIG_JSON" > studio/config/auth/firebase_config.json
+          printf '%s' "$STUDIO_ENV" > studio/config/.env
         env:
           FIREBASE_PRIVATE_JSON: ${{ secrets.E2E_FIREBASE_PRIVATE_JSON }}
+          FIREBASE_CONFIG_JSON: ${{ secrets.E2E_FIREBASE_CONFIG_JSON }}
+          STUDIO_ENV: ${{ secrets.E2E_STUDIO_ENV }}
 
       - name: Start db and backend
         run: |
@@ -54,8 +64,15 @@ jobs:
 
       - name: Start frontend dev server
         working-directory: frontend
+        # frontend/.env is gitignored; without REACT_APP_SERVER_* the app
+        # derives the API URL from window.location and calls :3000 (itself)
+        env:
+          BROWSER: none
+          REACT_APP_SERVER_HOST: localhost
+          REACT_APP_SERVER_PORT: 8000
+          REACT_APP_SERVER_PROTO: http
         run: |
-          BROWSER=none yarn start &
+          yarn start &
           timeout 300 bash -c 'until curl -sf http://localhost:3000 > /dev/null; do sleep 5; done'
 
       - name: Run e2e tests
@@ -69,6 +86,10 @@ jobs:
           TEST_PREMIUM_PASSWORD: ${{ secrets.E2E_TEST_PREMIUM_PASSWORD }}
           TEST_LIFECYCLE_EMAIL: e2e_ci_lifecycle@test.com
           TEST_LIFECYCLE_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+
+      - name: Dump backend logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.dev.multiuser.yml logs --tail 300 studio-dev-be db
 
       - name: Upload Playwright report
         if: always()

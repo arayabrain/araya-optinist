@@ -183,8 +183,14 @@ export async function importSampleData(page: Page, workspaceName: string) {
     timeout: 120_000,
   })
   // The documentation menu stays open behind the dialog and its backdrop
-  // blocks later clicks
-  await page.keyboard.press("Escape")
+  // blocks later clicks. A single Escape can race the closing dialog on
+  // slow machines, so keep pressing until the menu is verifiably gone.
+  await expect(async () => {
+    await page.keyboard.press("Escape")
+    await expect(page.getByText("Import sample data")).toBeHidden({
+      timeout: 2_000,
+    })
+  }).toPass({ timeout: 15_000 })
 }
 
 // Go to the Record tab; import sample data first if no records exist yet
@@ -295,6 +301,42 @@ export async function ensureCompletedTutorialRun(
 ) {
   await ensureTutorialRecords(page, wsName)
   await runTutorial(page, tutorialName, "RUN")
+}
+
+// Route-mock an active dedicated premium assignment (status + heartbeat +
+// beacon token), for exercising assignment-dependent UI on stacks where the
+// real AWS-backed flow is unreachable
+export async function mockPremiumAssignment(page: Page) {
+  await page.route("**/users/me/premium/status", (route) =>
+    route.fulfill({
+      json: {
+        user_id: 0,
+        subscription_type: "premium",
+        is_premium: true,
+        assignment: {
+          instance_id: "i-e2e-fake",
+          assigned_at: new Date().toISOString(),
+          status: "active",
+          is_shared: false,
+          assignment_source: "existing",
+        },
+      },
+    }),
+  )
+  await page.route("**/users/me/premium/heartbeat", (route) =>
+    route.fulfill({
+      json: {
+        message: "ok",
+        updated: true,
+        user_id: 0,
+        user_tier: "premium",
+        assignment_active: true,
+      },
+    }),
+  )
+  await page.route("**/users/me/premium/beacon-token", (route) =>
+    route.fulfill({ json: { token: "e2e" } }),
+  )
 }
 
 export async function createWorkspace(page: Page, name: string) {

@@ -326,7 +326,7 @@ grid).
 | BT-613 | Auto-release after 2h inactivity | LC-15 (frontend half: release beacon fires; instance-side release stays manual) |
 | BT-615 | Instance release on browser close | LC-15 partial (proves the release-beacon plumbing; the beforeunload trigger stays manual) |
 | BT-612 | Stay Active button | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual) |
-| BT-601/602 | assignment snackbars | STO-02 (strict success/preparing assertion when run against a deployed env) |
+| BT-601/602 | assignment snackbars | STO-02 (mocked assignment — asserts the success snackbar renders; the real AWS-backed flow stays a manual deployed-env check) |
 | BT-603, 606..610, 614 | instance assignment, concurrency, release (AWS state) | manual |
 
 #### 07 Dataview
