@@ -1,0 +1,81 @@
+name: E2E Release Tests
+
+# Scheduled workflows run only from the default branch (develop-main), and
+# check out that branch — no ref pinning needed. workflow_dispatch also
+# defaults to develop-main in the Actions UI.
+on:
+  schedule:
+    - cron: "0 0 * * 1" # Mondays 00:00 UTC = 09:00 JST
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-release-tests
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write Firebase service account
+        run: |
+          mkdir -p studio/config/auth
+          printf '%s' "$FIREBASE_PRIVATE_JSON" > studio/config/auth/firebase_private.json
+        env:
+          FIREBASE_PRIVATE_JSON: ${{ secrets.E2E_FIREBASE_PRIVATE_JSON }}
+
+      - name: Start db and backend
+        run: |
+          docker compose -f docker-compose.dev.multiuser.yml up -d --build db studio-dev-be
+          timeout 600 bash -c 'until curl -sf http://localhost:8000/docs > /dev/null; do sleep 5; done'
+
+      - name: Seed plans and bootstrap test users
+        run: .github/scripts/e2e-bootstrap.sh
+        env:
+          SUBSCRIPTION_PLANS_CONFIG: ${{ vars.SUBSCRIPTION_PLANS_CONFIG }}
+          TEST_USER_EMAIL: ${{ secrets.E2E_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+          TEST_PREMIUM_EMAIL: ${{ secrets.E2E_TEST_PREMIUM_EMAIL }}
+          TEST_PREMIUM_PASSWORD: ${{ secrets.E2E_TEST_PREMIUM_PASSWORD }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install frontend and Playwright
+        working-directory: frontend
+        run: |
+          yarn install --frozen-lockfile
+          npx playwright install --with-deps chromium
+
+      - name: Start frontend dev server
+        working-directory: frontend
+        run: |
+          BROWSER=none yarn start &
+          timeout 300 bash -c 'until curl -sf http://localhost:3000 > /dev/null; do sleep 5; done'
+
+      - name: Run e2e tests
+        working-directory: frontend
+        run: npx playwright test
+        env:
+          BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ secrets.E2E_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+          TEST_PREMIUM_EMAIL: ${{ secrets.E2E_TEST_PREMIUM_EMAIL }}
+          TEST_PREMIUM_PASSWORD: ${{ secrets.E2E_TEST_PREMIUM_PASSWORD }}
+          TEST_LIFECYCLE_EMAIL: e2e_ci_lifecycle@test.com
+          TEST_LIFECYCLE_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 14
