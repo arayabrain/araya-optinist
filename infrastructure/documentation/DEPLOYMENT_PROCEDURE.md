@@ -150,11 +150,16 @@ terraform apply -var-file=environments/<ENV>.tfvars
 - Lambda function code and layers
 - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
 
+> **Traceability:** Each apply stamps the applied `infrastructure/` git revision onto the
+> ECS cluster as tags (`TfGitCommit` / `TfGitBranch`), so you can later confirm which
+> infrastructure version is running. See [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md) →
+> "Check Which Git Revision Was Applied".
+
 > **Note:** The commands above are a quick reference for production deployment. For the authoritative guide — including environment switching, development setup, destroying environments, and Terraform troubleshooting — see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
 
 ### Step 2: Build and Push Docker Image (if application code changed)
 
-Skip this step if only Lambda or infrastructure code changed.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
 
 #### 2a. Initialize Terraform for the target environment
 
@@ -192,7 +197,7 @@ The script automatically:
 
 ### Step 3: Force ECS Redeployment (after Docker image push)
 
-Skip this step if only Lambda or infrastructure code changed.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
 
 **Option A: AWS Console**
 

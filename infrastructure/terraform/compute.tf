@@ -467,6 +467,10 @@ resource "aws_ecs_cluster" "main" {
 
   tags = {
     Name = "${local.env_prefix}-cloud-cluster"
+    # Terraform apply provenance (see deploy_info.tf). Traces the running
+    # deployment back to the infrastructure/ git revision it was applied from.
+    TfGitCommit = data.external.tf_build_info.result.git_commit
+    TfGitBranch = data.external.tf_build_info.result.git_branch
   }
 }
 
