@@ -139,6 +139,28 @@ local-testing default of `true` disables all storage lookups backend-side —
 deployed environments run with `false` — and the spec skips with a clear
 reason while it's on.
 
+## CI (GitHub Actions) secrets
+
+The scheduled workflow (`.github/workflows/e2e.yml`) runs the local docker
+stack inside the runner, so it needs every credential the local stack reads,
+supplied as repo secrets. If any is unset the workflow still starts but writes
+an empty config file and the backend fails to boot — the run then crawls to the
+90-minute timeout instead of failing fast. Required:
+
+| Secret / variable | Written to | Notes |
+|---|---|---|
+| `E2E_FIREBASE_PRIVATE_JSON` | `studio/config/auth/firebase_private.json` | Firebase service account |
+| `E2E_FIREBASE_CONFIG_JSON` | `studio/config/auth/firebase_config.json` | Firebase web config |
+| `E2E_STUDIO_ENV` | `studio/config/.env` | backend/DB config; strip personal AWS keys |
+| `E2E_TEST_USER_EMAIL` / `E2E_TEST_USER_PASSWORD` | `TEST_USER_*` env | free-plan CI user (bootstrap registers it) |
+| `E2E_TEST_PREMIUM_EMAIL` / `E2E_TEST_PREMIUM_PASSWORD` | `TEST_PREMIUM_*` env | premium CI user |
+| `SUBSCRIPTION_PLANS_CONFIG` (variable, not secret) | plan-seed step | pulled from the dev task definition |
+
+The lifecycle user needs no secret — the workflow hardcodes
+`e2e_ci_lifecycle@test.com` and reuses `E2E_TEST_USER_PASSWORD`. Values and the
+one-time `gh secret set` commands are in the internal drive doc linked from the
+PR description.
+
 ## Running the tests
 
 ```bash
