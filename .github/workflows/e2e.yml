@@ -7,14 +7,6 @@ on:
   schedule:
     - cron: "0 0 * * 1" # Mondays 00:00 UTC = 09:00 JST
   workflow_dispatch:
-  push: # TEMPORARY: remove before merge — pre-merge testing only
-    branches:
-      - feature/e2e-release-tests
-    paths:
-      - ".github/workflows/e2e.yml"
-      - ".github/scripts/**"
-      - "frontend/e2e/**"
-      - "frontend/playwright.config.ts"
 
 concurrency:
   group: e2e-release-tests
