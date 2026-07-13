@@ -29,12 +29,14 @@ test.describe("Record Management", () => {
   })
 
   test("REC-01 - Record page loads and shows records", async ({ page }) => {
+    // beforeEach guarantees records exist, so no "No records" fallback —
+    // it could mask a table that failed to render its rows
+    await expect(page.locator("text=Timestamp").first()).toBeVisible({
+      timeout: 15_000,
+    })
     await expect(
-      page
-        .locator("text=Timestamp")
-        .or(page.locator("text=No records"))
-        .first(),
-    ).toBeVisible({ timeout: 15_000 })
+      page.locator('tr:has([data-testid="reproduce-button"])').first(),
+    ).toBeVisible()
   })
 
   test("REC-02 - Expand record shows workflow parameters", async ({ page }) => {

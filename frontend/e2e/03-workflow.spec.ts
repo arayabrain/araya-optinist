@@ -94,10 +94,14 @@ test.describe("Workflow Execution", () => {
     ).toBeVisible({ timeout: 15_000 })
   })
 
-  test("WF-08 - Run button cooldown blocks rapid clicks", async ({ page }) => {
+  test("WF-08 - Rapid clicks produce one error snackbar, not duplicates", async ({
+    page,
+  }) => {
     await openWorkspace(page, "e2e-cooldown")
 
-    // 3-second debounce: rapid clicks must produce exactly one error snackbar
+    // Guarded by the SnackbarProvider's preventDuplicate (verified by
+    // toggling it off), NOT the run-request debounce — the validation path
+    // never reaches it. The debounce on actual run POSTs stays manual.
     const runButton = page.locator('button:has-text("RUN ALL")').first()
     await runButton.click()
     await runButton.click({ force: true })

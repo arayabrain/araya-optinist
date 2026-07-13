@@ -46,25 +46,34 @@ test.describe("File Select Dialog", () => {
     await expect(
       dialog.locator('[placeholder="Filter... (* as wildcard)"]'),
     ).toBeVisible()
-    // Tree should list at least one file entry (sample data is imported)
-    await expect(dialog.locator('[role="treeitem"], li').first()).toBeVisible({
+    // Tree should list at least one file entry (sample data is imported).
+    // treeitem only — an "or li" fallback matches the Selected Files panel,
+    // which renders even when the tree is empty
+    await expect(dialog.locator('[role="treeitem"]').first()).toBeVisible({
       timeout: 15_000,
     })
   })
 
   test("FILE-02 - Wildcard filter narrows file list", async ({ page }) => {
     const dialog = page.locator('[role="dialog"]')
-    // Wait for the tree to load before filtering, or the filter races it
-    await expect(dialog.locator('[role="treeitem"], li').first()).toBeVisible({
-      timeout: 15_000,
-    })
     const filter = dialog.locator('[placeholder="Filter... (* as wildcard)"]')
-    await filter.fill("*.tiff")
+    // The image node's tree only ever holds image files, so the negative
+    // case must use a pattern that excludes the known-present tiff — a
+    // ".csv absent" check passes even with the filter broken. Scope to tree
+    // rows: the dialog's Selected Files panel shows the node's current
+    // selection no matter what the filter says.
+    const tiffRows = dialog
+      .locator('[role="treeitem"]')
+      .filter({ hasText: /\.tiff/i })
+    // The tiff must be listed BEFORE filtering, or the exclusion check
+    // passes vacuously against a still-loading tree
+    await expect(tiffRows.first()).toBeVisible({ timeout: 15_000 })
 
-    await expect(dialog.locator("text=/\\.tiff/i").first()).toBeVisible({
-      timeout: 10_000,
-    })
-    await expect(dialog.locator("text=/\\.csv/i")).toHaveCount(0)
+    await filter.fill("*.nomatch")
+    await expect(tiffRows).toHaveCount(0, { timeout: 10_000 })
+
+    await filter.fill("*.tiff")
+    await expect(tiffRows.first()).toBeVisible({ timeout: 10_000 })
   })
 
   test("FILE-03 - Check all / uncheck all selects and clears all files", async ({

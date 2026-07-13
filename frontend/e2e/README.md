@@ -266,7 +266,7 @@ registration validation cases.
 | BT-306 | Run Tutorial 3 workflow | WF-06 `@slow` (RUN ALL, full compute) |
 | BT-307 | Run without algorithm nodes | WF-07 (see note) |
 | BT-308 | Run without input file | WF-07 |
-| BT-309 | Run button cooldown | WF-08 |
+| BT-309 | Run button cooldown | WF-08 (snackbar dedupe only; the run-POST debounce itself stays manual) |
 | BT-310 | Tab navigation | WF-09 |
 | BT-311 | File tree display | FILE-01 |
 | BT-312 | File filter with wildcards | FILE-02 |
