@@ -15,12 +15,15 @@ import {
   getLineData,
   getPieData,
   getPolarData,
+  getStructuredData,
   cancelRoi,
   mergeRoi,
   addRoi,
   deleteRoi,
   commitRoi,
   getStatus,
+  getDisplayErrorMessage,
+  type RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   DATA_TYPE,
@@ -48,6 +51,7 @@ const initialState: DisplayData = {
   line: {},
   pie: {},
   polar: {},
+  structured: {},
   loading: false,
   loadingStack: [],
   statusRoi: {
@@ -440,12 +444,16 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getImageData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        const payload = action.payload as RejectPayload | undefined
+        const errorMessage = getDisplayErrorMessage(payload, "Image not synced")
+
         state.image[path] = {
           type: "image",
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: errorMessage,
+          errorStatus: payload?.status,
         }
       })
       .addCase(getCsvData.pending, (state, action) => {
@@ -471,12 +479,16 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getCsvData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        const payload = action.payload as RejectPayload | undefined
+        const errorMessage = getDisplayErrorMessage(payload, "CSV not synced")
+
         state.csv[path] = {
           type: "csv",
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: errorMessage,
+          errorStatus: payload?.status,
         }
       })
       .addCase(getRoiData.pending, (state, action) => {
@@ -522,6 +534,8 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getRoiData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        const payload = action.payload as RejectPayload | undefined
+        const errorMessage = getDisplayErrorMessage(payload, "Data not synced")
 
         state.loadingStack.pop()
         state.loading = state.loadingStack.length > 0
@@ -531,7 +545,8 @@ export const displayDataSlice = createSlice({
           data: [],
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: errorMessage,
+          errorStatus: payload?.status,
           roiUniqueList: [],
         }
       })
@@ -634,6 +649,33 @@ export const displayDataSlice = createSlice({
           error: action.error.message ?? "rejected",
         }
       })
+      .addCase(getStructuredData.pending, (state, action) => {
+        const { itemId } = action.meta.arg
+        state.structured[itemId] = {
+          data: null,
+          pending: true,
+          fulfilled: false,
+          error: null,
+        }
+      })
+      .addCase(getStructuredData.fulfilled, (state, action) => {
+        const { itemId } = action.meta.arg
+        state.structured[itemId] = {
+          data: action.payload,
+          pending: false,
+          fulfilled: true,
+          error: null,
+        }
+      })
+      .addCase(getStructuredData.rejected, (state, action) => {
+        const { itemId } = action.meta.arg
+        state.structured[itemId] = {
+          data: null,
+          pending: false,
+          fulfilled: false,
+          error: action.error.message ?? "rejected",
+        }
+      })
       .addCase(getStatus.fulfilled, (state, action) => {
         state.statusRoi = action.payload
 
@@ -725,6 +767,11 @@ function deleteDisplayDataFn(
     delete state.pie[filePath]
   } else if (dataType === DATA_TYPE_SET.POLAR) {
     delete state.polar[filePath]
+  } else if (
+    dataType === DATA_TYPE_SET.HDF5 ||
+    dataType === DATA_TYPE_SET.MATLAB
+  ) {
+    // structured data is keyed by itemId, not filePath - cleaned up on item delete
   }
 }
 

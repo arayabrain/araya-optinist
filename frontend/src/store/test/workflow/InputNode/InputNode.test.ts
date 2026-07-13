@@ -1,6 +1,6 @@
 import { expect, describe, test } from "@jest/globals"
 
-import { REACT_FLOW_NODE_TYPE_KEY } from "const/flowchart"
+import { REACT_FLOW_NODE_TYPE_KEY } from "config/fileTypes.config"
 import { addInputNode } from "store/slice/FlowElement/FlowElementActions"
 import { selectNodeById } from "store/slice/FlowElement/FlowElementSelectors"
 import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"

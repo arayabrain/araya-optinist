@@ -95,7 +95,7 @@ def suite2p_roi(
                 logger.info("No ROIs detected in the data.")
 
     except Exception as e:
-        logger.error(f"Error during ROI detection: {str(e)}")
+        logger.warning(f"Error during ROI detection: {str(e)}")
         # Continue with empty results
 
     # Create ROI list
@@ -109,7 +109,7 @@ def suite2p_roi(
 
     # Prepare NWB output
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: roi_list}
+    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
     nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {

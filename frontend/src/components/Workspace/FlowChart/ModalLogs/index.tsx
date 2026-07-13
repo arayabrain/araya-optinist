@@ -12,7 +12,9 @@ import styled from "@emotion/styled"
 import AdbIcon from "@mui/icons-material/Adb"
 import ArrowBackIosIcon from "@mui/icons-material/ArrowBackIos"
 import ArrowForwardIosIcon from "@mui/icons-material/ArrowForwardIos"
+import CheckCircleOutline from "@mui/icons-material/CheckCircleOutline"
 import CloseIcon from "@mui/icons-material/Close"
+import ComputerIcon from "@mui/icons-material/Computer"
 import ErrorIcon from "@mui/icons-material/Error"
 import FilterAltOffOutlinedIcon from "@mui/icons-material/FilterAltOffOutlined"
 import GradeIcon from "@mui/icons-material/Grade"
@@ -21,9 +23,13 @@ import KeyboardDoubleArrowDownIcon from "@mui/icons-material/KeyboardDoubleArrow
 import MenuIcon from "@mui/icons-material/Menu"
 import SearchIcon from "@mui/icons-material/Search"
 import WarningIcon from "@mui/icons-material/Warning"
+import WorkspacePremiumIcon from "@mui/icons-material/WorkspacePremium"
 import { Badge, Box, Modal, Tooltip } from "@mui/material"
 
-import { TLevelsLog } from "components/Workspace/FlowChart/ModalLogs/helpers/service"
+import {
+  fetchAvailableLogLevels,
+  TLevelsLog,
+} from "components/Workspace/FlowChart/ModalLogs/helpers/service"
 import {
   TLogs,
   useLogs,
@@ -37,19 +43,30 @@ type Props = {
 
 const SPACE_CHECK_SCROLL = 50
 
+const serviceNameIconSx = {
+  fontSize: 18,
+  verticalAlign: "-4px",
+  ml: 0.5,
+} as const
+
 const ModalLogs = ({ isOpen = false, onClose }: Props) => {
   const [levels, setLevels] = useState<TLevelsLog[]>([])
+  const [availableLevels, setAvailableLevels] = useState<TLevelsLog[]>([])
   const [keyword, setKeywork] = useState("")
   const [openSearch, setOpenSearch] = useState(false)
   const [searchId, setSearchId] = useState("")
   const [openSearchLevels, setOpenSearchLevels] = useState(false)
   const [visibleScrollEnd, setVisibleScrollEnd] = useState(false)
 
-  const { logs, onPrevSearchApi, onNextSearchApi, isError, reset } = useLogs(
-    levels,
-    keyword,
-    !visibleScrollEnd,
-  )
+  useEffect(() => {
+    if (!isOpen) return
+    fetchAvailableLogLevels()
+      .then(setAvailableLevels)
+      .catch(() => setAvailableLevels(Object.values(TLevelsLog)))
+  }, [isOpen])
+
+  const { logs, onPrevSearchApi, onNextSearchApi, isError, reset, platform } =
+    useLogs(levels, keyword, !visibleScrollEnd)
   const logsRef = useRef(logs)
   const scrollLogs = useRef<HTMLDivElement>(null)
   const modalContent = useRef<HTMLDivElement>(null)
@@ -277,41 +294,60 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
               <FilterAltOffOutlinedIcon />
               <span>{TLevelsLog.ALL}</span>
             </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.INFO)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.INFO)}
-            >
-              <InfoIcon color="info" />
-              <span>{TLevelsLog.INFO}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.WARNING)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.WARNING)}
-            >
-              <WarningIcon color="warning" />
-              <span>{TLevelsLog.WARNING}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.DEBUG)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.DEBUG)}
-            >
-              <AdbIcon color="success" />
-              <span>{TLevelsLog.DEBUG}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.ERROR)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.ERROR)}
-            >
-              <ErrorIcon color="error" />
-              <span>{TLevelsLog.ERROR}</span>
-            </MenuFilter>
-            <MenuFilter
-              active={levels?.includes(TLevelsLog.CRITICAL)}
-              onClick={() => onChangeTypeFilter(TLevelsLog.CRITICAL)}
-            >
-              <GradeIcon color="secondary" />
-              <span>{TLevelsLog.CRITICAL}</span>
-            </MenuFilter>
+            {availableLevels.includes(TLevelsLog.INFO) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.INFO)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.INFO)}
+              >
+                <InfoIcon color="info" />
+                <span>{TLevelsLog.INFO}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.WARNING) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.WARNING)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.WARNING)}
+              >
+                <WarningIcon color="warning" />
+                <span>{TLevelsLog.WARNING}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.DEBUG) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.DEBUG)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.DEBUG)}
+              >
+                <AdbIcon color="success" />
+                <span>{TLevelsLog.DEBUG}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.ERROR) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.ERROR)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.ERROR)}
+              >
+                <ErrorIcon color="error" />
+                <span>{TLevelsLog.ERROR}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.CRITICAL) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.CRITICAL)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.CRITICAL)}
+              >
+                <GradeIcon color="secondary" />
+                <span>{TLevelsLog.CRITICAL}</span>
+              </MenuFilter>
+            )}
+            {availableLevels.includes(TLevelsLog.FRONTEND) && (
+              <MenuFilter
+                active={levels?.includes(TLevelsLog.FRONTEND)}
+                onClick={() => onChangeTypeFilter(TLevelsLog.FRONTEND)}
+              >
+                <ComputerIcon color="primary" />
+                <span>{TLevelsLog.FRONTEND}</span>
+              </MenuFilter>
+            )}
           </BoxFilter>
         ) : (
           <BoxMenu onClick={() => setOpenSearchLevels(true)}>
@@ -326,6 +362,23 @@ const ModalLogs = ({ isOpen = false, onClose }: Props) => {
           <BoxScrollDown onClick={onScrollEnd}>
             <KeyboardDoubleArrowDownIcon />
           </BoxScrollDown>
+        ) : null}
+        {platform ? (
+          <PlatformInfoBox>
+            <span>
+              Service: {platform.service_name}, Task: {platform.task_id} (
+              {platform.instance_id})
+              {platform.service_name.includes("-premium-") ? (
+                <WorkspacePremiumIcon
+                  sx={{ ...serviceNameIconSx, color: "#fffb00" }}
+                />
+              ) : (
+                <CheckCircleOutline
+                  sx={{ ...serviceNameIconSx, color: "#ffffff" }}
+                />
+              )}
+            </span>
+          </PlatformInfoBox>
         ) : null}
       </Content>
     </Modal>
@@ -481,6 +534,24 @@ const BoxScrollDown = styled(Box)`
   height: 30px;
   animation: ${rotate} 2s linear infinite;
   cursor: pointer;
+`
+
+const PlatformInfoBox = styled(Box)`
+  position: absolute;
+  bottom: 12px;
+  right: 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  background-color: rgba(92, 92, 92, 0.8);
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: rgba(255, 255, 255);
+  font-size: 12px;
+  line-height: 1;
+  user-select: text;
+  cursor: text;
 `
 
 export default ModalLogs

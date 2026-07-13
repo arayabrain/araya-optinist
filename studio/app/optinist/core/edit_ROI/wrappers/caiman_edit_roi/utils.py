@@ -21,7 +21,7 @@ def set_nwbfile(edit_roi_data: EditRoiData, iscell, function_id, fluorescence=No
             kargs["image_mask"] = edit_roi_data.im[i, :]
             roi_list.append(kargs)
 
-    nwbfile[NWBDATASET.ROI] = {function_id: roi_list}
+    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
 
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {
@@ -43,6 +43,7 @@ def set_nwbfile(edit_roi_data: EditRoiData, iscell, function_id, fluorescence=No
                 if fluorescence is not None and fluorescence.size > 0
                 else np.array([]).reshape(0, 0),
                 "unit": "lumens",
+                "rate": nwbfile.get("imaging_plane", {}).get("imaging_rate", 30),
             },
         }
     }

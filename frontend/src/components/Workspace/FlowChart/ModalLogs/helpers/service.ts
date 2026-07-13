@@ -10,6 +10,7 @@ export enum TLevelsLog {
   DEBUG = "DEBUG",
   WARNING = "WARNING",
   CRITICAL = "CRITICAL",
+  FRONTEND = "FRONTEND",
 }
 
 export type TParams<T = unknown> = {
@@ -18,6 +19,19 @@ export type TParams<T = unknown> = {
 } & T
 
 export type TParamQueryLogs = TParams & { reverse?: boolean; offset: number }
+
+export type TPlatformInfo = {
+  service_name: string
+  task_id: string
+  instance_id: string
+}
+
+export const fetchAvailableLogLevels = async (): Promise<TLevelsLog[]> => {
+  const { data } = await axios.get("/logs/level")
+  return (data.levels as string[]).map(
+    (l) => TLevelsLog[l as keyof typeof TLevelsLog],
+  )
+}
 
 export const serviceLogs = async (params: TParamQueryLogs) => {
   const { data, config } = await axios.get("/logs", {
@@ -28,5 +42,6 @@ export const serviceLogs = async (params: TParamQueryLogs) => {
     data: data.data.map((e: string) => ({ text: e, id: uuidv4() })),
     params: config.params,
     offset: { next: data.next_offset, pre: data.prev_offset },
+    platform: data.platform as TPlatformInfo | undefined,
   }
 }

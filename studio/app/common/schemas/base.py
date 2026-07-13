@@ -14,19 +14,30 @@ class SortDirection(str, Enum):
 @dataclasses.dataclass
 class SortOptions:
     sort: List = Query(
-        default=(None, SortDirection.asc),
+        default=("id", SortDirection.asc),
         description="field-0: sort column<br/>field-1: order ('asc' or 'desc')",
     )
 
     def get_sa_sort_list(
-        self, sa_table, mapping: Dict[str, Union[str, SQLModelMetaclass]] = None
+        self,
+        sa_table,
+        mapping: Dict[str, Union[str, SQLModelMetaclass]] = None,
+        default_sort: List = None,
     ) -> List:
+        # Use provided default if available, otherwise use self.sort
+        if default_sort and list(self.sort) == ["id", SortDirection.asc]:
+            sort = default_sort
+        else:
+            sort = self.sort
+
         sort_list = []
-        for i in range(0, len(self.sort), 2):
-            sort_field, sort_type = self.sort[i] or "id", self.sort[i + 1]
+        for i in range(0, len(sort), 2):
+            sort_field, sort_type = sort[i : i + 2]
 
             sort_column = (
-                mapping.get(sort_field) or sort_field if mapping else sort_field
+                mapping.get(sort_field)
+                if mapping is not None and mapping.get(sort_field) is not None
+                else sort_field
             )
             if isinstance(sort_column, str):
                 sort_column = getattr(sa_table, sort_column)

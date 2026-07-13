@@ -1,6 +1,10 @@
 import { PayloadAction, createSlice, isAnyOf } from "@reduxjs/toolkit"
 
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
+import {
+  privateDataviewReproduceWorkflow,
+  publicDataviewReproduceWorkflow,
+} from "store/slice/Dataview/DataviewActions"
 import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import {
   delWorkspace,
@@ -64,6 +68,14 @@ export const workspaceSlice = createSlice({
   extraReducers(builder) {
     builder
       .addCase(reproduceWorkflow.fulfilled, (state, action) => {
+        state.currentWorkspace.workspaceId = action.meta.arg.workspaceId
+        state.currentWorkspace.selectedTab = 0
+      })
+      .addCase(privateDataviewReproduceWorkflow.fulfilled, (state, action) => {
+        state.currentWorkspace.workspaceId = action.meta.arg.workspaceId
+        state.currentWorkspace.selectedTab = 0
+      })
+      .addCase(publicDataviewReproduceWorkflow.fulfilled, (state, action) => {
         state.currentWorkspace.workspaceId = action.meta.arg.workspaceId
         state.currentWorkspace.selectedTab = 0
       })

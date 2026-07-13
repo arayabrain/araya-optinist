@@ -59,7 +59,10 @@ const Tooltips: FC = () => {
   return (
     <>
       <Tooltip title="GitHub repository">
-        <IconButton href="https://github.com/oist/optinist" target="_blank">
+        <IconButton
+          href="https://github.com/arayabrain/araya-optinist"
+          target="_blank"
+        >
           <GitHub />
         </IconButton>
       </Tooltip>

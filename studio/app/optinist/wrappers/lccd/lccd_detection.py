@@ -22,7 +22,7 @@ def lccd_detect(
     recursive_flatten_params(params, flattened_params)
     params = flattened_params
 
-    logger.info("params: %s", params)
+    logger.debug("params: %s", params)
     lccd = LCCD(params)
     D = LoadData(mc_images)
     assert len(D.shape) == 3, "input array should have dimensions (width, height, time)"
@@ -31,7 +31,7 @@ def lccd_detect(
         num_cell = roi.shape[1]
     except ValueError as e:
         if "No roi region found" in str(e):
-            logger.info("No ROIs found in LCCD detection")
+            logger.warning("No ROIs found in LCCD detection")
             num_cell = 0
             roi = np.zeros((D.shape[0] * D.shape[1], 0))  # Empty ROIs
         else:
@@ -80,7 +80,7 @@ def lccd_detect(
     roi_list = [{"image_mask": roi[:, i].reshape(D.shape[:2])} for i in range(num_cell)]
 
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: roi_list}
+    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
     nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
 
     nwbfile[NWBDATASET.COLUMN] = {
@@ -99,6 +99,7 @@ def lccd_detect(
                 "name": "Fluorescence",
                 "data": timeseries,
                 "unit": "lumens",
+                "rate": nwbfile.get("imaging_plane", {}).get("imaging_rate", 30),
             }
         }
     }

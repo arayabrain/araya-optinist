@@ -46,7 +46,6 @@ class User(Base, TimestampMixin, table=True):
     email: str = Field(sa_column=Column(String(255), nullable=False))
     attributes: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
     active: bool = Field(nullable=False)
-
     workspace: List["Workspace"] = Relationship(  # noqa: F821
         back_populates="user", sa_relationship_kwargs={"uselist": True}
     )
@@ -64,7 +63,7 @@ class User(Base, TimestampMixin, table=True):
 
     @property
     def remote_bucket_name(self) -> str:
-        return self.attributes.get("remote_bucket_name")
+        return self.attributes.get("remote_bucket_name") if self.attributes else None
 
 
 class Role(Base, table=True):

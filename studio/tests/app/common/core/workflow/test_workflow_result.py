@@ -1,53 +1,136 @@
 import os
 import shutil
+import time
 
 import pytest
 
+from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
+from studio.app.common.core.experiment.experiment import ExptFunction
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.workflow.workflow import Message
-from studio.app.common.core.workflow.workflow_result import NodeResult, WorkflowResult
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+    RemoteSyncAction,
+    RemoteSyncStatusFileUtil,
+)
+from studio.app.common.core.workflow.workflow import Message, NodeRunStatus
+from studio.app.common.core.workflow.workflow_result import (
+    NodeResult,
+    WorkflowMonitor,
+    WorkflowResult,
+)
 from studio.app.dir_path import DIRPATH
 
-remote_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+# Set test mode before getting bucket name at module level
+MODE.IS_TEST = True
+remote_bucket_name = _get_user_remote_bucket_name()
 workspace_id = "default"
 unique_id = "result_test"
 node_id_list = ["func1", "func2"]
+node_1st = node_id_list[0]
 
 workflow_dirpath = f"{DIRPATH.DATA_DIR}/output_test/{workspace_id}/{unique_id}"
 output_dirpath = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}"
 pickle_path = (
-    f"{DIRPATH.DATA_DIR}/output_test/{workspace_id}/{unique_id}/func1/func1.pkl"
+    f"{DIRPATH.DATA_DIR}/output_test/{workspace_id}/{unique_id}/{node_1st}/func1.pkl"
 )
 
 
 @pytest.mark.asyncio
-async def test_WorkflowResult_get():
+async def test_WorkflowResult_get_success():
+    # ----------------------------------------
+    # Preparation
+    # ----------------------------------------
+
     shutil.copytree(
         workflow_dirpath,
         output_dirpath,
         dirs_exist_ok=True,
     )
 
-    # first, write pid_file
+    # Write pid_file
     Runner.write_pid_file(
         output_dirpath, "xxxx_dummy_func", "xxxx_dummy_func_script.py"
     )
 
+    # Write remote storage related files
+    if RemoteStorageController.is_available():
+        RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+            remote_bucket_name,
+            workspace_id,
+            unique_id,
+            RemoteSyncAction.UPLOAD,
+        )
+
+    # ----------------------------------------
+    # Tests
+    # ----------------------------------------
+
     output = await WorkflowResult(
-        remote_bucket_name, workspace_id=workspace_id, unique_id=unique_id
+        workspace_id=workspace_id, unique_id=unique_id
     ).observe(node_id_list)
 
     assert isinstance(output, dict)
-    assert len(output) == 1
+    assert output[node_1st].status == "success"
 
 
-def test_NodeResult_get():
+@pytest.mark.asyncio
+async def test_NodeResult_get():
     assert os.path.exists(pickle_path)
-    output = NodeResult(
+
+    expt_function = ExptFunction(
+        unique_id=unique_id,
+        name=node_1st,
+        success=NodeRunStatus.RUNNING.value,
+        hasNWB=False,
+    )
+
+    output = await NodeResult(
         workspace_id=workspace_id,
         unique_id=unique_id,
-        node_id="func1",
-        pickle_filepath=pickle_path,
-    ).observe()
+        node_id=node_1st,
+    ).observe(expt_function)
 
     assert isinstance(output, Message)
+
+
+@pytest.mark.asyncio
+async def test_WorkflowResult_get_error():
+    # ----------------------------------------
+    # Preparation
+    # ----------------------------------------
+
+    shutil.copytree(
+        workflow_dirpath,
+        output_dirpath,
+        dirs_exist_ok=True,
+    )
+
+    # Write pid_file file (causes timeout error)
+    pid_file_create_time = time.time() - WorkflowMonitor.PROCESS_SNAKEMAKE_WAIT_TIMEOUT
+    Runner.write_pid_file(
+        output_dirpath,
+        "xxxx_dummy_func",
+        "xxxx_dummy_func_script.py",
+        pid_file_create_time,
+    )
+
+    # Write remote storage related files
+    if RemoteStorageController.is_available():
+        RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+            remote_bucket_name,
+            workspace_id,
+            unique_id,
+            RemoteSyncAction.UPLOAD,
+        )
+
+    # ----------------------------------------
+    # Preparation
+    # ----------------------------------------
+
+    output = await WorkflowResult(
+        workspace_id=workspace_id, unique_id=unique_id
+    ).observe(node_id_list)
+
+    assert isinstance(output, dict)
+    assert output[node_1st].status == "error"

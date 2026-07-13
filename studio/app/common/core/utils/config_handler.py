@@ -1,5 +1,4 @@
 import os
-from typing import Union
 
 import yaml
 from filelock import FileLock
@@ -11,34 +10,147 @@ from studio.app.common.core.utils.filepath_creater import (
 )
 
 
+def get_env_var(key: str, default: str = None, required: bool = False) -> str:
+    """
+    Get environment variable with optional validation.
+
+    Args:
+        key: Environment variable name
+        default: Default value if not set (optional)
+        required: If True, raises ValueError when variable is not set
+                  and no default provided
+
+    Returns:
+        str: Environment variable value or default
+
+    Raises:
+        ValueError: If required=True and variable is not set with no default
+
+    Examples:
+        >>> get_env_var("BASE_URL", required=True)
+        >>> get_env_var("FRONTEND_URL", default="http://localhost:3000")
+    """
+    value = os.getenv(key, default)
+    if required and not value:
+        raise ValueError(f"{key} environment variable is not set")
+    return value
+
+
+def get_env_bool(key: str, default: bool = False) -> bool:
+    """
+    Get boolean environment variable.
+
+    Converts string values to boolean. Accepts: "true", "1", "yes", "on"
+    (case-insensitive) as True. All other values are treated as False.
+
+    Args:
+        key: Environment variable name
+        default: Default boolean value if not set
+
+    Returns:
+        bool: Environment variable value as boolean or default
+
+    Examples:
+        >>> get_env_bool("USE_FIREBASE_EMAIL", default=True)
+        >>> get_env_bool("DEBUG_MODE")
+    """
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+def is_local_environment() -> bool:
+    """
+    Detect if the application is running in a local development environment.
+
+    Checks MYSQL_SERVER and DATABASE_URL environment variables for localhost
+    indicators including:
+    - "localhost" hostname
+    - IPv4 loopback: 127.0.0.1
+    - IPv6 loopback: ::1
+
+    Returns:
+        bool: True if running in local development environment
+
+    Examples:
+        >>> # DATABASE_URL=mysql://user:pass@localhost:3306/db
+        >>> is_local_environment()
+        True
+        >>> # DATABASE_URL=mysql://user:pass@[::1]:3306/db
+        >>> is_local_environment()
+        True
+        >>> # DATABASE_URL=mysql://user:pass@prod-db.example.com:3306/db
+        >>> is_local_environment()
+        False
+    """
+    mysql_server = os.environ.get("MYSQL_SERVER", "")
+    database_url = os.environ.get("DATABASE_URL", "")
+
+    localhost_indicators = ("localhost", "127.0.0.1", "::1")
+
+    return any(
+        indicator in mysql_server or indicator in database_url
+        for indicator in localhost_indicators
+    )
+
+
+def differential_deep_merge(d1: dict, d2: dict) -> dict:
+    """
+    Deep merge only the differences to avoid destroying existing elements
+    """
+    result = d1.copy()
+    for key, value in d2.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = differential_deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 class ConfigReader:
     @classmethod
-    def read(cls, file: Union[str, bytes]):
+    def read(cls, filepath: str) -> dict:
         config = {}
 
-        if file is None:
-            return config
-
-        if isinstance(file, bytes):
-            config = yaml.safe_load(file)
-        elif isinstance(file, str) and os.path.exists(file):
-            with open(file) as f:
+        if filepath is not None and os.path.exists(filepath):
+            with open(filepath) as f:
                 config = yaml.safe_load(f)
-        else:
-            assert False, f"Invalid file [{file}]"
 
+        return config
+
+    @classmethod
+    def read_from_bytes(cls, content: bytes) -> dict:
+        config = yaml.safe_load(content)
         return config
 
 
 class ConfigWriter:
+    FILE_LOCK_TIMEOUT = 60
+
     @classmethod
-    def write(cls, dirname, filename, config):
+    def write(cls, dirname: str, filename: str, config: dict, auto_file_lock=True):
         create_directory(dirname)
 
         config_path = join_filepath([dirname, filename])
 
-        # Controls locking for simultaneous writing to yaml-file from multiple nodes.
-        lock_path = FileLockUtils.get_lockfile_path(config_path)
-        with FileLock(lock_path, timeout=10):
-            with open(config_path, "w") as f:
-                yaml.dump(config, f, sort_keys=False)
+        if auto_file_lock:
+            # Exclusive control for parallel updates from multiple processes.
+            lock_path = FileLockUtils.get_lockfile_path(config_path)
+            with FileLock(lock_path, cls.FILE_LOCK_TIMEOUT):
+                cls.__write(config_path, config)
+        else:
+            cls.__write(config_path, config)
+
+    @classmethod
+    def __write(cls, config_path: str, config: dict):
+        config_tmp_path = f"{config_path}.tmp"
+
+        # First write to a temporary file
+        # (a measure to avoid read conflicts due to write delays)
+        with open(config_tmp_path, "w") as f:
+            yaml.dump(config, f, sort_keys=False)
+
+        # Write to the original file path
+        # (write atomically by using os.replace)
+        os.replace(config_tmp_path, config_path)

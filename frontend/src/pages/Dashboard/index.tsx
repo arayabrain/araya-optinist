@@ -4,6 +4,7 @@ import { Link } from "react-router-dom"
 
 import AnalyticsIcon from "@mui/icons-material/Analytics"
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts"
+import ViewListIcon from "@mui/icons-material/ViewList"
 import { Box, styled, Typography } from "@mui/material"
 
 import { getMe } from "store/slice/User/UserActions"
@@ -25,7 +26,15 @@ const Dashboard = () => {
       <h1 style={{ paddingLeft: 16 }}>Dashboard</h1>
       <DashboardWrapper>
         <DashboardContent>
-          <LinkWrapper to="/console/workspaces">
+          <LinkWrapper to="/dataview">
+            <BoxMenu>
+              <Box>
+                <ViewListIcon fontSize="large" />
+                <TitleMenu>Dataview</TitleMenu>
+              </Box>
+            </BoxMenu>
+          </LinkWrapper>
+          <LinkWrapper to="/workspaces">
             <BoxMenu>
               <Box>
                 <AnalyticsIcon fontSize="large" />
@@ -34,7 +43,7 @@ const Dashboard = () => {
             </BoxMenu>
           </LinkWrapper>
           {admin ? (
-            <LinkWrapper to="/console/account-manager">
+            <LinkWrapper to="/account-manager">
               <BoxMenu>
                 <Box>
                   <ManageAccountsIcon fontSize="large" />

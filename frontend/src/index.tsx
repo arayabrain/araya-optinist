@@ -10,6 +10,11 @@ import App from "App"
 import reportWebVitals from "reportWebVitals"
 import { store } from "store/store"
 import { theme } from "Theme"
+import { initChunkReloadHandler } from "utils/chunkLoadReload"
+import { initErrorReporter } from "utils/errorReporter"
+
+initChunkReloadHandler()
+initErrorReporter()
 
 const root = createRoot(document.getElementById("root")!)
 

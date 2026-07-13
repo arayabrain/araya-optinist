@@ -1,0 +1,296 @@
+import { memo, useEffect, useMemo, useState, useRef } from "react"
+import PlotlyChart from "react-plotlyjs-ts"
+import { useSelector, useDispatch } from "react-redux"
+
+import createColormap from "colormap"
+import { max, uniq } from "lodash"
+
+import CloudDownloadIcon from "@mui/icons-material/CloudDownload"
+import CloudSyncIcon from "@mui/icons-material/CloudSync"
+import {
+  CircularProgress,
+  LinearProgress,
+  Typography,
+  Box,
+  IconButton,
+  Tooltip,
+} from "@mui/material"
+
+import {
+  getRoiData,
+  SYNC_IN_PROGRESS_MESSAGE,
+} from "store/slice/DisplayData/DisplayDataActions"
+import {
+  selectRoiData,
+  selectRoiDataIsPending,
+  selectRoiDataError,
+  selectRoiDataErrorStatus,
+} from "store/slice/DisplayData/DisplayDataSelectors"
+import { AppDispatch } from "store/store"
+
+interface RoiPlotSimpleProps {
+  filePath: string
+  workspaceId: number
+  uniqueId?: string
+  onClick?: () => void
+}
+
+export const RoiPlotSimple = memo(function RoiPlotSimple({
+  filePath,
+  workspaceId,
+  uniqueId,
+  onClick,
+}: RoiPlotSimpleProps) {
+  // Use selectors instead of direct state access
+  const roiDataFromSelector = useSelector(selectRoiData(filePath))
+  const isPending = useSelector(selectRoiDataIsPending(filePath))
+  const error = useSelector(selectRoiDataError(filePath))
+  const errorStatus = useSelector(selectRoiDataErrorStatus(filePath))
+  const [isMounted, setIsMounted] = useState(false)
+  const plotRef = useRef<HTMLDivElement>(null)
+
+  const roiData = useMemo(
+    () => (roiDataFromSelector ? [roiDataFromSelector] : []),
+    [roiDataFromSelector],
+  )
+
+  const dispatch = useDispatch<AppDispatch>()
+
+  const maxIndex = useMemo(() => {
+    if (!roiData || roiData.length === 0) return 0
+
+    // ROI data structure: data[0] is the 2D ROI array
+    const roi2DArray = roiData[0]
+    if (!roi2DArray || !Array.isArray(roi2DArray)) return 0
+
+    const flatValues = roi2DArray.map((row) => row.filter(Boolean)).flat()
+    const uniqueValues = uniq(flatValues)
+    const maxValue = max(uniqueValues)
+
+    return typeof maxValue === "number" ? maxValue : 0
+  }, [roiData])
+
+  useEffect(() => {
+    setIsMounted(true)
+    return () => {
+      setIsMounted(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (workspaceId && filePath) {
+      dispatch(getRoiData({ path: filePath, workspaceId, uniqueId }))
+    }
+  }, [dispatch, filePath, workspaceId, uniqueId])
+
+  if (!filePath) {
+    return (
+      <Box
+        sx={{
+          width: 100,
+          height: 80,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Typography variant="caption">No data</Typography>
+      </Box>
+    )
+  }
+
+  const handleRetry = () => {
+    if (workspaceId && filePath) {
+      dispatch(getRoiData({ path: filePath, workspaceId, uniqueId }))
+    }
+  }
+
+  if (isPending) {
+    return <LinearProgress />
+  } else if (error != null) {
+    const isSyncing = error === SYNC_IN_PROGRESS_MESSAGE
+    const isNotFound = errorStatus === 404
+    return (
+      <Box
+        sx={{
+          width: 100,
+          height: 80,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0.5,
+        }}
+      >
+        <Typography
+          color={isSyncing ? "text.secondary" : "error"}
+          variant="caption"
+          sx={{ fontSize: "0.65rem" }}
+        >
+          {error}
+        </Typography>
+        {!isNotFound && (
+          <Tooltip title={isSyncing ? "Retry sync" : "Download"}>
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleRetry()
+              }}
+              sx={{ padding: 0.25 }}
+            >
+              <CloudDownloadIcon sx={{ fontSize: 16 }} color="primary" />
+            </IconButton>
+          </Tooltip>
+        )}
+      </Box>
+    )
+  } else if (roiData && roiData.length > 0 && maxIndex > 0) {
+    const roi2DArray = roiData[0] // Get the actual 2D ROI array
+    const nshades = maxIndex < 100 ? Math.max(maxIndex, 6) : 100
+    const colorscaleRoi = createColormap({
+      colormap: "jet",
+      nshades,
+      format: "hex",
+      alpha: 1,
+    })
+
+    const data = [
+      {
+        z: roi2DArray,
+        type: "heatmap",
+        colorscale: colorscaleRoi.map((value, idx) => [
+          String(idx / (nshades - 1)),
+          value,
+        ]),
+        showscale: false,
+        hoverongaps: false,
+        hoverinfo: "none",
+        zmin: 0,
+        zmax: maxIndex,
+      },
+    ]
+
+    const layout = {
+      width: 100,
+      height: 80,
+      margin: { t: 0, r: 0, b: 0, l: 0 },
+      xaxis: { visible: false },
+      yaxis: { visible: false, autorange: "reversed" },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+    }
+
+    const config = {
+      displayModeBar: false,
+      responsive: true,
+      staticPlot: true,
+    }
+
+    if (!isMounted) {
+      return (
+        <div
+          ref={plotRef}
+          onClick={onClick}
+          style={{ cursor: "pointer", width: "100%", height: "100%" }}
+        />
+      )
+    }
+
+    return (
+      <div
+        ref={plotRef}
+        onClick={onClick}
+        style={{ cursor: "pointer", width: "100%", height: "100%" }}
+      >
+        <PlotlyChart data={data} layout={layout} config={config} />
+      </div>
+    )
+  } else {
+    return (
+      <Box
+        sx={{
+          width: 100,
+          height: 80,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Typography variant="caption">
+          {isPending
+            ? "Loading..."
+            : `No ROI data (${roiData.length} items, max: ${maxIndex})`}
+        </Typography>
+      </Box>
+    )
+  }
+})
+
+interface RoiPlotSimpleWithLoadingProps extends RoiPlotSimpleProps {
+  /** If true, show a sync indicator for legacy JSON files that may need on-demand sync */
+  showSyncIndicator?: boolean
+}
+
+/**
+ * RoiPlotSimple with loading state indicator for legacy JSON files.
+ *
+ * Legacy JSON files may need on-demand sync from S3, which can take longer.
+ * This component shows a sync indicator when loading potentially large files.
+ *
+ * Note: PNG thumbnails are handled directly by the parent component (DataviewRecords)
+ * and don't go through this component.
+ */
+export const RoiPlotSimpleWithLoading = memo(function RoiPlotSimpleWithLoading({
+  filePath,
+  workspaceId,
+  uniqueId,
+  onClick,
+  showSyncIndicator = true,
+}: RoiPlotSimpleWithLoadingProps) {
+  const [isSyncing, setIsSyncing] = useState(false)
+  const isPending = useSelector(selectRoiDataIsPending(filePath ?? ""))
+  const roiData = useSelector(selectRoiData(filePath ?? ""))
+
+  // Show sync indicator when loading
+  useEffect(() => {
+    if (showSyncIndicator && isPending && !roiData) {
+      setIsSyncing(true)
+    } else if (roiData) {
+      setIsSyncing(false)
+    }
+  }, [showSyncIndicator, isPending, roiData])
+
+  return (
+    <Box sx={{ position: "relative", width: 100, height: 80 }}>
+      <RoiPlotSimple
+        filePath={filePath}
+        workspaceId={workspaceId}
+        uniqueId={uniqueId}
+        onClick={onClick}
+      />
+      {isSyncing && (
+        <Box
+          sx={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(255, 255, 255, 0.8)",
+            gap: 0.5,
+          }}
+        >
+          <CircularProgress size={20} />
+          <Tooltip title="Syncing from cloud storage">
+            <CloudSyncIcon sx={{ fontSize: 14, color: "primary.main" }} />
+          </Tooltip>
+        </Box>
+      )}
+    </Box>
+  )
+})

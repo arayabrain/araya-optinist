@@ -16,10 +16,10 @@ from datetime import datetime
 
 
 # -- Project information -----------------------------------------------------
-project = "OptiNiSt"
-copyright = f"{datetime.today().year}, OIST"
-author = ""
-release = "2.1.0"
+project = "Araya-OptiNiSt Cloud"
+copyright = f"{datetime.now().year}, Araya Inc., OIST"
+author = "Araya Inc."
+release = "1.1.9"
 
 # -- readthedocs -------------------------------------------------------------
 on_rtd = os.environ.get("READTHEDOCS", None) == "True"

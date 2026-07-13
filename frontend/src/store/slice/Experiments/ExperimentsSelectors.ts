@@ -61,6 +61,27 @@ export const selectExperimentIsRemoteSynced =
   (uid: string) => (state: RootState) =>
     selectExperiment(uid)(state)?.isRemoteSynced ?? false
 
+export const selectExperimentHasIntermediates =
+  (uid: string) => (state: RootState) => {
+    const experiments = selectExperiments(state)
+    if (experiments.status !== "fulfilled") return true
+    return experiments.experimentList[uid]?.hasIntermediates ?? true
+  }
+
+export const selectExperimentHasOutputs =
+  (uid: string) => (state: RootState) => {
+    const experiments = selectExperiments(state)
+    if (experiments.status !== "fulfilled") return true
+    return experiments.experimentList[uid]?.hasOutputs ?? true
+  }
+
+export const selectExperimentHasInputs =
+  (uid: string) => (state: RootState) => {
+    const experiments = selectExperiments(state)
+    if (experiments.status !== "fulfilled") return true
+    return experiments.experimentList[uid]?.hasInputs ?? true
+  }
+
 export const selectExperimentStatus =
   (uid: string) =>
   (state: RootState): EXPERIMENTS_STATUS => {
@@ -110,6 +131,10 @@ export const selectExperimentFunctionHasNWB =
 
 export const selectFrameRate =
   (currentPipelineUid?: string) => (state: RootState) => {
-    if (!currentPipelineUid) return 50
-    return selectExperiment(currentPipelineUid)(state).frameRate || 50
+    // Check if experiments have been acquired
+    if (currentPipelineUid && selectExperimentsStatusIsFulfilled(state)) {
+      return selectExperiment(currentPipelineUid)(state).frameRate || 50
+    } else {
+      return 50
+    }
   }

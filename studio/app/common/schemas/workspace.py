@@ -8,12 +8,14 @@ from studio.app.common.schemas.users import UserInfo
 
 class Workspace(BaseModel):
     id: Optional[int]
+    display_number: Optional[int]
     name: str
     user: Optional[UserInfo]
     shared_count: int
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     data_usage: Optional[int]
+    canDelete: Optional[bool]
 
     class Config:
         orm_mode = True

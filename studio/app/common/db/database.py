@@ -4,14 +4,23 @@ from functools import lru_cache
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import create_engine
 
-from studio.app.common.db.config import DATABASE_CONFIG
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
 
 
 def get_new_engine():
+    kwargs = {}
+    creator = get_ssl_creator()
+    if creator:
+        kwargs["creator"] = creator
     return create_engine(
         DATABASE_CONFIG.DATABASE_URL,
         pool_recycle=360,
         pool_size=DATABASE_CONFIG.POOL_SIZE,
+        max_overflow=DATABASE_CONFIG.MAX_OVERFLOW,
+        pool_pre_ping=True,
+        pool_timeout=30,
+        echo_pool=False,
+        **kwargs,
     )
 
 

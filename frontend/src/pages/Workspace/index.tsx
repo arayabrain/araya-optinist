@@ -8,6 +8,7 @@ import { useSnackbar, VariantType } from "notistack"
 import DeleteIcon from "@mui/icons-material/Delete"
 import EditIcon from "@mui/icons-material/Edit"
 import GroupsIcon from "@mui/icons-material/Groups"
+import ReplayIcon from "@mui/icons-material/Replay"
 import {
   Box,
   styled,
@@ -18,8 +19,8 @@ import {
   DialogActions,
   Input,
   Tooltip,
-  Typography,
   IconButton,
+  CircularProgress,
 } from "@mui/material"
 import {
   GridEventListener,
@@ -32,10 +33,13 @@ import {
 } from "@mui/x-data-grid"
 import { isRejectedWithValue } from "@reduxjs/toolkit"
 
+import { refreshStorageUsageApi } from "api/storage/StorageAlerts"
 import { UserDTO } from "api/users/UsersApiDTO"
-import { ConfirmDialog } from "components/common/ConfirmDialog"
+import { refreshAllWorkspacesStorageApi } from "api/workspace"
+import DeleteConfirmModal from "components/common/DeleteConfirmModal"
 import Loading from "components/common/Loading"
 import PaginationCustom from "components/common/PaginationCustom"
+import StorageUsage from "components/common/StorageUsage"
 import PopupShare from "components/Workspace/PopupShare"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { resetVisualizeLayout } from "store/slice/VisualizeItem/VisualizeItemSlice"
@@ -55,6 +59,7 @@ import { ItemsWorkspace } from "store/slice/Workspace/WorkspaceType"
 import { isMine } from "store/slice/Workspace/WorkspaceUtils"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
+import { getWorkspaceLock } from "utils/operationLock"
 
 type PopupType = {
   open: boolean
@@ -70,21 +75,26 @@ type PopupType = {
 
 const columns = (
   handleOpenPopupShare: (id: number) => void,
-  handleOpenPopupDel: (id: number, nameWorkspace: string) => void,
+  handleOpenPopupDel: (
+    id: number,
+    nameWorkspace: string,
+    displayNumber?: number,
+  ) => void,
   handleNavWorkflow: (id: number) => void,
   handleNavRecords: (id: number) => void,
+  handleNavDataview: (id: number) => void,
   user?: UserDTO,
   onEdit?: (id: number) => void,
 ) => [
   {
-    field: "id",
+    field: "display_number",
     headerName: "ID",
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     flex: 1,
     minWidth: 70,
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
-      <span>{params.value}</span>
+      <span>{params.value ?? params.row.id}</span>
     ),
   },
   {
@@ -178,7 +188,7 @@ const columns = (
     field: "workflow",
     headerName: "",
     flex: 1,
-    minWidth: 160,
+    minWidth: 120,
     filterable: false, // todo enable when api complete
     sortable: false, // todo enable when api complete
     renderCell: (params: GridRenderCellParams<GridValidRowModel>) => (
@@ -213,6 +223,26 @@ const columns = (
     },
   },
   {
+    field: "dataview",
+    headerName: "",
+    flex: 1,
+    minWidth: 100,
+    filterable: false, // todo enable when api complete
+    sortable: false, // todo enable when api complete
+    renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
+      return isMine(user, params.row?.user?.id) ? (
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          onClick={() => handleNavDataview(params.row.id)}
+        >
+          Dataview
+        </Button>
+      ) : null
+    },
+  },
+  {
     field: "share",
     headerName: "",
     flex: 1,
@@ -234,17 +264,41 @@ const columns = (
     headerName: "",
     flex: 1,
     minWidth: 70,
-    filterable: false, // todo enable when api complete
-    sortable: false, // todo enable when api complete
-    renderCell: (params: GridRenderCellParams<GridValidRowModel>) =>
-      isMine(user, params.row?.user?.id) ? (
-        <IconButton
-          onClick={() => handleOpenPopupDel(params.row.id, params.row.name)}
-          color="error"
+    filterable: false,
+    sortable: false,
+    renderCell: (params: GridRenderCellParams<GridValidRowModel>) => {
+      const isOwner = isMine(user, params.row?.user?.id)
+      const canDelete = params.row?.canDelete
+
+      if (!isOwner) return null
+
+      return (
+        <Tooltip
+          title={
+            canDelete
+              ? "Delete workspace"
+              : "Cannot delete while experiment is running"
+          }
         >
-          <DeleteIcon />
-        </IconButton>
-      ) : null,
+          <span>
+            <IconButton
+              onClick={() =>
+                canDelete &&
+                handleOpenPopupDel(
+                  params.row.id,
+                  params.row.name,
+                  params.row.display_number,
+                )
+              }
+              color="error"
+              disabled={!canDelete}
+            >
+              <DeleteIcon />
+            </IconButton>
+          </span>
+        </Tooltip>
+      )
+    },
   },
 ]
 
@@ -304,12 +358,20 @@ const Workspaces = () => {
   const [workspaceDel, setWorkspaceDel] = useState<{
     id: number
     name: string
+    display_number?: number
   }>()
   const [newWorkspace, setNewWorkSpace] = useState<string>()
   const [error, setError] = useState("")
   const [initName, setInitName] = useState("")
   const [rowModesModel, setRowModesModel] = useState<GridRowModesModel>({})
   const [searchParams, setParams] = useSearchParams()
+  const [refreshing, setRefreshing] = useState(false)
+  const [storageRefreshKey, setStorageRefreshKey] = useState(0)
+  const [operationWarning, setOperationWarning] = useState<{
+    show: boolean
+    operation?: string
+    workspaceId?: number
+  }>({ show: false })
 
   const { enqueueSnackbar } = useSnackbar()
 
@@ -329,9 +391,11 @@ const Workspaces = () => {
   }, [offset, limit])
 
   useEffect(() => {
+    // Only fetch workspaces if user is authenticated
+    if (!user) return
     dispatch(getWorkspaceList(dataParams))
     //eslint-disable-next-line
-  }, [dataParams])
+  }, [dataParams, user])
 
   const handleOpenPopupShare = (shareId: number) => {
     setOpen({ ...open, share: true, shareId })
@@ -347,9 +411,43 @@ const Workspaces = () => {
     setOpen({ ...open, share: false })
   }
 
-  const handleOpenPopupDel = (id: number, name: string) => {
-    setWorkspaceDel({ id, name })
+  const handleOpenPopupDel = (
+    id: number,
+    name: string,
+    display_number?: number,
+  ) => {
+    const lock = getWorkspaceLock(String(id))
+    if (lock) {
+      setOperationWarning({
+        show: true,
+        operation: lock.operation,
+        workspaceId: id,
+      })
+      return
+    }
+    setWorkspaceDel({ id, name, display_number })
     setOpen({ ...open, del: true })
+  }
+
+  const handleCloseOperationWarning = () => {
+    setOperationWarning({ show: false })
+  }
+
+  const handleProceedDespiteOperation = () => {
+    if (operationWarning.workspaceId) {
+      const ws = data?.items?.find(
+        (w: ItemsWorkspace) => w.id === operationWarning.workspaceId,
+      )
+      if (ws) {
+        setWorkspaceDel({
+          id: ws.id,
+          name: ws.name,
+          display_number: ws.display_number,
+        })
+        setOpen({ ...open, del: true })
+      }
+    }
+    setOperationWarning({ show: false })
   }
 
   const handleOkDel = async () => {
@@ -383,11 +481,17 @@ const Workspaces = () => {
 
   const handleNavWorkflow = (id: number) => {
     dispatch(resetVisualizeLayout())
-    navigate(`/console/workspaces/${id}`)
+    navigate(`/workspaces/${id}`)
   }
 
   const handleNavRecords = (id: number) => {
-    navigate(`/console/workspaces/${id}`, { state: { tab: 2 } })
+    dispatch(resetVisualizeLayout())
+    navigate(`/workspaces/${id}`, { state: { tab: 2 } })
+  }
+
+  const handleNavDataview = (id: number) => {
+    dispatch(resetVisualizeLayout())
+    navigate(`/dataview/${id}`)
   }
 
   const onEditName = (id: number) => {
@@ -480,6 +584,34 @@ const Workspaces = () => {
     setParams(`limit=${Number(event.target.value)}&offset=0`)
   }
 
+  const handleRefreshStorage = async () => {
+    try {
+      setRefreshing(true)
+      // Call API to refresh all workspace storage usage
+      const response = await refreshAllWorkspacesStorageApi()
+
+      // Also refresh user-level storage so the StorageAlert updates
+      await refreshStorageUsageApi()
+
+      // Refresh the workspace list after storage sync
+      await dispatch(getWorkspaceList(dataParams))
+
+      // Trigger StorageAlert to re-fetch with fresh data
+      setStorageRefreshKey((k) => k + 1)
+
+      handleClickVariant(
+        "success",
+        `Storage refreshed for ${response.refreshed_workspaces} workspaces!`,
+      )
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to refresh storage:", error)
+      handleClickVariant("error", "Failed to refresh storage usage")
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <WorkspacesWrapper>
       <WorkspacesTitle>Workspaces</WorkspacesTitle>
@@ -492,6 +624,14 @@ const Workspaces = () => {
         }}
       >
         <Button
+          variant="outlined"
+          onClick={handleRefreshStorage}
+          disabled={refreshing}
+          endIcon={refreshing ? <CircularProgress size={16} /> : <ReplayIcon />}
+        >
+          Reload
+        </Button>
+        <Button
           sx={{
             background: "#000000c4",
             "&:hover": { backgroundColor: "#00000090" },
@@ -502,6 +642,7 @@ const Workspaces = () => {
           New
         </Button>
       </Box>
+      <StorageUsage key={storageRefreshKey} />
       {user ? (
         <Box
           sx={{
@@ -519,6 +660,7 @@ const Workspaces = () => {
               handleOpenPopupDel,
               handleNavWorkflow,
               handleNavRecords,
+              handleNavDataview,
               user,
               onEditName,
             ).filter(Boolean)}
@@ -553,21 +695,46 @@ const Workspaces = () => {
           id={open.shareId}
         />
       ) : null}
-      <ConfirmDialog
+      <DeleteConfirmModal
         open={open.del}
-        onCancel={handleClosePopupDel}
-        onConfirm={handleOkDel}
-        title={"Delete Workspace?"}
-        content={
-          <>
-            <Typography>ID: {workspaceDel?.id}</Typography>
-            <Typography>Name: {workspaceDel?.name}</Typography>
-          </>
+        onClose={handleClosePopupDel}
+        onSubmit={handleOkDel}
+        titleSubmit={"Delete Workspace"}
+        description={
+          "Delete ID: " +
+          (workspaceDel?.display_number ?? workspaceDel?.id) +
+          " Name: " +
+          workspaceDel?.name +
+          " ? \n"
         }
         iconType="warning"
-        confirmLabel="delete"
-        confirmButtonColor="error"
       />
+      <Dialog
+        open={operationWarning.show}
+        onClose={handleCloseOperationWarning}
+      >
+        <DialogTitle>Operation In Progress</DialogTitle>
+        <DialogContent>
+          <Box sx={{ mb: 2 }}>
+            Another tab has an active{" "}
+            <strong>{operationWarning.operation}</strong> operation on this
+            workspace. Deleting now may cause data loss.
+          </Box>
+          <Box>Do you want to proceed anyway?</Box>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="outlined" onClick={handleCloseOperationWarning}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handleProceedDespiteOperation}
+          >
+            Delete Anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
       <PopupNew
         open={open.new}
         handleClose={handleClosePopupNew}

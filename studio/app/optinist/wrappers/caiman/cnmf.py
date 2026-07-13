@@ -3,6 +3,8 @@ import os
 
 import numpy as np
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
@@ -115,7 +117,9 @@ def util_download_model_files():
     download model files for component evaluation
     """
     # NOTE: We specify the version of the CaImAn to download.
-    base_url = "https://github.com/flatironinstitute/CaImAn/raw/v1.9.12/model"
+    base_url = (
+        "https://raw.githubusercontent.com/flatironinstitute/CaImAn/v1.9.12/model"
+    )
     model_files = [
         "cnn_model.h5",
         "cnn_model.h5.pb",
@@ -133,15 +137,19 @@ def util_download_model_files():
     if not os.path.exists(model_dir):
         create_directory(join_filepath(model_dir))
 
-    if len(os.listdir(model_dir)) < len(model_files):
-        for model in model_files:
-            url = f"{base_url}/{model}"
-            file_path = join_filepath([model_dir, model])
-            if not os.path.exists(file_path):
-                logger.info(f"Downloading {model}")
-                response = requests.get(url)
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+    retry = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+
+    for model in model_files:
+        url = f"{base_url}/{model}"
+        file_path = join_filepath([model_dir, model])
+        if not os.path.exists(file_path):
+            logger.info(f"Downloading {model}")
+            response = session.get(url, timeout=30)
+            response.raise_for_status()
+            with open(file_path, "wb") as f:
+                f.write(response.content)
 
 
 def caiman_cnmf(
@@ -203,7 +211,7 @@ def caiman_cnmf(
         c, dview, n_processes = setup_cluster(
             backend="multiprocessing", n_processes=n_processes
         )
-    logger.info(f"n_processes: {n_processes}")
+    logger.debug(f"n_processes: {n_processes}")
 
     if use_online:
         ops.change_params(
@@ -314,7 +322,7 @@ def caiman_cnmf(
                 kargs["rejected"] = i in rejected_list
             roi_list.append(kargs)
 
-    nwbfile[NWBDATASET.ROI] = {function_id: roi_list}
+    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
     nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
 
     # Add iscell to NWB
@@ -345,6 +353,7 @@ def caiman_cnmf(
                 "name": "Fluorescence",
                 "data": fluorescence.T,
                 "unit": "lumens",
+                "rate": fr,
             }
         }
     }
@@ -383,7 +392,7 @@ def caiman_cnmf(
     try:
         util_cleanup_image_memmap(mmap_paths)
     except Exception as e:
-        logger.error("Failed to cleanup memmap files.")
-        logger.error(e)
+        logger.warning("Failed to cleanup memmap files.")
+        logger.warning(e)
 
     return info

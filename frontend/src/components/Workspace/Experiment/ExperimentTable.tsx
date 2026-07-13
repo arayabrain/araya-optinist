@@ -51,6 +51,7 @@ import { RemoteSyncButton } from "components/Workspace/Experiment/Button/RemoteS
 import { ReproduceButton } from "components/Workspace/Experiment/Button/ReproduceButton"
 import { CollapsibleTable } from "components/Workspace/Experiment/CollapsibleTable"
 import { ExperimentStatusIcon } from "components/Workspace/Experiment/ExperimentStatusIcon"
+import { ExpirationMessages } from "const/Subscription"
 import {
   copyExperimentByList,
   deleteExperimentByList,
@@ -68,6 +69,9 @@ import {
   selectExperimentList,
   selectExperimentHasNWB,
   selectExperimentDataUsage,
+  selectExperimentHasIntermediates,
+  selectExperimentHasOutputs,
+  selectExperimentHasInputs,
   selectExperimentIsRemoteSynced,
 } from "store/slice/Experiments/ExperimentsSelectors"
 import { ExperimentSortKeys } from "store/slice/Experiments/ExperimentsType"
@@ -118,7 +122,6 @@ const ExperimentsErrorView: FC = () => {
 }
 
 const LOCAL_STORAGE_KEY_PER_PAGE = "optinist_experiment_table_per_page"
-
 const TableImple = memo(function TableImple() {
   const isOwner = useSelector(selectIsWorkspaceOwner)
   const currentPipelineUid = useSelector(selectPipelineLatestUid)
@@ -127,7 +130,8 @@ const TableImple = memo(function TableImple() {
   const experimentListKeys = Object.keys(experimentList)
   const dispatch = useDispatch<AppDispatch>()
   const [checkedList, setCheckedList] = useState<string[]>([])
-  const [open, setOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [page, setPage] = useState(0)
   const [openCopy, setOpenCopy] = useState(false)
   const isRunning = useSelector((state: RootState) => {
     const currentUid = selectPipelineLatestUid(state)
@@ -185,7 +189,7 @@ const TableImple = memo(function TableImple() {
   const recordsIsEmpty = experimentListKeys.length === 0
 
   const onClickDelete = () => {
-    setOpen(true)
+    setDeleteOpen(true)
   }
   const onClickOk = () => {
     dispatch(deleteExperimentByList(checkedList))
@@ -196,14 +200,11 @@ const TableImple = memo(function TableImple() {
       .catch(() => {
         enqueueSnackbar("Failed to delete", { variant: "error" })
       })
-
     checkedList.filter((v) => v === currentPipelineUid).length > 0 &&
       dispatch(clearCurrentPipeline())
     setCheckedList([])
-    setOpen(false)
+    setDeleteOpen(false)
   }
-
-  const [page, setPage] = useState(0)
 
   const handleChangePage = (event: unknown, newPage: number) => {
     setPage(newPage)
@@ -280,8 +281,8 @@ const TableImple = memo(function TableImple() {
         )}
       </Box>
       <ConfirmDialog
-        open={open}
-        setOpen={setOpen}
+        open={deleteOpen}
+        setOpen={setDeleteOpen}
         onConfirm={onClickOk}
         title="Delete records?"
         content={
@@ -513,8 +514,11 @@ const RowItem = memo(function RowItem({
   const [valueEdit, setValueEdit] = useState(name)
   const dispatch = useDispatch<AppDispatch>()
   const { enqueueSnackbar } = useSnackbar()
-  const newLocal = useSelector(selectExperimentIsRemoteSynced(uid))
-  const isRemoteSynced = newLocal
+  const isRemoteSynced = useSelector(selectExperimentIsRemoteSynced(uid))
+  const hasIntermediates = useSelector(selectExperimentHasIntermediates(uid))
+  const hasOutputs = useSelector(selectExperimentHasOutputs(uid))
+  const hasInputs = useSelector(selectExperimentHasInputs(uid))
+  const hasAnyDataMissing = !hasIntermediates || !hasOutputs || !hasInputs
 
   const onBlurEdit = (event: FocusEvent) => {
     event.preventDefault()
@@ -605,10 +609,22 @@ const RowItem = memo(function RowItem({
           onClick={isRemoteSynced ? onEdit : undefined}
         >
           {!isEdit ? (
-            isRemoteSynced ? (
+            hasAnyDataMissing ? (
+              <Tooltip
+                title={getDataMissingTooltip(
+                  hasIntermediates,
+                  hasOutputs,
+                  hasInputs,
+                )}
+              >
+                <Typography sx={{ color: "text.disabled" }}>
+                  {valueEdit}
+                </Typography>
+              </Tooltip>
+            ) : isRemoteSynced ? (
               valueEdit
             ) : (
-              <Tooltip title="Data is unsynchronized">
+              <Tooltip title={ExpirationMessages.DATA_UNSYNCHRONIZED}>
                 <Typography sx={{ color: "gray" }}>{valueEdit}</Typography>
               </Tooltip>
             )
@@ -640,14 +656,30 @@ const RowItem = memo(function RowItem({
           <SnakemakeDownloadButton />
         </TableCell>
         <TableCell>
-          <NWBDownloadButton
-            name={uid}
-            hasNWB={hasNWB}
-            isRemoteSynced={isRemoteSynced}
-          />
+          {!hasOutputs ? (
+            <Tooltip title={ExpirationMessages.NWB_DELETED}>
+              <Typography variant="caption" color="text.disabled">
+                —
+              </Typography>
+            </Tooltip>
+          ) : (
+            <NWBDownloadButton
+              name={uid}
+              hasNWB={hasNWB}
+              isRemoteSynced={isRemoteSynced}
+            />
+          )}
         </TableCell>
         <TableCell>
-          <RemoteSyncButton />
+          {!hasOutputs ? (
+            <Tooltip title={ExpirationMessages.OUTPUTS_DELETED}>
+              <Typography variant="caption" color="text.disabled">
+                —
+              </Typography>
+            </Tooltip>
+          ) : (
+            <RemoteSyncButton />
+          )}
         </TableCell>
         {isOwner && (
           <TableCell>
@@ -677,6 +709,29 @@ const TextError = styled(Typography)(() => ({
   position: "absolute",
   bottom: 12,
 }))
+
+function getDataMissingTooltip(
+  hasIntermediates: boolean,
+  hasOutputs: boolean,
+  hasInputs: boolean,
+): string {
+  if (!hasIntermediates && !hasOutputs && !hasInputs) {
+    return ExpirationMessages.ALL_DATA_DELETED
+  }
+  if (!hasIntermediates && !hasOutputs) {
+    return ExpirationMessages.INTERMEDIATES_AND_OUTPUTS
+  }
+  if (!hasIntermediates && !hasInputs) {
+    return ExpirationMessages.INTERMEDIATES_AND_INPUTS
+  }
+  if (!hasIntermediates) {
+    return ExpirationMessages.INTERMEDIATES_ONLY
+  }
+  if (!hasInputs) {
+    return ExpirationMessages.INPUTS_ONLY
+  }
+  return ExpirationMessages.GENERIC
+}
 
 type Order = "asc" | "desc"
 

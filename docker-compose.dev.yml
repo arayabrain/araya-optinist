@@ -16,7 +16,7 @@ services:
     command: poetry run python main.py --reload --host 0.0.0.0 --port 8000
     environment:
       PYTHONPATH: /app/
-      TZ: Asia/Tokyo
+      TZ: UTC
       OPTINIST_DIR: /app/studio_data
 
   studio-dev-fe:
@@ -28,4 +28,4 @@ services:
       - "127.0.0.1:3000:3000"
     command: ash -c 'yarn install && yarn start'
     environment:
-      TZ: Asia/Tokyo
+      TZ: UTC

@@ -1,9 +1,7 @@
 import json
 import os
 import shutil
-from datetime import datetime
 
-from dateutil.tz import tzlocal
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -18,6 +16,10 @@ from pynwb.ophys import (
 )
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.datetime_utils import (
+    TIMEZONE_KEY,
+    get_datetime_for_timezone,
+)
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
@@ -25,11 +27,16 @@ from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 class NWBCreater:
     @classmethod
     def acquisition(cls, config: dict):
+        # Get timezone from config if present (passed from user's browser)
+        # Falls back to UTC if not provided
+        timezone_str = config.get(TIMEZONE_KEY)
+        session_start_time = get_datetime_for_timezone(timezone_str)
+
         new_nwbfile = NWBFile(
             session_description=config["session_description"],
             identifier=config["identifier"],
             experiment_description=config["experiment_description"],
-            session_start_time=datetime.now(tzlocal()),
+            session_start_time=session_start_time,
         )
 
         # Create Device (microscope information)
@@ -98,7 +105,7 @@ class NWBCreater:
                 external_file=image_path if not save_raw_image_to_nwb else None,
                 imaging_plane=imaging_plane,
                 starting_time=float(config[NWBDATASET.IMAGE_SERIES]["starting_time"]),
-                rate=1.0,
+                rate=float(config["imaging_plane"]["imaging_rate"]),
                 unit="normalized amplitude",
                 data=external_file.data if save_raw_image_to_nwb else None,
             )
@@ -162,7 +169,7 @@ class NWBCreater:
             unit="na",
             format="external",
             starting_time=0.0,
-            rate=1.0,
+            rate=float(nwbfile.imaging_planes["ImagingPlane"].imaging_rate),
         )
 
         xy_translation = TimeSeries(
@@ -170,7 +177,7 @@ class NWBCreater:
             data=xy_trans_data,
             unit="pixels",
             starting_time=0.0,
-            rate=1.0,
+            rate=float(nwbfile.imaging_planes["ImagingPlane"].imaging_rate),
         )
 
         corrected_image_stack = CorrectedImageStack(
@@ -426,7 +433,7 @@ def set_nwbconfig(nwbfile, config):
     if NWBDATASET.ROI in config:
         for function_key in config[NWBDATASET.ROI]:
             nwbfile = NWBCreater.roi(
-                nwbfile, function_key, config[NWBDATASET.ROI][function_key]
+                nwbfile, function_key, config[NWBDATASET.ROI][function_key]["roi_list"]
             )
 
     if NWBDATASET.COLUMN in config:

@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import signal
@@ -11,6 +12,7 @@ from typing import Dict, List
 from fastapi import HTTPException, status
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
+from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.logger import AppLogger
@@ -19,8 +21,17 @@ from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageWriter,
+    RemoteSyncStatusFileUtil,
 )
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.datetime_utils import (
+    TIMEZONE_KEY,
+    datetime_from_timestamp,
+    get_datetime_for_timezone_formatted,
+)
+from studio.app.common.core.utils.filepath_creater import (
+    join_filepath,
+    normalize_output_path,
+)
 from studio.app.common.core.utils.pickle_handler import PickleReader
 from studio.app.common.core.workflow.workflow import (
     Message,
@@ -41,8 +52,7 @@ logger = AppLogger.get_logger()
 
 
 class WorkflowResult:
-    def __init__(self, remote_bucket_name: str, workspace_id: str, unique_id: str):
-        self.remote_bucket_name = remote_bucket_name
+    def __init__(self, workspace_id: str, unique_id: str):
         self.workspace_id = workspace_id
         self.unique_id = unique_id
         self.workflow_dirpath = join_filepath(
@@ -52,19 +62,18 @@ class WorkflowResult:
                 self.unique_id,
             ]
         )
-        self.expt_filepath = join_filepath(
-            [self.workflow_dirpath, DIRPATH.EXPERIMENT_YML]
-        )
         self.monitor = WorkflowMonitor(workspace_id, unique_id)
 
-    async def observe(self, nodeIdList: List[str]) -> Dict:
+    async def observe(self, observe_node_ids: List[str]) -> Dict[str, Message]:
         """
         Perform the following operations for the specified workflow
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
         """
+        expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+
         # validate args
-        if not nodeIdList:
+        if not observe_node_ids:
             return {}
 
         # check for workflow errors
@@ -73,16 +82,18 @@ class WorkflowResult:
         )
 
         # observe node list
-        results = await self.__observe_node_list(nodeIdList, workflow_error)
-
-        # check workflow status
-        is_workflow_status_running = self.__is_workflow_status_running(
-            nodeIdList, results
+        node_results = await self.__observe_nodes(
+            observe_node_ids, expt_config, workflow_error
         )
 
-        # If the workflow status is running (workflow is incomplete),
+        # check workflow status
+        is_workflow_observation_ongoing = self.__is_workflow_observation_ongoing(
+            observe_node_ids, node_results
+        )
+
+        # If the workflow status observation is ongoing (maybe workflow is incomplete),
         # check whether the actual process exists.
-        if is_workflow_status_running:
+        if is_workflow_observation_ongoing:
             # check workflow process exists
             current_process = self.monitor.search_process()
 
@@ -93,108 +104,162 @@ class WorkflowResult:
                 )
 
             # re-run observe node list (reflects workflow error)
-            results = await self.__observe_node_list(nodeIdList, workflow_error)
+            node_results = await self.__observe_nodes(
+                observe_node_ids, expt_config, workflow_error
+            )
 
-        return results
+        return node_results
 
-    async def __observe_node_list(
-        self, nodeIdList: List[str], workflow_error: WorkflowErrorInfo
+    async def observe_overall(self) -> Dict[str, Message]:
+        """
+        Automatically observe all nodes
+        """
+        expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+
+        # Observe all nodes
+        observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
+
+        return await self.observe(observe_node_ids)
+
+    async def __observe_nodes(
+        self,
+        observe_node_ids: List[str],
+        expt_config: ExptConfig,
+        workflow_error: WorkflowErrorInfo,
     ) -> Dict[str, Message]:
-        results: Dict[str, Message] = {}
+        """
+        Observe by Nodes
+        """
+        node_results: Dict[str, Message] = {}
 
-        for node_id in nodeIdList:
-            # Cases with errors in workflow
-            if workflow_error.has_error:
-                node_pickle_path = None
+        for node_id in observe_node_ids:
+            # Check node processed status (inspect ExptConfig)
+            expt_function = (
+                expt_config.procs.get(node_id)
+                if NodeResult.is_procs_node(node_id=node_id)
+                else expt_config.function.get(node_id)
+            )
+            if not expt_function:
+                logger.warning(f"Invalid node_id [{node_id}]")
+                continue
+
+            # Perform observations of nodes
+            if NodeResult.is_procs_node(node_id=node_id):
+                node_result = PostProcessResult(
+                    self.workspace_id,
+                    self.unique_id,
+                    node_id,
+                    workflow_error=workflow_error,
+                )
+            else:
                 node_result = NodeResult(
                     self.workspace_id,
                     self.unique_id,
                     node_id,
-                    node_pickle_path,
-                    workflow_error,
-                )
-                results[node_id] = node_result.observe()
-
-            # Normal case
-            else:
-                # search node pickle files
-                node_dirpath = join_filepath([self.workflow_dirpath, node_id])
-                node_pickle_files = list(
-                    set(glob(join_filepath([node_dirpath, "*.pkl"])))
-                    - set(glob(join_filepath([node_dirpath, "tmp_*.pkl"])))
+                    workflow_error=workflow_error,
                 )
 
-                # process node pickle files
-                for node_pickle_path in node_pickle_files:
-                    # process for procs
-                    if node_id == ProcessType.POST_PROCESS.id:
-                        post_process_result = PostProcessResult(
-                            self.remote_bucket_name,
-                            self.workspace_id,
-                            self.unique_id,
-                            node_id,
-                            node_pickle_path,
-                        )
-                        results[node_id] = await post_process_result.observe()
+            if node_result.is_ready():
+                node_results[node_id] = await node_result.observe(expt_function)
 
-                        self.__check_has_nwb(node_id)
+        # If all nodes have already been processed, return here.
+        if NodeResult.is_all_nodes_already_finished(expt_config):
+            return node_results
 
-                    # process for nodes
-                    else:
-                        node_result = NodeResult(
-                            self.workspace_id,
-                            self.unique_id,
-                            node_id,
-                            node_pickle_path,
-                        )
-                        results[node_id] = node_result.observe()
+        # Check if whole.nwb file exists
+        self.__check_has_whole_nwb()
 
-                        self.__check_has_nwb(node_id)
+        # --------------------------------------------------
+        # Postprocessing after all node processing is completed
+        # --------------------------------------------------
 
-        # check workflow nwb
-        self.__check_has_nwb()
+        # Get the latest completion status of all nodes
+        latest_expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+        is_all_nodes_finished = NodeResult.is_all_nodes_already_finished(
+            latest_expt_config
+        )
 
-        return results
+        if is_all_nodes_finished:
+            # Operate remote storage data.
+            if RemoteStorageController.is_available():
+                remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
+                    self.workspace_id, self.unique_id
+                )
+                async with RemoteStorageWriter(
+                    remote_bucket_name,
+                    self.workspace_id,
+                    self.unique_id,
+                ) as remote_storage_controller:
+                    # Upload experiment.yaml and all JSON visualization files
+                    # JSON files are created during observation by save_json()
+                    # and need to be synced to S3 for remote viewing
+                    target_files = [DIRPATH.EXPERIMENT_YML]
 
-    def __is_workflow_status_running(
-        self, nodeIdList: List[str], messages: Dict[str, Message]
+                    # Find all JSON files in function directories
+                    # Use recursive glob to include nested files like:
+                    # - {function_id}/*.json (ROI, heatmap, etc.)
+                    # - {function_id}/timeseries/*.json (fluorescence traces)
+                    # - {function_id}/csv/*.json (CSV data)
+                    json_files = glob(
+                        join_filepath([self.workflow_dirpath, "**", "*.json"]),
+                        recursive=True,
+                    )
+                    for json_file in json_files:
+                        # Get relative path from experiment directory
+                        rel_path = os.path.relpath(json_file, self.workflow_dirpath)
+                        target_files.append(rel_path)
+
+                    logger.info(
+                        f"Uploading observation files to S3: {len(target_files)} files"
+                    )
+                    await remote_storage_controller.upload_experiment(
+                        self.workspace_id,
+                        self.unique_id,
+                        target_files,
+                    )
+
+        return node_results
+
+    def __is_workflow_observation_ongoing(
+        self, observe_node_ids: List[str], messages: Dict[str, Message]
     ) -> bool:
         """
-        By comparing the number of nodeIdList waiting for processing completion
-        with the number of nodeIdList that has completed processing immediately before,
-        is_running is determined.
+        By comparing the number of observe_node_ids waiting for processing completion
+        with the number of observe_node_ids that has completed processing immediately
+        before, is_running is determined.
         """
-        is_running = len(nodeIdList) != len(messages.keys())
+        is_ongoing = len(observe_node_ids) != len(messages.keys())
 
+        # # debug log.
         # logger.debug(
-        #     "check wornflow running status "
-        #     f"[{self.workspace_id}/{self.unique_id}] [is_running: {is_running}]"
+        #     "check wornflow ongoing status "
+        #     f"[{self.workspace_id}/{self.unique_id}] [is_ongoing: {is_ongoing}]"
         # )
 
-        return is_running
+        return is_ongoing
 
-    def __check_has_nwb(self, node_id=None) -> None:
-        target_whole_nwb = node_id is None
+    def __check_has_whole_nwb(self, node_id=None) -> None:
+        nwb_filepath_list = glob(join_filepath([self.workflow_dirpath, "*.nwb"]))
+        nwb_filepath = nwb_filepath_list[0] if nwb_filepath_list else None
+        hasNWB = os.path.exists(nwb_filepath) if nwb_filepath else False
 
-        if target_whole_nwb:
-            nwb_filepath_list = glob(join_filepath([self.workflow_dirpath, "*.nwb"]))
-        else:
-            node_dirpath = join_filepath([self.workflow_dirpath, node_id])
-            nwb_filepath_list = glob(join_filepath([node_dirpath, "*.nwb"]))
+        # ------------------------------------------------------------
+        # Update process of node processing status
+        # ------------------------------------------------------------
 
-        for nwb_filepath in nwb_filepath_list:
-            if os.path.exists(nwb_filepath):
-                config = ExptConfigReader.read(self.expt_filepath)
+        update_expt_config = ExptConfigReader.create_empty_experiment_config()
 
-                if target_whole_nwb:
-                    config.hasNWB = True
-                else:
-                    config.function[node_id].hasNWB = True
+        update_expt_config.hasNWB = hasNWB
 
-                # Update EXPERIMENT_YML
-                ExptConfigWriter.write_raw(
-                    self.workspace_id, self.unique_id, asdict(config)
-                )
+        # Make overwrite params
+        update_expt_config_dict = {}
+        if update_expt_config.hasNWB is not None:
+            update_expt_config_dict["hasNWB"] = update_expt_config.hasNWB
+
+        # Overwrite experiment config
+        ExptConfigWriter(self.workspace_id, self.unique_id).overwrite(
+            update_expt_config_dict
+        )
 
 
 class BaseNodeResult(metaclass=ABCMeta):
@@ -217,7 +282,6 @@ class NodeResult(BaseNodeResult):
         workspace_id: str,
         unique_id: str,
         node_id: str,
-        pickle_filepath: str,
         workflow_error: WorkflowErrorInfo = None,
     ):
         self.workspace_id = workspace_id
@@ -231,27 +295,25 @@ class NodeResult(BaseNodeResult):
         )
         self.node_id = node_id
         self.node_dirpath = join_filepath([self.workflow_dirpath, self.node_id])
-        self.expt_filepath = join_filepath(
-            [self.workflow_dirpath, DIRPATH.EXPERIMENT_YML]
-        )
         self.workflow_has_error = workflow_error.has_error if workflow_error else False
         self.workflow_error_log = workflow_error.error_log if workflow_error else None
 
+        # Read node's output pickle file
+        self.algo_name = None
+        self.info = None
         if not self.workflow_has_error:
-            pickle_filepath = pickle_filepath.replace("\\", "/")
-            self.algo_name = os.path.splitext(os.path.basename(pickle_filepath))[0]
-            try:
-                self.info = PickleReader.read(pickle_filepath)
-            except Exception as e:
-                self.info = None  # indicates error
-                logger.error(e, exc_info=True)
-        else:
-            self.algo_name = None
-            self.info = None
+            node_pickle_path = PickleReader.search_node_pickle_path(self.node_dirpath)
+            if node_pickle_path:
+                node_pickle_path = node_pickle_path.replace("\\", "/")
+                self.algo_name = os.path.splitext(os.path.basename(node_pickle_path))[0]
+                try:
+                    self.info = PickleReader.read(node_pickle_path)
+                except Exception as e:
+                    self.info = None  # indicates error
+                    logger.error(e, exc_info=True)
 
-    def observe(self) -> Message:
-        expt_config = ExptConfigReader.read(self.expt_filepath)
-
+    async def observe(self, expt_function: ExptFunction) -> Message:
+        # Generate node process status (workflow.Message)
         # case) error throughout workflow
         if self.workflow_has_error:
             message = self.error(self.workflow_error_log)
@@ -261,35 +323,137 @@ class NodeResult(BaseNodeResult):
         # case) success in node
         else:
             message = self.success()
-            expt_config.function[self.node_id].outputPaths = message.outputPaths
 
-        expt_config.function[self.node_id].success = message.status
+        # Determine if the node has already been processed
+        # *If it has, skip subsequent ExptConfig update process.
+        is_already_finished: bool = __class__.is_node_already_finished(expt_function)
+        if is_already_finished:
+            # # debug log.
+            # logger.debug(
+            #     "Target node has already been finished "
+            #     f"[id: {self.node_id}][status: {expt_function.success}]"
+            # )
+            return message
+
+        # ------------------------------------------------------------
+        # Update process of node processing status
+        # ------------------------------------------------------------
+
+        # ----------------------------------------
+        # Generate update parameters
+        # ----------------------------------------
+
+        original_expt_config = ExptConfigReader.read(
+            self.workspace_id,
+            self.unique_id,
+        )
+        update_expt_config = ExptConfigReader.create_empty_experiment_config()
+        original_config_function = (
+            original_expt_config.procs[self.node_id]
+            if NodeResult.is_procs_node(node_result=self)
+            else original_expt_config.function[self.node_id]
+        )
+        update_config_function: ExptFunction = copy.deepcopy(original_config_function)
+
+        if message.status == NodeRunStatus.SUCCESS.value:
+            update_config_function.outputPaths = message.outputPaths
+        update_config_function.success = message.status
 
         # TODO: Set started_at on the node
         #   At the moment, there is insufficient data to obtain an accurate started_at,
         #  so set it to None.
         #   separate modification is required to record running info for each node.
-        expt_config.function[self.node_id].started_at = None
+        update_config_function.started_at = None
 
-        now = datetime.now().strftime(DATE_FORMAT)
-        expt_config.function[self.node_id].finished_at = now
-        expt_config.function[self.node_id].message = message.message
+        # Use timezone from experiment config (user's browser timezone)
+        timezone = getattr(original_expt_config, TIMEZONE_KEY, None)
+        now = get_datetime_for_timezone_formatted(timezone, DATE_FORMAT)
+        update_config_function.finished_at = now
+        update_config_function.message = message.message
 
         # check all function processed status
-        statuses = list(map(lambda x: x.success, expt_config.function.values()))
+        latest_statuses = [
+            (
+                update_config_function.success
+                if k == update_config_function.unique_id
+                else v.success
+            )
+            for k, v in original_expt_config.function.items()
+        ]
 
-        if NodeRunStatus.RUNNING.value not in statuses:
-            expt_config.finished_at = now
-            if NodeRunStatus.ERROR.value in statuses:
-                expt_config.success = NodeRunStatus.ERROR.value
+        # Status check of each node
+        if NodeRunStatus.RUNNING.value not in latest_statuses:
+            update_expt_config.finished_at = now
+            if NodeRunStatus.ERROR.value in latest_statuses:
+                update_expt_config.success = NodeRunStatus.ERROR.value
             else:
-                expt_config.success = NodeRunStatus.SUCCESS.value
+                update_expt_config.success = NodeRunStatus.SUCCESS.value
 
-        # Update EXPERIMENT_YML
-        ExptConfigWriter.write_raw(
-            self.workspace_id, self.unique_id, asdict(expt_config)
+        # Check if nwb file exists
+        update_config_function.hasNWB = self.__check_has_nwb()
+
+        # ----------------------------------------
+        # ExptConfig update commit process
+        # ----------------------------------------
+
+        # Make overwrite params
+        update_expt_config_dict = {}
+        if update_config_function is not None:
+            function_field_key = (
+                "procs" if self.is_procs_node(node_result=self) else "function"
+            )
+            update_expt_config_dict[function_field_key] = {
+                update_config_function.unique_id: asdict(update_config_function)
+            }
+        if update_expt_config.success is not None:
+            update_expt_config_dict["success"] = update_expt_config.success
+        if update_expt_config.finished_at is not None:
+            update_expt_config_dict["finished_at"] = update_expt_config.finished_at
+
+        # Overwrite experiment config
+        ExptConfigWriter(self.workspace_id, self.unique_id).overwrite(
+            update_expt_config_dict
         )
+
+        logger.debug(
+            "Node observation completed "
+            f"[id: {self.node_id}][status: {update_expt_config.success}]"
+        )
+
         return message
+
+    def is_ready(self) -> bool:
+        is_ready = (self.info is not None) or self.workflow_has_error
+        return is_ready
+
+    @classmethod
+    def is_node_already_finished(cls, expt_function: ExptFunction) -> bool:
+        return expt_function.success != NodeRunStatus.RUNNING.value
+
+    @classmethod
+    def is_all_nodes_already_finished(cls, expt_config: ExptConfig) -> bool:
+        expt_functions = list(expt_config.function.values()) + list(
+            expt_config.procs.values()
+        )
+        return all([cls.is_node_already_finished(v) for v in expt_functions])
+
+    @classmethod
+    def is_procs_node(
+        cls, node_result: BaseNodeResult = None, node_id: str = None
+    ) -> bool:
+        if node_result is not None:
+            return isinstance(node_result, PostProcessResult)
+        elif node_id and isinstance(node_id, str):
+            return node_id == ProcessType.POST_PROCESS.id
+        else:
+            return False
+
+    def __check_has_nwb(self) -> bool:
+        nwb_filepath_list = glob(join_filepath([self.node_dirpath, "*.nwb"]))
+        nwb_filepath = nwb_filepath_list[0] if nwb_filepath_list else None
+        hasNWB = os.path.exists(nwb_filepath) if nwb_filepath else False
+
+        return hasNWB
 
     def success(self) -> Message:
         return Message(
@@ -315,119 +479,24 @@ class NodeResult(BaseNodeResult):
             if isinstance(v, BaseData):
                 v.save_json(self.node_dirpath)
                 if v.output_path:
-                    output_paths[k] = v.output_path
+                    # Normalize path to relative form for storage
+                    # This ensures paths work across environments (local, Docker, etc.)
+                    output_path = v.output_path
+                    output_path.path = normalize_output_path(output_path.path)
+                    output_paths[k] = output_path
 
         return output_paths
 
 
-class PostProcessResult(BaseNodeResult):
+class PostProcessResult(NodeResult):
     def __init__(
         self,
-        remote_bucket_name: str,
         workspace_id: str,
         unique_id: str,
         node_id: str,
-        pickle_filepath: str,
-        workflow_error: dict = None,
+        workflow_error: WorkflowErrorInfo = None,
     ):
-        self.remote_bucket_name = remote_bucket_name
-        self.workspace_id = workspace_id
-        self.unique_id = unique_id
-        self.workflow_dirpath = join_filepath(
-            [
-                DIRPATH.OUTPUT_DIR,
-                self.workspace_id,
-                self.unique_id,
-            ]
-        )
-        self.node_id = node_id
-        self.node_dirpath = join_filepath([self.workflow_dirpath, self.node_id])
-        self.expt_filepath = join_filepath(
-            [self.workflow_dirpath, DIRPATH.EXPERIMENT_YML]
-        )
-        self.workflow_has_error = (
-            workflow_error["has_error"] if workflow_error else False
-        )
-        self.workflow_error_log = (
-            workflow_error["error_log"] if workflow_error else None
-        )
-
-        if not self.workflow_has_error:
-            pickle_filepath = pickle_filepath.replace("\\", "/")
-            self.algo_name = os.path.splitext(os.path.basename(pickle_filepath))[0]
-            try:
-                self.info = PickleReader.read(pickle_filepath)
-            except EOFError:
-                self.info = None  # indicates error
-        else:
-            self.algo_name = None
-            self.info = None
-
-    async def observe(self) -> Message:
-        expt_config = ExptConfigReader.read(self.expt_filepath)
-
-        # case) error throughout workflow
-        if self.workflow_has_error:
-            message = self.error(self.workflow_error_log)
-        # case) error in node
-        elif PickleReader.check_is_error_node_pickle(self.info):
-            message = self.error()
-        # case) success in node
-        else:
-            message = self.success()
-
-        expt_config.procs[self.node_id].success = message.status
-
-        now = datetime.now().strftime(DATE_FORMAT)
-        expt_config.procs[self.node_id].finished_at = now
-        expt_config.procs[self.node_id].message = message.message
-
-        # check all function processed status
-        statuses = list(map(lambda x: x.success, expt_config.procs.values()))
-
-        if NodeRunStatus.RUNNING.value not in statuses:
-            expt_config.finished_at = now
-            if NodeRunStatus.ERROR.value in statuses:
-                expt_config.success = NodeRunStatus.ERROR.value
-            else:
-                expt_config.success = NodeRunStatus.SUCCESS.value
-
-        # Update EXPERIMENT_YML
-        ExptConfigWriter.write_raw(
-            self.workspace_id, self.unique_id, asdict(expt_config)
-        )
-
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
-            # upload latest EXPERIMENT_YML
-            async with RemoteStorageWriter(
-                self.remote_bucket_name, expt_config.workspace_id, expt_config.unique_id
-            ) as remote_storage_controller:
-                await remote_storage_controller.upload_experiment(
-                    expt_config.workspace_id,
-                    expt_config.unique_id,
-                    [DIRPATH.EXPERIMENT_YML],
-                )
-
-        return message
-
-    def success(self) -> Message:
-        return Message(
-            status=NodeRunStatus.SUCCESS.value,
-            message=f"{self.algo_name} success",
-            outputPaths=[],
-        )
-
-    def error(self, message: str = None) -> Message:
-        if message is None:
-            if self.info is None:
-                message = "Invalid node result info: None"
-            else:
-                message = (
-                    "\n".join(self.info) if isinstance(self.info, list) else self.info
-                )
-
-        return Message(status=NodeRunStatus.ERROR.value, message=message)
+        super().__init__(workspace_id, unique_id, node_id, workflow_error)
 
 
 class WorkflowMonitor:
@@ -442,14 +511,6 @@ class WorkflowMonitor:
     def __init__(self, workspace_id: str, unique_id: str):
         self.workspace_id = workspace_id
         self.unique_id = unique_id
-        self.expt_filepath = join_filepath(
-            [
-                DIRPATH.OUTPUT_DIR,
-                self.workspace_id,
-                self.unique_id,
-                DIRPATH.EXPERIMENT_YML,
-            ]
-        )
 
     def search_process(self) -> WorkflowProcessInfo:
         pid_data = Runner.read_pid_file(self.workspace_id, self.unique_id)
@@ -462,13 +523,13 @@ class WorkflowMonitor:
             # )
 
             # Refer experiment_data instead of pid_data
-            expt_config = ExptConfigReader.read(self.expt_filepath)
+            expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
             try:
                 expt_started_time = datetime.strptime(
                     expt_config.started_at, DATE_FORMAT
                 )
             except ValueError:
-                expt_started_time = datetime.fromtimestamp(0)
+                expt_started_time = datetime_from_timestamp(0)
 
             # Set dummy value to proceed to the next step.
             pid_data = WorkflowPIDFileData(
@@ -486,7 +547,7 @@ class WorkflowMonitor:
 
             # get process
             process = Process(last_pid)
-            logger.info(f"Found workflow process. {process}")
+            logger.debug(f"Found workflow process. {process}")
 
             # validate process name
             process_cmdline = " ".join(process.cmdline()).replace("\\", "/")
@@ -526,7 +587,7 @@ class WorkflowMonitor:
 
                     if re.search(self.PROCESS_CONDA_CMDLINE, cmdline):
                         conda_ps_create_elapsed = int(time.time() - proc.create_time())
-                        logger.info(
+                        logger.debug(
                             f"Found conda process. [{proc}] [{cmdline}] "
                             f"[{conda_ps_create_elapsed} sec]",
                         )

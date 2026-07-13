@@ -3,8 +3,17 @@ from typing import Dict, Optional
 
 from psutil import Process
 
+from studio.app.common.core.compat import StrEnum
 from studio.app.common.core.experiment.experiment import ExptFunction
-from studio.app.common.core.workflow.workflow import Edge, Node
+from studio.app.common.core.workflow.workflow import Edge, Message, Node
+
+
+class CompleteStatus(StrEnum):
+    """Post-run completion status (e.g. remote storage upload)."""
+
+    PROCESSING = "processing"
+    SUCCESS = "success"
+    ERROR = "error"
 
 
 @dataclass
@@ -57,3 +66,11 @@ class WorkflowProcessInfo:
 class WorkflowErrorInfo:
     has_error: bool
     error_log: str
+
+
+@dataclass
+class PollRunResultResponse:
+    """Response wrapper for poll run result with post-run completion status."""
+
+    nodeResults: Dict[str, Message]
+    completeStatus: Optional[str] = None

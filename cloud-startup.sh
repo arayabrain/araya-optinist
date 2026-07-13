@@ -1,6 +1,16 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# === AWS CREDENTIAL DIAGNOSTIC (remove after investigation of #612) ===
+echo "=== AWS CREDENTIAL DIAGNOSTIC ==="
+echo "AWS_ACCESS_KEY_ID set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "YES (${AWS_ACCESS_KEY_ID:0:4}...)" || echo "NO")"
+echo "AWS_SECRET_ACCESS_KEY set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "YES" || echo "NO")"
+echo "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-NOT SET}"
+echo "Calling sts get-caller-identity..."
+aws sts get-caller-identity --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>&1 || echo "STS CALL FAILED"
+echo "=== END DIAGNOSTIC ==="
+# === END DIAGNOSTIC ===
+
 # Map infrastructure environment variables (DB_*) to application expected variables (MYSQL_*)
 # This allows the application's config.py to find the correct environment variables
 # while maintaining infrastructure naming conventions
@@ -8,6 +18,33 @@ export MYSQL_SERVER="${DB_HOST}"
 export MYSQL_USER="${DB_USER}"
 export MYSQL_PASSWORD="${DB_PASSWORD}"
 export MYSQL_DATABASE="${DB_NAME}"
+
+# Fetch Firebase config from Secrets Manager (overrides files baked into Docker image)
+if [ -n "$ENV_PREFIX" ]; then
+    echo "Fetching Firebase config from Secrets Manager for environment: ${ENV_PREFIX}"
+    FIREBASE_CONFIG_DIR="/app/studio/config/auth"
+    mkdir -p "$FIREBASE_CONFIG_DIR"
+
+    FIREBASE_CONFIG=$(aws secretsmanager get-secret-value \
+        --secret-id "${ENV_PREFIX}-optinist/firebase/config" \
+        --query "SecretString" --output text --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>/dev/null || echo "")
+    if [ -n "$FIREBASE_CONFIG" ]; then
+        echo "$FIREBASE_CONFIG" > "$FIREBASE_CONFIG_DIR/firebase_config.json"
+        echo "Firebase config written from Secrets Manager"
+    else
+        echo "WARNING: Could not fetch Firebase config from Secrets Manager. Using defaults."
+    fi
+
+    FIREBASE_PRIVATE=$(aws secretsmanager get-secret-value \
+        --secret-id "${ENV_PREFIX}-optinist/firebase/private-key" \
+        --query "SecretString" --output text --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>/dev/null || echo "")
+    if [ -n "$FIREBASE_PRIVATE" ]; then
+        echo "$FIREBASE_PRIVATE" > "$FIREBASE_CONFIG_DIR/firebase_private.json"
+        echo "Firebase private key written from Secrets Manager"
+    else
+        echo "WARNING: Could not fetch Firebase private key from Secrets Manager. Using defaults."
+    fi
+fi
 
 echo 'Starting container'
 echo 'Attempting to connect to RDS'
@@ -18,12 +55,28 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 
 # Wait for RDS to be available
 # This is necessary because RDS might still be initializing when container starts
-# Tries 30 times with 2 second intervals (total 60 seconds timeout)
-max_tries=30
+# (e.g., after dev scheduler starts the environment — RDS takes 5-10 min)
+# Tries 60 times with 10 second intervals (total 10 minutes timeout)
+max_tries=60
 counter=0
-until mysql -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
+
+# Build SSL options based on MYSQL_SSL_MODE
+if [ -n "${MYSQL_SSL_MODE}" ]; then
+    case "${MYSQL_SSL_MODE}" in
+        DISABLED)
+            ssl_opts="--skip-ssl"
+            ;;
+        *)
+            ssl_opts="--ssl"
+            ;;
+    esac
+else
+    ssl_opts=""
+fi
+
+until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
 do
-    sleep 2
+    sleep 10
     [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
     echo "Attempt $counter: Waiting for Database..."
     ((counter++))
@@ -31,51 +84,51 @@ done
 
 echo 'Database connection successful'
 
-# Create database if it doesn't exist
-# This ensures the application's database exists before proceeding
-mysql -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" <<-EOSQL
-    CREATE DATABASE IF NOT EXISTS ${MYSQL_DATABASE};
-    USE ${MYSQL_DATABASE};
-EOSQL
-
-if ! mysql -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "USE ${MYSQL_DATABASE}"; then
-    echo "Failed to create/access database ${MYSQL_DATABASE}"
-    exit 1
-fi
-
-echo "Database ${MYSQL_DATABASE} ready"
-
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
 cd /app
-alembic upgrade head
 
-# Initialize admin user and organization
-# Only proceeds if all required environment variables are set
-# This section handles first-time setup of the application
-if [ ! -z "$INITIAL_FIREBASE_UID" ] && [ ! -z "$INITIAL_USER_NAME" ] && [ ! -z "$INITIAL_USER_EMAIL" ]; then
-    echo "Checking for existing admin user..."
-    # Check if user already exists to prevent duplicate creation
-    USER_EXISTS=$(mysql -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -N -s -e \
-        "SELECT COUNT(*) FROM ${MYSQL_DATABASE}.users WHERE uid='$INITIAL_FIREBASE_UID';")
+# Verify database SSL connection before running migrations
+echo "Verifying database SSL connection..."
+python3 -c "
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
+from sqlalchemy import create_engine, text
+creator = get_ssl_creator()
+kwargs = {'creator': creator} if creator else {}
+engine = create_engine(DATABASE_CONFIG.DATABASE_URL, **kwargs)
+with engine.connect() as c:
+    r = c.execute(text('SHOW STATUS LIKE \"Ssl_cipher\"'))
+    cipher = r.fetchone()
+    print(f'SSL: {cipher[1] if cipher and cipher[1] else \"disabled\"}')
+engine.dispose()
+" 2>&1 || echo "WARNING: SSL verification failed (see above)"
 
-    if [ "$USER_EXISTS" -eq "0" ]; then
-        # Create default organization first (required due to foreign key constraint)
-        echo "Creating default organization..."
-        mysql -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
-            INSERT IGNORE INTO organization (id, name) VALUES (1, 'Default Organization');
-EOSQL
+# Run Alembic upgrade - if migrations fail, the container will exit
+# This causes ECS to mark the deployment as failed and revert to the previous version
+echo "Running Alembic upgrade..."
+if ! alembic upgrade head 2>&1; then
+    echo "ERROR: Database migration failed!"
+    echo "Container will exit to prevent data loss and trigger deployment rollback."
+    echo "Please investigate the migration error before redeploying."
+    exit 1
+fi
+echo "Database migrations completed successfully"
 
-        # Create the initial admin user
-        echo "Creating initial admin user..."
-        mysql -h "$MYSQL_SERVER" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" ${MYSQL_DATABASE} <<-EOSQL
-            INSERT INTO users (uid, organization_id, name, email, active)
-            VALUES ('$INITIAL_FIREBASE_UID', 1, '$INITIAL_USER_NAME', '$INITIAL_USER_EMAIL', true);
-EOSQL
-        echo "Initial admin user created successfully"
-    else
-        echo "Admin user already exists, skipping creation"
-    fi
+# Seed subscription plans from SUBSCRIPTION_PLANS_CONFIG env var
+if [ -n "$SUBSCRIPTION_PLANS_CONFIG" ]; then
+    echo "Seeding subscription plans..."
+    python3 /app/scripts/seed_subscription_plans.py || echo "WARNING: Subscription plan seeding failed (non-fatal)"
+else
+    echo "SUBSCRIPTION_PLANS_CONFIG not set, skipping subscription plan seeding"
+fi
+
+# Create test users from TEST_USERS_CONFIG env var
+if [ -n "$TEST_USERS_CONFIG" ]; then
+    echo "Creating test users..."
+    cd /app/scripts && python3 create_test_users.py || echo "WARNING: Test user creation failed (non-fatal)"
+    cd /app
+else
+    echo "TEST_USERS_CONFIG not set, skipping test user creation"
 fi
 
 # Verify backend configuration
@@ -87,9 +140,76 @@ if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
     exit 1
 fi
 
+# Configure Uvicorn worker processes
+# Workers handle concurrent requests. Recommended formula: (2 × CPU cores) + 1
+# t3.large has 2 vCPUs, so optimal range is 2-5 workers
+# Set via environment variable UVICORN_WORKERS, defaults to 5 for production use
+UVICORN_WORKERS=${UVICORN_WORKERS:-5}
+echo "Uvicorn workers: $UVICORN_WORKERS"
+
+# Get EC2 instance ID for free tier user tracking
+# This is required for the FreeUserActivityMiddleware to track users across instances
+echo "Retrieving EC2 instance ID from ECS container metadata..."
+INSTANCE_ID=""
+
+# Temporarily disable exit-on-error to allow graceful handling if metadata is unavailable
+set +e
+
+# Get the container instance ARN from ECS metadata
+if [ -n "$ECS_CONTAINER_METADATA_URI_V4" ]; then
+    TASK_METADATA=$(curl -s "${ECS_CONTAINER_METADATA_URI_V4}/task" 2>/dev/null)
+    TASK_ARN=$(echo "$TASK_METADATA" | python3 -c "import sys, json; print(json.load(sys.stdin)['TaskARN'])" 2>/dev/null)
+
+    if [ -n "$TASK_ARN" ]; then
+        echo "Found ECS task: $TASK_ARN"
+        # Extract cluster name from task ARN (format: arn:aws:ecs:region:account:task/cluster-name/task-id)
+        CLUSTER_NAME=$(echo "$TASK_ARN" | cut -d'/' -f2)
+        echo "Cluster: $CLUSTER_NAME"
+
+        # Get container instance ARN
+        CONTAINER_INSTANCE_ARN=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER_NAME" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containerInstanceArn' \
+            --output text 2>/dev/null)
+
+        if [ -n "$CONTAINER_INSTANCE_ARN" ] && [ "$CONTAINER_INSTANCE_ARN" != "None" ]; then
+            echo "Container instance ARN: $CONTAINER_INSTANCE_ARN"
+            # Get EC2 instance ID from container instance
+            INSTANCE_ID=$(aws ecs describe-container-instances \
+                --cluster "$CLUSTER_NAME" \
+                --container-instances "$CONTAINER_INSTANCE_ARN" \
+                --query 'containerInstances[0].ec2InstanceId' \
+                --output text 2>/dev/null)
+
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+                echo "Got instance ID from ECS container metadata: $INSTANCE_ID"
+            fi
+        else
+            echo "Could not retrieve container instance ARN"
+        fi
+    else
+        echo "Could not retrieve task ARN from ECS metadata"
+    fi
+else
+    echo "ECS_CONTAINER_METADATA_URI_V4 not available"
+fi
+
+# Re-enable exit-on-error
+set -e
+
+# Export for the application to use
+if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+    export INSTANCE_ID
+    echo "INSTANCE_ID set to: $INSTANCE_ID"
+else
+    echo "WARNING: Could not retrieve EC2 instance ID. Free tier user tracking will not work."
+    echo "This is expected in local development, but should not happen in production."
+fi
+
 # Start the application in background
 echo "Starting application..."
-poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" &
+poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &
 APP_PID=$!
 
 # Allow initial startup time matching ECS health check startPeriod

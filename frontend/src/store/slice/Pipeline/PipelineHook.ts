@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, useRef } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 
@@ -37,8 +37,14 @@ import {
   setCurrentWorkspace,
 } from "store/slice/Workspace/WorkspaceSlice"
 import { AppDispatch } from "store/store"
+import {
+  acquireWorkspaceLock,
+  releaseWorkspaceLock,
+  refreshLock,
+} from "utils/operationLock"
 
-const POLLING_INTERVAL = 5000
+const POLLING_INTERVAL = 10000
+const LOCK_REFRESH_INTERVAL_MS = 60000
 
 export type UseRunPipelineReturnType = ReturnType<typeof useRunPipeline>
 
@@ -48,6 +54,8 @@ export function useRunPipeline() {
   const isStandalone = useSelector(selectModeStandalone)
   const navigate = useNavigate()
   const location = useLocation()
+  const lockRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const hasAcquiredLockRef = useRef(false)
 
   const { workspaceId } = useParams<{ workspaceId: string }>()
   const _workspaceId = Number(workspaceId)
@@ -65,12 +73,20 @@ export function useRunPipeline() {
           selectedTab && dispatch(setActiveTab(selectedTab))
         })
         .catch((_) => {
-          navigate("/console/workspaces")
+          navigate("/workspaces")
         })
     }
     return () => {
       dispatch(clearExperiments())
       dispatch(clearCurrentWorkspace())
+      if (lockRefreshRef.current) {
+        clearInterval(lockRefreshRef.current)
+        lockRefreshRef.current = null
+      }
+      if (workspaceId && hasAcquiredLockRef.current) {
+        releaseWorkspaceLock(workspaceId)
+        hasAcquiredLockRef.current = false
+      }
     }
   }, [
     dispatch,
@@ -79,6 +95,7 @@ export function useRunPipeline() {
     _workspaceId,
     location.state,
     isStandalone,
+    workspaceId,
   ])
 
   const uid = useSelector(selectPipelineLatestUid)
@@ -93,6 +110,20 @@ export function useRunPipeline() {
 
   const handleRunPipeline = useCallback(
     (name: string) => {
+      if (workspaceId) {
+        if (!acquireWorkspaceLock(workspaceId, "run")) {
+          return
+        }
+        hasAcquiredLockRef.current = true
+
+        if (lockRefreshRef.current) {
+          clearInterval(lockRefreshRef.current)
+        }
+        lockRefreshRef.current = setInterval(() => {
+          refreshLock(workspaceId)
+        }, LOCK_REFRESH_INTERVAL_MS)
+      }
+
       const newNodeDict = runPostData.nodeDict
       Object.keys(newNodeDict).forEach((key) => {
         delete newNodeDict[key].data.dataFilterParam
@@ -110,19 +141,49 @@ export function useRunPipeline() {
       )
         .unwrap()
         .catch((error) => {
+          if (workspaceId && hasAcquiredLockRef.current) {
+            if (lockRefreshRef.current) {
+              clearInterval(lockRefreshRef.current)
+              lockRefreshRef.current = null
+            }
+            releaseWorkspaceLock(workspaceId)
+            hasAcquiredLockRef.current = false
+          }
           handleWorkflowYamlError(error, enqueueSnackbar)
         })
     },
-    [dispatch, enqueueSnackbar, runPostData],
+    [dispatch, enqueueSnackbar, runPostData, workspaceId],
   )
 
   const handleRunPipelineByUid = useCallback(() => {
+    if (workspaceId) {
+      if (!acquireWorkspaceLock(workspaceId, "run")) {
+        return
+      }
+      hasAcquiredLockRef.current = true
+
+      if (lockRefreshRef.current) {
+        clearInterval(lockRefreshRef.current)
+      }
+      lockRefreshRef.current = setInterval(() => {
+        refreshLock(workspaceId)
+      }, LOCK_REFRESH_INTERVAL_MS)
+    }
+
     dispatch(runByCurrentUid({ runPostData }))
       .unwrap()
       .catch((error) => {
+        if (workspaceId && hasAcquiredLockRef.current) {
+          if (lockRefreshRef.current) {
+            clearInterval(lockRefreshRef.current)
+            lockRefreshRef.current = null
+          }
+          releaseWorkspaceLock(workspaceId)
+          hasAcquiredLockRef.current = false
+        }
         handleWorkflowYamlError(error, enqueueSnackbar)
       })
-  }, [dispatch, enqueueSnackbar, runPostData])
+  }, [dispatch, enqueueSnackbar, runPostData, workspaceId])
 
   const handleClickVariant = (variant: VariantType, mess: string) => {
     enqueueSnackbar(mess, { variant })
@@ -177,13 +238,21 @@ export function useRunPipeline() {
       }
 
       if (isRunFinished) {
-        // Update TreeView
         dispatch(getAlgoList())
+
+        if (workspaceId && hasAcquiredLockRef.current) {
+          if (lockRefreshRef.current) {
+            clearInterval(lockRefreshRef.current)
+            lockRefreshRef.current = null
+          }
+          releaseWorkspaceLock(workspaceId)
+          hasAcquiredLockRef.current = false
+        }
       }
 
       setPrevStatus(status)
     }
-  }, [dispatch, status, prevStatus, enqueueSnackbar])
+  }, [dispatch, status, prevStatus, enqueueSnackbar, workspaceId])
 
   return {
     filePathIsUndefined,

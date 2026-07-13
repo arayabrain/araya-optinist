@@ -55,3 +55,23 @@ export const postListUserShareWorkspaceApi = async (
   const response = await axios.post(`/workspace/share/${id}/status`, data)
   return response.data
 }
+
+export interface RefreshStorageResponse {
+  success: boolean
+  refreshed_workspaces: number
+  total_workspaces: number
+  message: string
+}
+
+export interface RefreshStorageOptions {
+  signal?: AbortSignal
+}
+
+export const refreshAllWorkspacesStorageApi = async (
+  options?: RefreshStorageOptions,
+): Promise<RefreshStorageResponse> => {
+  const response = await axios.post("/workspaces/refresh-storage", null, {
+    signal: options?.signal,
+  })
+  return response.data
+}

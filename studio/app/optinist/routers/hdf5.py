@@ -2,9 +2,16 @@ from typing import List
 
 import h5py
 import numpy as np
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+    RemoteStorageSimpleReader,
+)
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.routers.files import get_hdf5_structure_dict
+from studio.app.const import MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.schemas.hdf5 import HDF5Node
 
@@ -14,7 +21,7 @@ router = APIRouter()
 class HDF5Getter:
     @classmethod
     def get(cls, filepath) -> List[HDF5Node]:
-        cls.hdf5_list = []
+        cls.hdf5_list: List[HDF5Node] = []
         with h5py.File(filepath, "r") as f:
             f.visititems(cls.get_ds_dictionaries)
 
@@ -68,15 +75,58 @@ class HDF5Getter:
                         name=name,
                         path=path,
                         shape=node.shape,
-                        nbytes=f"{int(node.nbytes / (1000**2))} M",
-                        dataType="array"
-                        if isinstance(node[:], np.ndarray)
-                        else type(node[:]).__name__,
+                        nbytes=node.nbytes,
+                        dataType=(
+                            "array"
+                            if isinstance(node[:], np.ndarray)
+                            else type(node[:]).__name__
+                        ),
                     )
                 )
 
 
+def _dict_to_hdf5_node(d: dict) -> HDF5Node:
+    """Convert a dict from cached JSON back to HDF5Node."""
+    return HDF5Node(
+        isDir=d["isDir"],
+        name=d["name"],
+        path=d["path"],
+        nodes=[_dict_to_hdf5_node(n) for n in d.get("nodes", [])] or None,
+        shape=tuple(d["shape"]) if d.get("shape") else None,
+        nbytes=d.get("nbytes"),
+        dataType=d.get("dataType"),
+    )
+
+
 @router.get("/hdf5/{file_path:path}", response_model=List[HDF5Node], tags=["outputs"])
-async def get_files(file_path: str, workspace_id: str):
-    file_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
-    return HDF5Getter.get(file_path)
+async def get_files(
+    file_path: str,
+    workspace_id: str,
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+):
+    """Get HDF5 file structure.
+
+    First checks for cached structure in .hdf5_structure.json (downloaded from S3
+    if remote storage is available). Falls back to extracting from the file directly.
+    """
+    # Try to download cached structure from S3 first
+    if RemoteStorageController.is_available():
+        try:
+            async with RemoteStorageSimpleReader(
+                remote_bucket_name
+            ) as remote_storage_controller:
+                await remote_storage_controller.download_input_data(
+                    workspace_id, MetadataCacheFile.HDF5_STRUCTURE
+                )
+        except Exception:
+            pass  # Ignore errors - will fall back to file extraction
+
+    # Check for cached structure
+    structure_dict = get_hdf5_structure_dict(workspace_id)
+    if file_path in structure_dict:
+        cached = structure_dict[file_path]
+        return [_dict_to_hdf5_node(node) for node in cached]
+
+    # Fall back to extracting from file directly
+    full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
+    return HDF5Getter.get(full_path)

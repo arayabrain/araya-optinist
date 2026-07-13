@@ -95,6 +95,10 @@ describe("ExperimentTable", () => {
             },
             startedAt: "2023-09-17",
             hasNWB: true,
+            data_usage: 0,
+            hasIntermediates: true,
+            hasOutputs: true,
+            hasInputs: true,
           },
           2: {
             uid: "2",
@@ -109,6 +113,10 @@ describe("ExperimentTable", () => {
             },
             startedAt: "2023-09-15",
             hasNWB: true,
+            data_usage: 0,
+            hasIntermediates: true,
+            hasOutputs: true,
+            hasInputs: true,
           },
         },
       } as Experiments,
@@ -130,6 +138,7 @@ describe("ExperimentTable", () => {
         line: {},
         pie: {},
         polar: {},
+        structured: {},
         loading: false,
         statusRoi: {
           temp_add_roi: [],
@@ -171,6 +180,7 @@ describe("ExperimentTable", () => {
         selectedItemId: null,
         items: {},
         layout: [],
+        clickedRois: {},
       },
       snakemake: {
         params: {},
@@ -218,6 +228,10 @@ describe("ExperimentTable", () => {
       },
       user: {
         loading: false,
+        logoutGeneration: 0,
+      },
+      logsModal: {
+        open: false,
       },
     })
     ;(selectExperimentList as jest.Mock).mockReturnValue({
@@ -227,6 +241,9 @@ describe("ExperimentTable", () => {
         functions: {},
         startedAt: "2023-09-17",
         hasNWB: true,
+        hasIntermediates: true,
+        hasOutputs: true,
+        hasInputs: true,
       },
       2: {
         uid: "2",
@@ -234,6 +251,9 @@ describe("ExperimentTable", () => {
         functions: {},
         startedAt: "2023-09-15",
         hasNWB: true,
+        hasIntermediates: true,
+        hasOutputs: true,
+        hasInputs: true,
       },
     })
   })
@@ -407,22 +427,26 @@ describe("ExperimentTable", () => {
     // Find the delete button in the first row
     const deleteButton = screen.getAllByTestId("delete-button")[0]
 
-    // // Click the delete button
+    // Click the delete button
     fireEvent.click(deleteButton)
 
     // Wait for the dialog to appear
     const dialog = await waitFor(() =>
       screen.getByRole("dialog", { name: /delete record\?/i }),
     )
+
     expect(dialog).toBeInTheDocument()
 
-    // Find and click the "Cancel" button
+    // Click the Cancel button
     const cancelButton = screen.getByText(/cancel/i)
     fireEvent.click(cancelButton)
 
-    // Check if the dialog has been closed
+    // Assert the dialog has closed
     await waitFor(() => {
-      expect(dialog).not.toBeInTheDocument()
+      const closedDialog = screen.queryByRole("dialog", {
+        name: /delete record\?/i,
+      })
+      expect(closedDialog).not.toBeInTheDocument()
     })
   })
 

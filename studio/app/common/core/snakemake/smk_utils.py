@@ -1,11 +1,15 @@
+import copy
 import hashlib
+import json
 import os
 import platform
 import subprocess
+from pathlib import Path
 from typing import Dict
 
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.utils.config_handler import ConfigReader
+from studio.app.common.core.snakemake.smk import Rule
+from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_condaenv_filepath
 from studio.app.common.core.workflow.workflow import NodeType, NodeTypeUtil, ProcessType
@@ -83,10 +87,7 @@ class SmkUtils:
     def get_datatypes_inputs(
         cls, workspace_id: str, unique_id: str, apply_basename: bool = False
     ) -> list:
-        smk_config_yml_path = join_filepath(
-            [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, DIRPATH.SNAKEMAKE_CONFIG_YML]
-        )
-        smk_config = ConfigReader.read(smk_config_yml_path)
+        smk_config = SmkConfigReader.read(workspace_id, unique_id)
 
         input_paths = []
 
@@ -129,7 +130,7 @@ class SmkUtils:
                 return hardware_arch
 
         except Exception as e:
-            logger.info("Failed to detect Apple Silicon: %s", e)
+            logger.warning("Failed to detect Apple Silicon: %s", e)
             return False
 
     @staticmethod
@@ -149,14 +150,58 @@ class SmkUtils:
                 modified_params["advanced"]["quality_evaluation_params"][
                     "use_cnn"
                 ] = False
-                logger.info("Disabled CNN usage in CaImAn parameters for Apple Silicon")
+                logger.debug(
+                    "Disabled CNN usage in CaImAn parameters for Apple Silicon"
+                )
 
         # Also check top-level parameters
         if "quality_evaluation_params" in modified_params:
             modified_params["quality_evaluation_params"]["use_cnn"] = False
-            logger.info("Disabled CNN usage in CaImAn parameters for Apple Silicon")
+            logger.debug("Disabled CNN usage in CaImAn parameters for Apple Silicon")
 
         return modified_params
+
+    @staticmethod
+    def resolve_nwbfile_reference(rule_config: Rule):
+        """Resolve NWB template reference if necessary"""
+        if hasattr(rule_config, "nwbfile"):
+            if isinstance(rule_config.nwbfile, str) and rule_config.nwbfile.startswith(
+                "ref:"
+            ):
+                workflow_dirpath = str(Path(rule_config.output).parent.parent)
+
+                config_path = join_filepath(
+                    [DIRPATH.OUTPUT_DIR, workflow_dirpath, DIRPATH.SNAKEMAKE_CONFIG_YML]
+                )
+                config = SmkConfigReader.read_from_path(config_path)
+
+                if "nwb_template" in config:
+                    template = config["nwb_template"]
+                    rule_config.nwbfile = template
+                else:
+                    logger.error(f"NWB template not found in config: {config_path}")
+
+        return rule_config
+
+    @staticmethod
+    def replace_nwbfile_with_reference(config):
+        """Convert NWB template to reference in the config
+        In-built YAML reference not used as requires changing yaml read/write function
+        """
+        config_copy = copy.deepcopy(config)
+        nwb_template = config_copy.get("nwb_template", {})
+
+        template_str = json.dumps(nwb_template, sort_keys=True) if nwb_template else ""
+
+        # Check each rule and convert matching nwbfiles to references
+        for rule_name, rule in config_copy.get("rules", {}).items():
+            nwbfile = rule.get("nwbfile")
+            if isinstance(nwbfile, dict) and nwbfile:
+                # Convert to string and  compare string representations
+                rule_nwbfile_str = json.dumps(nwbfile, sort_keys=True)
+                if rule_nwbfile_str == template_str:
+                    config_copy["rules"][rule_name]["nwbfile"] = "ref:nwb_template"
+        return config_copy
 
 
 # Cache conda env path (performance consideration)
@@ -239,9 +284,9 @@ class SmkInternalUtils:
         NOTE: This determination is defined as follows:
           - snakemake.deployment.conda.Env.create
         """
-        is_conda_env_exists = os.path.exists(
-            os.path.join(conda_env_dirpath, "env_setup_start")
-        ) and os.path.exists(os.path.join(conda_env_dirpath, "env_setup_done"))
+        is_conda_env_exists = (
+            os.path.exists(os.path.join(conda_env_dirpath, "env_setup_done"))
+        ) or (os.path.exists(f"{conda_env_dirpath}.env_setup_done"))
 
         return is_conda_env_exists
 

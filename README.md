@@ -1,4 +1,4 @@
-# OptiNiSt <img src="docs/_static/optinist.png" width="250" title="optinist" alt="optinist" align="right" vspace = "50">
+# Araya-OptiNiSt Cloud <img src="docs/_static/optinist.png" width="77" title="optinist" alt="optinist" align="right" vspace = "50"><img src="docs/_static/araya_logo.png" width="200" title="araya" alt="araya" align="right" vspace = "50">
 
 <p align="center">
     <a>
@@ -16,22 +16,46 @@
     <a href="https://pypi.org/project/optinist">
       <img alt="" src="https://badge.fury.io/py/optinist.svg">
     </a>
-    <a href="https://github.com/oist/optinist">
-      <img alt="" src="https://img.shields.io/github/repo-size/oist/optinist">
+    <a href="https://github.com/arayabrain/araya-optinist">
+      <img alt="" src="https://img.shields.io/github/repo-size/arayabrain/araya-optinist">
     </a>
-    <a href="https://github.com/oist/optinist">
-      <img alt="" src="https://img.shields.io/github/stars/oist/optinist?style=social">
+    <a href="https://github.com/arayabrain/araya-optinist">
+      <img alt="" src="https://img.shields.io/github/stars/arayabrain/araya-optinist?style=social">
     </a>
-    <a href="https://github.com/oist/optinist">
-      <img alt="" src="https://img.shields.io/github/forks/oist/optinist?style=social">
+    <a href="https://github.com/arayabrain/araya-optinist">
+      <img alt="" src="https://img.shields.io/github/forks/arayabrain/araya-optinist?style=social">
     </a>
 </p>
 
-OptiNiSt(Optical Neuroimage Studio) is a GUI based workflow pipeline tools for processing two-photon calcium imaging data.
+**Araya-OptiNiSt Cloud** allows researchers to process and visualize their calcium imaging data entirely online. It was built by [Araya Inc.](https://www.araya.org/en/) on top of [OptiNiSt](https://github.com/oist/optinist), an open-source calcium imaging pipeline tool originally developed in collaboration with [OIST](https://www.oist.jp/).
 
-OptiNiSt helps researchers try multiple data analysis methods, visualize the results, and construct the data analysis pipelines easily and quickly on GUI. OptiNiSt's data-saving format follows NWB standards.
+We believe in open, reproducible science and in making it easy to share results between labs. Araya-OptiNiSt Cloud is built around these principles:
 
-OptiNiSt also supports reproducibility of scientific research, standardization of analysis protocols, and developments of novel analysis tools as plug-in.
+- **Public Data Sharing**: Publish your experiments to the [public page](https://www.araya-optinist.com/public), where anyone can view your results and reproduce your workflows without needing an account.
+- **Cloud Computing**: Run analysis pipelines on cloud infrastructure without managing local hardware.
+- **Cloud Storage**: Store your data securely in the cloud with Amazon S3-backed storage and on-demand synchronization.
+
+### Plans
+
+Plans are available to suit different needs, from individual researchers to large labs.
+
+- **Free** -- Shared compute resources with limited storage.
+- **Premium** -- Dedicated compute resources with expanded storage.
+- **Custom** -- Any size of compute (CPU or GPU) and storage. Additional analysis methods and plots can be added on request.
+
+See the [Subscription page](https://www.araya-optinist.com/subscription) for full details.
+
+## About OptiNiSt
+
+**OptiNiSt (Optical Neuroimage Studio)** helps researchers try multiple data analysis methods, visualize the results, and construct data analysis pipelines easily and quickly. OptiNiSt's data-saving format follows NWB standards.
+
+OptiNiSt also supports reproducibility of scientific research, standardization of analysis protocols, and development of novel analysis tools as plug-ins.
+
+### Main Features
+
+- **Easy-To-Create Workflow**: Create analysis pipelines easily on the GUI with zero knowledge of coding.
+- **Visualizing Analysis Results**: Visualize analysis results quickly with interactive plots.
+- **Managing Workflows**: Record and reproduce workflow pipelines easily.
 
 ### Support Library
 
@@ -52,48 +76,7 @@ OptiNiSt also supports reproducibility of scientific research, standardization o
 
 - [x] [NWB](https://github.com/NeurodataWithoutBorders/pynwb)
 
-## Key Features
-
-### :beginner: Easy-To-Create Workflow
-
-- **zero-knowledge of coding**: OptiNiSt allows you to create analysis pipelines easily on the GUI.
-
-### :zap: Visualizing analysis results
-
-- **quick visualization**: OptiNiSt supports you visualize the analysis results by plotly.
-
-### :rocket: Managing Workflows
-
-- **recording and reproducing**: OptiNiSt records and reproduces the workflow pipelines easily.
-
-## Installation
-
-Need anaconda or miniconda or miniforge environment.
-
-```
-conda create -n optinist python=3.9
-conda activate optinist
-```
-
-Install from pip.
-
-```
-pip install optinist
-```
-
-launch.
-
-```
-run_optinist
-```
-
-Open browser. http://localhost:8000
-
-## Documentation
-
-https://optinist.readthedocs.io/en/latest/
-
-## Using GUI
+## Using the GUI
 
 ### Workflow
 
@@ -116,19 +99,9 @@ https://optinist.readthedocs.io/en/latest/
   <img width="400px" src="docs/_static/record/whole.png" alt="record" />
 </p>
 
-## Contributors
+## Documentation
 
-### Proposers
-
-Kenji Doya, Yukako Yamane [OIST Neural Computation Unit](https://groups.oist.jp/ncu)
-
-### Main Developers
-
-[Shogo Akiyama](https://github.com/ShogoAkiyama), [Yoshifumi Takeshima](https://github.com/Yoshifumi14)
-
-### Support Developers
-
-[Tatsuya Tanabe](https://github.com/ttya16), [Yosuke Kaneko](https://github.com/toto-maru), [Syuya Saeki](https://github.com/hiiaka)
+https://araya-optinist.readthedocs.io/en/latest/
 
 ## References
 
@@ -143,7 +116,7 @@ Kenji Doya, Yukako Yamane [OIST Neural Computation Unit](https://groups.oist.jp/
 <tr>
 <td valign="top" width="50%">
 If you use this software, please cite our paper:
-<a href="https://www.biorxiv.org/content/10.1101/2024.09.17.613603v1">https://www.biorxiv.org/content/10.1101/2024.09.17.613603v1</a>
+<a href="https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1013087">Optical Neuroimage Studio (OptiNiSt): intuitive, scalable, extendable framework for optical neuroimage data analysis</a>
 </td>
 <td valign="top" width="50%" align="right">
 <img src="docs/_static/paper_QR.png" alt="Read our paper" width="150">
@@ -155,11 +128,11 @@ If you use this software, please cite our paper:
 @misc{OptiNiSt,
 	author = {Yamane, Yukako and Li, Yuzhe and Matsumoto, Keita and Kanai, Ryota and Desforges, Miles and Gutierrez, Carlos Enrique and Doya, Kenji},
 	title = {Optical Neuroimage Studio (OptiNiSt): intuitive, scalable, extendable framework for optical neuroimage data analysis},
-	elocation-id = {2024.09.17.613603},
-	year = {2024},
-	doi = {10.1101/2024.09.17.613603},
-  journal = {bioRxiv}
-	publisher = {Cold Spring Harbor Laboratory},
+	volume = {21},
+	issue = {5},
+	year = {2025},
+	doi = {10.1371/journal.pcbi.1013087},
+  journal = {PLOS Computational Biology}
 }
 ```
 
@@ -170,3 +143,7 @@ We've launched a Slack workspace to provide a more casual space for discussions 
 [Join the Optinist User Community on Slack](https://join.slack.com/t/optinist-community/shared_invite/zt-32gtn36gx-stu8ywHn6L807k95zWVUkg)
 
 Feel free to use it as a space for casual conversations, product questions, requests, and feedback.
+
+## Contact Support
+
+For questions, bug reports, or assistance, please reach out via [GitHub Issues](https://github.com/arayabrain/araya-optinist/issues) or the [contact page](https://araya-optinist.readthedocs.io/en/latest/other/contact.html) in our documentation.

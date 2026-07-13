@@ -1,11 +1,24 @@
 ### Content
-> *Describes a content of the pull request
+
+#### Summary
+
+#### Design Decisions
+
+### Evidence
 
 ### References
-> *Links to reference information
 
-### Testcase
-> *Testcase of the pull request
+### Files changed
+
+### Manual Testcases
+
+### Unit, Integration, Contract Test Coverage
 
 ### Others
-> *Other comments etc.
+
+#### Difficulties (if any)
+
+#### Risk Assessment
+| Area | Risk | Notes |
+|------|------|-------|
+|  |  |  |

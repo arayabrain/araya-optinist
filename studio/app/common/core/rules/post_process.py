@@ -17,6 +17,9 @@ sys.path.append(ROOT_DIRPATH)
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    init_client_id_from_snakemake_config,
+)
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_reader import RuleConfigReader
@@ -37,8 +40,17 @@ logger = AppLogger.get_logger()
 class PostProcessRunner:
     @classmethod
     async def run(cls, __rule: Rule):
+        # Initialize variables before try block to avoid UnboundLocalError in exception handler
+        workspace_id = None
+        unique_id = None
+
         try:
             logger.info("start post_process runner")
+
+            # Get workspace_id, unique_id from output file path
+            ids = ExptOutputPathIds(dirname(__rule.output))
+            workspace_id = ids.workspace_id
+            unique_id = ids.unique_id
 
             # Get input data for a rule.
             # Note:
@@ -46,15 +58,10 @@ class PostProcessRunner:
             #     If there is an error in any node, an AssertionError is generated here.
             #   - read_input_info() is used to determine if there is an error,
             #     and the return value is not used here.
-            Runner.read_input_info(__rule.input)
+            _ = Runner.read_input_info(__rule.input)
 
             # Operate remote storage.
             if RemoteStorageController.is_available():
-                # Get workspace_id, unique_id from output file path
-                ids = ExptOutputPathIds(dirname(__rule.output))
-                workspace_id = ids.workspace_id
-                unique_id = ids.unique_id
-
                 # Delete lock file created at the start of workflow.
                 RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
@@ -89,8 +96,17 @@ class PostProcessRunner:
             # save msg for GUI
             PickleWriter.write(__rule.output, err_msg)
 
+        finally:
+            # Operate remote storage.
+            if RemoteStorageController.is_available() and workspace_id and unique_id:
+                # Just to be safe, make sure to delete the sync_lock_file.
+                RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
 
 if __name__ == "__main__":
+    # Initialize client_id from snakemake config
+    init_client_id_from_snakemake_config(snakemake.config)
+
     logger.debug(
         "post process startup debug logging\n"
         f"[snakemake.input: {snakemake.input}]\n"

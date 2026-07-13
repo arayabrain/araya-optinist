@@ -1,0 +1,27 @@
+# Ignore old Terraform-generated app_setup.sh
+# The static version is now in infrastructure/scripts/app_setup.sh
+app_setup.sh
+
+# Terraform state files and directories
+terraform.*
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Secrets — never commit tfvars with real values
+*.tfvars
+!*.tfvars.example
+
+# SSH private keys
+*.pem
+
+# Lambda deployment build artifacts. Source for each Lambda lives in
+# <lambda>_package/ alongside requirements.txt and README; pip-vendored
+# deps and the assembled ZIP staging area live under .build/<lambda>/.
+**/.build/
+**/*.py.zip
+**/agent_recovery_lambda.zip
+
+# AWS constants layer build artifacts
+**/aws_constants_layer/
+**/aws_constants_layer.zip
