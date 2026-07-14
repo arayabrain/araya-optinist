@@ -1,4 +1,4 @@
-# OptiNiSt Cloud — Application Deployment & Release Guide
+# Araya OptiNiSt — Application Deployment & Release Guide
 
 This document covers **application code deployment, release procedures, and Git workflow**. Use this guide when deploying code changes (frontend, studio, Lambda) to the AWS environment.
 
@@ -150,36 +150,54 @@ terraform apply -var-file=environments/<ENV>.tfvars
 - Lambda function code and layers
 - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
 
+> **Traceability:** Each apply stamps the applied `infrastructure/` git revision onto the
+> ECS cluster as tags (`TfGitCommit` / `TfGitBranch`), so you can later confirm which
+> infrastructure version is running. See [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md) →
+> "Check Which Git Revision Was Applied".
+
 > **Note:** The commands above are a quick reference for production deployment. For the authoritative guide — including environment switching, development setup, destroying environments, and Terraform troubleshooting — see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
 
 ### Step 2: Build and Push Docker Image (if application code changed)
 
-Skip this step if only Lambda or infrastructure code changed.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
+
+#### 2a. Initialize Terraform for the target environment
+
+The build script reads configuration values (domain, port, protocol, ECR repository URL) from Terraform outputs via `terraform output`. Before running the script, ensure Terraform is initialized for the correct environment:
 
 ```bash
 export AWS_PROFILE=optinist
+cd infrastructure/terraform
+
+# Initialize with the target environment's backend
+# <ENV> = production | development
+terraform init -backend-config=backends/<ENV>.hcl -reconfigure
+```
+
+> **Note:** You do **not** need to run `terraform apply` at this point — `terraform init` connects to the remote state backend where existing outputs are already stored. However, the target environment must have been provisioned at least once previously (i.e., `terraform apply` was run at some point) so that outputs such as `environment`, `ecr_repository_url`, `domain_name`, `domain_port`, and `domain_protocol` exist in the state.
+
+#### 2b. Run the build script
+
+```bash
 cd infrastructure/scripts
-./ecr_build_push.sh
+./ecr_build_push.sh --tag {VERSION}  # Tag is automatically generated if omitted
 ```
 
 The script automatically:
 
-1. Reads infrastructure configuration from Terraform outputs
-2. Builds frontend with correct environment variables
-3. Builds and tags Docker image
-4. Pushes to the ECR repository for the active environment
+1. Reads infrastructure configuration from Terraform outputs (`terraform -chdir=../terraform output`)
+2. Retrieves Firebase config from AWS Secrets Manager
+3. Builds frontend with correct environment variables (`.env.production`)
+4. Builds and tags Docker image
+5. Pushes to the ECR repository for the active environment
 
 > For details on ECR repository isolation, image tagging, and rollback, see [INFRA_DEPLOYMENT_PROCEDURE.md — ECR Repository Management](INFRA_DEPLOYMENT_PROCEDURE.md#ecr-repository-management).
 
-**If Terraform outputs aren't available**, the script prompts you for:
-
-- Frontend Host: `araya-optinist.com` (or ALB DNS for development)
-- Frontend Protocol: `https` (production) / `http` (development)
-- Frontend Port: `443` (production) / `80` (development)
+> **If Terraform outputs are not available** (e.g., `terraform init` was not run or the state has no outputs), the script will **exit with an error**. Follow step 2a above to resolve this.
 
 ### Step 3: Force ECS Redeployment (after Docker image push)
 
-Skip this step if only Lambda or infrastructure code changed.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
 
 **Option A: AWS Console**
 
@@ -340,6 +358,7 @@ Update version numbers in the following files before building:
 | ----------------------- | ----------------------- |
 | `pyproject.toml`        | `[tool.poetry] version` |
 | `frontend/package.json` | `version`               |
+| `docs/conf.py`          | `release`               |
 
 **Version Format:** Use semantic versioning `X.Y.Z` (e.g., `2.4.0`)
 
@@ -359,30 +378,30 @@ Update version numbers in the following files before building:
 
 ```bash
 # Run the test suite
-cd /path/to/optinist-for-cloud
-pytest studio/tests/
+cd /path/to/araya-optinist
+make test_run_all
 ```
 
-### 3. Staging Environment Testing (test-optinist-for-cloud) TODO
+### 3. Staging Environment Testing (staging-araya-optinist) [TODO]
 
 **Status:** Not yet set up
 
-A parallel test infrastructure (`test-optinist-for-cloud`) will be available for pre-release testing. This is an exact copy of the production infrastructure with `test-` prefix on all resources.
+A parallel staging infrastructure (`staging-araya-optinist`) will be available for pre-release testing. This is an exact copy of the production infrastructure with `staging-` prefix on all resources.
 
 **Workflow:**
 
-1. **Create test environment:**
+1. **Create staging environment:**
 
    ```bash
    cd infrastructure/terraform
-   # Use test workspace/configuration
-   terraform workspace select test
+   # Use staging workspace/configuration
+   terraform workspace select staging
    terraform apply
    ```
 
-2. **Deploy and test:**
-   - Build and push Docker image to test ECR
-   - Run manual test cases against test environment
+2. **Deploy and staging:**
+   - Build and push Docker image to staging ECR
+   - Run manual staging cases against staging environment
    - Verify all functionality works as expected
 
 3. **Destroy after testing:**
@@ -390,10 +409,10 @@ A parallel test infrastructure (`test-optinist-for-cloud`) will be available for
    terraform destroy
    ```
 
-**Test Environment Resources:**
+**Staging Environment Resources:**
 
-- `test-subscr-optinist-cluster` (ECS)
-- `test-subscr-optinist-*` (ALB, RDS, S3, etc.)
+- `staging-subscr-optinist-cluster` (ECS)
+- `staging-subscr-optinist-*` (ALB, RDS, S3, etc.)
 - Separate Secrets Manager secrets
 - Isolated from production data
 
@@ -420,7 +439,7 @@ aws cloudwatch get-metric-statistics \
   --region ap-northeast-1
 ```
 
-**TODO:** Register an Araya team email address to receive CloudWatch Alarm notifications for crash reports and errors.
+**TODO:** Register an Support team email address to receive CloudWatch Alarm notifications for crash reports and errors.
 
 ---
 
@@ -465,31 +484,15 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 ### Release Notes Template
 
-```markdown
-## What's Changed
-
-### New Features
-
-- Feature description (#PR_NUMBER)
-
-### Bug Fixes
-
-- Fix description (#PR_NUMBER)
-
-### Improvements
-
-- Improvement description (#PR_NUMBER)
-
-**Full Changelog:** https://github.com/arayabrain/araya-optinist/compare/vX.Y.Z-1...vX.Y.Z
-```
+See: [RELEASE_STYLE_GUIDE.md](https://github.com/arayabrain/araya-optinist/blob/develop-subscription/.github/RELEASE_STYLE_GUIDE.md)
 
 ---
 
 ## Documentation Updates
 
-### Readthedocs TODO
+### Readthedocs
 
-**Documentation URL:** https://optinist-for-cloud.readthedocs.io
+**Documentation URL:** https://araya-optinist.readthedocs.io
 
 1. Documentation source files are located in the `docs/` directory
 
@@ -503,15 +506,15 @@ feature-branch → develop-main → main → release tag (vX.Y.Z)
 
 3. **Trigger Readthedocs build:**
    - Login to [Readthedocs Dashboard](https://readthedocs.org/dashboard/)
-   - Navigate to the optinist-for-cloud project
+   - Navigate to the araya-optinist
    - Click "Build Version"
    - Wait for build to complete
 
 4. **Verify the update:**
-   - Visit https://optinist-for-cloud.readthedocs.io
+   - Visit https://araya-optinist.readthedocs.io
    - Confirm changes are reflected
 
-### Wiki TODO
+### Wiki [TODO]
 
 **Wiki URL:** https://github.com/oist/optinist/wiki
 
@@ -573,8 +576,13 @@ For hotfixes, perform focused testing:
    - User can login
    - Basic workflow execution works
 3. **Run automated tests:**
+
    ```bash
-   pytest studio/tests/ -x  # Stop on first failure for faster feedback
+    # test for backend only
+    pytest studio/tests/ -x# Stop on first failure for faster feedback
+
+    # full test
+    make test_run_all
    ```
 
 #### 4. Deploy Hotfix
@@ -592,7 +600,7 @@ git push origin main
 # Deploy to production
 export AWS_PROFILE=optinist
 cd infrastructure/scripts
-./ecr_build_push.sh
+./ecr_build_push.sh --tag {VERSION}-hotfix
 ```
 
 #### 5. Sync Hotfix to develop-main

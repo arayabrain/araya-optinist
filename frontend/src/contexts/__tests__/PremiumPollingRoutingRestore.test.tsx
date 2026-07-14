@@ -31,9 +31,23 @@ const mockUser = {
   subscription_status: "Premium",
 }
 
+const mockDispatchFn = jest.fn(() => Promise.resolve())
+const mockLogoutFn = jest.fn()
+
 jest.mock("react-redux", () => ({
   useSelector: (selector: (s: unknown) => unknown) =>
     selector({ user: { currentUser: mockUser, logoutGeneration: 0 } }),
+  useDispatch: () => mockDispatchFn,
+}))
+
+jest.mock("store/slice/User/UserActions", () => ({
+  __esModule: true,
+  getMe: () => ({ type: "user/getMe" }),
+}))
+
+jest.mock("utils/auth/AuthUtils", () => ({
+  __esModule: true,
+  logout: mockLogoutFn,
 }))
 
 const mockAssignPremiumInstance = jest.fn<
@@ -81,6 +95,7 @@ jest.mock("utils/crossTabSync", () => ({
   __esModule: true,
   tabSync: {
     broadcast: () => {},
+    broadcastLogout: () => {},
     broadcastPremiumReleased: () => {},
     on: (type: TabSyncMessageType, handler: (m: TabSyncMessage) => void) => {
       if (!mockTabSyncHandlers.has(type))
@@ -226,6 +241,79 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
 
     // The regression: without the fix, premiumAssigned stays false here.
     expect(routingService.isPremiumAssigned()).toBe(true)
+  })
+
+  test("polling success on shared→dedicated calls getBeaconTokenApi", async () => {
+    // Before the fix, the polling success path set assignmentResult and
+    // restored routing but did NOT call getBeaconTokenApi(). This left
+    // beaconTokenRef stale and skipped the routing probe that would
+    // trigger auto-recovery on 502/503.
+    mockGetPremiumStatus
+      .mockResolvedValueOnce(sharedStatus)
+      .mockResolvedValue(dedicatedStatus)
+
+    mockGetBeaconTokenApi.mockClear()
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    // autoAssignOnLogin path calls getBeaconTokenApi once for the shared assignment.
+    const callsAfterMount = mockGetBeaconTokenApi.mock.calls.length
+    expect(callsAfterMount).toBeGreaterThanOrEqual(1)
+
+    // Advance timer to trigger polling; next /status returns dedicated.
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
+    })
+
+    // The fix: getBeaconTokenApi must be called again after polling detects
+    // the dedicated instance — this is the beacon-token acquisition +
+    // routing probe that was missing before this fix.
+    expect(mockGetBeaconTokenApi.mock.calls.length).toBeGreaterThan(
+      callsAfterMount,
+    )
+  })
+
+  test("polling success on shared→dedicated acquires beacon token even when fetch fails", async () => {
+    // When getBeaconTokenApi rejects (e.g. 502/503 from the dedicated
+    // instance), the polling success path must NOT throw — the catch
+    // block absorbs the error and the assignment flow continues.
+    mockGetPremiumStatus
+      .mockResolvedValueOnce(sharedStatus)
+      .mockResolvedValue(dedicatedStatus)
+
+    // Let mount-time beacon call succeed, then fail on the polling path.
+    mockGetBeaconTokenApi
+      .mockResolvedValueOnce({ data: { token: "mount-token" } })
+      .mockRejectedValueOnce(new Error("Service Unavailable"))
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    // Advance timer to trigger polling; beacon fetch will reject.
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    // Despite the beacon failure, assignment must still transition to dedicated.
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
+    })
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    // No error should be surfaced to the user.
+    expect(ctxRef.current?.error).toBeNull()
   })
 
   test("polling uses /status — converges to dedicated even if /assign would still return shared", async () => {

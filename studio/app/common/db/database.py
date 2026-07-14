@@ -16,7 +16,7 @@ def get_new_engine():
         DATABASE_CONFIG.DATABASE_URL,
         pool_recycle=360,
         pool_size=DATABASE_CONFIG.POOL_SIZE,
-        max_overflow=20,
+        max_overflow=DATABASE_CONFIG.MAX_OVERFLOW,
         pool_pre_ping=True,
         pool_timeout=30,
         echo_pool=False,

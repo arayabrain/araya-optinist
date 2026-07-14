@@ -104,19 +104,22 @@ class ExptOutputPathIds:
 
     @classmethod
     def from_request_url(
-        cls, request_url_path: str, outputs_url_prefix: str = r"^/outputs/[^/]+/"
+        cls,
+        request_url_path: str,
+        outputs_url_prefix: str = r"^/api/visualizations/[^/]+/",
     ) -> "ExptOutputPathIds":
         """
         Extract workspace_id and unique_id from a request URL path.
 
         Handles patterns:
-        - /outputs/image//app/studio_data/output/{workspace_id}/{unique_id}/...
-        - /outputs/thumbnail/{workspace_id}/{unique_id}/...
+        - /api/visualizations/image/
+            /app/studio_data/output/{workspace_id}/{unique_id}/...
+        - /api/visualizations/thumbnail/{workspace_id}/{unique_id}/...
 
         Args:
             request_url_path: The URL path from the request
             outputs_url_prefix: Regex pattern to strip from path
-                (default: r"^/outputs/[^/]+/")
+                (default: r"^/api/visualizations/[^/]+/")
 
         Returns:
             ExptOutputPathIds with workspace_id and unique_id

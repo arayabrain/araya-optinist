@@ -32,6 +32,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ===========================================
+# Guard: reject builds from a dirty worktree
+# ===========================================
+DIRTY_FILES=$(git -C "$(git rev-parse --show-toplevel)" status --porcelain)
+if [ -n "$DIRTY_FILES" ]; then
+    echo "ERROR: Working tree is not clean. Commit or stash changes before building."
+    echo ""
+    echo "$DIRTY_FILES"
+    echo ""
+    echo "This check ensures builds are reproducible from a clean commit."
+    echo "Note: .gitignored secrets (.env, firebase JSONs) are excluded by .dockerignore, not this check."
+    exit 1
+fi
+
+# ===========================================
 # Detect environment and ECR target
 # ===========================================
 echo "Reading Terraform outputs..."
@@ -54,8 +68,11 @@ fi
 
 REPO_NAME=$(echo "$ECR_URI" | sed 's|.*/||')
 
-# Generate version tag
+# Generate version tag and full commit hash
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_COMMIT_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [ -n "$CUSTOM_TAG" ]; then
     VERSION_TAG="$CUSTOM_TAG"
 else
@@ -73,7 +90,9 @@ echo "  Environment : ${ENVIRONMENT}"
 echo "  ECR Repo    : ${REPO_NAME}"
 echo "  ECR URI     : ${ECR_URI}"
 echo "  Tags        : latest, ${VERSION_TAG}"
-echo "  Git commit  : ${GIT_SHA}"
+echo "  Git commit  : ${GIT_COMMIT_FULL} (${GIT_SHA})"
+echo "  Git branch  : ${GIT_BRANCH}"
+echo "  Build time  : ${BUILD_TIMESTAMP}"
 echo "============================================"
 echo ""
 
@@ -121,14 +140,6 @@ if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGIO
     exit 1
 fi
 
-# Get Firebase config from Secrets Manager (matches the environment's tfvars)
-if [ -n "$ENVIRONMENT" ]; then
-    echo "Getting Firebase config from Secrets Manager for environment: ${ENVIRONMENT}"
-    FIREBASE_CONFIG=$(aws secretsmanager get-secret-value \
-        --secret-id "${ENVIRONMENT}-optinist/firebase/config" \
-        --query "SecretString" --output text --region $REGION 2>/dev/null || echo "")
-fi
-
 # Build frontend with custom domain for autoscaling
 echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
 cd ../../frontend
@@ -139,37 +150,17 @@ REACT_APP_SERVER_PROTO=${AUTOSCALING_PROTO}
 REACT_APP_EXPDB_METADATA_EDITABLE=true
 ENV_EOF
 
-# Inject Firebase config into .env.production if available
-if [ -n "$FIREBASE_CONFIG" ]; then
-    echo "Injecting Firebase config into frontend build..."
-    FIREBASE_API_KEY=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['apiKey'])")
-    FIREBASE_AUTH_DOMAIN=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['authDomain'])")
-    FIREBASE_PROJECT_ID=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['projectId'])")
-    FIREBASE_STORAGE_BUCKET=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['storageBucket'])")
-    FIREBASE_MESSAGING_SENDER_ID=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['messagingSenderId'])")
-    FIREBASE_APP_ID=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['appId'])")
-    FIREBASE_MEASUREMENT_ID=$(echo "$FIREBASE_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('measurementId',''))")
-    cat >> .env.production << ENV_EOF
-REACT_APP_FIREBASE_API_KEY=${FIREBASE_API_KEY}
-REACT_APP_FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN}
-REACT_APP_FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
-REACT_APP_FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}
-REACT_APP_FIREBASE_MESSAGING_SENDER_ID=${FIREBASE_MESSAGING_SENDER_ID}
-REACT_APP_FIREBASE_APP_ID=${FIREBASE_APP_ID}
-REACT_APP_FIREBASE_MEASUREMENT_ID=${FIREBASE_MEASUREMENT_ID}
-ENV_EOF
-    echo "Firebase config injected for project: ${FIREBASE_PROJECT_ID}"
-else
-    echo "WARNING: Firebase config not found in Secrets Manager. Frontend will use defaults from .env"
-fi
-
 yarn install
 yarn build
 cd ..
 
-# Build the Docker image
+# Build the Docker image with embedded build metadata
 echo "Building autoscaling Docker image..."
-docker build -f studio/config/docker/Dockerfile -t $REPO_NAME:$IMAGE_TAG .
+docker build -f studio/config/docker/Dockerfile \
+    --build-arg GIT_COMMIT="${GIT_COMMIT_FULL}" \
+    --build-arg GIT_BRANCH="${GIT_BRANCH}" \
+    --build-arg BUILD_TIMESTAMP="${BUILD_TIMESTAMP}" \
+    -t $REPO_NAME:$IMAGE_TAG .
 
 # Tag and push to ECR — both :latest (for ECS) and versioned (for history/rollback)
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest

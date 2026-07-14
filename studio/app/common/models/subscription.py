@@ -133,6 +133,11 @@ class SubscriptionProvider(SQLModel, table=True):
 
 class SubscriptionUserAccount(SQLModel, table=True):
     __tablename__ = "subscription_user_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "provider_id", name="uq_sub_user_account_user_provider"
+        ),
+    )
 
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),

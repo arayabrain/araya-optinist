@@ -110,19 +110,6 @@ resource "aws_cloudwatch_metric_alarm" "memory_low" {
   }
 }
 
-
-resource "aws_cloudwatch_log_metric_filter" "user_cpu_usage" {
-  name           = "user-cpu-usage"
-  log_group_name = aws_cloudwatch_log_group.ecs.name
-  pattern        = "[timestamp, level, user_id, cpu_usage]"
-
-  metric_transformation {
-    name      = "UserCPUUsage"
-    namespace = "OptiNiSt/Application/${var.environment}"
-    value     = "$cpu_usage"
-  }
-}
-
 # ==================================================
 # Load Average Monitoring
 # ==================================================
@@ -166,6 +153,32 @@ resource "aws_cloudwatch_metric_alarm" "high_iowait" {
 }
 
 # ==================================================
+# EBS I/O Saturation Monitoring
+# ==================================================
+# AWS/EBS VolumeQueueLength is keyed on VolumeId, which the ASG assigns
+# dynamically per instance, so it can't be alarmed statically. The agent's
+# per-device queue gauge aggregated to the ASG dimension is the workaround.
+resource "aws_cloudwatch_metric_alarm" "ebs_queue_length_high" {
+  alarm_name          = "${local.env_prefix}-ebs-queue-length-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "3"
+  datapoints_to_alarm = "2"
+  metric_name         = "diskio_iops_in_progress"
+  namespace           = "CWAgent"
+  period              = "60"
+  statistic           = "Maximum"
+  threshold           = "8"
+  alarm_description   = "EBS I/O queue depth high — sustained disk saturation can fail health checks and evict the instance."
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.main.name
+  }
+}
+
+# ==================================================
 # RDS Monitoring Alarms
 # ==================================================
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
@@ -182,7 +195,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -200,7 +213,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -218,7 +231,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -266,16 +279,18 @@ resource "aws_cloudwatch_metric_alarm" "efs_throughput_high" {
 # ==================================================
 resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
   alarm_name          = "${local.env_prefix}-alb-5xx-errors"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = "1"
   metric_name         = "HTTPCode_Target_5XX_Count"
   namespace           = "AWS/ApplicationELB"
-  period              = "60"
+  period              = "300"
   statistic           = "Sum"
-  threshold           = "10"
-  alarm_description   = "ALB target 5XX errors exceeded threshold"
+  threshold           = "20"
+  alarm_description   = "At least 20 target 5XX responses in a 5-min window (a sustained error storm, not a transient blip)."
   alarm_actions       = local.critical_alerts_actions
-  ok_actions          = local.critical_alerts_actions
+  # The metric only publishes when 5XX occur; without this the alarm flaps
+  # OK<->INSUFFICIENT_DATA on quiet traffic and emails on every gap.
+  treat_missing_data = "notBreaching"
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
@@ -283,24 +298,73 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_errors" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
-  alarm_name          = "${local.env_prefix}-alb-response-time-high"
+  for_each = {
+    free = {
+      tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
+      threshold     = "10"
+      description   = "Free TG p95 response time exceeded 10s for 25 of 30 min — persistent latency degradation, not a self-healing cold-cache spike."
+    }
+    public = {
+      tg_arn_suffix = aws_lb_target_group.public.arn_suffix
+      threshold     = "5"
+      description   = "Public TG p95 response time exceeded 5s for 25 of 30 min — sustained SPA shell or public-dataview latency degradation."
+    }
+  }
+
+  alarm_name          = "${local.env_prefix}-${each.key}-tg-response-time-high"
   comparison_operator = "GreaterThanThreshold"
-  # p95 over 3×5-min: Average is tripped by one slow request on sparse traffic.
-  evaluation_periods  = "3"
-  datapoints_to_alarm = "3"
+  # p95 sustained over 25 of 30 min: only persistent degradation pages; brief
+  # spikes (cold-cache S3 reads) self-heal and are ignored.
+  evaluation_periods  = "6"
+  datapoints_to_alarm = "5"
   metric_name         = "TargetResponseTime"
   namespace           = "AWS/ApplicationELB"
   period              = "300"
   extended_statistic  = "p95"
-  threshold           = "5"
-  alarm_description   = "ALB p95 response time exceeded 5s across 3×5-min windows."
+  threshold           = each.value.threshold
+  alarm_description   = each.value.description
+  alarm_actions       = local.critical_alerts_actions
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = aws_lb.autoscaling.arn_suffix
+    TargetGroup  = each.value.tg_arn_suffix
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
+  for_each = {
+    free = {
+      tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
+      description   = "Free TG has unhealthy targets — workflow instance may be failing health checks."
+    }
+    public = {
+      tg_arn_suffix = aws_lb_target_group.public.arn_suffix
+      description   = "Public TG has unhealthy targets — SPA delivery or public-dataview API at risk."
+    }
+  }
+
+  alarm_name          = "${local.env_prefix}-${each.key}-tg-unhealthy-hosts"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = "60"
+  statistic           = "Maximum"
+  threshold           = "0"
+  alarm_description   = each.value.description
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions
 
   dimensions = {
     LoadBalancer = aws_lb.autoscaling.arn_suffix
+    TargetGroup  = each.value.tg_arn_suffix
   }
 }
+
+# Premium UnHealthyHostCount alarms are created/deleted by the premium-manager
+# Lambda alongside each per-user target group; static alarms here would not
+# match the dynamic per-user TG ARNs.
 
 # CloudWatch Dashboard for monitoring both Free and Premium tiers
 resource "aws_cloudwatch_dashboard" "main" {
@@ -456,7 +520,6 @@ resource "aws_cloudwatch_dashboard" "main" {
             ["OptiNiSt/FreeUsers/${var.environment}", "ActiveLogins", { "label" : "Active Free Tier Users", "yAxis" : "left" }],
             ["OptiNiSt/Premium/${var.environment}", "ActiveAssignments", { "label" : "Active Premium Users", "yAxis" : "left" }],
             ["OptiNiSt/Premium/${var.environment}", "InstanceUtilization", { "label" : "Premium Instance Utilization %", "yAxis" : "right" }],
-            ["OptiNiSt/Application/${var.environment}", "UserCPUUsage", { "label" : "User CPU Usage", "stat" : "Average", "yAxis" : "right" }],
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Duration (ms)", "yAxis" : "right" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.premium_manager.function_name, { "label" : "Premium Manager Errors", "yAxis" : "left" }]
           ]
@@ -533,9 +596,9 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS CPU %", "yAxis" : "left" }],
-            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Connections", "yAxis" : "right" }],
-            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.id, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.identifier, { "label" : "RDS CPU %", "yAxis" : "left" }],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.identifier, { "label" : "RDS Connections", "yAxis" : "right" }],
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", aws_db_instance.main.identifier, { "label" : "RDS Free Storage (Bytes)", "yAxis" : "right" }],
             ["AWS/EFS", "ClientConnections", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Connections", "yAxis" : "right" }],
             ["AWS/EFS", "PercentIOLimit", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS I/O Limit %", "yAxis" : "left" }],
             ["AWS/EFS", "BurstCreditBalance", "FileSystemId", aws_efs_file_system.snmk.id, { "label" : "EFS Burst Credits", "yAxis" : "right" }]
@@ -706,7 +769,9 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 4
         properties = {
           title = "Alarm Status Overview"
-          alarms = [
+          # cpu_low excluded: it only drives scale-down (no SNS), so it sits in
+          # ALARM whenever the ASG is idle by design — a permanent false red here.
+          alarms = concat([
             # Background Service Alarms
             aws_cloudwatch_metric_alarm.background_task_stopped.arn,
             aws_cloudwatch_metric_alarm.background_cpu_high.arn,
@@ -718,10 +783,10 @@ resource "aws_cloudwatch_dashboard" "main" {
             # Autoscaling Alarms
             aws_cloudwatch_metric_alarm.cpu_high.arn,
             aws_cloudwatch_metric_alarm.memory_high.arn,
-            aws_cloudwatch_metric_alarm.cpu_low.arn,
             aws_cloudwatch_metric_alarm.memory_low.arn,
             aws_cloudwatch_metric_alarm.load_average_high.arn,
             aws_cloudwatch_metric_alarm.high_iowait.arn,
+            aws_cloudwatch_metric_alarm.ebs_queue_length_high.arn,
             # RDS Alarms
             aws_cloudwatch_metric_alarm.rds_cpu_high.arn,
             aws_cloudwatch_metric_alarm.rds_connections_high.arn,
@@ -731,8 +796,11 @@ resource "aws_cloudwatch_dashboard" "main" {
             aws_cloudwatch_metric_alarm.efs_throughput_high.arn,
             # ALB Alarms
             aws_cloudwatch_metric_alarm.alb_5xx_errors.arn,
-            aws_cloudwatch_metric_alarm.alb_response_time_high.arn
-          ]
+            ],
+            # Per-TG alarms (for_each maps) flattened into the overview.
+            [for a in aws_cloudwatch_metric_alarm.alb_response_time_high : a.arn],
+            [for a in aws_cloudwatch_metric_alarm.tg_unhealthy_hosts : a.arn],
+          )
         }
       }
     ]

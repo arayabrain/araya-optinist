@@ -116,8 +116,11 @@ Premium state is mounted for **all authenticated users** (`PremiumAssignmentProv
 
 ```
 currentUser.subscription_plan_name === PlanName.PREMIUM
-  AND (subscription_status === PREMIUM OR subscription_status === LIMIT_GRACE)
+  AND subscription_status === PREMIUM
 ```
+
+Note: `LIMIT_GRACE` is excluded — grace period users are moved to the free
+tier (auto-logout on transition) while retaining their 200 GB data quota.
 
 ### Sequence Overview
 
@@ -395,7 +398,7 @@ Two premium users **can** share the same dedicated-class EC2 -- the uniqueness c
 
 | Observed symptom | Implied state | Upstream cause |
 |---|---|---|
-| No toasts, no premium effects, no network calls to `/premium/*` | Inert provider path | `isPremiumUser` is false -- either `subscription_plan_name != PREMIUM`, or `subscription_status` is neither `PREMIUM` nor `LIMIT_GRACE` |
+| No toasts, no premium effects, no network calls to `/premium/*` | Inert provider path | `isPremiumUser` is false -- either `subscription_plan_name != PREMIUM`, or `subscription_status` is not `PREMIUM` (includes `LIMIT_GRACE`, `EXPIRED`, `FREE`) |
 | Console warn "Conditions not met for auto-assignment" | Provider mounted but gate failed | `currentUser` null at mount time, or `isPremiumUser` flipped false between mount and the useEffect firing |
 | Success toast "Premium instance assigned successfully..." at login | `/assign` returned `assigned=true, is_shared=false` on first call, OR `/status` found an existing dedicated assignment | A dedicated instance had zero active assignments at assign time and was picked up; or the user already had a live assignment from a prior session that survived in DB (cleanup hadn't run) |
 | Persistent info toast "Please wait while your dedicated premium resource is being prepared." from login, no success toast follows | `assignmentResult.assigned=true && is_shared=true`, OR response was 202 with `retry_after`, OR `/assign` returned an `autoscaling-pool` assignment | No premium instance had spare capacity at assign time: either (a) all running instances already have users so the least-loaded was picked (is_shared=true on a real instance), (b) scaling was initiated and the Lambda returned 202+retry_after, or (c) launching instances exist and response is 202 |
@@ -403,7 +406,7 @@ Two premium users **can** share the same dedicated-class EC2 -- the uniqueness c
 | Info toast is showing AND no polling is happening in any tab | Shared state with polling suppressed | Either (a) `assignmentResult` is null so the `state.assignmentResult != null` gate blocks polling -- this is the hard-error path, or (b) no tab has won leader election (storage unavailable / all tabs closed simultaneously) |
 | Dedicated assignment in DB, warning snackbar "Your dedicated premium instance is temporarily unreachable. Retrying..." | `instanceUnreachable=true`, `isUnreachableTerminal=false`. Half-open probe armed on leader tab with exponential backoff | `handlePremiumRoutingError()` fired on a premium-routed request. The circuit flipped `premiumAssigned=false`, broadcast `PREMIUM_INSTANCE_UNREACHABLE` to peer tabs, and will re-arm `premiumAssigned=true` ahead of the next user-driven request |
 | Same snackbar upgraded to "unresponsive after multiple attempts. Please reload the page or contact support" with a Retry action | `instanceUnreachable=true`, `isUnreachableTerminal=true`. Probe budget exhausted at `MAX_FAILED_PROBES=5` | Five consecutive probes returned 5xx. Auto-re-arm is disabled; only `retryUnreachableProbe()` (Retry button) or a backend reassignment can clear the state |
-| Snackbar was showing, disappeared without a reload | `instanceUnreachable` cleared | Either (a) a real request returned 2xx with unrotated routing ID and axios emitted `premiumReachable`, or (b) polling observed a backend reassignment (new `instance_id` or drop to `is_shared=true`) |
+| Snackbar was showing, disappeared without a reload | `instanceUnreachable` cleared | Either (a) a real request returned 2xx that passed `shouldEmitPremiumReachable()` (unrotated routing ID AND matching `x-served-by-instance`) and axios emitted `premiumReachable`, or (b) polling observed a backend reassignment (new `instance_id` or drop to `is_shared=true`) |
 | Info toast persists for more than ~30 minutes with no promotion | Polling capped out, or backend has no capacity to give | `MAX_POLL_ATTEMPTS=40` at capped 60s interval is roughly 30-40 minutes of wall time. Upstream: premium ASG cannot scale further (instance quota, scaling lock stuck, ghost ECS registrations consuming slots) |
 | Error toast "No premium instance available after extended wait..." | Polling loop stopped after exceeding 40 attempts | Same as above, but the loop has now given up; user will not auto-retry without a new login or re-mount |
 | Warning toast "Premium assignment issue: {err}. Falling back to shared resources." | `/assign` returned `assigned=false` with **no** `retry_after` and no `scaling_in_progress` | Hard error from Lambda: scaling lock held + no launching instances, or an exception inside `assign_premium_user()`. `isRetryableError` is false so `assignmentResult` stays null and polling never starts |
@@ -460,7 +463,7 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 9.   cleanup_excess_standby_instances()    - Trim standby pool to PREMIUM_STANDBY_POOL_SIZE
 10a. finalize_expired_pending_releases()   - Tear down ALB resources for assignments past soft-release grace
 10b. cleanup_ghost_ecs_registrations()     - Deregister ECS container instances whose EC2 is gone
-11.  cleanup_orphaned_ec2_instances()      - Stop premium-tagged EC2 not in the ECS cluster (15-min grace)
+11.  cleanup_orphaned_ec2_instances()      - Stop premium-tagged EC2 not in the ECS cluster (10-min launch-age grace)
 12.  fix_incorrect_is_shared_flags() then
      process_shared_instance_optimization() - Promote shared users to dedicated, or fire invoke_migration_async() if none free
 ```
@@ -717,7 +720,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 ┌──────────────────────────────────────────────────────────┐
 │ 11. cleanup_orphaned_ec2_instances()                     │
 │    → Stop premium-tagged EC2 not in ECS                  │
-│    → 15-minute grace period for booting instances        │
+│    → 10-minute launch-age grace for booting instances    │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -797,8 +800,8 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 **Problem:** EC2 instances stopped/terminated outside normal flow leave orphaned ECS registrations that confuse the ECS scheduler.
 
 **Solution:** Premium Manager's `cleanup_ghost_ecs_registrations()`:
-- Finds container instances with disconnected agents or stopped/terminated EC2
-- Force-deregisters them from the ECS cluster
+- Finds premium container instances with disconnected agents or stopped/terminated EC2
+- Stopped/terminated/unmapped instances are deregistered immediately; a running EC2 with a disconnected agent is tagged `optinist:agent-disconnected-at` on first sighting and deregistered only after `_AGENT_DISCONNECT_GRACE_SECONDS = 300` (5 minutes), with the tag cleared if the agent reconnects
 - Runs every 15 minutes as part of scheduled monitoring
 
 
@@ -808,8 +811,10 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 
 **Solution:** Premium Manager's `cleanup_orphaned_ec2_instances()`:
 - Finds premium-tagged EC2 instances not in the ECS cluster
-- 15-minute grace period (`ORPHAN_GRACE_PERIOD_MINUTES = 15`) to avoid stopping still-booting instances
-- Stops orphaned instances
+- `launch_time`-age grace (`ORPHAN_GRACE_PERIOD_MINUTES = 10` minutes) to avoid stopping still-booting instances; symmetric with the `booting_count` window in `update_premium_service_desired_count()`
+- Stops orphaned instances (and registers them as standby for later aged termination)
+
+> This and the ghost-CI cleanup (Edge Case 4) are independent timers measured from different events — agent-disconnect (300s) vs instance launch (10 min) — and both run in the same 15-minute cycle, so a single run can deregister a ghost container instance and stop the orphaned EC2 behind it.
 
 
 ### 6. Race Condition Between Manager and Cleanup
@@ -1426,6 +1431,8 @@ event=instance_unreachable_manual_retry details={'instance_id': '${i-xxx}'}   (u
 
 **Verdict:** a single `instance_unreachable` followed within seconds by `instance_reachable` is a blip (cold-start, ALB reroute, or task restart-in-place). The **problem** pattern is (a) `instance_probe_failure` climbing to `failed_probes=5` and staying terminal, or (b) repeated unreachable/reachable cycles for the same `instance_id` within minutes -- points to flapping at the target-group or task layer.
 
+**Instance identity validation (issue #566 fix):** Recovery detection uses `shouldEmitPremiumReachable()` in `axios.ts`, which performs a three-way check: (1) request carried premium routing headers, (2) response `x-routing-id` was not rotated, and (3) response `x-served-by-instance` matches the expected instance hash stored in `routingService.premiumInstanceId`. Condition (3) prevents a false `premiumReachable` when the dedicated instance is down and ALB falls back to the shared backend — the shared backend returns the same `x-routing-id` (it's UID-based) but a different `x-served-by-instance` (it's a different EC2). The expected instance hash is received from `/premium/assign` and `/premium/status` responses (`instance_id_hash` field) and persisted in localStorage via `routingService.setPremiumInstanceId()`.
+
 #### A.1.7a Warm-up suppression: `instance_unreachable_warmup_suppressed`
 
 Within `DEDICATED_HANDOFF_GRACE_MS` (15s) of a shared → dedicated transition or a dedicated reassignment to a different `instance_id`, the **first** 5xx on a premium-routed request is suppressed: the unreachable state machine does not flip, the warning popup is not shown, and the user keeps reading the success toast. The grace is single-shot — a second 5xx within the same window is treated normally and will flip to unreachable.
@@ -1483,7 +1490,7 @@ Note the log template is literal: it says `attempt N failed, retrying...`, not `
 | `Using free tier while premium instance provisions` | `axios.ts` | Single occurrence accompanies one `instance_unreachable` UI event; the circuit breaker will probe for recovery. Investigate only if the paired `instance_reachable` never arrives (see A.1.7) |
 | `Premium-(un)?reachable listener threw: ${e}` | `RoutingService.ts` | One listener crashed during dispatch; the pool continues delivering to others |
 | `Agent disconnected on ${i-xxx}, starting grace period` and its "within grace period" follow-up | `premium_manager.py` ghost ECS cleanup | 5-min grace before deregistering ECS container instance |
-| `Orphan ${i-xxx} running ${N}m, within grace period` | `premium_manager.py` orphan cleanup | 15-min grace before stopping orphan EC2 |
+| `Orphan ${i-xxx} running ${N}m, within grace period` | `premium_manager.py` orphan cleanup | 10-min launch-age grace before stopping orphan EC2 |
 | `Warning: Error closing database connection: ${e}` | both lambdas | Cleanup-path warning on teardown; does not affect the work already done |
 | `Transaction rolled back due to error: ${e}` | `premium_manager.py` | Expected when a `@with_transaction` path encounters an exception and rolls back cleanly |
 | `Conditions not met for auto-assignment: { isPremiumUser: false, ... }` | `PremiumAssignmentContext.tsx` | Non-premium user; the provider correctly short-circuits |

@@ -40,7 +40,7 @@ from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.routers.mat import MatGetter
 
-router = APIRouter(prefix="/outputs", tags=["outputs"])
+router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
 
@@ -908,6 +908,7 @@ async def get_structured_data(
     node_id: str,
     start_index: Optional[int] = 0,
     end_index: Optional[int] = 10,
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     try:
         config = WorkflowConfigReader.read(workspace_id, unique_id)
@@ -925,6 +926,19 @@ async def get_structured_data(
         raise HTTPException(status_code=400, detail="Node has no file path")
 
     full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
+    if not os.path.exists(full_path):
+        # Inputs are cleared independently of outputs, so re-fetch keyed on the
+        # file itself, not the experiment's output-sync status.
+        try:
+            await RemoteStorageDownloadUtils.ensure_input_file_synced(
+                workspace_id, file_path, remote_bucket_name
+            )
+        except Exception as e:
+            logger.error(f"Failed to sync input data: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to sync input file from cloud storage",
+            )
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 

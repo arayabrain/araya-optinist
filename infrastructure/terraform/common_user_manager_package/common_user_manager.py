@@ -21,7 +21,14 @@ import boto3
 import pymysql
 
 # Shared constants from Lambda Layer (mounted at /opt/python by AWS Lambda)
-from aws_constants import DatabaseConfig, PremiumAssignment, SubscriptionType
+from aws_constants import (
+    DatabaseConfig,
+    EnvironmentConfig,
+    InstanceState,
+    PremiumAssignment,
+    SubscriptionType,
+)
+from botocore.exceptions import ClientError
 
 if TYPE_CHECKING:
     from mypy_boto3_elbv2 import ElasticLoadBalancingv2Client
@@ -338,6 +345,27 @@ def check_free_user_inactivity() -> Dict[str, int]:
         return {"logged_out": 0, "error": str(e)}
 
 
+# Mirrored in premium_manager.py & premium_cleanup.py — keep all three in sync.
+def _premium_tg_alarm_name(tg_arn: str) -> "str | None":
+    """Derive the UnHealthyHostCount alarm name for a premium target group ARN."""
+    idx = tg_arn.find(":targetgroup/")
+    suffix = tg_arn[idx + 1 :] if idx != -1 else tg_arn
+    parts = suffix.split("/")
+    if len(parts) < 2:
+        return None
+    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+
+
+def _delete_tg_unhealthy_alarm(cw: Any, tg_arn: str) -> None:
+    """Best-effort, idempotent delete of a target group's UnHealthyHostCount alarm."""
+    try:
+        alarm_name = _premium_tg_alarm_name(tg_arn)
+        if alarm_name:
+            cw.delete_alarms(AlarmNames=[alarm_name])
+    except Exception as e:
+        print(f"WARNING: Failed to delete unhealthy-host alarm for {tg_arn}: {e}")
+
+
 def check_premium_user_inactivity() -> Dict[str, int]:
     """Check and logout inactive premium users"""
     try:
@@ -347,6 +375,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
             )
         )
         elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+        cw = boto3.client("cloudwatch")
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -415,6 +444,7 @@ def check_premium_user_inactivity() -> Dict[str, int]:
                                 print(
                                     f"Target group already deleted for user {user_id}"
                                 )
+                            _delete_tg_unhealthy_alarm(cw, user["target_group_arn"])
 
                         logged_out += 1
 
@@ -442,6 +472,108 @@ def check_premium_user_inactivity() -> Dict[str, int]:
         return {"logged_out": 0, "error": str(e)}
 
 
+def reap_terminated_ecs_registrations() -> Dict[str, int]:
+    """Deregister container instances whose backing EC2 is terminated or gone.
+
+    Tier-independent and termination-only: a stopped instance is a legitimate
+    registration it reconnects to on restart, so only terminated /
+    shutting-down / nonexistent / unmapped container instances are reaped.
+    """
+    try:
+        cluster_name = get_required_env_var("CLUSTER_NAME")
+    except ValueError as e:
+        print(f"Cannot reap ghost registrations: {e}")
+        return {"deregistered": 0}
+
+    ecs = boto3.client("ecs")
+    ec2 = boto3.client("ec2")
+
+    try:
+        arns = []
+        paginator = ecs.get_paginator("list_container_instances")
+        for page in paginator.paginate(cluster=cluster_name, status="ACTIVE"):
+            arns.extend(page.get("containerInstanceArns", []))
+
+        if not arns:
+            print("No ACTIVE container instances in cluster - nothing to reap")
+            return {"deregistered": 0}
+
+        container_instances = []
+        for i in range(0, len(arns), 100):
+            desc = ecs.describe_container_instances(
+                cluster=cluster_name, containerInstances=arns[i : i + 100]
+            )
+            container_instances.extend(desc.get("containerInstances", []))
+
+        ec2_ids = list(
+            {
+                ci["ec2InstanceId"]
+                for ci in container_instances
+                if ci.get("ec2InstanceId")
+            }
+        )
+        ec2_state_by_id: Dict[str, str] = {}
+
+        def _record(reservations):
+            for reservation in reservations:
+                for instance in reservation.get("Instances", []):
+                    inst_id = instance.get("InstanceId")
+                    if inst_id:
+                        ec2_state_by_id[inst_id] = instance["State"]["Name"]
+
+        for i in range(0, len(ec2_ids), 100):
+            chunk = ec2_ids[i : i + 100]
+            try:
+                resp = ec2.describe_instances(InstanceIds=chunk)
+                _record(resp.get("Reservations", []))
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
+                    raise
+                for ec2_id in chunk:
+                    try:
+                        resp = ec2.describe_instances(InstanceIds=[ec2_id])
+                        _record(resp.get("Reservations", []))
+                    except ClientError as inner:
+                        code = inner.response["Error"]["Code"]
+                        if code != "InvalidInstanceID.NotFound":
+                            raise
+
+        gone_states = {InstanceState.TERMINATED, InstanceState.SHUTTING_DOWN}
+        deregistered = 0
+        for ci in container_instances:
+            arn = ci.get("containerInstanceArn")
+            ec2_id = ci.get("ec2InstanceId")
+
+            if not ec2_id:
+                reason = "no EC2 mapping"
+            elif ec2_id not in ec2_state_by_id:
+                reason = "EC2 does not exist"
+            elif ec2_state_by_id[ec2_id] in gone_states:
+                reason = f"EC2 is {ec2_state_by_id[ec2_id]}"
+            else:
+                continue
+
+            try:
+                print(
+                    f"Reaping container instance {arn} "
+                    f"(EC2: {ec2_id}, reason: {reason})"
+                )
+                ecs.deregister_container_instance(
+                    cluster=cluster_name, containerInstance=arn, force=True
+                )
+                deregistered += 1
+            except Exception as e:
+                print(f"Failed to deregister {arn}: {e}")
+
+        print(f"Reaped {deregistered} terminated container instances")
+        return {"deregistered": deregistered}
+
+    except Exception as e:
+        print(f"Failed to reap terminated ECS registrations: {e}")
+        traceback.print_exc()
+        return {"deregistered": 0, "error": str(e)}
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Common user manager handler - runs every 10 minutes
@@ -467,6 +599,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # 3. Check premium user inactivity
         print("\n=== Step 3: Checking premium user inactivity ===")
         results["premium_inactivity"] = check_premium_user_inactivity()
+
+        # 4. Reap terminated/gone container instances (tier-independent)
+        if os.environ.get("CLUSTER_NAME"):
+            print("\n=== Step 4: Reaping terminated ECS registrations ===")
+            results["ghost_reap"] = reap_terminated_ecs_registrations()
 
         free_logged_out = results["free_inactivity"].get("logged_out", 0)
         premium_logged_out = results["premium_inactivity"].get("logged_out", 0)

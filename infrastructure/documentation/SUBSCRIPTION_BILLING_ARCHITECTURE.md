@@ -155,24 +155,29 @@ The SubscriptionService handles business logic and database operations for subsc
 | `PREMIUM` | Premium tier subscription active | Premium compute |
 | `TRIALING` | Trial period active | Full plan features |
 | `PAST_DUE` | Payment failed, retry in progress | Full access (temporary) |
-| `LIMIT_GRACE` | Premium expired, 30-day grace period | Full premium access (see below) |
+| `LIMIT_GRACE` | Premium expired, 30-day grace period | Free tier compute, 200 GB data retention (see below) |
 | `CANCELLED` | Scheduled for cancellation | Full until period end |
 | `UNPAID` | Payment failed, all retries exhausted | Restricted access |
 
 **LIMIT_GRACE details:** When a premium subscription expires, the user
 enters a 30-day grace period. During this period:
 
-- **Access is functionally identical to Premium** — the user retains
-  premium compute routing, 200 GB storage quota, and
-  `has_active_subscription` returns `True`
+- **Premium compute access is revoked** — the user is automatically
+  logged out and moved to the free/shared instance.
+  `has_active_subscription` returns `False` and `subscription_type`
+  returns `"free"`. The frontend auto-logout fires on the
+  `isPremiumUser` true → false transition
   (see `studio/app/common/schemas/users.py:has_active_subscription`,
-  `frontend/src/utils/routing/RoutingService.ts`)
+  `frontend/src/contexts/PremiumAssignmentContext.tsx`)
+- **200 GB storage quota is preserved** — the quota is stored in the
+  database (`UserStorageUsage.storage_quota_bytes`) and is independent
+  of `has_active_subscription`
 - **Workflow execution** is allowed as long as storage stays under quota
   (the same quota check that applies to all statuses)
 - **Alerts** warn the user that their subscription has expired and
   show a countdown of grace days remaining
 - After the 30-day grace period, the status transitions to `EXPIRED`
-  and access drops to Free tier (5 GB quota, no premium compute)
+  and data is deleted per user preferences down to Free tier (5 GB quota)
 
 #### calculate_limit_warning()
 
@@ -183,7 +188,7 @@ enters a 30-day grace period. During this period:
 **Calls:** `get_user_storage_usage()` -> `get_current_user_storage_usage()` -> `_generate_subscription_warning_message()`
 
 Uses cached storage data if fresh (< 20 minutes), otherwise triggers a live S3 scan. Compares storage
-against the effective quota (200 GB for active premium, 5 GB for grace/warning/overdue/free) and returns
+against the effective quota (200 GB for active premium and grace period, 5 GB for overdue/free) and returns
 the appropriate alert type with a countdown of days remaining.
 
 ---

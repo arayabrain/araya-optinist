@@ -68,6 +68,56 @@ resource "aws_subnet" "private2" {
 # ============
 # NAT Instance
 # ============
+locals {
+  nat_user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    # The iptables binary is not preinstalled on the AL2023 base AMI
+    yum install -y iptables-nft
+
+    # Authoritative drop-in so a pre-existing sysctl.conf entry cannot win
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
+    sysctl --system
+
+    # Detect the egress interface at boot — AL2023 uses predictable
+    # interface names (ens5/enX0 on Nitro), so eth0 cannot be assumed.
+    cat > /usr/local/sbin/configure-nat.sh << 'SCRIPT'
+    #!/bin/bash
+    set -euo pipefail
+    IFACE=$(ip -o -4 route show to default | awk '{print $5; exit}')
+    if [ -z "$IFACE" ]; then
+      echo "configure-nat: no default-route interface found" >&2
+      exit 1
+    fi
+    iptables -P FORWARD ACCEPT
+    iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
+      || iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+    SCRIPT
+    chmod +x /usr/local/sbin/configure-nat.sh
+
+    # Run via a systemd service on every boot, not just first boot —
+    # iptables rules can be lost after stop/start cycles.
+    cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
+    [Unit]
+    Description=Configure NAT iptables rules
+    Wants=network-online.target
+    After=network-online.target
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/local/sbin/configure-nat.sh
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+
+    systemctl daemon-reload
+    systemctl enable nat-iptables.service
+    systemctl start nat-iptables.service
+  EOF
+}
+
 resource "aws_instance" "nat" {
   ami                    = data.aws_ami.nat_instance.id
   instance_type          = "t3.nano"
@@ -82,36 +132,7 @@ resource "aws_instance" "nat" {
     volume_type = "gp3"
   }
 
-  user_data = <<-EOF
-              #!/bin/bash
-              yum update -y
-
-              # Enable IP forwarding (idempotent — only appends if not present)
-              grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
-              sysctl -p
-
-              # Create a systemd service to configure NAT iptables on every boot.
-              # User data only runs on first boot, but iptables rules can be lost
-              # after stop/start cycles. This service ensures NAT forwarding works
-              # reliably on every boot.
-              cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
-              [Unit]
-              Description=Configure NAT iptables rules
-              After=network.target
-
-              [Service]
-              Type=oneshot
-              RemainAfterExit=yes
-              ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT && iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'
-
-              [Install]
-              WantedBy=multi-user.target
-              UNIT
-
-              systemctl daemon-reload
-              systemctl enable nat-iptables.service
-              systemctl start nat-iptables.service
-              EOF
+  user_data = local.nat_user_data
 
   tags = {
     Name = "${local.env_prefix}-nat-instance"
@@ -134,36 +155,7 @@ resource "aws_instance" "nat2" {
     volume_type = "gp3"
   }
 
-  user_data = <<-EOF
-              #!/bin/bash
-              yum update -y
-
-              # Enable IP forwarding (idempotent — only appends if not present)
-              grep -q 'net.ipv4.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
-              sysctl -p
-
-              # Create a systemd service to configure NAT iptables on every boot.
-              # User data only runs on first boot, but iptables rules can be lost
-              # after stop/start cycles. This service ensures NAT forwarding works
-              # reliably on every boot.
-              cat > /etc/systemd/system/nat-iptables.service << 'UNIT'
-              [Unit]
-              Description=Configure NAT iptables rules
-              After=network.target
-
-              [Service]
-              Type=oneshot
-              RemainAfterExit=yes
-              ExecStart=/bin/bash -c 'iptables -P FORWARD ACCEPT && iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'
-
-              [Install]
-              WantedBy=multi-user.target
-              UNIT
-
-              systemctl daemon-reload
-              systemctl enable nat-iptables.service
-              systemctl start nat-iptables.service
-              EOF
+  user_data = local.nat_user_data
 
   tags = {
     Name = "${local.env_prefix}-nat-instance-2"
@@ -198,7 +190,7 @@ data "aws_ami" "nat_instance" {
 
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*"]
+    values = ["al2023-ami-2023.*-x86_64"]
   }
 
   filter {
@@ -491,6 +483,78 @@ resource "aws_efs_access_point" "snmk" {
 
   tags = {
     Name = "${local.env_prefix}-cloud-efs-ap"
+  }
+}
+
+# Persistent cache for published experiments served by the public tier.
+# Kept separate from snmk (workflow scratch) so each can be deleted alone.
+resource "aws_efs_file_system" "published_data" {
+  creation_token   = "${local.env_prefix}-public-published-data"
+  performance_mode = "generalPurpose"
+  throughput_mode  = "bursting"
+  encrypted        = true
+
+  lifecycle_policy {
+    transition_to_ia = "AFTER_7_DAYS"
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-published-data"
+  }
+}
+
+resource "aws_efs_mount_target" "published_data_private1" {
+  file_system_id  = aws_efs_file_system.published_data.id
+  subnet_id       = aws_subnet.private1.id
+  security_groups = [aws_security_group.efs.id]
+}
+
+resource "aws_efs_mount_target" "published_data_private2" {
+  file_system_id  = aws_efs_file_system.published_data.id
+  subnet_id       = aws_subnet.private2.id
+  security_groups = [aws_security_group.efs.id]
+}
+
+resource "aws_efs_access_point" "published_data" {
+  file_system_id = aws_efs_file_system.published_data.id
+
+  root_directory {
+    path = "/"
+    creation_info {
+      owner_gid   = 1000
+      owner_uid   = 1000
+      permissions = "755"
+    }
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-published-data-ap"
+  }
+}
+
+# Separate subtree for the on-demand-synced raw input cache, kept off the lean
+# root EBS and isolated from the output cache so it can be swept independently.
+resource "aws_efs_access_point" "published_data_input" {
+  file_system_id = aws_efs_file_system.published_data.id
+
+  # Pin all access through this point to uid/gid 1000 so the container's writes
+  # and the cleanup Lambda's deletes share one owner.
+  posix_user {
+    uid = 1000
+    gid = 1000
+  }
+
+  root_directory {
+    path = "/input-cache"
+    creation_info {
+      owner_gid   = 1000
+      owner_uid   = 1000
+      permissions = "755"
+    }
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-published-data-input-ap"
   }
 }
 

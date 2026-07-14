@@ -7,12 +7,17 @@
 - **Automatic migration** moves users from shared to dedicated instances, inline when possible and async otherwise
 - **Workflow safety** prevents migration of users with active workflows
 
-> **Sister document:**
+> **Sister documents:**
 > This file focuses on the **assignment flow** — 5-tier priority cascade,
-> standby pool, migration, and release paths. For the **system
-> architecture** — Manager / Cleanup Lambda split, frontend lifecycle,
-> and log playbook — see
-> [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+> standby pool, migration, and release paths.
+> - For the **system architecture** — Manager / Cleanup Lambda split,
+>   frontend lifecycle, and log playbook — see
+>   [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+> - For the **frontend-backend interaction lifecycle** — auto-assign,
+>   polling, re-trigger, inactivity release, concurrent assignment
+>   protection, session boundary state management, instance identity
+>   verification, and circuit breaker — see
+>   [PREMIUM_ROUTING_LIFECYCLE.md](./PREMIUM_ROUTING_LIFECYCLE.md).
 
 ## Key Architectural Principles
 
@@ -175,8 +180,9 @@ sequenceDiagram
     else Tier 3: Start Standby
         DB-->>PM: Found standby instance (is_standby=1)
         PM->>EC2: Start Instance
-        PM->>PM: clear_ecs_agent_checkpoint()
         EC2-->>PM: Instance running (5-15s)
+        Note over EC2: ecs-clear-checkpoint.service wipes stale agent.db before ECS agent starts
+        PM->>PM: check_instance_readiness_with_retry()
         PM->>ALB: Create Target Group + Rule
         PM->>PM: create_and_stop_standby_instance() (replenish)
         PM-->>User: Assigned (5-15s wait)
@@ -498,7 +504,7 @@ that are merely rebooting their agent.
 **Pre-assignment Steps:**
 1. Restore any `pending_release` assignment (beacon fired but the user is back) -- returns with `assignment_source: "restored_from_pending_release"`
 2. Check for existing assignment:
-   - If the EC2 is `stopped`/`stopping`, restart it, clear the ECS checkpoint, wait up to 120s for ECS readiness, and return `assignment_source: "restarted_instance"`
+   - If the EC2 is `stopped`/`stopping`, restart it and wait up to 120s for ECS readiness, then return `assignment_source: "restarted_instance"` (the instance's `ecs-clear-checkpoint.service` wipes the stale agent checkpoint on boot so it re-registers)
    - If the EC2 is `terminated`/`shutting-down`/gone, remove the stale DB entry and fall through to fresh assignment
    - If the assignment is on `autoscaling-pool` or a shared instance, attempt an **inline migration** to a ready dedicated instance first (`assignment_source: "inline_migration"`); fall back to `invoke_migration_async()` if no instance is ready
    - Otherwise return the existing assignment (`assignment_source: "existing"`)
@@ -785,11 +791,12 @@ assignment. This function only handles the **start** transition; it does
 **not** touch the standby placeholder row itself.
 **Input:** instance_id (str)
 **Output:** True on success, False on failure
-**Calls:** `ec2.start_instances()` -> `ec2.get_waiter('instance_running')` -> `clear_ecs_agent_checkpoint()`
+**Calls:** `ec2.start_instances()` -> `ec2.get_waiter('instance_running')` -> `check_instance_readiness_with_retry()`
 
 **Key behaviors:**
 - Waits for running state (delay=5s, max 24 attempts)
-- Clears stale ECS agent checkpoint so it re-registers
+- Stale ECS agent checkpoint is cleared host-side on boot by `ecs-clear-checkpoint.service` (before `ecs.service`), so the restarted agent re-registers instead of resuming a deregistered container instance
+- Waits for ECS readiness via `check_instance_readiness_with_retry()` (max 120s) and returns False on timeout, before any DB update
 - Updates `instance_state` to `'running'` for any pre-existing **non-standby**
   assignment rows on this instance (there should be none on a true Tier 3
   path; the clause is defensive)
@@ -916,7 +923,7 @@ subscribers.
 - Blocked if launching instances exist or `CREATE_RUNNING_LOCK` held
 - No-op if `running_count >= active_users` (sufficient capacity). Note this is distinct from [`scale_down_if_possible()`](#scale-down-scale_down_if_possible), which keeps `max(1, active_users + 1)` -- scale-up has no `+ 1` safety margin, so the scale-down headroom only exists after a full monitor cycle runs
 - Prefers starting stopped instances (fastest) over creating new
-- Clears ECS agent checkpoints after starting stopped instances
+- Started instances clear their stale ECS agent checkpoint host-side on boot (via `ecs-clear-checkpoint.service`); no Lambda-side action is needed
 - Falls back to `_create_running_instances_locked()` under
   distributed lock
 - Always calls `invoke_migration_async()` and
@@ -1029,32 +1036,22 @@ the tab too hard for the beacon to reach the ALB.
 > truth. Path 4 therefore fires no earlier than 3 h after last
 > activity, plus up to 1 h of scheduler latency.
 
-#### Known limitation: no automatic re-assignment after auto-release
+#### Automatic re-assignment after auto-release
 
 When the 2-hour auto-release fires (`autoReleaseOnLogout()`), the frontend
-clears `assignmentResult`, the warning state, and the beacon token — but it
-does **not** clear the `hasAttemptedAutoAssignment` flag in `sessionStorage`.
-Because `autoAssignOnLogin()` checks this flag before calling `/assign`,
-**no automatic re-assignment occurs** even if the user resumes activity on
-the same tab.
+now automatically re-assigns the user to a premium instance on the next
+user gesture (mouse click or keydown). This was fixed in PR #656 (issue #594).
 
-The backend's `restore_pending_release()` grace window (120 s) exists to
-cover the case where a user returns quickly, but it is unreachable in this
-scenario because the frontend never re-calls `/assign`.
+The mechanism uses `needsReassignAfterReleaseRef` (separate from
+`hasAttemptedRef` to prevent duplicate `/assign` calls) and
+`autoAssignGeneration` to force the `useEffect` re-fire. Cross-tab
+coordination via `PREMIUM_RELEASED` broadcast ensures peer tabs also
+prime for gesture-triggered reassignment.
 
-**User-visible effect:** after the 2-hour auto-release the user remains
-logged in but without premium compute resources, and there is no UI prompt
-to re-acquire them.
-
-**Current workarounds:**
-
-| Action | Why it works |
-|---|---|
-| Log out → log back in | Clears `hasAttemptedAutoAssignment` (flag is reset on logout) |
-| Close the tab → open a new tab | `sessionStorage` is per-tab; the new tab starts with the flag unset |
-
-A page reload (F5) within the same tab does **not** help because
-`sessionStorage` survives reloads.
+> For the full specification of the reassignment-after-release mechanism,
+> including the cross-tab deadlock fix (PR #703) and the `resetForRelease()`
+> cleanup method, see
+> [PREMIUM_ROUTING_LIFECYCLE.md § Reassignment After Release](./PREMIUM_ROUTING_LIFECYCLE.md#5-reassignment-after-release).
 
 #### Post-release: idle-instance handling
 
@@ -1361,7 +1358,7 @@ Shared instance optimization complete: 1 users migrated
 | Function | Purpose |
 |----------|---------|
 | `create_and_stop_standby_instance()` | Create instance, stop for pool (distributed lock) |
-| `start_standby_instance()` | Start standby + clear ECS checkpoint (does NOT delete placeholder row) |
+| `start_standby_instance()` | Start standby + wait for ECS readiness; checkpoint cleared host-side on boot (does NOT delete placeholder row) |
 | `convert_idle_instances_to_standby_immediate()` | Stop idle running instances and convert to standby in-line during scale-down (see [spec](#convert_idle_instances_to_standby_immediate)) |
 | `get_available_standby_instances()` | Query standby pool (is_standby=1) |
 | `register_orphaned_stopped_instances()` | Adopt AWS-stopped / DB-less instances into the standby pool |

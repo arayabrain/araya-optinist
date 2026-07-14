@@ -31,14 +31,19 @@ export const removeRefreshToken = () => {
   return localStorage.removeItem("refresh_token")
 }
 
-export const logout = async () => {
+export const logout = async ({
+  skipBackendLogout = false,
+}: { skipBackendLogout?: boolean } = {}) => {
   // Set logout flag to prevent token refresh during logout
   const setLoggingOut = await getSetLoggingOut()
   setLoggingOut(true)
 
   // Call backend logout endpoint for free tier users (fire and forget).
   // Skip for premium users - they have their own release mechanism.
-  if (!routingService.requiresPremiumRouting()) {
+  // skipBackendLogout is set by the premium-expiry auto-logout path, which
+  // already releases the instance via sendBeacon; by then routingInfo reports
+  // free tier, so without this flag the free-logout endpoint would also fire.
+  if (!skipBackendLogout && !routingService.requiresPremiumRouting()) {
     try {
       const { logoutFreeUserApi } = await import("api/users/UsersMe")
       await logoutFreeUserApi()

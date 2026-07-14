@@ -4,7 +4,7 @@ import { useSelector, useDispatch } from "react-redux"
 import { LinearProgress, Typography } from "@mui/material"
 import { DataGrid, GridColDef } from "@mui/x-data-grid"
 
-import { CsvData } from "api/outputs/Outputs"
+import { CsvData } from "api/visualizations/Outputs"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { getCsvData } from "store/slice/DisplayData/DisplayDataActions"
 import {

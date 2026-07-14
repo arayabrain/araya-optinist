@@ -10,12 +10,17 @@ from studio.app.common.core.cloud.cloud_utils import (
 )
 from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.secure_routing_middleware import (
+    ROUTING_SECRET_KEY,
+    get_instance_hash_cached,
+)
 from studio.app.common.core.middleware.user_activity_middleware import (
     increment_heartbeat_failures,
     invalidate_activity_cache,
     mark_user_logged_out,
 )
 from studio.app.common.core.premium.premium_assignment_service import (
+    AUTOSCALING_POOL_INSTANCE_ID,
     premium_assignment_service,
 )
 from studio.app.common.core.subscription.constants import (
@@ -105,9 +110,21 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
         )
 
         if result["success"]:
+            instance_id = result.get("instance_id")
+            if not instance_id:
+                logger.warning(
+                    "[premium-assign] user=%s assigned=True but instance_id "
+                    "is absent — frontend cannot verify instance identity",
+                    current_user.id,
+                )
             response = {
                 "message": result["message"],
-                "instance_id": result.get("instance_id"),
+                "instance_id": instance_id,
+                "instance_id_hash": (
+                    get_instance_hash_cached(instance_id, ROUTING_SECRET_KEY)
+                    if instance_id and instance_id != AUTOSCALING_POOL_INSTANCE_ID
+                    else None
+                ),
                 "assigned": True,
                 "is_shared": result.get("is_shared", False),
                 "assignment_source": result.get("assignment_source"),
@@ -334,6 +351,15 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
             status_info.get("is_shared") if status_info else None,
             status_info.get("instance_id") if status_info else None,
         )
+
+        if (
+            status_info
+            and status_info.get("instance_id")
+            and status_info.get("instance_id") != AUTOSCALING_POOL_INSTANCE_ID
+        ):
+            status_info["instance_id_hash"] = get_instance_hash_cached(
+                status_info["instance_id"], ROUTING_SECRET_KEY
+            )
 
         return {
             "user_id": current_user.uid,

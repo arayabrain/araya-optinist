@@ -26,6 +26,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from studio.app.dir_path import DIRPATH
 
+INDEX_HTML_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+}
+
 
 class SPARoutingMiddleware:
     """
@@ -94,11 +99,15 @@ class SPARoutingMiddleware:
         # Check if build exists, otherwise serve no-build page
         if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
             return self.build_templates.TemplateResponse(
-                "index.html", {"request": request}
+                "index.html",
+                {"request": request},
+                headers=INDEX_HTML_CACHE_HEADERS,
             )
         else:
             return self.public_templates.TemplateResponse(
-                "no-built-pages.html", {"request": request}
+                "no-built-pages.html",
+                {"request": request},
+                headers=INDEX_HTML_CACHE_HEADERS,
             )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

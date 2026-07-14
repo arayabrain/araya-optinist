@@ -17,7 +17,7 @@ from studio.app.common.core.subscription.constants import (
 )
 from studio.app.common.core.subscription.stripe_service import (
     StripeService,
-    get_stripe_customer_by_email,
+    get_or_create_stripe_customer,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
@@ -301,12 +301,8 @@ async def reactivate_user_subscription(
 
         sub_data, current_plan = current_subscription_result
 
-        # Get Stripe customer
-        customer = await get_stripe_customer_by_email(current_user.email)
-        if not customer:
-            raise HTTPException(
-                status_code=404, detail="No Stripe customer found for user"
-            )
+        # Get Stripe customer (unified lookup: DB first, then Stripe API)
+        customer = await get_or_create_stripe_customer(db, current_user)
 
         # Get active or trialing Stripe subscription
         # First try to find active subscription
@@ -380,16 +376,14 @@ async def reactivate_user_subscription(
 
 @router.get("/payment-methods/default", response_model=Optional[PaymentMethodResponse])
 async def get_user_default_payment_method(
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return await StripeService.get_default_payment_method(user)
+    return await StripeService.get_default_payment_method(db, user)
 
 
 @router.get("/payment-methods", response_model=List[PaymentMethodResponse])
-async def get_user_payment_methods(
-    user: User = Depends(get_current_user),
-):
-    # return await StripeService.handle_get_user_payment_methods(user)
+async def get_user_payment_methods():
     """
     This endpoint is currently not in use
     """
@@ -400,10 +394,7 @@ async def get_user_payment_methods(
 
 
 @router.post("/payment-methods/setup-intent", response_model=CreateSetupIntentResponse)
-async def setup_intent(
-    user: User = Depends(get_current_user),
-):
-    # await StripeService.create_setup_intent(user)
+async def setup_intent():
     """
     This endpoint is currently not in use
     """
@@ -416,11 +407,7 @@ async def setup_intent(
 @router.put("/payment-methods", response_model=UpdatePaymentMethodResponse)
 async def update_default_payment_method(
     payment_method_id: str,
-    user: User = Depends(get_current_user),
 ):
-    # return await StripeService.update_default_payment_method(
-    #     user, payment_method_id
-    # )
     """
     This endpoint is currently not in use
     """
@@ -433,9 +420,7 @@ async def update_default_payment_method(
 @router.delete("/payment-methods/{payment_method_id}")
 async def delete_payment_method(
     payment_method_id: str,
-    user: User = Depends(get_current_user),
 ):
-    # return await StripeService.delete_payment_method(user, payment_method_id)
     """
     This endpoint is currently not in use
     """
@@ -506,10 +491,21 @@ async def validate_checkout_session(
                 message="An internal error occurred. Please contact support.",
             )
 
-        # Find user by email
-        user = db.query(UserModel).filter(UserModel.email == customer_email).first()
+        # Find user by email. Filter active=True so a soft-deleted user
+        # (active=0) with the same email doesn't shadow the new active user
+        # after a re-registration — get_user_subscription only matches active
+        # users, so resolving to the inactive row would always return None
+        # and the UI would stay on "Activation Pending" (issue #629 P5).
+        user = (
+            db.query(UserModel)
+            .filter(
+                UserModel.email == customer_email,
+                UserModel.active.is_(True),
+            )
+            .first()
+        )
         if not user:
-            logger.error(f"No user found with email {customer_email}")
+            logger.error(f"No active user found with email {customer_email}")
             return CheckoutValidationResponse(
                 status=CheckoutValidationStatus.WEBHOOK_FAILED,
                 message="An internal error occurred. Please contact support.",
@@ -642,14 +638,15 @@ async def get_user_invoices(
 
         logger.debug(f"Fetching invoices for user {user_id} with email {user.email}")
 
-        # Find Stripe customer by email
-        stripe_customers = stripe.Customer.list(email=user.email, limit=1)
+        # Find Stripe customer (read-only — don't create if missing)
+        from studio.app.common.core.subscription.stripe_service import (
+            get_stripe_customer,
+        )
 
-        if not stripe_customers.data:
+        customer = await get_stripe_customer(db, current_user)
+        if not customer:
             logger.info(f"No Stripe customer found for user {user_id}")
             return []
-
-        customer = stripe_customers.data[0]
 
         # Get all invoices for this customer
         invoices = stripe.Invoice.list(
@@ -743,7 +740,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
         logger.info(f"Processing event type: {event_type}")
 
-        WebhookService.dispatch_webhook_event(db, event_type, data)
+        await WebhookService.dispatch_webhook_event(db, event_type, data)
 
         logger.info(f"Successfully processed {event_type}")
         return {"received": True, "processed": event_type}

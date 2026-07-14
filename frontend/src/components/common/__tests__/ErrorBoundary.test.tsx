@@ -20,14 +20,21 @@ const ControllableThrowError = () => {
 
 describe("ErrorBoundary", () => {
   const originalConsoleError = console.error
+  let originalLocation: Location
 
   beforeEach(() => {
     console.error = jest.fn()
+    originalLocation = window.location
   })
 
   afterEach(() => {
     console.error = originalConsoleError
     shouldThrowExternal = false
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    })
   })
 
   it("should render children when no error occurs", () => {
@@ -115,6 +122,7 @@ describe("ErrorBoundary", () => {
     Object.defineProperty(window, "location", {
       value: { reload: reloadMock },
       writable: true,
+      configurable: true,
     })
 
     render(
@@ -139,5 +147,87 @@ describe("ErrorBoundary", () => {
     )
 
     expect(screen.getByText("An unexpected error occurred")).toBeInTheDocument()
+  })
+
+  it("should reload the page when a ChunkLoadError is thrown", () => {
+    const reloadMock = jest.fn()
+    Object.defineProperty(window, "location", {
+      value: { reload: reloadMock },
+      writable: true,
+      configurable: true,
+    })
+    sessionStorage.removeItem("chunk-reload-attempted")
+
+    const ThrowChunkError = () => {
+      const error = new Error("Loading chunk 17 failed.")
+      error.name = "ChunkLoadError"
+      throw error
+    }
+
+    render(
+      <ErrorBoundary>
+        <ThrowChunkError />
+      </ErrorBoundary>,
+    )
+
+    expect(reloadMock).toHaveBeenCalledTimes(1)
+    sessionStorage.removeItem("chunk-reload-attempted")
+  })
+
+  it("should not log or call onError for a ChunkLoadError", () => {
+    const reloadMock = jest.fn()
+    Object.defineProperty(window, "location", {
+      value: { reload: reloadMock },
+      writable: true,
+      configurable: true,
+    })
+    sessionStorage.removeItem("chunk-reload-attempted")
+    const onError = jest.fn()
+
+    const ThrowChunkError = () => {
+      const error = new Error("Loading chunk 17 failed.")
+      error.name = "ChunkLoadError"
+      throw error
+    }
+
+    render(
+      <ErrorBoundary onError={onError}>
+        <ThrowChunkError />
+      </ErrorBoundary>,
+    )
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalledWith(
+      "ErrorBoundary caught an error:",
+      expect.anything(),
+      expect.anything(),
+    )
+    sessionStorage.removeItem("chunk-reload-attempted")
+  })
+
+  it("should show the error UI when the reload guard suppresses the reload", () => {
+    const reloadMock = jest.fn()
+    Object.defineProperty(window, "location", {
+      value: { reload: reloadMock },
+      writable: true,
+      configurable: true,
+    })
+    sessionStorage.setItem("chunk-reload-attempted", "1")
+
+    const ThrowChunkError = () => {
+      const error = new Error("Loading chunk 17 failed.")
+      error.name = "ChunkLoadError"
+      throw error
+    }
+
+    render(
+      <ErrorBoundary>
+        <ThrowChunkError />
+      </ErrorBoundary>,
+    )
+
+    expect(reloadMock).not.toHaveBeenCalled()
+    expect(screen.getByText("Something went wrong")).toBeInTheDocument()
+    sessionStorage.removeItem("chunk-reload-attempted")
   })
 })

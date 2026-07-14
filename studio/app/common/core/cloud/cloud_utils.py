@@ -712,10 +712,17 @@ async def get_user_subscription_plan(user_id: int) -> Dict[str, Any]:
 
             # Extract subscription information from user context
             plan_name = getattr(user, "subscription_plan_name", PlanName.FREE)
+            # getattr (not user.has_active_subscription) because `user` may be a
+            # raw row rather than a full User schema; the property is evaluated
+            # when present, else we fall back to non-premium.
             has_active = getattr(user, "has_active_subscription", False)
 
-            # Determine tier - Premium users should get priority even in grace period
-            is_premium = plan_name and plan_name.lower() == SubscriptionType.PREMIUM
+            # Determine tier from plan name and active status
+            is_premium = bool(
+                has_active
+                and plan_name
+                and plan_name.lower() == SubscriptionType.PREMIUM
+            )
             tier = SubscriptionType.PREMIUM if is_premium else SubscriptionType.FREE
 
             logger.info(f"User {user_id} subscription tier: {tier} (plan: {plan_name})")

@@ -18,6 +18,7 @@ os.environ["RDS_PASSWORD"] = "test_password"
 os.environ["RDS_DATABASE"] = "test_db"
 os.environ["FREE_IDLE_TIMEOUT_HOURS"] = "2"
 os.environ["PREMIUM_IDLE_TIMEOUT_HOURS"] = "2"
+os.environ["ENV_PREFIX"] = "test"
 os.environ[
     "AUTOSCALING_TARGET_GROUP_ARN"
 ] = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/test/abc123"
@@ -52,6 +53,19 @@ def mock_boto3():
     """Mock boto3 clients"""
     with patch("common_user_manager.boto3") as mock_boto:
         yield mock_boto
+
+
+def split_boto3_clients(mock_boto3):
+    """Wire boto3.client to return a distinct mock per service name.
+
+    The Lambda creates separate elbv2 and cloudwatch clients; sharing one mock
+    would let an alarm delete on the wrong client pass undetected.
+    """
+    mock_elbv2 = MagicMock()
+    mock_cloudwatch = MagicMock()
+    clients = {"elbv2": mock_elbv2, "cloudwatch": mock_cloudwatch}
+    mock_boto3.client.side_effect = lambda service, *a, **k: clients[service]
+    return mock_elbv2, mock_cloudwatch
 
 
 class TestRecoverStaleWorkflowCounts:
@@ -160,10 +174,10 @@ class TestCheckPremiumUserInactivity:
         mock_context, mock_cursor = mock_db_connection
         mock_cursor.fetchall.return_value = [
             {
-                "user_id": "premium1",
+                "user_id": 123,
                 "target_group_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
-                    "targetgroup/premium1/xyz"
+                    "targetgroup/premium-123-tg/xyz"
                 ),
                 "alb_rule_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
@@ -172,8 +186,7 @@ class TestCheckPremiumUserInactivity:
             }
         ]
 
-        mock_elbv2 = MagicMock()
-        mock_boto3.client.return_value = mock_elbv2
+        mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
         result = common_user_manager.check_premium_user_inactivity()
 
@@ -182,6 +195,10 @@ class TestCheckPremiumUserInactivity:
         # Verify ALB cleanup was called
         mock_elbv2.delete_rule.assert_called_once()
         mock_elbv2.delete_target_group.assert_called_once()
+        # Verify the per-TG unhealthy-host alarm was cleaned up on CloudWatch
+        mock_cloudwatch.delete_alarms.assert_called_once_with(
+            AlarmNames=["test-premium-123-tg-unhealthy-hosts"]
+        )
         # Verify database deletion
         mock_context.commit.assert_called_once()
 
@@ -196,8 +213,7 @@ class TestCheckPremiumUserInactivity:
             }
         ]
 
-        mock_elbv2 = MagicMock()
-        mock_boto3.client.return_value = mock_elbv2
+        mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
         result = common_user_manager.check_premium_user_inactivity()
 
@@ -205,16 +221,17 @@ class TestCheckPremiumUserInactivity:
         # Verify ALB cleanup was NOT called for standby
         mock_elbv2.delete_rule.assert_not_called()
         mock_elbv2.delete_target_group.assert_not_called()
+        mock_cloudwatch.delete_alarms.assert_not_called()
 
     def test_partial_failure(self, mock_db_connection, mock_boto3):
         """Test when some users fail to logout"""
         mock_context, mock_cursor = mock_db_connection
         mock_cursor.fetchall.return_value = [
             {
-                "user_id": "user1",
+                "user_id": 123,
                 "target_group_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
-                    "targetgroup/user1/xyz"
+                    "targetgroup/premium-123-tg/xyz"
                 ),
                 "alb_rule_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
@@ -222,10 +239,10 @@ class TestCheckPremiumUserInactivity:
                 ),
             },
             {
-                "user_id": "user2",
+                "user_id": 456,
                 "target_group_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
-                    "targetgroup/user2/xyz"
+                    "targetgroup/premium-456-tg/xyz"
                 ),
                 "alb_rule_arn": (
                     "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
@@ -234,10 +251,9 @@ class TestCheckPremiumUserInactivity:
             },
         ]
 
-        mock_elbv2 = MagicMock()
+        mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
         # First user succeeds, second fails
         mock_elbv2.delete_rule.side_effect = [None, Exception("ALB error")]
-        mock_boto3.client.return_value = mock_elbv2
 
         result = common_user_manager.check_premium_user_inactivity()
 

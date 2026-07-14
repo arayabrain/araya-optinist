@@ -409,6 +409,95 @@ class TestRoutingIDValidation:
                     assert len(sent_messages) == 2
                     assert sent_messages[0]["status"] == 403
 
+    @pytest.mark.asyncio
+    async def test_mismatched_routing_id_rejected_for_free_user(self):
+        """A free-tier user sending a mismatched x-routing-id (e.g. stolen
+        from a premium user) must be rejected with 403.  Unconditional
+        validation prevents tier-bypass via ALB header spoofing."""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            SecureRoutingMiddleware,
+        )
+        from studio.app.common.core.mode import MODE
+
+        mock_app = AsyncMock()
+        middleware = SecureRoutingMiddleware(app=mock_app)
+
+        scope = {
+            "type": "http",
+            "path": "/api/test",
+            "headers": [
+                (b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode()),
+                (b"x-routing-id", b"stolen_premium_routing_id"),
+            ],
+        }
+
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
+
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_FREE,
+                ):
+                    await middleware(scope, AsyncMock(), mock_send)
+
+                    # Must be rejected with 403 — unconditional validation
+                    assert len(sent_messages) == 2
+                    assert sent_messages[0]["status"] == 403
+
+    @pytest.mark.asyncio
+    async def test_mismatched_routing_id_still_rejected_for_premium(self):
+        """Regression: premium users with mismatched routing IDs must still
+        be rejected with 403."""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            SecureRoutingMiddleware,
+        )
+        from studio.app.common.core.mode import MODE
+
+        mock_app = AsyncMock()
+        middleware = SecureRoutingMiddleware(app=mock_app)
+
+        scope = {
+            "type": "http",
+            "path": "/api/test",
+            "headers": [
+                (b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode()),
+                (b"x-routing-id", b"wrong_routing_id"),
+            ],
+        }
+
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
+
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_PREMIUM,
+                ):
+                    await middleware(scope, AsyncMock(), mock_send)
+
+                    # Should be rejected with 403
+                    assert len(sent_messages) == 2
+                    assert sent_messages[0]["status"] == 403
+
 
 class TestCacheInvalidation:
     """Test cache invalidation on subscription changes"""
@@ -720,6 +809,184 @@ class TestCORSConfiguration:
             "user_middleware) so it adds headers before "
             "CORS exposes them"
         )
+
+
+class TestInstanceHash:
+    """Test generate_instance_hash function and X-Served-By-Instance header"""
+
+    def test_generate_instance_hash_deterministic(self):
+        """generate_instance_hash produces deterministic output for the same input"""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            generate_instance_hash,
+        )
+
+        hash1 = generate_instance_hash("i-0abc123def456", "test-secret")
+        hash2 = generate_instance_hash("i-0abc123def456", "test-secret")
+        assert hash1 == hash2
+        assert len(hash1) == 16  # 16 hex chars
+
+    def test_generate_instance_hash_differs_from_routing_id(self):
+        """
+        generate_instance_hash output differs from generate_routing_id
+            for the same input (domain separation)
+        """
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            generate_instance_hash,
+            generate_routing_id,
+        )
+
+        same_input = "i-0abc123def456"
+        secret = "test-secret"
+
+        instance_hash = generate_instance_hash(same_input, secret)
+        routing_id = generate_routing_id(same_input, secret)
+
+        assert (
+            instance_hash != routing_id
+        ), "instance hash and routing id must differ due to domain separation"
+
+    def test_generate_instance_hash_different_instances(self):
+        """Different instance IDs produce different hashes"""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            generate_instance_hash,
+        )
+
+        hash1 = generate_instance_hash("i-instance-A", "test-secret")
+        hash2 = generate_instance_hash("i-instance-B", "test-secret")
+        assert hash1 != hash2
+
+    @pytest.mark.asyncio
+    async def test_served_by_instance_header_on_premium_response(self):
+        """X-Served-By-Instance header is present on authenticated premium responses"""
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            ROUTING_SECRET_KEY,
+            SecureRoutingMiddleware,
+            generate_instance_hash,
+        )
+        from studio.app.common.core.mode import MODE
+
+        mock_app = AsyncMock()
+        middleware = SecureRoutingMiddleware(app=mock_app)
+
+        scope = {
+            "type": "http",
+            "path": "/api/test",
+            "headers": [(b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode())],
+        }
+
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        async def mock_receive():
+            return {"type": "http.request"}
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
+
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_PREMIUM,
+                ):
+                    with patch(
+                        "studio.app.common.core.middleware.secure_routing_middleware."
+                        "_get_instance_id",
+                        return_value="i-test-instance-123",
+                    ):
+
+                        async def mock_app_impl(scope, receive, send):
+                            await send(
+                                {
+                                    "type": "http.response.start",
+                                    "status": 200,
+                                    "headers": [],
+                                }
+                            )
+
+                        middleware.app = mock_app_impl
+                        await middleware(scope, mock_receive, mock_send)
+
+                        response_start = sent_messages[0]
+                        headers = dict(response_start["headers"])
+                        assert b"x-served-by-instance" in headers
+
+                        expected_hash = generate_instance_hash(
+                            "i-test-instance-123", ROUTING_SECRET_KEY
+                        )
+                        assert (
+                            headers[b"x-served-by-instance"] == expected_hash.encode()
+                        )
+
+    @pytest.mark.asyncio
+    async def test_served_by_instance_header_on_free_response(self):
+        """
+        X-Served-By-Instance header is present
+            on authenticated free-tier responses too
+        """
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            SecureRoutingMiddleware,
+        )
+        from studio.app.common.core.mode import MODE
+
+        mock_app = AsyncMock()
+        middleware = SecureRoutingMiddleware(app=mock_app)
+
+        scope = {
+            "type": "http",
+            "path": "/api/test",
+            "headers": [(b"authorization", b"Bearer " + TEST_JWT_TOKEN.encode())],
+        }
+
+        sent_messages = []
+
+        async def mock_send(message):
+            sent_messages.append(message)
+
+        async def mock_receive():
+            return {"type": "http.request"}
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            with patch(
+                "studio.app.common.core.middleware.secure_routing_middleware."
+                "extract_uid_from_firebase_jwt"
+            ) as mock_extract:
+                mock_extract.return_value = (TEST_UID, None)
+
+                with patch(
+                    "studio.app.common.core.middleware.secure_routing_middleware."
+                    "get_user_tier_cached",
+                    return_value=TEST_TIER_FREE,
+                ):
+                    with patch(
+                        "studio.app.common.core.middleware.secure_routing_middleware."
+                        "_get_instance_id",
+                        return_value="i-free-instance-456",
+                    ):
+
+                        async def mock_app_impl(scope, receive, send):
+                            await send(
+                                {
+                                    "type": "http.response.start",
+                                    "status": 200,
+                                    "headers": [],
+                                }
+                            )
+
+                        middleware.app = mock_app_impl
+                        await middleware(scope, mock_receive, mock_send)
+
+                        response_start = sent_messages[0]
+                        headers = dict(response_start["headers"])
+                        # Free tier still gets X-Served-By-Instance
+                        assert b"x-served-by-instance" in headers
+                        # But not routing ID
+                        assert b"x-routing-id" not in headers
 
 
 if __name__ == "__main__":

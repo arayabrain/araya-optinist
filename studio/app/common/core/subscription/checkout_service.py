@@ -5,6 +5,7 @@ import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -35,7 +36,6 @@ from studio.app.common.schemas.subscriptions import (
 )
 
 logger = AppLogger.get_logger()
-STRIPE_CALLBACK_URL = SubscriptionService.get_base_url()
 
 
 class CheckoutService:
@@ -180,7 +180,12 @@ class CheckoutService:
         db: Session, user_id: int, provider_id: int, customer_id: str
     ) -> SubscriptionUserAccount:
         """
-        Create or update user account with payment provider
+        Create or update user account with payment provider.
+
+        Handles re-registration: if a user deletes their account and
+        re-registers with the same email, the Stripe customer ID is reused.
+        The old row (from the deleted user) is reassigned to the new user_id
+        to satisfy the unique constraint on provider_customer_id.
 
         Args:
             db: Database session
@@ -200,17 +205,39 @@ class CheckoutService:
             .first()
         )
 
-        if not user_account:
-            user_account = SubscriptionUserAccount(
-                user_id=user_id,
-                provider_id=provider_id,
-                provider_customer_id=customer_id,
-            )
-            db.add(user_account)
-        else:
+        if user_account:
             user_account.provider_customer_id = customer_id
             user_account.updated_at = SubscriptionService.get_current_datetime()
+            return user_account
 
+        # Check if this Stripe customer ID already exists (e.g., from a
+        # deleted user who re-registered with the same email). Reassign
+        # the row to the new user instead of creating a duplicate.
+        existing_by_customer = (
+            db.query(SubscriptionUserAccount)
+            .filter(
+                SubscriptionUserAccount.provider_customer_id == customer_id,
+            )
+            .first()
+        )
+
+        if existing_by_customer:
+            logger.info(
+                f"Reassigning Stripe customer {customer_id} from "
+                f"user {existing_by_customer.user_id} to user {user_id} "
+                f"(re-registration)"
+            )
+            existing_by_customer.user_id = user_id
+            existing_by_customer.provider_id = provider_id
+            existing_by_customer.updated_at = SubscriptionService.get_current_datetime()
+            return existing_by_customer
+
+        user_account = SubscriptionUserAccount(
+            user_id=user_id,
+            provider_id=provider_id,
+            provider_customer_id=customer_id,
+        )
+        db.add(user_account)
         return user_account
 
     @staticmethod
@@ -337,26 +364,60 @@ class CheckoutService:
         )
 
         if existing_subscription:
-            # Update existing subscription
-            existing_subscription.plan_id = plan_id
-            existing_subscription.sync_status = SyncStatus.SYNCED
-            existing_subscription.expiration = expiration_date
-            existing_subscription.scheduled_downgrade = False
-            existing_subscription.updated_at = (
-                SubscriptionService.get_current_datetime()
+            return CheckoutService._apply_subscription_update(
+                existing_subscription, plan_id, expiration_date
             )
-            return existing_subscription.id
-        else:
-            # Create new subscription
-            new_subscription = UserSubscription(
-                plan_id=plan_id,
-                user_id=user_id,
-                expiration=expiration_date,
-                sync_status=SyncStatus.SYNCED,
-            )
-            db.add(new_subscription)
-            db.flush()  # Get ID without committing
+
+        # Create new subscription. ``subscription_users.user_id`` is unique,
+        # and SELECT ... FOR UPDATE does not lock a row that doesn't exist
+        # yet — so concurrent webhook deliveries (e.g. ``checkout.session.
+        # completed`` racing ``customer.subscription.created``) can both
+        # reach this branch and one will hit IntegrityError. Guard the
+        # insert with a SAVEPOINT and, on conflict, fall back to selecting
+        # + updating the row that the other delivery just created. This
+        # makes the upsert idempotent and avoids a spurious 500 -> Stripe
+        # retry.
+        try:
+            with db.begin_nested():
+                new_subscription = UserSubscription(
+                    plan_id=plan_id,
+                    user_id=user_id,
+                    expiration=expiration_date,
+                    sync_status=SyncStatus.SYNCED,
+                )
+                db.add(new_subscription)
+                db.flush()  # Get ID without committing
             return new_subscription.id
+        except IntegrityError:
+            logger.warning(
+                "Concurrent insert detected for subscription_users "
+                f"user_id={user_id}; falling back to update"
+            )
+            existing_subscription = (
+                db.query(UserSubscription)
+                .filter(UserSubscription.user_id == user_id)
+                .with_for_update()
+                .first()
+            )
+            if existing_subscription is None:
+                # The conflict implies a row exists; if we still can't find
+                # it, surface the original error rather than swallow it.
+                raise
+            return CheckoutService._apply_subscription_update(
+                existing_subscription, plan_id, expiration_date
+            )
+
+    @staticmethod
+    def _apply_subscription_update(
+        subscription: UserSubscription, plan_id: int, expiration_date: datetime
+    ) -> int:
+        """Apply the standard field updates to an existing subscription row."""
+        subscription.plan_id = plan_id
+        subscription.sync_status = SyncStatus.SYNCED
+        subscription.expiration = expiration_date
+        subscription.scheduled_downgrade = False
+        subscription.updated_at = SubscriptionService.get_current_datetime()
+        return subscription.id
 
     @staticmethod
     def get_subscription_account(
@@ -664,31 +725,15 @@ class CheckoutService:
             # Create Stripe checkout session using the price ID from the database
             try:
                 logger.debug("Initializing Stripe")
-                subscription_account = CheckoutService.get_subscription_account(
-                    db, user.id
+
+                # Unified customer lookup: DB first, then Stripe API, then
+                # create. Prevents duplicate Stripe customers.
+                from studio.app.common.core.subscription.stripe_service import (
+                    get_or_create_stripe_customer,
                 )
 
-                if subscription_account:
-                    customer_id = subscription_account.provider_customer_id
-                else:
-                    # Create new Stripe customer
-                    stripe_customer = stripe.Customer.create(
-                        email=user.email,
-                        name=getattr(user, "name", ""),
-                        metadata={"user_id": str(user.id)},
-                    )
-                    customer_id = stripe_customer.id
-
-                    # Save the customer to database to prevent duplicates
-                    provider_id = CheckoutService.get_or_create_stripe_provider(db)
-                    CheckoutService.create_or_update_user_account(
-                        db, user.id, provider_id, customer_id
-                    )
-                    db.commit()
-                    logger.debug(
-                        f"Created and saved new Stripe customer {customer_id} "
-                        f"for user {user.id}"
-                    )
+                stripe_customer = await get_or_create_stripe_customer(db, user)
+                customer_id = stripe_customer.id
 
                 # Check if user already has an active subscription in Stripe
                 # that wasn't synced to DB (e.g., server was down during
@@ -729,6 +774,7 @@ class CheckoutService:
                 is_first_time_user = not (has_db_purchase or has_stripe_purchase)
 
                 # Prepare subscription parameters
+                stripe_callback_url = SubscriptionService.get_base_url()
                 subscription_params = {
                     "payment_method_types": [
                         PAYMENT_METHOD_TYPE_CARD,
@@ -742,10 +788,10 @@ class CheckoutService:
                     ],
                     "mode": "subscription",
                     "success_url": (
-                        f"{STRIPE_CALLBACK_URL}/subscription/thanks"
+                        f"{stripe_callback_url}/subscription/thanks"
                         "?session_id={CHECKOUT_SESSION_ID}"
                     ),
-                    "cancel_url": f"{STRIPE_CALLBACK_URL}/subscription",
+                    "cancel_url": f"{stripe_callback_url}/subscription",
                     "customer": customer_id,
                     "client_reference_id": str(user.id),
                     "metadata": {

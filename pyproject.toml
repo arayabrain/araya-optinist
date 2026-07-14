@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "araya-optinist"
 description = "Cloud-based Calcium Imaging Pipeline Tool"
-version = "1.1.6"
+version = "1.1.9"
 license = "GPL-3.0"
 authors = ["ARAYA <optinist-support@araya.org>"]
 readme = "README.md"
@@ -148,6 +148,7 @@ testpaths = "/app/studio/tests"
 env = [
   "OPTINIST_DIR=/app/studio/test_data",
   "IS_TEST=True",
+  "IS_STANDALONE=True",
   "REMOTE_STORAGE_TYPE=1",  # See .env
   "MOCK_STORAGE_DIR=/tmp/studio/mock_storage",  # See .env
 

@@ -2233,15 +2233,15 @@ def test_visualization_sync(workspace_id: str, unique_id: str, token: str) -> di
     """
     Test tiered visualization sync endpoint.
 
-    Calls POST /outputs/sync/{workspace_id}/{unique_id} which:
+    Calls POST /api/visualizations/sync/{workspace_id}/{unique_id} which:
     1. Downloads only JSON and TIFF files (sync_mode="visualization")
     2. Triggers background task to download PKL/NWB files
 
     This tests the new tiered sync approach for faster visualization loading.
     """
-    url = f"{get_api_base_url()}/outputs/sync/{workspace_id}/{unique_id}"
+    url = f"{get_api_base_url()}/api/visualizations/sync/{workspace_id}/{unique_id}"
     headers = get_auth_headers(token)
-    endpoint = "POST /outputs/sync/{workspace_id}/{unique_id}"
+    endpoint = "POST /api/visualizations/sync/{workspace_id}/{unique_id}"
 
     try:
         print(f"Testing visualization_sync for {workspace_id}/{unique_id}...")
@@ -2391,7 +2391,7 @@ def run_test_lazy_sync(email: str) -> dict:
     print(f"{'PASS' if results['rename'] else 'FAIL'}")
 
     # Test 4: visualization sync (tiered sync - JSON/TIFF first, PKL/NWB background)
-    print("\n      [d] POST /outputs/sync (visualization_sync)")
+    print("\n      [d] POST /api/visualizations/sync (visualization_sync)")
     clear_local_visualization_files(ws_id, unique_id)
     result = test_visualization_sync(ws_id, unique_id, token)
     results["visualization_sync"] = result.get("status") == "success"

@@ -38,3 +38,15 @@ cd studio && poetry run pytest tests/app/ -m "not heavier_processing"
 ```
 
 Tests live in `studio/tests/` and `studio/app/optinist/microscopes/tests/`. Conftest at `studio/tests/app/conftest.py`. Backend tests may require env vars -- see `docker-compose.test.yml` for `PYTHONPATH`, `STRIPE_*`, etc.
+
+### E2E release tests (Playwright, from `frontend/`)
+
+Browser tests automating release verification, with stable per-feature test
+IDs (`AUTH-01`, `WF-04`, ...). They need a running environment and a test
+account:
+
+```
+yarn test:e2e
+```
+
+Full setup, credentials, coverage matrix, and troubleshooting: `frontend/e2e/README.md`.

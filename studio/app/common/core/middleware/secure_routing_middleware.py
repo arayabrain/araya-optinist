@@ -31,6 +31,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
+from studio.app.common.core.middleware.user_activity_middleware import (
+    TIER_FREE,
+    TIER_PREMIUM,
+    _get_instance_id,
+)
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 
@@ -43,6 +48,53 @@ ROUTING_SECRET_KEY = os.environ.get("ROUTING_SECRET_KEY", "dev-key-not-for-produ
 _tier_cache = {}
 _TIER_CACHE_TTL = 300  # 5 minutes
 _MAX_CACHE_SIZE = 10000  # Prevent unbounded growth
+
+# Instance hash cache: instance_id is stable per process, so cache avoids
+# recomputing HMAC on every request and lets us log the mapping exactly once.
+_instance_hash_cache: dict[str, str] = {}
+
+
+def generate_instance_hash(instance_id: str, secret_key: str) -> str:
+    """Generate non-reversible hash of instance ID using HMAC-SHA256.
+
+    Uses domain-separated key ("instance:" prefix) to ensure the output
+    never collides with routing IDs generated from UIDs.
+
+    Args:
+        instance_id: EC2 instance ID (e.g., "i-0abc123def456")
+        secret_key: Secret key for HMAC signature
+
+    Returns:
+        16-character hex string (64 bits of entropy)
+    """
+    domain_key = f"instance:{secret_key}"
+    signature = hmac.new(
+        domain_key.encode("utf-8"), instance_id.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return signature[:16]
+
+
+def get_instance_hash_cached(instance_id: str, secret_key: str) -> str:
+    """Return cached instance hash, logging the mapping on first computation.
+
+    The mapping is logged exactly once per instance_id so that operators can
+    trace an X-Served-By-Instance header value back to the raw EC2 instance ID
+    during incident investigation.  The secret_key is not included in the cache
+    key because ROUTING_SECRET_KEY is constant within a process.  The raw
+    instance ID is safe to include in backend logs — the HMAC exists only to
+    avoid exposing it to the browser client.
+    """
+    if instance_id in _instance_hash_cache:
+        return _instance_hash_cache[instance_id]
+
+    instance_hash = generate_instance_hash(instance_id, secret_key)
+    _instance_hash_cache[instance_id] = instance_hash
+    logger.info(
+        "[routing] instance hash mapping: instance_id=%s -> " "x-served-by-instance=%s",
+        instance_id,
+        instance_hash,
+    )
+    return instance_hash
 
 
 def generate_routing_id(uid: str, secret_key: str) -> str:
@@ -122,15 +174,19 @@ def get_user_tier_cached(uid: str) -> str:
         try:
             user = db.query(User).filter(User.uid == uid).first()
             if not user:
-                return "free"
+                return TIER_FREE
 
             # Check if user has active subscription
             subscription_data = SubscriptionService.get_user_subscription(db, user.id)
             if subscription_data:
                 _, plan = subscription_data
-                tier = "premium" if plan.id == SubscriptionPlanIds.PREMIUM else "free"
+                tier = (
+                    TIER_PREMIUM
+                    if plan.id == SubscriptionPlanIds.PREMIUM
+                    else TIER_FREE
+                )
             else:
-                tier = "free"
+                tier = TIER_FREE
 
             # Update cache
             _tier_cache[uid] = (tier, current_time)
@@ -139,7 +195,7 @@ def get_user_tier_cached(uid: str) -> str:
             db.close()
     except Exception as e:
         logger.warning(f"Failed to query user tier for {uid}: {e}")
-        return "free"
+        return TIER_FREE
 
 
 class SecureRoutingMiddleware:
@@ -205,7 +261,10 @@ class SecureRoutingMiddleware:
         # Get tier with caching
         tier = get_user_tier_cached(uid)
 
-        # Validate routing ID if present in request (detect header spoofing)
+        # Validate routing ID if present in request (detect header spoofing).
+        # Unconditional for all tiers — prevents a free-tier caller from
+        # attaching a stolen premium routing_id and being routed to a
+        # premium-dedicated instance by the ALB.
         routing_id_header = headers.get(b"x-routing-id", b"").decode()
         if routing_id_header:
             expected_routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
@@ -236,9 +295,19 @@ class SecureRoutingMiddleware:
                 headers.append((b"x-user-tier", tier.encode()))
 
                 # Only add routing ID for premium users
-                if tier == "premium":
+                if tier == TIER_PREMIUM:
                     routing_id = generate_routing_id(uid, ROUTING_SECRET_KEY)
                     headers.append((b"x-routing-id", routing_id.encode()))
+
+                # Add instance identity header for all authenticated responses.
+                # The frontend compares this against the expected instance hash
+                # to detect ALB fallback.
+                instance_id = _get_instance_id()
+                if instance_id:
+                    instance_hash = get_instance_hash_cached(
+                        instance_id, ROUTING_SECRET_KEY
+                    )
+                    headers.append((b"x-served-by-instance", instance_hash.encode()))
 
                 message["headers"] = headers
 
