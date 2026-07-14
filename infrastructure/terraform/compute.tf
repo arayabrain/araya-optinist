@@ -179,18 +179,16 @@ resource "aws_launch_template" "ecs" {
   }
 
   user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
-    tier                  = "free"
-    cluster_name          = aws_ecs_cluster.main.name
-    git_branch            = var.git_branch
-    git_repo              = var.git_repo
-    firebase_config_json  = var.firebase_config_json
-    firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", local.ecr_repository_url)[0]
-    ecr_repository_url    = local.ecr_repository_url
-    efs_id                = aws_efs_file_system.snmk.id
-    db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
-    swap_device_name      = "/dev/xvds"
+    tier               = "free"
+    cluster_name       = aws_ecs_cluster.main.name
+    git_branch         = var.git_branch
+    git_repo           = var.git_repo
+    ecr_registry       = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url = local.ecr_repository_url
+    efs_id             = aws_efs_file_system.snmk.id
+    db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb       = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name   = "/dev/xvds"
   }))
   tag_specifications {
     resource_type = "instance"
@@ -412,18 +410,16 @@ resource "aws_launch_template" "premium" {
   }
 
   user_data = base64encode(templatefile("${path.module}/../scripts/ecs-user-data.sh", {
-    tier                  = "premium"
-    cluster_name          = aws_ecs_cluster.main.name
-    git_branch            = var.git_branch
-    git_repo              = var.git_repo
-    firebase_config_json  = var.firebase_config_json
-    firebase_private_json = var.firebase_private_json
-    ecr_registry          = split("/", local.ecr_repository_url)[0]
-    ecr_repository_url    = local.ecr_repository_url
-    efs_id                = aws_efs_file_system.snmk.id
-    db_host               = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb          = 32768 # 32GB swap for workflow memory spikes
-    swap_device_name      = "/dev/xvds"
+    tier               = "premium"
+    cluster_name       = aws_ecs_cluster.main.name
+    git_branch         = var.git_branch
+    git_repo           = var.git_repo
+    ecr_registry       = split("/", local.ecr_repository_url)[0]
+    ecr_repository_url = local.ecr_repository_url
+    efs_id             = aws_efs_file_system.snmk.id
+    db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
+    swap_size_mb       = 32768 # 32GB swap for workflow memory spikes
+    swap_device_name   = "/dev/xvds"
   }))
 
   tag_specifications {
