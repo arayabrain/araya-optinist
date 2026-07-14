@@ -28,6 +28,7 @@ infrastructure/terraform/
 ├── free_manager.tf              # Free tier Lambda functions and scheduling
 ├── common_user_manager.tf       # Shared user lifecycle Lambda function
 ├── lambda_layers.tf             # Shared Lambda layer (aws_constants)
+├── deploy_info.tf               # Apply-time git provenance → ECS cluster tags (see "Deployment Provenance")
 │
 ├── backends/
 │   ├── production.hcl           # S3 backend config → subscr-optinist-for-cloud-tfstate
@@ -110,9 +111,37 @@ locals {
 }
 
 # Examples:
-# Production: subscr-optinist-app-storage, subscr-optinist-cloud-ecs-cluster
-# Development: development-optinist-app-storage, development-optinist-cloud-ecs-cluster
+# Production: subscr-optinist-app-storage, subscr-optinist-cloud-cluster
+# Development: development-optinist-app-storage, development-optinist-cloud-cluster
 ```
+
+---
+
+## Deployment Provenance (Apply Traceability)
+
+To make the *actually-applied* infrastructure version verifiable from the running
+environment, each `terraform apply` records which `infrastructure/` git revision it was
+applied from. This mirrors the Docker `/app/BUILD_INFO` concept (image provenance) at the
+infrastructure layer.
+
+| File | Role |
+| --- | --- |
+| `scripts/terraform_build_info.sh` | Emits the apply-time git commit/branch/dirty as JSON (no `jq` dependency) |
+| `deploy_info.tf` | `data.external.tf_build_info` runs the script at apply time |
+| `compute.tf` (`aws_ecs_cluster.main`) | Stamps `TfGitCommit` / `TfGitBranch` tags from that data |
+
+Design notes:
+
+- The commit is stamped onto a **single** long-lived resource (the ECS cluster), not via
+  `provider.default_tags`, so only that one resource changes on a real deploy instead of
+  every taggable resource.
+- The tag value changes **only when the git commit changes**, so no-op applies produce no
+  diff.
+- No timestamp is stored in the tag — "when was the last change-bearing apply" is already
+  answered by the state file's `LastModified` in the S3 backend bucket.
+
+See [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md) → "Check Which Git
+Revision Was Applied" for how to read it back.
 
 ---
 
