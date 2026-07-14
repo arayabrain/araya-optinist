@@ -1,8 +1,9 @@
 name: E2E Release Tests
 
-# Scheduled workflows run only from the default branch (develop-main), and
-# check out that branch — no ref pinning needed. workflow_dispatch also
-# defaults to develop-main in the Actions UI.
+# Runs the LOCAL docker stack in the runner (db + backend via docker compose,
+# frontend via yarn start) — it does NOT test the deployed AWS environment.
+# Scheduled runs fire only from the default branch (develop-main) and check out
+# that branch; workflow_dispatch also defaults to develop-main.
 on:
   schedule:
     - cron: "0 0 * * 1" # Mondays 00:00 UTC = 09:00 JST
