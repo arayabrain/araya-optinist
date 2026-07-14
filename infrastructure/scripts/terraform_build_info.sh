@@ -21,7 +21,9 @@ cd "$(dirname "$0")/.."
 
 git_commit=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+# `|| true` keeps the dirty check non-fatal under `set -e`
+git_status=$(git status --porcelain 2>/dev/null || true)
+if [ -n "$git_status" ]; then
   git_dirty="true"
 else
   git_dirty="false"

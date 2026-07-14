@@ -111,8 +111,8 @@ locals {
 }
 
 # Examples:
-# Production: subscr-optinist-app-storage, subscr-optinist-cloud-ecs-cluster
-# Development: development-optinist-app-storage, development-optinist-cloud-ecs-cluster
+# Production: subscr-optinist-app-storage, subscr-optinist-cloud-cluster
+# Development: development-optinist-app-storage, development-optinist-cloud-cluster
 ```
 
 ---

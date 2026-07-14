@@ -446,19 +446,24 @@ commit changes, so no-op applies produce no diff.
 > compute plane the app runs on — so only that one resource changes on a real deploy.
 
 ```bash
-# <ENV> = production (subscr) | development
-aws ecs describe-clusters \
-  --clusters <ENV>-optinist-cloud-cluster \
+# Get the cluster name for the active environment from Terraform state
+# (unambiguous — returns exactly one name, even when dev and prod share an account)
+CLUSTER_NAME=$(terraform output -raw ecs_cluster_name)
+
+# Note: ECS tags use lowercase `key` (unlike EC2's `Key`)
+aws ecs describe-clusters --clusters "$CLUSTER_NAME" \
   --include TAGS --region ap-northeast-1 \
-  --query 'clusters[0].tags[?starts_with(Key, `Tf`)]' --output table
+  --query 'clusters[0].tags[?starts_with(key, `Tf`)]' --output table
 ```
 
 > To see *when* the last change-bearing apply ran, check the state file's `LastModified`
 > in the environment's state bucket (a no-op apply does not rewrite state, so it reflects
-> the last apply that actually changed something):
+> the last apply that actually changed something). The bucket name matches the active
+> environment: `subscr-optinist-for-cloud-tfstate` (production) or
+> `development-optinist-for-cloud-tfstate` (development).
 >
 > ```bash
-> aws s3api head-object --bucket <ENV>-optinist-for-cloud-tfstate \
+> aws s3api head-object --bucket <STATE_BUCKET> \
 >   --key terraform.tfstate --region ap-northeast-1 --query 'LastModified' --output text
 > ```
 
