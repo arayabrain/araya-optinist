@@ -81,16 +81,29 @@ export class RoutingService {
   }
 
   /**
+   * Whether the user has active premium routing credentials in memory.
+   * Both premiumAssigned (confirmed by /assign) and routingToken (seeded
+   * from the X-Routing-ID response header) must be present.
+   *
+   * Single source of truth consumed by getRoutingHeaders() and
+   * requiresPremiumRouting() — keeps the two in sync by construction.
+   */
+  private hasActiveRoutingCredentials(): boolean {
+    return !!this.routingToken && this.premiumAssigned
+  }
+
+  /**
    * Get routing headers for the current user request
    * Returns the backend-issued non-reversible routing ID and user tier
    */
   getRoutingHeaders(): Record<string, string> {
-    if (!this.routingToken || !this.premiumAssigned) {
+    if (!this.hasActiveRoutingCredentials()) {
       return {}
     }
 
     const headers: Record<string, string> = {
-      [RoutingHeaders.ROUTING_ID]: this.routingToken,
+      // Safe: hasActiveRoutingCredentials() guarantees routingToken is non-null
+      [RoutingHeaders.ROUTING_ID]: this.routingToken!,
     }
 
     // Use routingInfo.user_tier if available, fall back to stored tier
@@ -112,8 +125,10 @@ export class RoutingService {
   }
 
   /**
-   * Update routing information for a user
-   * Note: This maintains user tier info but no longer sets client-controlled headers
+   * Update routing information for a user.
+   * Note: This maintains user tier info but no longer sets client-controlled headers.
+   * For non-premium users, also clears stale premiumAssigned and premiumInstanceId
+   * to prevent downgrade state leaks.
    */
   updateRoutingInfo(user: UserDTO): void {
     const isPremium = this.isPremiumUser(user)
@@ -129,6 +144,17 @@ export class RoutingService {
     // Persist tier to localStorage
     this.storedTier = userTier
     this.saveTierToStorage(userTier)
+
+    // When the authoritative source (/users/me) says the user is not
+    // premium, clear any stale assignment state left in localStorage.
+    // This prevents a downgraded user from retaining premiumAssigned=true,
+    // which would cause requiresPremiumRouting() and getRoutingHeaders()
+    // to behave as if the user is still premium (affects the logout
+    // free-user cleanup path in AuthUtils and the 503 fallback gate).
+    if (!isPremium) {
+      this.setPremiumAssigned(false)
+      this.setPremiumInstanceId(null)
+    }
 
     this.lastFetch = Date.now()
   }
@@ -147,6 +173,27 @@ export class RoutingService {
     this.clearTierFromStorage()
     this.clearPremiumAssignedFromStorage()
     this.clearPremiumInstanceIdFromStorage()
+  }
+
+  /**
+   * Clear only the routing token (not tier, routing info, or premium flags).
+   * Used on premium release to prevent stale token reuse on reassignment.
+   */
+  clearRoutingToken(): void {
+    this.routingToken = null
+    this.clearTokenFromStorage()
+  }
+
+  /**
+   * Reset routing state for a premium release.
+   * Clears premiumAssigned, premiumInstanceId, and routingToken together.
+   * Use this in both same-tab and cross-tab release paths to keep them
+   * in sync and prevent (premiumAssigned=true, token=null) deadlocks.
+   */
+  resetForRelease(): void {
+    this.setPremiumAssigned(false)
+    this.setPremiumInstanceId(null)
+    this.clearRoutingToken()
   }
 
   /**
@@ -230,10 +277,22 @@ export class RoutingService {
   }
 
   /**
-   * Check if user requires premium routing
+   * Check if user requires premium routing.
+   *
+   * Returns true when either:
+   *  - routingInfo (set by /users/me) indicates premium, OR
+   *  - localStorage-backed credentials are active (survives page reload
+   *    even when routingInfo is null).
+   *
+   * The second clause delegates to hasActiveRoutingCredentials(), the
+   * same predicate used by getRoutingHeaders(), so the 503 fallback
+   * gate is aligned with header emission by construction.
    */
   requiresPremiumRouting(): boolean {
-    return this.routingInfo?.requires_premium_routing || false
+    return (
+      (this.routingInfo?.requires_premium_routing ?? false) ||
+      this.hasActiveRoutingCredentials()
+    )
   }
 
   /**
@@ -257,8 +316,7 @@ export class RoutingService {
   private isPremiumUser(user: UserDTO): boolean {
     return (
       user.subscription_plan_name === PlanName.PREMIUM &&
-      (user.subscription_status === SubscriptionStatus.PREMIUM ||
-        user.subscription_status === SubscriptionStatus.LIMIT_GRACE)
+      user.subscription_status === SubscriptionStatus.PREMIUM
     )
   }
 

@@ -14,7 +14,7 @@ import React, {
   useRef,
 } from "react"
 import { flushSync } from "react-dom"
-import { useSelector } from "react-redux"
+import { useDispatch, useSelector } from "react-redux"
 
 import {
   assignPremiumInstance,
@@ -36,8 +36,10 @@ import {
   useInstanceUnreachableMachine,
 } from "contexts/premium/useInstanceUnreachableMachine"
 import { useSleepDetection } from "hooks/useSleepDetection"
+import { getMe } from "store/slice/User/UserActions"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
-import { RootState } from "store/store"
+import { AppDispatch, RootState } from "store/store"
+import { logout as authLogout } from "utils/auth/AuthUtils"
 import {
   CrossTabLeaderElection,
   syncActivityAcrossTabs,
@@ -58,6 +60,18 @@ const MAX_POLL_INTERVAL_MS = 60000
 const MAX_POLL_ATTEMPTS = 40
 const BACKOFF_MULTIPLIER = 1.5
 const ERROR_BACKOFF_MULTIPLIER = 2
+// When polling returns assignment=null after a retryable assign response,
+// re-trigger assignPremiumInstance() every N polls instead of only polling
+// status. This handles the case where the assign API timed out without
+// actually creating an assignment (e.g., lock contention).
+const ASSIGN_RETRY_POLL_THRESHOLD = 3
+// Maximum number of re-trigger assign attempts before stopping.
+// Independent of pollAttempts so that finalizeDedicatedAssignment (which
+// resets pollAttempts to 0) cannot remove the overall ceiling.
+// Only reset when confirmed reachable (instanceUnreachable → false).
+const MAX_RETRIGGER_ATTEMPTS = 5
+// 5 min poll to detect subscription expiry; lower if tighter detection needed
+const SUBSCRIPTION_CHECK_INTERVAL_MS = 5 * 60 * 1000
 
 // sessionStorage keys — per-tab persistence across page refreshes.
 // Clears automatically when the tab closes.
@@ -150,6 +164,7 @@ export const PremiumAssignmentProvider: React.FC<{
   children: React.ReactNode
 }> = ({ children }) => {
   const currentUser = useSelector((state: RootState) => state.user.currentUser)
+  const dispatch = useDispatch<AppDispatch>()
   // Track logout generation to detect stale closures
   const logoutGeneration = useSelector(selectLogoutGeneration)
 
@@ -171,6 +186,13 @@ export const PremiumAssignmentProvider: React.FC<{
   // useRef (not useState) so the flag is set synchronously and survives
   // StrictMode double-invocations without triggering extra renders.
   const hasAttemptedRef = useRef(ssRead(SS_HAS_ATTEMPTED) === "true")
+
+  // Bumped to re-fire the auto-assign effect after inactivity release.
+  // Unlike hasAttemptedRef (which is also false on initial mount), this ref
+  // is only true after an explicit inactivity release — preventing the
+  // duplicate-/assign regression.
+  const [autoAssignGeneration, setAutoAssignGeneration] = useState(0)
+  const needsReassignAfterReleaseRef = useRef(false)
 
   // Polling state with backoff
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
@@ -194,9 +216,28 @@ export const PremiumAssignmentProvider: React.FC<{
   const leaderElectionRef = useRef<CrossTabLeaderElection | null>(null)
   const beaconTokenRef = useRef<string | null>(null)
 
+  // Monotonically increasing generation counter, incremented synchronously
+  // on every release path (autoReleaseOnLogout, cross-tab PREMIUM_RELEASED,
+  // explicit release, logout, MAX_POLL_ATTEMPTS).  The polling callback
+  // captures the value before its first await and re-checks after each
+  // subsequent await.  A mismatch means a release occurred during the
+  // in-flight call — the callback bails instead of resurrecting a released
+  // instance.
+  const releaseGenerationRef = useRef(0)
+  // Bounded counter for re-trigger assign attempts.  Independent of
+  // pollAttempts so that finalizeDedicatedAssignment (which resets
+  // pollAttempts) cannot remove the overall ceiling.  Only reset when
+  // confirmed reachable (instanceUnreachable → false).
+  const retriggerCountRef = useRef(0)
+  // In-flight guard to prevent overlapping re-trigger calls across
+  // concurrent polling callbacks.
+  const isRetriggeringRef = useRef(false)
+
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
+  // Track previous premium status to detect subscription expiry transition
+  const prevIsPremiumRef = useRef(false)
 
   const unreachable = useInstanceUnreachableMachine({
     assignment: state.assignmentResult,
@@ -206,25 +247,41 @@ export const PremiumAssignmentProvider: React.FC<{
   // Calculate premium user status
   const isPremiumUser =
     currentUser?.subscription_plan_name === PlanName.PREMIUM &&
-    (currentUser?.subscription_status === SubscriptionStatus.PREMIUM ||
-      currentUser?.subscription_status === SubscriptionStatus.LIMIT_GRACE)
+    currentUser?.subscription_status === SubscriptionStatus.PREMIUM
 
   // Update state when premium status changes
   useEffect(() => {
     setState((prev) => ({ ...prev, isPremiumUser }))
   }, [isPremiumUser])
 
+  // Periodic subscription status refresh for premium users.
+  // Keeps Redux currentUser.subscription_status fresh so we can detect expiry.
+  useEffect(() => {
+    if (!isPremiumUser || !isTabLeader) return
+
+    const interval = setInterval(() => {
+      dispatch(getMe())
+    }, SUBSCRIPTION_CHECK_INTERVAL_MS)
+
+    return () => clearInterval(interval)
+  }, [isPremiumUser, isTabLeader, dispatch])
+
   // Reset flag when user changes
   useEffect(() => {
     hasAttemptedRef.current = false
+    prevIsPremiumRef.current = isPremiumUser
     ssRemove(SS_HAS_ATTEMPTED)
     ssRemove(SS_POLL_ATTEMPTS)
+    // isPremiumUser intentionally excluded — this effect syncs refs on user
+    // identity change only; the auto-logout effect handles isPremiumUser transitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id])
 
   // Reset state when logout generation changes to prevent stale closures
   useEffect(() => {
     if (logoutGeneration > 0) {
       // Clear any cached assignment state on logout
+      releaseGenerationRef.current += 1
       setState({
         isAssigning: false,
         isReleasing: false,
@@ -240,6 +297,7 @@ export const PremiumAssignmentProvider: React.FC<{
       })
       unreachable.reset()
       hasAttemptedRef.current = false
+      prevIsPremiumRef.current = false
       ssRemove(SS_HAS_ATTEMPTED)
       ssRemove(SS_POLL_ATTEMPTS)
     }
@@ -255,6 +313,17 @@ export const PremiumAssignmentProvider: React.FC<{
   useEffect(() => {
     showInactivityWarningRef.current = state.showInactivityWarning
   }, [state.showInactivityWarning])
+
+  // Reset the re-trigger counter when the instance becomes reachable again.
+  // Only a confirmed-reachable response (emitPremiumReachable → state machine
+  // transition) flips instanceUnreachable to false — finalizeDedicatedAssignment
+  // alone does not reset it.
+  useEffect(() => {
+    if (!unreachable.state.instanceUnreachable) {
+      retriggerCountRef.current = 0
+      isRetriggeringRef.current = false
+    }
+  }, [unreachable.state.instanceUnreachable])
 
   // Initialize cross-tab leader election for premium users
   useEffect(() => {
@@ -419,6 +488,7 @@ export const PremiumAssignmentProvider: React.FC<{
       const result = await releasePremiumInstance()
       // Clear beacon token so beforeunload doesn't fire a duplicate release
       beaconTokenRef.current = null
+      releaseGenerationRef.current += 1
       setState((prev) => ({
         ...prev,
         isReleasing: false,
@@ -600,14 +670,32 @@ export const PremiumAssignmentProvider: React.FC<{
       navigator.sendBeacon(BEACON_RELEASE_URL, blob)
       beaconTokenRef.current = null
     }
+    releaseGenerationRef.current += 1
     setState((prev) => ({
       ...prev,
       assignmentResult: null,
       statusResult: null,
     }))
-    routingService.setPremiumAssigned(false)
-    routingService.setPremiumInstanceId(null)
+    routingService.resetForRelease()
   }, [])
+
+  // Auto-logout when subscription expires during an active session.
+  // Detects premium → non-premium transition and releases the instance.
+  useEffect(() => {
+    if (prevIsPremiumRef.current && !isPremiumUser && state.assignmentResult) {
+      // Subscription expired mid-session — release instance + force logout
+      autoReleaseOnLogout()
+      tabSync.broadcastLogout()
+      // Fire-and-forget: authLogout is async and redirect is intentionally not awaited.
+      // skipBackendLogout: autoReleaseOnLogout already released the instance via
+      // sendBeacon, so suppress the free-logout endpoint (user is now free tier).
+      // The ref update on the last line prevents re-trigger on subsequent renders.
+      authLogout({ skipBackendLogout: true })
+    }
+    prevIsPremiumRef.current = isPremiumUser
+    // tabSync.broadcastLogout and authLogout are stable module imports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPremiumUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Inactivity monitoring for premium users
   // Uses refs for lastActivityTime/showInactivityWarning to avoid interval churn
@@ -643,6 +731,13 @@ export const PremiumAssignmentProvider: React.FC<{
         )
         setState((prev) => ({ ...prev, showInactivityWarning: false }))
         autoReleaseOnLogout()
+        // Notify other tabs so they can also re-prime for reassignment.
+        tabSync.broadcastPremiumReleased()
+        // Reset the assignment guard so autoAssignOnLogin can run again.
+        hasAttemptedRef.current = false
+        ssRemove(SS_HAS_ATTEMPTED)
+        // Flag that the next user gesture should trigger reassignment.
+        needsReassignAfterReleaseRef.current = true
       } else if (
         timeSinceLastActivity >= oneHourMs &&
         !showInactivityWarningRef.current
@@ -674,15 +769,19 @@ export const PremiumAssignmentProvider: React.FC<{
   }, [isPremiumUser, currentUser, state.assignmentResult, autoReleaseOnLogout])
 
   // Sleep/wake detection callback (Cases 50-51)
+  // Send a backend heartbeat to keep the instance alive, but do NOT reset
+  // the frontend inactivity timer.  Device wake (e.g. macOS Power Nap) is
+  // not a user interaction — only explicit gestures ("Stay Active" button)
+  // should reset the 2h inactivity countdown.
   const handleDeviceWake = useCallback(() => {
     if (!isPremiumUser || !state.assignmentResult) return
-    recordActivity().catch((error) => {
+    sendPremiumHeartbeat().catch((error) => {
       // eslint-disable-next-line no-console
-      console.warn("Failed to record activity after wake:", error)
+      console.warn("Failed to send heartbeat after wake:", error)
     })
-  }, [isPremiumUser, state.assignmentResult, recordActivity])
+  }, [isPremiumUser, state.assignmentResult])
 
-  // Detect sleep/wake cycles and refresh activity status (Cases 50-51)
+  // Detect sleep/wake cycles and send backend heartbeat (Cases 50-51)
   useSleepDetection(handleDeviceWake, {
     enabled: isPremiumUser && !!state.assignmentResult,
   })
@@ -693,14 +792,45 @@ export const PremiumAssignmentProvider: React.FC<{
       // Backend has already released this assignment; drop the local token
       // so a later logout/beforeunload doesn't beacon a now-invalid token.
       beaconTokenRef.current = null
+      releaseGenerationRef.current += 1
       setState((prev) => ({
         ...prev,
         assignmentResult: null,
         statusResult: null,
       }))
+      // Mirror the same-tab release path: clear assigned flag, instance ID,
+      // and token together. Without setPremiumAssigned(false), this tab's
+      // in-memory RoutingService stays premiumAssigned=true with token=null
+      // — an unrecoverable state where the interceptor guard blocks
+      // re-seeding and getRoutingHeaders() returns {}.
+      routingService.resetForRelease()
+      // Allow this tab to reassign on next user gesture.
+      hasAttemptedRef.current = false
+      ssRemove(SS_HAS_ATTEMPTED)
+      needsReassignAfterReleaseRef.current = true
     })
     return unsubscribe
   }, [])
+
+  // Re-fire auto-assign after inactivity auto-release when user resumes activity.
+  // Guarded by needsReassignAfterReleaseRef (not hasAttemptedRef) so that
+  // normal initial-mount clicks never bump the counter — avoiding the
+  // duplicate-/assign.
+  useEffect(() => {
+    if (!isPremiumUser) return
+    const onActivity = () => {
+      if (needsReassignAfterReleaseRef.current) {
+        needsReassignAfterReleaseRef.current = false
+        setAutoAssignGeneration((g) => g + 1)
+      }
+    }
+    window.addEventListener("pointerdown", onActivity)
+    window.addEventListener("keydown", onActivity)
+    return () => {
+      window.removeEventListener("pointerdown", onActivity)
+      window.removeEventListener("keydown", onActivity)
+    }
+  }, [isPremiumUser])
 
   // Auto-assign when premium user is detected
   useEffect(() => {
@@ -713,7 +843,7 @@ export const PremiumAssignmentProvider: React.FC<{
         hasCurrentUser: !!currentUser,
       })
     }
-  }, [isPremiumUser, currentUser, autoAssignOnLogin])
+  }, [isPremiumUser, currentUser, autoAssignOnLogin, autoAssignGeneration])
 
   // Reset polling state when user changes or gets a dedicated instance
   useEffect(() => {
@@ -722,6 +852,35 @@ export const PremiumAssignmentProvider: React.FC<{
       setPollAttempts(0)
     }
   }, [state.assignmentResult?.is_shared])
+
+  // Shared helper for the polling effect: finalize a dedicated assignment
+  // by updating state, restoring routing, acquiring the beacon token, and
+  // resetting the polling cadence.  Used by both the "status found dedicated"
+  // path and the "re-trigger assign succeeded" path to avoid duplication.
+  const finalizeDedicatedAssignment = async (
+    result: PremiumAssignmentResult,
+    statusResult?: PremiumStatusResult | null,
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      assignmentResult: result,
+      ...(statusResult !== undefined ? { statusResult } : {}),
+      error: null,
+      isRetryableError: false,
+    }))
+    routingService.setPremiumAssigned(true)
+    routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
+    try {
+      const tokenRes = await getBeaconTokenApi()
+      beaconTokenRef.current = tokenRes.data.token
+    } catch {
+      // Non-critical; beacon will fail gracefully.
+      // If this was a 502/503, the axios interceptor already
+      // handled recovery (setPremiumAssigned(false) + retry).
+    }
+    setPollInterval(INITIAL_POLL_INTERVAL_MS)
+    setPollAttempts(0)
+  }
 
   // Poll runs while unreachable so a backend reassignment is caught; a poll result alone never clears unreachable (only a real response does).
   useEffect(() => {
@@ -744,20 +903,44 @@ export const PremiumAssignmentProvider: React.FC<{
       console.warn(
         `Max poll attempts (${MAX_POLL_ATTEMPTS}) reached. Stopping polling.`,
       )
+      // Reset the attempt guard so the user can retry via page refresh
+      // or user gesture without closing the tab entirely.  Covers both
+      // the retryable-assign case (assigned:false) and the instance-lost
+      // case (assigned:true but status returned null).
+      releaseGenerationRef.current += 1
+      if (state.assignmentResult) {
+        hasAttemptedRef.current = false
+        ssRemove(SS_HAS_ATTEMPTED)
+        // Allow re-assignment on the next user gesture (click/keydown).
+        needsReassignAfterReleaseRef.current = true
+      }
       setState((prev) => ({
         ...prev,
+        assignmentResult: null,
         error:
           "No premium instance available after extended wait. " +
           "Please try again later or contact support.",
         isRetryableError: false,
       }))
+      setPollAttempts(0)
+      setPollInterval(INITIAL_POLL_INTERVAL_MS)
       return
     }
 
     const timeoutId = setTimeout(async () => {
+      // Capture release generation before async work. If any release path
+      // fires during an await, the generation will have advanced and we
+      // bail out instead of resurrecting a released instance.
+      const gen = releaseGenerationRef.current
+
       try {
         // /status reads the canonical assignment row; /assign could return shared even after migration completed.
         const status = await getPremiumStatus()
+
+        // Post-await liveness check: if a release occurred during the
+        // status call (autoReleaseOnLogout, cross-tab PREMIUM_RELEASED,
+        // explicit release), bail to avoid resurrecting the instance.
+        if (releaseGenerationRef.current !== gen) return
 
         if (status?.error) {
           // eslint-disable-next-line no-console
@@ -779,18 +962,10 @@ export const PremiumAssignmentProvider: React.FC<{
             "Premium instance now available",
           )
           // The hook clears unreachable on an instance_id change; same-id is a no-op — reachability must come from a real response.
-          setState((prev) => ({
-            ...prev,
-            assignmentResult: result,
-            statusResult: status,
-            error: null,
-            isRetryableError: false,
-          }))
-          // Restore routing: an earlier 502/503 may have flipped premiumAssigned off.
-          routingService.setPremiumAssigned(true)
-          routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
-          setPollInterval(INITIAL_POLL_INTERVAL_MS)
-          setPollAttempts(0)
+          // Also serves as a routing probe — if the dedicated instance is
+          // unreachable, the 502/503 handler will flip premiumAssigned off
+          // and emit unreachable, causing polling to resume automatically.
+          await finalizeDedicatedAssignment(result, status)
         } else {
           if (assignment) {
             setState((prev) => {
@@ -813,6 +988,76 @@ export const PremiumAssignmentProvider: React.FC<{
             })
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
+
+            // Re-trigger assignPremiumInstance() when status returns null
+            // and we have a stale assignmentResult. Two scenarios:
+            //  1. Original assign returned retryable error (assigned:false,
+            //     scaling_in_progress) — polling alone can't create one.
+            //  2. Instance was successfully assigned but later stopped/
+            //     terminated externally (assigned:true, but status now null)
+            //     — the tab silently fell back to free tier.
+            // In both cases, periodically re-call assign so the backend
+            // gets another chance to place the user on a live instance.
+            // NOTE: state.assignmentResult is read from the closure and
+            // must remain in this effect's dependency array (see
+            // deps below) to stay fresh across re-renders.
+            const shouldRetriggerAssign = state.assignmentResult != null
+
+            if (
+              shouldRetriggerAssign &&
+              pollAttempts > 0 &&
+              (pollAttempts + 1) % ASSIGN_RETRY_POLL_THRESHOLD === 0
+            ) {
+              if (retriggerCountRef.current >= MAX_RETRIGGER_ATTEMPTS) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  `[premium-poll] Re-trigger limit (${MAX_RETRIGGER_ATTEMPTS}) reached, ` +
+                    "continuing status-only polling",
+                )
+              } else if (isRetriggeringRef.current) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  "[premium-poll] Re-trigger already in-flight, skipping",
+                )
+              } else {
+                isRetriggeringRef.current = true
+                retriggerCountRef.current += 1
+                // eslint-disable-next-line no-console
+                console.log(
+                  `[premium-poll] Re-triggering assign after ${pollAttempts + 1} null-status polls ` +
+                    `(attempt ${retriggerCountRef.current}/${MAX_RETRIGGER_ATTEMPTS})`,
+                )
+                try {
+                  // Pre-assign liveness re-check
+                  if (releaseGenerationRef.current !== gen) return
+                  const reassignResult = await assignPremiumInstance()
+                  // Post-assign liveness re-check: a release during the
+                  // await means the instance was intentionally freed — do
+                  // not finalize.
+                  if (releaseGenerationRef.current !== gen) return
+                  if (reassignResult?.assigned) {
+                    // eslint-disable-next-line no-console
+                    console.log(
+                      "[premium-poll] Re-assign succeeded:",
+                      reassignResult.instance_id,
+                    )
+                    await finalizeDedicatedAssignment(reassignResult)
+                    return
+                  }
+                  // Still retryable or non-retryable — fall through to
+                  // continue polling with backoff.
+                } catch (retryError) {
+                  // eslint-disable-next-line no-console
+                  console.warn(
+                    "[premium-poll] Re-assign attempt failed:",
+                    retryError,
+                  )
+                  // Fall through to continue polling
+                } finally {
+                  isRetriggeringRef.current = false
+                }
+              }
+            }
           }
           // eslint-disable-next-line no-console
           console.warn(

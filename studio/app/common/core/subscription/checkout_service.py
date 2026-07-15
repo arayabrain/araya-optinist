@@ -180,7 +180,12 @@ class CheckoutService:
         db: Session, user_id: int, provider_id: int, customer_id: str
     ) -> SubscriptionUserAccount:
         """
-        Create or update user account with payment provider
+        Create or update user account with payment provider.
+
+        Handles re-registration: if a user deletes their account and
+        re-registers with the same email, the Stripe customer ID is reused.
+        The old row (from the deleted user) is reassigned to the new user_id
+        to satisfy the unique constraint on provider_customer_id.
 
         Args:
             db: Database session
@@ -200,17 +205,39 @@ class CheckoutService:
             .first()
         )
 
-        if not user_account:
-            user_account = SubscriptionUserAccount(
-                user_id=user_id,
-                provider_id=provider_id,
-                provider_customer_id=customer_id,
-            )
-            db.add(user_account)
-        else:
+        if user_account:
             user_account.provider_customer_id = customer_id
             user_account.updated_at = SubscriptionService.get_current_datetime()
+            return user_account
 
+        # Check if this Stripe customer ID already exists (e.g., from a
+        # deleted user who re-registered with the same email). Reassign
+        # the row to the new user instead of creating a duplicate.
+        existing_by_customer = (
+            db.query(SubscriptionUserAccount)
+            .filter(
+                SubscriptionUserAccount.provider_customer_id == customer_id,
+            )
+            .first()
+        )
+
+        if existing_by_customer:
+            logger.info(
+                f"Reassigning Stripe customer {customer_id} from "
+                f"user {existing_by_customer.user_id} to user {user_id} "
+                f"(re-registration)"
+            )
+            existing_by_customer.user_id = user_id
+            existing_by_customer.provider_id = provider_id
+            existing_by_customer.updated_at = SubscriptionService.get_current_datetime()
+            return existing_by_customer
+
+        user_account = SubscriptionUserAccount(
+            user_id=user_id,
+            provider_id=provider_id,
+            provider_customer_id=customer_id,
+        )
+        db.add(user_account)
         return user_account
 
     @staticmethod
@@ -698,31 +725,15 @@ class CheckoutService:
             # Create Stripe checkout session using the price ID from the database
             try:
                 logger.debug("Initializing Stripe")
-                subscription_account = CheckoutService.get_subscription_account(
-                    db, user.id
+
+                # Unified customer lookup: DB first, then Stripe API, then
+                # create. Prevents duplicate Stripe customers.
+                from studio.app.common.core.subscription.stripe_service import (
+                    get_or_create_stripe_customer,
                 )
 
-                if subscription_account:
-                    customer_id = subscription_account.provider_customer_id
-                else:
-                    # Create new Stripe customer
-                    stripe_customer = stripe.Customer.create(
-                        email=user.email,
-                        name=getattr(user, "name", ""),
-                        metadata={"user_id": str(user.id)},
-                    )
-                    customer_id = stripe_customer.id
-
-                    # Save the customer to database to prevent duplicates
-                    provider_id = CheckoutService.get_or_create_stripe_provider(db)
-                    CheckoutService.create_or_update_user_account(
-                        db, user.id, provider_id, customer_id
-                    )
-                    db.commit()
-                    logger.debug(
-                        f"Created and saved new Stripe customer {customer_id} "
-                        f"for user {user.id}"
-                    )
+                stripe_customer = await get_or_create_stripe_customer(db, user)
+                customer_id = stripe_customer.id
 
                 # Check if user already has an active subscription in Stripe
                 # that wasn't synced to DB (e.g., server was down during

@@ -507,6 +507,33 @@ async def update_user(
         # create firebase user
         firebase_auth.update_user(user_db.uid, email=data.email)
 
+        # Sync email to Stripe customer if user has a subscription account
+        if data.email:
+            import stripe
+
+            from studio.app.common.core.subscription.checkout_service import (
+                CheckoutService,
+            )
+
+            try:
+                stripe_account = CheckoutService.get_subscription_account(
+                    db, user_db.id
+                )
+                if stripe_account:
+                    stripe.Customer.modify(
+                        stripe_account.provider_customer_id,
+                        email=data.email,
+                    )
+                    logger.info(
+                        f"Synced email to Stripe customer "
+                        f"{stripe_account.provider_customer_id} "
+                        f"for user {user_db.id}"
+                    )
+            except stripe.error.StripeError as e:
+                logger.warning(
+                    f"Failed to sync email to Stripe for user {user_db.id}: {e}"
+                )
+
         db.commit()
 
         # Refresh user_db to ensure relationships are loaded
@@ -728,7 +755,9 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         # ----------------------------------------
         try:
             SubscriptionService._ensure_stripe_initialized()
-            await StripeService.handle_cancel_user_subscription(db, user_db)
+            await StripeService.handle_cancel_user_subscription(
+                db, user_db, immediate=True
+            )
             deletion_record.step = DeletionStep.STRIPE_CANCELLED.value
             db.commit()
         except Exception as e:
@@ -903,7 +932,9 @@ async def resume_deletion_from_step(record: UserDeletionRecord, db: Session) -> 
     if current_order < _get_step_order(DeletionStep.STRIPE_CANCELLED):
         try:
             SubscriptionService._ensure_stripe_initialized()
-            await StripeService.handle_cancel_user_subscription(db, user_db)
+            await StripeService.handle_cancel_user_subscription(
+                db, user_db, immediate=True
+            )
             record.step = DeletionStep.STRIPE_CANCELLED.value
             db.commit()
         except Exception as e:

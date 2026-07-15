@@ -77,6 +77,10 @@ CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
+ASSIGN_USER_LOCK_PREFIX = "assign_user_"
+ASSIGN_LOCK_TIMEOUT_SECONDS = (
+    10  # Short acquisition timeout so 409 fallback is reachable within Lambda timeout
+)
 LOCK_TIMEOUT_SECONDS = 60
 
 # Wait before first migration attempt to let instances boot
@@ -2843,30 +2847,24 @@ def get_next_available_priority(
         raise
 
 
-def assign_premium_user(
+def _assign_premium_user_impl(
     user_id: int,
     event: Dict[str, Any],
-    user_uid: Optional[str] = None,
+    user_uid: Optional[str],
+    ec2: "EC2Client",
+    elbv2: "ElasticLoadBalancingv2Client",
+    backend_port: int,
+    vpc_id: str,
+    alb_listener_arn: str,
 ) -> Dict[str, Any]:
-    """Enhanced assignment with standby pool support -
-    prefer stopped instances for fast startup"""
+    """Core premium user assignment logic.
 
-    ec2: "EC2Client" = boto3.client("ec2")
-    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
-    backend_port = PremiumInstanceConfig.get_backend_port()
-
-    try:
-        vpc_id = get_required_env_var("VPC_ID")
-        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
-    except ValueError as e:
-        print(f" Assignment failed - environment configuration error: {str(e)}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps(
-                {"error": "Configuration error", "message": str(e), "assigned": False}
-            ),
-        }
-
+    Called from assign_premium_user UNDER the per-user distributed
+    lock to prevent concurrent calls from corrupting ALB resources
+    (issue #630).  The lock uses ASSIGN_LOCK_TIMEOUT_SECONDS (10 s)
+    so the 409 fallback is reliably reachable within the Lambda
+    invocation timeout (60 s).
+    """
     # Restore pending_release if user refreshed (beacon fired but user is back)
     try:
         restored = restore_pending_release(user_id)
@@ -3751,6 +3749,99 @@ def assign_premium_user(
             print(f"Failed to cleanup DB assignment: {str(db_cleanup_error)}")
 
         raise
+
+
+def assign_premium_user(
+    user_id: int,
+    event: Dict[str, Any],
+    user_uid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Enhanced assignment with standby pool support -
+    prefer stopped instances for fast startup"""
+
+    ec2: "EC2Client" = boto3.client("ec2")
+    elbv2: "ElasticLoadBalancingv2Client" = boto3.client("elbv2")
+    backend_port = PremiumInstanceConfig.get_backend_port()
+
+    try:
+        vpc_id = get_required_env_var("VPC_ID")
+        alb_listener_arn = get_required_env_var("ALB_LISTENER_ARN")
+    except ValueError as e:
+        print(f" Assignment failed - environment configuration error: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps(
+                {"error": "Configuration error", "message": str(e), "assigned": False}
+            ),
+        }
+
+    # Serialize concurrent assign calls for the same user_id.
+    # Without this lock, two concurrent calls can both pass the
+    # "existing assignment?" check and race through TG creation,
+    # causing the second call's orphan-cleanup to delete the first
+    # call's freshly-created target group (issue #630).
+    #
+    # The entire _assign_premium_user_impl runs under the lock.
+    # Lock timeout is short (ASSIGN_LOCK_TIMEOUT_SECONDS = 10) so
+    # the 409 fallback is reliably reachable within the Lambda
+    # invocation timeout (60 s).
+    lock_name = f"{ASSIGN_USER_LOCK_PREFIX}{user_id}"
+    with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
+        if not acquired:
+            # Lock timed out -- another invocation held it.
+            # Check whether that call stored a valid assignment
+            # before giving up.
+            print(
+                f"Per-user assign lock timed out for user {user_id}, "
+                f"checking for completed assignment"
+            )
+            try:
+                existing = get_existing_user_assignment(user_id)
+                if existing:
+                    print(
+                        f"Found assignment completed by concurrent invocation "
+                        f"for user {user_id}: {existing.get('instance_id')}"
+                    )
+                    return {
+                        "statusCode": 200,
+                        "body": json.dumps(
+                            {
+                                "message": f"User {user_id} already assigned to "
+                                f"instance {existing.get('instance_id')}",
+                                "instance_id": existing.get("instance_id"),
+                                "target_group_arn": existing.get("target_group_arn"),
+                                "rule_arn": existing.get("alb_rule_arn"),
+                                "is_shared": bool(existing.get("is_shared", False)),
+                                "assignment_source": "existing",
+                            }
+                        ),
+                    }
+            except Exception as fallback_err:
+                print(f"Fallback assignment check failed: {fallback_err}")
+
+            return {
+                "statusCode": 409,
+                "body": json.dumps(
+                    {
+                        "error": "Assignment in progress",
+                        "message": "Another assignment is in progress "
+                        "for this user. Please retry.",
+                        "assigned": False,
+                    }
+                ),
+            }
+
+        # ── Under lock: full assignment logic ──
+        return _assign_premium_user_impl(
+            user_id,
+            event,
+            user_uid,
+            ec2,
+            elbv2,
+            backend_port,
+            vpc_id,
+            alb_listener_arn,
+        )
 
 
 def invoke_migration_async():

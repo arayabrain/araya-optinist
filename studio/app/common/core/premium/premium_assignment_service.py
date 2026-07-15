@@ -35,6 +35,8 @@ class PremiumStatusCheckError(Exception):
 LAMBDA_TIMEOUT_SECONDS = 60
 LAMBDA_MAX_RETRIES = 2
 LAMBDA_RETRY_BASE_DELAY_SECONDS = 2
+# instance_id the Lambda returns for non-pinned autoscaling-pool assignments.
+AUTOSCALING_POOL_INSTANCE_ID = "autoscaling-pool"
 # Short bound for latency-sensitive callers (e.g. the Stripe webhook path),
 # which must respond quickly. Cleanup that exceeds this is handled by the
 # periodic premium-expiration sweep, so failing open here is safe.
@@ -271,6 +273,23 @@ class PremiumAssignmentService:
                     "message": body.get("message", "Starting standby instance"),
                     "retry_after": retry_after,
                     "requires_retry": True,
+                }
+
+            elif status_code == 409:
+                # Another Lambda invocation is already assigning this user.
+                # The lock holder likely completed by now; retry promptly.
+                body = json.loads(response_payload.get("body", "{}"))
+                logger.warning(
+                    f"Concurrent assignment conflict for user {user_id}, " f"will retry"
+                )
+                return {
+                    "success": False,
+                    "message": body.get(
+                        "message",
+                        "Another assignment in progress. Please retry.",
+                    ),
+                    "requires_retry": True,
+                    "retry_after": 5,
                 }
 
             else:

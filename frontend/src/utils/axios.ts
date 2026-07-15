@@ -200,7 +200,9 @@ const handleUnauthorizedError = async (
 
     if (
       axiosLibrary.isAxiosError(e) &&
-      (e?.response?.status === 400 || e?.response?.status === 401)
+      (e?.response?.status === 400 ||
+        e?.response?.status === 401 ||
+        e?.response?.status === 422)
     ) {
       // eslint-disable-next-line no-console
       console.error("Invalid refresh token, logging out")
@@ -309,19 +311,79 @@ function shouldEmitPremiumReachable(
   return true
 }
 
+/**
+ * Detects when a successful response (200 OK) came from the wrong instance
+ * — indicating ALB fallback after EventBridge cleanup deleted the per-user
+ * rule and target group.
+ *
+ * Returns true only when ALL of:
+ *  1. The request carried premium routing headers
+ *  2. The expected instance ID was known at request time (not startup race)
+ *  3. The response carries an x-served-by-instance header
+ *  4. The serving instance differs from the expected dedicated instance
+ *
+ * When true, the caller should emit premiumUnreachable to trigger the
+ * recovery flow (polling /status + /assign). The warm-up grace period
+ * (DEDICATED_HANDOFF_GRACE_MS) is respected downstream by the
+ * useInstanceUnreachableMachine listener.
+ */
+function isInstanceMismatch(
+  res: AxiosResponse,
+  cfg: CustomAxiosRequestConfig | undefined,
+): boolean {
+  if (!cfg?._hadPremiumHeaders) return false
+  const outgoingInstanceId = cfg._outgoingInstanceId
+  if (!outgoingInstanceId) return false
+  const servedByHeader = RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()
+  const servedByInstance = res.headers[servedByHeader]
+  if (typeof servedByInstance !== "string") return false
+  return servedByInstance !== outgoingInstanceId
+}
+
 axios.interceptors.response.use(
   async (res) => {
+    const cfg = res.config as CustomAxiosRequestConfig | undefined
+
     // Extract routing headers from backend response
     // Note: axios normalizes response header names to lowercase
     const routingIdHeader = RoutingHeaders.ROUTING_ID.toLowerCase()
     const routingId = res.headers[routingIdHeader]
     if (routingId) {
-      routingService.updateRoutingToken(routingId)
+      // Only update the routing token when:
+      //  (a) the user is NOT in premium-assigned mode (initial token seeding), or
+      //  (b) the response came from the verified premium instance, or
+      //  (c) the current token is null (recovery from cleared state).
+      // This prevents non-premium responses (free/public tier 200s after
+      // 502/503 fallback) from overwriting the token while premiumAssigned
+      // is true — breaking the feedback loop described in issue #605.
+      // Condition (c) ensures that (premiumAssigned=true, token=null) is
+      // never a permanent trap — any response carrying X-Routing-ID can
+      // re-seed a missing token. This is safe because the token value is
+      // deterministic (HMAC of UID) and identical across all backends.
+      const isPremiumMode = routingService.isPremiumAssigned()
+      const tokenIsNull = routingService.getRoutingToken() == null
+      const instanceVerified =
+        cfg?._hadPremiumHeaders &&
+        cfg._outgoingInstanceId &&
+        res.headers[RoutingHeaders.SERVED_BY_INSTANCE.toLowerCase()] ===
+          cfg._outgoingInstanceId
+      if (!isPremiumMode || tokenIsNull || instanceVerified) {
+        routingService.updateRoutingToken(routingId)
+      }
     }
 
-    const cfg = res.config as CustomAxiosRequestConfig | undefined
     if (shouldEmitPremiumReachable(res, cfg)) {
       routingService.emitPremiumReachable({
+        url: cfg!.url,
+        status: res.status,
+        sentAt: cfg!._premiumSentAt,
+      })
+    } else if (isInstanceMismatch(res, cfg)) {
+      // Active detection: 200 OK from wrong instance (ALB fallback after
+      // EventBridge cleanup). Stop sending premium headers to prevent
+      // further misrouted requests and trigger the recovery flow.
+      routingService.setPremiumAssigned(false)
+      routingService.emitPremiumUnreachable({
         url: cfg!.url,
         status: res.status,
         sentAt: cfg!._premiumSentAt,

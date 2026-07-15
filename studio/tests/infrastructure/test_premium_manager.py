@@ -12,6 +12,14 @@ TEST_USER_ID = "test_user_12345"
 TEST_INSTANCE_ID = "i-testlambda123"
 
 
+def _always_acquired_lock():
+    """Mock distributed_lock that always grants the lock."""
+    mock = MagicMock()
+    mock.return_value.__enter__ = MagicMock(return_value=True)
+    mock.return_value.__exit__ = MagicMock(return_value=False)
+    return mock
+
+
 class TestPremiumManagerEvents:
     """Handler-level tests with realistic API Gateway events."""
 
@@ -46,11 +54,16 @@ class TestPremiumManagerEvents:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"id": 123}),
-                    # restore_pending_release: no pending_release row
+                    # restore_pending_release (in _assign_premium_user_impl): no pending
                     None,
                     # get_existing_user_assignment: no existing assignment
                     None,
@@ -423,7 +436,10 @@ class TestEarlyCheckAndCleanup:
             "premium_manager.get_existing_user_assignment"
         ) as mock_get_existing, patch(
             "premium_manager.pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_get_existing.return_value = existing_assignment
             mock_connection = setup_db_mock(fetchone_values=[None])
             mock_pymysql.return_value = mock_connection
@@ -462,7 +478,12 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_manager.pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch(
+            "premium_manager.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     None,
@@ -702,7 +723,10 @@ class TestEarlyCheckAndCleanup:
                 "boto3.client"
             ) as mock_boto3, patch(
                 "premium_manager.pymysql.connect"
-            ) as mock_pymysql:
+            ) as mock_pymysql, patch(
+                "premium_manager.distributed_lock",
+                new=_always_acquired_lock(),
+            ):
                 mock_get_existing.return_value = existing_autoscaling_assignment
                 mock_connection = setup_db_mock(fetchone_values=[None])
                 mock_pymysql.return_value = mock_connection
@@ -749,7 +773,10 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ), patch("premium_manager.restore_pending_release") as mock_restore:
+        ), patch("premium_manager.restore_pending_release") as mock_restore, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_restore.return_value = restored_assignment
 
             from premium_manager import assign_premium_user
@@ -793,7 +820,10 @@ class TestEarlyCheckAndCleanup:
             "premium_manager._update_instance_state_to_running"
         ) as mock_update_state, patch(
             "premium_manager.pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
             mock_connection = setup_db_mock(fetchone_values=[None])
@@ -866,7 +896,10 @@ class TestEarlyCheckAndCleanup:
             "premium_manager._update_instance_state_to_running"
         ), patch(
             "premium_manager.pymysql.connect"
-        ) as mock_pymysql:
+        ) as mock_pymysql, patch(
+            "premium_manager.distributed_lock",
+            new=_always_acquired_lock(),
+        ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
             mock_connection = setup_db_mock(fetchone_values=[None])
@@ -959,7 +992,10 @@ class TestEarlyCheckAndCleanup:
                     "boto3.client"
                 ) as mock_boto3, patch(
                     "pymysql.connect"
-                ) as mock_pymysql:
+                ) as mock_pymysql, patch(
+                    "premium_manager.distributed_lock",
+                    new=_always_acquired_lock(),
+                ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
                         fetchone_values=[None] * 20,
@@ -1050,7 +1086,10 @@ class TestEarlyCheckAndCleanup:
                     "boto3.client"
                 ) as mock_boto3, patch(
                     "pymysql.connect"
-                ) as mock_pymysql:
+                ) as mock_pymysql, patch(
+                    "premium_manager.distributed_lock",
+                    new=_always_acquired_lock(),
+                ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
                         fetchone_values=[None] * 20,
@@ -1095,6 +1134,122 @@ class TestEarlyCheckAndCleanup:
             finally:
                 for p in patchers:
                     p.stop()
+
+
+class TestConcurrentAssignLock:
+    """Tests for per-user distributed lock on assign_premium_user (issue #630)."""
+
+    @staticmethod
+    def _lock_ctx(acquired: bool):
+        """Create a mock distributed_lock that returns *acquired*."""
+        mock = MagicMock()
+        mock.return_value.__enter__ = MagicMock(return_value=acquired)
+        mock.return_value.__exit__ = MagicMock(return_value=False)
+        return mock
+
+    def test_lock_not_acquired_no_existing_returns_409(self, mock_env_vars_premium):
+        """When the per-user lock times out and no completed assignment
+        exists, the Lambda returns 409 so the caller retries."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(False),
+        ), patch(
+            "premium_manager.get_existing_user_assignment",
+            return_value=None,
+        ):
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 409
+            body = json.loads(result["body"])
+            assert body["assigned"] is False
+            assert "in progress" in body["message"].lower()
+
+    def test_lock_not_acquired_existing_found_returns_200(self, mock_env_vars_premium):
+        """When the per-user lock times out but the winning call stored
+        an assignment, return 200 with the existing assignment."""
+        existing = {
+            "instance_id": "i-winner",
+            "target_group_arn": "arn:tg/winner",
+            "alb_rule_arn": "arn:rule/winner",
+            "is_shared": 0,
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(False),
+        ), patch(
+            "premium_manager.get_existing_user_assignment",
+            return_value=existing,
+        ):
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["instance_id"] == "i-winner"
+            assert body["assignment_source"] == "existing"
+
+    def test_lock_name_includes_user_id(self, mock_env_vars_premium):
+        """The lock name must include the user_id so different users
+        do not block each other."""
+        lock_mock = self._lock_ctx(True)
+        impl_response = {
+            "statusCode": 200,
+            "body": json.dumps({"instance_id": "i-impl", "assigned": True}),
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=lock_mock,
+        ), patch(
+            "premium_manager._assign_premium_user_impl",
+            return_value=impl_response,
+        ):
+            from premium_manager import (
+                ASSIGN_LOCK_TIMEOUT_SECONDS,
+                ASSIGN_USER_LOCK_PREFIX,
+                assign_premium_user,
+            )
+
+            assign_premium_user(42, {"tier": "premium"}, "uid_42")
+
+            lock_mock.assert_called_once_with(
+                f"{ASSIGN_USER_LOCK_PREFIX}42",
+                timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
+            )
+
+    def test_lock_acquired_calls_impl_under_lock(self, mock_env_vars_premium):
+        """When the lock is acquired, _assign_premium_user_impl is
+        called INSIDE the lock for full mutual exclusion."""
+        impl_response = {
+            "statusCode": 200,
+            "body": json.dumps({"instance_id": "i-new", "assigned": True}),
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch(
+            "premium_manager.distributed_lock",
+            new=self._lock_ctx(True),
+        ), patch(
+            "premium_manager._assign_premium_user_impl",
+            return_value=impl_response,
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+            assert result["statusCode"] == 200
+            body = json.loads(result["body"])
+            assert body["instance_id"] == "i-new"
+            mock_impl.assert_called_once()
 
 
 class TestDictCursorFix:
@@ -1887,6 +2042,9 @@ class TestStandbyReplenishmentAsync:
             ), patch(
                 "premium_manager.pymysql.connect"
             ) as mock_pymysql, patch(
+                "premium_manager.distributed_lock",
+                new=_always_acquired_lock(),
+            ), patch(
                 "boto3.client"
             ) as mock_boto3:
                 mock_pymysql.return_value = setup_db_mock()

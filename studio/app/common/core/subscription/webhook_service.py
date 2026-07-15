@@ -604,33 +604,53 @@ class WebhookService:
             subscription = stripe.Subscription.retrieve(subscription_id)
             current_period_end = subscription["items"]["data"][0]["current_period_end"]
 
-            # Get customer details to find user
-            customer = stripe.Customer.retrieve(customer_id)
-            customer_email = customer.get("email")
-
-            if not customer_email:
-                raise HTTPException(
-                    status_code=400, detail=f"No email found for customer {customer_id}"
-                )
-
-            # Find user by email. Filter active=True so a soft-deleted user
-            # (active=0) with the same email doesn't shadow the new active
-            # user after a re-registration (issue #629 P5).
+            # Find user by customer_id in DB first (most reliable),
+            # then fall back to email lookup from Stripe customer.
             from studio.app.common.models.user import User
 
-            user = (
-                db.query(User)
-                .filter(
-                    User.email == customer_email,
-                    User.active.is_(True),
-                )
+            user = None
+            user_account = (
+                db.query(SubscriptionUserAccount)
+                .filter(SubscriptionUserAccount.provider_customer_id == customer_id)
                 .first()
             )
+            if user_account:
+                user = (
+                    db.query(User)
+                    .filter(
+                        User.id == user_account.user_id,
+                        User.active.is_(True),
+                    )
+                    .first()
+                )
+
+            if not user:
+                # Fall back to email lookup from Stripe customer
+                customer = stripe.Customer.retrieve(customer_id)
+                customer_email = customer.get("email")
+
+                if not customer_email:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No email found for customer {customer_id}",
+                    )
+
+                # Filter active=True so a soft-deleted user (active=0) with
+                # the same email doesn't shadow the new active user after a
+                # re-registration (issue #629 P5).
+                user = (
+                    db.query(User)
+                    .filter(
+                        User.email == customer_email,
+                        User.active.is_(True),
+                    )
+                    .first()
+                )
 
             if not user:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"No active user found with email {customer_email}",
+                    detail=f"No active user found for customer {customer_id}",
                 )
 
             # Find the plan by matching the price or metadata

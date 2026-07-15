@@ -93,6 +93,8 @@ describe("RoutingService", () => {
       const freeUser = createFreeUser()
       routingService.updateRoutingToken("abc123def456")
       routingService.updateRoutingInfo(freeUser)
+      // Note: updateRoutingInfo(freeUser) clears premiumAssigned;
+      // re-set it here to test header format independently of tier logic.
       routingService.setPremiumAssigned(true)
 
       const headers = routingService.getRoutingHeaders()
@@ -148,14 +150,14 @@ describe("RoutingService", () => {
       expect(routingService.requiresPremiumRouting()).toBe(false)
     })
 
-    test("should identify Limit Grace user as premium", () => {
+    test("should identify Limit Grace user as free", () => {
       const graceUser = createPremiumUser({
         subscription_status: SubscriptionStatus.LIMIT_GRACE,
       })
       routingService.updateRoutingInfo(graceUser)
 
-      expect(routingService.getUserTier()).toBe(UserTier.PREMIUM)
-      expect(routingService.requiresPremiumRouting()).toBe(true)
+      expect(routingService.getUserTier()).toBe(UserTier.FREE)
+      expect(routingService.requiresPremiumRouting()).toBe(false)
     })
 
     test("should identify expired premium user as free", () => {
@@ -166,6 +168,60 @@ describe("RoutingService", () => {
 
       expect(routingService.getUserTier()).toBe(UserTier.FREE)
       expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should clear stale premiumAssigned on downgrade (premium → free)", () => {
+      // Setup: user was premium and assigned
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      // User's subscription expires — /users/me now returns free tier
+      routingService.updateRoutingInfo(createFreeUser())
+
+      // Stale assignment state should be cleared
+      expect(routingService.isPremiumAssigned()).toBe(false)
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+      expect(routingService.getRoutingHeaders()).toEqual({})
+      // localStorage cleaned up
+      expect(localStorageMock.getItem("premium_assigned")).toBe("false")
+      expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+    })
+
+    test("should NOT clear premiumAssigned when user is premium", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      routingService.updateRoutingInfo(createPremiumUser())
+
+      // Assignment state preserved for premium users
+      expect(routingService.isPremiumAssigned()).toBe(true)
+      expect(routingService.getPremiumInstanceId()).toBe("inst-hash")
+    })
+
+    test("should clear stale localStorage state after page reload when user has been downgraded", () => {
+      // Simulate stale localStorage from a previous premium session
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("premium_assigned", "true")
+      localStorageMock.setItem("premium_instance_id", "old-inst-hash")
+      localStorageMock.setItem("routing_tier", "premium")
+
+      // Page reload: constructor loads stale state
+      const reloadedService = new RoutingService()
+      // Before /users/me returns, stale state makes it look premium
+      expect(reloadedService.requiresPremiumRouting()).toBe(true)
+
+      // /users/me returns — user is now free tier (downgraded)
+      reloadedService.updateRoutingInfo(createFreeUser())
+
+      // Stale state cleared — correct for a free user
+      expect(reloadedService.requiresPremiumRouting()).toBe(false)
+      expect(reloadedService.isPremiumAssigned()).toBe(false)
+      expect(reloadedService.getPremiumInstanceId()).toBeNull()
+      expect(reloadedService.getRoutingHeaders()).toEqual({})
     })
   })
 
@@ -208,6 +264,157 @@ describe("RoutingService", () => {
       const headers = routingService.getRoutingHeaders()
       expect(headers[RoutingHeaders.ROUTING_ID]).toBe("test-token")
       expect(headers[RoutingHeaders.USER_TIER]).toBe(UserTier.PREMIUM)
+    })
+  })
+
+  describe("requiresPremiumRouting", () => {
+    test("should return true when routingInfo indicates premium", () => {
+      routingService.updateRoutingInfo(createPremiumUser())
+      expect(routingService.requiresPremiumRouting()).toBe(true)
+    })
+
+    test("should return false when routingInfo indicates free", () => {
+      routingService.updateRoutingInfo(createFreeUser())
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return true when premiumAssigned and routingToken are set (no routingInfo)", () => {
+      // Simulates page reload: localStorage state survives but routingInfo is null
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("premium_assigned", "true")
+
+      const newService = new RoutingService()
+
+      expect(newService.requiresPremiumRouting()).toBe(true)
+    })
+
+    test("should return false when premiumAssigned but no routingToken", () => {
+      localStorageMock.setItem("premium_assigned", "true")
+
+      const newService = new RoutingService()
+
+      expect(newService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return false when routingToken exists but premiumAssigned is false", () => {
+      localStorageMock.setItem("routing_id", "stored-token")
+
+      const newService = new RoutingService()
+
+      expect(newService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return false after clearRoutingInfo", () => {
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+
+      routingService.clearRoutingInfo()
+
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should return false after resetForRelease (premiumAssigned cleared)", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+
+      routingService.resetForRelease()
+
+      expect(routingService.requiresPremiumRouting()).toBe(false)
+    })
+
+    test("should stay aligned with getRoutingHeaders — both true or both false", () => {
+      // After page reload with localStorage state
+      localStorageMock.setItem("routing_id", "stored-token")
+      localStorageMock.setItem("premium_assigned", "true")
+      localStorageMock.setItem("routing_tier", "premium")
+
+      const newService = new RoutingService()
+
+      const headersActive =
+        Object.keys(newService.getRoutingHeaders()).length > 0
+      const fallbackActive = newService.requiresPremiumRouting()
+      expect(headersActive).toBe(fallbackActive)
+    })
+  })
+
+  describe("clearRoutingToken", () => {
+    test("should clear token and localStorage but preserve tier and premiumAssigned", () => {
+      const premiumUser = createPremiumUser()
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(premiumUser)
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      routingService.clearRoutingToken()
+
+      expect(routingService.getRoutingToken()).toBeNull()
+      expect(localStorageMock.getItem("routing_id")).toBeNull()
+      // Tier, premiumAssigned, and instanceId must be preserved
+      expect(routingService.getUserTier()).toBe(UserTier.PREMIUM)
+      expect(routingService.isPremiumAssigned()).toBe(true)
+      expect(routingService.getPremiumInstanceId()).toBe("inst-hash")
+      expect(localStorageMock.getItem("routing_tier")).toBe("premium")
+      expect(localStorageMock.getItem("premium_assigned")).toBe("true")
+    })
+
+    test("should cause getRoutingHeaders to return empty (token is null)", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.setPremiumAssigned(true)
+
+      routingService.clearRoutingToken()
+
+      // Even though premiumAssigned is true, token is null → empty headers
+      expect(routingService.getRoutingHeaders()).toEqual({})
+    })
+  })
+
+  describe("resetForRelease", () => {
+    test("should clear premiumAssigned, instanceId, and token together", () => {
+      const premiumUser = createPremiumUser()
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(premiumUser)
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("inst-hash")
+
+      routingService.resetForRelease()
+
+      expect(routingService.isPremiumAssigned()).toBe(false)
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+      expect(routingService.getRoutingToken()).toBeNull()
+      expect(localStorageMock.getItem("routing_id")).toBeNull()
+      expect(localStorageMock.getItem("premium_assigned")).toBe("false")
+      expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+      // Tier and routingInfo are preserved (user is still premium-subscribed)
+      expect(routingService.getUserTier()).toBe(UserTier.PREMIUM)
+    })
+
+    test("should make getRoutingHeaders return empty after release", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.updateRoutingInfo(createPremiumUser())
+      routingService.setPremiumAssigned(true)
+
+      routingService.resetForRelease()
+
+      expect(routingService.getRoutingHeaders()).toEqual({})
+    })
+
+    test("should allow re-seeding after release (premiumAssigned=false path)", () => {
+      routingService.updateRoutingToken("test-token")
+      routingService.setPremiumAssigned(true)
+
+      routingService.resetForRelease()
+
+      // After release, premiumAssigned=false so interceptor can re-seed
+      expect(routingService.isPremiumAssigned()).toBe(false)
+      // Simulate re-seeding
+      routingService.updateRoutingToken("new-token")
+      routingService.setPremiumAssigned(true)
+      routingService.setPremiumInstanceId("new-hash")
+
+      expect(routingService.getRoutingToken()).toBe("new-token")
+      expect(routingService.isPremiumAssigned()).toBe(true)
     })
   })
 

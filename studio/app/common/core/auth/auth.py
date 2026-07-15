@@ -1,5 +1,5 @@
 import json
-from typing import Tuple
+from typing import Optional, Tuple
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
@@ -96,7 +96,13 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
         )
 
 
-async def refresh_current_user_token(refresh_token: str):
+async def refresh_current_user_token(refresh_token: Optional[str]):
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="re-login required",
+        )
+
     token, err = validate_refresh_token(refresh_token)
 
     if err:

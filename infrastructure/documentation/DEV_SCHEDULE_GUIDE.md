@@ -7,13 +7,15 @@ The dev environment automatically starts and stops on a schedule to save costs
 
 | | Start | Stop |
 |---|---|---|
-| **Monday - Friday** | 08:45 JST (23:45 UTC prev day) | 22:00 JST (13:00 UTC) |
+| **Monday - Friday** | 08:00 JST (23:00 UTC prev day) | 22:00 JST (13:00 UTC) |
 | **Saturday - Sunday** | Off | Off |
 
-The environment is completely stopped from **Friday 22:00 JST** until **Monday 08:45 JST**.
+The environment is completely stopped from **Friday 22:00 JST** until **Monday 08:00 JST**.
 
-RDS starts at 08:45 to allow ~15 minutes warm-up. All other services (ASG, NAT, background)
-start at the same time but are typically ready within 5-10 minutes.
+All resources start at 08:00 JST. RDS is restored from a snapshot — the slowest step
+(~10-15 min) — so the database is typically ready by ~08:15. A verify-start pass runs at
+08:15 JST to finish anything deferred during the initial start (notably registering the
+RDS Proxy target once the database is available) and to enable the delayed scaling rules.
 
 ## What Gets Started/Stopped
 
@@ -43,7 +45,7 @@ the next morning. This eliminates AWS's 7-day forced restart, but has implicatio
   only copy of the database while the instance is destroyed. If deleted, the next
   morning's restore will fail.
 - **Morning restore takes ~10-15 minutes** (longer than a simple RDS start). The
-  instance may not be ready until ~09:00 even though the Lambda fires at 08:45.
+  instance may not be ready until ~08:15 even though the Lambda fires at 08:00.
 - **RDS configuration changes** (instance class, parameter group, security groups, etc.)
   in Terraform also need to be reflected in the Lambda's environment variables, otherwise
   the restored instance will use stale settings. The env vars are already wired via
@@ -51,6 +53,10 @@ the next morning. This eliminates AWS's 7-day forced restart, but has implicatio
   if you change RDS config manually in the console.
 
 ## Working After Hours
+
+> All `aws lambda invoke` examples below pass `--cli-binary-format raw-in-base64-out`.
+> AWS CLI v2 decodes `--payload` as base64 by default; without this flag the raw JSON
+> is rejected with `Invalid base64`.
 
 ### Option 1: Skip the Next Stop (Working Late)
 
@@ -62,6 +68,7 @@ with a duration **before** 22:00:
 aws lambda invoke \
   --function-name development-dev-scheduler \
   --payload '{"action":"override","hours":3}' \
+  --cli-binary-format raw-in-base64-out \
   --region ap-northeast-1 \
   /dev/stdout
 ```
@@ -79,6 +86,7 @@ To start the environment outside scheduled hours:
 aws lambda invoke \
   --function-name development-dev-scheduler \
   --payload '{"action":"start"}' \
+  --cli-binary-format raw-in-base64-out \
   --region ap-northeast-1 \
   /dev/stdout
 ```
@@ -94,6 +102,7 @@ To stop the environment immediately:
 aws lambda invoke \
   --function-name development-dev-scheduler \
   --payload '{"action":"stop"}' \
+  --cli-binary-format raw-in-base64-out \
   --region ap-northeast-1 \
   /dev/stdout
 ```
@@ -194,7 +203,7 @@ deleted. Check available snapshots:
 
 ```bash
 aws rds describe-db-snapshots \
-  --db-instance-identifier development-cloud-rds \
+  --db-instance-identifier development-optinist-cloud-rds \
   --query 'DBSnapshots[?contains(DBSnapshotIdentifier, `dev-scheduler`)].[DBSnapshotIdentifier,Status]' \
   --region ap-northeast-1 \
   --output table
@@ -235,6 +244,6 @@ done
 | Scenario | Monthly Compute Cost | Savings |
 |---|---|---|
 | 24/7 operation | ~$200-216 | - |
-| Weekday 9-22 JST only (13h/day, 5 days) | ~$89-94 | ~$111-122 (~54%) |
+| Weekday 08:00-22:00 JST only (14h/day, 5 days) | ~$89-94 | ~$111-122 (~54%) |
 
 Note: ALB (~$16-22/month) runs continuously and is excluded from savings.

@@ -7,12 +7,17 @@
 - **Automatic migration** moves users from shared to dedicated instances, inline when possible and async otherwise
 - **Workflow safety** prevents migration of users with active workflows
 
-> **Sister document:**
+> **Sister documents:**
 > This file focuses on the **assignment flow** — 5-tier priority cascade,
-> standby pool, migration, and release paths. For the **system
-> architecture** — Manager / Cleanup Lambda split, frontend lifecycle,
-> and log playbook — see
-> [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+> standby pool, migration, and release paths.
+> - For the **system architecture** — Manager / Cleanup Lambda split,
+>   frontend lifecycle, and log playbook — see
+>   [PREMIUM_MANAGER_ARCHITECTURE.md](./PREMIUM_MANAGER_ARCHITECTURE.md).
+> - For the **frontend-backend interaction lifecycle** — auto-assign,
+>   polling, re-trigger, inactivity release, concurrent assignment
+>   protection, session boundary state management, instance identity
+>   verification, and circuit breaker — see
+>   [PREMIUM_ROUTING_LIFECYCLE.md](./PREMIUM_ROUTING_LIFECYCLE.md).
 
 ## Key Architectural Principles
 
@@ -1031,32 +1036,22 @@ the tab too hard for the beacon to reach the ALB.
 > truth. Path 4 therefore fires no earlier than 3 h after last
 > activity, plus up to 1 h of scheduler latency.
 
-#### Known limitation: no automatic re-assignment after auto-release
+#### Automatic re-assignment after auto-release
 
 When the 2-hour auto-release fires (`autoReleaseOnLogout()`), the frontend
-clears `assignmentResult`, the warning state, and the beacon token — but it
-does **not** clear the `hasAttemptedAutoAssignment` flag in `sessionStorage`.
-Because `autoAssignOnLogin()` checks this flag before calling `/assign`,
-**no automatic re-assignment occurs** even if the user resumes activity on
-the same tab.
+now automatically re-assigns the user to a premium instance on the next
+user gesture (mouse click or keydown). This was fixed in PR #656 (issue #594).
 
-The backend's `restore_pending_release()` grace window (120 s) exists to
-cover the case where a user returns quickly, but it is unreachable in this
-scenario because the frontend never re-calls `/assign`.
+The mechanism uses `needsReassignAfterReleaseRef` (separate from
+`hasAttemptedRef` to prevent duplicate `/assign` calls) and
+`autoAssignGeneration` to force the `useEffect` re-fire. Cross-tab
+coordination via `PREMIUM_RELEASED` broadcast ensures peer tabs also
+prime for gesture-triggered reassignment.
 
-**User-visible effect:** after the 2-hour auto-release the user remains
-logged in but without premium compute resources, and there is no UI prompt
-to re-acquire them.
-
-**Current workarounds:**
-
-| Action | Why it works |
-|---|---|
-| Log out → log back in | Clears `hasAttemptedAutoAssignment` (flag is reset on logout) |
-| Close the tab → open a new tab | `sessionStorage` is per-tab; the new tab starts with the flag unset |
-
-A page reload (F5) within the same tab does **not** help because
-`sessionStorage` survives reloads.
+> For the full specification of the reassignment-after-release mechanism,
+> including the cross-tab deadlock fix (PR #703) and the `resetForRelease()`
+> cleanup method, see
+> [PREMIUM_ROUTING_LIFECYCLE.md § Reassignment After Release](./PREMIUM_ROUTING_LIFECYCLE.md#5-reassignment-after-release).
 
 #### Post-release: idle-instance handling
 

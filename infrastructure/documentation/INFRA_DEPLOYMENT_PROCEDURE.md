@@ -408,7 +408,7 @@ terraform output alb_dns_name
 terraform output rds_endpoint
 
 # Sensitive output
-terraform output -raw optinist_cloud_user_secret_access_key
+terraform output -raw effective_ami_id
 ```
 
 ### Update a Single Resource
@@ -431,6 +431,41 @@ terraform import -var-file=environments/development.tfvars aws_s3_bucket.app_sto
 # The backend config tells you which state bucket is active
 cat .terraform/terraform.tfstate | python3 -c "import sys,json; print(json.load(sys.stdin)['backend']['config']['bucket'])"
 ```
+
+### Check Which Git Revision Was Applied
+
+Every `terraform apply` stamps the applied `infrastructure/` git revision onto the ECS
+cluster as tags (`TfGitCommit` / `TfGitBranch`), so you can confirm which infrastructure
+version is actually running and detect deploy mistakes. The tag only changes when the git
+commit changes, so no-op applies produce no diff.
+
+> **Why only the ECS cluster is tagged:** the commit is deliberately *not* added to
+> `provider.default_tags`. A default tag would apply the value to every taggable resource,
+> so each new-commit apply would churn dozens of resources' tags at once. Instead it is
+> stamped onto a single long-lived, representative resource — the ECS cluster, which is the
+> compute plane the app runs on — so only that one resource changes on a real deploy.
+
+```bash
+# Get the cluster name for the active environment from Terraform state
+# (unambiguous — returns exactly one name, even when dev and prod share an account)
+CLUSTER_NAME=$(terraform output -raw ecs_cluster_name)
+
+# Note: ECS tags use lowercase `key` (unlike EC2's `Key`)
+aws ecs describe-clusters --clusters "$CLUSTER_NAME" \
+  --include TAGS --region ap-northeast-1 \
+  --query 'clusters[0].tags[?starts_with(key, `Tf`)]' --output table
+```
+
+> To see *when* the last change-bearing apply ran, check the state file's `LastModified`
+> in the environment's state bucket (a no-op apply does not rewrite state, so it reflects
+> the last apply that actually changed something). The bucket name matches the active
+> environment: `subscr-optinist-for-cloud-tfstate` (production) or
+> `development-optinist-for-cloud-tfstate` (development).
+>
+> ```bash
+> aws s3api head-object --bucket <STATE_BUCKET> \
+>   --key terraform.tfstate --region ap-northeast-1 --query 'LastModified' --output text
+> ```
 
 ---
 
