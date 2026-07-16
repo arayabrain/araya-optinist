@@ -498,9 +498,7 @@ class PublishedExperimentSyncJob:
 
         base = os.environ.get("INTERNAL_API_BASE_URL") or f"https://{alb_dns}"
         url = (
-            f"{base}"
-            f"/system-internal/sync-experiment"
-            f"/{workspace_id}/{unique_id}"
+            f"{base}" f"/system-internal/sync-experiment" f"/{workspace_id}/{unique_id}"
         )
         headers = {
             "X-Internal-Secret": internal_secret,
