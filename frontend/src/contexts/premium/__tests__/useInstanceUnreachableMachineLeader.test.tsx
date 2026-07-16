@@ -162,9 +162,12 @@ describe("useInstanceUnreachableMachine — leader-gated side effects", () => {
   test("non-leader tab does NOT write premium_unreachable_snapshot on unreachable", () => {
     // Drive the hook into unreachable state on a non-leader tab. The
     // leader-only write branch must skip — no snapshot key in localStorage.
+    jest.useFakeTimers()
     const { ref } = renderHook({ isTabLeader: false })
 
+    // Past the initial-dedicated warm-up grace so this is a genuine failure.
     act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
       routingService.emitPremiumUnreachable({ status: 503, sentAt: 1 })
     })
 
@@ -173,9 +176,12 @@ describe("useInstanceUnreachableMachine — leader-gated side effects", () => {
   })
 
   test("leader tab writes snapshot when unreachable, and clears it on recovery", () => {
+    jest.useFakeTimers()
     const { ref } = renderHook({ isTabLeader: true })
 
+    // Past the initial-dedicated warm-up grace so this is a genuine failure.
     act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
       routingService.emitPremiumUnreachable({ status: 503, sentAt: 1 })
     })
 
@@ -201,7 +207,9 @@ describe("useInstanceUnreachableMachine — leader-gated side effects", () => {
 
     const { ref } = renderHook({ isTabLeader: true })
 
+    // Past the initial-dedicated warm-up grace so this is a genuine failure.
     act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
       routingService.emitPremiumUnreachable({ status: 503, sentAt: 1 })
     })
     expect(ref.current?.state.instanceUnreachable).toBe(true)
@@ -330,7 +338,7 @@ describe("useInstanceUnreachableMachine — dedicated handoff warm-up grace", ()
     )
   })
 
-  test("grace is single-shot: a second 5xx within the window is NOT suppressed", () => {
+  test("grace is a time-window: every 5xx within the window is suppressed", () => {
     jest.useFakeTimers()
 
     const { ref, rerender } = renderHook({ assignment: shared })
@@ -348,7 +356,8 @@ describe("useInstanceUnreachableMachine — dedicated handoff warm-up grace", ()
     })
     expect(ref.current?.state.instanceUnreachable).toBe(false)
 
-    // Second 5xx still within the original grace window — must flip.
+    // Second 5xx still within the original grace window — also suppressed
+    // (multiple warm-up flaps must all be absorbed, not just the first).
     act(() => {
       jest.advanceTimersByTime(1000)
       routingService.emitPremiumUnreachable({
@@ -357,14 +366,84 @@ describe("useInstanceUnreachableMachine — dedicated handoff warm-up grace", ()
       })
     })
 
-    expect(ref.current?.state.instanceUnreachable).toBe(true)
-    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
-      "instance_unreachable_warmup_suppressed",
+    expect(ref.current?.state.instanceUnreachable).toBe(false)
+    const suppressedCalls = mockLogPremiumUiEvent.mock.calls.filter(
+      ([event]) => event === "instance_unreachable_warmup_suppressed",
+    )
+    expect(suppressedCalls).toHaveLength(2)
+    expect(mockLogPremiumUiEvent).not.toHaveBeenCalledWith(
+      "instance_unreachable",
       expect.anything(),
     )
+
+    // Once the window elapses, a 5xx flips to unreachable as normal.
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS)
+      routingService.emitPremiumUnreachable({
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+    expect(ref.current?.state.instanceUnreachable).toBe(true)
     expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
       "instance_unreachable",
       expect.anything(),
+    )
+  })
+
+  test("initial undefined → dedicated assignment (direct sign-in) arms the grace", () => {
+    // Regression for the false "temporarily unreachable" warning on the first
+    // premium /assign at sign-in: mounting directly on a dedicated instance
+    // (no prior shared/unassigned state) must still arm the warm-up grace, so a
+    // transient warm-up 5xx is suppressed rather than surfaced as a warning.
+    jest.useFakeTimers()
+
+    // Mount straight onto dedicated — no shared/unassigned assignment first.
+    const { ref } = renderHook({ assignment: dedicated })
+
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS - 1)
+      routingService.emitPremiumUnreachable({
+        url: "/api/run",
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    expect(ref.current?.state.instanceUnreachable).toBe(false)
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "instance_unreachable_warmup_suppressed",
+      expect.objectContaining({
+        instance_id: "inst-A",
+        url: "/api/run",
+        status: 503,
+      }),
+    )
+    expect(mockLogPremiumUiEvent).not.toHaveBeenCalledWith(
+      "instance_unreachable",
+      expect.anything(),
+    )
+  })
+
+  test("initial dedicated: a genuine 5xx after the grace window still flips to unreachable", () => {
+    // The safety feature must survive: absorbing warm-up flaps must not mask a
+    // real, persistent unreachable condition once the grace has elapsed.
+    jest.useFakeTimers()
+
+    const { ref } = renderHook({ assignment: dedicated })
+
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
+      routingService.emitPremiumUnreachable({
+        status: 503,
+        sentAt: Date.now(),
+      })
+    })
+
+    expect(ref.current?.state.instanceUnreachable).toBe(true)
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "instance_unreachable",
+      expect.objectContaining({ instance_id: "inst-A", status: 503 }),
     )
   })
 
