@@ -131,7 +131,12 @@ class TestHandleOrphanedData:
     """Test orphaned data handling from terminated instances"""
 
     def test_handle_orphaned_data_terminated_instance(self):
-        """Test cleanup of data from terminated instance"""
+        """Test DB-only cleanup of orphaned assignment from terminated instance.
+
+        When an instance is terminated its EBS is destroyed, so
+        _cleanup_orphaned_assignment should only remove the DB record
+        (no _cleanup_user_data call).
+        """
         mock_assignment = MagicMock()
         mock_assignment.user_id = "123"
         mock_assignment.instance_id = "i-12345"
@@ -149,21 +154,12 @@ class TestHandleOrphanedData:
             ) as mock:
                 mock_session = MagicMock()
                 mock.return_value.__enter__.return_value = mock_session
-                # Mock execute() to return row-like tuples
-                mock_session.execute.return_value.all.return_value = [
-                    (mock_assignment,)
-                ]
-                mock_session.get.return_value = MagicMock(id=123)
-                # Mock Workspace query for _cleanup_orphaned_assignment
                 mock_session.execute.return_value.all.return_value = [
                     (mock_assignment,)
                 ]
 
                 with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
-                    with patch.object(
-                        DataCleanupJob, "_cleanup_user_data", return_value=True
-                    ):
-                        DataCleanupJob._handle_orphaned_data()
+                    DataCleanupJob._handle_orphaned_data()
 
                 mock_session.delete.assert_called_once_with(mock_assignment)
 
@@ -195,7 +191,7 @@ class TestHandleOrphanedData:
                 mock_session.delete.assert_not_called()
 
     def test_handle_orphaned_data_empty_reservations(self):
-        """Test cleanup when EC2 returns empty Reservations"""
+        """Test DB-only cleanup when EC2 returns empty Reservations"""
         mock_assignment = MagicMock()
         mock_assignment.user_id = "123"
         mock_assignment.instance_id = "i-12345"
@@ -207,44 +203,10 @@ class TestHandleOrphanedData:
             mock_ec2.describe_instances.return_value = {"Reservations": []}
 
             with patch(
-                "studio.app.common.core.background" ".cleanup_job.session_scope"
-            ) as mock:
-                mock_session = MagicMock()
-                mock.return_value.__enter__.return_value = mock_session
-                mock_session.execute.return_value.all.return_value = [
-                    (mock_assignment,)
-                ]
-                mock_session.get.return_value = MagicMock(id=123)
-
-                with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
-                    with patch.object(
-                        DataCleanupJob,
-                        "_cleanup_user_data",
-                        return_value=True,
-                    ):
-                        DataCleanupJob._handle_orphaned_data()
-
-                mock_session.delete.assert_called_once_with(mock_assignment)
-
-    def test_handle_orphaned_data_active_workflows(self):
-        """Test no cleanup when workflows are active"""
-        mock_assignment = MagicMock()
-        mock_assignment.instance_id = "i-12345"
-        mock_assignment.active_workflow_count = 1
-
-        with patch("boto3.client") as mock_boto:
-            mock_ec2 = MagicMock()
-            mock_boto.return_value = mock_ec2
-            mock_ec2.describe_instances.return_value = {
-                "Reservations": [{"Instances": [{"State": {"Name": "terminated"}}]}]
-            }
-
-            with patch(
                 "studio.app.common.core.background.cleanup_job.session_scope"
             ) as mock:
                 mock_session = MagicMock()
                 mock.return_value.__enter__.return_value = mock_session
-                # Mock execute() to return row-like tuples
                 mock_session.execute.return_value.all.return_value = [
                     (mock_assignment,)
                 ]
@@ -252,4 +214,158 @@ class TestHandleOrphanedData:
                 with patch.dict("os.environ", {"INSTANCE_ID": "i-current"}):
                     DataCleanupJob._handle_orphaned_data()
 
-                mock_session.delete.assert_not_called()
+                mock_session.delete.assert_called_once_with(mock_assignment)
+
+    def test_handle_orphaned_data_skipped_on_free_tier(self):
+        """Test _handle_orphaned_data is skipped when ENABLE_LOCAL_CLEANUP=1"""
+        import asyncio
+
+        with patch("boto3.client"):
+            with patch.dict(
+                "os.environ",
+                {"INSTANCE_ID": "i-current", "ENABLE_LOCAL_CLEANUP": "1"},
+            ):
+                # run() should NOT call _handle_orphaned_data
+                with patch.object(
+                    DataCleanupJob, "_handle_orphaned_data"
+                ) as mock_orphan:
+                    with patch.object(
+                        DataCleanupJob, "_get_users_for_cleanup", return_value=[]
+                    ):
+                        asyncio.get_event_loop().run_until_complete(
+                            DataCleanupJob.run()
+                        )
+                    mock_orphan.assert_not_called()
+
+    def test_handle_orphaned_data_runs_on_background_service(self):
+        """Test _handle_orphaned_data runs when ENABLE_LOCAL_CLEANUP is not set"""
+        import asyncio
+
+        with patch.dict("os.environ", {"INSTANCE_ID": "i-bg"}, clear=False):
+            # Ensure ENABLE_LOCAL_CLEANUP is not set
+            with patch.dict("os.environ", {}, clear=False):
+                import os as _os
+
+                _os.environ.pop("ENABLE_LOCAL_CLEANUP", None)
+
+                with patch.object(
+                    DataCleanupJob, "_handle_orphaned_data"
+                ) as mock_orphan:
+                    with patch.object(
+                        DataCleanupJob, "_get_users_for_cleanup", return_value=[]
+                    ):
+                        asyncio.get_event_loop().run_until_complete(
+                            DataCleanupJob.run()
+                        )
+                    mock_orphan.assert_called_once()
+
+
+class TestGetCurrentInstanceId:
+    """Test _get_current_instance_id helper"""
+
+    def test_returns_env_var_when_set(self):
+        with patch.dict("os.environ", {"INSTANCE_ID": "i-abc12345"}):
+            assert DataCleanupJob._get_current_instance_id() == "i-abc12345"
+
+    def test_returns_local_when_unset(self):
+        with patch.dict("os.environ", {}, clear=True):
+            assert DataCleanupJob._get_current_instance_id() == "local"
+
+    def test_returns_local_for_empty_string(self):
+        with patch.dict("os.environ", {"INSTANCE_ID": ""}):
+            assert DataCleanupJob._get_current_instance_id() == "local"
+
+
+class TestGetUsersForCleanupInstanceFilter:
+    """Test instance_id filtering in _get_users_for_cleanup"""
+
+    def test_filters_by_instance_id_when_set(self):
+        """When INSTANCE_ID is set, query should include instance_id filter"""
+        with patch.dict("os.environ", {"INSTANCE_ID": "i-abc12345"}):
+            with patch(
+                "studio.app.common.core.background.cleanup_job.session_scope"
+            ) as mock_scope:
+                mock_session = MagicMock()
+                mock_scope.return_value.__enter__.return_value = mock_session
+                mock_session.execute.return_value = iter([])
+
+                result = DataCleanupJob._get_users_for_cleanup()
+
+                assert result == []
+                # Verify the SQL was executed (with instance_id filter)
+                mock_session.execute.assert_called_once()
+                # Check the compiled SQL contains instance_id
+                call_args = mock_session.execute.call_args
+                stmt = call_args[0][0]
+                compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                assert "instance_id" in compiled
+
+    def test_no_filter_in_dev_mode(self):
+        """When INSTANCE_ID is not set (local dev), no instance_id filter"""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch(
+                "studio.app.common.core.background.cleanup_job.session_scope"
+            ) as mock_scope:
+                mock_session = MagicMock()
+                mock_scope.return_value.__enter__.return_value = mock_session
+                mock_session.execute.return_value = iter([])
+
+                result = DataCleanupJob._get_users_for_cleanup()
+
+                assert result == []
+                mock_session.execute.assert_called_once()
+                call_args = mock_session.execute.call_args
+                stmt = call_args[0][0]
+                compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                assert "instance_id" not in compiled
+
+
+class TestCleanupUserDataNotFound:
+    """Test _cleanup_user_data returns False when no local data found"""
+
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_returns_false_when_no_data_on_disk(self, mock_relogin):
+        """When no input/output dirs exist, cleanup returns False
+        to prevent premature DB record deletion."""
+        with patch("os.path.exists", return_value=False):
+            result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+
+        assert result is False
+
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_returns_true_when_data_exists_and_cleaned(self, mock_relogin):
+        """When data exists and is fully cleaned, returns True"""
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=True
+        ):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["exp123"]):
+                        with patch("shutil.rmtree"):
+                            result = DataCleanupJob._cleanup_user_data(
+                                "123", ["workspace1"]
+                            )
+
+        assert result is True
+
+
+class TestCleanupOrphanedAssignmentNoFileCleanup:
+    """Test _cleanup_orphaned_assignment does NOT call _cleanup_user_data"""
+
+    def test_does_not_call_cleanup_user_data(self):
+        """Terminated instance EBS is destroyed — only DB record removal needed"""
+        mock_assignment = MagicMock()
+        mock_assignment.user_id = "123"
+        mock_assignment.instance_id = "i-12345"
+
+        mock_db = MagicMock()
+
+        with patch.object(DataCleanupJob, "_cleanup_user_data") as mock_cleanup:
+            result = DataCleanupJob._cleanup_orphaned_assignment(
+                mock_db, mock_assignment
+            )
+
+        assert result is True
+        mock_cleanup.assert_not_called()
+        mock_db.delete.assert_called_once_with(mock_assignment)
+        mock_db.commit.assert_called_once()

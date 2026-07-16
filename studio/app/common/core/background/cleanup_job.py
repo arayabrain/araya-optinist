@@ -44,6 +44,16 @@ logger = AppLogger.get_logger()
 class DataCleanupJob:
     """Background job to clean up data for logged-out free users"""
 
+    @staticmethod
+    def _get_current_instance_id() -> str:
+        """Return the EC2 instance ID for the current host.
+
+        Uses the ``INSTANCE_ID`` environment variable set by
+        ``cloud-startup.sh``.  Falls back to ``"local"`` in dev
+        environments where the variable is unset.
+        """
+        return os.environ.get("INSTANCE_ID") or "local"
+
     @classmethod
     async def run(cls):
         """
@@ -53,11 +63,19 @@ class DataCleanupJob:
         3. Delete user's workspace data from local storage
         4. Mark data as cleaned in database
         """
-        logger.info("Starting data cleanup job for logged-out free users")
+        instance_id = cls._get_current_instance_id()
+        logger.info(
+            f"Starting data cleanup job for logged-out free users "
+            f"(instance: {instance_id})"
+        )
 
         try:
-            # First, handle orphaned data from terminated instances
-            cls._handle_orphaned_data()
+            # Handle orphaned data only on the background service.
+            # Free-tier cleanup workers (ENABLE_LOCAL_CLEANUP=1) should not
+            # run orphan detection — that responsibility stays with the
+            # background service which has EC2 describe permissions.
+            if os.environ.get("ENABLE_LOCAL_CLEANUP") != "1":
+                cls._handle_orphaned_data()
 
             # Get users eligible for cleanup
             users_to_cleanup = cls._get_users_for_cleanup()
@@ -155,8 +173,20 @@ class DataCleanupJob:
                 .where(FreeUserAssignment.active_workflow_count == 0)
                 .where(User.active == 1)
                 .where(Workspace.deleted == 0)
-                .group_by(FreeUserAssignment.user_id)
-                .limit(SyncStatusConstants.MAX_USERS_PER_RUN)
+            )
+
+            # Filter by instance_id so each cleanup worker only processes
+            # users assigned to *this* instance.  In local dev (no
+            # INSTANCE_ID env var) the filter is skipped for backward
+            # compatibility.
+            current_instance_id = cls._get_current_instance_id()
+            if current_instance_id != "local":
+                statement = statement.where(
+                    FreeUserAssignment.instance_id == current_instance_id
+                )
+
+            statement = statement.group_by(FreeUserAssignment.user_id).limit(
+                SyncStatusConstants.MAX_USERS_PER_RUN
             )
 
             result = db.execute(statement)
@@ -257,6 +287,7 @@ class DataCleanupJob:
         logger.info(f"Cleaning up data for user {user_id}, workspaces: {workspace_ids}")
 
         fully_cleaned = True
+        data_found = False
         total_experiments_kept = 0
 
         for workspace_id in workspace_ids:
@@ -268,12 +299,14 @@ class DataCleanupJob:
                 # Clean input data (always safe to delete - user uploads are in S3)
                 input_dir = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
                 if os.path.exists(input_dir):
+                    data_found = True
                     logger.debug(f"Deleting input directory: {input_dir}")
                     shutil.rmtree(input_dir)
 
                 # Clean output data (with S3 verification)
                 output_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])
                 if os.path.exists(output_dir):
+                    data_found = True
                     # Verify each experiment has S3 backup before deletion
                     experiments_to_delete = []
                     experiments_to_keep = []
@@ -338,6 +371,13 @@ class DataCleanupJob:
                 f"Incomplete cleanup for user {user_id}: "
                 f"{total_experiments_kept} experiments kept (S3 backup not verified)"
             )
+
+        if not data_found:
+            logger.warning(
+                f"No local data found for user {user_id} on this instance. "
+                f"Returning False to prevent premature DB record deletion."
+            )
+            return False
 
         return fully_cleaned
 
@@ -436,7 +476,12 @@ class DataCleanupJob:
     @classmethod
     def _cleanup_orphaned_assignment(cls, db, assignment: FreeUserAssignment):
         """
-        Clean up user data for an orphaned assignment (terminated instance).
+        Remove the DB record for an orphaned assignment (terminated instance).
+
+        When an EC2 instance is terminated its local EBS is destroyed, so
+        there is no filesystem data to clean up.  This method only removes
+        the stale ``FreeUserAssignment`` row and closes the open
+        ``InstanceUsageLog``.
 
         Args:
             db: Database session
@@ -446,32 +491,6 @@ class DataCleanupJob:
             True if cleanup successful, False otherwise
         """
         try:
-            # Only clean if no active workflows
-            if assignment.active_workflow_count != 0:
-                logger.info(
-                    f"Skipping cleanup for user {assignment.user_id}: "
-                    f"has {assignment.active_workflow_count} active workflows"
-                )
-                return False
-
-            # Get user's workspaces
-            from studio.app.common.models import User, Workspace
-
-            user = db.get(User, int(assignment.user_id))
-            if not user:
-                logger.warning(f"User {assignment.user_id} not found")
-                return False
-
-            workspaces_result = db.execute(
-                select(Workspace).where(
-                    Workspace.user_id == user.id,
-                    Workspace.deleted == 0,
-                )
-            ).all()
-
-            workspace_ids = [str(row[0].id) for row in workspaces_result]
-            cls._cleanup_user_data(assignment.user_id, workspace_ids)
-
             # Close usage log before deleting assignment
             db.execute(
                 update(InstanceUsageLog)
@@ -487,8 +506,9 @@ class DataCleanupJob:
             db.delete(assignment)
             db.commit()
             logger.info(
-                f"Cleaned orphaned data for user {assignment.user_id} "
-                f"from terminated instance"
+                f"Removed orphaned assignment for user {assignment.user_id} "
+                f"from terminated instance {assignment.instance_id} "
+                f"(EBS already destroyed, DB record only)"
             )
             return True
 

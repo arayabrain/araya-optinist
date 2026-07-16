@@ -153,6 +153,13 @@ async def lifespan(app: FastAPI):
         )
 
         # Add cleanup job (every 60 minutes)
+        # NOTE: On free-tier instances, DataCleanupJob is run by a dedicated
+        # standalone process (studio/cleanup_worker.py) started from
+        # cloud-startup.sh.  This registration remains here for the
+        # background service, where _handle_orphaned_data() still runs
+        # to clean up DB records of terminated instances.
+        # Future: consider migrating all background jobs to standalone
+        # worker processes to fully decouple them from FastAPI lifespan.
         BackgroundScheduler.add_job(
             func=DataCleanupJob.run,
             interval_minutes=SyncStatusConstants.CLEANUP_INTERVAL_MINUTES,
