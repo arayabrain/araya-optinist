@@ -437,6 +437,10 @@ export const PremiumAssignmentProvider: React.FC<{
   const markLocalActivity = useCallback(() => {
     if (!isPremiumUser) return
     const now = Date.now()
+    // Throttled early-return does not dismiss the warning, but this is safe:
+    // a warning only appears after >=1h of no activity, so the last mark is
+    // also >=1h old and any interaction while it shows always passes the
+    // throttle and reaches the dismissal below.
     if (now - lastActivityMarkRef.current < ACTIVITY_MARK_THROTTLE_MS) return
     lastActivityMarkRef.current = now
     lastActivityTimeRef.current = now

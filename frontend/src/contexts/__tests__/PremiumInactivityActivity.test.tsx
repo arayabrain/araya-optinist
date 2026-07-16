@@ -137,15 +137,24 @@ const Harness: React.FC<{ ctxRef: { current: Ctx | null } }> = ({ ctxRef }) => {
   return null
 }
 
+// Re-render trigger: the mocked useSelector reads `mockPipelineStatus` at
+// render time only, so a test that flips the status mid-run must force the
+// provider to re-render (without touching the activity clock) to pick it up.
+// A fresh element tree is required — re-rendering with an unchanged children
+// prop would bail out and never re-run the provider.
+let triggerRerender: () => void = () => {}
+
 const renderProvider = () => {
   const ctxRef: { current: Ctx | null } = { current: null }
-  render(
+  const buildTree = () => (
     <SnackbarProvider maxSnack={3}>
       <PremiumAssignmentProvider>
         <Harness ctxRef={ctxRef} />
       </PremiumAssignmentProvider>
-    </SnackbarProvider>,
+    </SnackbarProvider>
   )
+  const utils = render(buildTree())
+  triggerRerender = () => utils.rerender(buildTree())
   return ctxRef
 }
 
@@ -224,5 +233,73 @@ describe("PremiumAssignmentProvider — activity resets inactivity clock", () =>
 
     expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
     expect(ctxRef.current?.showInactivityWarning).toBe(false)
+  })
+
+  test.each([["keydown"], ["scroll"]])(
+    "%s also resets the clock and prevents the 2h auto-release",
+    async (eventName) => {
+      mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+      const ctxRef = renderProvider()
+
+      await waitFor(() => {
+        expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+      })
+
+      await advance(115 * ONE_MIN)
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+
+      act(() => {
+        window.dispatchEvent(new Event(eventName))
+      })
+
+      await advance(115 * ONE_MIN)
+
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    },
+  )
+
+  test("interaction dismisses the 1h inactivity warning", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Cross the 1h threshold (but stay under 2h) — the warning appears.
+    await advance(61 * ONE_MIN)
+    expect(ctxRef.current?.showInactivityWarning).toBe(true)
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+
+    // Interacting with the page dismisses the warning (basis for the UI text).
+    act(() => {
+      window.dispatchEvent(new Event("keydown"))
+    })
+    expect(ctxRef.current?.showInactivityWarning).toBe(false)
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+  })
+
+  test("countdown resumes and releases 2h after a workflow finishes", async () => {
+    mockPipelineStatus = "StartSuccess"
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // Workflow running: no release even past 2h.
+    await advance(2 * 60 * ONE_MIN + 5000)
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+
+    // Workflow finishes → the running-workflow guard clears on next render.
+    mockPipelineStatus = "Finished"
+    act(() => {
+      triggerRerender()
+    })
+
+    // With no workflow and no activity, the 2h countdown resumes from finish.
+    await advance(2 * 60 * ONE_MIN + 5000)
+    expect(ctxRef.current?.assignmentResult).toBeNull()
   })
 })
