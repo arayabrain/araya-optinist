@@ -111,7 +111,8 @@ async def refresh_current_user_token(refresh_token: Optional[str]):
         user = pyrebase_app.auth().refresh(refresh_token=token["sub"])
         return AccessToken(access_token=user["idToken"])
     except Exception as e:
-        logger.warning(e)
+        message = _extract_firebase_error(e) if isinstance(e, HTTPError) else str(e)
+        logger.warning(f"Token refresh failed: {message}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
 

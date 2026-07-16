@@ -3,8 +3,10 @@ Email service for sending verification and authentication emails.
 """
 
 from firebase_admin import auth as firebase_auth
+from requests.exceptions import HTTPError
 
 from studio.app.common.core.auth import pyrebase_app
+from studio.app.common.core.auth.auth import _extract_firebase_error
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.config_handler import get_env_bool
 from studio.app.const import FRONTEND_URL
@@ -141,7 +143,6 @@ class AuthEmailService:
                 return True
 
         except Exception as e:
-            logger.error(
-                f"Failed to send password reset email to {email}: {e}", exc_info=True
-            )
+            message = _extract_firebase_error(e) if isinstance(e, HTTPError) else str(e)
+            logger.error(f"Failed to send password reset email to {email}: {message}")
             raise
