@@ -267,6 +267,10 @@ resource "aws_ecs_task_definition" "background" {
           name  = "ALB_DNS_NAME"
           value = aws_lb.autoscaling.dns_name
         },
+        {
+          name  = "INTERNAL_API_BASE_URL"
+          value = var.enable_custom_domain ? "https://${aws_lb.autoscaling.dns_name}" : "http://${aws_lb.autoscaling.dns_name}:8080"
+        },
         # Background scheduler ENABLED - this service runs all background jobs
         {
           name  = "DISABLE_BACKGROUND_SCHEDULER"

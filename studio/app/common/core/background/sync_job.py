@@ -496,8 +496,9 @@ class PublishedExperimentSyncJob:
         if not alb_dns or not internal_secret:
             return False
 
+        base = os.environ.get("INTERNAL_API_BASE_URL") or f"https://{alb_dns}"
         url = (
-            f"https://{alb_dns}"
+            f"{base}"
             f"/system-internal/sync-experiment"
             f"/{workspace_id}/{unique_id}"
         )
