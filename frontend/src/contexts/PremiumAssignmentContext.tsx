@@ -36,6 +36,8 @@ import {
   useInstanceUnreachableMachine,
 } from "contexts/premium/useInstanceUnreachableMachine"
 import { useSleepDetection } from "hooks/useSleepDetection"
+import { selectPipelineStatus } from "store/slice/Pipeline/PipelineSelectors"
+import { RUN_STATUS } from "store/slice/Pipeline/PipelineType"
 import { getMe } from "store/slice/User/UserActions"
 import { selectLogoutGeneration } from "store/slice/User/UserSelector"
 import { AppDispatch, RootState } from "store/store"
@@ -121,6 +123,10 @@ function ssRemove(key: string): void {
 const HEARTBEAT_MAX_RETRIES = 3
 const HEARTBEAT_RETRY_DELAY_MS = 1000
 
+// Throttle for the passive activity listener: genuine user interaction
+// advances the inactivity clock at most once per this interval.
+const ACTIVITY_MARK_THROTTLE_MS = 60 * 1000
+
 interface PremiumAssignmentState {
   isAssigning: boolean
   isReleasing: boolean
@@ -167,6 +173,17 @@ export const PremiumAssignmentProvider: React.FC<{
   const dispatch = useDispatch<AppDispatch>()
   // Track logout generation to detect stale closures
   const logoutGeneration = useSelector(selectLogoutGeneration)
+
+  // A running workflow counts as activity even without direct user input,
+  // so a long unattended analysis is never falsely auto-released.
+  const pipelineStatus = useSelector(selectPipelineStatus)
+  const isWorkflowRunning =
+    pipelineStatus === RUN_STATUS.START_PENDING ||
+    pipelineStatus === RUN_STATUS.START_SUCCESS
+  const isWorkflowRunningRef = useRef(isWorkflowRunning)
+  useEffect(() => {
+    isWorkflowRunningRef.current = isWorkflowRunning
+  }, [isWorkflowRunning])
 
   const [state, setState] = useState<PremiumAssignmentState>({
     isAssigning: false,
@@ -236,6 +253,8 @@ export const PremiumAssignmentProvider: React.FC<{
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
+  // Last time the passive activity listener advanced the clock (throttling).
+  const lastActivityMarkRef = useRef(0)
   // Track previous premium status to detect subscription expiry transition
   const prevIsPremiumRef = useRef(false)
 
@@ -407,6 +426,31 @@ export const PremiumAssignmentProvider: React.FC<{
       }
     }
   }, [isPremiumUser, sleep])
+
+  /**
+   * Mark genuine user interaction as activity.
+   * Advances the frontend inactivity clock (and syncs it across tabs) so the
+   * 1h warning / 2h auto-release only fire on a truly idle session. Throttled
+   * and frontend-local — it does not send a backend heartbeat (normal API
+   * traffic already keeps the backend's last_activity fresh).
+   */
+  const markLocalActivity = useCallback(() => {
+    if (!isPremiumUser) return
+    const now = Date.now()
+    // Throttled early-return does not dismiss the warning, but this is safe:
+    // a warning only appears after >=1h of no activity, so the last mark is
+    // also >=1h old and any interaction while it shows always passes the
+    // throttle and reaches the dismissal below.
+    if (now - lastActivityMarkRef.current < ACTIVITY_MARK_THROTTLE_MS) return
+    lastActivityMarkRef.current = now
+    lastActivityTimeRef.current = now
+    setState((prev) => ({
+      ...prev,
+      lastActivityTime: now,
+      showInactivityWarning: false,
+    }))
+    syncActivityAcrossTabs(now)
+  }, [isPremiumUser])
 
   /**
    * Assign premium instance
@@ -708,6 +752,19 @@ export const PremiumAssignmentProvider: React.FC<{
 
     const checkInactivity = () => {
       const now = Date.now()
+
+      // A running workflow keeps the instance active even with no direct
+      // input. Advance the clock so the 1h/2h countdown only starts once the
+      // workflow finishes, and clear any warning already shown.
+      if (isWorkflowRunningRef.current) {
+        lastActivityTimeRef.current = now
+        syncActivityAcrossTabs(now)
+        if (showInactivityWarningRef.current) {
+          setState((prev) => ({ ...prev, showInactivityWarning: false }))
+        }
+        return
+      }
+
       // Check activity from any tab, not just this one
       const lastActivityAnyTab = getLastActivityFromAnyTab()
       const effectiveLastActivity = Math.max(
@@ -767,6 +824,27 @@ export const PremiumAssignmentProvider: React.FC<{
       unsubscribe()
     }
   }, [isPremiumUser, currentUser, state.assignmentResult, autoReleaseOnLogout])
+
+  // Reset the inactivity clock on genuine user interaction (pointer/keyboard/
+  // scroll). Throttled via markLocalActivity so a busy session does not spam
+  // state updates or cross-tab writes.
+  useEffect(() => {
+    if (!isPremiumUser || !state.assignmentResult) return
+
+    const onActivity = () => markLocalActivity()
+    // capture:true for scroll so scrolls inside inner containers (which don't
+    // bubble to window) also count as activity.
+    const scrollOpts = { passive: true, capture: true } as const
+    window.addEventListener("pointerdown", onActivity)
+    window.addEventListener("keydown", onActivity)
+    window.addEventListener("scroll", onActivity, scrollOpts)
+
+    return () => {
+      window.removeEventListener("pointerdown", onActivity)
+      window.removeEventListener("keydown", onActivity)
+      window.removeEventListener("scroll", onActivity, scrollOpts)
+    }
+  }, [isPremiumUser, state.assignmentResult, markLocalActivity])
 
   // Sleep/wake detection callback (Cases 50-51)
   // Send a backend heartbeat to keep the instance alive, but do NOT reset

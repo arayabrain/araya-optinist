@@ -45,6 +45,7 @@ jest.mock("react-redux", () => ({
   useSelector: (selector: (s: unknown) => unknown) =>
     selector({
       user: { currentUser: mockUser, logoutGeneration: 0 },
+      pipeline: { run: { status: "StartUninitialized" } },
     }),
   useDispatch: () => mockDispatchFn,
 }))
