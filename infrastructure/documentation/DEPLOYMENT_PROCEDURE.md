@@ -102,10 +102,16 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
 
 2. **Ongoing deployments (no Terraform needed):**
    - Build and push Docker images using `ecr_build_push.sh`
-   - The `app_setup.sh` script inside the container automatically:
+
+3. **Host provisioning (`app_setup.sh`, runs on a 30-minute schedule):**
+   - Runs independently of image deploys. `aws_ssm_association "app_setup"` (`deployment.tf`, `schedule_expression = "rate(30 minutes)"`) downloads the script from S3 and executes it on each EC2 host via SSM — **not inside the container, and not one-shot**. It re-runs every 30 minutes for the life of the instance. On each cycle it:
      - Reads secrets from AWS Secrets Manager
      - Discovers infrastructure (RDS endpoint, S3 buckets) via AWS CLI
      - Configures the application with correct settings
+     - Applies the DB bootstrap SQL (idempotent — guarded so re-runs allocate
+       no new rows)
+
+   > **Design note / future consideration:** this script mixes two concerns on one 30-minute loop — periodic desired-state (env/config files, secret refresh, which *should* re-run) and one-shot bootstrap (package installs, DB seeding, Firebase admin verification, which need only run once). The seed migration now owns the DB reference rows, so the DB block could be removed from here entirely. A cleaner design would split bootstrap (launch-time / one-shot) from periodic config enforcement. Not required for correctness — the bootstrap steps are idempotent — but it would stop re-running one-shot work every 30 minutes for the life of each instance.
 
 ---
 
