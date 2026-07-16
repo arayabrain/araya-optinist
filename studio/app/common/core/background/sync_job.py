@@ -512,8 +512,10 @@ class PublishedExperimentSyncJob:
         }
 
         try:
-            # Skip SSL verification for internal VPC traffic;
-            # ALB cert doesn't match AWS-generated hostname
+            # Skip SSL verification for internal VPC traffic on the prod
+            # HTTPS path; the ALB cert doesn't match the AWS-generated
+            # hostname. On dev the base URL is plain HTTP (:8080), where
+            # verify=False is a no-op.
             response = requests.post(
                 url,
                 headers=headers,
