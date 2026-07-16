@@ -276,6 +276,18 @@ The inactivity monitor observes `lastActivity` across all tabs and fires on two 
 | 1 hour | Surface the `InactivityWarning` snackbar with a 60-minute countdown |
 | 2 hours | Call `autoReleaseOnLogout()` |
 
+**What resets the inactivity clock:**
+
+| Source | Mechanism |
+|--------|-----------|
+| Genuine user interaction (`pointerdown` / `keydown` / `scroll`) | A throttled listener calls `markLocalActivity()`, which advances `lastActivityTime` (frontend-local) and broadcasts it cross-tab. Throttled to once per minute to avoid state-update / broadcast spam. |
+| Running workflow | While a pipeline run is in progress (`START_PENDING` / `START_SUCCESS`), each 30s `checkInactivity` tick treats the session as active, advancing the clock so the countdown only starts after the run finishes. Covers long unattended analyses with no direct input. |
+| "Stay Active" button | `recordActivity()` — additionally sends a backend heartbeat and advances the clock. |
+
+`markLocalActivity()` is frontend-local (no backend heartbeat): normal API traffic already keeps the backend's `last_activity` fresh, so the passive listener only needs to keep the frontend clock in sync with real activity.
+
+**Release severity:** The 2h auto-release goes through the beacon endpoint (`POST /premium/release-beacon` → `release_premium_user(hard=False)`), which is a **soft release**: the assignment row is marked `pending_release`, ALB/TG stay intact for the grace period (`PENDING_RELEASE_GRACE_SECONDS`, 120s), and the EC2 instance is **not** stopped or terminated (no scale-down). So a false release is recoverable routing loss, not lost compute — a page refresh or the next gesture-triggered reassignment restores the same instance within the grace window. (A `hard=True` release, used by explicit logout/finalization, is what tears down ALB resources and scales down.)
+
 **`autoReleaseOnLogout()` actions:**
 1. Increment `releaseGenerationRef` (invalidates stale closures)
 2. Call `DELETE /premium/assign` with beacon token
@@ -287,7 +299,7 @@ The inactivity monitor observes `lastActivity` across all tabs and fires on two 
 8. Clear `SS_HAS_ATTEMPTED` from sessionStorage
 
 **Cross-tab activity sync:**
-- `recordActivity()` sends heartbeat with timestamp to the server and broadcasts via `crossTabSync`
+- `recordActivity()` and `markLocalActivity()` both broadcast the new timestamp via `crossTabSync`
 - `onActivityFromOtherTab()` listener updates `lastActivityTimeRef` so activity in any tab resets the inactivity timer for all tabs
 
 > **Threshold coupling warning:** The 1h / 2h thresholds are hard-coded in `PremiumAssignmentContext.tsx`. `INACTIVITY_WARNING_DURATION_MINUTES` controls only the countdown shown in the snackbar; changing it without also changing the hard-coded thresholds would cause the displayed countdown to disagree with the actual auto-release time.
@@ -762,8 +774,6 @@ Items with planned improvements. See [PREMIUM_ROUTING_RETROSPECTIVE_v1.1.9.md §
 
 Design trade-offs with known impact boundaries. No corresponding improvement is planned because the impact is minimal or the behavior is intentionally self-correcting.
 
-1. **Inactivity detection is input-based only.** The inactivity timer fires based on mouse/keyboard events. Users running long computational workflows without interaction may be falsely detected as inactive and have their premium instance released. (Inactivity release mechanism introduced in [PR #656](https://github.com/arayabrain/araya-optinist/pull/656) for [#594](https://github.com/arayabrain/araya-optinist/issues/594))
+1. **Startup race gap.** During the brief window between login and the first `/premium/assign` response, `premiumInstanceId` is null and `shouldEmitPremiumReachable()` returns `false`. This means the circuit breaker cannot detect recovery during this window. The practical impact is minimal (seconds-long window). (Instance identity introduced in [PR #649](https://github.com/arayabrain/araya-optinist/pull/649) for [#566](https://github.com/arayabrain/araya-optinist/issues/566))
 
-2. **Startup race gap.** During the brief window between login and the first `/premium/assign` response, `premiumInstanceId` is null and `shouldEmitPremiumReachable()` returns `false`. This means the circuit breaker cannot detect recovery during this window. The practical impact is minimal (seconds-long window). (Instance identity introduced in [PR #649](https://github.com/arayabrain/araya-optinist/pull/649) for [#566](https://github.com/arayabrain/araya-optinist/issues/566))
-
-3. **Warm-up grace suppression delay.** A 502 received within `DEDICATED_HANDOFF_GRACE_MS` (15s) after a new assignment is suppressed to avoid triggering the circuit breaker during instance warm-up. If the instance is genuinely unreachable, detection is delayed until the next 502 outside the grace window. This is self-correcting and the practical delay is at most 15 seconds. (Grace window introduced in [PR #704](https://github.com/arayabrain/araya-optinist/pull/704) for [#628](https://github.com/arayabrain/araya-optinist/issues/628))
+2. **Warm-up grace suppression delay.** A 502 received within `DEDICATED_HANDOFF_GRACE_MS` (15s) after a new assignment is suppressed to avoid triggering the circuit breaker during instance warm-up. If the instance is genuinely unreachable, detection is delayed until the next 502 outside the grace window. This is self-correcting and the practical delay is at most 15 seconds. (Grace window introduced in [PR #704](https://github.com/arayabrain/araya-optinist/pull/704) for [#628](https://github.com/arayabrain/araya-optinist/issues/628))
