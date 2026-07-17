@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from firebase_admin import auth
-from requests.exceptions import HTTPError
+from requests.exceptions import HTTPError, RequestException
 from sqlmodel import Session
 
 from studio.app.common.core.auth import pyrebase_app
@@ -22,12 +22,15 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
-def _extract_firebase_error(error: HTTPError) -> str:
-    # The raw HTTPError string embeds the request URL with the Firebase API key,
-    # so read the error code from the wrapped response body instead of logging it.
+def _extract_firebase_error(error: RequestException) -> str:
+    # The raw error string embeds the request URL with the Firebase API key,
+    # so read the error code from the response body instead of logging it.
     bodies = []
     if len(error.args) > 1:
         bodies.append(error.args[1])
+    response = getattr(error, "response", None)
+    if response is not None:
+        bodies.append(response.text)
     bodies.append(getattr(error, "strerror", None))
     for body in bodies:
         try:
