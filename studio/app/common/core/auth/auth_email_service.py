@@ -143,6 +143,15 @@ class AuthEmailService:
                 return True
 
         except Exception as e:
-            message = _extract_firebase_error(e) if isinstance(e, HTTPError) else str(e)
-            logger.error(f"Failed to send password reset email to {email}: {message}")
+            if isinstance(e, HTTPError):
+                # Traceback and str(e) embed the request URL with the API key.
+                message = _extract_firebase_error(e)
+                logger.error(
+                    f"Failed to send password reset email to {email}: {message}"
+                )
+            else:
+                logger.error(
+                    f"Failed to send password reset email to {email}: {e}",
+                    exc_info=True,
+                )
             raise
