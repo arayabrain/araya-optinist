@@ -225,8 +225,11 @@ class ExptConfigReader:
                 return None
             return WorkflowRunStatus(config.success)
         except AssertionError:
-            # An empty experiment.yaml means "no status yet", not corruption.
-            logger.debug(f"experiment.yaml is empty: [{workspace_id}/{unique_id}]")
+            # A missing or empty experiment.yaml means "no status yet",
+            # not corruption.
+            logger.debug(
+                f"experiment.yaml is missing or empty: [{workspace_id}/{unique_id}]"
+            )
             return None
         except (ValueError, yaml.YAMLError) as e:
             logger.warning(

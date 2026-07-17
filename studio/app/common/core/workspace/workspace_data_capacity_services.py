@@ -135,12 +135,13 @@ class WorkspaceDataCapacityService:
                 try:
                     cls._update_exp_data_usage_yaml(workspace_id, unique_id, data_usage)
                 except AssertionError:
-                    # An empty experiment.yaml is recoverable - capacity is still
-                    # tracked in the DB - so it is logged at debug to avoid
-                    # re-warning on every recalculation.
+                    # A missing or empty experiment.yaml is recoverable - capacity
+                    # is still tracked in the DB - so it is logged at debug to
+                    # avoid re-warning on every recalculation.
                     logger.debug(
                         f"Skipping YAML update for experiment "
-                        f"{workspace_id}/{unique_id}: experiment.yaml is empty"
+                        f"{workspace_id}/{unique_id}: "
+                        f"experiment.yaml is missing or empty"
                     )
                 except (ValueError, yaml.YAMLError) as yaml_error:
                     logger.warning(
