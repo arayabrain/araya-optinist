@@ -267,6 +267,15 @@ resource "aws_ecs_task_definition" "background" {
           name  = "ALB_DNS_NAME"
           value = aws_lb.autoscaling.dns_name
         },
+        # Base URL for the sync job's internal /system-internal call.
+        # Scheme/port mirror aws_lb_listener.autoscaling_https: HTTPS:443 in
+        # prod, HTTP:8080 in dev. enable_custom_domain gates both this and
+        # compute.tf, so the flag can't drift them apart; the ":8080" literal
+        # is kept to match compute.tf and must be changed there in lockstep.
+        {
+          name  = "INTERNAL_API_BASE_URL"
+          value = var.enable_custom_domain ? "https://${aws_lb.autoscaling.dns_name}" : "http://${aws_lb.autoscaling.dns_name}:8080"
+        },
         # Background scheduler ENABLED - this service runs all background jobs
         {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
