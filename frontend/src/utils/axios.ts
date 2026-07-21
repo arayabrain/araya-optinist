@@ -378,10 +378,15 @@ axios.interceptors.response.use(
         status: res.status,
         sentAt: cfg!._premiumSentAt,
       })
-    } else if (isInstanceMismatch(res, cfg)) {
+    } else if (
+      isInstanceMismatch(res, cfg) &&
+      !routingService.isWithinPremiumWarmup()
+    ) {
       // Active detection: 200 OK from wrong instance (ALB fallback after
       // EventBridge cleanup). Stop sending premium headers to prevent
       // further misrouted requests and trigger the recovery flow.
+      // Skipped during warm-up: a fresh dedicated instance may still be
+      // registering in the ALB target group, so a mismatch is expected there.
       routingService.setPremiumAssigned(false)
       routingService.emitPremiumUnreachable({
         url: cfg!.url,
