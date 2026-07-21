@@ -493,4 +493,28 @@ describe("useInstanceUnreachableMachine — dedicated handoff warm-up grace", ()
       expect.objectContaining({ instance_id: "inst-B" }),
     )
   })
+
+  test("reload / new tab onto an existing instance co-arms the axios warm-up window", () => {
+    // Regression for the reload/new-tab stranding: the machine's grace arms on
+    // every fresh mount (prevDedicatedInstanceIdRef starts undefined), but the
+    // axios warm-up window (RoutingService) only arms on a CHANGED instance hash.
+    // On reload/new-tab the hash is unchanged (hydrated from localStorage), so
+    // without co-arming, a transient 5xx would tear routing down (axios not in
+    // warm-up) while the grace suppresses the unreachable event → stranded.
+
+    // Reproduce the post-reload RoutingService state: hash persisted, in-memory
+    // warm-up window lost, and the restore path re-confirms the SAME hash.
+    routingService.setPremiumInstanceId("inst-A") // arms window (null → inst-A)
+    routingService.clearPremiumWarmup() // reload drops the in-memory window
+    routingService.setPremiumInstanceId("inst-A") // restore re-confirms same hash
+    expect(routingService.isWithinPremiumWarmup()).toBe(false) // axios not armed on its own
+
+    // Mount the machine fresh (= reload) onto the same dedicated instance.
+    renderHook({ assignment: dedicated })
+
+    // Fix: the grace and the axios window are co-armed, so the teardown gate
+    // (tearDownPremiumRoutingUnlessWarmup → isWithinPremiumWarmup) suppresses a
+    // transient teardown instead of stranding premium routing.
+    expect(routingService.isWithinPremiumWarmup()).toBe(true)
+  })
 })

@@ -14,7 +14,7 @@ import {
 } from "utils/DataviewUtils"
 import {
   routingService,
-  PremiumUnreachableDetail,
+  type PremiumUnreachableDetail,
 } from "utils/routing/RoutingService"
 
 // Extend AxiosRequestConfig to include custom retry property

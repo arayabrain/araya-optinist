@@ -131,16 +131,22 @@ export function useInstanceUnreachableMachine({
       failedProbesRef.current = 0
       dispatch({ type: "CLEAR" })
       routingService.setPremiumAssigned(true)
-      // Reassignment onto a different dedicated instance — start a fresh grace.
+      // Reassignment onto a different dedicated instance — fresh grace.
       dedicatedSinceRef.current = Date.now()
+      routingService.startPremiumWarmup()
     } else if (
       isDedicated &&
       prevDedicatedInstanceIdRef.current === undefined
     ) {
-      // First transition onto dedicated — initial sign-in assignment or a
-      // shared → dedicated migration. Either way the freshly-assigned instance
-      // may still be warming up, so arm the grace to absorb transient 5xx.
+      // First dedicated transition: initial sign-in, shared→dedicated migration,
+      // or reload/new-tab onto an existing instance.
+      // Co-arm the axios warm-up window with this grace (lock-step): on
+      // reload/new-tab the hash is unchanged (hydrated from localStorage), so
+      // setPremiumInstanceId does not arm axios by itself. Without co-arming, a
+      // transient 5xx tears routing down while this grace suppresses the
+      // unreachable event — stranding routing with no probe to recover it.
       dedicatedSinceRef.current = Date.now()
+      routingService.startPremiumWarmup()
     }
     prevDedicatedInstanceIdRef.current = assignment?.instance_id
   }, [assignment])
