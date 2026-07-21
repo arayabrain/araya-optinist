@@ -473,3 +473,152 @@ class TestPublicDataviewReproduceWorkflow:
         # Verify bulk update was executed and committed
         mock_db.execute.assert_called_once()
         mock_db.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reproduce_synced_but_missing_in_s3_demotes_to_error(self):
+        """A synced row whose files are gone from S3 is demoted to error."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import public_reproduce_experiment
+
+        mock_record = MagicMock()
+        mock_record.id = 1
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+
+        mock_validation = MagicMock()
+        mock_validation.is_displayable = False
+        mock_validation.reason = "Data not available"
+
+        mock_db = MagicMock()
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_dataview_record",
+            return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+            "check_sync_status_unsynced",
+            return_value=False,
+        ), patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview."
+            "_resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            new=AsyncMock(return_value=(False, "No data found in S3")),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
+        ):
+            response = await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=mock_db
+            )
+
+        assert response.status_code == 503
+        mock_db.execute.assert_called_once()
+        mock_db.commit.assert_called_once()
+        # Pin that the statement demotes synced -> error (SET target and guard)
+        params = mock_db.execute.call_args[0][0].compile().params
+        assert params["local_sync_status"] == LocalSyncStatus.error.value
+        assert params["local_sync_status_1"] == LocalSyncStatus.synced.value
+
+    @pytest.mark.asyncio
+    async def test_reproduce_synced_present_in_s3_does_not_demote(self):
+        """A synced row still present in S3 is not demoted (transient local miss)."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import public_reproduce_experiment
+
+        mock_record = MagicMock()
+        mock_record.id = 1
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+
+        mock_validation = MagicMock()
+        mock_validation.is_displayable = False
+        mock_validation.reason = "Data not available"
+
+        mock_db = MagicMock()
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_dataview_record",
+            return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+            "check_sync_status_unsynced",
+            return_value=False,
+        ), patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview."
+            "_resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            new=AsyncMock(return_value=(True, None)),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
+        ):
+            response = await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=mock_db
+            )
+
+        assert response.status_code == 503
+        mock_db.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reproduce_synced_s3_check_fails_does_not_demote(self):
+        """A transient S3 check failure (None) must not demote a synced row."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import public_reproduce_experiment
+
+        mock_record = MagicMock()
+        mock_record.id = 1
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+
+        mock_validation = MagicMock()
+        mock_validation.is_displayable = False
+        mock_validation.reason = "Data not available"
+
+        mock_db = MagicMock()
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_dataview_record",
+            return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
+            "check_sync_status_unsynced",
+            return_value=False,
+        ), patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview."
+            "_resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            new=AsyncMock(return_value=(None, "Could not verify S3 data")),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator."
+            "validate_for_display",
+            return_value=mock_validation,
+        ):
+            response = await public_reproduce_experiment(
+                workspace_id="1", unique_id="exp123", db=mock_db
+            )
+
+        assert response.status_code == 503
+        mock_db.execute.assert_not_called()
