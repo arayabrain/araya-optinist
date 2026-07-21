@@ -69,9 +69,10 @@ export class RoutingService {
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
   // Warm-up grace duration. Intentionally longer than DEDICATED_HANDOFF_GRACE_MS
   // (15000 ms, contexts/premium/unreachableConstants) so this window CONTAINS the
-  // machine's grace:
-  //   - this window opens synchronously in setPremiumInstanceId (T0)
-  //   - the machine's dedicatedSinceRef opens later in a useEffect (T0+Δ)
+  // machine's grace. Arming sources:
+  //   - fresh/changed instance: setPremiumInstanceId arms synchronously (T0)
+  //   - every first dedicated transition (incl. reload/new-tab same instance):
+  //     the machine co-arms via startPremiumWarmup in its useEffect (T0+Δ)
   // Equal durations would leave a tail [T0+15000, T0+Δ+15000] where teardown is no
   // longer suppressed here but the machine still suppresses the unreachable event —
   // stranding premium routing. Do NOT shrink this back to equality.
