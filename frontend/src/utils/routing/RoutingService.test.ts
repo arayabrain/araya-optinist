@@ -682,7 +682,9 @@ describe("RoutingService", () => {
   })
 
   describe("premium warm-up window", () => {
-    const GRACE_MS = 15000
+    // Intentionally longer than DEDICATED_HANDOFF_GRACE_MS (15000) so the axios
+    // window contains the machine's grace window — see PREMIUM_WARMUP_GRACE_MS.
+    const GRACE_MS = 16000
     const T0 = 1_000_000
 
     beforeEach(() => {

@@ -67,9 +67,15 @@ export class RoutingService {
   private premiumWarmupUntil: number | null = null
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
-  // Warm-up grace duration. Mirrors DEDICATED_HANDOFF_GRACE_MS in
-  // contexts/premium/unreachableConstants (kept in sync intentionally).
-  private readonly PREMIUM_WARMUP_GRACE_MS = 15000
+  // Warm-up grace duration. Intentionally longer than DEDICATED_HANDOFF_GRACE_MS
+  // (15000 ms, contexts/premium/unreachableConstants) so this window CONTAINS the
+  // machine's grace:
+  //   - this window opens synchronously in setPremiumInstanceId (T0)
+  //   - the machine's dedicatedSinceRef opens later in a useEffect (T0+Δ)
+  // Equal durations would leave a tail [T0+15000, T0+Δ+15000] where teardown is no
+  // longer suppressed here but the machine still suppresses the unreachable event —
+  // stranding premium routing. Do NOT shrink this back to equality.
+  private readonly PREMIUM_WARMUP_GRACE_MS = 16000
   private readonly STORAGE_KEY = "routing_id"
   private readonly TIER_STORAGE_KEY = "routing_tier"
   private readonly PREMIUM_ASSIGNED_KEY = "premium_assigned"
