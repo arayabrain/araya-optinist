@@ -6,6 +6,7 @@ from firebase_admin import auth as firebase_auth
 from firebase_admin.auth import UserNotFoundError, UserRecord
 from firebase_admin.exceptions import FirebaseError
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth import authenticate_user
@@ -548,6 +549,25 @@ async def update_user(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _insert_or_reselect(db: Session, row, model, user_id: int):
+    """Insert ``row`` inside a SAVEPOINT. Both subscription_users and
+    user_storage_usage are unique on user_id, so a concurrent writer can win
+    the race; on conflict, re-select and return the existing row instead of
+    surfacing a 500."""
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+        return row
+    except IntegrityError:
+        existing = (
+            db.query(model).filter(model.user_id == user_id).with_for_update().first()
+        )
+        if existing is None:
+            raise
+        return existing
+
+
 async def update_user_subscription_admin(
     db: Session,
     user_id: int,
@@ -575,46 +595,78 @@ async def update_user_subscription_admin(
             raise HTTPException(
                 status_code=400, detail=f"Invalid plan_id: {data.plan_id}"
             )
+        if data.plan_id == SubscriptionPlanIds.PREMIUM and data.expiration is None:
+            raise HTTPException(
+                status_code=400, detail="expiration is required for the premium plan"
+            )
 
         subscription = (
             db.query(UserSubscription)
             .filter(UserSubscription.user_id == user_id)
             .first()
         )
-        if subscription is None:
-            raise HTTPException(
-                status_code=400, detail="User has no subscription record"
-            )
+        subscription_existed = subscription is not None
 
         storage = (
             db.query(UserStorageUsage)
             .filter(UserStorageUsage.user_id == user_id)
             .first()
         )
-        if storage is None:
-            raise HTTPException(status_code=400, detail="User has no storage record")
+        storage_existed = storage is not None
 
-        # Capture old values before applying changes
-        # Normalize expiration to UTC ISO string for consistent audit format
+        # Capture old values before applying changes.
+        # A missing row is recorded as None so the audit reflects that the
+        # record was created rather than edited.
+        old_plan_id = None
         old_expiration_str = None
-        if subscription.expiration:
-            old_exp = subscription.expiration
-            if old_exp.tzinfo is None:
-                old_exp = old_exp.replace(tzinfo=timezone.utc)
-            old_expiration_str = old_exp.isoformat()
+        if subscription_existed:
+            old_plan_id = subscription.plan_id
+            # Normalize expiration to UTC ISO string for consistent audit format
+            if subscription.expiration:
+                old_exp = subscription.expiration
+                if old_exp.tzinfo is None:
+                    old_exp = old_exp.replace(tzinfo=timezone.utc)
+                old_expiration_str = old_exp.isoformat()
 
         old_value = SubscriptionAuditSnapshot(
-            plan_id=subscription.plan_id,
+            plan_id=old_plan_id,
             expiration=old_expiration_str,
-            storage_quota_bytes=storage.storage_quota_bytes,
+            storage_quota_bytes=(
+                storage.storage_quota_bytes if storage_existed else None
+            ),
         )
 
         # Apply changes
         # For Free plan, expiration is not meaningful — default to now
         expiration = data.expiration or datetime.now(timezone.utc)
+        # This admin repair path does not provision an S3 bucket; it only fixes
+        # subscription/quota rows. A user missing these rows in practice already
+        # has a bucket from signup. Add ensure_user_bucket_exists here if that
+        # assumption ever stops holding.
+        if not subscription_existed:
+            subscription = _insert_or_reselect(
+                db,
+                UserSubscription(
+                    user_id=user_id, plan_id=data.plan_id, expiration=expiration
+                ),
+                UserSubscription,
+                user_id,
+            )
         subscription.plan_id = data.plan_id
         subscription.expiration = expiration
         subscription.scheduled_downgrade = False
+
+        if not storage_existed:
+            storage = _insert_or_reselect(
+                db,
+                UserStorageUsage(
+                    user_id=user_id,
+                    storage_usage_bytes=0,
+                    storage_quota_bytes=data.storage_quota_bytes,
+                ),
+                UserStorageUsage,
+                user_id,
+            )
         storage.storage_quota_bytes = data.storage_quota_bytes
 
         # Write audit log
