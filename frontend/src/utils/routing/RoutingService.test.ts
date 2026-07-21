@@ -753,4 +753,65 @@ describe("RoutingService", () => {
       expect(routingService.isWithinPremiumWarmup()).toBe(false)
     })
   })
+
+  describe("reachable watermark / stale premium failure", () => {
+    const T0 = 1_000_000
+
+    beforeEach(() => {
+      jest.useFakeTimers()
+      jest.setSystemTime(T0)
+      routingService = new RoutingService()
+    })
+
+    afterEach(() => {
+      jest.useRealTimers()
+    })
+
+    test("no failure is stale before any reachable is observed", () => {
+      expect(routingService.isStalePremiumFailure(100)).toBe(false)
+    })
+
+    test("emitPremiumReachable advances the watermark; an older failure is stale", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      expect(routingService.isStalePremiumFailure(1500)).toBe(true)
+    })
+
+    test("a failure newer than the watermark is not stale", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      expect(routingService.isStalePremiumFailure(2500)).toBe(false)
+    })
+
+    test("a failure sent at exactly the watermark is not stale", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      expect(routingService.isStalePremiumFailure(2000)).toBe(false)
+    })
+
+    test("undefined sentAt is treated as now — not stale when the watermark is in the past", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      expect(routingService.isStalePremiumFailure(undefined)).toBe(false)
+    })
+
+    test("undefined sentAt is stale only if now predates the watermark", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: T0 + 5000 })
+      expect(routingService.isStalePremiumFailure(undefined)).toBe(true)
+    })
+
+    test("the watermark is monotonic — an older reachable does not lower it", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      routingService.emitPremiumReachable({ status: 200, sentAt: 1000 })
+      expect(routingService.isStalePremiumFailure(1500)).toBe(true)
+    })
+
+    test("clearRoutingInfo resets the watermark", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      routingService.clearRoutingInfo()
+      expect(routingService.isStalePremiumFailure(1500)).toBe(false)
+    })
+
+    test("resetForRelease resets the watermark", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      routingService.resetForRelease()
+      expect(routingService.isStalePremiumFailure(1500)).toBe(false)
+    })
+  })
 })

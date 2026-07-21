@@ -65,6 +65,11 @@ export class RoutingService {
   private premiumInstanceId: string | null = null
   // Warm-up grace window (epoch ms) after a fresh dedicated assignment.
   private premiumWarmupUntil: number | null = null
+  // Monotonic sentAt of the last response confirmed to come from the assigned
+  // instance. A failure whose request was sent before this is a stale/out-of-order
+  // echo; the teardown choke-point and the state machine use it to ignore such
+  // failures instead of tearing routing down.
+  private lastReachableSentAt = 0
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
   // Warm-up grace duration. Intentionally longer than DEDICATED_HANDOFF_GRACE_MS
@@ -181,6 +186,7 @@ export class RoutingService {
     this.premiumAssigned = false
     this.premiumInstanceId = null
     this.premiumWarmupUntil = null
+    this.lastReachableSentAt = 0
     this.lastFetch = 0
     this.clearTokenFromStorage()
     this.clearTierFromStorage()
@@ -207,6 +213,7 @@ export class RoutingService {
     this.setPremiumAssigned(false)
     this.setPremiumInstanceId(null)
     this.clearRoutingToken()
+    this.lastReachableSentAt = 0
   }
 
   /**
@@ -278,6 +285,16 @@ export class RoutingService {
     this.premiumWarmupUntil = null
   }
 
+  /**
+   * Whether a premium failure is stale — its request was sent before the last
+   * response confirmed reachable, so it is an out-of-order echo rather than a
+   * live outage. The teardown choke-point and the state machine both consult
+   * this so a stale failure never tears premium routing down.
+   */
+  isStalePremiumFailure(sentAt: number | undefined): boolean {
+    return (sentAt ?? Date.now()) < this.lastReachableSentAt
+  }
+
   // Pure notifier — telemetry lives in listeners so tests can emit without side effects.
   onPremiumUnreachable(listener: PremiumUnreachableListener): () => void {
     this.unreachableListeners.add(listener)
@@ -305,6 +322,12 @@ export class RoutingService {
   }
 
   emitPremiumReachable(detail: PremiumReachableDetail): void {
+    // Advance the reachable watermark before notifying — the teardown
+    // choke-point and the state machine read it to suppress stale failures.
+    const sentAt = detail.sentAt ?? Date.now()
+    if (sentAt > this.lastReachableSentAt) {
+      this.lastReachableSentAt = sentAt
+    }
     this.reachableListeners.forEach((listener) => {
       try {
         listener(detail)
