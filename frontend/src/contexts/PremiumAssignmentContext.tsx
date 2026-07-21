@@ -253,7 +253,9 @@ export const PremiumAssignmentProvider: React.FC<{
   // Refs for values that inactivity check needs but shouldn't trigger re-renders
   const lastActivityTimeRef = useRef(state.lastActivityTime)
   const showInactivityWarningRef = useRef(state.showInactivityWarning)
-  // Last time the passive activity listener advanced the clock (throttling).
+  // Last time we broadcast activity to other tabs, shared by the passive
+  // activity listener and the running-workflow guard to throttle cross-tab
+  // writes to once per ACTIVITY_MARK_THROTTLE_MS.
   const lastActivityMarkRef = useRef(0)
   // Track previous premium status to detect subscription expiry transition
   const prevIsPremiumRef = useRef(false)
@@ -758,7 +760,14 @@ export const PremiumAssignmentProvider: React.FC<{
       // workflow finishes, and clear any warning already shown.
       if (isWorkflowRunningRef.current) {
         lastActivityTimeRef.current = now
-        syncActivityAcrossTabs(now)
+        // Throttle the cross-tab broadcast to once per minute (same rationale
+        // as markLocalActivity) — a long-running workflow otherwise writes
+        // localStorage every 30s for its whole duration. Other tabs still see
+        // fresh activity well within the 1h idle threshold.
+        if (now - lastActivityMarkRef.current >= ACTIVITY_MARK_THROTTLE_MS) {
+          lastActivityMarkRef.current = now
+          syncActivityAcrossTabs(now)
+        }
         if (showInactivityWarningRef.current) {
           setState((prev) => ({ ...prev, showInactivityWarning: false }))
         }
@@ -825,26 +834,43 @@ export const PremiumAssignmentProvider: React.FC<{
     }
   }, [isPremiumUser, currentUser, state.assignmentResult, autoReleaseOnLogout])
 
-  // Reset the inactivity clock on genuine user interaction (pointer/keyboard/
-  // scroll). Throttled via markLocalActivity so a busy session does not spam
+  // Genuine user interaction (pointer/keyboard/scroll) resets the inactivity
+  // clock; a pointer/keyboard gesture also re-fires auto-assign once after an
+  // inactivity auto-release. Both concerns share a single set of window
+  // listeners. Throttled via markLocalActivity so a busy session does not spam
   // state updates or cross-tab writes.
   useEffect(() => {
-    if (!isPremiumUser || !state.assignmentResult) return
+    if (!isPremiumUser) return
 
-    const onActivity = () => markLocalActivity()
-    // capture:true for scroll so scrolls inside inner containers (which don't
-    // bubble to window) also count as activity.
+    const onGesture = () => {
+      // Re-fire auto-assign after an inactivity auto-release when the user
+      // resumes activity. Guarded by needsReassignAfterReleaseRef (not
+      // hasAttemptedRef) so normal initial-mount clicks never bump the
+      // counter — avoiding a duplicate /assign.
+      if (needsReassignAfterReleaseRef.current) {
+        needsReassignAfterReleaseRef.current = false
+        setAutoAssignGeneration((g) => g + 1)
+      }
+      markLocalActivity()
+    }
+    // Scroll counts as activity but must not trigger reassignment: it can be
+    // code-driven (e.g. the auto-scrolling log panel in ScrollLogs), so it only
+    // marks activity. A code-driven scroll therefore still resets the idle
+    // clock, but in practice that autoscroll coincides with a running workflow,
+    // which the inactivity guard already keeps alive. capture:true so scrolls
+    // inside inner containers (which don't bubble to window) also count.
+    const onScroll = () => markLocalActivity()
     const scrollOpts = { passive: true, capture: true } as const
-    window.addEventListener("pointerdown", onActivity)
-    window.addEventListener("keydown", onActivity)
-    window.addEventListener("scroll", onActivity, scrollOpts)
+    window.addEventListener("pointerdown", onGesture)
+    window.addEventListener("keydown", onGesture)
+    window.addEventListener("scroll", onScroll, scrollOpts)
 
     return () => {
-      window.removeEventListener("pointerdown", onActivity)
-      window.removeEventListener("keydown", onActivity)
-      window.removeEventListener("scroll", onActivity, scrollOpts)
+      window.removeEventListener("pointerdown", onGesture)
+      window.removeEventListener("keydown", onGesture)
+      window.removeEventListener("scroll", onScroll, scrollOpts)
     }
-  }, [isPremiumUser, state.assignmentResult, markLocalActivity])
+  }, [isPremiumUser, markLocalActivity])
 
   // Sleep/wake detection callback (Cases 50-51)
   // Send a backend heartbeat to keep the instance alive, but do NOT reset
@@ -889,26 +915,6 @@ export const PremiumAssignmentProvider: React.FC<{
     })
     return unsubscribe
   }, [])
-
-  // Re-fire auto-assign after inactivity auto-release when user resumes activity.
-  // Guarded by needsReassignAfterReleaseRef (not hasAttemptedRef) so that
-  // normal initial-mount clicks never bump the counter — avoiding the
-  // duplicate-/assign.
-  useEffect(() => {
-    if (!isPremiumUser) return
-    const onActivity = () => {
-      if (needsReassignAfterReleaseRef.current) {
-        needsReassignAfterReleaseRef.current = false
-        setAutoAssignGeneration((g) => g + 1)
-      }
-    }
-    window.addEventListener("pointerdown", onActivity)
-    window.addEventListener("keydown", onActivity)
-    return () => {
-      window.removeEventListener("pointerdown", onActivity)
-      window.removeEventListener("keydown", onActivity)
-    }
-  }, [isPremiumUser])
 
   // Auto-assign when premium user is detected
   useEffect(() => {
