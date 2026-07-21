@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy import BIGINT, INTEGER, JSON, TIMESTAMP, Boolean, DateTime
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
@@ -64,16 +64,32 @@ class SubscriptionPlans(SQLModel, table=True):
 class UserSubscription(SQLModel, table=True):
     __tablename__ = "subscription_users"
     __table_args__ = (
-        UniqueConstraint("id", name="idx_id"),
         UniqueConstraint("user_id", name="idx_user_id_unique"),
+        Index("idx_subscription_users_user_id", "user_id"),
+        Index("idx_subscription_users_plan_id", "plan_id"),
+        Index("idx_subscription_users_expiration", "expiration"),
+        Index("idx_subscription_users_user_plan", "user_id", "plan_id"),
+        Index("idx_subscription_users_user_expiration", "user_id", "expiration"),
     )
 
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
         default=None,
     )
-    plan_id: int = Field(sa_column=Column(BIGINT, nullable=False))
-    user_id: int = Field(sa_column=Column(BIGINT, nullable=False))
+    plan_id: int = Field(
+        sa_column=Column(
+            BIGINT,
+            ForeignKey("subscription_plans.id", name="fk_subscription_users_plan"),
+            nullable=False,
+        )
+    )
+    user_id: int = Field(
+        sa_column=Column(
+            BIGINT,
+            ForeignKey("users.id", name="fk_subscription_users_user"),
+            nullable=False,
+        )
+    )
     expiration: datetime = Field(sa_column=Column(DateTime, nullable=False))
     scheduled_downgrade: bool = Field(
         sa_column=Column(Boolean, nullable=False, default=False),
