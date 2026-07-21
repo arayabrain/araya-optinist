@@ -272,9 +272,11 @@ async def public_reproduce_experiment(
             and record.local_sync_status == LocalSyncStatus.synced.value
         ):
             bucket = _resolve_workspace_remote_bucket_name(db, workspace_id)
-            exists, s3_error = await _validate_experiment_exists_in_s3(
-                workspace_id, unique_id, bucket
-            )
+            exists = None
+            if bucket:
+                exists, s3_error = await _validate_experiment_exists_in_s3(
+                    workspace_id, unique_id, bucket
+                )
             if exists is False:
                 logger.error(
                     f"Experiment {workspace_id}/{unique_id} marked synced but not "

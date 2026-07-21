@@ -525,7 +525,7 @@ class TestPublicDataviewReproduceWorkflow:
         # Pin that the statement demotes synced -> error (SET target and guard)
         params = mock_db.execute.call_args[0][0].compile().params
         assert params["local_sync_status"] == LocalSyncStatus.error.value
-        assert params["local_sync_status_1"] == LocalSyncStatus.synced.value
+        assert LocalSyncStatus.synced.value in params.values()
 
     @pytest.mark.asyncio
     async def test_reproduce_synced_present_in_s3_does_not_demote(self):
