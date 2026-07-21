@@ -43,6 +43,7 @@ const mockEmitPremiumReachable = jest.fn<
 const mockGetPremiumInstanceId = jest.fn<string | null, []>(() => null)
 const mockIsPremiumAssigned = jest.fn<boolean, []>(() => false)
 const mockGetRoutingToken = jest.fn<string | null, []>(() => null)
+const mockIsWithinPremiumWarmup = jest.fn<boolean, []>(() => false)
 
 const mockIsDataviewPublicOutputsRequest = jest.fn<boolean, [string]>(
   () => false,
@@ -70,6 +71,7 @@ jest.mock("utils/routing/RoutingService", () => ({
     getPremiumInstanceId: mockGetPremiumInstanceId,
     isPremiumAssigned: mockIsPremiumAssigned,
     getRoutingToken: mockGetRoutingToken,
+    isWithinPremiumWarmup: mockIsWithinPremiumWarmup,
   },
 }))
 
@@ -547,6 +549,36 @@ describe("axios premium-routing interceptors", () => {
     expect(mockSetPremiumAssigned).toHaveBeenCalledWith(false)
 
     // Must NOT emit reachable — instance mismatch.
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
+  it("does NOT clear premiumAssigned on instance mismatch during the warm-up grace", async () => {
+    // Right after a fresh dedicated assignment the instance may still be
+    // registering in the ALB target group, so a 200 from a different (shared)
+    // instance is expected — not a fallback. Tearing down premium routing here
+    // would disable it before warm-up completes and, since the unreachable
+    // state is grace-suppressed downstream, leave no path to re-enable it.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
+    mockIsWithinPremiumWarmup.mockReturnValue(true)
+
+    responses.set("/warmup-mismatch", {
+      status: 200,
+      data: { ok: true },
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "warming-shared-instance-hash",
+      },
+    })
+    const res = await axiosInstance.get("/warmup-mismatch")
+
+    expect(res.status).toBe(200)
+    // Suppressed during warm-up: neither teardown nor unreachable fires.
+    expect(mockSetPremiumAssigned).not.toHaveBeenCalledWith(false)
+    expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
     expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
   })
 
