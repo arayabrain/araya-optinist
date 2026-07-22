@@ -243,14 +243,21 @@ def db():
         SubscriptionAuditLog.__table__,
     ]
     # Drop the MySQL "ON UPDATE CURRENT_TIMESTAMP" default (invalid SQLite DDL).
+    # These Table objects are process-global, so restore the defaults afterward.
+    stripped = []
     for table in tables:
         for col in table.columns:
             arg = getattr(col.server_default, "arg", None)
             if arg is not None and "ON UPDATE" in str(arg):
+                stripped.append((col, col.server_default))
                 col.server_default = None
-    SQLModel.metadata.create_all(engine, tables=tables)
-    with Session(engine) as session:
-        yield session
+    try:
+        SQLModel.metadata.create_all(engine, tables=tables)
+        with Session(engine) as session:
+            yield session
+    finally:
+        for col, default in stripped:
+            col.server_default = default
 
 
 @pytest.fixture()
