@@ -264,6 +264,37 @@ async def public_reproduce_experiment(
         unique_id=unique_id,
     )
     if not display_validation.is_displayable:
+        # A 'synced' row that won't display may have lost its files from S3 after
+        # publishing; confirm on S3 and demote so the background sync job re-checks it.
+        if (
+            RemoteStorageController.is_available()
+            and hasattr(record, "local_sync_status")
+            and record.local_sync_status == LocalSyncStatus.synced.value
+        ):
+            bucket = _resolve_workspace_remote_bucket_name(db, workspace_id)
+            exists = None
+            if bucket:
+                exists, s3_error = await _validate_experiment_exists_in_s3(
+                    workspace_id, unique_id, bucket
+                )
+            if exists is False:
+                logger.error(
+                    f"Experiment {workspace_id}/{unique_id} marked synced but not "
+                    f"present in S3 ({s3_error}); demoting to error"
+                )
+                db.execute(
+                    update(models.ExperimentRecord)
+                    .where(models.ExperimentRecord.id == record.id)
+                    .where(
+                        models.ExperimentRecord.publish_status == PublishStatus.on.value
+                    )
+                    .where(
+                        models.ExperimentRecord.local_sync_status
+                        == LocalSyncStatus.synced.value
+                    )
+                    .values(local_sync_status=LocalSyncStatus.error.value)
+                )
+                db.commit()
         # Data is not available locally - check if we should return pending or error
         if hasattr(record, "local_sync_status"):
             if record.local_sync_status == LocalSyncStatus.pending.value:
@@ -394,7 +425,7 @@ async def _ensure_experiment_downloaded(
 
 async def _validate_experiment_exists_in_s3(
     workspace_id: str, unique_id: str, bucket_name: str
-) -> Tuple[bool, Optional[str]]:
+) -> Tuple[Optional[bool], Optional[str]]:
     """
     Check if experiment data exists in S3.
 
@@ -404,7 +435,10 @@ async def _validate_experiment_exists_in_s3(
         bucket_name: The S3 bucket name
 
     Returns:
-        Tuple of (exists, error_message). If exists is True, error_message is None.
+        Tuple of (exists, error_message):
+        - True: data confirmed present (error_message is None)
+        - False: data confirmed absent
+        - None: could not check (transient/S3 error) - caller must not treat as absent
     """
     if not RemoteStorageController.is_available():
         return True, None  # Skip validation if S3 not configured
@@ -421,7 +455,7 @@ async def _validate_experiment_exists_in_s3(
                 return False, f"No data found in S3 for {workspace_id}/{unique_id}"
     except Exception as e:
         logger.error(f"S3 validation error for {workspace_id}/{unique_id}: {e}")
-        return False, f"Could not verify S3 data: {str(e)}"
+        return None, f"Could not verify S3 data: {str(e)}"
 
     return True, None
 
