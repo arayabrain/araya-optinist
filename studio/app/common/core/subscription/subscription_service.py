@@ -269,11 +269,14 @@ class SubscriptionService:
             .where(UserSubscription.user_id == user_id)
             .where(UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM)
             .order_by(UserSubscription.expiration.desc())
+            .limit(1)
         )
         result_rows = query_result.all()
 
-        logger.info(
-            f"Found {len(result_rows)} premium subscription records for user {user_id}"
+        logger.debug(
+            "Found %d premium subscription records for user %s",
+            len(result_rows),
+            user_id,
         )
 
         if not result_rows:
@@ -322,7 +325,7 @@ class SubscriptionService:
             status = SubscriptionLifecycleStatus.OVERDUE
             days_remaining = 0
 
-        logger.info(f"Final status: {status}, days_remaining: {days_remaining}")
+        logger.debug("Final status: %s, days_remaining: %s", status, days_remaining)
 
         return SubscriptionLifecycle(
             status=status,
