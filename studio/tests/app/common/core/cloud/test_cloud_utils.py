@@ -1377,3 +1377,176 @@ def test_ensure_bucket_returns_none_when_user_not_found():
 
     assert result is None
     db.commit.assert_not_called()
+
+
+# ============================================================================
+# Tests for get_effective_quota_bytes() - shared enforcement quota (issue #721)
+# ============================================================================
+
+FREE_QUOTA_BYTES = StorageQuota.FREE * StorageSize.GB
+PREMIUM_QUOTA_BYTES = StorageQuota.PREMIUM * StorageSize.GB
+
+
+def _mock_lifecycle_db(expiration):
+    """Build a mocked session_scope whose lifecycle query returns one premium row."""
+    mock_db = Mock()
+    mock_subscription = Mock()
+    mock_subscription.expiration = expiration
+    mock_db.execute.return_value.all.return_value = [[mock_subscription]]
+    return mock_db
+
+
+def _run_effective_quota(expiration, raw_quota_bytes):
+    from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        mock_scope.return_value.__enter__.return_value = _mock_lifecycle_db(expiration)
+        return get_effective_quota_bytes(
+            1, storage_info={"storage_quota_bytes": raw_quota_bytes}
+        )
+
+
+def test_effective_quota_overdue_premium_downgraded_to_free():
+    """Overdue premium with a still-raw premium record enforces the free limit."""
+    grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
+    warning = SubscriptionPeriods.WARNING_PERIOD_DAYS
+    expiration = get_current_datetime() - timedelta(days=grace + warning + 5)
+
+    assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == FREE_QUOTA_BYTES
+
+
+def test_effective_quota_grace_downgraded_to_free():
+    """A user just inside the grace period is held to the 5GB free limit."""
+    expiration = get_current_datetime() - timedelta(days=1)
+
+    assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == FREE_QUOTA_BYTES
+
+
+def test_effective_quota_warning_downgraded_to_free():
+    """A user in the post-grace warning window is held to the 5GB free limit."""
+    grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
+    expiration = get_current_datetime() - timedelta(days=grace + 1)
+
+    assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == FREE_QUOTA_BYTES
+
+
+def test_effective_quota_active_premium_uses_raw():
+    """An active premium user keeps the full raw quota - no downgrade."""
+    expiration = get_current_datetime() + timedelta(days=30)
+
+    assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == PREMIUM_QUOTA_BYTES
+
+
+def test_effective_quota_free_user_uses_raw():
+    """A user who never had premium (no rows) enforces their raw quota (5GB)."""
+    from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        mock_db = Mock()
+        mock_db.execute.return_value.all.return_value = []  # never had premium
+        mock_scope.return_value.__enter__.return_value = mock_db
+
+        result = get_effective_quota_bytes(
+            1, storage_info={"storage_quota_bytes": FREE_QUOTA_BYTES}
+        )
+
+    assert result == FREE_QUOTA_BYTES
+
+
+def test_effective_quota_zero_raw_quota_returns_zero():
+    """Unknown/disabled quota (<=0) returns 0 so callers skip enforcement."""
+    from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
+
+    assert get_effective_quota_bytes(1, storage_info={"storage_quota_bytes": 0}) == 0
+    assert get_effective_quota_bytes(1, storage_info={}) == 0
+
+
+def test_effective_quota_malformed_row_fails_open_to_raw():
+    """A premium row with None expiration cannot be classified -> enforce raw quota."""
+    from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        mock_scope.return_value.__enter__.return_value = _mock_lifecycle_db(None)
+
+        result = get_effective_quota_bytes(
+            1, storage_info={"storage_quota_bytes": PREMIUM_QUOTA_BYTES}
+        )
+
+    assert result == PREMIUM_QUOTA_BYTES
+
+
+# ============================================================================
+# Run gate uses the effective quota (issue #721)
+# ============================================================================
+
+
+def test_run_gate_blocks_overdue_user_over_effective_quota():
+    """End-to-end: _check_storage_quota raises 403 for an overdue user over the
+    free effective quota even though their raw quota record still reads premium.
+
+    get_effective_quota_bytes is NOT stubbed, so this proves the gate is wired to
+    the effective quota (the fix), not the raw storage_quota_bytes.
+    """
+    from fastapi import HTTPException
+
+    from studio.app.common.routers.run import _check_storage_quota
+
+    used = 6_886_941_631  # 6.4 GB - the issue's reproduction value
+    grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
+    warning = SubscriptionPeriods.WARNING_PERIOD_DAYS
+    overdue_expiration = get_current_datetime() - timedelta(days=grace + warning + 5)
+
+    with patch(
+        "studio.app.common.routers.run.get_current_user_storage_usage",
+        new=AsyncMock(return_value=used),
+    ), patch(
+        "studio.app.common.routers.run.get_user_storage_usage",
+        return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
+    ), patch(
+        "studio.app.common.core.cloud.cloud_utils.session_scope"
+    ) as mock_scope:
+        mock_scope.return_value.__enter__.return_value = _mock_lifecycle_db(
+            overdue_expiration
+        )
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(_check_storage_quota(13))
+
+    assert exc.value.status_code == 403
+    assert "Storage quota exceeded" in exc.value.detail
+
+
+def test_run_gate_allows_active_user_under_raw_quota():
+    """End-to-end: an active premium user under their raw quota is unaffected."""
+    from studio.app.common.routers.run import _check_storage_quota
+
+    active_expiration = get_current_datetime() + timedelta(days=30)
+
+    with patch(
+        "studio.app.common.routers.run.get_current_user_storage_usage",
+        new=AsyncMock(return_value=50 * StorageSize.GB),
+    ), patch(
+        "studio.app.common.routers.run.get_user_storage_usage",
+        return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
+    ), patch(
+        "studio.app.common.core.cloud.cloud_utils.session_scope"
+    ) as mock_scope:
+        mock_scope.return_value.__enter__.return_value = _mock_lifecycle_db(
+            active_expiration
+        )
+        # Should not raise (50GB well under the raw premium effective quota)
+        asyncio.run(_check_storage_quota(1))
+
+
+def test_effective_quota_db_error_fails_open_to_raw():
+    """A DB error while resolving lifecycle must fail open to the raw quota,
+    never propagate (which would 500 the run/upload)."""
+    from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
+
+    with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
+        mock_scope.side_effect = Exception("DB connection lost")
+
+        result = get_effective_quota_bytes(
+            1, storage_info={"storage_quota_bytes": PREMIUM_QUOTA_BYTES}
+        )
+
+    assert result == PREMIUM_QUOTA_BYTES
