@@ -44,6 +44,9 @@ const mockGetPremiumInstanceId = jest.fn<string | null, []>(() => null)
 const mockIsPremiumAssigned = jest.fn<boolean, []>(() => false)
 const mockGetRoutingToken = jest.fn<string | null, []>(() => null)
 const mockIsWithinPremiumWarmup = jest.fn<boolean, []>(() => false)
+const mockIsStalePremiumFailure = jest.fn<boolean, [number | undefined]>(
+  () => false,
+)
 
 const mockIsDataviewPublicOutputsRequest = jest.fn<boolean, [string]>(
   () => false,
@@ -72,6 +75,7 @@ jest.mock("utils/routing/RoutingService", () => ({
     isPremiumAssigned: mockIsPremiumAssigned,
     getRoutingToken: mockGetRoutingToken,
     isWithinPremiumWarmup: mockIsWithinPremiumWarmup,
+    isStalePremiumFailure: mockIsStalePremiumFailure,
   },
 }))
 
@@ -612,6 +616,39 @@ describe("axios premium-routing interceptors", () => {
     // Falls back so the request still resolves...
     expect(res.status).toBe(200)
     // ...but premium routing is NOT torn down during warm-up.
+    expect(mockSetPremiumAssigned).not.toHaveBeenCalledWith(false)
+    expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
+  })
+
+  it("does NOT clear premiumAssigned on a stale 502/503 (older than the last reachable)", async () => {
+    // A late-arriving 5xx whose request was sent before the last confirmed-
+    // reachable response is an out-of-order echo, not a live outage. Past warm-up
+    // the choke-point still skips teardown: the machine suppresses the stale
+    // event (never flips), so tearing down here would strand premium routing.
+    mockRequiresPremiumRouting.mockReturnValue(true)
+    mockIsWithinPremiumWarmup.mockReturnValue(false)
+    mockIsStalePremiumFailure.mockReturnValue(true)
+
+    let callCount = 0
+    responses.set("/stale-5xx", () => {
+      callCount += 1
+      if (callCount === 1) {
+        return { status: 503, data: { detail: "late echo" } }
+      }
+      return { status: 200, data: { ok: true }, headers: {} }
+    })
+    mockGetRoutingHeaders
+      .mockReturnValueOnce({
+        "X-Routing-ID": "rid-outgoing",
+        "X-User-Tier": "premium",
+      })
+      .mockReturnValue({})
+
+    const res = await axiosInstance.get("/stale-5xx")
+
+    // Falls back so the request still resolves...
+    expect(res.status).toBe(200)
+    // ...but a stale failure never tears premium routing down.
     expect(mockSetPremiumAssigned).not.toHaveBeenCalledWith(false)
     expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
   })
