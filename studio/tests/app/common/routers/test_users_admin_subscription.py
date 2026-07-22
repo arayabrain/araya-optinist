@@ -8,15 +8,42 @@ Tests the admin subscription update feature including:
 - Edge cases
 """
 
+import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import BIGINT as GENERIC_BIGINT
+from sqlalchemy import BigInteger
+from sqlalchemy.dialects.mysql import BIGINT as MYSQL_BIGINT
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
+from studio.app.common.core.users import crud_users
+from studio.app.common.models import User as UserModel
+from studio.app.common.models.subscription import (
+    SubscriptionAuditLog,
+    UserStorageUsage,
+    UserSubscription,
+)
 from studio.app.common.schemas.users import (
     SubscriptionAuditSnapshot,
     UserSubscriptionUpdate,
 )
+
+
+# SQLite only autoincrements an INTEGER PRIMARY KEY, not BIGINT.
+@compiles(BigInteger, "sqlite")
+@compiles(GENERIC_BIGINT, "sqlite")
+@compiles(MYSQL_BIGINT, "sqlite")
+def _bigint_as_integer_sqlite(type_, compiler, **kw):
+    return "INTEGER"
+
+
+FREE_PLAN = 1
+PREMIUM_PLAN = 2
 
 # ============================================================================
 # Schema Validation Tests (UserSubscriptionUpdate)
@@ -174,3 +201,209 @@ class TestSubscriptionAuditSnapshot:
         assert dumped["plan_id"] == 2
         assert dumped["expiration"] == "2026-12-31T23:59:59+00:00"
         assert dumped["storage_quota_bytes"] == 214748364800
+
+    def test_snapshot_all_fields_null(self):
+        """Snapshot allows every field null (record did not exist before)."""
+        snapshot = SubscriptionAuditSnapshot()
+        assert snapshot.plan_id is None
+        assert snapshot.expiration is None
+        assert snapshot.storage_quota_bytes is None
+        assert snapshot.dict() == {
+            "plan_id": None,
+            "expiration": None,
+            "storage_quota_bytes": None,
+        }
+
+    def test_snapshot_mixed_null(self):
+        """Snapshot allows one row present and the other absent."""
+        snapshot = SubscriptionAuditSnapshot(plan_id=1, storage_quota_bytes=None)
+        assert snapshot.plan_id == 1
+        assert snapshot.storage_quota_bytes is None
+
+
+# ============================================================================
+# CRUD Tests (update_user_subscription_admin) — real DB session
+# ============================================================================
+
+
+@pytest.fixture()
+def db():
+    """In-memory SQLite session with all tables created."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    # Only the tables this logic touches — the full metadata includes tables
+    # with MySQL-specific DDL that SQLite cannot create.
+    tables = [
+        UserModel.__table__,
+        UserSubscription.__table__,
+        UserStorageUsage.__table__,
+        SubscriptionAuditLog.__table__,
+    ]
+    # Drop the MySQL "ON UPDATE CURRENT_TIMESTAMP" default (invalid SQLite DDL).
+    for table in tables:
+        for col in table.columns:
+            arg = getattr(col.server_default, "arg", None)
+            if arg is not None and "ON UPDATE" in str(arg):
+                col.server_default = None
+    SQLModel.metadata.create_all(engine, tables=tables)
+    with Session(engine) as session:
+        yield session
+
+
+@pytest.fixture()
+def seeded_user(db):
+    """An active user; returns its id. No subscription/storage rows."""
+    user = UserModel(
+        organization_id=1,
+        uid="uid-test",
+        name="Test User",
+        email="test@example.com",
+        attributes={},
+        active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user.id
+
+
+@pytest.fixture()
+def admin_user():
+    return SimpleNamespace(id=99, organization=SimpleNamespace(id=1))
+
+
+def _call(db, user_id, data, admin_user):
+    # get_user_with_context re-queries with joins irrelevant to this logic;
+    # stub it so the test focuses on the upsert + audit behavior.
+    async def _stub(_db, _uid):
+        return _uid
+
+    original = crud_users.get_user_with_context
+    crud_users.get_user_with_context = _stub
+    try:
+        return asyncio.run(
+            crud_users.update_user_subscription_admin(db, user_id, data, admin_user)
+        )
+    finally:
+        crud_users.get_user_with_context = original
+
+
+class TestUpdateUserSubscriptionAdminCRUD:
+    """Business-logic + audit coverage for the admin subscription upsert."""
+
+    def test_creates_both_rows_when_missing(self, db, seeded_user, admin_user):
+        data = UserSubscriptionUpdate(
+            plan_id=PREMIUM_PLAN,
+            expiration=datetime(2026, 12, 31, tzinfo=timezone.utc),
+            storage_quota_bytes=214748364800,
+            reason="grant premium",
+        )
+        _call(db, seeded_user, data, admin_user)
+
+        sub = (
+            db.query(UserSubscription)
+            .filter(UserSubscription.user_id == seeded_user)
+            .one()
+        )
+        storage = (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == seeded_user)
+            .one()
+        )
+        assert sub.plan_id == PREMIUM_PLAN
+        assert storage.storage_quota_bytes == 214748364800
+
+        log = db.query(SubscriptionAuditLog).one()
+        assert log.old_value == {
+            "plan_id": None,
+            "expiration": None,
+            "storage_quota_bytes": None,
+        }
+        assert log.new_value["plan_id"] == PREMIUM_PLAN
+        assert log.new_value["storage_quota_bytes"] == 214748364800
+
+    def test_creates_subscription_when_only_storage_exists(
+        self, db, seeded_user, admin_user
+    ):
+        db.add(
+            UserStorageUsage(
+                user_id=seeded_user,
+                storage_usage_bytes=0,
+                storage_quota_bytes=5368709120,
+            )
+        )
+        db.commit()
+
+        data = UserSubscriptionUpdate(
+            plan_id=PREMIUM_PLAN,
+            expiration=datetime(2026, 12, 31, tzinfo=timezone.utc),
+            storage_quota_bytes=214748364800,
+            reason="upgrade",
+        )
+        _call(db, seeded_user, data, admin_user)
+
+        assert (
+            db.query(UserSubscription)
+            .filter(UserSubscription.user_id == seeded_user)
+            .one()
+            .plan_id
+            == PREMIUM_PLAN
+        )
+        log = db.query(SubscriptionAuditLog).one()
+        # storage existed -> its old quota is recorded; subscription did not.
+        assert log.old_value["plan_id"] is None
+        assert log.old_value["storage_quota_bytes"] == 5368709120
+
+    def test_updates_existing_rows(self, db, seeded_user, admin_user):
+        db.add(
+            UserSubscription(
+                user_id=seeded_user,
+                plan_id=PREMIUM_PLAN,
+                expiration=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        db.add(
+            UserStorageUsage(
+                user_id=seeded_user,
+                storage_usage_bytes=0,
+                storage_quota_bytes=214748364800,
+            )
+        )
+        db.commit()
+
+        data = UserSubscriptionUpdate(
+            plan_id=FREE_PLAN,
+            expiration=None,
+            storage_quota_bytes=5368709120,
+            reason="downgrade to free",
+        )
+        _call(db, seeded_user, data, admin_user)
+
+        assert (
+            db.query(UserSubscription)
+            .filter(UserSubscription.user_id == seeded_user)
+            .one()
+            .plan_id
+            == FREE_PLAN
+        )
+        log = db.query(SubscriptionAuditLog).one()
+        assert log.old_value["plan_id"] == PREMIUM_PLAN
+        assert log.old_value["storage_quota_bytes"] == 214748364800
+        assert log.new_value["storage_quota_bytes"] == 5368709120
+
+    def test_premium_requires_expiration(self, db, seeded_user, admin_user):
+        from fastapi import HTTPException
+
+        data = UserSubscriptionUpdate(
+            plan_id=PREMIUM_PLAN,
+            expiration=None,
+            storage_quota_bytes=214748364800,
+            reason="premium no expiration",
+        )
+        with pytest.raises(HTTPException) as exc:
+            _call(db, seeded_user, data, admin_user)
+        assert exc.value.status_code == 400
+        assert db.query(UserSubscription).count() == 0

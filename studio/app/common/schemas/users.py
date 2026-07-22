@@ -97,9 +97,9 @@ class UserUpdate(BaseModel):
 class SubscriptionAuditSnapshot(BaseModel):
     """Typed snapshot of subscription state for audit log old_value/new_value."""
 
-    plan_id: int
+    plan_id: Optional[int] = None
     expiration: Optional[str] = None
-    storage_quota_bytes: int
+    storage_quota_bytes: Optional[int] = None
 
 
 class UserSubscriptionUpdate(BaseModel):
