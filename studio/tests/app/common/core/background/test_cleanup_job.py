@@ -6,7 +6,17 @@ Tests cleanup logic with S3 verification and orphaned data handling.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from studio.app.common.core.background.cleanup_job import DataCleanupJob
+
+
+@pytest.fixture(autouse=True)
+def _reset_instance_id_cache():
+    """Clear the process-lifetime instance-id cache between tests."""
+    DataCleanupJob._instance_id_cache = None
+    yield
+    DataCleanupJob._instance_id_cache = None
 
 
 class TestVerifyS3Backup:

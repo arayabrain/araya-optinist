@@ -45,16 +45,22 @@ logger = AppLogger.get_logger()
 class DataCleanupJob:
     """Background job to clean up data for logged-out free users"""
 
-    @staticmethod
-    def _get_current_instance_id() -> str:
-        """Return the EC2 instance ID for the current host.
+    # Cache the resolved instance id (constant for a process lifetime) to
+    # avoid repeating IMDS round-trips when INSTANCE_ID is unset.
+    _instance_id_cache = None
+
+    @classmethod
+    def _get_current_instance_id(cls) -> str:
+        """Return the EC2 instance ID for the current host (cached).
 
         Delegates to the shared ``resolve_instance_id`` (env → IMDSv2 →
         IMDSv1 → "local") so the worker resolves the *same* id the
         middleware writes into ``FreeUserAssignment.instance_id``; a
         divergence would silently drop the per-instance cleanup filter.
         """
-        return resolve_instance_id()
+        if cls._instance_id_cache is None:
+            cls._instance_id_cache = resolve_instance_id()
+        return cls._instance_id_cache
 
     @classmethod
     async def run(cls):
