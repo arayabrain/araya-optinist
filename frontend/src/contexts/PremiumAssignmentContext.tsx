@@ -1076,6 +1076,10 @@ export const PremiumAssignmentProvider: React.FC<{
                 statusResult: status,
               }
             })
+            // Reached only for a shared assignment (dedicated returns above).
+            // Keep the flag consistent with the polled assignment so the
+            // teardown gate holds even for a shared state seen only via polling.
+            routingService.setPremiumShared(true)
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
 

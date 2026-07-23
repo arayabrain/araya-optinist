@@ -206,6 +206,18 @@ const dedicatedStatus: PremiumStatusResult = {
   },
 }
 
+const sharedStatus: PremiumStatusResult = {
+  user_id: 1,
+  subscription_type: UserTier.PREMIUM,
+  is_premium: true,
+  assignment: {
+    instance_id: "inst-shared",
+    is_shared: true,
+    assigned_at: "2023-01-01T00:00:00Z",
+    status: "active",
+  },
+}
+
 // --- Tests ---
 
 describe("PremiumAssignmentProvider — unreachable state machine", () => {
@@ -222,6 +234,28 @@ describe("PremiumAssignmentProvider — unreachable state machine", () => {
 
   afterEach(() => {
     jest.clearAllTimers()
+  })
+
+  test("shared /status assignment forwards is_shared to routingService.setPremiumShared", async () => {
+    // Wiring guard: the establishment site must forward is_shared so the axios
+    // teardown gate (isPremiumShared) sees a shared assignment.
+    mockedGetStatus.mockResolvedValue(sharedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+    expect(routingService.isPremiumShared()).toBe(true)
+  })
+
+  test("dedicated /status assignment leaves premiumShared false", async () => {
+    mockedGetStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(false)
+    })
+    expect(routingService.isPremiumShared()).toBe(false)
   })
 
   test("HEALTHY → DEGRADED on emitPremiumUnreachable, then clears on emitPremiumReachable", async () => {

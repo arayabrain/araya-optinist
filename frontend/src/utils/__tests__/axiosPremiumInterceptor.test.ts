@@ -588,6 +588,37 @@ describe("axios premium-routing interceptors", () => {
     expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
   })
 
+  it("does NOT clear premiumAssigned on instance mismatch when the assignment is shared", async () => {
+    // The teardown guard lives in the single choke-point, so the success-path
+    // instance-mismatch caller is gated for shared too: a 200 from a different
+    // instance must not tear a shared assignment down (it has no dedicated-only
+    // recovery to hand off to).
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    mockGetPremiumInstanceId.mockReturnValue("expected-instance-hash")
+    mockIsWithinPremiumWarmup.mockReturnValue(false)
+    mockIsStalePremiumFailure.mockReturnValue(false)
+    mockIsPremiumShared.mockReturnValue(true)
+
+    responses.set("/shared-mismatch", {
+      status: 200,
+      data: { ok: true },
+      headers: {
+        "x-routing-id": "rid-outgoing",
+        "x-served-by-instance": "free-tier-instance-hash",
+      },
+    })
+    const res = await axiosInstance.get("/shared-mismatch")
+
+    expect(res.status).toBe(200)
+    // Shared is never torn down, on either teardown caller.
+    expect(mockSetPremiumAssigned).not.toHaveBeenCalledWith(false)
+    expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
+    expect(mockEmitPremiumReachable).not.toHaveBeenCalled()
+  })
+
   it("does NOT clear premiumAssigned on a 502/503 during the warm-up grace", async () => {
     // A transient 5xx from a freshly-assigned dedicated instance is expected
     // during warm-up. Tearing down premiumAssigned here would strand premium
