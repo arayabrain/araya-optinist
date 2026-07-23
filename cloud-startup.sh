@@ -222,6 +222,16 @@ echo "Starting application..."
 poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &
 APP_PID=$!
 
+# Forward ECS stop signals (SIGTERM) to child processes so the cleanup
+# worker and app can shut down gracefully; without this the signal reaches
+# only the shell and children are killed abruptly.
+_forward_shutdown() {
+    echo "Received shutdown signal, forwarding to child processes..."
+    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null
+    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
+}
+trap _forward_shutdown TERM INT
+
 # Allow initial startup time matching ECS health check startPeriod
 echo "Waiting for initial startup..."
 sleep 30
@@ -267,3 +277,4 @@ LB_CHECK_PID=$!
 # This ensures the container keeps running as long as the application is running
 wait $APP_PID
 wait $LB_CHECK_PID
+[ -n "$CLEANUP_PID" ] && wait "$CLEANUP_PID" 2>/dev/null
