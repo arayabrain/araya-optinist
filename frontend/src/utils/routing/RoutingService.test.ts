@@ -639,6 +639,37 @@ describe("RoutingService", () => {
     })
   })
 
+  describe("emitPremiumReachable re-arms premiumAssigned (exit side)", () => {
+    test("recovery not routed through the probe still re-arms routing", () => {
+      // Teardown turned routing off (concurrent failure), then a concurrent
+      // success emits reachable without going through the half-open probe.
+      routingService.setPremiumAssigned(false)
+
+      routingService.emitPremiumReachable({ status: 200 })
+
+      expect(routingService.isPremiumAssigned()).toBe(true)
+    })
+
+    test("re-arm holds even when a listener throws", () => {
+      routingService.setPremiumAssigned(false)
+      routingService.onPremiumReachable(() => {
+        throw new Error("boom")
+      })
+
+      routingService.emitPremiumReachable({ status: 200 })
+
+      expect(routingService.isPremiumAssigned()).toBe(true)
+    })
+
+    test("re-arm is idempotent when already assigned (probe path)", () => {
+      routingService.setPremiumAssigned(true)
+
+      routingService.emitPremiumReachable({ status: 200 })
+
+      expect(routingService.isPremiumAssigned()).toBe(true)
+    })
+  })
+
   describe("premiumInstanceId", () => {
     test("setPremiumInstanceId / getPremiumInstanceId round-trip", () => {
       expect(routingService.getPremiumInstanceId()).toBeNull()

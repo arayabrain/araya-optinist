@@ -331,6 +331,10 @@ export class RoutingService {
     if (sentAt > this.lastReachableSentAt) {
       this.lastReachableSentAt = sentAt
     }
+    // Re-arm routing at the source of truth: a response that reached here
+    // passed shouldEmitPremiumReachable (verified serving-instance identity),
+    // so routing must be on for every listener path. Idempotent (probe re-arm).
+    this.setPremiumAssigned(true)
     this.reachableListeners.forEach((listener) => {
       try {
         listener(detail)
