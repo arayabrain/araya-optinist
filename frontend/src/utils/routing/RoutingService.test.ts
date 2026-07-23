@@ -813,5 +813,11 @@ describe("RoutingService", () => {
       routingService.resetForRelease()
       expect(routingService.isStalePremiumFailure(1500)).toBe(false)
     })
+
+    test("updateRoutingInfo downgrade to free resets the watermark", () => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+      routingService.updateRoutingInfo(createFreeUser())
+      expect(routingService.isStalePremiumFailure(1500)).toBe(false)
+    })
   })
 })

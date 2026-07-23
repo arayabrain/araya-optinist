@@ -171,6 +171,9 @@ export class RoutingService {
     if (!isPremium) {
       this.setPremiumAssigned(false)
       this.setPremiumInstanceId(null)
+      // Reset the reachable watermark alongside clearRoutingInfo / resetForRelease
+      // so all three "premium goes away" paths leave watermark state consistent.
+      this.lastReachableSentAt = 0
     }
 
     this.lastFetch = Date.now()
