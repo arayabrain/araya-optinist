@@ -9,6 +9,7 @@ Tests the admin subscription update feature including:
 """
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -35,6 +36,9 @@ from studio.app.common.schemas.users import (
 
 
 # SQLite only autoincrements an INTEGER PRIMARY KEY, not BIGINT.
+# NOTE: @compiles mutates SQLAlchemy's process-global dialect-compiler registry
+# on import, not just this module - every SQLite-backed test in the same process
+# that builds DDL from a BigInteger/BIGINT column will emit INTEGER too.
 @compiles(BigInteger, "sqlite")
 @compiles(GENERIC_BIGINT, "sqlite")
 @compiles(MYSQL_BIGINT, "sqlite")
@@ -301,14 +305,20 @@ def _call(db, user_id, data, admin_user):
 class TestUpdateUserSubscriptionAdminCRUD:
     """Business-logic + audit coverage for the admin subscription upsert."""
 
-    def test_creates_both_rows_when_missing(self, db, seeded_user, admin_user):
+    def test_creates_both_rows_when_missing(self, db, seeded_user, admin_user, caplog):
         data = UserSubscriptionUpdate(
             plan_id=PREMIUM_PLAN,
             expiration=datetime(2026, 12, 31, tzinfo=timezone.utc),
             storage_quota_bytes=214748364800,
             reason="grant premium",
         )
-        _call(db, seeded_user, data, admin_user)
+        with caplog.at_level(logging.WARNING):
+            _call(db, seeded_user, data, admin_user)
+
+        # Both rows were missing -> the warning names both tables.
+        assert "creating missing" in caplog.text
+        assert "subscription_users" in caplog.text
+        assert "user_storage_usage" in caplog.text
 
         sub = (
             db.query(UserSubscription)
@@ -321,6 +331,7 @@ class TestUpdateUserSubscriptionAdminCRUD:
             .one()
         )
         assert sub.plan_id == PREMIUM_PLAN
+        assert sub.scheduled_downgrade is False
         assert storage.storage_quota_bytes == 214748364800
 
         log = db.query(SubscriptionAuditLog).one()
@@ -364,7 +375,7 @@ class TestUpdateUserSubscriptionAdminCRUD:
         assert log.old_value["plan_id"] is None
         assert log.old_value["storage_quota_bytes"] == 5368709120
 
-    def test_updates_existing_rows(self, db, seeded_user, admin_user):
+    def test_updates_existing_rows(self, db, seeded_user, admin_user, caplog):
         db.add(
             UserSubscription(
                 user_id=seeded_user,
@@ -387,7 +398,11 @@ class TestUpdateUserSubscriptionAdminCRUD:
             storage_quota_bytes=5368709120,
             reason="downgrade to free",
         )
-        _call(db, seeded_user, data, admin_user)
+        with caplog.at_level(logging.WARNING):
+            _call(db, seeded_user, data, admin_user)
+
+        # Both rows existed -> no "creating missing" warning.
+        assert "creating missing" not in caplog.text
 
         assert (
             db.query(UserSubscription)
@@ -414,3 +429,83 @@ class TestUpdateUserSubscriptionAdminCRUD:
             _call(db, seeded_user, data, admin_user)
         assert exc.value.status_code == 400
         assert db.query(UserSubscription).count() == 0
+
+    def test_creates_storage_when_only_subscription_exists(
+        self, db, seeded_user, admin_user, caplog
+    ):
+        db.add(
+            UserSubscription(
+                user_id=seeded_user,
+                plan_id=PREMIUM_PLAN,
+                expiration=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+
+        data = UserSubscriptionUpdate(
+            plan_id=FREE_PLAN,
+            expiration=None,
+            storage_quota_bytes=5368709120,
+            reason="repair storage",
+        )
+        with caplog.at_level(logging.WARNING):
+            _call(db, seeded_user, data, admin_user)
+
+        # Only storage was missing -> the warning names it and not the
+        # subscription table (guards against inverted label/flag pairing).
+        assert "user_storage_usage" in caplog.text
+        assert "subscription_users" not in caplog.text
+
+        assert (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == seeded_user)
+            .one()
+            .storage_quota_bytes
+            == 5368709120
+        )
+        log = db.query(SubscriptionAuditLog).one()
+        # subscription existed -> its old plan recorded; storage did not -> null.
+        assert log.old_value["plan_id"] == PREMIUM_PLAN
+        assert log.old_value["storage_quota_bytes"] is None
+
+
+class TestInsertOrReselect:
+    """The SAVEPOINT + IntegrityError -> re-select concurrency guard."""
+
+    def test_returns_existing_row_on_unique_conflict(self, db, seeded_user):
+        existing = UserSubscription(
+            user_id=seeded_user,
+            plan_id=PREMIUM_PLAN,
+            expiration=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        db.add(existing)
+        db.commit()
+
+        # A concurrent writer's row would collide on the user_id unique
+        # constraint; the guard must return the winner, not the duplicate.
+        duplicate = UserSubscription(
+            user_id=seeded_user,
+            plan_id=FREE_PLAN,
+            expiration=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+        result = crud_users._insert_or_reselect(
+            db, duplicate, UserSubscription, seeded_user
+        )
+
+        assert result.plan_id == PREMIUM_PLAN
+        assert (
+            db.query(UserSubscription)
+            .filter(UserSubscription.user_id == seeded_user)
+            .count()
+            == 1
+        )
+
+    def test_reraises_when_no_existing_row(self, db):
+        from sqlalchemy.exc import IntegrityError
+
+        # expiration is NOT NULL: this raises IntegrityError on flush for a
+        # reason other than the unique constraint, and no row exists to
+        # re-select, so the error must propagate rather than be swallowed.
+        bad = UserSubscription(user_id=424242, plan_id=PREMIUM_PLAN, expiration=None)
+        with pytest.raises(IntegrityError):
+            crud_users._insert_or_reselect(db, bad, UserSubscription, 424242)

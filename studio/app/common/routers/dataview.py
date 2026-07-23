@@ -273,6 +273,7 @@ async def public_reproduce_experiment(
         ):
             bucket = _resolve_workspace_remote_bucket_name(db, workspace_id)
             exists = None
+            s3_error = None
             if bucket:
                 exists, s3_error = await _validate_experiment_exists_in_s3(
                     workspace_id, unique_id, bucket
@@ -443,21 +444,9 @@ async def _validate_experiment_exists_in_s3(
     if not RemoteStorageController.is_available():
         return True, None  # Skip validation if S3 not configured
 
-    s3_controller = S3StorageController(bucket_name)
-    s3_path = S3StorageController.make_s3_output_prefix(workspace_id, unique_id)
-
-    try:
-        async with s3_controller._S3StorageController__get_s3_client() as client:
-            result = await client.list_objects_v2(
-                Bucket=bucket_name, Prefix=s3_path, MaxKeys=5
-            )
-            if result.get("KeyCount", 0) == 0:
-                return False, f"No data found in S3 for {workspace_id}/{unique_id}"
-    except Exception as e:
-        logger.error(f"S3 validation error for {workspace_id}/{unique_id}: {e}")
-        return None, f"Could not verify S3 data: {str(e)}"
-
-    return True, None
+    return await S3StorageController(bucket_name).experiment_prefix_exists(
+        workspace_id, unique_id
+    )
 
 
 @router.get(
