@@ -234,6 +234,10 @@ const tearDownPremiumRoutingUnlessWarmup = (
   // routing, since the state machine suppresses the event and never arms a
   // recovery probe.
   if (routingService.isStalePremiumFailure(detail.sentAt)) return
+  // Shared assignments have no dedicated-only recovery (state machine / probe),
+  // so a permanent downgrade here would strand them on free tier with nothing to
+  // re-arm. The per-request free-tier retry in the caller still serves the request.
+  if (routingService.isPremiumShared()) return
   routingService.setPremiumAssigned(false)
   routingService.emitPremiumUnreachable(detail)
 }

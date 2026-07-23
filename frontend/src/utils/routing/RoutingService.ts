@@ -63,6 +63,10 @@ export class RoutingService {
   private storedTier: UserTier | null = null
   private premiumAssigned: boolean = false
   private premiumInstanceId: string | null = null
+  // Whether the current assignment is a shared (pool) instance. Shared has no
+  // dedicated-only recovery (state machine / probe), so the teardown choke-point
+  // must not permanently downgrade it — see tearDownPremiumRoutingUnlessWarmup.
+  private premiumShared: boolean = false
   // Warm-up grace window (epoch ms) after a fresh dedicated assignment.
   private premiumWarmupUntil: number | null = null
   // Monotonic sentAt of the last response confirmed to come from the assigned
@@ -86,6 +90,7 @@ export class RoutingService {
   private readonly TIER_STORAGE_KEY = "routing_tier"
   private readonly PREMIUM_ASSIGNED_KEY = "premium_assigned"
   private readonly PREMIUM_INSTANCE_ID_KEY = "premium_instance_id"
+  private readonly PREMIUM_SHARED_KEY = "premium_shared"
   private unreachableListeners: Set<PremiumUnreachableListener> = new Set()
   private reachableListeners: Set<PremiumReachableListener> = new Set()
 
@@ -95,6 +100,7 @@ export class RoutingService {
     this.loadTierFromStorage()
     this.loadPremiumAssignedFromStorage()
     this.loadPremiumInstanceIdFromStorage()
+    this.loadPremiumSharedFromStorage()
   }
 
   /**
@@ -171,6 +177,7 @@ export class RoutingService {
     if (!isPremium) {
       this.setPremiumAssigned(false)
       this.setPremiumInstanceId(null)
+      this.setPremiumShared(false)
       // Reset the reachable watermark alongside clearRoutingInfo / resetForRelease
       // so all three "premium goes away" paths leave watermark state consistent.
       this.lastReachableSentAt = 0
@@ -188,6 +195,7 @@ export class RoutingService {
     this.storedTier = null
     this.premiumAssigned = false
     this.premiumInstanceId = null
+    this.premiumShared = false
     this.premiumWarmupUntil = null
     this.lastReachableSentAt = 0
     this.lastFetch = 0
@@ -195,6 +203,7 @@ export class RoutingService {
     this.clearTierFromStorage()
     this.clearPremiumAssignedFromStorage()
     this.clearPremiumInstanceIdFromStorage()
+    this.clearPremiumSharedFromStorage()
   }
 
   /**
@@ -215,6 +224,7 @@ export class RoutingService {
   resetForRelease(): void {
     this.setPremiumAssigned(false)
     this.setPremiumInstanceId(null)
+    this.setPremiumShared(false)
     this.clearRoutingToken()
     this.lastReachableSentAt = 0
   }
@@ -261,6 +271,22 @@ export class RoutingService {
    */
   getPremiumInstanceId(): string | null {
     return this.premiumInstanceId
+  }
+
+  /**
+   * Set whether the current assignment is a shared (pool) instance.
+   * Set alongside the instance ID whenever an assignment is established.
+   */
+  setPremiumShared(shared: boolean): void {
+    this.premiumShared = shared
+    this.savePremiumSharedToStorage(shared)
+  }
+
+  /**
+   * Whether the current assignment is a shared (pool) instance.
+   */
+  isPremiumShared(): boolean {
+    return this.premiumShared
   }
 
   /**
@@ -553,6 +579,34 @@ export class RoutingService {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn("Failed to clear premium instance ID from localStorage:", e)
+    }
+  }
+
+  private loadPremiumSharedFromStorage(): void {
+    try {
+      this.premiumShared =
+        localStorage.getItem(this.PREMIUM_SHARED_KEY) === "true"
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to load premium shared from localStorage:", e)
+    }
+  }
+
+  private savePremiumSharedToStorage(shared: boolean): void {
+    try {
+      localStorage.setItem(this.PREMIUM_SHARED_KEY, String(shared))
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to save premium shared to localStorage:", e)
+    }
+  }
+
+  private clearPremiumSharedFromStorage(): void {
+    try {
+      localStorage.removeItem(this.PREMIUM_SHARED_KEY)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to clear premium shared from localStorage:", e)
     }
   }
 }

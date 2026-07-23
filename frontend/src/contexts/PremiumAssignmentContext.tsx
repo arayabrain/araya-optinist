@@ -489,6 +489,7 @@ export const PremiumAssignmentProvider: React.FC<{
         if (result.assigned) {
           routingService.setPremiumAssigned(true)
           routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
+          routingService.setPremiumShared(result.is_shared ?? false)
           try {
             const tokenRes = await getBeaconTokenApi()
             beaconTokenRef.current = tokenRes.data.token
@@ -630,6 +631,7 @@ export const PremiumAssignmentProvider: React.FC<{
         routingService.setPremiumInstanceId(
           assignmentResult.instance_id_hash ?? null,
         )
+        routingService.setPremiumShared(assignmentResult.is_shared ?? false)
         try {
           const tokenRes = await getBeaconTokenApi()
           beaconTokenRef.current = tokenRes.data.token
@@ -658,6 +660,7 @@ export const PremiumAssignmentProvider: React.FC<{
         routingService.setPremiumInstanceId(
           assignmentResponse.instance_id_hash ?? null,
         )
+        routingService.setPremiumShared(assignmentResponse.is_shared ?? false)
         try {
           const tokenRes = await getBeaconTokenApi()
           beaconTokenRef.current = tokenRes.data.token
@@ -954,6 +957,9 @@ export const PremiumAssignmentProvider: React.FC<{
     }))
     routingService.setPremiumAssigned(true)
     routingService.setPremiumInstanceId(result.instance_id_hash ?? null)
+    // Dedicated by definition (only reached for !is_shared), but set explicitly
+    // so the upgrade from a prior shared assignment clears the shared flag.
+    routingService.setPremiumShared(result.is_shared ?? false)
     try {
       const tokenRes = await getBeaconTokenApi()
       beaconTokenRef.current = tokenRes.data.token

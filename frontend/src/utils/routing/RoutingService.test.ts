@@ -730,6 +730,51 @@ describe("RoutingService", () => {
     })
   })
 
+  describe("premiumShared flag", () => {
+    test("defaults to false", () => {
+      expect(routingService.isPremiumShared()).toBe(false)
+    })
+
+    test("setPremiumShared / isPremiumShared round-trip and persist", () => {
+      routingService.setPremiumShared(true)
+      expect(routingService.isPremiumShared()).toBe(true)
+      expect(localStorageMock.getItem("premium_shared")).toBe("true")
+
+      routingService.setPremiumShared(false)
+      expect(routingService.isPremiumShared()).toBe(false)
+      expect(localStorageMock.getItem("premium_shared")).toBe("false")
+    })
+
+    test("loads shared flag from localStorage on initialization", () => {
+      localStorageMock.setItem("premium_shared", "true")
+
+      const newService = new RoutingService()
+      expect(newService.isPremiumShared()).toBe(true)
+    })
+
+    test("clearRoutingInfo clears the shared flag", () => {
+      routingService.setPremiumShared(true)
+      routingService.clearRoutingInfo()
+
+      expect(routingService.isPremiumShared()).toBe(false)
+      expect(localStorageMock.getItem("premium_shared")).toBeNull()
+    })
+
+    test("resetForRelease clears the shared flag", () => {
+      routingService.setPremiumShared(true)
+      routingService.resetForRelease()
+
+      expect(routingService.isPremiumShared()).toBe(false)
+    })
+
+    test("updateRoutingInfo for a non-premium user clears the shared flag", () => {
+      routingService.setPremiumShared(true)
+      routingService.updateRoutingInfo(createFreeUser())
+
+      expect(routingService.isPremiumShared()).toBe(false)
+    })
+  })
+
   describe("premium warm-up window", () => {
     // Intentionally longer than DEDICATED_HANDOFF_GRACE_MS (15000) so the axios
     // window contains the machine's grace window — see PREMIUM_WARMUP_GRACE_MS.
