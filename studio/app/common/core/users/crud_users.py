@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Type, TypeVar
 
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
@@ -549,9 +550,14 @@ async def update_user(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _insert_or_reselect(db: Session, row, model, user_id: int):
-    """Insert ``row`` inside a SAVEPOINT. Both subscription_users and
-    user_storage_usage are unique on user_id, so a concurrent writer can win
+_UniqueRow = TypeVar("_UniqueRow")
+
+
+def _insert_or_reselect(
+    db: Session, row: _UniqueRow, model: Type[_UniqueRow], user_id: int
+) -> _UniqueRow:
+    """Insert ``row`` (a UserSubscription or UserStorageUsage instance) inside a
+    SAVEPOINT. Both tables are unique on user_id, so a concurrent writer can win
     the race; on conflict, re-select and return the existing row instead of
     surfacing a 500."""
     try:
@@ -613,6 +619,24 @@ async def update_user_subscription_admin(
             .first()
         )
         storage_existed = storage is not None
+
+        # These rows should already exist from signup provisioning; the admin
+        # path materializing them repairs a state that "shouldn't happen", so
+        # surface it in case rows are going missing from a systemic cause.
+        if not subscription_existed or not storage_existed:
+            missing = [
+                name
+                for name, existed in (
+                    ("subscription_users", subscription_existed),
+                    ("user_storage_usage", storage_existed),
+                )
+                if not existed
+            ]
+            logger.warning(
+                "Admin subscription update creating missing %s row(s) for user %s",
+                ", ".join(missing),
+                user_id,
+            )
 
         # Capture old values before applying changes.
         # A missing row is recorded as None so the audit reflects that the
