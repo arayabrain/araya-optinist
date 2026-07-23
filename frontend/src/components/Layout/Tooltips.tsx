@@ -40,9 +40,10 @@ const Tooltips: FC = () => {
   const { enqueueSnackbar } = useSnackbar()
   const workspaceId = useSelector(selectCurrentWorkspaceId)
   const category = "tutorial"
+  const workspaceReady = typeof workspaceId === "number"
 
   const handleImportSampleDataClick = () => {
-    if (typeof workspaceId === "number") {
+    if (workspaceReady) {
       dispatch(importSampleData({ workspaceId, category }))
         .unwrap()
         .then(() => {
@@ -88,7 +89,9 @@ const Tooltips: FC = () => {
           <ListItemText>Go to documentation page</ListItemText>
         </MenuItem>
         <MenuItem
+          disabled={!workspaceReady}
           onClick={() => {
+            handleClose()
             setDialogOpen(true)
           }}
         >
