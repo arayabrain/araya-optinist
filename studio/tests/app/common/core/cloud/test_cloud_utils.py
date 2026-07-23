@@ -1550,3 +1550,101 @@ def test_effective_quota_db_error_fails_open_to_raw():
         )
 
     assert result == PREMIUM_QUOTA_BYTES
+
+
+# ============================================================================
+# Upload gate uses the effective quota (issue #721)
+# ============================================================================
+
+
+def _call_create_file(user_id, filename="test.tiff"):
+    """Invoke create_file for the given user. workspace_id/filename and the
+    background_tasks/file/db/remote_bucket_name args are inert for the gate: it
+    reads only current_user.id and raises before touching the rest."""
+    from studio.app.common.routers.files import create_file
+
+    return asyncio.run(
+        create_file(
+            workspace_id="1",
+            filename=filename,
+            background_tasks=Mock(),
+            file=Mock(),
+            current_user=Mock(id=user_id),
+            db=Mock(),
+            remote_bucket_name="",
+        )
+    )
+
+
+def test_upload_gate_blocks_overdue_user_over_effective_quota():
+    """End-to-end: create_file raises 403 for an overdue user over the free
+    effective quota even though their raw quota record still reads premium.
+
+    get_effective_quota_bytes is NOT stubbed, so this proves the upload gate is
+    wired to the effective quota (the fix), not the raw storage_quota_bytes.
+    """
+    from fastapi import HTTPException
+
+    used = 6_886_941_631  # 6.4 GB - the issue's reproduction value
+    # Guard the premise: over the free limit but under the raw premium quota,
+    # so a 403 can only mean the gate used the effective (downgraded) quota.
+    assert FREE_QUOTA_BYTES < used < PREMIUM_QUOTA_BYTES
+    grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
+    warning = SubscriptionPeriods.WARNING_PERIOD_DAYS
+    overdue_expiration = get_current_datetime() - timedelta(days=grace + warning + 5)
+
+    with patch(
+        "studio.app.common.routers.files.get_current_user_storage_usage",
+        new=AsyncMock(return_value=used),
+    ), patch(
+        "studio.app.common.routers.files.get_user_storage_usage",
+        return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
+    ), patch(
+        "studio.app.common.core.cloud.cloud_utils.session_scope"
+    ) as mock_scope:
+        mock_scope.return_value.__enter__.return_value = _mock_lifecycle_db(
+            overdue_expiration
+        )
+        with pytest.raises(HTTPException) as exc:
+            _call_create_file(13)
+
+    assert exc.value.status_code == 403
+    assert "Storage quota exceeded" in exc.value.detail
+
+
+def test_upload_gate_allows_active_user_under_raw_quota():
+    """End-to-end: an active premium user well under their raw quota is not
+    blocked - proves active premium keeps the raw quota (not downgraded to free)
+    through the real create_file gate.
+    """
+    active_expiration = get_current_datetime() + timedelta(days=30)
+
+    with patch(
+        "studio.app.common.routers.files.get_current_user_storage_usage",
+        new=AsyncMock(return_value=50 * StorageSize.GB),
+    ), patch(
+        "studio.app.common.routers.files.get_user_storage_usage",
+        return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
+    ), patch(
+        "studio.app.common.core.cloud.cloud_utils.session_scope"
+    ) as mock_scope, patch(
+        "studio.app.common.routers.files.create_directory"
+    ), patch(
+        "studio.app.common.routers.files.open", create=True
+    ), patch(
+        "studio.app.common.routers.files.shutil"
+    ), patch(
+        "studio.app.common.routers.files.WorkspaceDataCapacityService.is_available",
+        return_value=False,
+    ), patch(
+        "studio.app.common.routers.files.RemoteStorageController.is_available",
+        return_value=False,
+    ):
+        mock_scope.return_value.__enter__.return_value = _mock_lifecycle_db(
+            active_expiration
+        )
+        # 50GB is far under the raw premium quota; would only 403 if the gate
+        # wrongly downgraded an active premium user to the free limit.
+        result = _call_create_file(1, filename="test.csv")
+
+    assert result == {"file_path": "test.csv"}
