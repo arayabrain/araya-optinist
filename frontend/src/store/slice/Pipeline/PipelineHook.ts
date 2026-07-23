@@ -224,7 +224,11 @@ export function useRunPipeline() {
       if (status === RUN_STATUS.START_SUCCESS) {
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.FINISHED) {
-        enqueueSnackbar("Workflow finished", { variant: "success" })
+        // Only notify on an in-session run completion; loading an
+        // already-finished workflow lands on FINISHED without a running phase.
+        if (prevStatus === RUN_STATUS.START_SUCCESS) {
+          enqueueSnackbar("Workflow finished", { variant: "success" })
+        }
         isRunFinished = true
         dispatch(getExperiments())
       } else if (status === RUN_STATUS.ABORTED) {

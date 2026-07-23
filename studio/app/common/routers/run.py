@@ -11,6 +11,9 @@ from studio.app.common.core.cloud.storage_tracking import (
     get_user_storage_usage,
 )
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_record_services import (
+    ExperimentRecordService,
+)
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -20,6 +23,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_result import (
+    NodeResult,
     WorkflowMonitor,
     WorkflowResult,
 )
@@ -211,6 +215,28 @@ async def run_result(
             if sync_status:
                 # Create CompleteStatus (converted from RemoteSyncStatus)
                 complete_status = CompleteStatus(sync_status.value)
+
+        # The executor writes the experiment record asynchronously after
+        # completion, so a poll can see all nodes finished before the row lands.
+        # Keep reporting "processing" until it exists, so the dataview isn't
+        # opened against a missing record.
+        try:
+            if (
+                ExperimentRecordService.is_available()
+                and complete_status != CompleteStatus.PROCESSING
+                and NodeResult.is_all_nodes_already_finished(
+                    ExptConfigReader.read(workspace_id, uid)
+                )
+                and not ExperimentRecordService.record_exists(workspace_id, uid)
+            ):
+                complete_status = CompleteStatus.PROCESSING
+        except Exception as e:
+            logger.warning(
+                "Poll-time record existence check failed [%s/%s]: %s",
+                workspace_id,
+                uid,
+                e,
+            )
 
         return PollRunResultResponse(
             nodeResults=node_results,
