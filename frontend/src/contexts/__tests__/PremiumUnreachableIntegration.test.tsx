@@ -478,8 +478,10 @@ describe("PremiumAssignmentProvider — unreachable state machine", () => {
       expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
     })
 
-    // Teardown choke-point flips the machine and turns routing off.
+    // Teardown choke-point flips the machine and turns routing off, but keeps
+    // the instance identity (only release/logout nulls it).
     act(() => {
+      routingService.setPremiumInstanceId("inst-A")
       routingService.setPremiumAssigned(false)
       routingService.emitPremiumUnreachable({ status: 503, sentAt: 1000 })
     })

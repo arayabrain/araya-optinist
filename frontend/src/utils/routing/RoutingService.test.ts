@@ -641,8 +641,10 @@ describe("RoutingService", () => {
 
   describe("emitPremiumReachable re-arms premiumAssigned (exit side)", () => {
     test("recovery not routed through the probe still re-arms routing", () => {
-      // Teardown turned routing off (concurrent failure), then a concurrent
-      // success emits reachable without going through the half-open probe.
+      // Teardown turned routing off (concurrent failure) but keeps the instance
+      // identity, then a concurrent success emits reachable without going
+      // through the half-open probe.
+      routingService.setPremiumInstanceId("inst-A")
       routingService.setPremiumAssigned(false)
 
       routingService.emitPremiumReachable({ status: 200 })
@@ -651,6 +653,7 @@ describe("RoutingService", () => {
     })
 
     test("re-arm holds even when a listener throws", () => {
+      routingService.setPremiumInstanceId("inst-A")
       routingService.setPremiumAssigned(false)
       routingService.onPremiumReachable(() => {
         throw new Error("boom")
@@ -662,11 +665,26 @@ describe("RoutingService", () => {
     })
 
     test("re-arm is idempotent when already assigned (probe path)", () => {
+      routingService.setPremiumInstanceId("inst-A")
       routingService.setPremiumAssigned(true)
 
       routingService.emitPremiumReachable({ status: 200 })
 
       expect(routingService.isPremiumAssigned()).toBe(true)
+    })
+
+    test("late post-release reachable does not resurrect routing", () => {
+      // A premium request was in flight, then release/logout cleared the
+      // instance identity. The late verified 200 must not re-arm routing, or it
+      // recreates the (assigned, instanceId=null) desync resetForRelease prevents.
+      routingService.setPremiumInstanceId("inst-A")
+      routingService.setPremiumAssigned(true)
+      routingService.resetForRelease()
+      expect(routingService.getPremiumInstanceId()).toBeNull()
+
+      routingService.emitPremiumReachable({ status: 200 })
+
+      expect(routingService.isPremiumAssigned()).toBe(false)
     })
   })
 
