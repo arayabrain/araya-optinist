@@ -96,6 +96,21 @@ jest.mock("hooks/useSleepDetection", () => ({
   useSleepDetection: () => undefined,
 }))
 
+// Neutralize the dedicated warm-up grace here: these are raw machine-transition
+// integration tests that flip unreachable immediately after a fresh dedicated
+// assignment. The grace (which now covers the initial undefined → dedicated
+// case too) would otherwise suppress that first 5xx. The grace itself is
+// covered in useInstanceUnreachableMachineLeader.test.tsx.
+// "mock" prefix required for Jest's out-of-scope factory guard.
+const mockUnreachableConstants = jest.requireActual(
+  "contexts/premium/unreachableConstants",
+) as typeof import("contexts/premium/unreachableConstants")
+jest.mock("contexts/premium/unreachableConstants", () => ({
+  __esModule: true,
+  ...mockUnreachableConstants,
+  DEDICATED_HANDOFF_GRACE_MS: 0,
+}))
+
 // Mock tabSync so tests can invoke handlers directly. "mock" prefix required for Jest's out-of-scope guard.
 const mockTabSyncHandlers: Map<
   TabSyncMessageType,

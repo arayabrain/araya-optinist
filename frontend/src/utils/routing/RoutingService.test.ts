@@ -1,4 +1,11 @@
-import { describe, test, expect, beforeEach, jest } from "@jest/globals"
+import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals"
 
 import { UserDTO } from "api/users/UsersApiDTO"
 import {
@@ -671,6 +678,79 @@ describe("RoutingService", () => {
 
       expect(routingService.getPremiumInstanceId()).toBeNull()
       expect(localStorageMock.getItem("premium_instance_id")).toBeNull()
+    })
+  })
+
+  describe("premium warm-up window", () => {
+    // Intentionally longer than DEDICATED_HANDOFF_GRACE_MS (15000) so the axios
+    // window contains the machine's grace window — see PREMIUM_WARMUP_GRACE_MS.
+    const GRACE_MS = 16000
+    const T0 = 1_000_000
+
+    beforeEach(() => {
+      jest.useFakeTimers()
+      jest.setSystemTime(T0)
+      // Rebuild after fake timers are active so no stale state leaks in.
+      routingService = new RoutingService()
+    })
+
+    afterEach(() => {
+      jest.useRealTimers()
+    })
+
+    test("no window is open initially", () => {
+      expect(routingService.isWithinPremiumWarmup()).toBe(false)
+    })
+
+    test("startPremiumWarmup opens a window that expires after the grace", () => {
+      routingService.startPremiumWarmup()
+      expect(routingService.isWithinPremiumWarmup()).toBe(true)
+
+      jest.setSystemTime(T0 + GRACE_MS - 1)
+      expect(routingService.isWithinPremiumWarmup()).toBe(true)
+
+      jest.setSystemTime(T0 + GRACE_MS)
+      expect(routingService.isWithinPremiumWarmup()).toBe(false)
+    })
+
+    test("setPremiumInstanceId arms the window on a new/changed instance", () => {
+      routingService.setPremiumInstanceId("hash-A")
+      expect(routingService.isWithinPremiumWarmup()).toBe(true)
+    })
+
+    test("re-confirming the same instance does not extend the window", () => {
+      routingService.setPremiumInstanceId("hash-A")
+
+      // Advance near the end of the original window, then re-confirm the SAME
+      // instance — must not re-arm (a genuine late fallback still needs to
+      // surface once the original window expires).
+      jest.setSystemTime(T0 + GRACE_MS - 1)
+      routingService.setPremiumInstanceId("hash-A")
+
+      jest.setSystemTime(T0 + GRACE_MS)
+      expect(routingService.isWithinPremiumWarmup()).toBe(false)
+    })
+
+    test("changing to a different instance re-arms the window", () => {
+      routingService.setPremiumInstanceId("hash-A")
+
+      jest.setSystemTime(T0 + GRACE_MS)
+      expect(routingService.isWithinPremiumWarmup()).toBe(false)
+
+      routingService.setPremiumInstanceId("hash-B")
+      expect(routingService.isWithinPremiumWarmup()).toBe(true)
+    })
+
+    test("setPremiumInstanceId(null) clears the window", () => {
+      routingService.setPremiumInstanceId("hash-A")
+      routingService.setPremiumInstanceId(null)
+      expect(routingService.isWithinPremiumWarmup()).toBe(false)
+    })
+
+    test("clearRoutingInfo clears the window", () => {
+      routingService.setPremiumInstanceId("hash-A")
+      routingService.clearRoutingInfo()
+      expect(routingService.isWithinPremiumWarmup()).toBe(false)
     })
   })
 })
