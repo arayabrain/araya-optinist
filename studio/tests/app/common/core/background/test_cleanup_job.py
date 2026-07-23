@@ -6,7 +6,17 @@ Tests cleanup logic with S3 verification and orphaned data handling.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from studio.app.common.core.background.cleanup_job import DataCleanupJob
+
+
+@pytest.fixture(autouse=True)
+def _reset_instance_id_cache():
+    """Clear the process-lifetime instance-id cache between tests."""
+    DataCleanupJob._instance_id_cache = None
+    yield
+    DataCleanupJob._instance_id_cache = None
 
 
 class TestVerifyS3Backup:
@@ -232,9 +242,7 @@ class TestHandleOrphanedData:
                     with patch.object(
                         DataCleanupJob, "_get_users_for_cleanup", return_value=[]
                     ):
-                        asyncio.get_event_loop().run_until_complete(
-                            DataCleanupJob.run()
-                        )
+                        asyncio.run(DataCleanupJob.run())
                     mock_orphan.assert_not_called()
 
     def test_handle_orphaned_data_runs_on_background_service(self):
@@ -254,9 +262,7 @@ class TestHandleOrphanedData:
                     with patch.object(
                         DataCleanupJob, "_get_users_for_cleanup", return_value=[]
                     ):
-                        asyncio.get_event_loop().run_until_complete(
-                            DataCleanupJob.run()
-                        )
+                        asyncio.run(DataCleanupJob.run())
                     mock_orphan.assert_called_once()
 
 
@@ -267,13 +273,32 @@ class TestGetCurrentInstanceId:
         with patch.dict("os.environ", {"INSTANCE_ID": "i-abc12345"}):
             assert DataCleanupJob._get_current_instance_id() == "i-abc12345"
 
-    def test_returns_local_when_unset(self):
+    def test_returns_local_when_unset_and_no_metadata(self):
+        # env unset → IMDS attempted → both fail → "local"
         with patch.dict("os.environ", {}, clear=True):
-            assert DataCleanupJob._get_current_instance_id() == "local"
+            with patch("urllib.request.urlopen", side_effect=Exception("no imds")):
+                assert DataCleanupJob._get_current_instance_id() == "local"
 
-    def test_returns_local_for_empty_string(self):
+    def test_returns_local_for_empty_string_and_no_metadata(self):
         with patch.dict("os.environ", {"INSTANCE_ID": ""}):
-            assert DataCleanupJob._get_current_instance_id() == "local"
+            with patch("urllib.request.urlopen", side_effect=Exception("no imds")):
+                assert DataCleanupJob._get_current_instance_id() == "local"
+
+    def test_falls_back_to_imds_when_env_unset(self):
+        """When env is unset, the worker resolves via IMDS (matches middleware),
+        so the per-instance filter is not silently dropped."""
+        from unittest.mock import MagicMock
+
+        token_resp = MagicMock()
+        token_resp.read.return_value = b"token123"
+        token_resp.__enter__.return_value = token_resp
+        id_resp = MagicMock()
+        id_resp.read.return_value = b"i-fromimds"
+        id_resp.__enter__.return_value = id_resp
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("urllib.request.urlopen", side_effect=[token_resp, id_resp]):
+                assert DataCleanupJob._get_current_instance_id() == "i-fromimds"
 
 
 class TestGetUsersForCleanupInstanceFilter:
@@ -300,8 +325,9 @@ class TestGetUsersForCleanupInstanceFilter:
                 compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
                 assert "instance_id" in compiled
 
-    def test_no_filter_in_dev_mode(self):
-        """When INSTANCE_ID is not set (local dev), no instance_id filter"""
+    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="local")
+    def test_no_filter_in_dev_mode(self, mock_instance):
+        """When resolver returns 'local' (dev / no metadata), no instance filter"""
         with patch.dict("os.environ", {}, clear=True):
             with patch(
                 "studio.app.common.core.background.cleanup_job.session_scope"
@@ -321,16 +347,30 @@ class TestGetUsersForCleanupInstanceFilter:
 
 
 class TestCleanupUserDataNotFound:
-    """Test _cleanup_user_data returns False when no local data found"""
+    """Test _cleanup_user_data no-data behavior (finding #1)"""
 
+    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="local")
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_false_when_no_data_on_disk(self, mock_relogin):
-        """When no input/output dirs exist, cleanup returns False
-        to prevent premature DB record deletion."""
+    def test_returns_false_when_no_data_unfiltered(self, mock_relogin, mock_instance):
+        """Unfiltered run (local / background service): no data → False,
+        because the user's data may live on another instance."""
         with patch("os.path.exists", return_value=False):
             result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
 
         assert result is False
+
+    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="i-abc12345")
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_returns_true_when_no_data_on_owning_instance(
+        self, mock_relogin, mock_instance
+    ):
+        """Instance-filtered run: the filter guarantees ownership, so an
+        empty user is genuinely clean → True, letting _mark_cleaned close
+        the assignment / usage log (prevents the leak in finding #1)."""
+        with patch("os.path.exists", return_value=False):
+            result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+
+        assert result is True
 
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
     def test_returns_true_when_data_exists_and_cleaned(self, mock_relogin):

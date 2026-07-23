@@ -28,6 +28,7 @@ from studio.app.common.core.storage.s3_storage_controller import S3StorageContro
 from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.instance_utils import resolve_instance_id
 from studio.app.common.db.database import session_scope
 from studio.app.common.models import (
     FreeUserAssignment,
@@ -44,15 +45,22 @@ logger = AppLogger.get_logger()
 class DataCleanupJob:
     """Background job to clean up data for logged-out free users"""
 
-    @staticmethod
-    def _get_current_instance_id() -> str:
-        """Return the EC2 instance ID for the current host.
+    # Cache the resolved instance id (constant for a process lifetime) to
+    # avoid repeating IMDS round-trips when INSTANCE_ID is unset.
+    _instance_id_cache = None
 
-        Uses the ``INSTANCE_ID`` environment variable set by
-        ``cloud-startup.sh``.  Falls back to ``"local"`` in dev
-        environments where the variable is unset.
+    @classmethod
+    def _get_current_instance_id(cls) -> str:
+        """Return the EC2 instance ID for the current host (cached).
+
+        Delegates to the shared ``resolve_instance_id`` (env → IMDSv2 →
+        IMDSv1 → "local") so the worker resolves the *same* id the
+        middleware writes into ``FreeUserAssignment.instance_id``; a
+        divergence would silently drop the per-instance cleanup filter.
         """
-        return os.environ.get("INSTANCE_ID") or "local"
+        if cls._instance_id_cache is None:
+            cls._instance_id_cache = resolve_instance_id()
+        return cls._instance_id_cache
 
     @classmethod
     async def run(cls):
@@ -373,8 +381,15 @@ class DataCleanupJob:
             )
 
         if not data_found:
+            # No local data on disk:
+            # - filtered run → this worker owns the assignment, nothing to
+            #   delete → success (let _mark_cleaned close assignment/usage log)
+            # - unfiltered run → data may be on another instance → keep guard
+            if cls._get_current_instance_id() != "local":
+                logger.info(f"No local data for user {user_id}; nothing to clean.")
+                return True
             logger.warning(
-                f"No local data found for user {user_id} on this instance. "
+                f"No local data found for user {user_id} (unfiltered run). "
                 f"Returning False to prevent premature DB record deletion."
             )
             return False
