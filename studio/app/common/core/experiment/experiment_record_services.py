@@ -25,7 +25,7 @@ class ExperimentRecordService:
     def record_exists(cls, workspace_id: str, unique_id: str) -> bool:
         with session_scope() as db:
             return (
-                db.query(ExperimentRecord)
+                db.query(ExperimentRecord.id)
                 .filter(
                     ExperimentRecord.workspace_id == workspace_id,
                     ExperimentRecord.uid == unique_id,
