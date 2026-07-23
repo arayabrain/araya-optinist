@@ -22,7 +22,7 @@ infrastructure/terraform/
 ├── compute_domain.tf            # Route53, ACM certificate (conditional — production only)
 ├── security.tf                  # IAM roles/policies, security groups, key pairs, Secrets Manager
 ├── monitoring.tf                # CloudWatch log groups, alarms, dashboard
-├── deployment.tf                # SSM document for app_setup.sh deployment
+├── deployment.tf                # SSM document + association running app_setup.sh on each host every 30 min
 ├── background_service.tf        # Background job ECS service and task definition
 ├── premium_manager.tf           # Premium tier Lambda functions and scheduling
 ├── free_manager.tf              # Free tier Lambda functions and scheduling

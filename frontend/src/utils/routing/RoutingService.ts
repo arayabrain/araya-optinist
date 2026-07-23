@@ -63,8 +63,20 @@ export class RoutingService {
   private storedTier: UserTier | null = null
   private premiumAssigned: boolean = false
   private premiumInstanceId: string | null = null
+  // Warm-up grace window (epoch ms) after a fresh dedicated assignment.
+  private premiumWarmupUntil: number | null = null
   private lastFetch: number = 0
   private readonly CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
+  // Warm-up grace duration. Intentionally longer than DEDICATED_HANDOFF_GRACE_MS
+  // (15000 ms, contexts/premium/unreachableConstants) so this window CONTAINS the
+  // machine's grace. Arming sources:
+  //   - fresh/changed instance: setPremiumInstanceId arms synchronously (T0)
+  //   - every first dedicated transition (incl. reload/new-tab same instance):
+  //     the machine co-arms via startPremiumWarmup in its useEffect (T0+Δ)
+  // Equal durations would leave a tail [T0+15000, T0+Δ+15000] where teardown is no
+  // longer suppressed here but the machine still suppresses the unreachable event —
+  // stranding premium routing. Do NOT shrink this back to equality.
+  private readonly PREMIUM_WARMUP_GRACE_MS = 16000
   private readonly STORAGE_KEY = "routing_id"
   private readonly TIER_STORAGE_KEY = "routing_tier"
   private readonly PREMIUM_ASSIGNED_KEY = "premium_assigned"
@@ -168,6 +180,7 @@ export class RoutingService {
     this.storedTier = null
     this.premiumAssigned = false
     this.premiumInstanceId = null
+    this.premiumWarmupUntil = null
     this.lastFetch = 0
     this.clearTokenFromStorage()
     this.clearTierFromStorage()
@@ -217,10 +230,18 @@ export class RoutingService {
    * Used by the axios interceptor to detect ALB fallback responses.
    */
   setPremiumInstanceId(id: string | null): void {
+    // Arm the warm-up grace only when moving onto a new/changed dedicated
+    // instance — re-confirming the same instance must not keep extending the
+    // window, or a genuine late fallback would never surface.
+    const changedToNewInstance = !!id && id !== this.premiumInstanceId
     this.premiumInstanceId = id
     if (id) {
+      if (changedToNewInstance) {
+        this.startPremiumWarmup()
+      }
       this.savePremiumInstanceIdToStorage(id)
     } else {
+      this.clearPremiumWarmup()
       this.clearPremiumInstanceIdFromStorage()
     }
   }
@@ -230,6 +251,31 @@ export class RoutingService {
    */
   getPremiumInstanceId(): string | null {
     return this.premiumInstanceId
+  }
+
+  /**
+   * Arm the warm-up grace window (transition onto a new dedicated instance).
+   */
+  startPremiumWarmup(): void {
+    this.premiumWarmupUntil = Date.now() + this.PREMIUM_WARMUP_GRACE_MS
+  }
+
+  /**
+   * Whether we are still within the dedicated-instance warm-up grace window.
+   * axios uses this to suppress the isInstanceMismatch teardown while a
+   * freshly-assigned instance is still registering in the ALB target group.
+   */
+  isWithinPremiumWarmup(): boolean {
+    return (
+      this.premiumWarmupUntil != null && Date.now() < this.premiumWarmupUntil
+    )
+  }
+
+  /**
+   * Clear the warm-up grace window (release/logout/downgrade).
+   */
+  clearPremiumWarmup(): void {
+    this.premiumWarmupUntil = null
   }
 
   // Pure notifier — telemetry lives in listeners so tests can emit without side effects.

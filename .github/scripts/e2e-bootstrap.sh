@@ -11,13 +11,6 @@ $COMPOSE exec -T -e SUBSCRIPTION_PLANS_CONFIG -e DB_HOST=db -e DB_PORT=3306 \
   studio-dev-be \
   poetry run python infrastructure/scripts/seed_subscription_plans.py
 
-# No migration seeds organization/roles; registration FK-fails without them
-$COMPOSE exec -T db sh -c \
-  'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"' <<SQL
-INSERT IGNORE INTO organization (id, name) VALUES (1, 'E2E CI');
-INSERT IGNORE INTO roles (id, role) VALUES (1, 'admin'), (20, 'operator');
-SQL
-
 # Dev Firebase persists between runs while the CI DB starts empty; a
 # leftover Firebase user makes registration 400 without creating the DB
 # row, so remove the CI users first and register them fresh each run
