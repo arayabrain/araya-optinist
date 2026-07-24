@@ -112,9 +112,7 @@ class TestResolveUserBucketName:
                 ) as mock_create:
                     result = DataCleanupJob._resolve_user_bucket_name("7")
 
-        mock_create.assert_called_once_with(
-            id=7, prefix="development-optinist-user"
-        )
+        mock_create.assert_called_once_with(id=7, prefix="development-optinist-user")
         assert result == "development-optinist-user-7-abc123"
 
 
@@ -442,9 +440,7 @@ class TestCleanupUserDataNotFound:
         DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
     )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_true_when_data_exists_and_cleaned(
-        self, mock_relogin, mock_bucket
-    ):
+    def test_returns_true_when_data_exists_and_cleaned(self, mock_relogin, mock_bucket):
         """When data exists and is fully cleaned, returns True"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True

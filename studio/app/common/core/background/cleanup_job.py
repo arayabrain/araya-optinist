@@ -238,16 +238,12 @@ class DataCleanupJob:
         # 1) Authoritative: bucket recorded on the user row.
         try:
             with session_scope() as db:
-                result_row = db.execute(
-                    select(User).where(User.id == user_id)
-                ).first()
+                result_row = db.execute(select(User).where(User.id == user_id)).first()
                 user = result_row[0] if result_row else None
                 if user and user.remote_bucket_name:
                     return user.remote_bucket_name
         except Exception as e:
-            logger.warning(
-                f"Could not read remote_bucket_name for user {user_id}: {e}"
-            )
+            logger.warning(f"Could not read remote_bucket_name for user {user_id}: {e}")
 
         # 2) Deterministic fallback: same formula the writer uses.
         try:
