@@ -330,4 +330,39 @@ describe("PremiumAssignmentProvider — shared polling does not stall at the cap
       )
     })
   })
+
+  test("shared-origin user whose /status goes null keeps polling and never stops", async () => {
+    // The MAX_POLL_ATTEMPTS stop is gated on the STORED assignment
+    // (state.assignmentResult?.is_shared, :990). The null-status branch (:1084)
+    // preserves assignmentResult, so a shared-origin user stays shared even
+    // after /status returns null — isOnShared stays true and the stop never
+    // fires, no matter how high the (now-incrementing) counter climbs. Guards
+    // against a future change that clears assignmentResult on null and thereby
+    // re-enables the stop for these users.
+    mockGetPremiumStatus.mockResolvedValue(sharedStatus)
+    // Re-trigger assign (fires in the null branch) stays retryable — never
+    // finalizes a dedicated instance, so the assignment remains shared.
+    mockAssignPremiumInstance.mockResolvedValue(retryableAssignment)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    })
+
+    // Assignment is lost on the backend: /status now returns null.
+    mockGetPremiumStatus.mockResolvedValue(nullAssignmentStatus)
+
+    // Advance well past MAX_POLL_ATTEMPTS (40) — the stop must not fire.
+    for (let i = 0; i < 45; i++) {
+      await advanceOnePollCycle()
+    }
+
+    // Still shared (assignmentResult preserved), no error surfaced, and polling
+    // kept running the whole time.
+    expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    expect(ctxRef.current?.assignmentResult).not.toBeNull()
+    expect(ctxRef.current?.error).toBeNull()
+    expect(mockGetPremiumStatus.mock.calls.length).toBeGreaterThan(40)
+  })
 })
