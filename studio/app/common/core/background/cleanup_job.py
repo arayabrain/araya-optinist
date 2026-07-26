@@ -217,11 +217,61 @@ class DataCleanupJob:
             return users
 
     @classmethod
-    def _verify_s3_backup_exists(cls, workspace_id: str, experiment_id: str) -> bool:
+    def _resolve_user_bucket_name(cls, user_id: str) -> str:
+        """
+        Resolve the S3 bucket that holds a user's experiment backups.
+
+        Experiment outputs live in a per-user bucket, not the shared
+        ``S3_DEFAULT_BUCKET_NAME``. Resolution order (most authoritative
+        first):
+
+        1. ``users.attributes.remote_bucket_name`` — the exact bucket the
+           upload path recorded on the user row.
+        2. ``create_user_bucket_name`` — the deterministic formula the writer
+           uses (needs ``S3_USER_BUCKET_PREFIX`` / ``S3_USER_BUCKET_SECRET``
+           to match).
+        3. ``S3_DEFAULT_BUCKET_NAME`` — legacy single-bucket deployments.
+
+        Returns the bucket name, or None if none could be resolved (caller
+        then keeps the data rather than risking deletion).
+        """
+        # 1) Authoritative: bucket recorded on the user row.
+        try:
+            with session_scope() as db:
+                result_row = db.execute(select(User).where(User.id == user_id)).first()
+                user = result_row[0] if result_row else None
+                if user and user.remote_bucket_name:
+                    return user.remote_bucket_name
+        except Exception as e:
+            logger.warning(f"Could not read remote_bucket_name for user {user_id}: {e}")
+
+        # 2) Deterministic fallback: same formula the writer uses.
+        try:
+            from studio.app.common.core.storage.remote_storage_controller import (
+                RemoteStorageController,
+            )
+
+            prefix = os.environ.get("S3_USER_BUCKET_PREFIX", "optinist-user")
+            return RemoteStorageController.create_user_bucket_name(
+                id=int(user_id), prefix=prefix
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not derive per-user bucket name for user {user_id}: {e}"
+            )
+
+        # 3) Last resort: legacy shared bucket.
+        return os.environ.get("S3_DEFAULT_BUCKET_NAME")
+
+    @classmethod
+    def _verify_s3_backup_exists(
+        cls, s3_bucket: str, workspace_id: str, experiment_id: str
+    ) -> bool:
         """
         Verify that experiment data exists in S3 before deleting from local storage.
 
         Args:
+            s3_bucket: The user's S3 bucket (see ``_resolve_user_bucket_name``)
             workspace_id: Workspace ID
             experiment_id: Experiment unique ID
 
@@ -232,10 +282,10 @@ class DataCleanupJob:
             import boto3
             from botocore.exceptions import ClientError
 
-            s3_bucket = os.environ.get("S3_DEFAULT_BUCKET_NAME")
             if not s3_bucket:
                 logger.warning(
-                    "S3_DEFAULT_BUCKET_NAME not set, skipping S3 verification"
+                    "No S3 bucket resolved for verification; "
+                    "keeping data to prevent loss"
                 )
                 return False
 
@@ -298,6 +348,12 @@ class DataCleanupJob:
         data_found = False
         total_experiments_kept = 0
 
+        # Experiment outputs live in the user's own bucket, not the shared
+        # default bucket. Resolved lazily on first need and cached, so users
+        # with no output data incur no bucket lookup.
+        s3_bucket = None
+        s3_bucket_resolved = False
+
         for workspace_id in workspace_ids:
             # Check if user logged back in before processing workspace
             if cls._check_user_relogin(user_id):
@@ -315,6 +371,12 @@ class DataCleanupJob:
                 output_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id])
                 if os.path.exists(output_dir):
                     data_found = True
+
+                    # Resolve the user's bucket once, on first output data.
+                    if not s3_bucket_resolved:
+                        s3_bucket = cls._resolve_user_bucket_name(user_id)
+                        s3_bucket_resolved = True
+
                     # Verify each experiment has S3 backup before deletion
                     experiments_to_delete = []
                     experiments_to_keep = []
@@ -327,7 +389,7 @@ class DataCleanupJob:
 
                             # Verify S3 backup exists
                             if cls._verify_s3_backup_exists(
-                                workspace_id, experiment_id
+                                s3_bucket, workspace_id, experiment_id
                             ):
                                 experiments_to_delete.append(experiment_id)
                             else:

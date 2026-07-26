@@ -29,11 +29,15 @@ class TestVerifyS3Backup:
             mock_boto.return_value = mock_s3
             mock_s3.head_object.return_value = {}
 
-            with patch.dict("os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}):
-                result = DataCleanupJob._verify_s3_backup_exists("workspace1", "exp123")
+            result = DataCleanupJob._verify_s3_backup_exists(
+                "test-bucket", "workspace1", "exp123"
+            )
 
         assert result is True
         assert mock_s3.head_object.call_count == 2  # experiment.yaml, workflow.yaml
+        # head_object must target the passed (per-user) bucket, not a default one
+        for call in mock_s3.head_object.call_args_list:
+            assert call.kwargs["Bucket"] == "test-bucket"
 
     def test_verify_s3_backup_missing(self):
         """Test verification when S3 backup is missing"""
@@ -45,24 +49,81 @@ class TestVerifyS3Backup:
             error_response = {"Error": {"Code": "404"}}
             mock_s3.head_object.side_effect = ClientError(error_response, "head_object")
 
-            with patch.dict("os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}):
-                result = DataCleanupJob._verify_s3_backup_exists("workspace1", "exp123")
+            result = DataCleanupJob._verify_s3_backup_exists(
+                "test-bucket", "workspace1", "exp123"
+            )
 
         assert result is False
 
-    def test_verify_s3_backup_no_bucket_configured(self):
-        """Test verification when S3 bucket not configured"""
-        with patch.dict("os.environ", {}, clear=True):
-            result = DataCleanupJob._verify_s3_backup_exists("workspace1", "exp123")
+    def test_verify_s3_backup_no_bucket_resolved(self):
+        """No bucket resolved → keep data (return False), never call S3"""
+        with patch("boto3.client") as mock_boto:
+            result = DataCleanupJob._verify_s3_backup_exists(
+                None, "workspace1", "exp123"
+            )
 
         assert result is False
+        mock_boto.assert_not_called()
+
+
+class TestResolveUserBucketName:
+    """Test per-user S3 bucket resolution used before deletion"""
+
+    def test_prefers_remote_bucket_name_from_db(self):
+        """The bucket recorded on the user row wins (authoritative)."""
+        user = MagicMock()
+        user.remote_bucket_name = "development-optinist-user-7-abc123"
+
+        mock_db = MagicMock()
+        mock_db.execute.return_value.first.return_value = (user,)
+
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_db
+        cm.__exit__.return_value = False
+
+        with patch(
+            "studio.app.common.core.background.cleanup_job.session_scope",
+            return_value=cm,
+        ):
+            result = DataCleanupJob._resolve_user_bucket_name("7")
+
+        assert result == "development-optinist-user-7-abc123"
+
+    def test_falls_back_to_deterministic_name(self):
+        """No DB bucket → derive it with the writer's formula/prefix."""
+        mock_db = MagicMock()
+        mock_db.execute.return_value.first.return_value = None  # no user row
+
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_db
+        cm.__exit__.return_value = False
+
+        with patch(
+            "studio.app.common.core.background.cleanup_job.session_scope",
+            return_value=cm,
+        ):
+            with patch.dict(
+                "os.environ", {"S3_USER_BUCKET_PREFIX": "development-optinist-user"}
+            ):
+                with patch(
+                    "studio.app.common.core.storage.remote_storage_controller."
+                    "RemoteStorageController.create_user_bucket_name",
+                    return_value="development-optinist-user-7-abc123",
+                ) as mock_create:
+                    result = DataCleanupJob._resolve_user_bucket_name("7")
+
+        mock_create.assert_called_once_with(id=7, prefix="development-optinist-user")
+        assert result == "development-optinist-user-7-abc123"
 
 
 class TestCleanupUserData:
     """Test user data cleanup"""
 
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_cleanup_user_data_with_s3_verification(self, mock_relogin):
+    def test_cleanup_user_data_with_s3_verification(self, mock_relogin, mock_bucket):
         """Test cleanup only deletes data with S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
@@ -78,8 +139,11 @@ class TestCleanupUserData:
         assert result is True
         assert mock_rmtree.call_count >= 1
 
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_cleanup_user_data_keeps_unverified(self, mock_relogin):
+    def test_cleanup_user_data_keeps_unverified(self, mock_relogin, mock_bucket):
         """Test cleanup keeps data without S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=False
@@ -372,8 +436,11 @@ class TestCleanupUserDataNotFound:
 
         assert result is True
 
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_true_when_data_exists_and_cleaned(self, mock_relogin):
+    def test_returns_true_when_data_exists_and_cleaned(self, mock_relogin, mock_bucket):
         """When data exists and is fully cleaned, returns True"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
