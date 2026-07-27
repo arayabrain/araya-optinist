@@ -193,9 +193,10 @@ def _snakemake_execute_process(
         RemoteSyncLockFileUtil.wait_for_lock_release(workspace_id, unique_id)
 
     try:
-        # Finalize workflow results. A remote upload-lock conflict (idempotent
-        # upload handled by the concurrent observe path) does not block DB
-        # finalization; only a genuine observe failure does.
+        # Finalize workflow results. Reaching the upload lock proves the local
+        # ExptConfig is finalized, so a lock conflict (idempotent upload handled
+        # by the concurrent observe path) still finalizes the DB. Finalization is
+        # skipped only when observe never succeeded and never reached the lock.
         observe_success, observe_lock_conflict = _observe_overall_with_lock_retry(
             workspace_id, unique_id
         )

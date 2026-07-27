@@ -198,6 +198,32 @@ class TestPostProcessObserveLockConflict:
         )
 
     @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_lock_conflict_then_genuine_failure_still_finalizes(
+        self, mock_observe, mock_experiment_record, mock_data_capacity
+    ):
+        """A lock conflict proves the local ExptConfig was finalized, so a later
+        genuine failure on the redundant upload does not un-prove it: the DB is
+        still finalized."""
+        mock_observe.observe_overall = AsyncMock(
+            side_effect=[self._make_lock_error(), RuntimeError("boom")]
+        )
+
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _snakemake_execute_process,
+        )
+
+        with patch(f"{MODULE}.logger.error"):  # suppress intentional traceback
+            _snakemake_execute_process(WORKSPACE_ID, UNIQUE_ID, MagicMock())
+
+        # Loop breaks on the genuine failure at the 2nd attempt.
+        assert mock_observe.observe_overall.await_count == 2
+        record_fn = mock_experiment_record.regist_record_on_workflow_completed
+        record_fn.assert_called_once_with(WORKSPACE_ID, UNIQUE_ID)
+        mock_data_capacity.update_experiment_data_usage.assert_called_once_with(
+            WORKSPACE_ID, UNIQUE_ID
+        )
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
     def test_logs_lock_conflict_warning(
         self, mock_observe, mock_experiment_record, mock_data_capacity, caplog
     ):

@@ -6,6 +6,7 @@ Extracted from cloud_utils.py for module cohesion.
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from sqlalchemy import update
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -175,8 +176,6 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
     leaves the target row unchanged at flush time. The success is logged only
     after the commit lands.
     """
-    from sqlalchemy import update
-
     try:
         with session_scope() as db:
             try:

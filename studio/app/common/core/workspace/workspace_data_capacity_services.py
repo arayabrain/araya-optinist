@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 from sqlalchemy.exc import NoResultFound
-from sqlmodel import Session, delete, update
+from sqlmodel import Session, delete, select, update
 
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
@@ -58,24 +58,38 @@ class WorkspaceDataCapacityService:
     def _update_exp_data_usage_db(
         cls, workspace_id: str, unique_id: str, data_usage: int
     ):
+        # Concurrent writers (main process + executor) often write the same
+        # value; a Core UPDATE avoids the ORM stale-data error a same-value flush
+        # raises on MySQL. Existence is checked with a SELECT since a same-value
+        # UPDATE reports rowcount 0 (MySQL counts rows *changed*).
         with session_scope() as db:
-            try:
-                exp = (
-                    db.query(ExperimentRecord)
-                    .filter(
+            exists = (
+                db.execute(
+                    select(ExperimentRecord.id).where(
                         ExperimentRecord.workspace_id == workspace_id,
                         ExperimentRecord.uid == unique_id,
                     )
-                    .one()
+                ).first()
+                is not None
+            )
+
+            if exists:
+                db.execute(
+                    update(ExperimentRecord)
+                    .where(
+                        ExperimentRecord.workspace_id == workspace_id,
+                        ExperimentRecord.uid == unique_id,
+                    )
+                    .values(data_usage=data_usage)
                 )
-                exp.data_usage = data_usage
-            except NoResultFound:
-                exp = ExperimentRecord(
-                    workspace_id=workspace_id,
-                    uid=unique_id,
-                    data_usage=data_usage,
+            else:
+                db.add(
+                    ExperimentRecord(
+                        workspace_id=workspace_id,
+                        uid=unique_id,
+                        data_usage=data_usage,
+                    )
                 )
-                db.add(exp)
 
     @classmethod
     def update_workspace_data_usage(
