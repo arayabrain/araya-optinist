@@ -314,6 +314,11 @@ class StorageOperation(SQLModel, table=True):
 
     __tablename__ = "storage_operations"
 
+    __table_args__ = (
+        Index("idx_storage_ops_status_created", "status", "created_at"),
+        Index("idx_storage_ops_status_retry", "status", "retry_count"),
+    )
+
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
         default=None,
@@ -323,7 +328,13 @@ class StorageOperation(SQLModel, table=True):
         description="User ID for this storage operation",
     )
     idempotency_key: str = Field(
-        sa_column=Column(String(255), nullable=False, unique=True, index=True),
+        sa_column=Column(
+            String(255),
+            nullable=False,
+            unique=True,
+            index=True,
+            comment="Unique key to prevent duplicate operations",
+        ),
         description="Unique key to prevent duplicate operations",
     )
     operation_type: str = Field(
@@ -337,7 +348,11 @@ class StorageOperation(SQLModel, table=True):
         ),
     )
     bytes_delta: int = Field(
-        sa_column=Column(BIGINT, nullable=False),
+        sa_column=Column(
+            BIGINT,
+            nullable=False,
+            comment="Number of bytes to add or remove",
+        ),
         description="Number of bytes to add (positive) or remove (negative)",
     )
     status: str = Field(
@@ -354,19 +369,30 @@ class StorageOperation(SQLModel, table=True):
         default=StorageOperationStatus.PENDING.value,
     )
     error_message: Optional[str] = Field(
-        sa_column=Column(String(500), nullable=True),
+        sa_column=Column(
+            String(500),
+            nullable=True,
+            comment="Error message if operation failed",
+        ),
         default=None,
         description="Error message if operation failed",
     )
     # Retry tracking for failed storage operations
     retry_count: int = Field(
-        sa_column=Column(INTEGER, nullable=False, default=0),
+        sa_column=Column(
+            INTEGER,
+            nullable=False,
+            default=0,
+            comment="Number of retry attempts for failed operations",
+        ),
         default=0,
         description="Number of retry attempts for failed operations",
     )
     created_at: Optional[datetime] = Field(
         default_factory=get_current_datetime,
-        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+        sa_column=Column(
+            TIMESTAMP, nullable=False, server_default=func.current_timestamp()
+        ),
     )
     completed_at: Optional[datetime] = Field(
         sa_column=Column(DateTime, nullable=True),
