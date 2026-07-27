@@ -1157,10 +1157,10 @@ export const PremiumAssignmentProvider: React.FC<{
           console.warn(
             "Still on temporary instance, will retry with backoff...",
           )
-          const isOnShared = assignment?.is_shared === true
-          if (!isOnShared) {
-            setPollAttempts((prev) => prev + 1)
-          }
+          // Increment for shared too — a changing dep re-runs the effect and
+          // reschedules the next poll once pollInterval saturates at the cap.
+          // Shared stop still excluded (:991); re-trigger is null-only.
+          setPollAttempts((prev) => prev + 1)
           // Exponential backoff capped at MAX_POLL_INTERVAL_MS
           setPollInterval((prev) =>
             Math.min(prev * BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
