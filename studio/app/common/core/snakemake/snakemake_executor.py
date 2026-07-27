@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -30,6 +31,7 @@ from studio.app.common.core.snakemake.smk import ForceRun, SmkParam
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
+    RemoteStorageLockError,
     RemoteSyncAction,
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
@@ -191,30 +193,36 @@ def _snakemake_execute_process(
         RemoteSyncLockFileUtil.wait_for_lock_release(workspace_id, unique_id)
 
     try:
-        # Update workflow processing results
-        observe_success = False
-        try:
-            asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
-            observe_success = True
-        except Exception as e:
-            logger.error(
-                f"snakemake_execute post process (WorkflowResult) failed: {e}",
-                exc_info=True,
-            )
+        # Finalize workflow results. A remote upload-lock conflict (idempotent
+        # upload handled by the concurrent observe path) does not block DB
+        # finalization; only a genuine observe failure does.
+        observe_success, observe_lock_conflict = _observe_overall_with_lock_retry(
+            workspace_id, unique_id
+        )
+        should_finalize = observe_success or observe_lock_conflict
 
-        # Update experiment database record if observe_overall() succeeded
-        if observe_success and ExperimentRecordService.is_available():
+        # Update experiment database record
+        if should_finalize and ExperimentRecordService.is_available():
             ExperimentRecordService.regist_record_on_workflow_completed(
                 workspace_id, unique_id
             )
 
         # Data usage calculation
-        if observe_success:
+        if should_finalize:
             WorkspaceDataCapacityService.update_experiment_data_usage(
                 workspace_id, unique_id
             )
 
-        if not observe_success:
+        if observe_lock_conflict and not observe_success:
+            logger.warning(
+                "observe_overall() upload stayed locked; finalized DB "
+                "registration and data usage regardless "
+                "(upload handled by the concurrent observe path). "
+                "[workspace: %s] [unique_id: %s]",
+                workspace_id,
+                unique_id,
+            )
+        elif not should_finalize:
             logger.warning(
                 "Skipped experiment record registration and data usage update "
                 "due to observe_overall() failure. [workspace: %s] [unique_id: %s]",
@@ -241,6 +249,52 @@ def _snakemake_execute_process(
             )
 
     return snakemake_result
+
+
+def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple:
+    """Run observe_overall() at finalization, tolerating upload-lock conflicts.
+
+    observe_overall() finalizes the local ExptConfig (node statuses) first, then
+    uploads the experiment to remote storage under the per-experiment lock. A
+    concurrent /run/result observe (main API process) may hold that lock, in
+    which case the upload raises RemoteStorageLockError even though the local
+    ExptConfig is already finalized. The upload is idempotent and is completed
+    by whichever path wins the lock, so the conflict is retried a bounded number
+    of times to let this path land its own upload once the lock frees.
+
+    Returns:
+        (observe_success, observe_lock_conflict):
+            observe_success is True when observe_overall() completed.
+            observe_lock_conflict is True when at least one attempt hit the
+            upload lock; the caller finalizes the DB even if it never succeeded.
+    """
+    observe_success = False
+    observe_lock_conflict = False
+    retry_max = RemoteSyncLockFileUtil.LOCK_CONFLICT_RETRY_MAX
+
+    for attempt in range(1, retry_max + 1):
+        try:
+            asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+            observe_success = True
+            break
+        except RemoteStorageLockError as e:
+            observe_lock_conflict = True
+            logger.warning(
+                "observe_overall() upload lock conflict (attempt %d/%d): %s",
+                attempt,
+                retry_max,
+                e,
+            )
+            if attempt < retry_max:
+                time.sleep(RemoteSyncLockFileUtil.LOCK_CONFLICT_RETRY_BACKOFF_SECONDS)
+        except Exception as e:
+            logger.error(
+                f"snakemake_execute post process (WorkflowResult) failed: {e}",
+                exc_info=True,
+            )
+            break
+
+    return observe_success, observe_lock_conflict
 
 
 def delete_dependencies(

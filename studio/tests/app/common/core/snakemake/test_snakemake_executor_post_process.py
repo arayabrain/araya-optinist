@@ -25,10 +25,11 @@ def _patch_snakemake_execution():
         patch(f"{MODULE}.join_filepath", return_value="/tmp/fake"),
         patch(f"{MODULE}.SnakemakeApi") as mock_api_cls,
         patch(f"{MODULE}.RemoteStorageController") as mock_remote,
-        patch(f"{MODULE}.RemoteSyncLockFileUtil"),
+        patch(f"{MODULE}.RemoteSyncLockFileUtil") as mock_lock,
         patch(f"{MODULE}.RemoteSyncStatusFileUtil"),
         patch(f"{MODULE}.get_pickle_file"),
         patch(f"{MODULE}.DIRPATH"),
+        patch(f"{MODULE}.time.sleep"),  # avoid real backoff sleeps
     ):
         # Make snakemake execution itself succeed
         mock_ctx = MagicMock()
@@ -39,6 +40,10 @@ def _patch_snakemake_execution():
         mock_ctx.dag.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_remote.is_available.return_value = False
+
+        # Provide real integer retry-policy constants (the class is mocked).
+        mock_lock.LOCK_CONFLICT_RETRY_MAX = 3
+        mock_lock.LOCK_CONFLICT_RETRY_BACKOFF_SECONDS = 0
         yield
 
 
@@ -129,5 +134,90 @@ class TestPostProcessObserveFailure:
             in record.message
             and WORKSPACE_ID in record.message
             and UNIQUE_ID in record.message
+            for record in caplog.records
+        )
+
+
+class TestPostProcessObserveLockConflict:
+    """A remote upload-lock conflict must not skip DB finalization.
+
+    The upload is idempotent and handled by the concurrent observe path, and
+    the local ExptConfig is already finalized before the upload step, so
+    registration and data-usage still run.
+    """
+
+    def _make_lock_error(self):
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageLockError,
+        )
+
+        return RemoteStorageLockError(WORKSPACE_ID, UNIQUE_ID)
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_finalizes_when_lock_persists(
+        self, mock_observe, mock_experiment_record, mock_data_capacity
+    ):
+        """Every attempt hits the lock: DB is still finalized."""
+        mock_observe.observe_overall = AsyncMock(side_effect=self._make_lock_error())
+
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _snakemake_execute_process,
+        )
+
+        _snakemake_execute_process(WORKSPACE_ID, UNIQUE_ID, MagicMock())
+
+        # observe_overall retried up to the configured maximum
+        assert mock_observe.observe_overall.await_count == 3
+
+        record_fn = mock_experiment_record.regist_record_on_workflow_completed
+        record_fn.assert_called_once_with(WORKSPACE_ID, UNIQUE_ID)
+        mock_data_capacity.update_experiment_data_usage.assert_called_once_with(
+            WORKSPACE_ID, UNIQUE_ID
+        )
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_retry_succeeds_then_finalizes(
+        self, mock_observe, mock_experiment_record, mock_data_capacity
+    ):
+        """A transient lock clears on retry: observe succeeds, DB finalized."""
+        mock_observe.observe_overall = AsyncMock(
+            side_effect=[self._make_lock_error(), None]
+        )
+
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _snakemake_execute_process,
+        )
+
+        _snakemake_execute_process(WORKSPACE_ID, UNIQUE_ID, MagicMock())
+
+        assert mock_observe.observe_overall.await_count == 2
+        record_fn = mock_experiment_record.regist_record_on_workflow_completed
+        record_fn.assert_called_once_with(WORKSPACE_ID, UNIQUE_ID)
+        mock_data_capacity.update_experiment_data_usage.assert_called_once_with(
+            WORKSPACE_ID, UNIQUE_ID
+        )
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_logs_lock_conflict_warning(
+        self, mock_observe, mock_experiment_record, mock_data_capacity, caplog
+    ):
+        mock_observe.observe_overall = AsyncMock(side_effect=self._make_lock_error())
+
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _snakemake_execute_process,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            _snakemake_execute_process(WORKSPACE_ID, UNIQUE_ID, MagicMock())
+
+        assert any(
+            "upload stayed locked" in record.message
+            and WORKSPACE_ID in record.message
+            and UNIQUE_ID in record.message
+            for record in caplog.records
+        )
+        # The "skipped" warning must NOT be emitted on a lock conflict.
+        assert not any(
+            "Skipped experiment record registration" in record.message
             for record in caplog.records
         )
