@@ -844,6 +844,9 @@ def test_routing_info_response_omits_identifiers_end_to_end():
     mock_user.id = 1
     mock_user.subscription_type = SubscriptionType.FREE.value
 
+    # Save/restore rather than pop: conftest sets a session-scoped
+    # get_current_user override that later TestClient tests rely on.
+    previous_override = app.dependency_overrides.get(get_current_user)
     app.dependency_overrides[get_current_user] = lambda: mock_user
     try:
         response = TestClient(app).get("/users/me/routing-info")
@@ -857,4 +860,7 @@ def test_routing_info_response_omits_identifiers_end_to_end():
         assert "user_id" not in body
         assert "uid" not in body
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        if previous_override is not None:
+            app.dependency_overrides[get_current_user] = previous_override
+        else:
+            app.dependency_overrides.pop(get_current_user, None)
