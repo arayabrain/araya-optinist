@@ -836,9 +836,7 @@ def test_response_model_drops_identifier_fields(model_cls, payload):
 from fastapi.testclient import TestClient  # noqa: E402
 
 from studio.__main_unit__ import app  # noqa: E402
-from studio.app.common.core.auth.auth_dependencies import (  # noqa: E402
-    get_current_user,
-)
+from studio.app.common.core.auth.auth_dependencies import get_current_user  # noqa: E402
 
 
 def test_routing_info_response_omits_identifiers_end_to_end():
