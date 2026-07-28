@@ -3070,6 +3070,25 @@ def _assign_premium_user_impl(
                 )
                 invoke_migration_async()
 
+            # If a dedicated assignment's target group no longer exists, its
+            # stored ARNs are dead. Drop the row and fall through to a fresh
+            # assignment that recreates the rule/TG, rather than reusing a
+            # broken route. Shared/pool rows use the shared TG (handled above).
+            if (
+                existing_assignment
+                and not existing_assignment.get("is_shared")
+                and existing_instance_id != PremiumAssignment.AUTOSCALING_POOL
+                and not target_group_exists(existing_assignment.get("target_group_arn"))
+            ):
+                print(
+                    f"Existing assignment for user {user_id} has a missing "
+                    f"target group ({existing_assignment.get('target_group_arn')})"
+                    f" - dropping the stale row so a fresh assignment "
+                    f"reprovisions ALB routing"
+                )
+                remove_user_assignment(user_id)
+                existing_assignment = None
+
             if existing_assignment:
                 return {
                     "statusCode": 200,
@@ -5506,7 +5525,7 @@ def reconcile_premium_target_group_ports() -> Dict[str, Any]:
         "drift_detected": 0,
         "drift_fixed": 0,
         "skipped_no_host_port": 0,
-        "skipped_missing_tg": 0,
+        "healed_missing_tg": 0,
         "errors": 0,
     }
 
@@ -5546,8 +5565,14 @@ def reconcile_premium_target_group_ports() -> Dict[str, Any]:
 
         try:
             if not target_group_exists(tg_arn):
-                summary["skipped_missing_tg"] += 1
-                print(f"reconcile: user {user_id} TG {tg_arn} gone — skipping")
+                # Heal instead of skip: a missing TG leaves the row a permanent
+                # strand. Drop it so the next assign reprovisions the rule/TG.
+                summary["healed_missing_tg"] += 1
+                print(
+                    f"reconcile: user {user_id} TG {tg_arn} gone — dropping "
+                    f"stale assignment so next assign reprovisions routing"
+                )
+                remove_user_assignment(user_id)
                 continue
 
             actual_port = get_host_port_for_instance(instance_id)

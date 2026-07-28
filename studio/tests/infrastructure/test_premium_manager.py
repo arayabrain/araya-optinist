@@ -471,6 +471,64 @@ class TestEarlyCheckAndCleanup:
             assert not mock_elbv2.create_rule.called
             mock_get_existing.assert_called_once_with(test_user_id)
 
+    def test_reuse_drops_assignment_when_target_group_missing(
+        self, mock_env_vars_premium
+    ):
+        """A dedicated assignment whose target group was reaped must NOT be
+        reused as-is — the stored ARNs are dead. The guard drops the stale row
+        and falls through to a fresh assignment instead of returning
+        ``assignment_source == "existing"``."""
+        import premium_manager
+
+        existing = {
+            "user_id": 12,
+            "instance_id": "i-dedicated",
+            "target_group_arn": "arn:aws:tg/premium-12-gone",
+            "alb_rule_arn": "arn:aws:rule/premium-12-gone",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.restore_pending_release", return_value=None
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=existing
+        ), patch(
+            "premium_manager.target_group_exists", return_value=False
+        ) as mock_tg_exists, patch(
+            "premium_manager.remove_user_assignment"
+        ) as mock_remove, patch(
+            # First call on the fresh-assignment path: raise a sentinel so the
+            # test proves control fell through without exercising the whole path.
+            "premium_manager.register_orphaned_stopped_instances",
+            side_effect=RuntimeError("reached fresh assignment path"),
+        ):
+            mock_ec2 = MagicMock()
+            # Assigned instance is still running, so the EC2 state check keeps
+            # the row — the missing TG is the only reason it is dropped.
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_elbv2 = MagicMock()
+
+            with pytest.raises(RuntimeError, match="reached fresh assignment path"):
+                premium_manager._assign_premium_user_impl(
+                    12,
+                    {"tier": "premium"},
+                    "uid_12",
+                    mock_ec2,
+                    mock_elbv2,
+                    8000,
+                    "vpc-123",
+                    "arn:aws:listener/test",
+                )
+
+            # Healed: the dead assignment was dropped, triggered by the missing
+            # TG, and it was NOT returned as an existing reuse.
+            mock_tg_exists.assert_called_once_with("arn:aws:tg/premium-12-gone")
+            mock_remove.assert_called_once_with(12)
+
     def test_exception_handler_cleans_up_alb_rule(self, mock_env_vars_premium):
         """Exception handler cleans up ALB rule."""
         print("Testing Exception Handler ALB Rule Cleanup")
@@ -4329,12 +4387,17 @@ class TestReconcilePremiumTargetGroupPorts:
             assert mock_elbv2.register_targets.call_count == 1
             assert mock_elbv2.deregister_targets.call_count == 3
 
-    def test_skips_when_target_group_missing(self, mock_env_vars_premium):
+    def test_heals_missing_tg(self, mock_env_vars_premium):
+        """A missing TG for an active row is a permanent strand, so reconcile
+        drops the row (heal) instead of skipping — the next assign reprovisions
+        the rule/TG."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager.get_db_connection"
         ) as mock_db, patch("boto3.client") as mock_boto3, patch(
             "premium_manager.target_group_exists", return_value=False
         ), patch(
+            "premium_manager.remove_user_assignment"
+        ) as mock_remove, patch(
             "premium_manager.get_host_port_for_instance"
         ) as mock_host_port:
             mock_db.return_value = setup_db_mock(
@@ -4347,8 +4410,10 @@ class TestReconcilePremiumTargetGroupPorts:
 
             summary = reconcile_premium_target_group_ports()
 
-            assert summary["skipped_missing_tg"] == 1
+            # Healed, not skipped: row dropped and no port work attempted.
+            assert summary["healed_missing_tg"] == 1
             assert summary["drift_detected"] == 0
+            mock_remove.assert_called_once_with(12)
             mock_host_port.assert_not_called()
             mock_elbv2.register_targets.assert_not_called()
 
