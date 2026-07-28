@@ -24,7 +24,6 @@ import pytest
 
 # StorageAlert interface (nested in StorageAlertResponse)
 STORAGE_ALERT_REQUIRED_FIELDS = {
-    "user_id": int,
     "user_name": str,
     "user_email": str,
     "alert_level": str,  # "critical" | "danger"
