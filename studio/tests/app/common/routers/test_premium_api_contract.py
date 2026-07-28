@@ -28,7 +28,6 @@ from studio.app.common.core.subscription.constants import SubscriptionType
 
 # RoutingInfo interface
 ROUTING_INFO_REQUIRED_FIELDS = {
-    "user_id": str,
     "user_tier": str,
     "requires_premium_routing": bool,
     "routing_headers": dict,
@@ -61,7 +60,6 @@ PREMIUM_RELEASE_OPTIONAL_FIELDS = {
 
 # PremiumStatusResult interface
 PREMIUM_STATUS_REQUIRED_FIELDS = {
-    "user_id": (str, int),  # Backend returns string uid
     "subscription_type": str,
     "is_premium": bool,
 }
@@ -90,7 +88,6 @@ PREMIUM_ASSIGNMENT_NESTED_OPTIONAL_FIELDS = {
 PREMIUM_HEARTBEAT_REQUIRED_FIELDS = {
     "message": str,
     "updated": bool,
-    "user_id": (str, int),
     "user_tier": str,
     "assignment_active": bool,
 }

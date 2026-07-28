@@ -61,7 +61,6 @@ async def get_routing_info(current_user: User = Depends(get_current_user)):
     is_premium = current_user.subscription_type == SubscriptionType.PREMIUM.value
 
     routing_info = {
-        "user_id": current_user.uid,
         "user_tier": current_user.subscription_type,
         "requires_premium_routing": is_premium,
         "routing_headers": {},
@@ -317,7 +316,6 @@ async def logout_free_user(
 
         return {
             "message": "Logout recorded successfully",
-            "user_id": current_user.uid,
             "user_tier": SubscriptionType.FREE.value,
             "logged_out": True,
             "cleanup_after_minutes": 60,  # Data cleanup occurs after 1 hour
@@ -327,7 +325,6 @@ async def logout_free_user(
         logger.error(f"Error logging out free user {current_user.id}: {e}")
         return {
             "message": f"Logout processed with warnings: {str(e)}",
-            "user_id": current_user.uid,
             "logged_out": False,
             "error": str(e),
         }
@@ -362,7 +359,6 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
             )
 
         return {
-            "user_id": current_user.uid,
             "subscription_type": current_user.subscription_type,
             "is_premium": current_user.subscription_type
             == SubscriptionType.PREMIUM.value,
@@ -372,7 +368,6 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
     except Exception as e:
         logger.error(f"Error getting premium status for user {current_user.id}: {e}")
         return {
-            "user_id": current_user.uid,
             "subscription_type": current_user.subscription_type,
             "is_premium": current_user.subscription_type
             == SubscriptionType.PREMIUM.value,
@@ -393,7 +388,6 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
     if not is_premium:
         return {
             "message": "Heartbeat received (non-premium user)",
-            "user_id": current_user.uid,
             "user_tier": SubscriptionType.FREE.value,
             "assignment_active": False,
             "updated": False,
@@ -409,7 +403,6 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             return {
                 "message": "Activity updated successfully",
                 "updated": True,
-                "user_id": current_user.uid,
                 "user_tier": SubscriptionType.PREMIUM.value,
                 "assignment_active": True,
                 "activity_update": result.get("timestamp"),
@@ -419,7 +412,6 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
             return {
                 "message": "No active assignment found",
                 "updated": False,
-                "user_id": current_user.uid,
                 "user_tier": SubscriptionType.PREMIUM.value,
                 "assignment_active": False,
                 "heartbeat_failures": failure_count,
@@ -431,7 +423,6 @@ async def send_premium_heartbeat(current_user: User = Depends(get_current_user))
         return {
             "message": f"Heartbeat processed with warnings: {str(e)}",
             "updated": False,
-            "user_id": current_user.uid,
             "user_tier": SubscriptionType.PREMIUM.value,
             "assignment_active": False,
             "heartbeat_failures": failure_count,
@@ -514,7 +505,6 @@ async def get_my_cloud_details(
         await CloudDebug.print_user_details(user_id=current_user.id)
 
         result = {
-            "user_id": current_user.uid,
             "user_name": current_user.name,
             "user_email": current_user.email,
         }
@@ -557,5 +547,4 @@ async def get_my_cloud_details(
         logger.error(f"Failed to get cloud details for user {current_user.id}: {e}")
         return {
             "error": str(e),
-            "user_id": current_user.uid,
         }

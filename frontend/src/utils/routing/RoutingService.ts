@@ -24,7 +24,6 @@ import {
 } from "const/Subscription"
 
 export interface RoutingInfo {
-  user_id: string
   user_tier: UserTier
   requires_premium_routing: boolean
   routing_headers: Record<string, string>
@@ -152,7 +151,6 @@ export class RoutingService {
     const userTier = isPremium ? UserTier.PREMIUM : UserTier.FREE
 
     this.routingInfo = {
-      user_id: user.uid || "",
       user_tier: userTier,
       requires_premium_routing: isPremium,
       routing_headers: {}, // No longer client-controlled

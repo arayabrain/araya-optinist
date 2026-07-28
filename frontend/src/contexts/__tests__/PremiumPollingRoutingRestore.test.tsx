@@ -184,7 +184,6 @@ const dedicatedAssignment: PremiumAssignmentResult = {
 }
 
 const sharedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -196,7 +195,6 @@ const sharedStatus: PremiumStatusResult = {
 }
 
 const dedicatedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
