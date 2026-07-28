@@ -768,3 +768,58 @@ async def test_contract_beacon_release_missing_uid():
     )
 
     assert result["success"] is False
+
+
+# ============================================================================
+# Guard Tests: typed response models must not leak identifier fields
+# ============================================================================
+# These verify the response_model layer strips undeclared keys, so an internal
+# identifier (e.g. uid / user_id) cannot be re-exposed by adding it to a
+# response dict. Each sample is the minimal valid payload for that model, which
+# also confirms every required-field set constructs without error.
+
+from studio.app.common.schemas.premium import (  # noqa: E402
+    FreeLogoutResponse,
+    PremiumAssignResponse,
+    PremiumHeartbeatResponse,
+    PremiumReleaseResponse,
+    PremiumStatusResponse,
+    RoutingInfoResponse,
+)
+from studio.app.common.schemas.users import CloudDetailsResponse  # noqa: E402
+
+RESPONSE_MODEL_SAMPLES = [
+    (
+        RoutingInfoResponse,
+        {
+            "user_tier": "free",
+            "requires_premium_routing": False,
+            "routing_headers": {},
+        },
+    ),
+    (PremiumAssignResponse, {"message": "ok", "assigned": True}),
+    (PremiumReleaseResponse, {"message": "ok", "released": True}),
+    (
+        PremiumStatusResponse,
+        {"subscription_type": "premium", "is_premium": True},
+    ),
+    (
+        PremiumHeartbeatResponse,
+        {
+            "message": "ok",
+            "updated": True,
+            "user_tier": "premium",
+            "assignment_active": True,
+        },
+    ),
+    (FreeLogoutResponse, {"message": "ok", "logged_out": True}),
+    (CloudDetailsResponse, {"user_name": "n", "user_email": "e"}),
+]
+
+
+@pytest.mark.parametrize("model_cls,payload", RESPONSE_MODEL_SAMPLES)
+def test_response_model_drops_identifier_fields(model_cls, payload):
+    leaked = {**payload, "uid": "leak-uid", "user_id": "leak-id"}
+    serialized = model_cls(**leaked).dict()
+    assert "uid" not in serialized
+    assert "user_id" not in serialized
