@@ -435,6 +435,95 @@ class TestCleanupOrphanedAlbResources:
             assert result["orphaned_rules_deleted"] == 1
             mock_elbv2.delete_rule.assert_called_once_with(RuleArn=orphan_arn)
 
+    def test_keeps_grace_period_assignment(self, mock_env_vars_premium):
+        """Regression (#766): a soft-released row in its grace window
+        (status == PENDING_RELEASE == 'terminating') still owns a live ALB
+        rule and must NOT be reaped as orphaned."""
+        grace_rule_arn = "arn:aws:rule/user-12-grace"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_elbv2.describe_rules.return_value = {
+                "Rules": [
+                    {
+                        "RuleArn": grace_rule_arn,
+                        "Priority": "100",
+                        "Conditions": [
+                            {
+                                "Field": "http-header",
+                                "HttpHeaderConfig": {
+                                    "HttpHeaderName": (RoutingHeaders.ROUTING_ID),
+                                    "Values": ["rid-12"],
+                                },
+                            },
+                            {
+                                "Field": "http-header",
+                                "HttpHeaderConfig": {
+                                    "HttpHeaderName": (RoutingHeaders.USER_TIER),
+                                    "Values": ["premium"],
+                                },
+                            },
+                        ],
+                        "Actions": [
+                            {
+                                "Type": "forward",
+                                "TargetGroupArn": ("arn:aws:tg/premium-12"),
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            # The grace row is returned by the keep-set query because it now
+            # covers TERMINATING (== PENDING_RELEASE) and the recency guard.
+            mock_connection = setup_db_mock(
+                fetchall_values=[
+                    [
+                        MockRow(
+                            {
+                                "alb_rule_arn": grace_rule_arn,
+                                "target_group_arn": ("arn:aws:tg/premium-12"),
+                                "user_id": 12,
+                            }
+                        )
+                    ],
+                ],
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+            # Live rule survives the sweep.
+            assert result["orphaned_rules_deleted"] == 0
+            assert not mock_elbv2.delete_rule.called
+
+            # Pin the fix: keep-set query covers grace states + recency guard,
+            # not ACTIVE only (the ACTIVE-only filter is the bug).
+            mock_cursor = mock_connection.cursor.return_value.__enter__.return_value
+            keep_set_call = next(
+                c
+                for c in mock_cursor.execute.call_args_list
+                if "premium_user_assignments" in c.args[0]
+                and "alb_rule_arn" in c.args[0]
+            )
+            keep_set_sql, keep_set_params = keep_set_call.args[0], keep_set_call.args[1]
+            assert "last_activity" in keep_set_sql
+            assert PremiumAssignment.MIGRATING in keep_set_params
+            assert PremiumAssignment.TERMINATING in keep_set_params
+            assert PremiumAssignment.PENDING_RELEASE_GRACE_SECONDS in keep_set_params
+
     def test_skips_default_rule(self, mock_env_vars_premium):
         """Default ALB rule is never deleted."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(

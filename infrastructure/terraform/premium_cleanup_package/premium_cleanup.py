@@ -440,14 +440,30 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
-        # Get all active assignments from database
+        # Keep-set: ACTIVE/MIGRATING/TERMINATING all still own a live rule.
+        # TERMINATING shares its DB value with PENDING_RELEASE (soft-release
+        # grace), so an ACTIVE-only filter would reap a live rule mid-grace.
+        # Recency guard: also keep any row touched within the grace window,
+        # so a rule whose row is mid-transition is never seen as orphaned.
+        grace_seconds = PremiumAssignment.PENDING_RELEASE_GRACE_SECONDS
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT alb_rule_arn, target_group_arn, user_id
                        FROM premium_user_assignments
-                       WHERE status = %s AND is_standby = 0""",
-                    (PremiumAssignment.ACTIVE,),
+                       WHERE is_standby = 0
+                         AND (
+                             status IN (%s, %s, %s)
+                             OR last_activity >= DATE_SUB(
+                                 NOW(), INTERVAL %s SECOND
+                             )
+                         )""",
+                    (
+                        PremiumAssignment.ACTIVE,
+                        PremiumAssignment.MIGRATING,
+                        PremiumAssignment.TERMINATING,
+                        grace_seconds,
+                    ),
                 )
                 db_assignments = cursor.fetchall()
 
@@ -457,7 +473,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
             if a["alb_rule_arn"]
             and a["alb_rule_arn"].lower() != PremiumAssignment.STANDBY
         }
-        print(f"Found {len(db_rule_arns)} active assignments in database")
+        print(f"Found {len(db_rule_arns)} keep-set assignments in database")
 
         # Find orphaned rules (in ALB but not in database)
         orphaned_rules = [
