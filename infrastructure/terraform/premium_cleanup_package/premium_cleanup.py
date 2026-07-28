@@ -440,7 +440,9 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
-        # Keep-set: ACTIVE/MIGRATING/TERMINATING all still own a live rule.
+        # Keep-set: ACTIVE/MIGRATING/TERMINATING are the only statuses that own
+        # a real ALB rule ARN (RESERVING/AUTOSCALING_POOL rows carry markers,
+        # not rule ARNs), so enumerating them keeps every live rule.
         # TERMINATING shares its DB value with PENDING_RELEASE (soft-release
         # grace), so an ACTIVE-only filter would reap a live rule mid-grace.
         # Recency guard: also keep any row touched within the grace window,
