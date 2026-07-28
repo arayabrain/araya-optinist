@@ -122,7 +122,6 @@ class LimitWarningStatus(BaseModel):
         None,
         description="Days remaining if alert is present",
     )
-    user_id: str = Field(..., description="User UID")
 
     class Config:
         schema_extra = {
@@ -130,6 +129,5 @@ class LimitWarningStatus(BaseModel):
                 "has_alert": True,
                 "alert_type": "grace",
                 "days_remaining": 15,
-                "user_id": "abc123",
             }
         }
