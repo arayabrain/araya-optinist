@@ -223,6 +223,8 @@ async def test_contract_storage_alert_response_with_alert(
                     )
                     # Validate alert_level is valid enum
                     assert result["alert"]["alert_level"] in VALID_ALERT_LEVELS
+                    # The internal user id must not be echoed back to the client.
+                    assert "user_id" not in result["alert"]
 
 
 @pytest.mark.asyncio

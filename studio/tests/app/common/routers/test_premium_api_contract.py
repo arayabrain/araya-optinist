@@ -823,3 +823,40 @@ def test_response_model_drops_identifier_fields(model_cls, payload):
     serialized = model_cls(**leaked).dict()
     assert "uid" not in serialized
     assert "user_id" not in serialized
+
+
+# ============================================================================
+# Guard Test (end-to-end): real FastAPI serialization strips identifiers
+# ============================================================================
+# The parametrized guard above exercises the model layer directly
+# (Model(**...).dict()). This one drives the actual response_model
+# serialization via TestClient, so it also catches a future config change
+# (e.g. Config.extra = "allow") or a serialization-path regression.
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from studio.__main_unit__ import app  # noqa: E402
+from studio.app.common.core.auth.auth_dependencies import (  # noqa: E402
+    get_current_user,
+)
+
+
+def test_routing_info_response_omits_identifiers_end_to_end():
+    mock_user = Mock()
+    mock_user.id = 1
+    mock_user.subscription_type = SubscriptionType.FREE.value
+
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    try:
+        response = TestClient(app).get("/users/me/routing-info")
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {
+            "user_tier",
+            "requires_premium_routing",
+            "routing_headers",
+        }
+        assert "user_id" not in body
+        assert "uid" not in body
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
