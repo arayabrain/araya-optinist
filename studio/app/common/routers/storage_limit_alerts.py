@@ -325,7 +325,6 @@ async def check_limit_warning_status(
             has_alert=warning is not None,
             alert_type=warning.alert_type if warning else None,
             days_remaining=warning.days_remaining if warning else None,
-            user_id=current_user.uid,
         )
 
     except Exception as e:

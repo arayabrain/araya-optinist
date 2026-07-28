@@ -83,7 +83,6 @@ export interface LimitAlertStatus {
   has_alert: boolean
   alert_type: string | null
   days_remaining: number | null
-  user_id: number
 }
 
 // Limit Alert API Functions
