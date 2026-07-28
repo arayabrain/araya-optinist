@@ -7,7 +7,7 @@ import {
   useState,
 } from "react"
 import { useSelector, useDispatch } from "react-redux"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 
 import { useSnackbar, VariantType } from "notistack"
 
@@ -494,6 +494,11 @@ const Account = () => {
           Delete Account
         </Button>
       </BoxFlex>
+      <BoxFlex sx={{ maxWidth: 600 }}>
+        <LegalLink to="/terms">Terms of Service</LegalLink>
+        <Typography sx={{ mx: 1 }}>·</Typography>
+        <LegalLink to="/privacy">Privacy Policy</LegalLink>
+      </BoxFlex>
       <Loading loading={loading} />
     </AccountWrapper>
   )
@@ -522,6 +527,11 @@ const BoxData = styled(Typography)({
 const TitleData = styled(Typography)({
   width: 250,
   minWidth: 250,
+})
+
+const LegalLink = styled(Link)({
+  color: "inherit",
+  fontSize: 14,
 })
 
 export default Account
