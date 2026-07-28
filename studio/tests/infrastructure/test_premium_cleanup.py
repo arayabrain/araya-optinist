@@ -530,9 +530,7 @@ class TestCleanupOrphanedAlbResources:
 
             mock_elbv2.describe_rules.return_value = {
                 "Rules": [
-                    _premium_alb_rule(
-                        grace_rule_arn, "arn:aws:tg/premium-12", "rid-12"
-                    )
+                    _premium_alb_rule(grace_rule_arn, "arn:aws:tg/premium-12", "rid-12")
                 ]
             }
 
@@ -582,9 +580,7 @@ class TestCleanupOrphanedAlbResources:
 
             mock_elbv2.describe_rules.return_value = {
                 "Rules": [
-                    _premium_alb_rule(
-                        recent_rule_arn, "arn:aws:tg/premium-7", "rid-7"
-                    )
+                    _premium_alb_rule(recent_rule_arn, "arn:aws:tg/premium-7", "rid-7")
                 ]
             }
 
