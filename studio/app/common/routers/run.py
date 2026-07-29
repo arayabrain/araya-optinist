@@ -6,6 +6,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
+from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
 from studio.app.common.core.cloud.storage_tracking import (
     get_current_user_storage_usage,
     get_user_storage_usage,
@@ -47,9 +48,9 @@ async def _check_storage_quota(user_id: int) -> None:
     """Raise 403 if user has exceeded their storage quota."""
     current_usage = await get_current_user_storage_usage(user_id, force_live=False)
     storage_info = get_user_storage_usage(user_id)
+    quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
 
-    if storage_info and storage_info["storage_quota_bytes"] > 0:
-        quota_limit = storage_info["storage_quota_bytes"]
+    if quota_limit > 0:
         usage_percent = (current_usage / quota_limit) * 100
 
         if usage_percent >= 100:

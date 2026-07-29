@@ -229,6 +229,11 @@ const tearDownPremiumRoutingUnlessWarmup = (
   detail: PremiumUnreachableDetail,
 ): void => {
   if (routingService.isWithinPremiumWarmup()) return
+  // Stale/out-of-order failure (request sent before the last confirmed-reachable
+  // response) — an echo, not a live outage. Tearing down here would strand
+  // routing, since the state machine suppresses the event and never arms a
+  // recovery probe.
+  if (routingService.isStalePremiumFailure(detail.sentAt)) return
   routingService.setPremiumAssigned(false)
   routingService.emitPremiumUnreachable(detail)
 }
