@@ -2,7 +2,16 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from sqlalchemy import BIGINT, INTEGER, JSON, TIMESTAMP, Boolean, DateTime
+from sqlalchemy import (
+    BIGINT,
+    DECIMAL,
+    INTEGER,
+    JSON,
+    TIMESTAMP,
+    Boolean,
+    Date,
+    DateTime,
+)
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
@@ -312,7 +321,10 @@ class SubscriptionCancellation(SQLModel, table=True):
 
 class UserStorageUsage(SQLModel, table=True):
     __tablename__ = "user_storage_usage"
-    __table_args__ = (UniqueConstraint("id", name="idx_id"),)
+    __table_args__ = (
+        UniqueConstraint("id", name="idx_id"),
+        Index("idx_user_storage_usage_user_id", "user_id"),
+    )
 
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
@@ -504,6 +516,10 @@ class UserDeletionRecord(SQLModel, table=True):
     """
 
     __tablename__ = "user_deletion_records"
+    __table_args__ = (
+        Index("idx_user_deletion_records_user_id", "user_id"),
+        Index("idx_user_deletion_records_status_started", "status", "started_at"),
+    )
 
     id: Optional[int] = Field(
         sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
@@ -514,7 +530,11 @@ class UserDeletionRecord(SQLModel, table=True):
         description="FK to users.id being deleted",
     )
     user_uid: str = Field(
-        sa_column=Column(String(128), nullable=False),
+        sa_column=Column(
+            String(128),
+            nullable=False,
+            comment="Firebase UID for recovery checks",
+        ),
         description="Firebase UID for recovery checks",
     )
     step: str = Field(
@@ -548,13 +568,19 @@ class UserDeletionRecord(SQLModel, table=True):
         default=DeletionStatus.IN_PROGRESS.value,
     )
     error: Optional[str] = Field(
-        sa_column=Column(Text, nullable=True),
+        sa_column=Column(
+            Text,
+            nullable=True,
+            comment="Error message if deletion failed",
+        ),
         default=None,
         description="Error message if deletion failed",
     )
     started_at: Optional[datetime] = Field(
         default_factory=get_current_datetime,
-        sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+        sa_column=Column(
+            TIMESTAMP, nullable=False, server_default=func.current_timestamp()
+        ),
     )
     completed_at: Optional[datetime] = Field(
         sa_column=Column(DateTime, nullable=True),
@@ -563,6 +589,7 @@ class UserDeletionRecord(SQLModel, table=True):
     updated_at: Optional[datetime] = Field(
         sa_column=Column(
             TIMESTAMP,
+            nullable=False,
             server_default=func.current_timestamp(),
             onupdate=func.current_timestamp(),
         ),
@@ -627,4 +654,47 @@ class SubscriptionAuditLog(SQLModel, table=True):
     created_at: Optional[datetime] = Field(
         default_factory=get_current_datetime,
         sa_column=Column(TIMESTAMP, server_default=func.current_timestamp()),
+    )
+
+
+class Taxes(SQLModel, table=True):
+    """
+    UNUSED / dead schema. Created by migration
+    `af8c4144cd54_add_stripe_integration_tables` but never wired to any code:
+    tax calculation is handled by Stripe (session.total_details.breakdown.taxes),
+    not this table. Mapped here only so `alembic check` matches the DB without
+    a destructive migration. Candidate for an explicit drop in a future PR.
+    """
+
+    __tablename__ = "taxes"
+    __table_args__ = (
+        Index("idx_taxes_type", "tax_type"),
+        Index("idx_taxes_active", "is_active"),
+    )
+
+    id: Optional[int] = Field(
+        sa_column=Column(BIGINT, primary_key=True, nullable=False, autoincrement=True),
+        default=None,
+    )
+    tax_type: str = Field(sa_column=Column(String(50), nullable=False))
+    tax_name: str = Field(sa_column=Column(String(100), nullable=False))
+    tax_rate: float = Field(
+        sa_column=Column(DECIMAL(precision=5, scale=4), nullable=False)
+    )
+    is_active: bool = Field(
+        sa_column=Column(Boolean, nullable=False, server_default="1"), default=True
+    )
+    effective_date: datetime = Field(sa_column=Column(Date, nullable=False))
+    created_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP, nullable=False, server_default=func.current_timestamp()
+        ),
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP,
+            nullable=False,
+            server_default=func.current_timestamp(),
+            onupdate=func.current_timestamp(),
+        ),
     )
