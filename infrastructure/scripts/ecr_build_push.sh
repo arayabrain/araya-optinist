@@ -3,6 +3,7 @@ set -e
 
 # Common Configuration
 REGION="ap-northeast-1"
+TERRAFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform" && pwd)"
 
 # ===========================================
 # Parse arguments
@@ -56,8 +57,8 @@ fi
 # Detect environment and ECR target
 # ===========================================
 echo "Reading Terraform outputs..."
-ENVIRONMENT=$(terraform -chdir=../terraform output -raw environment 2>/dev/null || echo "")
-ECR_URI=$(terraform -chdir=../terraform output -raw ecr_repository_url 2>/dev/null || echo "")
+ENVIRONMENT=$(terraform -chdir="$TERRAFORM_DIR" output -raw environment 2>/dev/null || echo "")
+ECR_URI=$(terraform -chdir="$TERRAFORM_DIR" output -raw ecr_repository_url 2>/dev/null || echo "")
 
 if [ -z "$ENVIRONMENT" ]; then
     echo "ERROR: Could not read environment from Terraform output."
@@ -121,9 +122,9 @@ fi
 # ===========================================
 # Get configuration from Terraform outputs
 # ===========================================
-AUTOSCALING_HOST=$(terraform -chdir=../terraform output -raw domain_name)
-AUTOSCALING_PORT=$(terraform -chdir=../terraform output -raw domain_port)
-AUTOSCALING_PROTO=$(terraform -chdir=../terraform output -raw domain_protocol)
+AUTOSCALING_HOST=$(terraform -chdir="$TERRAFORM_DIR" output -raw domain_name)
+AUTOSCALING_PORT=$(terraform -chdir="$TERRAFORM_DIR" output -raw domain_port)
+AUTOSCALING_PROTO=$(terraform -chdir="$TERRAFORM_DIR" output -raw domain_protocol)
 
 echo "Autoscaling Host: $AUTOSCALING_HOST"
 echo "Autoscaling Protocol: $AUTOSCALING_PROTO"
@@ -190,7 +191,7 @@ echo "============================================"
 # Runs AFTER the push, so the force always resolves the digest we just pushed.
 # Cycles all tiers (main/premium/public/background), not just the main service.
 if [ "$DEPLOY" = true ]; then
-    CLUSTER=$(terraform -chdir=../terraform output -raw ecs_cluster_name)
+    CLUSTER=$(terraform -chdir="$TERRAFORM_DIR" output -raw ecs_cluster_name)
     echo ""
     echo "Forcing new deployment on all services in ${CLUSTER}..."
     SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
