@@ -1,15 +1,18 @@
-from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import List, NamedTuple, Optional, Tuple
 
 import stripe
 from fastapi import HTTPException
 from sqlalchemy import and_, exists
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     DeletionPriority,
+    SubscriptionLifecycleStatus,
+    SubscriptionPeriods,
+    SubscriptionPlanIds,
     SubscriptionPlanType,
     SubscriptionStatusType,
     SubscriptionUserStatus,
@@ -28,6 +31,16 @@ from studio.app.common.models.user import User
 from studio.app.common.models.user_preferences import UserPreferences
 
 logger = AppLogger.get_logger()
+
+
+class SubscriptionLifecycle(NamedTuple):
+    """Resolved premium-subscription lifecycle for a user."""
+
+    status: SubscriptionLifecycleStatus
+    days_remaining: Optional[int]
+    subscription_end: Optional[datetime]
+    grace_end: Optional[datetime]
+    deletion_date: Optional[datetime]
 
 
 class SubscriptionService:
@@ -235,6 +248,91 @@ class SubscriptionService:
             )
             .order_by(common_model.UserSubscription.expiration.desc())
             .first()
+        )
+
+    @staticmethod
+    def determine_lifecycle(
+        db: Session, user_id: int
+    ) -> Optional[SubscriptionLifecycle]:
+        """Resolve a user's premium-subscription lifecycle status.
+
+        Returns FREE when the user never had premium. Returns None when a premium
+        row exists but is malformed (missing/None expiration) so callers can decide
+        how to fail: the warning banner shows nothing, enforcement falls open to
+        the raw quota.
+        """
+        GRACE_PERIOD_DAYS = SubscriptionPeriods.GRACE_PERIOD_DAYS
+        WARNING_PERIOD_DAYS = SubscriptionPeriods.WARNING_PERIOD_DAYS
+
+        query_result = db.execute(
+            select(UserSubscription)
+            .where(UserSubscription.user_id == user_id)
+            .where(UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM)
+            .order_by(UserSubscription.expiration.desc())
+            .limit(1)
+        )
+        result_rows = query_result.all()
+
+        logger.debug(
+            "Found %d premium subscription records for user %s",
+            len(result_rows),
+            user_id,
+        )
+
+        if not result_rows:
+            return SubscriptionLifecycle(
+                status=SubscriptionLifecycleStatus.FREE,
+                days_remaining=None,
+                subscription_end=None,
+                grace_end=None,
+                deletion_date=None,
+            )
+
+        last_subscription_row = result_rows[0]
+        if hasattr(last_subscription_row, "__getitem__"):
+            last_subscription = last_subscription_row[0]
+        else:
+            last_subscription = last_subscription_row
+
+        if not hasattr(last_subscription, "expiration"):
+            logger.error(
+                f"User {user_id} subscription object missing "
+                f"expiration attribute: {dir(last_subscription)}"
+            )
+            return None
+
+        subscription_end = last_subscription.expiration
+        if subscription_end is None:
+            logger.error(f"User {user_id} subscription has None expiration date")
+            return None
+        if subscription_end.tzinfo is None:
+            subscription_end = subscription_end.replace(tzinfo=timezone.utc)
+
+        grace_end = subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
+        deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
+        now = get_current_datetime()
+
+        days_remaining = None
+        if subscription_end > now:
+            status = SubscriptionLifecycleStatus.ACTIVE
+        elif now <= grace_end:
+            status = SubscriptionLifecycleStatus.GRACE
+            days_remaining = (grace_end - now).days
+        elif now <= deletion_date:
+            status = SubscriptionLifecycleStatus.WARNING
+            days_remaining = (deletion_date - now).days
+        else:
+            status = SubscriptionLifecycleStatus.OVERDUE
+            days_remaining = 0
+
+        logger.debug("Final status: %s, days_remaining: %s", status, days_remaining)
+
+        return SubscriptionLifecycle(
+            status=status,
+            days_remaining=days_remaining,
+            subscription_end=subscription_end,
+            grace_end=grace_end,
+            deletion_date=deletion_date,
         )
 
     @staticmethod

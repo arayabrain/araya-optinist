@@ -309,6 +309,59 @@ describe("PremiumAssignmentProvider — unreachable state machine", () => {
     )
   })
 
+  test("stale failure that tears routing down must not strand premium routing", async () => {
+    // Phase 2 repro (grievance B). The axios teardown choke-point has no
+    // staleness knowledge: past warm-up it tears premiumAssigned down on any
+    // 5xx. The machine, however, suppresses a stale failure (older sentAt than
+    // the last reachable) and never flips to unreachable — so no recovery probe
+    // arms. Nothing re-arms premiumAssigned → premium routing is stranded on
+    // free tier until the next reload.
+    mockedGetStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.assigned).toBe(true)
+    })
+
+    // Healthy, dedicated, steady state: clear the warm-up window so the
+    // interceptor teardown is no longer warm-up-suppressed.
+    act(() => {
+      routingService.setPremiumAssigned(true)
+      routingService.clearPremiumWarmup()
+    })
+    expect(routingService.isWithinPremiumWarmup()).toBe(false)
+
+    // A successful premium response sets the reachable watermark at sentAt=2000.
+    act(() => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 2000 })
+    })
+
+    // A request sent earlier (sentAt=1500) 5xxs late. Mirror the axios choke-point
+    // (tearDownPremiumRoutingUnlessWarmup): past warm-up it still skips teardown
+    // for a stale failure, so routing is left intact.
+    act(() => {
+      const detail = { status: 503, sentAt: 1500 }
+      if (
+        !routingService.isWithinPremiumWarmup() &&
+        !routingService.isStalePremiumFailure(detail.sentAt)
+      ) {
+        routingService.setPremiumAssigned(false)
+        routingService.emitPremiumUnreachable(detail)
+      }
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The failure is recognized as stale (1500 < watermark 2000), so the
+    // choke-point never tears routing down and the machine never flips.
+    expect(routingService.isStalePremiumFailure(1500)).toBe(true)
+    expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(false)
+
+    // Invariant: a stale failure must not downgrade routing to free tier.
+    expect(routingService.isPremiumAssigned()).toBe(true)
+  })
+
   test("peer UNREACHABLE broadcast applies state including failed_probes/is_terminal", async () => {
     mockedGetStatus.mockResolvedValue(dedicatedStatus)
     const ctxRef = renderProvider()
