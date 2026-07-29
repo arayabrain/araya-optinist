@@ -193,12 +193,13 @@ if [ "$DEPLOY" = true ]; then
     CLUSTER=$(terraform -chdir=../terraform output -raw ecs_cluster_name)
     echo ""
     echo "Forcing new deployment on all services in ${CLUSTER}..."
-    for svc in $(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
-        --query 'serviceArns[]' --output text); do
+    SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
+        --query 'serviceArns[]' --output text)
+    for svc in $SERVICES; do
         echo "  -> ${svc##*/}"
         aws ecs update-service --cluster "$CLUSTER" --service "$svc" \
             --force-new-deployment --region "$REGION" >/dev/null
     done
-    echo "Force-new-deployment issued for all services (${ECR_URI}:${VERSION_TAG})."
+    echo "Force-new-deployment issued for all services (re-pulling ${ECR_URI}:latest)."
     echo "Standby (desiredCount 0) services will re-pull on next scale-up."
 fi
