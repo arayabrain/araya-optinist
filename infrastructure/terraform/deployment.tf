@@ -138,13 +138,21 @@ resource "null_resource" "deploy_to_ecs" {
       set -e
       echo "=== Starting ECS deployment ==="
 
-      # Force ECS deployment
-      echo "Forcing ECS service deployment..."
-      aws ecs update-service \
+      # Force a new deployment on EVERY service in the cluster (main, premium,
+      # public, background) so all tiers re-pull the just-pushed :latest, not
+      # only the main service.
+      echo "Forcing ECS deployment on all services in ${aws_ecs_cluster.main.name}..."
+      for svc in $(aws ecs list-services \
         --cluster ${aws_ecs_cluster.main.name} \
-        --service ${aws_ecs_service.autoscaling.name} \
-        --force-new-deployment \
-        --region ${var.aws_region}
+        --region ${var.aws_region} \
+        --query 'serviceArns[]' --output text); do
+        echo "  -> $${svc##*/}"
+        aws ecs update-service \
+          --cluster ${aws_ecs_cluster.main.name} \
+          --service "$svc" \
+          --force-new-deployment \
+          --region ${var.aws_region} >/dev/null
+      done
 
       echo "Waiting for ECS service to stabilize..."
             # Check if service is already running first

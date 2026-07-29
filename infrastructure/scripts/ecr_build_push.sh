@@ -7,11 +7,14 @@ REGION="ap-northeast-1"
 # ===========================================
 # Parse arguments
 # ===========================================
-# Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes]
+# Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes] [--deploy]
 #   --tag <tag>  : Custom version tag (default: auto-generated YYYYMMDD-HHMMSS-<git-sha>)
 #   --yes        : Skip confirmation prompt
+#   --deploy     : After push, force-new-deployment on EVERY service in the
+#                  cluster so all tiers re-pull the just-pushed :latest
 CUSTOM_TAG=""
 SKIP_CONFIRM=false
+DEPLOY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -23,9 +26,13 @@ while [[ $# -gt 0 ]]; do
             SKIP_CONFIRM=true
             shift
             ;;
+        --deploy)
+            DEPLOY=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes]"
+            echo "Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes] [--deploy]"
             exit 1
             ;;
     esac
@@ -176,3 +183,22 @@ echo "  Environment : ${ENVIRONMENT}"
 echo "  latest      : ${ECR_URI}:latest"
 echo "  Version     : ${ECR_URI}:${VERSION_TAG}"
 echo "============================================"
+
+# ===========================================
+# Optional: force every service to re-pull :latest
+# ===========================================
+# Runs AFTER the push, so the force always resolves the digest we just pushed.
+# Cycles all tiers (main/premium/public/background), not just the main service.
+if [ "$DEPLOY" = true ]; then
+    CLUSTER=$(terraform -chdir=../terraform output -raw ecs_cluster_name)
+    echo ""
+    echo "Forcing new deployment on all services in ${CLUSTER}..."
+    for svc in $(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
+        --query 'serviceArns[]' --output text); do
+        echo "  -> ${svc##*/}"
+        aws ecs update-service --cluster "$CLUSTER" --service "$svc" \
+            --force-new-deployment --region "$REGION" >/dev/null
+    done
+    echo "Force-new-deployment issued for all services (${ECR_URI}:${VERSION_TAG})."
+    echo "Standby (desiredCount 0) services will re-pull on next scale-up."
+fi
