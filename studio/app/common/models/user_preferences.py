@@ -14,9 +14,6 @@ from studio.app.common.core.subscription.constants import DeletionPriority  # no
 
 class UserPreferences(SQLModel, table=True):
     __tablename__ = "user_preferences"
-    # Migration created two objects on user_id: an unnamed UniqueConstraint
-    # (reflected as index "user_id") plus a separate non-unique index
-    # "ix_user_preferences_user_id". Declare both to match the DB exactly.
     __table_args__ = (
         UniqueConstraint("user_id"),
         Index("ix_user_preferences_user_id", "user_id"),

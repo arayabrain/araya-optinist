@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -678,13 +679,13 @@ class Taxes(SQLModel, table=True):
     )
     tax_type: str = Field(sa_column=Column(String(50), nullable=False))
     tax_name: str = Field(sa_column=Column(String(100), nullable=False))
-    tax_rate: float = Field(
+    tax_rate: Decimal = Field(
         sa_column=Column(DECIMAL(precision=5, scale=4), nullable=False)
     )
     is_active: bool = Field(
         sa_column=Column(Boolean, nullable=False, server_default="1"), default=True
     )
-    effective_date: datetime = Field(sa_column=Column(Date, nullable=False))
+    effective_date: date = Field(sa_column=Column(Date, nullable=False))
     created_at: Optional[datetime] = Field(
         sa_column=Column(
             TIMESTAMP, nullable=False, server_default=func.current_timestamp()
