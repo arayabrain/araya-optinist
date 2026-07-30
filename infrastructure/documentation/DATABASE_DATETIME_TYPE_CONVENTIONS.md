@@ -30,7 +30,7 @@ Two datetime conventions coexist in the models:
 
 Tables inheriting `TimestampMixin`: `experiment_records`, `background_tasks`, `users`, `workspaces`.
 
-`background_tasks` overrides the mixin and re-declares `created_at` / `updated_at` as `TIMESTAMP`, so the mixin convention is already broken in at least one place.
+`background_tasks` overrides the mixin and redeclares `created_at` / `updated_at` as `TIMESTAMP`, so the mixin convention is already broken in at least one place.
 
 ---
 
