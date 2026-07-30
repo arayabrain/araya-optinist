@@ -15,7 +15,9 @@ def test_main_registers_cleanup_job():
     """main() adds DataCleanupJob.run on the expected id / interval."""
     with patch("studio.cleanup_worker.AsyncIOScheduler") as mock_sched_cls, patch(
         "studio.cleanup_worker.asyncio"
-    ) as mock_asyncio, patch("studio.cleanup_worker.signal") as mock_signal:
+    ) as mock_asyncio, patch("studio.cleanup_worker.signal") as mock_signal, patch(
+        "studio.cleanup_worker.resolve_instance_id", return_value="i-worker"
+    ):
         import studio.cleanup_worker as worker
 
         mock_sched = MagicMock()

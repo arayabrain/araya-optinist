@@ -15,7 +15,6 @@ SIGTERM / SIGINT (ECS sends SIGTERM on task stop).
 """
 
 import asyncio
-import os
 import signal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -24,12 +23,16 @@ from apscheduler.triggers.interval import IntervalTrigger
 from studio.app.common.core.background.cleanup_job import DataCleanupJob
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.utils.instance_utils import resolve_instance_id
 
 logger = AppLogger.get_logger()
 
 
 def main() -> None:
-    instance_id = os.environ.get("INSTANCE_ID") or "local"
+    # Use the shared resolver (env → IMDS → "local") so the logged id matches
+    # the one DataCleanupJob filters on; logging only the INSTANCE_ID env var
+    # would read "local" whenever it is unset even though IMDS resolves a real id.
+    instance_id = resolve_instance_id()
     logger.info(
         f"cleanup_worker starting (instance: {instance_id}, "
         f"interval: {SyncStatusConstants.CLEANUP_INTERVAL_MINUTES}min)"

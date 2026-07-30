@@ -207,6 +207,21 @@ else
     echo "This is expected in local development, but should not happen in production."
 fi
 
+# Forward ECS stop signals (SIGTERM) to child processes so the cleanup
+# worker and app can shut down gracefully; without this the signal reaches
+# only the shell and children are killed abruptly.
+#
+# Install the trap BEFORE launching any child so a stop signal arriving
+# during startup (between process launch and trap installation) is still
+# forwarded. CLEANUP_PID / APP_PID are empty until their process starts;
+# the guards below skip any child that hasn't launched yet.
+_forward_shutdown() {
+    echo "Received shutdown signal, forwarding to child processes..."
+    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null
+    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
+}
+trap _forward_shutdown TERM INT
+
 # Start standalone cleanup worker on free-tier instances
 # This runs DataCleanupJob in its own process, filtered by INSTANCE_ID,
 # so cleanup happens on the instance that owns the local EBS data.
@@ -221,16 +236,6 @@ fi
 echo "Starting application..."
 poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &
 APP_PID=$!
-
-# Forward ECS stop signals (SIGTERM) to child processes so the cleanup
-# worker and app can shut down gracefully; without this the signal reaches
-# only the shell and children are killed abruptly.
-_forward_shutdown() {
-    echo "Received shutdown signal, forwarding to child processes..."
-    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null
-    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
-}
-trap _forward_shutdown TERM INT
 
 # Allow initial startup time matching ECS health check startPeriod
 echo "Waiting for initial startup..."
