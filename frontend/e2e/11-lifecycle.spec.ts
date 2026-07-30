@@ -660,4 +660,47 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       )
       .not.toBe("0")
   })
+
+  test("LC-17 - Release clears every routing key; a gesture re-seeds them", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 1 MONTH")
+
+    await mockPremiumAssignment(page)
+    await page.route("**/users/me/premium/release-beacon", (route) =>
+      route.fulfill({ json: { released: true } }),
+    )
+    await loginWithArmedInactivityMonitor(page)
+
+    const routingKeys = () =>
+      page.evaluate(() => ({
+        routingId: localStorage.getItem("routing_id"),
+        assigned: localStorage.getItem("premium_assigned"),
+        instanceId: localStorage.getItem("premium_instance_id"),
+        shared: localStorage.getItem("premium_shared"),
+      }))
+
+    await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+
+    const beaconFired = page.waitForRequest(
+      (r) => r.url().includes("/users/me/premium/release-beacon"),
+      { timeout: 15_000 },
+    )
+    await page.clock.fastForward(125 * 60 * 1000)
+    await beaconFired
+
+    // premium_assigned=true with no routing_id is the unrecoverable pair:
+    // headers are withheld while the app still believes it is routed.
+    await expect.poll(routingKeys).toEqual({
+      routingId: null,
+      assigned: "false",
+      instanceId: null,
+      shared: "false",
+    })
+
+    // A gesture after the release re-runs auto-assign against the same mocks.
+    await page.mouse.click(5, 5)
+    await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+  })
 })
