@@ -8,7 +8,7 @@ dead executor post-process can't strand the run in a perpetual spinner.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 from studio.app.common.core.workflow.workflow import NodeItem
@@ -18,7 +18,8 @@ from studio.app.const import DATE_FORMAT
 
 
 def _finished_at(seconds_ago: float) -> str:
-    return (datetime.now() - timedelta(seconds=seconds_ago)).strftime(DATE_FORMAT)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return (now - timedelta(seconds=seconds_ago)).strftime(DATE_FORMAT)
 
 
 def _poll(
