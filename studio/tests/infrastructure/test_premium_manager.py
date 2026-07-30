@@ -670,6 +670,112 @@ class TestEarlyCheckAndCleanup:
             mock_tg_exists.assert_not_called()
             mock_remove.assert_not_called()
 
+    def test_reuse_drop_survives_concurrent_removal(self, mock_env_vars_premium):
+        """A concurrent reconcile heal (or second /assign) may drop the row
+        before this guard's own remove runs. The resulting "No assignment
+        found" must be treated as already-healed — fall through to the fresh
+        assignment path, not 500 on the outer except."""
+        import premium_manager
+
+        existing = {
+            "user_id": 12,
+            "instance_id": "i-dedicated",
+            "target_group_arn": "arn:aws:tg/premium-12-gone",
+            "alb_rule_arn": "arn:aws:rule/premium-12-gone",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.restore_pending_release", return_value=None
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=existing
+        ), patch(
+            "premium_manager.target_group_exists", return_value=False
+        ), patch(
+            # Row already dropped by a concurrent heal: removal raises the
+            # same "No assignment found" the transaction raises on an empty row.
+            "premium_manager.remove_user_assignment",
+            side_effect=Exception("No assignment found for user 12"),
+        ) as mock_remove, patch(
+            # Sentinel proves control fell through to fresh provisioning
+            # instead of returning a 500 from the outer except.
+            "premium_manager.register_orphaned_stopped_instances",
+            side_effect=RuntimeError("reached fresh assignment path"),
+        ):
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_elbv2 = MagicMock()
+
+            with pytest.raises(RuntimeError, match="reached fresh assignment path"):
+                premium_manager._assign_premium_user_impl(
+                    12,
+                    {"tier": "premium"},
+                    "uid_12",
+                    mock_ec2,
+                    mock_elbv2,
+                    8000,
+                    "vpc-123",
+                    "arn:aws:listener/test",
+                )
+
+            # The concurrent removal was swallowed as already-healed; control
+            # reached the fresh path rather than 500ing.
+            mock_remove.assert_called_once_with(12)
+
+    def test_reuse_drop_reraises_unexpected_removal_error(self, mock_env_vars_premium):
+        """A real DB error during the guard's removal (not "No assignment
+        found") must still propagate to the outer except and 500 — fail fast,
+        as before, rather than masquerading as a heal."""
+        import premium_manager
+
+        existing = {
+            "user_id": 12,
+            "instance_id": "i-dedicated",
+            "target_group_arn": "arn:aws:tg/premium-12-gone",
+            "alb_rule_arn": "arn:aws:rule/premium-12-gone",
+            "status": "active",
+            "instance_state": "running",
+            "is_shared": 0,
+        }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.restore_pending_release", return_value=None
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=existing
+        ), patch(
+            "premium_manager.target_group_exists", return_value=False
+        ), patch(
+            "premium_manager.remove_user_assignment",
+            side_effect=Exception("Deadlock found when trying to get lock"),
+        ), patch(
+            # Must never be reached — the unexpected error fails fast first.
+            "premium_manager.register_orphaned_stopped_instances",
+            side_effect=RuntimeError("must not reach fresh assignment path"),
+        ):
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]
+            }
+            mock_elbv2 = MagicMock()
+
+            result = premium_manager._assign_premium_user_impl(
+                12,
+                {"tier": "premium"},
+                "uid_12",
+                mock_ec2,
+                mock_elbv2,
+                8000,
+                "vpc-123",
+                "arn:aws:listener/test",
+            )
+
+            # Unexpected removal error fails fast on the outer except → 500.
+            assert result["statusCode"] == 500
+
     def test_exception_handler_cleans_up_alb_rule(self, mock_env_vars_premium):
         """Exception handler cleans up ALB rule."""
         print("Testing Exception Handler ALB Rule Cleanup")
@@ -4670,6 +4776,34 @@ class TestReconcilePremiumTargetGroupPorts:
             mock_remove.assert_called_once_with(12)
             mock_host_port.assert_not_called()
             mock_elbv2.register_targets.assert_not_called()
+
+    def test_missing_tg_removal_failure_counts_error_not_heal(
+        self, mock_env_vars_premium
+    ):
+        """The heal counter is incremented only after remove_user_assignment
+        succeeds. If removal raises (concurrent removal / DB error) the outer
+        except records an error and the row is NOT counted as healed."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection"
+        ) as mock_db, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.target_group_exists", return_value=False
+        ), patch(
+            "premium_manager.remove_user_assignment",
+            side_effect=Exception("No assignment found for user 12"),
+        ) as mock_remove:
+            mock_db.return_value = setup_db_mock(
+                fetchall_values=[[self._make_row(12, "i-aaa", "arn:tg/gone")]]
+            )
+            mock_boto3.return_value = MagicMock()
+
+            from premium_manager import reconcile_premium_target_group_ports
+
+            summary = reconcile_premium_target_group_ports()
+
+            # Removal raised → error counted, heal not counted.
+            assert summary["healed_missing_tg"] == 0
+            assert summary["errors"] == 1
+            mock_remove.assert_called_once_with(12)
 
     def test_heals_only_stranded_row_in_mixed_batch(self, mock_env_vars_premium):
         """In a batch of one missing-TG row and one healthy row, only the

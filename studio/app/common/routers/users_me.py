@@ -92,7 +92,11 @@ async def get_routing_info(current_user: User = Depends(get_current_user)):
     return routing_info
 
 
-@router.post("/premium/assign", response_model=PremiumAssignResponse)
+@router.post(
+    "/premium/assign",
+    response_model=PremiumAssignResponse,
+    response_model_exclude_unset=True,
+)
 async def assign_premium_instance(current_user: User = Depends(get_current_user)):
     """
     Assign current user to a premium instance if they have an active subscription.
@@ -169,7 +173,11 @@ async def assign_premium_instance(current_user: User = Depends(get_current_user)
         )
 
 
-@router.delete("/premium/assign", response_model=PremiumReleaseResponse)
+@router.delete(
+    "/premium/assign",
+    response_model=PremiumReleaseResponse,
+    response_model_exclude_unset=True,
+)
 async def release_premium_instance(current_user: User = Depends(get_current_user)):
     """
     Release current user from their assigned premium instance.
@@ -270,7 +278,11 @@ async def release_premium_beacon(request: Request, db: Session = Depends(get_db)
         return {"success": False, "message": str(e)}
 
 
-@router.post("/free/logout", response_model=FreeLogoutResponse)
+@router.post(
+    "/free/logout",
+    response_model=FreeLogoutResponse,
+    response_model_exclude_unset=True,
+)
 async def logout_free_user(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
@@ -343,7 +355,11 @@ async def logout_free_user(
         }
 
 
-@router.get("/premium/status", response_model=PremiumStatusResponse)
+@router.get(
+    "/premium/status",
+    response_model=PremiumStatusResponse,
+    response_model_exclude_unset=True,
+)
 async def get_premium_assignment_status(current_user: User = Depends(get_current_user)):
     """
     Get the current premium instance assignment status for the user.
@@ -389,7 +405,11 @@ async def get_premium_assignment_status(current_user: User = Depends(get_current
         }
 
 
-@router.post("/premium/heartbeat", response_model=PremiumHeartbeatResponse)
+@router.post(
+    "/premium/heartbeat",
+    response_model=PremiumHeartbeatResponse,
+    response_model_exclude_unset=True,
+)
 async def send_premium_heartbeat(current_user: User = Depends(get_current_user)):
     """
     Send heartbeat to update activity timestamp for premium users.
@@ -500,7 +520,11 @@ async def delete_me(
     )
 
 
-@router.get("/cloud-details", response_model=CloudDetailsResponse)
+@router.get(
+    "/cloud-details",
+    response_model=CloudDetailsResponse,
+    response_model_exclude_unset=True,
+)
 async def get_my_cloud_details(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

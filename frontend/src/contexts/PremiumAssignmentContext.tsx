@@ -211,7 +211,11 @@ export const PremiumAssignmentProvider: React.FC<{
   const [autoAssignGeneration, setAutoAssignGeneration] = useState(0)
   const needsReassignAfterReleaseRef = useRef(false)
 
-  // Polling state with backoff
+  // Polling state with backoff.
+  // NOTE: pollAttempts is dual-purpose — it's the attempt counter (MAX_POLL_ATTEMPTS
+  // stop, re-trigger threshold) AND a keep-alive tick: it's in the poll effect's
+  // dependency array, so incrementing it every cycle re-runs the effect and
+  // reschedules the next poll even after pollInterval saturates (needed for shared).
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
   const [pollAttempts, setPollAttempts] = useState(() => {
     const stored = ssRead(SS_POLL_ATTEMPTS)
@@ -1079,6 +1083,12 @@ export const PremiumAssignmentProvider: React.FC<{
             // Reached only for a shared assignment (dedicated returns above).
             // Keep the flag consistent with the polled assignment so the
             // teardown gate holds even for a shared state seen only via polling.
+            // Refresh the instance hash too: a dedicated→shared transition seen
+            // only via polling would otherwise leave the stale dedicated hash,
+            // skewing routing telemetry.
+            routingService.setPremiumInstanceId(
+              assignment.instance_id_hash ?? null,
+            )
             routingService.setPremiumShared(true)
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
@@ -1159,7 +1169,8 @@ export const PremiumAssignmentProvider: React.FC<{
           )
           // Increment for shared too — a changing dep re-runs the effect and
           // reschedules the next poll once pollInterval saturates at the cap.
-          // Shared stop still excluded (:991); re-trigger is null-only.
+          // The MAX_POLL_ATTEMPTS stop still excludes shared (!isOnShared), and
+          // the re-trigger check runs only in the null-assignment branch.
           setPollAttempts((prev) => prev + 1)
           // Exponential backoff capped at MAX_POLL_INTERVAL_MS
           setPollInterval((prev) =>

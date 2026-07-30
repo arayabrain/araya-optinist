@@ -8,6 +8,20 @@ from pydantic import BaseModel
 # (success / retry / error) stays valid.
 
 
+class PremiumAssignmentDetail(BaseModel):
+    """Whitelisted `/premium/status` assignment body (mirrors the frontend
+    `PremiumAssignment`). Typed so undeclared keys from the passthrough Lambda
+    payload are dropped on serialization. All Optional: any branch stays valid.
+    """
+
+    instance_id: Optional[str] = None
+    instance_id_hash: Optional[str] = None
+    assigned_at: Optional[str] = None
+    status: Optional[str] = None
+    is_shared: Optional[bool] = None
+    assignment_source: Optional[str] = None
+
+
 class RoutingInfoResponse(BaseModel):
     user_tier: str
     requires_premium_routing: bool
@@ -34,7 +48,7 @@ class PremiumReleaseResponse(BaseModel):
 class PremiumStatusResponse(BaseModel):
     subscription_type: str
     is_premium: bool
-    assignment: Optional[dict] = None
+    assignment: Optional[PremiumAssignmentDetail] = None
     migration_ready: Optional[bool] = None
     health_status: Optional[str] = None
     error: Optional[str] = None

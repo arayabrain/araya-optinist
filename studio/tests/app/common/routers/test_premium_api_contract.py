@@ -825,6 +825,33 @@ def test_response_model_drops_identifier_fields(model_cls, payload):
     assert "user_id" not in serialized
 
 
+def test_premium_status_nested_assignment_drops_identifier_fields():
+    """The nested `assignment` model must strip identifiers the passthrough
+    Lambda body might echo, while keeping the whitelisted fields."""
+    leaked_assignment = {
+        "instance_id": "i-123456",
+        "instance_id_hash": "hash-abc",
+        "assigned_at": "2024-01-15T10:30:00Z",
+        "status": "active",
+        "is_shared": False,
+        "assignment_source": "existing",
+        "uid": "leak-uid",
+        "user_id": "leak-id",
+    }
+    serialized = PremiumStatusResponse(
+        subscription_type="premium",
+        is_premium=True,
+        assignment=leaked_assignment,
+    ).dict()
+
+    assignment = serialized["assignment"]
+    assert "uid" not in assignment
+    assert "user_id" not in assignment
+    # Whitelisted fields survive.
+    assert assignment["instance_id"] == "i-123456"
+    assert assignment["assignment_source"] == "existing"
+
+
 # ============================================================================
 # Guard Test (end-to-end): real FastAPI serialization strips identifiers
 # ============================================================================
@@ -836,9 +863,7 @@ def test_response_model_drops_identifier_fields(model_cls, payload):
 from fastapi.testclient import TestClient  # noqa: E402
 
 from studio.__main_unit__ import app  # noqa: E402
-from studio.app.common.core.auth.auth_dependencies import (  # noqa: E402
-    get_current_user,
-)
+from studio.app.common.core.auth.auth_dependencies import get_current_user  # noqa: E402
 
 
 def test_routing_info_response_omits_identifiers_end_to_end():
@@ -846,6 +871,9 @@ def test_routing_info_response_omits_identifiers_end_to_end():
     mock_user.id = 1
     mock_user.subscription_type = SubscriptionType.FREE.value
 
+    # Save/restore rather than pop: conftest sets a session-scoped
+    # get_current_user override that later TestClient tests rely on.
+    previous_override = app.dependency_overrides.get(get_current_user)
     app.dependency_overrides[get_current_user] = lambda: mock_user
     try:
         response = TestClient(app).get("/users/me/routing-info")
@@ -859,4 +887,7 @@ def test_routing_info_response_omits_identifiers_end_to_end():
         assert "user_id" not in body
         assert "uid" not in body
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        if previous_override is not None:
+            app.dependency_overrides[get_current_user] = previous_override
+        else:
+            app.dependency_overrides.pop(get_current_user, None)
