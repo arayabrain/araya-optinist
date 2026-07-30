@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from sqlalchemy import Index
 from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import (
@@ -35,10 +34,7 @@ class UserRole(Base, table=True):
 
 class User(Base, TimestampMixin, table=True):
     __tablename__ = "users"
-    __table_args__ = (
-        UniqueConstraint("uid", name="idx_uid"),
-        Index("idx_users_organization_active", "organization_id", "active"),
-    )
+    __table_args__ = (UniqueConstraint("uid", name="idx_uid"),)
 
     organization_id: int = Field(
         sa_column=Column(

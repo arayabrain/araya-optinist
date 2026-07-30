@@ -3,7 +3,6 @@ from typing import Optional
 
 from sqlalchemy import TIMESTAMP
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import Index, UniqueConstraint
 from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql import func
 from sqlalchemy.sql.functions import current_timestamp
@@ -14,13 +13,6 @@ from studio.app.common.core.subscription.constants import DeletionPriority  # no
 
 class UserPreferences(SQLModel, table=True):
     __tablename__ = "user_preferences"
-    # Migration created two objects on user_id: an unnamed UniqueConstraint
-    # (reflected as index "user_id") plus a separate non-unique index
-    # "ix_user_preferences_user_id". Declare both to match the DB exactly.
-    __table_args__ = (
-        UniqueConstraint("user_id"),
-        Index("ix_user_preferences_user_id", "user_id"),
-    )
 
     id: Optional[int] = Field(
         sa_column=Column(
@@ -31,8 +23,10 @@ class UserPreferences(SQLModel, table=True):
     user_id: int = Field(
         sa_column=Column(
             BIGINT(unsigned=True),
-            ForeignKey("users.id", name="fk_user_preferences_user"),
+            ForeignKey("users.id"),
             nullable=False,
+            unique=True,
+            index=True,
         ),
     )
     deletion_priority: Optional[str] = Field(
