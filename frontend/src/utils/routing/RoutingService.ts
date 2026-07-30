@@ -331,6 +331,11 @@ export class RoutingService {
     if (sentAt > this.lastReachableSentAt) {
       this.lastReachableSentAt = sentAt
     }
+    // Re-arm routing at the source of truth for every listener path. Gate on a
+    // live premiumInstanceId so a late post-release 200 can't resurrect routing.
+    if (this.premiumInstanceId != null && !this.premiumAssigned) {
+      this.setPremiumAssigned(true)
+    }
     this.reachableListeners.forEach((listener) => {
       try {
         listener(detail)
