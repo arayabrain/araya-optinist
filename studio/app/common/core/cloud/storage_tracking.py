@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import update
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -236,7 +237,9 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     )
                     db.add(new_storage_usage)
 
-            except Exception as orm_error:
+            except (ProgrammingError, OperationalError) as orm_error:
+                # Benign fallback for a missing/inaccessible table only; genuine
+                # write errors (StaleDataError, etc.) propagate and return False.
                 logger.warning(
                     f"UserStorageUsage table not accessible:"
                     f" {orm_error}, skipping storage update"

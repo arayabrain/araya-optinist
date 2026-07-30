@@ -197,9 +197,11 @@ def _snakemake_execute_process(
         # ExptConfig is finalized, so a lock conflict (idempotent upload handled
         # by the concurrent observe path) still finalizes the DB. Finalization is
         # skipped only when observe never succeeded and never reached the lock.
-        observe_success, observe_lock_conflict = _observe_overall_with_lock_retry(
-            workspace_id, unique_id
-        )
+        (
+            observe_success,
+            observe_lock_conflict,
+            upload_confirmed,
+        ) = _observe_overall_with_lock_retry(workspace_id, unique_id)
         should_finalize = observe_success or observe_lock_conflict
 
         # Update experiment database record
@@ -214,11 +216,24 @@ def _snakemake_execute_process(
                 workspace_id, unique_id
             )
 
-        if observe_lock_conflict and not observe_success:
+        if observe_lock_conflict and not observe_success and upload_confirmed:
             logger.warning(
                 "observe_overall() upload stayed locked; finalized DB "
                 "registration and data usage regardless "
-                "(upload handled by the concurrent observe path). "
+                "(upload completed by the concurrent observe path, verified "
+                "via remote sync status). [workspace: %s] [unique_id: %s]",
+                workspace_id,
+                unique_id,
+            )
+        elif observe_lock_conflict and not observe_success:
+            # Local ExptConfig is finalized (DB is correct), but the redundant
+            # remote upload is unconfirmed; the periodic re-sync reconciles it.
+            logger.warning(
+                "observe_overall() upload stayed locked and the concurrent "
+                "observe path has not reported sync success; finalized DB "
+                "registration and data usage from the finalized local "
+                "ExptConfig, but the remote upload is unconfirmed and will be "
+                "reconciled by the periodic re-sync. "
                 "[workspace: %s] [unique_id: %s]",
                 workspace_id,
                 unique_id,
@@ -263,23 +278,49 @@ def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple
     by whichever path wins the lock, so the conflict is retried a bounded number
     of times to let this path land its own upload once the lock frees.
 
+    A lock conflict only proves the other path holds the lock, not that its
+    upload succeeded, so the remote sync-status file (written SUCCESS by the
+    winning writer) is checked before reporting the upload as confirmed.
+
     Returns:
-        (observe_success, observe_lock_conflict):
-            observe_success is True when observe_overall() completed.
+        (observe_success, observe_lock_conflict, upload_confirmed):
+            observe_success is True when observe_overall() completed here.
             observe_lock_conflict is True when at least one attempt hit the
-            upload lock; the caller finalizes the DB even if it never succeeded.
+            upload lock; the caller finalizes the DB even if it never succeeded,
+            because the local ExptConfig is already finalized.
+            upload_confirmed is True when the remote upload is known complete —
+            either this path uploaded, or a lock conflict was accompanied by a
+            SUCCESS remote sync-status written by the path that won the lock.
     """
     observe_success = False
     observe_lock_conflict = False
+    upload_confirmed = False
     retry_max = RemoteSyncLockFileUtil.LOCK_CONFLICT_RETRY_MAX
 
     for attempt in range(1, retry_max + 1):
         try:
             asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
             observe_success = True
+            upload_confirmed = True
             break
         except RemoteStorageLockError as e:
             observe_lock_conflict = True
+            # A SUCCESS sync status proves the winner's upload landed; stop
+            # retrying our own.
+            if RemoteSyncStatusFileUtil.check_sync_status_success(
+                workspace_id, unique_id
+            ):
+                upload_confirmed = True
+                logger.info(
+                    "observe_overall() upload lock held by the concurrent "
+                    "observe path, which reported sync success (attempt %d/%d). "
+                    "[workspace: %s] [unique_id: %s]",
+                    attempt,
+                    retry_max,
+                    workspace_id,
+                    unique_id,
+                )
+                break
             logger.warning(
                 "observe_overall() upload lock conflict (attempt %d/%d): %s",
                 attempt,
@@ -295,7 +336,13 @@ def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple
             )
             break
 
-    return observe_success, observe_lock_conflict
+    # The winner may have completed between our last attempt and now.
+    if observe_lock_conflict and not upload_confirmed:
+        upload_confirmed = RemoteSyncStatusFileUtil.check_sync_status_success(
+            workspace_id, unique_id
+        )
+
+    return observe_success, observe_lock_conflict, upload_confirmed
 
 
 def delete_dependencies(

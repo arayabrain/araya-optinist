@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import yaml
+from sqlalchemy import text
 from sqlalchemy.exc import NoResultFound
 from sqlmodel import Session, delete, select, update
 
@@ -54,42 +55,79 @@ class WorkspaceDataCapacityService:
         # Overwrite experiment config
         ExptConfigWriter(workspace_id, unique_id).overwrite(update_params)
 
+    # MySQL advisory-lock namespace for _update_exp_data_usage_db (name max 64).
+    _EXP_DATA_USAGE_LOCK_PREFIX = "exp_data_usage"
+    _EXP_DATA_USAGE_LOCK_TIMEOUT_SECONDS = 10
+
     @classmethod
     def _update_exp_data_usage_db(
         cls, workspace_id: str, unique_id: str, data_usage: int
     ):
-        # Concurrent writers (main process + executor) often write the same
-        # value; a Core UPDATE avoids the ORM stale-data error a same-value flush
-        # raises on MySQL. Existence is checked with a SELECT since a same-value
-        # UPDATE reports rowcount 0 (MySQL counts rows *changed*).
+        # Concurrent writers (main /run/result task + executor) often write the
+        # same value: a Core UPDATE (existence via SELECT, since a same-value
+        # UPDATE reports rowcount 0 on MySQL) avoids the ORM stale-data error.
+        # experiment_records has no unique constraint on (workspace_id, uid), so
+        # the check-then-write is serialized with a MySQL advisory lock to
+        # prevent duplicate INSERTs; best-effort if the lock is unavailable.
+        lock_name = f"{cls._EXP_DATA_USAGE_LOCK_PREFIX}_{workspace_id}_{unique_id}"[:64]
         with session_scope() as db:
-            exists = (
-                db.execute(
-                    select(ExperimentRecord.id).where(
-                        ExperimentRecord.workspace_id == workspace_id,
-                        ExperimentRecord.uid == unique_id,
-                    )
-                ).first()
-                is not None
-            )
+            got_lock = False
+            try:
+                got_lock = (
+                    db.execute(
+                        text("SELECT GET_LOCK(:name, :timeout) AS r"),
+                        {
+                            "name": lock_name,
+                            "timeout": cls._EXP_DATA_USAGE_LOCK_TIMEOUT_SECONDS,
+                        },
+                    ).scalar()
+                    == 1
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Advisory lock unavailable for experiment data usage "
+                    f"[{workspace_id}/{unique_id}]: {e}; proceeding without it"
+                )
 
-            if exists:
-                db.execute(
-                    update(ExperimentRecord)
-                    .where(
-                        ExperimentRecord.workspace_id == workspace_id,
-                        ExperimentRecord.uid == unique_id,
-                    )
-                    .values(data_usage=data_usage)
+            try:
+                exists = (
+                    db.execute(
+                        select(ExperimentRecord.id).where(
+                            ExperimentRecord.workspace_id == workspace_id,
+                            ExperimentRecord.uid == unique_id,
+                        )
+                    ).first()
+                    is not None
                 )
-            else:
-                db.add(
-                    ExperimentRecord(
-                        workspace_id=workspace_id,
-                        uid=unique_id,
-                        data_usage=data_usage,
+
+                if exists:
+                    db.execute(
+                        update(ExperimentRecord)
+                        .where(
+                            ExperimentRecord.workspace_id == workspace_id,
+                            ExperimentRecord.uid == unique_id,
+                        )
+                        .values(data_usage=data_usage)
                     )
-                )
+                else:
+                    db.add(
+                        ExperimentRecord(
+                            workspace_id=workspace_id,
+                            uid=unique_id,
+                            data_usage=data_usage,
+                        )
+                    )
+            finally:
+                if got_lock:
+                    try:
+                        db.execute(
+                            text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name}
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to release advisory lock for experiment "
+                            f"data usage [{workspace_id}/{unique_id}]: {e}"
+                        )
 
     @classmethod
     def update_workspace_data_usage(
