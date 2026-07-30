@@ -173,7 +173,7 @@ class BackgroundTask(Base, TimestampMixin, table=True):
             index=True,
             comment="User who initiated the task",
         ),
-        description="User who initiated the deletion",
+        description="User who initiated the task",
     )
     task_type: str = Field(
         sa_column=Column(
@@ -202,7 +202,7 @@ class BackgroundTask(Base, TimestampMixin, table=True):
             comment="Workspace ID for experiment tasks",
         ),
         default=None,
-        description="Workspace ID for experiment deletions",
+        description="Workspace ID for experiment tasks",
     )
     status: str = Field(
         sa_column=Column(
@@ -246,7 +246,7 @@ class BackgroundTask(Base, TimestampMixin, table=True):
             comment="Error message if task failed",
         ),
         default=None,
-        description="Error message if deletion failed",
+        description="Error message if task failed",
     )
     started_at: Optional[datetime] = Field(
         sa_column=Column(
