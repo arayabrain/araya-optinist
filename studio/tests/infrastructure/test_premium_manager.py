@@ -693,9 +693,7 @@ class TestEarlyCheckAndCleanup:
             # reached the fresh path rather than 500ing.
             mock_remove.assert_called_once_with(12)
 
-    def test_reuse_drop_reraises_unexpected_removal_error(
-        self, mock_env_vars_premium
-    ):
+    def test_reuse_drop_reraises_unexpected_removal_error(self, mock_env_vars_premium):
         """A real DB error during the guard's removal (not "No assignment
         found") must still propagate to the outer except and 500 — fail fast,
         as before, rather than masquerading as a heal."""
