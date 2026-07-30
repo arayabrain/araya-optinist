@@ -426,13 +426,25 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         with session_scope() as session:
             now = get_current_datetime()
 
-            # Try UPDATE first (common path for existing users)
+            # Try UPDATE first (common path for existing users).
+            #
+            # IMPORTANT: do NOT overwrite ``instance_id`` here. The column is
+            # the authoritative "which instance owns this user's local EBS
+            # data" marker that the cleanup worker filters on. Sticky-session
+            # drift (cookie expiry, ASG rebalance, deregistration) can route a
+            # request to a different instance than the one holding the data;
+            # rewriting ``instance_id`` on that stray request would re-point
+            # the assignment to an instance with no local data, and the
+            # cleanup worker there would then treat "no local data" as a
+            # completed cleanup and delete the assignment — orphaning the real
+            # data on the original instance (the exact leak this PR fixes).
+            # ``instance_id`` is pinned at INSERT and only changes when the
+            # assignment is removed and recreated on the next login.
             stmt = (
                 update(FreeUserAssignment)
                 .where(FreeUserAssignment.user_id == user_id)
                 .values(
                     last_activity=now,
-                    instance_id=instance_id,
                 )
             )
             result = session.execute(stmt)

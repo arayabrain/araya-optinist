@@ -886,3 +886,61 @@ class TestPremiumActivityRestoresPendingRelease:
         """rowcount == 0 → returns False (no row, or escape valve blocked)."""
         result, _ = self._execute_sync_update(rowcount=0)
         assert result is False
+
+
+class TestFreeUserActivityInstanceIdPinning:
+    """instance_id must be pinned at INSERT and NOT overwritten on UPDATE.
+
+    Rewriting instance_id on a stray cross-instance request would re-point the
+    assignment to an instance holding no local data; the cleanup worker there
+    would then treat "no local data" as done and orphan the real data (the
+    exact leak this PR fixes).
+    """
+
+    def _run_sync_update(self, rowcount):
+        from unittest.mock import MagicMock, patch
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_free_user_activity_sync,
+        )
+
+        mock_session = MagicMock()
+        exec_result = MagicMock()
+        exec_result.rowcount = rowcount
+        exec_result.scalar.return_value = 1  # open usage session already exists
+        mock_session.execute.return_value = exec_result
+
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware."
+            "is_user_logged_out",
+            return_value=False,
+        ), patch(
+            "studio.app.common.core.middleware.user_activity_middleware."
+            "_get_instance_id",
+            return_value="i-current",
+        ), patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_scope:
+            mock_scope.return_value.__enter__.return_value = mock_session
+            _update_free_user_activity_sync(TEST_USER_ID)
+
+        return mock_session
+
+    def test_update_does_not_overwrite_instance_id(self):
+        """Existing-row UPDATE sets last_activity only, never instance_id."""
+        mock_session = self._run_sync_update(rowcount=1)
+
+        update_stmt = mock_session.execute.call_args_list[0][0][0]
+        compiled = str(update_stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "last_activity" in compiled
+        assert "instance_id" not in compiled
+
+    def test_insert_still_sets_instance_id(self):
+        """New-row INSERT path still pins instance_id via session.add()."""
+        mock_session = self._run_sync_update(rowcount=0)
+
+        added = [c.args[0] for c in mock_session.add.call_args_list]
+        assignments = [a for a in added if hasattr(a, "instance_id")]
+        assert assignments, "expected a FreeUserAssignment to be added"
+        assert any(a.instance_id == "i-current" for a in assignments)
