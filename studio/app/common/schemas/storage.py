@@ -106,6 +106,36 @@ class LimitWarning(BaseModel):
         }
 
 
+class StorageAlertDetail(BaseModel):
+    """Nested alert object for GET /storage-limit-alerts/me.
+
+    Typed so undeclared keys are dropped on serialization. user_name /
+    user_email are the owner's own PII (frontend-unused; removal deferred).
+    """
+
+    alert_level: Optional[str] = None
+    storage_usage_bytes: Optional[int] = None
+    storage_quota_bytes: Optional[int] = None
+    storage_usage_percent: Optional[float] = None
+    timestamp: Optional[str] = None
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    message: Optional[str] = None
+
+
+class StorageAlertResponse(BaseModel):
+    """Response for GET /storage-limit-alerts/me. Covers both branches:
+    alert present (has_alert=True, alert set) and none (has_alert=False,
+    storage_usage_bytes / _formatted set). Served with exclude_unset so only
+    each branch's keys are emitted.
+    """
+
+    has_alert: bool
+    alert: Optional[StorageAlertDetail] = None
+    storage_usage_bytes: Optional[int] = None
+    storage_usage_formatted: Optional[str] = None
+
+
 class LimitWarningStatus(BaseModel):
     """
     Quick status check response for limit warnings.

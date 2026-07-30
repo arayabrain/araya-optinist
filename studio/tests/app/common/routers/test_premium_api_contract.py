@@ -825,6 +825,33 @@ def test_response_model_drops_identifier_fields(model_cls, payload):
     assert "user_id" not in serialized
 
 
+def test_premium_status_nested_assignment_drops_identifier_fields():
+    """The nested `assignment` model must strip identifiers the passthrough
+    Lambda body might echo, while keeping the whitelisted fields."""
+    leaked_assignment = {
+        "instance_id": "i-123456",
+        "instance_id_hash": "hash-abc",
+        "assigned_at": "2024-01-15T10:30:00Z",
+        "status": "active",
+        "is_shared": False,
+        "assignment_source": "existing",
+        "uid": "leak-uid",
+        "user_id": "leak-id",
+    }
+    serialized = PremiumStatusResponse(
+        subscription_type="premium",
+        is_premium=True,
+        assignment=leaked_assignment,
+    ).dict()
+
+    assignment = serialized["assignment"]
+    assert "uid" not in assignment
+    assert "user_id" not in assignment
+    # Whitelisted fields survive.
+    assert assignment["instance_id"] == "i-123456"
+    assert assignment["assignment_source"] == "existing"
+
+
 # ============================================================================
 # Guard Test (end-to-end): real FastAPI serialization strips identifiers
 # ============================================================================
