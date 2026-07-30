@@ -471,8 +471,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
         db_rule_arns = {
             a["alb_rule_arn"]
             for a in db_assignments
-            if a["alb_rule_arn"]
-            and a["alb_rule_arn"].startswith("arn:")
+            if a["alb_rule_arn"] and a["alb_rule_arn"].startswith("arn:")
         }
         print(f"Found {len(db_rule_arns)} keep-set assignments in database")
 
