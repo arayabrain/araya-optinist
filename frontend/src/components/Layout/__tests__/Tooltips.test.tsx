@@ -17,9 +17,12 @@ jest.mock("notistack", () => ({
 
 const mockStore = configureMockStore([])
 
-const renderWithWorkspaceId = (workspaceId: number | undefined) => {
+const renderWithTab = (
+  workspaceId: number | undefined,
+  selectedTab: number,
+) => {
   const store = mockStore({
-    workspace: { currentWorkspace: { workspaceId } },
+    workspace: { currentWorkspace: { workspaceId, selectedTab } },
   })
   return render(
     <Provider store={store}>
@@ -33,16 +36,16 @@ const openDocumentationMenu = () => {
 }
 
 describe("Tooltips documentation menu", () => {
-  it("disables 'Import sample data' before the workspace loads", () => {
-    renderWithWorkspaceId(undefined)
+  it("disables 'Import sample data' when not on the Record tab", () => {
+    renderWithTab(1, 0)
     openDocumentationMenu()
 
     const item = screen.getByText("Import sample data").closest("li")
     expect(item).toHaveAttribute("aria-disabled", "true")
   })
 
-  it("enables 'Import sample data' once the workspace is loaded", () => {
-    renderWithWorkspaceId(1)
+  it("enables 'Import sample data' on the Record tab", () => {
+    renderWithTab(1, 2)
     openDocumentationMenu()
 
     const item = screen.getByText("Import sample data").closest("li")
@@ -50,7 +53,7 @@ describe("Tooltips documentation menu", () => {
   })
 
   it("closes the menu when opening the import dialog so its backdrop stops blocking clicks", async () => {
-    renderWithWorkspaceId(1)
+    renderWithTab(1, 2)
     openDocumentationMenu()
 
     fireEvent.click(screen.getByText("Import sample data"))

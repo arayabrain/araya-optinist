@@ -17,7 +17,11 @@ import { ConfirmDialog } from "components/common/ConfirmDialog"
 import { getExperiments } from "store/slice/Experiments/ExperimentsActions"
 import { reset } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { importSampleData } from "store/slice/Workflow/WorkflowActions"
-import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
+import {
+  selectActiveTab,
+  selectCurrentWorkspaceId,
+} from "store/slice/Workspace/WorkspaceSelector"
+import { WORKSPACE_TABS } from "store/slice/Workspace/WorkspaceType"
 import { AppDispatch } from "store/store"
 
 const Tooltips: FC = () => {
@@ -39,6 +43,8 @@ const Tooltips: FC = () => {
   const dispatch: AppDispatch = useDispatch()
   const { enqueueSnackbar } = useSnackbar()
   const workspaceId = useSelector(selectCurrentWorkspaceId)
+  const activeTab = useSelector(selectActiveTab)
+  const isRecordTab = activeTab === WORKSPACE_TABS.RECORD
   const category = "tutorial"
   const workspaceReady = typeof workspaceId === "number"
 
@@ -89,7 +95,7 @@ const Tooltips: FC = () => {
           <ListItemText>Go to documentation page</ListItemText>
         </MenuItem>
         <MenuItem
-          disabled={!workspaceReady}
+          disabled={!isRecordTab}
           onClick={() => {
             handleClose()
             setDialogOpen(true)
