@@ -211,7 +211,11 @@ export const PremiumAssignmentProvider: React.FC<{
   const [autoAssignGeneration, setAutoAssignGeneration] = useState(0)
   const needsReassignAfterReleaseRef = useRef(false)
 
-  // Polling state with backoff
+  // Polling state with backoff.
+  // NOTE: pollAttempts is dual-purpose — it's the attempt counter (MAX_POLL_ATTEMPTS
+  // stop, re-trigger threshold) AND a keep-alive tick: it's in the poll effect's
+  // dependency array, so incrementing it every cycle re-runs the effect and
+  // reschedules the next poll even after pollInterval saturates (needed for shared).
   const [pollInterval, setPollInterval] = useState(INITIAL_POLL_INTERVAL_MS)
   const [pollAttempts, setPollAttempts] = useState(() => {
     const stored = ssRead(SS_POLL_ATTEMPTS)
@@ -1163,10 +1167,11 @@ export const PremiumAssignmentProvider: React.FC<{
           console.warn(
             "Still on temporary instance, will retry with backoff...",
           )
-          const isOnShared = assignment?.is_shared === true
-          if (!isOnShared) {
-            setPollAttempts((prev) => prev + 1)
-          }
+          // Increment for shared too — a changing dep re-runs the effect and
+          // reschedules the next poll once pollInterval saturates at the cap.
+          // The MAX_POLL_ATTEMPTS stop still excludes shared (!isOnShared), and
+          // the re-trigger check runs only in the null-assignment branch.
+          setPollAttempts((prev) => prev + 1)
           // Exponential backoff capped at MAX_POLL_INTERVAL_MS
           setPollInterval((prev) =>
             Math.min(prev * BACKOFF_MULTIPLIER, MAX_POLL_INTERVAL_MS),
