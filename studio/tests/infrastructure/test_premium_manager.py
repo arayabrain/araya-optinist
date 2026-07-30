@@ -5558,53 +5558,77 @@ class TestMigrationWorkflowGuard:
         mock_reserve.assert_not_called()
         mock_boto3.assert_not_called()
 
+    @staticmethod
+    def _run_blocked_migrate(premium_manager, fetchone_values):
+        """Run migrate_user_to_dedicated_instance(42, "i-new") past
+        can_migrate_user (reservation granted) with the given assignment-row
+        fetch, capturing the reserve/release/elbv2 mocks. Returns
+        (result, mock_reserve, mock_release, mock_elbv2)."""
+        mock_elbv2 = MagicMock()
+        with patch(
+            "premium_user_utils.can_migrate_user", return_value=True
+        ), patch.object(
+            premium_manager,
+            "try_reserve_instance_for_migration",
+            return_value=True,
+        ) as mock_reserve, patch.object(
+            premium_manager, "release_instance_reservation"
+        ) as mock_release, patch(
+            "boto3.client", return_value=mock_elbv2
+        ), patch(
+            "premium_manager.pymysql.connect",
+            return_value=setup_db_mock(fetchone_values=fetchone_values),
+        ):
+            result = premium_manager.migrate_user_to_dedicated_instance(42, "i-new")
+        return result, mock_reserve, mock_release, mock_elbv2
+
+    _ACTIVE_WORKFLOW_ROW = [
+        MockRow(
+            {
+                "instance_id": "i-old",
+                "target_group_arn": "arn:tg/old",
+                "alb_rule_arn": "arn:rule/old",
+                "active_workflow_count": 3,
+            }
+        )
+    ]
+
     def test_migrate_aborts_when_record_shows_active_workflow(
         self, mock_env_vars_premium
     ):
         """Defense in depth: even past can_migrate_user, a stale
         active_workflow_count > 0 on the assignment row blocks the swap before
-        any target-group mutation (no register/deregister).
-
-        This path reserves the target instance first, then aborts WITHOUT
-        releasing the reservation — a real leak (migrate has no release on any
-        abort). The assertion below locks that current behavior; flip it to
-        assert_called_once when the release is added on the abort paths."""
+        any target-group mutation (no register/deregister). The reserve is a
+        transient SELECT..FOR UPDATE lock that writes no persistent row, so the
+        abort has nothing to release (no release_instance_reservation call)."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
-            mock_elbv2 = MagicMock()
-            with patch(
-                "premium_user_utils.can_migrate_user", return_value=True
-            ), patch.object(
-                premium_manager,
-                "try_reserve_instance_for_migration",
-                return_value=True,
-            ), patch.object(
-                premium_manager, "release_instance_reservation"
-            ) as mock_release, patch(
-                "boto3.client", return_value=mock_elbv2
-            ), patch(
-                "premium_manager.pymysql.connect",
-                return_value=setup_db_mock(
-                    fetchone_values=[
-                        MockRow(
-                            {
-                                "instance_id": "i-old",
-                                "target_group_arn": "arn:tg/old",
-                                "alb_rule_arn": "arn:rule/old",
-                                "active_workflow_count": 3,
-                            }
-                        )
-                    ]
-                ),
-            ):
-                result = premium_manager.migrate_user_to_dedicated_instance(42, "i-new")
+            result, mock_reserve, mock_release, mock_elbv2 = self._run_blocked_migrate(
+                premium_manager, self._ACTIVE_WORKFLOW_ROW
+            )
 
         assert result is False
         mock_elbv2.register_targets.assert_not_called()
         mock_elbv2.deregister_targets.assert_not_called()
-        # Known leak: the reservation from try_reserve_instance_for_migration is
-        # not released on this abort.
+        mock_reserve.assert_called_once()
+        mock_release.assert_not_called()
+
+    def test_migrate_aborts_when_no_assignment_record(self, mock_env_vars_premium):
+        """No assignment row past the reserve also aborts before any
+        target-group mutation. Same transient-lock reserve, so nothing to
+        release on abort."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            result, mock_reserve, mock_release, mock_elbv2 = self._run_blocked_migrate(
+                premium_manager, [None]
+            )
+
+        assert result is False
+        mock_elbv2.register_targets.assert_not_called()
+        mock_elbv2.deregister_targets.assert_not_called()
+        mock_reserve.assert_called_once()
         mock_release.assert_not_called()
 
 

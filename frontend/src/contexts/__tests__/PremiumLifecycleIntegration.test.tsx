@@ -359,8 +359,15 @@ describe("PremiumAssignmentProvider — full routing lifecycle", () => {
 
     // The inactivity release has fired; stop the poll from resurrecting the
     // shared assignment so the terminal state is deterministic (a live shared
-    // status would re-populate on the next poll and re-arm inactivity).
+    // status would re-populate on the next poll and re-arm inactivity). Also
+    // neutralize assign so a stray re-assign cannot resurrect it regardless of
+    // the mock default.
     mockPremiumApi.getPremiumStatus.mockResolvedValue(noAssignmentStatus)
+    mockPremiumApi.assignPremiumInstance.mockResolvedValue({
+      message: "not assigned",
+      instance_id: "",
+      assigned: false,
+    })
     await act(async () => {
       jest.advanceTimersByTime(60_000)
       await Promise.resolve()
