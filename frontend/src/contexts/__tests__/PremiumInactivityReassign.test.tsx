@@ -169,7 +169,6 @@ const dedicatedAssignment: PremiumAssignmentResult = {
 }
 
 const dedicatedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -323,7 +322,6 @@ describe("PremiumAssignmentProvider — inactivity re-assignment", () => {
     // This test guards against the PR #603 regression: DOM listeners must
     // NOT bump autoAssignGeneration during initial mount.
     mockGetPremiumStatus.mockResolvedValue({
-      user_id: 1,
       subscription_type: UserTier.PREMIUM,
       is_premium: true,
       assignment: null,

@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Query
 from pydantic import BaseModel, EmailStr, Field
@@ -135,3 +135,12 @@ class UserInfo(BaseModel):
 
 class UserCreateResponse(BaseModel):
     user: User
+
+
+class CloudDetailsResponse(BaseModel):
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    user_context: Optional[dict] = None
+    subscription_details: Optional[dict] = None
+    storage_usage: Optional[Any] = None
+    error: Optional[str] = None

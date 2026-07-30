@@ -209,7 +209,6 @@ const dedicatedAssignment: PremiumAssignmentResult = {
 
 /** Status endpoint returning null assignment (no assignment exists). */
 const nullAssignmentStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: null,
@@ -217,7 +216,6 @@ const nullAssignmentStatus: PremiumStatusResult = {
 
 /** Status endpoint returning a dedicated assignment. */
 const dedicatedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -578,7 +576,6 @@ describe("PremiumAssignmentProvider — re-trigger assign during polling", () =>
 
     // Set up mocks for recovery: status returns a new dedicated instance.
     const newDedicatedStatus: PremiumStatusResult = {
-      user_id: 1,
       subscription_type: UserTier.PREMIUM,
       is_premium: true,
       assignment: {
