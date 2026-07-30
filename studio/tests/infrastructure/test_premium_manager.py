@@ -1559,10 +1559,16 @@ class TestConcurrentAssignLock:
     def _assign_once(self, premium_manager, fake_elbv2, ec2, *, existing_return):
         """Run one assign_premium_user for user 77 against a shared stateful
         fake ELBv2. existing_return is what get_existing_user_assignment yields
-        for this call: the per-user lock's whole job is to make the second
-        concurrent call observe the first call's stored assignment, so varying
-        this value models 'lock present' (sees it) vs 'lock removed' (stale
-        None) without editing production code."""
+        for this call.
+
+        NOTE: the lock is always granted here (both variants). These two tests
+        do NOT exercise serialization — that is covered by test_lock_* above
+        (lock timeout -> 409/200, lock name includes user_id, impl runs under
+        the lock). What they isolate is the DOWNSTREAM behavior the lock's
+        happens-before guarantees: whether the existing-assignment read observes
+        a prior assignment (existing_return) decides orphan-cleanup vs
+        short-circuit. This documents the corruption mechanism (issue #630,
+        6204); it is not itself proof the lock serializes."""
         from contextlib import ExitStack
 
         def boto3_client(service):
@@ -1611,13 +1617,12 @@ class TestConcurrentAssignLock:
                 77, {"tier": "premium"}, "uid_77"
             )
 
-    def test_concurrent_assign_without_serialization_orphans_target_group(
-        self, mock_env_vars_premium
-    ):
-        """Guard-removed variant (AC #2): when the second concurrent assign does
-        not observe the first call's stored assignment (the stale read the
-        per-user lock prevents), its orphan-cleanup deletes the first call's
-        live target group, corrupting routing (issue #630, 6204)."""
+    def test_stale_existing_read_orphans_target_group(self, mock_env_vars_premium):
+        """Corruption mechanism (issue #630, 6204): when a second assign does not
+        observe the first's stored assignment (the stale read the per-user lock
+        prevents), its orphan-cleanup deletes the first's live target group,
+        corrupting routing. This is what the lock exists to prevent; the lock
+        itself is asserted by test_lock_* above, not here."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
@@ -1634,13 +1639,15 @@ class TestConcurrentAssignLock:
         assert first_tg in fake.deleted
         assert first_tg not in fake.live
 
-    def test_concurrent_assign_serialized_keeps_single_target_group(
+    def test_existing_assignment_read_short_circuits_single_target_group(
         self, mock_env_vars_premium
     ):
-        """Guarded variant (AC #2): with serialization the second assign
-        observes the first call's assignment and short-circuits to 'existing',
-        creating and deleting nothing, so exactly one target group survives
-        (issue #630, 6204)."""
+        """Post-serialization outcome (issue #630, 6204): once the second assign
+        observes the first's stored assignment (what the lock's happens-before
+        guarantees), it short-circuits to 'existing', creating and deleting
+        nothing, so exactly one target group survives. The serialization that
+        produces this read ordering is asserted by test_lock_* above, not
+        here."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
@@ -5556,7 +5563,12 @@ class TestMigrationWorkflowGuard:
     ):
         """Defense in depth: even past can_migrate_user, a stale
         active_workflow_count > 0 on the assignment row blocks the swap before
-        any target-group mutation."""
+        any target-group mutation (no register/deregister).
+
+        This path reserves the target instance first, then aborts WITHOUT
+        releasing the reservation — a real leak (migrate has no release on any
+        abort). The assertion below locks that current behavior; flip it to
+        assert_called_once when the release is added on the abort paths."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
@@ -5567,7 +5579,9 @@ class TestMigrationWorkflowGuard:
                 premium_manager,
                 "try_reserve_instance_for_migration",
                 return_value=True,
-            ), patch(
+            ), patch.object(
+                premium_manager, "release_instance_reservation"
+            ) as mock_release, patch(
                 "boto3.client", return_value=mock_elbv2
             ), patch(
                 "premium_manager.pymysql.connect",
@@ -5589,6 +5603,9 @@ class TestMigrationWorkflowGuard:
         assert result is False
         mock_elbv2.register_targets.assert_not_called()
         mock_elbv2.deregister_targets.assert_not_called()
+        # Known leak: the reservation from try_reserve_instance_for_migration is
+        # not released on this abort.
+        mock_release.assert_not_called()
 
 
 class TestInlineMigrationOnAdoption:
@@ -5703,5 +5720,7 @@ class TestIdleUserSelectorExcludesActiveWorkflows:
         sql = cursor.execute.call_args[0][0]
         params = cursor.execute.call_args[0][1]
         normalized = " ".join(sql.split())
+        assert "instance_id = %s" in normalized
         assert "active_workflow_count = 0" in normalized
+        assert "status = 'active'" in normalized
         assert params == ("i-target",)

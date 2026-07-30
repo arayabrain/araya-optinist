@@ -12,11 +12,18 @@
  *  2. The (premiumAssigned=true, token=null) deadlock is never observed.
  *  3. A shared assignment carries premium_shared for its whole life and drops
  *     it on release.
- *  4. The explicit release() action tears routing down as fully as the
- *     logout/cross-tab paths — no stale token/instance/shared left behind.
+ *  4. The explicit release() action tears routing down as fully as the logout
+ *     path — no stale token/instance/shared left behind. (release() is an
+ *     unused public context method today; this locks its teardown contract.)
+ *  5. A cross-tab PREMIUM_RELEASED broadcast received by this tab tears routing
+ *     down the same way.
  *
- * Cross-tab release is simulated (same-document localStorage writes emit no
- * storage event) and lives in PremiumInactivityReassign.
+ * Cross-tab receive is simulated by invoking the registered handler directly
+ * (same-document localStorage writes emit no storage event), matching how the
+ * per-concern suites do it. This test drives only the mocked API boundary; the
+ * axios-path invariants (premiumShared teardown gate, staleness watermark,
+ * warm-up grace suppression) are exercised by axiosPremiumInterceptor,
+ * PremiumUnreachableIntegration and useInstanceUnreachableMachineLeader.
  */
 
 import React from "react"
@@ -350,6 +357,16 @@ describe("PremiumAssignmentProvider — full routing lifecycle", () => {
     await flushPromises()
     expect(mockPremiumApi.getPremiumStatus.mock.calls.length).toBeGreaterThan(1)
 
+    // The inactivity release has fired; stop the poll from resurrecting the
+    // shared assignment so the terminal state is deterministic (a live shared
+    // status would re-populate on the next poll and re-arm inactivity).
+    mockPremiumApi.getPremiumStatus.mockResolvedValue(noAssignmentStatus)
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+    await flushPromises()
+
     await waitFor(() => {
       expect(ctxRef.current?.assignmentResult).toBeNull()
     })
@@ -379,6 +396,35 @@ describe("PremiumAssignmentProvider — full routing lifecycle", () => {
 
     // resetForRelease clears token + instance + shared, not just the assigned
     // flag — the same teardown the beacon/cross-tab paths perform.
+    expectRoutingTornDown()
+  })
+
+  test("a cross-tab PREMIUM_RELEASED broadcast tears this tab's routing down", async () => {
+    mockPremiumApi.getPremiumStatus.mockResolvedValue(noAssignmentStatus)
+    mockPremiumApi.assignPremiumInstance.mockResolvedValue(assignedA)
+
+    const ctxRef: { current: Ctx | null } = { current: null }
+    render(tree(ctxRef))
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+    routingService.updateRoutingToken("routing-A")
+    expect(routingService.isPremiumAssigned()).toBe(true)
+    expect(routingService.getRoutingToken()).toBe("routing-A")
+
+    // Simulate another tab's broadcast by invoking the handler this tab
+    // registered (same-document localStorage writes emit no storage event).
+    const handlers = mockTabSyncHandlers.get("PREMIUM_RELEASED")
+    expect(handlers && handlers.size).toBeGreaterThan(0)
+    await act(async () => {
+      handlers!.forEach((h) =>
+        h({ type: "PREMIUM_RELEASED" } as TabSyncMessage),
+      )
+      await Promise.resolve()
+    })
+
+    expect(ctxRef.current?.assignmentResult).toBeNull()
     expectRoutingTornDown()
   })
 })

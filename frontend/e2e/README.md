@@ -349,7 +349,19 @@ grid).
 | BT-615 | Instance release on browser close | LC-15 partial (proves the release-beacon plumbing; the beforeunload trigger stays manual) |
 | BT-612 | Stay Active button | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual) |
 | BT-601/602 | assignment snackbars | STO-02 (mocked assignment — asserts the success snackbar renders; the real AWS-backed flow stays a manual deployed-env check) |
+| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle | LC-17 (fake-clock companion to the `PremiumLifecycleIntegration` jest L2 test; real AWS state stays manual) |
 | BT-603, 606..610, 614 | instance assignment, concurrency, release (AWS state) | manual |
+
+Note: the `BT-6xx` rows above are the release
+sheet, a separate scheme from the System test sheet. The System sheet's
+`600-x` cases correspond to the CSV `62xx` cases (`600-4` <-> `6204`
+concurrency); `BT-6xx` does NOT line up by trailing digits (`BT-604` is
+"Premium profile display", not the `6204` concurrency race). The L1
+decision-logic coverage for the `62xx` cases lives in
+`studio/tests/infrastructure/test_premium_manager.py` (`TestAssignCascadeTiers`
+for the assign tiers, `TestConcurrentAssignLock` for `6204`,
+`TestMigrationWorkflowGuard` for `6217`) and, on the frontend, in
+`frontend/src/contexts/__tests__/PremiumLifecycleIntegration.test.tsx`.
 
 #### 07 Dataview
 
