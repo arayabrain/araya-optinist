@@ -20,6 +20,39 @@ def _always_acquired_lock():
     return mock
 
 
+class _StatefulFakeElbv2:
+    """Fake ELBv2 that tracks target-group create/describe/delete so the
+    concurrent-assign orphaned-TG corruption is observable (issue #630)."""
+
+    def __init__(self):
+        self._seq = 0
+        self.live = {}  # arn -> name
+        self.created = []  # arns, in creation order
+        self.deleted = []  # arns passed to delete_target_group
+
+    def create_target_group(self, Name, **kwargs):
+        self._seq += 1
+        arn = f"arn:tg/{Name}/{self._seq}"
+        self.live[arn] = Name
+        self.created.append(arn)
+        return {"TargetGroups": [{"TargetGroupArn": arn}]}
+
+    def describe_target_groups(self, Names=None, **kwargs):
+        if Names:
+            arns = [a for a, n in self.live.items() if n in Names]
+        else:
+            arns = list(self.live)
+        return {"TargetGroups": [{"TargetGroupArn": a} for a in arns]}
+
+    def delete_target_group(self, TargetGroupArn=None, **kwargs):
+        self.deleted.append(TargetGroupArn)
+        self.live.pop(TargetGroupArn, None)
+        return {}
+
+    def register_targets(self, **kwargs):
+        return {}
+
+
 class TestPremiumManagerEvents:
     """Handler-level tests with realistic API Gateway events."""
 
@@ -1416,6 +1449,119 @@ class TestConcurrentAssignLock:
             body = json.loads(result["body"])
             assert body["instance_id"] == "i-new"
             mock_impl.assert_called_once()
+
+    def _assign_once(self, premium_manager, fake_elbv2, ec2, *, existing_return):
+        """Run one assign_premium_user for user 77 against a shared stateful
+        fake ELBv2. existing_return is what get_existing_user_assignment yields
+        for this call: the per-user lock's whole job is to make the second
+        concurrent call observe the first call's stored assignment, so varying
+        this value models 'lock present' (sees it) vs 'lock removed' (stale
+        None) without editing production code."""
+        from contextlib import ExitStack
+
+        def boto3_client(service):
+            if service == "elbv2":
+                return fake_elbv2
+            if service == "ec2":
+                return ec2
+            return MagicMock()
+
+        with ExitStack() as stack:
+
+            def stub(name, **kwargs):
+                stack.enter_context(patch.object(premium_manager, name, **kwargs))
+
+            stub("restore_pending_release", return_value=None)
+            stub("get_existing_user_assignment", return_value=existing_return)
+            stub("register_orphaned_stopped_instances")
+            stub(
+                "get_all_premium_instances_with_states",
+                return_value=[{"instance_id": "i-run", "state": InstanceState.RUNNING}],
+            )
+            stub("count_active_premium_users", return_value=0)
+            stub("get_available_standby_instances", return_value=[])
+            stub("check_instance_readiness_with_retry", return_value=True)
+            stub("get_assigned_users_for_instance", return_value=[])
+            stub("try_reserve_instance", return_value=True)
+            stub("target_group_exists", return_value=True)
+            stub("_enable_sticky_sessions")
+            stub("_ensure_premium_tg_unhealthy_alarm")
+            stub("_delete_premium_tg_unhealthy_alarm")
+            stub("cleanup_duplicate_rules_for_routing_id", return_value=0)
+            stub("create_alb_rule", return_value={"Rules": [{"RuleArn": "arn:rule"}]})
+            stub("store_user_assignment")
+            stub("update_user_activity", return_value=True)
+            stub("invoke_migration_async")
+            stub("scale_premium_instances_if_needed", return_value=False)
+            stack.enter_context(
+                patch("premium_manager.pymysql.connect", return_value=setup_db_mock())
+            )
+            stack.enter_context(
+                patch("premium_manager.distributed_lock", new=_always_acquired_lock())
+            )
+            stack.enter_context(patch("boto3.client", side_effect=boto3_client))
+
+            return premium_manager.assign_premium_user(
+                77, {"tier": "premium"}, "uid_77"
+            )
+
+    def test_concurrent_assign_without_serialization_orphans_target_group(
+        self, mock_env_vars_premium
+    ):
+        """Guard-removed variant (AC #2): when the second concurrent assign does
+        not observe the first call's stored assignment (the stale read the
+        per-user lock prevents), its orphan-cleanup deletes the first call's
+        live target group, corrupting routing (issue #630, 6204)."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            fake = _StatefulFakeElbv2()
+            ec2 = MagicMock()
+
+            r1 = self._assign_once(premium_manager, fake, ec2, existing_return=None)
+            r2 = self._assign_once(premium_manager, fake, ec2, existing_return=None)
+
+        assert r1["statusCode"] == 200, r1["body"]
+        assert r2["statusCode"] == 200, r2["body"]
+        first_tg = fake.created[0]
+        assert len(fake.created) == 2
+        assert first_tg in fake.deleted
+        assert first_tg not in fake.live
+
+    def test_concurrent_assign_serialized_keeps_single_target_group(
+        self, mock_env_vars_premium
+    ):
+        """Guarded variant (AC #2): with serialization the second assign
+        observes the first call's assignment and short-circuits to 'existing',
+        creating and deleting nothing, so exactly one target group survives
+        (issue #630, 6204)."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            fake = _StatefulFakeElbv2()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {"Instances": [{"State": {"Name": InstanceState.RUNNING}}]}
+                ]
+            }
+
+            r1 = self._assign_once(premium_manager, fake, ec2, existing_return=None)
+            first_tg = fake.created[0]
+            stored = {
+                "instance_id": "i-run",
+                "target_group_arn": first_tg,
+                "alb_rule_arn": "arn:rule",
+                "is_shared": 0,
+            }
+            r2 = self._assign_once(premium_manager, fake, ec2, existing_return=stored)
+
+        assert r1["statusCode"] == 200, r1["body"]
+        assert r2["statusCode"] == 200, r2["body"]
+        assert json.loads(r2["body"])["assignment_source"] == "existing"
+        assert fake.deleted == []
+        assert list(fake.live) == [first_tg]
+        assert len(fake.created) == 1
 
 
 class TestDictCursorFix:
@@ -5038,3 +5184,390 @@ class TestPremiumTgUnhealthyAlarm:
                 AlarmNames=[self.EXPECTED_NAME]
             )
             assert "[premium-alarm] action=delete" in capsys.readouterr().out
+
+
+class TestAssignCascadeTiers:
+    """Every reachable branch of the assign cascade emits the correct
+    (assignment_source, is_shared) tuple, so each premium tier is exercised at
+    least once (issue #731, WS3 tier coverage).
+
+    _assign_premium_user_impl has five cascade branches:
+        dedicated / False, shared / True, standby / False,
+        autoscaling_temp / True, aws_fallback / False.
+    Only the first four are reachable; see
+    test_aws_fallback_is_shadowed_by_autoscaling for why aws_fallback is dead.
+    """
+
+    @staticmethod
+    def _run_assign(
+        premium_manager,
+        *,
+        all_instances,
+        standby,
+        assigned_users=None,
+        reserve=True,
+        active_users=0,
+    ):
+        """Force one cascade branch via pool-state stubs, run the real assign
+        path, and return the parsed 200 response body."""
+        from contextlib import ExitStack
+
+        assigned_users = [] if assigned_users is None else assigned_users
+
+        mock_elbv2 = MagicMock()
+        mock_elbv2.describe_target_groups.return_value = {"TargetGroups": []}
+        mock_elbv2.create_target_group.return_value = {
+            "TargetGroups": [{"TargetGroupArn": "arn:aws:tg/cascade"}]
+        }
+
+        def boto3_client(service):
+            return mock_elbv2 if service == "elbv2" else MagicMock()
+
+        with ExitStack() as stack:
+
+            def stub(name, **kwargs):
+                stack.enter_context(patch.object(premium_manager, name, **kwargs))
+
+            stub("restore_pending_release", return_value=None)
+            stub("get_existing_user_assignment", return_value=None)
+            stub("register_orphaned_stopped_instances")
+            stub("get_all_premium_instances_with_states", return_value=all_instances)
+            stub("count_active_premium_users", return_value=active_users)
+            stub("get_available_standby_instances", return_value=standby)
+            stub("check_instance_readiness_with_retry", return_value=True)
+            stub("get_assigned_users_for_instance", return_value=assigned_users)
+            stub("try_reserve_instance", return_value=reserve)
+            stub("start_standby_instance", return_value=True)
+            stub("invoke_standby_replenishment_async")
+            stub("scale_premium_instances_if_needed", return_value=False)
+            stub("invoke_migration_async")
+            stub("_enable_sticky_sessions")
+            stub("_ensure_premium_tg_unhealthy_alarm")
+            stub("cleanup_duplicate_rules_for_routing_id", return_value=0)
+            stub("create_alb_rule", return_value={"Rules": [{"RuleArn": "arn:rule"}]})
+            stub("store_user_assignment")
+            stub("update_user_activity", return_value=True)
+            stack.enter_context(
+                patch("premium_manager.pymysql.connect", return_value=setup_db_mock())
+            )
+            stack.enter_context(
+                patch("premium_manager.distributed_lock", new=_always_acquired_lock())
+            )
+            stack.enter_context(patch("boto3.client", side_effect=boto3_client))
+
+            result = premium_manager.assign_premium_user(
+                12345, {"tier": "premium"}, "firebase_uid_cascade"
+            )
+
+        assert result["statusCode"] == 200, result["body"]
+        return json.loads(result["body"])
+
+    def test_tier1_dedicated(self, mock_env_vars_premium):
+        """Idle running instance with 0 users -> dedicated, is_shared False."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            body = self._run_assign(
+                premium_manager,
+                all_instances=[
+                    {"instance_id": "i-ded", "state": InstanceState.RUNNING}
+                ],
+                standby=[],
+                assigned_users=[],
+                reserve=True,
+            )
+        assert body["assignment_source"] == "dedicated"
+        assert body["is_shared"] is False
+
+    def test_tier2_shared(self, mock_env_vars_premium):
+        """All running instances occupied -> shared on least-loaded, is_shared True."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            body = self._run_assign(
+                premium_manager,
+                all_instances=[
+                    {"instance_id": "i-run", "state": InstanceState.RUNNING}
+                ],
+                standby=[],
+                assigned_users=[{"user_id": 999}],
+                active_users=1,
+            )
+        assert body["assignment_source"] == "shared"
+        assert body["is_shared"] is True
+
+    def test_tier3_standby(self, mock_env_vars_premium):
+        """No running instances, standby available -> standby, is_shared False."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            body = self._run_assign(
+                premium_manager,
+                all_instances=[],
+                standby=[{"instance_id": "i-standby1"}],
+            )
+        assert body["assignment_source"] == "standby"
+        assert body["is_shared"] is False
+
+    def test_tier3_5_autoscaling_pool(self, mock_env_vars_premium):
+        """No premium capacity at all -> autoscaling_temp sentinel, is_shared True."""
+        env = {
+            **mock_env_vars_premium,
+            "AUTOSCALING_TARGET_GROUP_ARN": "arn:aws:tg/autoscaling",
+        }
+        with patch.dict("os.environ", env):
+            import premium_manager
+
+            body = self._run_assign(premium_manager, all_instances=[], standby=[])
+        assert body["assignment_source"] == "autoscaling_temp"
+        assert body["is_shared"] is True
+        assert body["instance_id"] == premium_manager.PremiumAssignment.AUTOSCALING_POOL
+
+    def test_aws_fallback_is_shadowed_by_autoscaling(self, mock_env_vars_premium):
+        """PRIORITY 4 (aws_fallback) is unreachable. With only a stopped AWS
+        instance and no running/standby capacity, PRIORITY 3.5
+        (autoscaling_temp) always catches first: no_premium_available is
+        necessarily true whenever instance_to_use is still None (a truthy
+        available_dedicated would already have been assigned at PRIORITY 1).
+        Documents the dead branch instead of pretending to cover it.
+        """
+        env = {
+            **mock_env_vars_premium,
+            "AUTOSCALING_TARGET_GROUP_ARN": "arn:aws:tg/autoscaling",
+        }
+        with patch.dict("os.environ", env):
+            import premium_manager
+
+            body = self._run_assign(
+                premium_manager,
+                all_instances=[
+                    {"instance_id": "i-stopped", "state": InstanceState.STOPPED}
+                ],
+                standby=[],
+            )
+        assert body["assignment_source"] == "autoscaling_temp"
+        assert body["assignment_source"] != "aws_fallback"
+
+
+class TestMigrationWorkflowGuard:
+    """can_migrate_user blocks migration while a workflow is active (issue #731,
+    6217). The active_workflow_count guard returns False for count > 0 and for a
+    missing row, and True only when no workflow is running."""
+
+    @staticmethod
+    def _can_migrate(premium_user_utils, row):
+        """Run can_migrate_user against a single stubbed fetchone row."""
+        cursor = MagicMock()
+        cursor.fetchone.return_value = row
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        conn.cursor.return_value.__exit__.return_value = False
+        db_cm = MagicMock()
+        db_cm.__enter__.return_value = conn
+        db_cm.__exit__.return_value = False
+        with patch.object(premium_user_utils, "get_db_connection", return_value=db_cm):
+            return premium_user_utils.can_migrate_user(42)
+
+    def test_blocks_while_workflow_active(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_user_utils
+
+            row = MockRow({"active_workflow_count": 2, "instance_id": "i-x"})
+            assert self._can_migrate(premium_user_utils, row) is False
+
+    def test_permits_when_no_active_workflow(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_user_utils
+
+            row = MockRow({"active_workflow_count": 0, "instance_id": "i-x"})
+            assert self._can_migrate(premium_user_utils, row) is True
+
+    def test_permits_when_count_null(self, mock_env_vars_premium):
+        """NULL active_workflow_count coalesces to 0 -> migration permitted."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_user_utils
+
+            row = MockRow({"active_workflow_count": None, "instance_id": "i-x"})
+            assert self._can_migrate(premium_user_utils, row) is True
+
+    def test_blocks_when_user_not_found(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_user_utils
+
+            assert self._can_migrate(premium_user_utils, None) is False
+
+    def test_migrate_aborts_before_side_effects_when_workflow_active(
+        self, mock_env_vars_premium
+    ):
+        """The real migrate path honours the guard: can_migrate_user False
+        returns without reserving the target or touching ELB."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch(
+                "premium_user_utils.can_migrate_user", return_value=False
+            ), patch.object(
+                premium_manager, "try_reserve_instance_for_migration"
+            ) as mock_reserve, patch(
+                "boto3.client"
+            ) as mock_boto3:
+                result = premium_manager.migrate_user_to_dedicated_instance(42, "i-new")
+
+        assert result is False
+        mock_reserve.assert_not_called()
+        mock_boto3.assert_not_called()
+
+    def test_migrate_aborts_when_record_shows_active_workflow(
+        self, mock_env_vars_premium
+    ):
+        """Defense in depth: even past can_migrate_user, a stale
+        active_workflow_count > 0 on the assignment row blocks the swap before
+        any target-group mutation."""
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            mock_elbv2 = MagicMock()
+            with patch(
+                "premium_user_utils.can_migrate_user", return_value=True
+            ), patch.object(
+                premium_manager,
+                "try_reserve_instance_for_migration",
+                return_value=True,
+            ), patch(
+                "boto3.client", return_value=mock_elbv2
+            ), patch(
+                "premium_manager.pymysql.connect",
+                return_value=setup_db_mock(
+                    fetchone_values=[
+                        MockRow(
+                            {
+                                "instance_id": "i-old",
+                                "target_group_arn": "arn:tg/old",
+                                "alb_rule_arn": "arn:rule/old",
+                                "active_workflow_count": 3,
+                            }
+                        )
+                    ]
+                ),
+            ):
+                result = premium_manager.migrate_user_to_dedicated_instance(42, "i-new")
+
+        assert result is False
+        mock_elbv2.register_targets.assert_not_called()
+        mock_elbv2.deregister_targets.assert_not_called()
+
+
+class TestInlineMigrationOnAdoption:
+    """A user holding a shared / autoscaling-pool assignment is migrated to a
+    ready idle dedicated instance inline, in a single assign invocation, and
+    does not fall through to the async migration path (issue #731, 6233).
+
+    An autoscaling-pool existing assignment skips the EC2-state precheck (guarded
+    by instance_id != AUTOSCALING_POOL) and enters the inline-migration block
+    directly, so this drives the real adoption path end to end.
+    """
+
+    def test_inline_migration_returns_dedicated_without_async_fallback(
+        self, mock_env_vars_premium
+    ):
+        from aws_constants import PremiumAssignment
+
+        pool_row = MockRow(
+            {
+                "instance_id": PremiumAssignment.AUTOSCALING_POOL,
+                "is_shared": True,
+                "target_group_arn": "arn:tg/shared",
+                "alb_rule_arn": "arn:rule/shared",
+            }
+        )
+        migrated_row = MockRow(
+            {
+                "instance_id": "i-dedicated",
+                "is_shared": False,
+                "target_group_arn": "arn:tg/premium-77-tg",
+                "alb_rule_arn": "arn:rule/premium-77",
+            }
+        )
+        ready_dedicated = [
+            {"instance_id": "i-dedicated", "state": InstanceState.RUNNING}
+        ]
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "restore_pending_release", return_value=None
+            ), patch.object(
+                premium_manager,
+                "get_existing_user_assignment",
+                side_effect=[pool_row, migrated_row],
+            ), patch.object(
+                premium_manager,
+                "get_all_premium_instances_with_states",
+                return_value=ready_dedicated,
+            ), patch.object(
+                premium_manager, "get_assigned_users_for_instance", return_value=[]
+            ), patch.object(
+                premium_manager,
+                "check_instance_readiness_with_retry",
+                return_value=True,
+            ), patch.object(
+                premium_manager,
+                "migrate_user_to_dedicated_instance",
+                return_value=True,
+            ) as mock_migrate, patch.object(
+                premium_manager, "invoke_migration_async"
+            ) as mock_async, patch(
+                "premium_manager.pymysql.connect", return_value=setup_db_mock()
+            ), patch(
+                "premium_manager.distributed_lock", new=_always_acquired_lock()
+            ), patch(
+                "boto3.client", return_value=MagicMock()
+            ):
+                result = premium_manager.assign_premium_user(
+                    77, {"tier": "premium"}, "firebase_uid_inline"
+                )
+
+        assert result["statusCode"] == 200, result["body"]
+        body = json.loads(result["body"])
+        assert body["assignment_source"] == "inline_migration"
+        assert body["is_shared"] is False
+        assert body["instance_id"] == "i-dedicated"
+        mock_migrate.assert_called_once_with(77, "i-dedicated")
+        mock_async.assert_not_called()
+
+
+class TestIdleUserSelectorExcludesActiveWorkflows:
+    """get_idle_premium_users_for_instance selects only workflow-free users
+    (issue #731, 6217 "migrate query excludes count > 0"). The exclusion lives
+    purely in SQL, so assert the query filters active_workflow_count = 0 rather
+    than a Python-side filter that does not exist."""
+
+    def test_query_filters_on_zero_active_workflows(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium):
+            import premium_user_utils
+
+            cursor = MagicMock()
+            cursor.fetchall.return_value = [
+                MockRow({"user_id": 11}),
+                MockRow({"user_id": 22}),
+            ]
+            conn = MagicMock()
+            conn.cursor.return_value.__enter__.return_value = cursor
+            conn.cursor.return_value.__exit__.return_value = False
+            db_cm = MagicMock()
+            db_cm.__enter__.return_value = conn
+            db_cm.__exit__.return_value = False
+
+            with patch.object(
+                premium_user_utils, "get_db_connection", return_value=db_cm
+            ):
+                result = premium_user_utils.get_idle_premium_users_for_instance(
+                    "i-target"
+                )
+
+        assert result == [11, 22]
+        sql = cursor.execute.call_args[0][0]
+        params = cursor.execute.call_args[0][1]
+        normalized = " ".join(sql.split())
+        assert "active_workflow_count = 0" in normalized
+        assert params == ("i-target",)

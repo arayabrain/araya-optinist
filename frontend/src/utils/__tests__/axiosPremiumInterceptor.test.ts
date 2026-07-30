@@ -844,4 +844,43 @@ describe("axios premium-routing interceptors", () => {
 
     expect(mockUpdateRoutingToken).not.toHaveBeenCalled()
   })
+
+  it("omits premium routing headers on the ui-event POST when unreachable (6238)", async () => {
+    // When the premium instance is unreachable, routing is torn down and
+    // getRoutingHeaders() returns {}. logPremiumUiEvent must then reach the
+    // backend via free tier, i.e. carry no X-Routing-ID / X-User-Tier, so the
+    // telemetry is not routed to the dead premium instance.
+    mockGetRoutingHeaders.mockReturnValue({})
+    responses.set("/users/me/premium/ui-event", { status: 200, data: {} })
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { logPremiumUiEvent } = require("api/premium/PremiumAssignmentApi")
+    await logPremiumUiEvent("instance_unreachable", { reason: "probe_failed" })
+
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].url).toBe("/users/me/premium/ui-event")
+    const reqHeaders = recorded[0].headers as Record<string, unknown>
+    expect(reqHeaders["X-Routing-ID"]).toBeUndefined()
+    expect(reqHeaders["X-User-Tier"]).toBeUndefined()
+  })
+
+  it("keeps premium routing headers on the ui-event POST when reachable (6238)", async () => {
+    // The omission is driven purely by routing state, not by hardcoding the
+    // ui-event endpoint: while premium is reachable the telemetry must still
+    // carry the headers so it lands on the user's premium instance.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    responses.set("/users/me/premium/ui-event", { status: 200, data: {} })
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { logPremiumUiEvent } = require("api/premium/PremiumAssignmentApi")
+    await logPremiumUiEvent("instance_reachable", {})
+
+    expect(recorded).toHaveLength(1)
+    const reqHeaders = recorded[0].headers as Record<string, unknown>
+    expect(reqHeaders["X-Routing-ID"]).toBe("rid-outgoing")
+    expect(reqHeaders["X-User-Tier"]).toBe("premium")
+  })
 })
