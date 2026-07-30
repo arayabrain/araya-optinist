@@ -13,6 +13,8 @@
  *  2. A delayed shared→dedicated upgrade is still finalized and clears
  *     premium_shared.
  *  3. The dedicated MAX_POLL_ATTEMPTS stop is unchanged.
+ *  4. A shared-origin user whose /status goes null keeps polling and never
+ *     stops (the MAX_POLL_ATTEMPTS stop stays excluded for shared).
  */
 
 import React from "react"
@@ -333,12 +335,12 @@ describe("PremiumAssignmentProvider — shared polling does not stall at the cap
 
   test("shared-origin user whose /status goes null keeps polling and never stops", async () => {
     // The MAX_POLL_ATTEMPTS stop is gated on the STORED assignment
-    // (state.assignmentResult?.is_shared, :990). The null-status branch (:1084)
-    // preserves assignmentResult, so a shared-origin user stays shared even
-    // after /status returns null — isOnShared stays true and the stop never
-    // fires, no matter how high the (now-incrementing) counter climbs. Guards
-    // against a future change that clears assignmentResult on null and thereby
-    // re-enables the stop for these users.
+    // (state.assignmentResult?.is_shared). The null-status branch only updates
+    // statusResult and preserves assignmentResult, so a shared-origin user
+    // stays shared even after /status returns null — isOnShared stays true and
+    // the stop never fires, no matter how high the (now-incrementing) counter
+    // climbs. Guards against a future change that clears assignmentResult on
+    // null and thereby re-enables the stop for these users.
     mockGetPremiumStatus.mockResolvedValue(sharedStatus)
     // Re-trigger assign (fires in the null branch) stays retryable — never
     // finalizes a dedicated instance, so the assignment remains shared.
