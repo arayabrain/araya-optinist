@@ -119,11 +119,14 @@ class TestResolveUserBucketName:
 class TestCleanupUserData:
     """Test user data cleanup"""
 
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
     @patch.object(
         DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
     )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_cleanup_user_data_with_s3_verification(self, mock_relogin, mock_bucket):
+    def test_cleanup_user_data_with_s3_verification(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
         """Test cleanup only deletes data with S3 backup"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
@@ -139,12 +142,15 @@ class TestCleanupUserData:
         assert result is True
         assert mock_rmtree.call_count >= 1
 
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
     @patch.object(
         DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
     )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_cleanup_user_data_keeps_unverified(self, mock_relogin, mock_bucket):
-        """Test cleanup keeps data without S3 backup"""
+    def test_cleanup_user_data_keeps_unverified(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        """Test cleanup keeps unverified experiment outputs (input backed up)"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=False
         ):
@@ -157,10 +163,32 @@ class TestCleanupUserData:
                             )
 
         assert result is False
-        # Input directory is always deleted (1 call), but experiments are kept
+        # Input directory is deleted (backup verified, 1 call); experiments kept
         assert mock_rmtree.call_count == 1
         # Verify it was the input directory that was deleted
         assert "input" in str(mock_rmtree.call_args_list[0])
+
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_cleanup_keeps_input_when_backup_unverified(
+        self, mock_relogin, mock_bucket
+    ):
+        """Input with no verified S3 backup is kept, not deleted (data safety)."""
+        with patch.object(
+            DataCleanupJob, "_verify_s3_input_backup_exists", return_value=False
+        ):
+            # Only the input dir exists (no output dir)
+            def _exists(path):
+                return "input" in str(path)
+
+            with patch("os.path.exists", side_effect=_exists):
+                with patch("shutil.rmtree") as mock_rmtree:
+                    result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+
+        assert result is False
+        mock_rmtree.assert_not_called()
 
 
 class TestVerifyNoActiveWorkflows:
@@ -423,12 +451,13 @@ class TestCleanupUserDataNotFound:
 
         assert result is False
 
+    @patch.object(DataCleanupJob, "_owns_assignment", return_value=True)
     @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="i-abc12345")
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
     def test_returns_true_when_no_data_on_owning_instance(
-        self, mock_relogin, mock_instance
+        self, mock_relogin, mock_instance, mock_owns
     ):
-        """Instance-filtered run: the filter guarantees ownership, so an
+        """Instance-filtered run where this instance owns the assignment: an
         empty user is genuinely clean → True, letting _mark_cleaned close
         the assignment / usage log (prevents the leak in finding #1)."""
         with patch("os.path.exists", return_value=False):
@@ -436,11 +465,28 @@ class TestCleanupUserDataNotFound:
 
         assert result is True
 
+    @patch.object(DataCleanupJob, "_owns_assignment", return_value=False)
+    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="i-abc12345")
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_returns_false_when_no_data_but_not_owner(
+        self, mock_relogin, mock_instance, mock_owns
+    ):
+        """Defense-in-depth: even on a filtered run, if this instance no
+        longer owns the assignment (mid-run reassignment), "no local data"
+        must NOT delete the record — data may live on the real owner."""
+        with patch("os.path.exists", return_value=False):
+            result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+
+        assert result is False
+
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
     @patch.object(
         DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
     )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_true_when_data_exists_and_cleaned(self, mock_relogin, mock_bucket):
+    def test_returns_true_when_data_exists_and_cleaned(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
         """When data exists and is fully cleaned, returns True"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
@@ -454,6 +500,104 @@ class TestCleanupUserDataNotFound:
                             )
 
         assert result is True
+
+
+class TestOwnsAssignment:
+    """Test _owns_assignment ownership guard (finding: HIGH orphaning)."""
+
+    def _session_returning(self, first_value):
+        mock_db = MagicMock()
+        mock_db.execute.return_value.first.return_value = first_value
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_db
+        cm.__exit__.return_value = False
+        return cm
+
+    def test_true_when_instance_matches(self):
+        cm = self._session_returning(("i-abc12345",))
+        with patch(
+            "studio.app.common.core.background.cleanup_job.session_scope",
+            return_value=cm,
+        ):
+            assert DataCleanupJob._owns_assignment("7", "i-abc12345") is True
+
+    def test_false_when_instance_differs(self):
+        """Assignment pinned to another instance → this worker is not owner."""
+        cm = self._session_returning(("i-other",))
+        with patch(
+            "studio.app.common.core.background.cleanup_job.session_scope",
+            return_value=cm,
+        ):
+            assert DataCleanupJob._owns_assignment("7", "i-abc12345") is False
+
+    def test_true_when_assignment_already_gone(self):
+        """No row → nothing left to orphan → safe to proceed."""
+        cm = self._session_returning(None)
+        with patch(
+            "studio.app.common.core.background.cleanup_job.session_scope",
+            return_value=cm,
+        ):
+            assert DataCleanupJob._owns_assignment("7", "i-abc12345") is True
+
+
+class TestVerifyS3InputBackup:
+    """Test _verify_s3_input_backup_exists (finding: MEDIUM input deletion)."""
+
+    def test_no_bucket_resolved_keeps_data(self):
+        with patch("boto3.client") as mock_boto:
+            result = DataCleanupJob._verify_s3_input_backup_exists(None, "workspace1")
+        assert result is False
+        mock_boto.assert_not_called()
+
+    def test_all_files_present_returns_true(self):
+        with patch("boto3.client") as mock_boto:
+            mock_s3 = MagicMock()
+            mock_boto.return_value = mock_s3
+            mock_s3.head_object.return_value = {}
+            with patch("os.path.isdir", return_value=True):
+                with patch(
+                    "os.walk",
+                    return_value=[("/in/workspace1", [".locks"], ["a.h5", "b.mat"])],
+                ):
+                    result = DataCleanupJob._verify_s3_input_backup_exists(
+                        "user-bucket", "workspace1"
+                    )
+        assert result is True
+        assert mock_s3.head_object.call_count == 2
+        for call in mock_s3.head_object.call_args_list:
+            assert call.kwargs["Bucket"] == "user-bucket"
+
+    def test_missing_file_returns_false(self):
+        from botocore.exceptions import ClientError
+
+        with patch("boto3.client") as mock_boto:
+            mock_s3 = MagicMock()
+            mock_boto.return_value = mock_s3
+            mock_s3.head_object.side_effect = ClientError(
+                {"Error": {"Code": "404"}}, "head_object"
+            )
+            with patch("os.path.isdir", return_value=True):
+                with patch(
+                    "os.walk",
+                    return_value=[("/in/workspace1", [], ["a.h5"])],
+                ):
+                    result = DataCleanupJob._verify_s3_input_backup_exists(
+                        "user-bucket", "workspace1"
+                    )
+        assert result is False
+
+    def test_empty_input_dir_returns_true(self):
+        """Nothing to verify (no files) → safe to delete the empty dir."""
+        with patch("boto3.client") as mock_boto:
+            mock_s3 = MagicMock()
+            mock_boto.return_value = mock_s3
+            with patch("os.path.isdir", return_value=True):
+                with patch("os.walk", return_value=[("/in/workspace1", [], [])]):
+                    result = DataCleanupJob._verify_s3_input_backup_exists(
+                        "user-bucket", "workspace1"
+                    )
+        assert result is True
+        mock_s3.head_object.assert_not_called()
 
 
 class TestCleanupOrphanedAssignmentNoFileCleanup:

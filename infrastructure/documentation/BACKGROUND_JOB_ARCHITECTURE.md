@@ -7,7 +7,7 @@
 - **Single-instance execution** with one task and one worker eliminates multi-worker coordination on the background service
 - **Four jobs** handle experiment sync (5 min), data cleanup (60 min), storage reconciliation (60 min), and expiration lifecycle (24 hr)
 - **Validate-then-trigger pattern** validates in S3 on the background service, triggers file downloads on API instances via ALB
-- **Safety-first cleanup** verifies S3 backups, checks for active workflows, and requires local data to exist before deleting
+- **Safety-first cleanup** verifies S3 backups and checks for active workflows before deleting; on the owning (instance-filtered) worker, "no local data" is treated as a completed cleanup, while an unfiltered run keeps the DB record so data on another instance is never orphaned
 
 ---
 
