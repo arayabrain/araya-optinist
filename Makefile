@@ -77,10 +77,15 @@ test_contract:
 alembic_check:
 	# Migrate a fresh DB to head, then run `alembic check` to assert the
 	# SQLAlchemy models and the migrations describe the same schema.
-	docker compose -f docker-compose.alembic-check.yml down -v
-	docker compose -f docker-compose.alembic-check.yml build alembic_check
-	docker compose -f docker-compose.alembic-check.yml run --rm alembic_check
-	docker compose -f docker-compose.alembic-check.yml down -v
+	# Run in a single shell with an EXIT trap so the DB stack is always torn
+	# down, even when `alembic check` exits non-zero (expected while models
+	# drift). set -e still propagates that non-zero status out to CI.
+	@bash -euc '\
+		compose="docker compose -f docker-compose.alembic-check.yml"; \
+		trap "$$compose down -v" EXIT; \
+		$$compose down -v; \
+		$$compose build alembic_check; \
+		$$compose run --rm alembic_check'
 
 
 ############################## For Building ##############################
