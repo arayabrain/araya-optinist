@@ -1079,6 +1079,12 @@ export const PremiumAssignmentProvider: React.FC<{
             // Reached only for a shared assignment (dedicated returns above).
             // Keep the flag consistent with the polled assignment so the
             // teardown gate holds even for a shared state seen only via polling.
+            // Refresh the instance hash too: a dedicated→shared transition seen
+            // only via polling would otherwise leave the stale dedicated hash,
+            // skewing routing telemetry.
+            routingService.setPremiumInstanceId(
+              assignment.instance_id_hash ?? null,
+            )
             routingService.setPremiumShared(true)
           } else {
             setState((prev) => ({ ...prev, statusResult: status }))
