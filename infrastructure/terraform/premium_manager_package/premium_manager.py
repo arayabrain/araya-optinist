@@ -3110,7 +3110,14 @@ def _assign_premium_user_impl(
                         f"target group ({existing_tg_arn}) - dropping the stale "
                         f"row so a fresh assignment reprovisions ALB routing"
                     )
-                    remove_user_assignment(user_id)
+                    try:
+                        remove_user_assignment(user_id)
+                    except Exception as remove_error:
+                        # Row already gone (concurrent heal / second assign) is
+                        # the wanted outcome — fall through. Re-raise real DB
+                        # errors to fail fast.
+                        if "No assignment found" not in str(remove_error):
+                            raise
                     existing_assignment = None
 
             if existing_assignment:
@@ -5593,12 +5600,14 @@ def reconcile_premium_target_group_ports() -> Dict[str, Any]:
                 # strand. Drop the row (any orphaned ALB rule is reaped by
                 # premium_cleanup) so the next assign reprovisions the rule/TG.
                 # A transient probe raise is caught below as an error, not a heal.
-                summary["healed_missing_tg"] += 1
                 print(
                     f"reconcile: user {user_id} TG {tg_arn} gone — dropping "
                     f"stale assignment so next assign reprovisions routing"
                 )
+                # Count the heal only after the drop succeeds; a raise is
+                # caught below as an error, not a heal.
                 remove_user_assignment(user_id)
+                summary["healed_missing_tg"] += 1
                 continue
 
             actual_port = get_host_port_for_instance(instance_id)
