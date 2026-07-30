@@ -440,13 +440,10 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
-        # Keep-set: ACTIVE/MIGRATING/TERMINATING are the only statuses that own
-        # a real ALB rule ARN (RESERVING/AUTOSCALING_POOL rows carry markers,
-        # not rule ARNs), so enumerating them keeps every live rule.
-        # TERMINATING shares its DB value with PENDING_RELEASE (soft-release
-        # grace), so an ACTIVE-only filter would reap a live rule mid-grace.
-        # Recency guard: also keep any row touched within the grace window,
-        # so a rule whose row is mid-transition is never seen as orphaned.
+        # Keep-set: ACTIVE/MIGRATING/TERMINATING (statuses that can own a live
+        # rule) plus any row touched within the grace window. TERMINATING
+        # aliases PENDING_RELEASE, so an ACTIVE-only filter would reap a rule
+        # mid soft-release grace; the recency guard covers rows mid-transition.
         grace_seconds = PremiumAssignment.PENDING_RELEASE_GRACE_SECONDS
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -469,11 +466,13 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 )
                 db_assignments = cursor.fetchall()
 
+        # Filter to real ARNs: marker rows (RESERVING/AUTOSCALING_POOL) carry
+        # placeholder strings, not rule ARNs, so they must not enter the keep-set.
         db_rule_arns = {
             a["alb_rule_arn"]
             for a in db_assignments
             if a["alb_rule_arn"]
-            and a["alb_rule_arn"].lower() != PremiumAssignment.STANDBY
+            and a["alb_rule_arn"].startswith("arn:")
         }
         print(f"Found {len(db_rule_arns)} keep-set assignments in database")
 
