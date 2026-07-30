@@ -4,6 +4,7 @@ set -e
 # Common Configuration
 REGION="ap-northeast-1"
 TERRAFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # ===========================================
 # Parse arguments
@@ -150,7 +151,7 @@ fi
 
 # Build frontend with custom domain for autoscaling
 echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
-cd ../../frontend
+cd "$REPO_ROOT/frontend"
 cat > .env.production << ENV_EOF
 REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
 REACT_APP_SERVER_PORT=${AUTOSCALING_PORT}
@@ -160,7 +161,7 @@ ENV_EOF
 
 yarn install
 yarn build
-cd ..
+cd "$REPO_ROOT"
 
 # Build the Docker image with embedded build metadata
 echo "Building autoscaling Docker image..."
@@ -202,5 +203,5 @@ if [ "$DEPLOY" = true ]; then
             --force-new-deployment --region "$REGION" >/dev/null
     done
     echo "Force-new-deployment issued for all services (re-pulling ${ECR_URI}:latest)."
-    echo "Standby (desiredCount 0) services will re-pull on next scale-up."
+    echo "Running services restart now; any service at desiredCount 0 re-pulls on next scale-up."
 fi

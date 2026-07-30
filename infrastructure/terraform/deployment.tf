@@ -133,6 +133,11 @@ resource "aws_ssm_association" "app_setup" {
 resource "null_resource" "deploy_to_ecs" {
   depends_on = [null_resource.build_and_deploy]
 
+  triggers = {
+    git_branch = var.git_branch
+    ecr_repo   = local.ecr_repository_url
+  }
+
   provisioner "local-exec" {
     command = <<-EOT
       set -e
