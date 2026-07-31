@@ -83,14 +83,14 @@ care about.
 All credentials come from env vars, or `frontend/e2e/.env` (gitignored,
 simple `KEY=VALUE` lines). Nothing is ever committed.
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `TEST_USER_EMAIL` / `TEST_USER_PASSWORD` | for logged-in tests | free-plan account; without it only public/validation tests run, the rest skip |
-| `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD` | optional | enables SUB-04/05 (premium subscription state) |
-| `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only | enables LC-01..16 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
-| `BASE_URL` | default `http://localhost:3000` | frontend under test |
-| `API_URL` | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls |
-| `RUN_SLOW` | optional | include the `@slow` workflow-run tests |
+| Variable                                           | Required                          | Purpose                                                                                                                                                                                                                            |
+| -------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TEST_USER_EMAIL` / `TEST_USER_PASSWORD`           | for logged-in tests               | free-plan account; without it only public/validation tests run, the rest skip                                                                                                                                                      |
+| `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD`     | optional                          | enables SUB-04/05 (premium subscription state)                                                                                                                                                                                     |
+| `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..16 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
+| `BASE_URL`                                         | default `http://localhost:3000`   | frontend under test                                                                                                                                                                                                                |
+| `API_URL`                                          | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls                                                                                                                                                                                               |
+| `RUN_SLOW`                                         | optional                          | include the `@slow` workflow-run tests                                                                                                                                                                                             |
 
 The account must exist in **both** Firebase (email/password sign-in,
 email verified) and the target environment's DB. Note: the `test_users` in
@@ -147,14 +147,14 @@ supplied as repo secrets. If any is unset the workflow still starts but writes
 an empty config file and the backend fails to boot — the run then crawls to the
 90-minute timeout instead of failing fast. Required:
 
-| Secret / variable | Written to | Notes |
-|---|---|---|
-| `E2E_FIREBASE_PRIVATE_JSON` | `studio/config/auth/firebase_private.json` | Firebase service account |
-| `E2E_FIREBASE_CONFIG_JSON` | `studio/config/auth/firebase_config.json` | Firebase web config |
-| `E2E_STUDIO_ENV` | `studio/config/.env` | backend/DB config; strip personal AWS keys |
-| `E2E_TEST_USER_EMAIL` / `E2E_TEST_USER_PASSWORD` | `TEST_USER_*` env | free-plan CI user (bootstrap registers it) |
-| `E2E_TEST_PREMIUM_EMAIL` / `E2E_TEST_PREMIUM_PASSWORD` | `TEST_PREMIUM_*` env | premium CI user |
-| `SUBSCRIPTION_PLANS_CONFIG` (variable, not secret) | plan-seed step | pulled from the dev task definition |
+| Secret / variable                                      | Written to                                 | Notes                                      |
+| ------------------------------------------------------ | ------------------------------------------ | ------------------------------------------ |
+| `E2E_FIREBASE_PRIVATE_JSON`                            | `studio/config/auth/firebase_private.json` | Firebase service account                   |
+| `E2E_FIREBASE_CONFIG_JSON`                             | `studio/config/auth/firebase_config.json`  | Firebase web config                        |
+| `E2E_STUDIO_ENV`                                       | `studio/config/.env`                       | backend/DB config; strip personal AWS keys |
+| `E2E_TEST_USER_EMAIL` / `E2E_TEST_USER_PASSWORD`       | `TEST_USER_*` env                          | free-plan CI user (bootstrap registers it) |
+| `E2E_TEST_PREMIUM_EMAIL` / `E2E_TEST_PREMIUM_PASSWORD` | `TEST_PREMIUM_*` env                       | premium CI user                            |
+| `SUBSCRIPTION_PLANS_CONFIG` (variable, not secret)     | plan-seed step                             | pulled from the dev task definition        |
 
 The lifecycle user needs no secret — the workflow hardcodes
 `e2e_ci_lifecycle@test.com` and reuses `E2E_TEST_USER_PASSWORD`. Values and the
@@ -180,7 +180,7 @@ yarn test:e2e:report             # open the last HTML report
 - `@slow` = WF-04/05/06, real workflow executions (5–10 min each; slower
   on an ARM Mac where the backend image is amd64-emulated). Keep the
   machine awake for these — `caffeinate -i RUN_SLOW=1 npx playwright test
-  --grep @slow` — sleep mid-run is the #1 cause of bogus failures.
+--grep @slow` — sleep mid-run is the #1 cause of bogus failures.
 
 ## How the suite works
 
@@ -211,35 +211,35 @@ Understanding these makes failures much easier to read:
 
 ## Test groups and coverage
 
-| Group (spec file) | IDs | Automated | Stays manual |
-|---|---|---|---|
-| Auth (`01-auth`) | AUTH-01..11 | login, logout, session persistence, unverified-email flow, header navigation, registration validation | — |
-| Workspace (`02-workspace`) | WS-01..06 | create, list, navigation, storage reload, delete | — |
-| Workflow (`03-workflow`) | WF-01..09 | sample data import, reproduce, tutorial runs (`@slow`), run validation, tab navigation | exact no-algorithm-nodes message (needs manual node wiring) |
-| Record (`04-record`) | REC-01..09 | list, expand parameters, copy, delete (single and multi-select), workflow/snakemake/NWB downloads | — |
-| File handling (`05-file-handling`) | FILE-01..04 | file tree dialog, wildcard filter, check-all, sidebar toggle | — |
-| Uploads & node dialogs (`10-uploads`) | UPL-01..04 | CSV param dialog, HDF5 structure dialog, image/HDF5 upload appears in inputs | MAT structure dialog; S3-side verification |
-| Dataview (`06-dataview`) | DV-01..15 | table display, ID/name column-menu filters, sort, pagination, inputs/outputs/details dialogs, public access, public/private API auth, image/ROI thumbnails, publish/unpublish + public listing, bulk publish/unpublish with confirmation | DB/S3 sync verification, sync status states |
-| Subscription (`07-subscription`) | SUB-01..06 | free and premium plan UI state, `/thanks` access guard | Stripe checkout/registration, DB/Stripe dashboard verification |
-| Storage (`08-storage`) | STO-01..02 | no-warning login under quota, premium-login assignment snackbar | S3 verification, over-quota states, auto-refresh tracing |
-| Visualize (`09-visualize`) | VIS-01..05 | sidebar workspace/workflow info, Cell-ROI image plot, frame playback, second plot type, ROI editor open/cancel | Edit ROI commit (OK mutates ROI data and starts a processing run) |
-| Lifecycle (`11-lifecycle`, local stack only) | LC-01..14 | free baseline, upgrade, over-quota warning modal (110%), usage-high indicator (95%), storage reload reset, expired-premium grace warning, overdue acknowledgment modal, downgraded-free over-quota warning, run blocked/warned at quota, expiration captions, cancel-subscription dialog, cancelled banner, inactivity warning + Stay Active (fake clock), 2h auto-release beacon, account deletion | real Stripe upgrade/downgrade, real S3 usage, reactivation/cancel API calls (the spec drives plan/expiry/usage in the docker DB and mocks premium assignment for the inactivity tests) |
+| Group (spec file)                            | IDs         | Automated                                                                                                                                                                                                                                                                                                                                                                                           | Stays manual                                                                                                                                                                           |
+| -------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auth (`01-auth`)                             | AUTH-01..11 | login, logout, session persistence, unverified-email flow, header navigation, registration validation                                                                                                                                                                                                                                                                                               | —                                                                                                                                                                                      |
+| Workspace (`02-workspace`)                   | WS-01..06   | create, list, navigation, storage reload, delete                                                                                                                                                                                                                                                                                                                                                    | —                                                                                                                                                                                      |
+| Workflow (`03-workflow`)                     | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tab navigation                                                                                                                                                                                                                                                                                                              | exact no-algorithm-nodes message (needs manual node wiring)                                                                                                                            |
+| Record (`04-record`)                         | REC-01..09  | list, expand parameters, copy, delete (single and multi-select), workflow/snakemake/NWB downloads                                                                                                                                                                                                                                                                                                   | —                                                                                                                                                                                      |
+| File handling (`05-file-handling`)           | FILE-01..04 | file tree dialog, wildcard filter, check-all, sidebar toggle                                                                                                                                                                                                                                                                                                                                        | —                                                                                                                                                                                      |
+| Uploads & node dialogs (`10-uploads`)        | UPL-01..04  | CSV param dialog, HDF5 structure dialog, image/HDF5 upload appears in inputs                                                                                                                                                                                                                                                                                                                        | MAT structure dialog; S3-side verification                                                                                                                                             |
+| Dataview (`06-dataview`)                     | DV-01..15   | table display, ID/name column-menu filters, sort, pagination, inputs/outputs/details dialogs, public access, public/private API auth, image/ROI thumbnails, publish/unpublish + public listing, bulk publish/unpublish with confirmation                                                                                                                                                            | DB/S3 sync verification, sync status states                                                                                                                                            |
+| Subscription (`07-subscription`)             | SUB-01..06  | free and premium plan UI state, `/thanks` access guard                                                                                                                                                                                                                                                                                                                                              | Stripe checkout/registration, DB/Stripe dashboard verification                                                                                                                         |
+| Storage (`08-storage`)                       | STO-01..02  | no-warning login under quota, premium-login assignment snackbar                                                                                                                                                                                                                                                                                                                                     | S3 verification, over-quota states, auto-refresh tracing                                                                                                                               |
+| Visualize (`09-visualize`)                   | VIS-01..05  | sidebar workspace/workflow info, Cell-ROI image plot, frame playback, second plot type, ROI editor open/cancel                                                                                                                                                                                                                                                                                      | Edit ROI commit (OK mutates ROI data and starts a processing run)                                                                                                                      |
+| Lifecycle (`11-lifecycle`, local stack only) | LC-01..14   | free baseline, upgrade, over-quota warning modal (110%), usage-high indicator (95%), storage reload reset, expired-premium grace warning, overdue acknowledgment modal, downgraded-free over-quota warning, run blocked/warned at quota, expiration captions, cancel-subscription dialog, cancelled banner, inactivity warning + Stay Active (fake clock), 2h auto-release beacon, account deletion | real Stripe upgrade/downgrade, real S3 usage, reactivation/cancel API calls (the spec drives plan/expiry/usage in the docker DB and mocks premium assignment for the inactivity tests) |
 
 Not automated at all (out of browser-test scope): premium instance
 provisioning, AWS monitoring.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-|---|---|
-| Nearly everything skips with "TEST_USER_EMAIL ... not set" | `e2e/.env` missing or not readable; env vars beat the file |
-| `global-setup` login times out | Dev server recompiling after idle/wake — retry; it attempts 3 logins with 60s each. Check `BASE_URL` actually serves the login form |
-| Tests hang for hours / half the suite flakes at once | The machine slept mid-run. Use `caffeinate -i`, re-run |
-| Registration/login 500s on a fresh local DB | `subscription_plans` not seeded — see [Test environment](#test-environment) |
-| `Cannot find module` from a global npx playwright | `frontend/node_modules` was pruned (e.g. `yarn install` after a lockfile change) — `yarn install && npx playwright install chromium` |
-| Premium account shows Free quota (5GB) | `user_storage_usage.storage_quota_bytes` not updated — see the premium bootstrap SQL |
-| "Import sample data" does nothing | Known app quirk: the menu item silently no-ops until the workspace has loaded into the store, and its menu stays open over the page. The helpers wait for readiness and press Escape; do the same in new tests |
-| Downloads never fire in new record tests | `snakemake-download-link` / `nwb-download-link` testids are on hidden anchors — click the `IconButton` in the same table cell instead |
+| Symptom                                                    | Cause / fix                                                                                                                                                                                                    |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nearly everything skips with "TEST_USER_EMAIL ... not set" | `e2e/.env` missing or not readable; env vars beat the file                                                                                                                                                     |
+| `global-setup` login times out                             | Dev server recompiling after idle/wake — retry; it attempts 3 logins with 60s each. Check `BASE_URL` actually serves the login form                                                                            |
+| Tests hang for hours / half the suite flakes at once       | The machine slept mid-run. Use `caffeinate -i`, re-run                                                                                                                                                         |
+| Registration/login 500s on a fresh local DB                | `subscription_plans` not seeded — see [Test environment](#test-environment)                                                                                                                                    |
+| `Cannot find module` from a global npx playwright          | `frontend/node_modules` was pruned (e.g. `yarn install` after a lockfile change) — `yarn install && npx playwright install chromium`                                                                           |
+| Premium account shows Free quota (5GB)                     | `user_storage_usage.storage_quota_bytes` not updated — see the premium bootstrap SQL                                                                                                                           |
+| "Import sample data" does nothing                          | Known app quirk: the menu item silently no-ops until the workspace has loaded into the store, and its menu stays open over the page. The helpers wait for readiness and press Escape; do the same in new tests |
+| Downloads never fire in new record tests                   | `snakemake-download-link` / `nwb-download-link` testids are on hidden anchors — click the `IconButton` in the same table cell instead                                                                          |
 
 ## Appendix: release-sheet coverage map
 
@@ -254,48 +254,48 @@ registration validation cases.
 
 #### 01 Login & Auth
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-101 | Successful login | AUTH-01 |
-| BT-102 | Invalid credentials | AUTH-02 |
-| BT-103 | Empty fields validation | AUTH-03 |
-| BT-104 | Unverified email login | AUTH-04 |
-| BT-105 | Successful logout | AUTH-05 |
-| BT-106 | Session persistence | AUTH-06 |
-| BT-107 | Logo navigation | AUTH-07 |
-| BT-108 | Dashboard button (logged in) | AUTH-08 |
+| Sheet row | Subject                      | Test    |
+| --------- | ---------------------------- | ------- |
+| BT-101    | Successful login             | AUTH-01 |
+| BT-102    | Invalid credentials          | AUTH-02 |
+| BT-103    | Empty fields validation      | AUTH-03 |
+| BT-104    | Unverified email login       | AUTH-04 |
+| BT-105    | Successful logout            | AUTH-05 |
+| BT-106    | Session persistence          | AUTH-06 |
+| BT-107    | Logo navigation              | AUTH-07 |
+| BT-108    | Dashboard button (logged in) | AUTH-08 |
 
 #### 02 Workspace
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-201 | Create new workspace | WS-01 |
-| BT-202 | Workspace list display | WS-02 |
-| BT-203 | Access workspace | WS-03 |
-| BT-204 | Storage refresh | WS-04 |
-| BT-205 | Dataview access | WS-05 |
-| BT-206 | Delete workspace | WS-06 |
+| Sheet row | Subject                | Test  |
+| --------- | ---------------------- | ----- |
+| BT-201    | Create new workspace   | WS-01 |
+| BT-202    | Workspace list display | WS-02 |
+| BT-203    | Access workspace       | WS-03 |
+| BT-204    | Storage refresh        | WS-04 |
+| BT-205    | Dataview access        | WS-05 |
+| BT-206    | Delete workspace       | WS-06 |
 
 #### 03 Workflow Execution
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-301 | Access workflow page | WF-01 |
-| BT-302 | Import sample data | WF-02 |
-| BT-303 | Reproduce workflow from record | WF-03 |
-| BT-304 | Run Tutorial 1 workflow | WF-04 `@slow` (by-uid RUN) |
-| BT-305 | Run Tutorial 2 workflow | WF-05 `@slow` (RUN ALL, full compute) |
-| BT-306 | Run Tutorial 3 workflow | WF-06 `@slow` (RUN ALL, full compute) |
-| BT-307 | Run without algorithm nodes | WF-07 (see note) |
-| BT-308 | Run without input file | WF-07 |
-| BT-309 | Run button cooldown | WF-08 (snackbar dedupe only; the run-POST debounce itself stays manual) |
-| BT-310 | Tab navigation | WF-09 |
-| BT-311 | File tree display | FILE-01 |
-| BT-312 | File filter with wildcards | FILE-02 |
-| BT-313 | Check all / uncheck all | FILE-03 |
-| BT-314 | Sidebar toggle | FILE-04 |
-| BT-315 | HDF5 file dialog | UPL-02 |
-| BT-316 | CSV parameter dialog | UPL-01 |
+| Sheet row | Subject                        | Test                                                                    |
+| --------- | ------------------------------ | ----------------------------------------------------------------------- |
+| BT-301    | Access workflow page           | WF-01                                                                   |
+| BT-302    | Import sample data             | WF-02                                                                   |
+| BT-303    | Reproduce workflow from record | WF-03                                                                   |
+| BT-304    | Run Tutorial 1 workflow        | WF-04 `@slow` (by-uid RUN)                                              |
+| BT-305    | Run Tutorial 2 workflow        | WF-05 `@slow` (RUN ALL, full compute)                                   |
+| BT-306    | Run Tutorial 3 workflow        | WF-06 `@slow` (RUN ALL, full compute)                                   |
+| BT-307    | Run without algorithm nodes    | WF-07 (see note)                                                        |
+| BT-308    | Run without input file         | WF-07                                                                   |
+| BT-309    | Run button cooldown            | WF-08 (snackbar dedupe only; the run-POST debounce itself stays manual) |
+| BT-310    | Tab navigation                 | WF-09                                                                   |
+| BT-311    | File tree display              | FILE-01                                                                 |
+| BT-312    | File filter with wildcards     | FILE-02                                                                 |
+| BT-313    | Check all / uncheck all        | FILE-03                                                                 |
+| BT-314    | Sidebar toggle                 | FILE-04                                                                 |
+| BT-315    | HDF5 file dialog               | UPL-02                                                                  |
+| BT-316    | CSV parameter dialog           | UPL-01                                                                  |
 
 Note: a fresh workspace surfaces the input-file message before the
 algorithm-nodes one, so WF-07 accepts either; verifying the exact
@@ -303,15 +303,15 @@ no-algorithm-nodes message needs an input file wired in manually.
 
 #### 04 Visualize
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-401 | Open Visualize tab | VIS-01 |
-| BT-402 | Confirm workflow info in sidebar | VIS-01 |
-| BT-403 | Add Cell ROI plot | VIS-02 |
-| BT-404 | Play visualization image | VIS-03 |
-| BT-405 | Add additional plot type | VIS-04 |
-| BT-406 | Image thumbnail display | DV-12 |
-| BT-407 | Run Edit ROI | VIS-05 (editor open + Cancel; the OK commit mutates ROI data and stays manual) |
+| Sheet row | Subject                          | Test                                                                           |
+| --------- | -------------------------------- | ------------------------------------------------------------------------------ |
+| BT-401    | Open Visualize tab               | VIS-01                                                                         |
+| BT-402    | Confirm workflow info in sidebar | VIS-01                                                                         |
+| BT-403    | Add Cell ROI plot                | VIS-02                                                                         |
+| BT-404    | Play visualization image         | VIS-03                                                                         |
+| BT-405    | Add additional plot type         | VIS-04                                                                         |
+| BT-406    | Image thumbnail display          | DV-12                                                                          |
+| BT-407    | Run Edit ROI                     | VIS-05 (editor open + Cancel; the OK commit mutates ROI data and stays manual) |
 
 Note (how the data-backed tests avoid @slow runs): the sample-data import
 ships WITH pre-computed outputs, so the Visualize plot editor has plottable
@@ -326,38 +326,39 @@ grid).
 
 #### 05 Record Management
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-501 | Access record page | REC-01 |
-| BT-502 | View workflow details | REC-02 |
-| BT-503 | Copy single record | REC-03 |
-| BT-504 | Copy multiple records | REC-08 |
-| BT-505 | Delete single record | REC-04 |
-| BT-506 | Delete multiple records | REC-09 |
-| BT-507 | Download workflow file | REC-05 |
-| BT-508 | Download Snakemake file | REC-06 |
-| BT-509 | Download NWB file | REC-07 |
+| Sheet row | Subject                 | Test   |
+| --------- | ----------------------- | ------ |
+| BT-501    | Access record page      | REC-01 |
+| BT-502    | View workflow details   | REC-02 |
+| BT-503    | Copy single record      | REC-03 |
+| BT-504    | Copy multiple records   | REC-08 |
+| BT-505    | Delete single record    | REC-04 |
+| BT-506    | Delete multiple records | REC-09 |
+| BT-507    | Download workflow file  | REC-05 |
+| BT-508    | Download Snakemake file | REC-06 |
+| BT-509    | Download NWB file       | REC-07 |
 
 #### 06 Premium Features
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-604 | Premium profile display | SUB-05 |
-| BT-605 | Premium subscription page | SUB-04 |
-| BT-611 | Inactivity warning | LC-14 (frontend lifecycle via fake clock; backend heartbeat/CloudWatch stays manual) |
-| BT-613 | Auto-release after 2h inactivity | LC-15 (frontend half: release beacon fires; instance-side release stays manual) |
-| BT-615 | Instance release on browser close | LC-15 partial (proves the release-beacon plumbing; the beforeunload trigger stays manual) |
-| BT-612 | Stay Active button | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual) |
-| BT-601/602 | assignment snackbars | STO-02 (mocked assignment — asserts the success snackbar renders; the real AWS-backed flow stays a manual deployed-env check) |
-| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle | LC-17 (fake-clock companion to the `PremiumLifecycleIntegration` jest L2 test; real AWS state stays manual) |
-| BT-603, 606..610, 614 | instance assignment, concurrency, release (AWS state) | manual |
+| Sheet row                                   | Subject                                               | Test                                                                                                                          |
+| ------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| BT-604                                      | Premium profile display                               | SUB-05                                                                                                                        |
+| BT-605                                      | Premium subscription page                             | SUB-04                                                                                                                        |
+| BT-611                                      | Inactivity warning                                    | LC-14 (frontend lifecycle via fake clock; backend heartbeat/CloudWatch stays manual)                                          |
+| BT-613                                      | Auto-release after 2h inactivity                      | LC-15 (frontend half: release beacon fires; instance-side release stays manual)                                               |
+| BT-615                                      | Instance release on browser close                     | LC-15 partial (proves the release-beacon plumbing; the beforeunload trigger stays manual)                                     |
+| BT-612                                      | Stay Active button                                    | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual)                                                         |
+| BT-601/602                                  | assignment snackbars                                  | STO-02 (mocked assignment — asserts the success snackbar renders; the real AWS-backed flow stays a manual deployed-env check) |
+| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle                  | LC-17 (fake-clock companion to the `PremiumLifecycleIntegration` jest L2 test; real AWS state stays manual)                   |
+| BT-603, 606..610, 614                       | instance assignment, concurrency, release (AWS state) | manual                                                                                                                        |
 
 Note: the `BT-6xx` rows above are the release
 sheet, a separate scheme from the System test sheet. The System sheet's
 `600-x` cases correspond to the CSV `62xx` cases (`600-4` <-> `6204`
 concurrency); `BT-6xx` does NOT line up by trailing digits (`BT-604` is
 "Premium profile display", not the `6204` concurrency race). The L1
-decision-logic coverage for the `62xx` cases lives in
+decision-logic coverage for the `62xx` cases (test levels L1/L2/L3 are
+defined in the appendix below) lives in
 `studio/tests/infrastructure/test_premium_manager.py` (`TestAssignCascadeTiers`
 for the assign tiers, `TestConcurrentAssignLock` for `6204`,
 `TestMigrationWorkflowGuard` for `6217`) and, on the frontend, in
@@ -365,28 +366,28 @@ for the assign tiers, `TestConcurrentAssignLock` for `6204`,
 
 #### 07 Dataview
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-701 | Private Dataview Table Display | DV-01 |
-| BT-702 | Publish Toggle Display | DV-02 |
-| BT-703 | Publish Experiment | DV-14 (toggle + public listing; DB/S3 sync verification manual) |
-| BT-704 | Unpublish Experiment | DV-14 |
-| BT-705 | Bulk Publish | DV-15 |
-| BT-706 | Bulk Unpublish | DV-15 |
-| BT-707 | Public Dataview Table Display | DV-09 |
-| BT-708 | Public Dataview Unauthenticated Access | DV-10 |
-| BT-709 | UID Filter | DV-03 (column-menu filter) |
-| BT-710 | Name Filter | DV-13 (column-menu filter) |
-| BT-711 | Workspace Filter (Public Only) | manual |
-| BT-712 | Sort by Column Header | DV-04 |
-| BT-713 | Change Page Size | DV-05 |
-| BT-714 | Inputs Dialog Display | DV-06 |
-| BT-715 | Outputs Dialog Display | DV-07 |
-| BT-716 | Workflow Details Dialog Display | DV-08 |
-| BT-717 | Close Dialog | DV-08 |
-| BT-720 | Image Thumbnail Display | DV-12 |
-| BT-721 | ROI Thumbnail Display | DV-12 |
-| BT-718, 719 | sync status, retry | manual |
+| Sheet row   | Subject                                | Test                                                            |
+| ----------- | -------------------------------------- | --------------------------------------------------------------- |
+| BT-701      | Private Dataview Table Display         | DV-01                                                           |
+| BT-702      | Publish Toggle Display                 | DV-02                                                           |
+| BT-703      | Publish Experiment                     | DV-14 (toggle + public listing; DB/S3 sync verification manual) |
+| BT-704      | Unpublish Experiment                   | DV-14                                                           |
+| BT-705      | Bulk Publish                           | DV-15                                                           |
+| BT-706      | Bulk Unpublish                         | DV-15                                                           |
+| BT-707      | Public Dataview Table Display          | DV-09                                                           |
+| BT-708      | Public Dataview Unauthenticated Access | DV-10                                                           |
+| BT-709      | UID Filter                             | DV-03 (column-menu filter)                                      |
+| BT-710      | Name Filter                            | DV-13 (column-menu filter)                                      |
+| BT-711      | Workspace Filter (Public Only)         | manual                                                          |
+| BT-712      | Sort by Column Header                  | DV-04                                                           |
+| BT-713      | Change Page Size                       | DV-05                                                           |
+| BT-714      | Inputs Dialog Display                  | DV-06                                                           |
+| BT-715      | Outputs Dialog Display                 | DV-07                                                           |
+| BT-716      | Workflow Details Dialog Display        | DV-08                                                           |
+| BT-717      | Close Dialog                           | DV-08                                                           |
+| BT-720      | Image Thumbnail Display                | DV-12                                                           |
+| BT-721      | ROI Thumbnail Display                  | DV-12                                                           |
+| BT-718, 719 | sync status, retry                     | manual                                                          |
 
 Note (dataview data preconditions): the records the data-dependent tests
 need are minted once per run before any of them execute — a fast no-op rerun
@@ -398,50 +399,100 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 
 #### 08 Subscription
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-801 | Free Plan card display | SUB-01 |
-| BT-802 | Free account status display | SUB-02 |
-| BT-803 | No invoice for Free user | SUB-03 |
-| BT-804 | Premium plan status display | SUB-04 |
-| BT-805 | Premium account status display | SUB-05 |
-| BT-806 | Expiration date text | LC-11 (exact caption per state; sheet says "renews on" but the UI text is "Renew on") |
-| BT-807..811 | DB / Stripe dashboard verification | manual |
+| Sheet row   | Subject                            | Test                                                                                  |
+| ----------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
+| BT-801      | Free Plan card display             | SUB-01                                                                                |
+| BT-802      | Free account status display        | SUB-02                                                                                |
+| BT-803      | No invoice for Free user           | SUB-03                                                                                |
+| BT-804      | Premium plan status display        | SUB-04                                                                                |
+| BT-805      | Premium account status display     | SUB-05                                                                                |
+| BT-806      | Expiration date text               | LC-11 (exact caption per state; sheet says "renews on" but the UI text is "Renew on") |
+| BT-807..811 | DB / Stripe dashboard verification | manual                                                                                |
 
 #### 09 Subscription Registration
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-906 | Prevent direct access to /thanks | SUB-06 |
-| BT-907 | Subscription page updated to Premium | SUB-04 (standing premium account) |
-| BT-908 | Account Profile updated to Premium | SUB-05 (standing premium account) |
-| BT-917 | Initiate downgrade | LC-12 (confirmation modal + 30-day retention notice) |
-| BT-918 | Cancel downgrade (click No) | LC-12 |
-| BT-920 | Reactivation option | LC-13 (banner + Continue Plan visible; clicking it is Stripe-backed, manual) |
-| BT-922 | Expired premium user buttons | LC-06 (Upgrade + Manage both visible) |
-| BT-925 | Delete test user account | LC-16 (per-run throwaway account; active=0 + deletion records completed) |
-| BT-901..905, 909..916, 919, 921, 923, 924 | checkout flow, DB/Stripe verification, confirmed cancel/reactivation | manual |
+| Sheet row                                 | Subject                                                              | Test                                                                         |
+| ----------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| BT-906                                    | Prevent direct access to /thanks                                     | SUB-06                                                                       |
+| BT-907                                    | Subscription page updated to Premium                                 | SUB-04 (standing premium account)                                            |
+| BT-908                                    | Account Profile updated to Premium                                   | SUB-05 (standing premium account)                                            |
+| BT-917                                    | Initiate downgrade                                                   | LC-12 (confirmation modal + 30-day retention notice)                         |
+| BT-918                                    | Cancel downgrade (click No)                                          | LC-12                                                                        |
+| BT-920                                    | Reactivation option                                                  | LC-13 (banner + Continue Plan visible; clicking it is Stripe-backed, manual) |
+| BT-922                                    | Expired premium user buttons                                         | LC-06 (Upgrade + Manage both visible)                                        |
+| BT-925                                    | Delete test user account                                             | LC-16 (per-run throwaway account; active=0 + deletion records completed)     |
+| BT-901..905, 909..916, 919, 921, 923, 924 | checkout flow, DB/Stripe verification, confirmed cancel/reactivation | manual                                                                       |
 
 #### 10 Storage
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-1001 | Free user login - no warning | STO-01 |
-| BT-1005 | Upload image data | UPL-03 (UI half — file appears in inputs; S3 verification manual) |
-| BT-1006 | Upload HDF5 file | UPL-04 (UI half — file appears in inputs; S3 verification manual) |
-| BT-1007 | Premium user login | STO-02 |
-| BT-1010 | Storage limit exceeded warning on login | LC-03 (premium) / LC-08 (free) |
-| BT-1011 | Handle Later button | LC-03 (dismisses, stays on dashboard) |
-| BT-1012 | Manage Files button | LC-08 (redirects to /workspaces) |
-| BT-1013 | Cannot run workflow when over limit | LC-09 |
-| BT-1014 | Storage 90-99% warning on RUN | LC-10 (snackbar + run not blocked) |
-| BT-1015 | Manual storage refresh | WS-04 |
-| BT-1016 | Storage values update after delete | LC-05 (delete ballast → Reload clears warning) |
-| BT-1002..1004, 1008, 1009 | S3-side verification | manual (the LC rows drive real files locally, but the S3 bucket half needs a deployed env) |
+| Sheet row                 | Subject                                 | Test                                                                                       |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------ |
+| BT-1001                   | Free user login - no warning            | STO-01                                                                                     |
+| BT-1005                   | Upload image data                       | UPL-03 (UI half — file appears in inputs; S3 verification manual)                          |
+| BT-1006                   | Upload HDF5 file                        | UPL-04 (UI half — file appears in inputs; S3 verification manual)                          |
+| BT-1007                   | Premium user login                      | STO-02                                                                                     |
+| BT-1010                   | Storage limit exceeded warning on login | LC-03 (premium) / LC-08 (free)                                                             |
+| BT-1011                   | Handle Later button                     | LC-03 (dismisses, stays on dashboard)                                                      |
+| BT-1012                   | Manage Files button                     | LC-08 (redirects to /workspaces)                                                           |
+| BT-1013                   | Cannot run workflow when over limit     | LC-09                                                                                      |
+| BT-1014                   | Storage 90-99% warning on RUN           | LC-10 (snackbar + run not blocked)                                                         |
+| BT-1015                   | Manual storage refresh                  | WS-04                                                                                      |
+| BT-1016                   | Storage values update after delete      | LC-05 (delete ballast → Reload clears warning)                                             |
+| BT-1002..1004, 1008, 1009 | S3-side verification                    | manual (the LC rows drive real files locally, but the S3 bucket half needs a deployed env) |
 
 #### 11 AWS Monitoring
 
-| Sheet row | Subject | Test |
-|---|---|---|
-| BT-1110 | Public Dataview access + auth guard | DV-11 (API half; point BASE_URL/API_URL at the env) |
-| BT-1101..1109, 1111 | AWS CLI / console probes | manual |
+| Sheet row           | Subject                             | Test                                                |
+| ------------------- | ----------------------------------- | --------------------------------------------------- |
+| BT-1110             | Public Dataview access + auth guard | DV-11 (API half; point BASE_URL/API_URL at the env) |
+| BT-1101..1109, 1111 | AWS CLI / console probes            | manual                                              |
+
+## Appendix: premium-routing unit/integration coverage
+
+The release-sheet map above tracks the Playwright e2e IDs. This appendix maps the
+**System test sheets** for premium features - "06 Premium Features" (`600-x` /
+`62xx`) and "06-2 Premium Assignment" - to the unit/integration tests. These
+are NOT Playwright: they run in `make test_backend` /
+`make test_lambda` (pytest) and `make test_frontend` (jest) on every PR, plus one
+opt-in real-DB lane.
+
+Test levels used in the tables below:
+
+- **L1** - decision-logic (mocked)
+- **L2** - FE context integration
+- **contract** - FE<->BE shape parity
+- **L3** - real infra (real DB / AWS)
+
+### System sheet "06 Premium Features" (601-608)
+
+| Case | Subject                                                | Automated by                                                                                                                           | Status                                                                                                |
+| ---- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| 601  | "Preparing dedicated resource" snackbar                | `PremiumNotificationManager.test.tsx`; e2e STO-02                                                                                      | automated (FE unit + e2e)                                                                             |
+| 602  | "Premium instance assigned successfully" snackbar      | `PremiumNotificationManager.test.tsx`                                                                                                  | automated (FE unit). Reported Tier-3 UI bug (snackbar may not fire) stays a manual deployed-env check |
+| 603  | Activity heartbeat                                     | FE send/retry: `PremiumHeartbeatRetry.test.ts`, `PremiumInactivityActivity.test.tsx`                                                   | FE automated; the CloudWatch `Updated premium activity` assertion is manual (real AWS)                |
+| 604  | Tutorial 1 end-to-end on dedicated                     | tutorial run itself: e2e `WF-04` (free tier)                                                                                           | dedicated-instance routing + per-user S3 + CloudWatch task-log = manual (real AWS)                    |
+| 605  | Concurrent workflows on dedicated                      | -                                                                                                                                      | manual (real-AWS stress)                                                                              |
+| 606  | Logout completes even if the logout API is unreachable | `frontend/src/hooks/__tests__/useLogout.test.ts`                                                                                       | automated (FE unit)                                                                                   |
+| 607  | Published experiment via public instance (lazy S3)     | -                                                                                                                                      | manual (real-AWS cross-instance)                                                                      |
+| 608  | Data survives migration to another instance            | migration decision logic: `TestMigrationWorkflowGuard`, `TestIdleUserSelectorExcludesActiveWorkflows`, `TestInlineMigrationOnAdoption` | guard logic automated (L1); the real cross-instance S3 recovery is manual (real AWS)                  |
+
+### System sheet "06-2 Premium Assignment" (`62xx`) and routing lifecycle
+
+| Case               | Subject                                                         | Automated by                                                                                                                                                                                                                        | Level                        |
+| ------------------ | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| tiers              | assign cascade: dedicated / shared / standby / autoscaling      | `TestAssignCascadeTiers` (`aws_fallback` documented dead)                                                                                                                                                                           | L1                           |
+| 6204               | concurrent-assign corruption + serialization                    | `TestConcurrentAssignLock` (corruption mechanism + existing-read short-circuit) + `test_assign_impl_runs_inside_the_lock` (critical section runs inside the lock) + `test_premium_lock_integration.py` (real `GET_LOCK` serializes) | L1 + L3                      |
+| 6217               | workflow-guard migration                                        | `TestMigrationWorkflowGuard`                                                                                                                                                                                                        | L1                           |
+| 6233               | inline migration on adoption                                    | `TestInlineMigrationOnAdoption`                                                                                                                                                                                                     | L1                           |
+| 6238               | telemetry headers omitted on free tier                          | `axiosPremiumInterceptor.test.ts`                                                                                                                                                                                                   | FE unit                      |
+| 6201 / 6203 / 6231 | login -> assign -> release -> reassign -> logout                | `PremiumLifecycleIntegration.test.tsx`; e2e `LC-17`                                                                                                                                                                                 | L2                           |
+| 6208 / 6209        | inactivity grace / 2h auto-release                              | `PremiumLifecycleIntegration.test.tsx`; `PremiumInactivityActivity.test.tsx`; e2e `LC-14` / `LC-15`                                                                                                                                 | L2 / e2e                     |
+| 6210 / 6211        | cross-tab release / reassign                                    | `PremiumLifecycleIntegration.test.tsx` (PREMIUM_RELEASED receive); `PremiumInactivityReassign.test.tsx`                                                                                                                             | L2 (single-jsdom simulation) |
+| contract           | typed `/premium/*` shapes, header names, identifier omission    | `premiumRoutingContract.test.ts` + `test_premium_contract_fixtures.py`                                                                                                                                                              | contract                     |
+| v1.1.10 invariants | premiumShared teardown gate, staleness watermark, warm-up grace | `axiosPremiumInterceptor.test.ts`, `PremiumUnreachableIntegration.test.tsx`, `useInstanceUnreachableMachineLeader.test.tsx`, `PremiumSharedPollingStall.test.tsx`                                                                   | L2                           |
+
+### What stays manual / deferred
+
+- **Real-AWS L3** (603 CloudWatch assertion; 604 / 605 / 607 / 608 EC2/ECS/S3/CloudWatch behavior) needs a live deployed env - follow the SQL Check / CloudWatch Logs columns in the System sheet. The one automatable slice of that surface, proving the real `distributed_lock` serializes, is the opt-in `test_premium_lock_integration.py` lane.
+- **Full concurrent `assign_premium_user` race against a reconstructed DB schema** (asserting a single surviving target group) is deferred; the layered 6204 coverage above makes it low-value. The one scoping regression none of the three 6204 layers catches - logic hoisted out of `_assign_premium_user_impl` above the lock - is documented in that test and would only be caught by this deferred race.
+- **Numbering:** `600-x <-> 62xx` correspond; `BT-6xx` (release sheet, mapped earlier) does NOT map by trailing digits.

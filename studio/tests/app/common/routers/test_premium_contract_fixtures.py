@@ -1,5 +1,5 @@
 """
-WS2 producer-side contract test (#731).
+Producer-side contract test for the premium/routing response shapes.
 
 Asserts the FastAPI premium/routing response models agree with the shared
 fixtures the frontend consumes:

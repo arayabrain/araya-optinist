@@ -22,7 +22,7 @@ def _always_acquired_lock():
 
 class _StatefulFakeElbv2:
     """Fake ELBv2 that tracks target-group create/describe/delete so the
-    concurrent-assign orphaned-TG corruption is observable (issue #630)."""
+    concurrent-assign orphaned-TG corruption is observable."""
 
     def __init__(self):
         self._seq = 0
@@ -1442,7 +1442,7 @@ class TestEarlyCheckAndCleanup:
 
 
 class TestConcurrentAssignLock:
-    """Tests for per-user distributed lock on assign_premium_user (issue #630)."""
+    """Tests for per-user distributed lock on assign_premium_user."""
 
     @staticmethod
     def _lock_ctx(acquired: bool):
@@ -1561,11 +1561,11 @@ class TestConcurrentAssignLock:
         BETWEEN lock acquire and release. Guards the lock's scope, not just its
         presence: a refactor that keeps distributed_lock but moves the impl call
         outside the `with` block would reorder these events and fail here (the
-        real-lock serialization is proven by the WS5 GET_LOCK integration test;
+        real-lock serialization is proven by the GET_LOCK integration test;
         this pins that assign runs its work under the lock). It treats impl as
         opaque, so work hoisted OUT of _assign_premium_user_impl to before the
         lock is NOT caught here - only a full concurrent-assign-vs-real-DB race
-        (deferred WS5) would."""
+        (deferred) would."""
         from contextlib import contextmanager
 
         events = []
@@ -1609,8 +1609,8 @@ class TestConcurrentAssignLock:
         the lock). What they isolate is the DOWNSTREAM behavior the lock's
         happens-before guarantees: whether the existing-assignment read observes
         a prior assignment (existing_return) decides orphan-cleanup vs
-        short-circuit. This documents the corruption mechanism (issue #630,
-        6204); it is not itself proof the lock serializes."""
+        short-circuit. This documents the corruption mechanism (6204); it is
+        not itself proof the lock serializes."""
         from contextlib import ExitStack
 
         def boto3_client(service):
@@ -1660,7 +1660,7 @@ class TestConcurrentAssignLock:
             )
 
     def test_stale_existing_read_orphans_target_group(self, mock_env_vars_premium):
-        """Corruption mechanism (issue #630, 6204): when a second assign does not
+        """Corruption mechanism (6204): when a second assign does not
         observe the first's stored assignment (the stale read the per-user lock
         prevents), its orphan-cleanup deletes the first's live target group,
         corrupting routing. This is what the lock exists to prevent; the lock
@@ -1684,7 +1684,7 @@ class TestConcurrentAssignLock:
     def test_existing_assignment_read_short_circuits_single_target_group(
         self, mock_env_vars_premium
     ):
-        """Post-serialization outcome (issue #630, 6204): once the second assign
+        """Post-serialization outcome (6204): once the second assign
         observes the first's stored assignment (what the lock's happens-before
         guarantees), it short-circuits to 'existing', creating and deleting
         nothing, so exactly one target group survives. The serialization that
@@ -3647,7 +3647,7 @@ class TestCleanupGhostECSRegistrations:
 
     def test_deregisters_shutting_down_ec2_immediately(self, mock_env_vars_premium):
         """Instance whose EC2 is shutting-down (the typical transient state
-        during the #549 race) gets deregistered with no grace."""
+        during this deregistration race) gets deregistered with no grace."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ) as mock_boto3:
@@ -3994,7 +3994,7 @@ class TestCleanupGhostECSRegistrations:
     def test_deregisters_connected_agent_when_ec2_terminated(
         self, mock_env_vars_premium
     ):
-        """Regression for #549: a CI reporting agentConnected=True is still
+        """Regression: a CI reporting agentConnected=True is still
         deregistered when its underlying EC2 has been terminated."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -4168,7 +4168,7 @@ class TestCleanupGhostECSRegistrations:
 
     def test_deregisters_connected_without_ec2_id(self, mock_env_vars_premium):
         """CI with no ec2InstanceId is deregistered even when
-        agentConnected=True (the pre-#549 short-circuit treated any connected
+        agentConnected=True (the earlier short-circuit treated any connected
         agent as healthy regardless of EC2 mapping)."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -5372,7 +5372,7 @@ class TestPremiumTgUnhealthyAlarm:
 class TestAssignCascadeTiers:
     """Every reachable branch of the assign cascade emits the correct
     (assignment_source, is_shared) tuple, so each premium tier is exercised at
-    least once (issue #731, WS3 tier coverage).
+    least once.
 
     _assign_premium_user_impl has five cascade branches:
         dedicated / False, shared / True, standby / False,
@@ -5533,8 +5533,8 @@ class TestAssignCascadeTiers:
 
 
 class TestMigrationWorkflowGuard:
-    """can_migrate_user blocks migration while a workflow is active (issue #731,
-    6217). The active_workflow_count guard returns False for count > 0 and for a
+    """can_migrate_user blocks migration while a workflow is active (6217).
+    The active_workflow_count guard returns False for count > 0 and for a
     missing row, and True only when no workflow is running."""
 
     @staticmethod
@@ -5677,7 +5677,7 @@ class TestMigrationWorkflowGuard:
 class TestInlineMigrationOnAdoption:
     """A user holding a shared / autoscaling-pool assignment is migrated to a
     ready idle dedicated instance inline, in a single assign invocation, and
-    does not fall through to the async migration path (issue #731, 6233).
+    does not fall through to the async migration path (6233).
 
     An autoscaling-pool existing assignment skips the EC2-state precheck (guarded
     by instance_id != AUTOSCALING_POOL) and enters the inline-migration block
@@ -5755,7 +5755,7 @@ class TestInlineMigrationOnAdoption:
 
 class TestIdleUserSelectorExcludesActiveWorkflows:
     """get_idle_premium_users_for_instance selects only workflow-free users
-    (issue #731, 6217 "migrate query excludes count > 0"). The exclusion lives
+    (6217 "migrate query excludes count > 0"). The exclusion lives
     purely in SQL, so assert the query filters active_workflow_count = 0 rather
     than a Python-side filter that does not exist."""
 
