@@ -343,6 +343,21 @@ For background sync metrics (`ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`,
 | `RDS_DATABASE` | Database name | Required |
 | `S3_DEFAULT_BUCKET_NAME` | Fallback S3 bucket when user has no assigned bucket | Required |
 
+### Firebase / Auth Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `USE_FIREBASE_TOKEN` | `True` → authenticate with `Authorization: Bearer <Firebase ID token>`. `False` → use the locally-signed `ExToken` JWT and bypass Firebase | `True` (`auth_config.py`); `studio/config/.env.example` sets `False` for local dev |
+| `USE_FIREBASE_EMAIL` | Send verification / reset mail via the Firebase Identity Toolkit REST API | `True` |
+| `IS_STANDALONE` | Tolerates a missing `firebase_config.json` | `True` locally |
+| `FRONTEND_URL` | Only used in the log-only dev branch (`auth_email_service.py:73,127`). On the live path, `sendOobCode` is posted with no `continueUrl`, so the real action-link target comes from the **Firebase console email template**, not this variable | `http://localhost:3000` (`app/const.py:38`) |
+| `SECRET_KEY` | Signs the app-level JWT that wraps the Firebase refresh token, and the `ExToken` | Required |
+| `REFRESH_TOKEN_EXPIRE_MINUTES` | Lifetime of the app-level refresh JWT | `1440` |
+
+All set in `studio/config/.env.example`; `app_setup.sh` overrides `USE_FIREBASE_TOKEN` to `True` on AWS. `INITIAL_FIREBASE_UID` is plumbed through four ECS task definitions in Terraform (`public_service.tf`, `background_service.tf`, `compute.tf`) but read by nothing in `studio/` — dead variable, safe to remove.
+
+For the Terraform-side secrets (`firebase_config_json`, `firebase_private_json`, `optinist_admin_uid`, `test_users[].firebase_uid`) and how they flow into Secrets Manager, see [TERRAFORM_ARCHITECTURE.md](TERRAFORM_ARCHITECTURE.md#how-firebase-configuration-flows).
+
 ### Frontend Constants
 
 | Constant | Value | File | Purpose |
