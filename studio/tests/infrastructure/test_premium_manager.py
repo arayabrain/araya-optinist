@@ -1556,6 +1556,48 @@ class TestConcurrentAssignLock:
             assert body["instance_id"] == "i-new"
             mock_impl.assert_called_once()
 
+    def test_assign_impl_runs_inside_the_lock(self, mock_env_vars_premium):
+        """The critical section (_assign_premium_user_impl) must execute strictly
+        BETWEEN lock acquire and release. Guards the lock's scope, not just its
+        presence: a refactor that keeps distributed_lock but moves the impl call
+        outside the `with` block would reorder these events and fail here (the
+        real-lock serialization is proven by the WS5 GET_LOCK integration test;
+        this pins that assign runs its work under the lock). It treats impl as
+        opaque, so work hoisted OUT of _assign_premium_user_impl to before the
+        lock is NOT caught here - only a full concurrent-assign-vs-real-DB race
+        (deferred WS5) would."""
+        from contextlib import contextmanager
+
+        events = []
+
+        @contextmanager
+        def tracking_lock(name, timeout=None):
+            events.append(("enter", name))
+            try:
+                yield True
+            finally:
+                events.append(("exit", name))
+
+        def impl_probe(*_args, **_kwargs):
+            events.append(("impl", None))
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"instance_id": "i-x", "assigned": True}),
+            }
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ), patch("premium_manager.distributed_lock", new=tracking_lock), patch(
+            "premium_manager._assign_premium_user_impl", side_effect=impl_probe
+        ):
+            from premium_manager import ASSIGN_USER_LOCK_PREFIX, assign_premium_user
+
+            result = assign_premium_user(77, {"tier": "premium"}, "uid_77")
+
+        assert result["statusCode"] == 200
+        assert [e[0] for e in events] == ["enter", "impl", "exit"]
+        assert events[0][1] == f"{ASSIGN_USER_LOCK_PREFIX}77"
+
     def _assign_once(self, premium_manager, fake_elbv2, ec2, *, existing_return):
         """Run one assign_premium_user for user 77 against a shared stateful
         fake ELBv2. existing_return is what get_existing_user_assignment yields

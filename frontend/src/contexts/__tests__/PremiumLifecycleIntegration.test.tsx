@@ -1,5 +1,6 @@
 /**
  * L2 lifecycle integration test for premium routing.
+ * (test levels defined in frontend/e2e/README.md)
  *
  * Drives the real provider through one continuous session — login → assign →
  * 2h inactivity release → reassign on gesture → logout — and asserts the

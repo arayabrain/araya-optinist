@@ -8,6 +8,7 @@ import {
   apiUrl,
   ensureTutorialRecords,
   login,
+  logout,
   mockPremiumAssignment,
   openWorkspace,
   reproduceTutorial,
@@ -683,6 +684,7 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
 
     await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
 
+    // Release boundary: 2h of inactivity fires the release beacon.
     const beaconFired = page.waitForRequest(
       (r) => r.url().includes("/users/me/premium/release-beacon"),
       { timeout: 15_000 },
@@ -690,8 +692,8 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await page.clock.fastForward(125 * 60 * 1000)
     await beaconFired
 
-    // premium_assigned=true with no routing_id is the unrecoverable pair:
-    // headers are withheld while the app still believes it is routed.
+    // Every routing key is cleared so premium_assigned never outlives the
+    // token (the unrecoverable pair).
     await expect.poll(routingKeys).toEqual({
       routingId: null,
       assigned: "false",
@@ -699,8 +701,13 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       shared: "false",
     })
 
-    // A gesture after the release re-runs auto-assign against the same mocks.
+    // Reassign boundary: a gesture re-runs auto-assign.
     await page.mouse.click(5, 5)
     await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+
+    // Logout boundary: teardown clears the token and drops the assigned flag.
+    await logout(page)
+    await expect.poll(async () => (await routingKeys()).routingId).toBe(null)
+    expect((await routingKeys()).assigned).not.toBe("true")
   })
 })

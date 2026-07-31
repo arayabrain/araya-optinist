@@ -1,5 +1,5 @@
 /**
- * WS2 consumer-side contract test (#731).
+ * Consumer-side contract test for the premium/routing response shapes.
  *
  * The FE and BE share ONE fixture file
  * (frontend/src/utils/routing/__fixtures__/premium_routing/premium_contract.json).

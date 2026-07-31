@@ -845,29 +845,13 @@ describe("axios premium-routing interceptors", () => {
     expect(mockUpdateRoutingToken).not.toHaveBeenCalled()
   })
 
-  it("omits premium routing headers on the ui-event POST when unreachable (6238)", async () => {
-    // When the premium instance is unreachable, routing is torn down and
-    // getRoutingHeaders() returns {}. logPremiumUiEvent must then reach the
-    // backend via free tier, i.e. carry no X-Routing-ID / X-User-Tier, so the
-    // telemetry is not routed to the dead premium instance.
-    mockGetRoutingHeaders.mockReturnValue({})
-    responses.set("/users/me/premium/ui-event", { status: 200, data: {} })
-
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { logPremiumUiEvent } = require("api/premium/PremiumAssignmentApi")
-    await logPremiumUiEvent("instance_unreachable", { reason: "probe_failed" })
-
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0].url).toBe("/users/me/premium/ui-event")
-    const reqHeaders = recorded[0].headers as Record<string, unknown>
-    expect(reqHeaders["X-Routing-ID"]).toBeUndefined()
-    expect(reqHeaders["X-User-Tier"]).toBeUndefined()
-  })
-
-  it("keeps premium routing headers on the ui-event POST when reachable (6238)", async () => {
-    // The omission is driven purely by routing state, not by hardcoding the
-    // ui-event endpoint: while premium is reachable the telemetry must still
-    // carry the headers so it lands on the user's premium instance.
+  it("stamps whatever routing headers are active onto the ui-event POST (6238)", async () => {
+    // Unit-level check that logPremiumUiEvent is a normal request through this
+    // interceptor: it stamps exactly what getRoutingHeaders() returns, with no
+    // special-casing of the ui-event endpoint. The end-to-end 6238 behaviour —
+    // that a real dedicated 502 tears routing down so this POST goes free tier,
+    // while a reachable instance keeps the headers — is proven against the real
+    // routingService in premiumTelemetryRouting.test.ts.
     mockGetRoutingHeaders.mockReturnValue({
       "X-Routing-ID": "rid-outgoing",
       "X-User-Tier": "premium",

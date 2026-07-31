@@ -15,14 +15,19 @@ file does not duplicate them — it only checks the fixtures declare no
 identifier keys and that each fixture is a faithful subset of its model.
 """
 
+import asyncio
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
+from studio.app.common.core.middleware import secure_routing_middleware
 from studio.app.common.schemas.premium import (
     FreeLogoutResponse,
+    PremiumAssignmentDetail,
     PremiumAssignResponse,
     PremiumHeartbeatResponse,
     PremiumReleaseResponse,
@@ -64,12 +69,6 @@ def _backend_routing_headers():
 
 RoutingHeaders = _backend_routing_headers()
 
-# The FE PremiumAssignment interface (nested under PremiumStatusResult). The
-# response model types status.assignment only as Optional[dict], so its shape
-# is unenforced by the model layer and must be pinned here.
-STATUS_ASSIGNMENT_REQUIRED = {"instance_id", "assigned_at", "status", "is_shared"}
-STATUS_ASSIGNMENT_OPTIONAL = {"instance_id_hash", "assignment_source"}
-
 # (fixture key, response model) — the six typed endpoints.
 TYPED_MODELS = [
     ("routing_info", RoutingInfoResponse),
@@ -92,13 +91,18 @@ def test_fixture_is_valid_for_model(key, model_cls):
 
 
 def test_status_nested_assignment_shape():
-    # PremiumStatusResponse.assignment is Optional[dict] (unenforced), so pin
-    # the nested shape against the FE PremiumAssignment interface here.
+    # PremiumStatusResponse.assignment is Optional[PremiumAssignmentDetail], a
+    # typed model. Derive the allowed nested keys from that model so a field
+    # rename there is caught here, and confirm the fixture declares no key the
+    # model would silently drop.
     a = CONTRACT["premium_status"]["assignment"]
-    missing = STATUS_ASSIGNMENT_REQUIRED - set(a)
-    assert not missing, f"nested assignment missing required fields: {missing}"
-    unknown = set(a) - STATUS_ASSIGNMENT_REQUIRED - STATUS_ASSIGNMENT_OPTIONAL
-    assert not unknown, f"nested assignment has unknown fields: {unknown}"
+    allowed = set(PremiumAssignmentDetail.__fields__)
+    unknown = set(a) - allowed
+    assert (
+        not unknown
+    ), f"nested assignment has keys absent from PremiumAssignmentDetail: {unknown}"
+    # Constructs => every fixture value coerces to its declared type.
+    PremiumAssignmentDetail(**a)
     assert "uid" not in a and "user_id" not in a
 
 
@@ -121,3 +125,61 @@ def test_header_names_match_backend_source_of_truth():
     assert RoutingHeaders.ROUTING_ID.lower() == h["routing_id"].lower()
     assert RoutingHeaders.USER_TIER.lower() == h["user_tier"].lower()
     assert RoutingHeaders.SERVED_BY_INSTANCE.lower() == h["served_by_instance"].lower()
+
+
+def _run_secure_routing_middleware():
+    """Drive SecureRoutingMiddleware around a header-less ASGI app as a premium
+    user and return the lower-cased response header names it appended."""
+    captured = []
+
+    async def inner_app(scope, receive, send):
+        # Emit no headers here, so the captured start message contains exactly
+        # the names the middleware appends.
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def capture_send(message):
+        captured.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {
+        "type": "http",
+        "path": "/",
+        "headers": [(b"authorization", b"Bearer test-token")],
+    }
+    middleware = secure_routing_middleware.SecureRoutingMiddleware(inner_app)
+
+    srm = secure_routing_middleware
+    # The app test conftest forces IS_STANDALONE=True, under which the
+    # middleware skips header injection; flip it off so send_wrapper runs.
+    # extract_uid / tier / instance-id are mocked so the wrapper reaches the
+    # header-append path without a real JWT, DB, or instance-metadata lookup.
+    patches = [
+        mock.patch.object(srm.MODE, "IS_STANDALONE", False),
+        mock.patch.object(
+            srm, "extract_uid_from_firebase_jwt", return_value=("test-uid", None)
+        ),
+        mock.patch.object(srm, "get_user_tier_cached", return_value=srm.TIER_PREMIUM),
+        mock.patch.object(srm, "_get_instance_id", return_value="i-0test123"),
+    ]
+    with contextlib.ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        asyncio.run(middleware(scope, receive, capture_send))
+
+    start = next(m for m in captured if m["type"] == "http.response.start")
+    return {name.decode().lower() for name, _ in start["headers"]}
+
+
+def test_middleware_emits_fixture_header_names():
+    # Binds the real header emitter to the fixture: renaming a hardcoded header
+    # literal in SecureRoutingMiddleware breaks this test.
+    emitted = _run_secure_routing_middleware()
+    expected = {v.lower() for v in CONTRACT["headers"].values()}
+    assert emitted == expected, (
+        "SecureRoutingMiddleware response header names drifted from the shared "
+        f"premium_contract.json headers block: emitted={sorted(emitted)} "
+        f"expected={sorted(expected)}"
+    )

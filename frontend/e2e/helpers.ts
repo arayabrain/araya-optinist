@@ -303,36 +303,45 @@ export async function ensureCompletedTutorialRun(
   await runTutorial(page, tutorialName, "RUN")
 }
 
+// Shared routing contract fixture: sourcing the mock bodies from it keeps them
+// on the real response shape and guarantees no body carries a user_id.
+const PREMIUM_CONTRACT = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "src",
+      "utils",
+      "routing",
+      "__fixtures__",
+      "premium_routing",
+      "premium_contract.json",
+    ),
+    "utf-8",
+  ),
+)
+
 // Route-mock an active dedicated premium assignment (status + heartbeat +
-// beacon token), for exercising assignment-dependent UI on stacks where the
-// real AWS-backed flow is unreachable
+// beacon token) for assignment-dependent UI where the real AWS flow is
+// unreachable. No X-Routing-ID header: the local backend runs non-standalone
+// and rejects a request carrying a routing_id it did not mint, so seeding a
+// fake one here would 403 every later real request. Seeding is covered at the
+// jest interceptor level instead.
 export async function mockPremiumAssignment(page: Page) {
+  const status = PREMIUM_CONTRACT.premium_status
   await page.route("**/users/me/premium/status", (route) =>
     route.fulfill({
       json: {
-        user_id: 0,
-        subscription_type: "premium",
-        is_premium: true,
+        ...status,
         assignment: {
-          instance_id: "i-e2e-fake",
+          ...status.assignment,
           assigned_at: new Date().toISOString(),
-          status: "active",
-          is_shared: false,
-          assignment_source: "existing",
         },
       },
     }),
   )
   await page.route("**/users/me/premium/heartbeat", (route) =>
-    route.fulfill({
-      json: {
-        message: "ok",
-        updated: true,
-        user_id: 0,
-        user_tier: "premium",
-        assignment_active: true,
-      },
-    }),
+    route.fulfill({ json: PREMIUM_CONTRACT.premium_heartbeat }),
   )
   await page.route("**/users/me/premium/beacon-token", (route) =>
     route.fulfill({ json: { token: "e2e" } }),
