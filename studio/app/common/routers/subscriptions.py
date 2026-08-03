@@ -752,8 +752,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         return {"received": True, "processed": event_type}
 
     except HTTPException:
-        # Re-raise HTTP exceptions
-        raise HTTPException(status_code=400, detail="Webhook processing failed")
+        # bare raise: the generic arm below would turn this into a 500
+        raise
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")

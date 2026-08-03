@@ -748,8 +748,9 @@ class WebhookService:
             )
 
         except HTTPException:
+            # bare raise: the generic arm below would turn this into a 500
             db.rollback()
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+            raise
         except Exception as e:
             logger.error(
                 f"Error processing subscription_schedule.released webhook: {str(e)}"
@@ -956,7 +957,8 @@ class WebhookService:
                 )
 
             except HTTPException:
-                raise HTTPException(status_code=400, detail="Invalid webhook data")
+                # bare raise: the generic arm below would turn this into a 500
+                raise
             except Exception as e:
                 logger.error(f"Webhook: Error finding subscription: {str(e)}")
                 raise HTTPException(
@@ -974,7 +976,8 @@ class WebhookService:
                     )
 
             except HTTPException:
-                raise HTTPException(status_code=400, detail="Invalid webhook data")
+                # bare raise: the generic arm below would turn this into a 500
+                raise
             except Exception as e:
                 logger.error(f"Webhook: Error getting subscription plan: {str(e)}")
                 raise HTTPException(
@@ -1094,8 +1097,9 @@ class WebhookService:
             }
 
         except HTTPException:
+            # bare raise: the generic arm below would turn this into a 500
             db.rollback()
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+            raise
         except Exception as e:
             logger.error(
                 f"Webhook: Error processing subscription payment for invoice "
@@ -1803,8 +1807,10 @@ class WebhookService:
                         "message": f"Unhandled event type: {event_type}",
                     }
 
-        except HTTPException:
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+        except HTTPException as e:
+            log_fn = logger.error if e.status_code >= 500 else logger.warning
+            log_fn(f"Webhook {event_type} failed: {e.status_code} {e.detail}")
+            raise
         except Exception as e:
             logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")
             raise HTTPException(

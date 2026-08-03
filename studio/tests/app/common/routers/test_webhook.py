@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from fastapi import HTTPException
 from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
@@ -1392,6 +1393,132 @@ class TestSubscriptionLifecycleWebhooks:
         mock_db.rollback.assert_not_called()
         # execute() called once for fallback UPDATE
         mock_db.execute.assert_called_once()
+
+
+class TestWebhookErrorDetailPassthrough:
+    """
+    Webhook handlers used to collapse every inner HTTPException into
+    400 "Invalid webhook data", at up to four nesting levels, without
+    logging any of them. The originating status and detail must now
+    survive to the caller, and be logged exactly once at the dispatch
+    boundary.
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        db.execute = Mock()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_inner_detail_survives_dispatch(self, mock_db):
+        """A handler's own 404 is not rewritten into 400 Invalid webhook data."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(
+                status_code=404, detail="Subscription plan not found: 3"
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert exc.value.status_code == 404
+        assert exc.value.detail == "Subscription plan not found: 3"
+
+    @pytest.mark.asyncio
+    async def test_server_error_is_not_downgraded_to_400(self, mock_db):
+        """A 5xx must not be relabelled as a client-side 400."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(
+                status_code=500, detail="Failed to update subscription"
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == "Failed to update subscription"
+
+    @pytest.mark.asyncio
+    async def test_client_error_logged_once_as_warning(self, mock_db, caplog):
+        """4xx logs at WARNING with the event type, status and detail."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(status_code=404, detail="Nope"),
+        ):
+            with caplog.at_level("WARNING"):
+                with pytest.raises(HTTPException):
+                    await WebhookService.dispatch_webhook_event(
+                        mock_db, "checkout.session.completed", {}
+                    )
+
+        matches = [r for r in caplog.records if "Webhook checkout" in r.getMessage()]
+        assert len(matches) == 1
+        assert matches[0].levelname == "WARNING"
+        assert "404" in matches[0].getMessage()
+        assert "Nope" in matches[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_server_error_logged_as_error(self, mock_db, caplog):
+        """5xx must page at ERROR, not hide at WARNING with the 4xx traffic."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(status_code=500, detail="Boom"),
+        ):
+            with caplog.at_level("WARNING"):
+                with pytest.raises(HTTPException):
+                    await WebhookService.dispatch_webhook_event(
+                        mock_db, "checkout.session.completed", {}
+                    )
+
+        matches = [r for r in caplog.records if "Webhook checkout" in r.getMessage()]
+        assert len(matches) == 1
+        assert matches[0].levelname == "ERROR"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_still_becomes_500(self, mock_db):
+        """The generic arm is untouched: non-HTTP errors still surface as 500."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=RuntimeError("kaboom"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert exc.value.status_code == 500
+        assert "kaboom" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_success_path_logs_no_failure(self, mock_db, caplog):
+        """A healthy event must not emit a failure line."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            return_value={"success": True},
+        ):
+            with caplog.at_level("WARNING"):
+                result = await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert result["success"] is True
+        assert not [r for r in caplog.records if "failed" in r.getMessage()]
 
 
 if __name__ == "__main__":
