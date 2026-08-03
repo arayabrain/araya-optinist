@@ -170,7 +170,9 @@ export async function openWorkspace(page: Page, name: string): Promise<number> {
 
 export async function importSampleData(page: Page, workspaceName: string) {
   // The import menu silently no-ops until GET /workspace/{id} populates the
-  // store; the sidebar showing the workspace name signals it's ready
+  // store; the workspace name, rendered only by the Workflow tab, signals
+  // it's ready
+  await page.locator('button[role="tab"]:has-text("Workflow")').click()
   await expect(page.locator(`text=${workspaceName}`).first()).toBeVisible({
     timeout: 15_000,
   })
