@@ -8,6 +8,7 @@ import {
   apiUrl,
   ensureTutorialRecords,
   login,
+  logout,
   mockPremiumAssignment,
   openWorkspace,
   reproduceTutorial,
@@ -659,5 +660,54 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
         { timeout: 60_000 },
       )
       .not.toBe("0")
+  })
+
+  test("LC-17 - Release clears every routing key; a gesture re-seeds them", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 1 MONTH")
+
+    await mockPremiumAssignment(page)
+    await page.route("**/users/me/premium/release-beacon", (route) =>
+      route.fulfill({ json: { released: true } }),
+    )
+    await loginWithArmedInactivityMonitor(page)
+
+    const routingKeys = () =>
+      page.evaluate(() => ({
+        routingId: localStorage.getItem("routing_id"),
+        assigned: localStorage.getItem("premium_assigned"),
+        instanceId: localStorage.getItem("premium_instance_id"),
+        shared: localStorage.getItem("premium_shared"),
+      }))
+
+    await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+
+    // Release boundary: 2h of inactivity fires the release beacon.
+    const beaconFired = page.waitForRequest(
+      (r) => r.url().includes("/users/me/premium/release-beacon"),
+      { timeout: 15_000 },
+    )
+    await page.clock.fastForward(125 * 60 * 1000)
+    await beaconFired
+
+    // Every routing key is cleared so premium_assigned never outlives the
+    // token (the unrecoverable pair).
+    await expect.poll(routingKeys).toEqual({
+      routingId: null,
+      assigned: "false",
+      instanceId: null,
+      shared: "false",
+    })
+
+    // Reassign boundary: a gesture re-runs auto-assign.
+    await page.mouse.click(5, 5)
+    await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+
+    // Logout boundary: teardown clears the token and drops the assigned flag.
+    await logout(page)
+    await expect.poll(async () => (await routingKeys()).routingId).toBe(null)
+    expect((await routingKeys()).assigned).not.toBe("true")
   })
 })

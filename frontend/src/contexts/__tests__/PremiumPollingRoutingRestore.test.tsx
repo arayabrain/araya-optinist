@@ -205,6 +205,20 @@ const dedicatedStatus: PremiumStatusResult = {
   },
 }
 
+// The pool marker is load-balanced across the ASG, so /status carries no
+// instance_id_hash for it — nothing to pin a single instance to.
+const autoscalingPoolStatus: PremiumStatusResult = {
+  subscription_type: UserTier.PREMIUM,
+  is_premium: true,
+  assignment: {
+    instance_id: "autoscaling-pool",
+    is_shared: true,
+    assigned_at: "2026-05-12T00:00:00Z",
+    status: "active",
+    assignment_source: "autoscaling_temp",
+  },
+}
+
 // --- Tests ---
 
 describe("PremiumAssignmentProvider — polling routing restore", () => {
@@ -437,6 +451,46 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
     }
 
     expect(ctxRef.current?.assignmentResult).toBe(firstRef)
+  })
+
+  test("refresh adopts an autoscaling-pool assignment and keeps polling for the dedicated handoff", async () => {
+    // A page refresh on the pool marker must re-adopt the same row (no fresh
+    // assignment) and resume leader polling. The pool has no verifiable
+    // instance, so the pinned instance id must be cleared rather than set to
+    // the marker string — pinning it would fail every x-served-by comparison.
+    mockGetPremiumStatus.mockResolvedValue(autoscalingPoolStatus)
+    // A pin left in localStorage by an earlier dedicated session survives the
+    // refresh, so the adoption has to actively clear it.
+    routingService.setPremiumInstanceId("hash-stale")
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe(
+        "autoscaling-pool",
+      )
+    })
+    expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
+    expect(routingService.isPremiumAssigned()).toBe(true)
+    expect(routingService.isPremiumShared()).toBe(true)
+    expect(routingService.getPremiumInstanceId()).toBeNull()
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+
+    mockGetPremiumStatus.mockClear()
+
+    await act(async () => {
+      jest.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    // Poll state survives the adoption: the tab keeps asking /status so the
+    // inline migration to a dedicated instance is picked up when it happens.
+    expect(mockGetPremiumStatus).toHaveBeenCalled()
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe(
+      "autoscaling-pool",
+    )
+    expect(ctxRef.current?.error).toBeNull()
   })
 
   test("polling fires via unreachable path on dedicated assignment, uses /status not /assign", async () => {

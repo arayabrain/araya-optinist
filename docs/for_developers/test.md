@@ -49,4 +49,14 @@ account:
 yarn test:e2e
 ```
 
-Full setup, credentials, coverage matrix, and troubleshooting: `frontend/e2e/README.md`.
+Setup, credentials, running, and troubleshooting: `frontend/e2e/README.md`.
+
+### Test-sheet coverage maps
+
+Which manual test-sheet rows are already automated is tracked in two documents,
+one per sheet family:
+
+| Document | Sheet family |
+|---|---|
+| `infrastructure/documentation/RELEASE_TEST_COVERAGE.md` | `Araya-OptiNiSt Release Test Cases Template` (`BT-1xx` .. `BT-11xx`), almost all Playwright |
+| `infrastructure/documentation/SYSTEM_TEST_COVERAGE.md` | `Araya-Optinist System Test Cases Template`, a larger scheme covered mostly by the jest and pytest suites above |
