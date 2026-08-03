@@ -63,18 +63,24 @@ class WorkspaceDataCapacityService:
     def _update_exp_data_usage_db(
         cls, workspace_id: str, unique_id: str, data_usage: int
     ):
-        # Concurrent writers (main /run/result task + executor) often write the
-        # same value: a Core UPDATE (existence via SELECT, since a same-value
-        # UPDATE reports rowcount 0 on MySQL) avoids the ORM stale-data error.
-        # experiment_records has no unique constraint on (workspace_id, uid), so
-        # the check-then-write is serialized with a MySQL advisory lock to
-        # prevent duplicate INSERTs; best-effort if the lock is unavailable.
+        # Concurrent writers (main /run/result task + executor) write the same
+        # row. Two safeguards:
+        #   - Core UPDATE with an existence SELECT (not UPDATE rowcount, which is
+        #     0 for a same-value write on MySQL) avoids the ORM stale-data error.
+        #   - (workspace_id, uid) has no unique constraint, so the check-then-
+        #     write is serialized by a MySQL advisory lock, held on a dedicated
+        #     lock_db session and released only AFTER the inner write commits.
+        #     Spanning the commit is essential: otherwise a second writer could
+        #     acquire the lock and run its existence SELECT before this INSERT is
+        #     visible (REPEATABLE READ) and insert a duplicate. Best-effort:
+        #     proceeds unlocked if the lock backend is unavailable.
         lock_name = f"{cls._EXP_DATA_USAGE_LOCK_PREFIX}_{workspace_id}_{unique_id}"[:64]
-        with session_scope() as db:
+
+        with session_scope() as lock_db:
             got_lock = False
             try:
                 got_lock = (
-                    db.execute(
+                    lock_db.execute(
                         text("SELECT GET_LOCK(:name, :timeout) AS r"),
                         {
                             "name": lock_name,
@@ -90,37 +96,41 @@ class WorkspaceDataCapacityService:
                 )
 
             try:
-                exists = (
-                    db.execute(
-                        select(ExperimentRecord.id).where(
-                            ExperimentRecord.workspace_id == workspace_id,
-                            ExperimentRecord.uid == unique_id,
-                        )
-                    ).first()
-                    is not None
-                )
+                # Separate session: its commit lands while lock_db still holds
+                # the lock.
+                with session_scope() as db:
+                    exists = (
+                        db.execute(
+                            select(ExperimentRecord.id).where(
+                                ExperimentRecord.workspace_id == workspace_id,
+                                ExperimentRecord.uid == unique_id,
+                            )
+                        ).first()
+                        is not None
+                    )
 
-                if exists:
-                    db.execute(
-                        update(ExperimentRecord)
-                        .where(
-                            ExperimentRecord.workspace_id == workspace_id,
-                            ExperimentRecord.uid == unique_id,
+                    if exists:
+                        db.execute(
+                            update(ExperimentRecord)
+                            .where(
+                                ExperimentRecord.workspace_id == workspace_id,
+                                ExperimentRecord.uid == unique_id,
+                            )
+                            .values(data_usage=data_usage)
                         )
-                        .values(data_usage=data_usage)
-                    )
-                else:
-                    db.add(
-                        ExperimentRecord(
-                            workspace_id=workspace_id,
-                            uid=unique_id,
-                            data_usage=data_usage,
+                    else:
+                        db.add(
+                            ExperimentRecord(
+                                workspace_id=workspace_id,
+                                uid=unique_id,
+                                data_usage=data_usage,
+                            )
                         )
-                    )
             finally:
+                # Release after the inner write committed (lock spans commit).
                 if got_lock:
                     try:
-                        db.execute(
+                        lock_db.execute(
                             text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name}
                         )
                     except Exception as e:

@@ -1,10 +1,15 @@
 """
 Unit tests for WorkspaceDataCapacityService._update_exp_data_usage_db.
 
-Guards that the check-then-write is serialized by a MySQL advisory lock so
-concurrent writers do not create duplicate experiment_records rows (the table
-has no unique constraint on (workspace_id, uid)), and that the lock is always
-released.
+Guards the code structure of the advisory-lock serialization: the lock is
+acquired, the check-then-write runs, and the lock is released *after* the write
+(so it spans the write's commit).
+
+NOTE: these use a single mocked session and therefore validate ordering/branch
+structure only. The actual cross-connection guarantee — that a second writer
+cannot INSERT a duplicate row because the lock is held across the first writer's
+commit — needs two real DB connections and is validated by the manual test
+(Test 3 in the PR's manual test plan), not here.
 """
 
 from contextlib import contextmanager
@@ -44,7 +49,9 @@ def test_inserts_under_advisory_lock_when_absent():
 
     texts = _sql_texts(db)
     assert any("GET_LOCK" in t for t in texts)
-    assert any("RELEASE_LOCK" in t for t in texts)
+    # RELEASE_LOCK is the LAST statement — it runs after the write session's
+    # commit, so the lock spans the commit (the whole point of the fix).
+    assert "RELEASE_LOCK" in texts[-1]
     # Absent -> insert branch.
     db.add.assert_called_once()
 
