@@ -62,3 +62,27 @@ def test_success_log_not_emitted_when_commit_fails(caplog):
         "Updated storage usage for user 9" in r.message for r in caplog.records
     )
     assert any("Failed to update storage usage" in r.message for r in caplog.records)
+
+
+def test_genuine_db_error_reports_failure_not_success(caplog):
+    """A genuine write error (StaleDataError) must NOT be swallowed as the
+    benign 'table not accessible' fallback: the function reports failure."""
+    from sqlalchemy.orm.exc import StaleDataError
+
+    from studio.app.common.core.cloud.storage_tracking import update_user_storage_usage
+
+    db = MagicMock()
+    db.execute.side_effect = StaleDataError("stale")
+
+    with patch(f"{MODULE}.session_scope", _session_scope(db)):
+        with caplog.at_level(logging.WARNING):
+            result = update_user_storage_usage(9, 111)
+
+    assert result is False
+    # Must not be misclassified as the benign missing-table fallback...
+    assert not any("table not accessible" in r.message for r in caplog.records)
+    # ...nor logged as success.
+    assert not any(
+        "Updated storage usage for user 9" in r.message for r in caplog.records
+    )
+    assert any("Failed to update storage usage" in r.message for r in caplog.records)
