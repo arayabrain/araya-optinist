@@ -174,6 +174,8 @@ export async function importSampleData(page: Page, workspaceName: string) {
   await expect(page.locator(`text=${workspaceName}`).first()).toBeVisible({
     timeout: 15_000,
   })
+  // The menu item is disabled off the Record tab
+  await page.locator('button[role="tab"]:has-text("Record")').click()
   await page.locator('[data-testid="MenuBookIcon"]').click()
   await page.getByText("Import sample data").click()
   const dialog = page.locator('[role="dialog"]:has-text("Import sample data?")')
@@ -182,15 +184,6 @@ export async function importSampleData(page: Page, workspaceName: string) {
   await expect(page.locator("text=Sample data import success")).toBeVisible({
     timeout: 120_000,
   })
-  // The documentation menu stays open behind the dialog and its backdrop
-  // blocks later clicks. A single Escape can race the closing dialog on
-  // slow machines, so keep pressing until the menu is verifiably gone.
-  await expect(async () => {
-    await page.keyboard.press("Escape")
-    await expect(page.getByText("Import sample data")).toBeHidden({
-      timeout: 2_000,
-    })
-  }).toPass({ timeout: 15_000 })
 }
 
 // Go to the Record tab; import sample data first if no records exist yet
@@ -203,9 +196,7 @@ export async function ensureTutorialRecords(page: Page, workspaceName: string) {
     .then(() => true)
     .catch(() => false)
   if (!hasRecords) {
-    await page.locator('button[role="tab"]:has-text("Workflow")').click()
     await importSampleData(page, workspaceName)
-    await page.locator('button[role="tab"]:has-text("Record")').click()
     await expect(
       page.locator('[data-testid="reproduce-button"]').first(),
     ).toBeVisible({ timeout: 30_000 })
