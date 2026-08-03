@@ -4,6 +4,12 @@
 # not part of the per-PR test lambda job.
 # Credentials are inline (not from studio/config/.env) so it runs unchanged.
 # Invoked via `make premium_lock_it`.
+#
+# Own compose project: without it this file inherits `araya-optinist` from the
+# directory and the make target's `down -v` cleanup would stop a dev or test
+# lane running concurrently.
+name: premium-lock-it
+
 services:
   db:
     image: mysql:8.4
