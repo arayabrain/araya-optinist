@@ -844,4 +844,27 @@ describe("axios premium-routing interceptors", () => {
 
     expect(mockUpdateRoutingToken).not.toHaveBeenCalled()
   })
+
+  it("stamps whatever routing headers are active onto the ui-event POST (6238)", async () => {
+    // Unit-level check that logPremiumUiEvent is a normal request through this
+    // interceptor: it stamps exactly what getRoutingHeaders() returns, with no
+    // special-casing of the ui-event endpoint. The end-to-end 6238 behaviour —
+    // that a real dedicated 502 tears routing down so this POST goes free tier,
+    // while a reachable instance keeps the headers — is proven against the real
+    // routingService in premiumTelemetryRouting.test.ts.
+    mockGetRoutingHeaders.mockReturnValue({
+      "X-Routing-ID": "rid-outgoing",
+      "X-User-Tier": "premium",
+    })
+    responses.set("/users/me/premium/ui-event", { status: 200, data: {} })
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { logPremiumUiEvent } = require("api/premium/PremiumAssignmentApi")
+    await logPremiumUiEvent("instance_reachable", {})
+
+    expect(recorded).toHaveLength(1)
+    const reqHeaders = recorded[0].headers as Record<string, unknown>
+    expect(reqHeaders["X-Routing-ID"]).toBe("rid-outgoing")
+    expect(reqHeaders["X-User-Tier"]).toBe("premium")
+  })
 })

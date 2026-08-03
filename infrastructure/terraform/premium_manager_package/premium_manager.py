@@ -4563,7 +4563,7 @@ def migrate_user_to_dedicated_instance(user_id: int, new_instance_id: str) -> bo
         )
         return False
 
-    # Reserve target instance first using database-level locking
+    # Lock-based reserve (no RESERVING row written); aborts have nothing to release
     if not try_reserve_instance_for_migration(new_instance_id, user_id):
         print(
             f"Cannot migrate user {user_id}: instance {new_instance_id} not available"

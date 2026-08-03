@@ -5,6 +5,8 @@
  *  1. User interaction (pointerdown) resets the clock and prevents the 2h
  *     auto-release.
  *  2. A running workflow keeps the instance active with no direct user input.
+ *  3. Activity broadcast by another tab dismisses this tab's warning and
+ *     advances this tab's clock, with no interaction in this tab.
  */
 
 import React from "react"
@@ -46,6 +48,10 @@ let mockPipelineStatus = "StartUninitialized"
 const mockDispatchFn = jest.fn(() => Promise.resolve())
 const mockLogoutFn = jest.fn()
 const mockBroadcastPremiumReleased = jest.fn()
+// Captures the provider's cross-tab activity subscriber so a test can play the
+// part of the other tab. Prefixed with `mock` so the jest.mock factory may
+// reference it.
+const mockActivityFromOtherTab: Set<(timestamp: number) => void> = new Set()
 const mockLogPremiumUiEvent = jest.fn()
 
 jest.mock("react-redux", () => ({
@@ -111,7 +117,10 @@ jest.mock("utils/crossTabSync", () => ({
   },
   syncActivityAcrossTabs: () => {},
   getLastActivityFromAnyTab: () => 0,
-  onActivityFromOtherTab: () => () => {},
+  onActivityFromOtherTab: (handler: (timestamp: number) => void) => {
+    mockActivityFromOtherTab.add(handler)
+    return () => mockActivityFromOtherTab.delete(handler)
+  },
   CrossTabLeaderElection: class {
     constructor(onBecomeLeader: () => void) {
       setTimeout(onBecomeLeader, 0)
@@ -186,6 +195,7 @@ describe("PremiumAssignmentProvider — activity resets inactivity clock", () =>
     jest.useFakeTimers()
     localStorage.clear()
     sessionStorage.clear()
+    mockActivityFromOtherTab.clear()
     mockPipelineStatus = "StartUninitialized"
   })
 
@@ -275,6 +285,34 @@ describe("PremiumAssignmentProvider — activity resets inactivity clock", () =>
       window.dispatchEvent(new Event("keydown"))
     })
     expect(ctxRef.current?.showInactivityWarning).toBe(false)
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+  })
+
+  test("another tab's activity dismisses this tab's warning without any interaction here", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatus)
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    await advance(61 * ONE_MIN)
+    expect(ctxRef.current?.showInactivityWarning).toBe(true)
+
+    // Play the other tab: a Stay Active click there writes the shared activity
+    // timestamp, which reaches this tab as a storage event.
+    expect(mockActivityFromOtherTab.size).toBeGreaterThan(0)
+    act(() => {
+      mockActivityFromOtherTab.forEach((handler) => handler(Date.now()))
+    })
+
+    expect(ctxRef.current?.showInactivityWarning).toBe(false)
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    // No heartbeat of our own: this tab only mirrors the other tab's state.
+    expect(mockSendPremiumHeartbeat).not.toHaveBeenCalled()
+
+    // The clock advanced too, so the release deadline moved with it.
+    await advance(115 * ONE_MIN)
     expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
   })
 

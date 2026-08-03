@@ -5,6 +5,17 @@ import os
 from unittest.mock import MagicMock, Mock, patch
 
 
+def split_boto3_clients(mock_boto3):
+    """Wire boto3.client to return a distinct mock per service name.
+
+    The Lambda creates separate elbv2 and cloudwatch clients; sharing one mock
+    would let an alarm delete on the wrong client pass undetected.
+    """
+    clients = {"elbv2": MagicMock(), "cloudwatch": MagicMock()}
+    mock_boto3.client.side_effect = lambda service, *a, **k: clients[service]
+    return clients["elbv2"], clients["cloudwatch"]
+
+
 class TestRecoverStaleWorkflowCounts:
     """SQLAlchemy-based workflow recovery tests."""
 
@@ -184,12 +195,18 @@ class TestCheckPremiumUserInactivity:
             assert "error" not in result
 
     def test_logout_with_alb_cleanup(self, mock_env_vars_common):
-        """Inactive premium user triggers ALB rule + TG delete."""
+        """Inactive premium user triggers ALB rule + TG delete, and the TG's
+        unhealthy-host alarm goes with it. The alarm delete is best-effort in
+        the Lambda (exceptions are swallowed), so without this assertion a
+        leaked alarm would page on a target group that no longer exists."""
         mock_conn, mock_cursor = self._setup_db_mock()
         mock_cursor.fetchall.return_value = [
             {
-                "user_id": "premium1",
-                "target_group_arn": "arn:aws:tg/user-tg",
+                "user_id": 123,
+                "target_group_arn": (
+                    "arn:aws:elasticloadbalancing:region:account:"
+                    "targetgroup/premium-123-tg/xyz"
+                ),
                 "alb_rule_arn": "arn:aws:rule/user-rule",
             }
         ]
@@ -198,8 +215,7 @@ class TestCheckPremiumUserInactivity:
             "common_user_manager.get_db_connection"
         ) as mock_db, patch("common_user_manager.boto3") as mock_boto3:
             mock_db.return_value = mock_conn
-            mock_elbv2 = MagicMock()
-            mock_boto3.client.return_value = mock_elbv2
+            mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
             from common_user_manager import check_premium_user_inactivity
 
@@ -209,6 +225,9 @@ class TestCheckPremiumUserInactivity:
             assert result.get("failed", 0) == 0
             mock_elbv2.delete_rule.assert_called_once()
             mock_elbv2.delete_target_group.assert_called_once()
+            mock_cloudwatch.delete_alarms.assert_called_once_with(
+                AlarmNames=["test-premium-123-tg-unhealthy-hosts"]
+            )
             mock_conn.commit.assert_called_once()
 
     def test_skips_standby_markers(self, mock_env_vars_common):
@@ -226,8 +245,7 @@ class TestCheckPremiumUserInactivity:
             "common_user_manager.get_db_connection"
         ) as mock_db, patch("common_user_manager.boto3") as mock_boto3:
             mock_db.return_value = mock_conn
-            mock_elbv2 = MagicMock()
-            mock_boto3.client.return_value = mock_elbv2
+            mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
             from common_user_manager import check_premium_user_inactivity
 
@@ -236,6 +254,7 @@ class TestCheckPremiumUserInactivity:
             assert result["logged_out"] == 1
             mock_elbv2.delete_rule.assert_not_called()
             mock_elbv2.delete_target_group.assert_not_called()
+            mock_cloudwatch.delete_alarms.assert_not_called()
 
     def test_skips_autoscaling_tg(self, mock_env_vars_common):
         """Autoscaling TG is never deleted during cleanup."""
@@ -253,8 +272,7 @@ class TestCheckPremiumUserInactivity:
             "common_user_manager.get_db_connection"
         ) as mock_db, patch("common_user_manager.boto3") as mock_boto3:
             mock_db.return_value = mock_conn
-            mock_elbv2 = MagicMock()
-            mock_boto3.client.return_value = mock_elbv2
+            mock_elbv2, mock_cloudwatch = split_boto3_clients(mock_boto3)
 
             from common_user_manager import check_premium_user_inactivity
 
@@ -263,6 +281,7 @@ class TestCheckPremiumUserInactivity:
             assert result["logged_out"] == 1
             mock_elbv2.delete_rule.assert_called_once()
             mock_elbv2.delete_target_group.assert_not_called()
+            mock_cloudwatch.delete_alarms.assert_not_called()
 
     def test_partial_failure(self, mock_env_vars_common):
         """One user fails, other succeeds."""
@@ -352,6 +371,43 @@ class TestHandler:
             assert result["statusCode"] == 500
             body = json.loads(result["body"])
             assert "Unexpected crash" in body["error"]
+
+    def test_step_failure_does_not_fail_the_sweep(self, mock_env_vars_common):
+        """A step that fails internally reports its error in the body while the
+        handler still returns 200, so one broken step never stops the sweep
+        (and the 10-minute schedule keeps retrying). Drives the real step
+        functions against a failing DB rather than stubbing their results."""
+        mock_cursor = MagicMock()
+        mock_cursor.execute.side_effect = Exception("Critical database error")
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = Mock(return_value=mock_conn)
+        mock_conn.__exit__ = Mock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
+
+        with patch.dict("os.environ", mock_env_vars_common), patch(
+            "common_user_manager.get_db_connection", return_value=mock_conn
+        ), patch(
+            "common_user_manager.get_sqlalchemy_session",
+            side_effect=Exception("Critical database error"),
+        ), patch(
+            "common_user_manager.reap_terminated_ecs_registrations",
+            return_value={"deregistered": 0},
+        ), patch(
+            "common_user_manager.boto3"
+        ), patch(
+            "common_user_manager.traceback.print_exc"
+        ):
+            from common_user_manager import handler
+
+            result = handler({"source": "aws.events"}, MagicMock())
+
+            assert result["statusCode"] == 200
+            results = json.loads(result["body"])["results"]
+            for step in ("workflow_recovery", "free_inactivity", "premium_inactivity"):
+                assert "error" in results[step]
+            assert results["free_inactivity"]["logged_out"] == 0
+            assert results["premium_inactivity"]["logged_out"] == 0
 
 
 class TestHandlerGhostReap:
