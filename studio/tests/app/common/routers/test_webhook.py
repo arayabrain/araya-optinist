@@ -792,14 +792,8 @@ class TestCheckoutStorageQuotaUpdate:
         }
         return patches
 
-    def test_existing_storage_record_updated_via_execute(
-        self, mock_db, session_data, mock_user
-    ):
-        """When storage record exists, db.execute(update) should be called"""
+    def _run_checkout(self, mock_db, session_data, mock_user):
         patches = self._setup_checkout_mocks(mock_db, mock_user)
-        # db.execute returns a result with rowcount=1 (existing record updated)
-        mock_db.execute.return_value.rowcount = 1
-
         with (
             patches["plan"],
             patches["provider"],
@@ -811,53 +805,52 @@ class TestCheckoutStorageQuotaUpdate:
             patches["cache"],
             patches["datetime"],
         ):
-            result = WebhookService.handle_checkout_completed(mock_db, session_data)
+            return WebhookService.handle_checkout_completed(mock_db, session_data)
 
-        assert result["success"] is True
-        # Verify db.execute was called (the update statement)
-        mock_db.execute.assert_called_once()
-        # Verify db.add was NOT called for storage (no new record needed)
-        mock_db.add.assert_not_called()
-        # Verify single atomic commit
-        mock_db.commit.assert_called_once()
-
-    def test_no_storage_record_creates_new_via_add(
+    def test_storage_quota_written_as_single_upsert(
         self, mock_db, session_data, mock_user
     ):
-        """When no storage record exists, db.add(UserStorageUsage) should be called"""
-        from studio.app.common.models.subscription import UserStorageUsage
-
-        patches = self._setup_checkout_mocks(mock_db, mock_user)
-        # db.execute returns rowcount=0 (no existing record)
-        mock_db.execute.return_value.rowcount = 0
-
-        with (
-            patches["plan"],
-            patches["provider"],
-            patches["account"],
-            patches["payment"],
-            patches["subscription"],
-            patches["purchase"],
-            patches["stripe"],
-            patches["cache"],
-            patches["datetime"],
-        ):
-            result = WebhookService.handle_checkout_completed(mock_db, session_data)
-
-        assert result["success"] is True
-        # Verify db.add was called with a UserStorageUsage instance
-        mock_db.add.assert_called_once()
-        added_obj = mock_db.add.call_args[0][0]
-        assert isinstance(added_obj, UserStorageUsage)
-        assert added_obj.user_id == 42
-        assert added_obj.storage_usage_bytes == 0
+        """Quota write is one statement, whether or not the row already exists."""
         from studio.app.common.core.subscription.constants import (
             StorageQuota,
             SubscriptionPlanIds,
         )
 
-        expected_quota = StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
-        assert added_obj.storage_quota_bytes == expected_quota
+        result = self._run_checkout(mock_db, session_data, mock_user)
+
+        assert result["success"] is True
+        mock_db.execute.assert_called_once()
+        # No separate INSERT path to get out of sync with the UPDATE path.
+        mock_db.add.assert_not_called()
+        mock_db.commit.assert_called_once()
+
+        stmt = mock_db.execute.call_args[0][0]
+        params = stmt.compile().params
+        assert params["user_id"] == 42
+        assert params["storage_usage_bytes"] == 0
+        assert params["storage_quota_bytes"] == StorageQuota.bytes_for_plan(
+            SubscriptionPlanIds.PREMIUM
+        )
+
+    def test_quota_write_is_idempotent_for_an_existing_row(
+        self, mock_db, session_data, mock_user
+    ):
+        """
+        Re-upgrading a user whose quota already equals the target must not
+        attempt a fresh INSERT. MySQL reports 0 affected rows both for "no
+        such row" and for "row matched but value unchanged", so a rowcount
+        check cannot tell them apart and raises a duplicate-key error here.
+        """
+        from sqlalchemy.dialects import mysql
+
+        self._run_checkout(mock_db, session_data, mock_user)
+
+        sql = str(
+            mock_db.execute.call_args[0][0].compile(dialect=mysql.dialect())
+        ).upper()
+        assert "INSERT INTO USER_STORAGE_USAGE" in sql
+        assert "ON DUPLICATE KEY UPDATE" in sql
+        assert "ROWCOUNT" not in sql
 
 
 class TestCustomerSubscriptionDeleted:
