@@ -7,8 +7,9 @@ COMPREHENSIVE SAFETY CHECKS:
 1. Only processes users with active_workflow_count = 0 (no running workflows)
 2. Verifies S3 backup exists before deleting experiment outputs AND input data
 3. Keeps local data if S3 verification fails (prevents data loss)
-4. Only the owning instance (matching FreeUserAssignment.instance_id) may
-   close an assignment, so cleanup on another instance can never orphan data
+4. Deletes an assignment only after this instance actually removed its local
+   data; "no local data on this instance" never closes a record, so cleanup
+   on another instance can never orphan data
 
 This ensures:
 - No data deletion while workflows are running (even long 2+ hour workflows)
@@ -531,55 +532,25 @@ class DataCleanupJob:
             )
 
         if not data_found:
-            # No local data on disk:
-            # - filtered run → this worker owns the assignment, nothing to
-            #   delete → success (let _mark_cleaned close assignment/usage log)
-            # - unfiltered run → data may be on another instance → keep guard
-            current_instance_id = cls._get_current_instance_id()
-            if current_instance_id != "local":
-                # Defense-in-depth: only treat "no local data" as a completed
-                # cleanup when this instance actually owns the assignment.
-                # The selection query already filters on instance_id, but a
-                # stray mid-run reassignment must never let a non-owning
-                # instance delete the DB record and orphan another instance's
-                # data. If ownership can't be confirmed, keep the record.
-                if not cls._owns_assignment(user_id, current_instance_id):
-                    logger.warning(
-                        f"No local data for user {user_id}, but this instance "
-                        f"({current_instance_id}) no longer owns the assignment. "
-                        f"Keeping DB record to avoid orphaning data elsewhere."
-                    )
-                    return False
-                logger.info(f"No local data for user {user_id}; nothing to clean.")
-                return True
-            logger.warning(
-                f"No local data found for user {user_id} (unfiltered run). "
-                f"Returning False to prevent premature DB record deletion."
+            # No local data on this instance → keep the DB record; do NOT
+            # treat "no local data" as a completed cleanup.
+            #
+            # instance_id is refreshed to the serving instance on each request
+            # (see user_activity_middleware), so "this instance == instance_id"
+            # does not guarantee this instance is where the data was written: a
+            # stray cross-instance request can point instance_id here. Deleting
+            # the record on that basis would orphan the real data on the
+            # instance that actually holds it. Retaining the record instead
+            # leaves at most reclaimable local disk on the true owner, which is
+            # cleaned once instance_id settles back to it. Data is also backed
+            # up to S3, so nothing is lost.
+            logger.info(
+                f"No local data for user {user_id} on this instance; "
+                f"keeping DB record (data may live on the owning instance)."
             )
             return False
 
         return fully_cleaned
-
-    @classmethod
-    def _owns_assignment(cls, user_id: str, current_instance_id: str) -> bool:
-        """Return True if the assignment is pinned to ``current_instance_id``.
-
-        ``FreeUserAssignment.instance_id`` is the authoritative "which
-        instance owns this user's local EBS data" marker (pinned at INSERT by
-        the middleware and never rewritten). A worker may only close an
-        assignment for which it is the owning instance; otherwise "no local
-        data" would delete a record whose data lives on another instance.
-        """
-        with session_scope() as db:
-            result_row = db.execute(
-                select(FreeUserAssignment.instance_id).where(
-                    FreeUserAssignment.user_id == user_id
-                )
-            ).first()
-            if not result_row:
-                # Assignment already gone — nothing to orphan.
-                return True
-            return result_row[0] == current_instance_id
 
     @classmethod
     def _verify_no_active_workflows(cls, user_id: str) -> bool:

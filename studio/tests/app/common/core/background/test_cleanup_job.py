@@ -451,29 +451,15 @@ class TestCleanupUserDataNotFound:
 
         assert result is False
 
-    @patch.object(DataCleanupJob, "_owns_assignment", return_value=True)
     @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="i-abc12345")
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_true_when_no_data_on_owning_instance(
-        self, mock_relogin, mock_instance, mock_owns
-    ):
-        """Instance-filtered run where this instance owns the assignment: an
-        empty user is genuinely clean → True, letting _mark_cleaned close
-        the assignment / usage log (prevents the leak in finding #1)."""
-        with patch("os.path.exists", return_value=False):
-            result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+    def test_returns_false_when_no_local_data(self, mock_relogin, mock_instance):
+        """No local data on this instance → keep the DB record (return False).
 
-        assert result is True
-
-    @patch.object(DataCleanupJob, "_owns_assignment", return_value=False)
-    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="i-abc12345")
-    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_false_when_no_data_but_not_owner(
-        self, mock_relogin, mock_instance, mock_owns
-    ):
-        """Defense-in-depth: even on a filtered run, if this instance no
-        longer owns the assignment (mid-run reassignment), "no local data"
-        must NOT delete the record — data may live on the real owner."""
+        instance_id is refreshed to the serving instance, so "no local data"
+        must never close a record: a stray cross-instance request could point
+        instance_id here while the real data lives on another instance.
+        """
         with patch("os.path.exists", return_value=False):
             result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
 
@@ -500,44 +486,6 @@ class TestCleanupUserDataNotFound:
                             )
 
         assert result is True
-
-
-class TestOwnsAssignment:
-    """Test _owns_assignment ownership guard (finding: HIGH orphaning)."""
-
-    def _session_returning(self, first_value):
-        mock_db = MagicMock()
-        mock_db.execute.return_value.first.return_value = first_value
-        cm = MagicMock()
-        cm.__enter__.return_value = mock_db
-        cm.__exit__.return_value = False
-        return cm
-
-    def test_true_when_instance_matches(self):
-        cm = self._session_returning(("i-abc12345",))
-        with patch(
-            "studio.app.common.core.background.cleanup_job.session_scope",
-            return_value=cm,
-        ):
-            assert DataCleanupJob._owns_assignment("7", "i-abc12345") is True
-
-    def test_false_when_instance_differs(self):
-        """Assignment pinned to another instance → this worker is not owner."""
-        cm = self._session_returning(("i-other",))
-        with patch(
-            "studio.app.common.core.background.cleanup_job.session_scope",
-            return_value=cm,
-        ):
-            assert DataCleanupJob._owns_assignment("7", "i-abc12345") is False
-
-    def test_true_when_assignment_already_gone(self):
-        """No row → nothing left to orphan → safe to proceed."""
-        cm = self._session_returning(None)
-        with patch(
-            "studio.app.common.core.background.cleanup_job.session_scope",
-            return_value=cm,
-        ):
-            assert DataCleanupJob._owns_assignment("7", "i-abc12345") is True
 
 
 class TestVerifyS3InputBackup:
