@@ -20,6 +20,7 @@ This ensures:
 import os
 import shutil
 from datetime import timedelta
+from enum import Enum
 from typing import List, Optional, Tuple
 
 from sqlalchemy import func, update
@@ -42,6 +43,21 @@ from studio.app.common.models.instance_usage import UsageTier
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+
+
+class CleanupOutcome(Enum):
+    """Outcome of attempting to clean up one user's local data.
+
+    - ``CLEANED``: local data was removed; the assignment may be closed.
+    - ``KEPT``: nothing was closed on purpose — no local data on this instance,
+      data intentionally retained pending S3 verification, or the user logged
+      back in. This is a routine, expected outcome, NOT an error.
+    - ``ERROR``: an unexpected failure occurred while cleaning.
+    """
+
+    CLEANED = "cleaned"
+    KEPT = "kept"
+    ERROR = "error"
 
 
 class DataCleanupJob:
@@ -99,6 +115,7 @@ class DataCleanupJob:
             # Clean up each user
             cleaned_count = 0
             error_count = 0
+            kept_count = 0
 
             for user_id, workspace_ids in users_to_cleanup:
                 try:
@@ -109,9 +126,9 @@ class DataCleanupJob:
                         )
                         continue
 
-                    success = cls._cleanup_user_data(user_id, workspace_ids)
+                    outcome = cls._cleanup_user_data(user_id, workspace_ids)
 
-                    if success:
+                    if outcome == CleanupOutcome.CLEANED:
                         # Re-check workflow count and re-login before marking cleaned
                         # Prevents race condition where workflow/login during cleanup
                         if cls._check_user_relogin(user_id):
@@ -129,6 +146,11 @@ class DataCleanupJob:
                                 f"workflow started during cleanup"
                             )
                             error_count += 1
+                    elif outcome == CleanupOutcome.KEPT:
+                        # Nothing closed on purpose (no local data here, data
+                        # retained pending S3 verification, or user returned).
+                        # Expected, not an error.
+                        kept_count += 1
                     else:
                         error_count += 1
 
@@ -140,11 +162,11 @@ class DataCleanupJob:
 
             logger.info(
                 f"Cleanup job completed: {cleaned_count} users cleaned, "
-                f"{error_count} errors"
+                f"{kept_count} kept, {error_count} errors"
             )
 
             # Publish CloudWatch metrics
-            cls._publish_metrics(cleaned_count, error_count)
+            cls._publish_metrics(cleaned_count, error_count, kept_count)
 
         except Exception as e:
             logger.error(f"Fatal error in cleanup job: {e}", exc_info=True)
@@ -398,7 +420,9 @@ class DataCleanupJob:
             return False
 
     @classmethod
-    def _cleanup_user_data(cls, user_id: str, workspace_ids: List[str]) -> bool:
+    def _cleanup_user_data(
+        cls, user_id: str, workspace_ids: List[str]
+    ) -> CleanupOutcome:
         """
         Delete user's workspace data from local storage.
 
@@ -412,13 +436,17 @@ class DataCleanupJob:
             workspace_ids: List of workspace IDs to clean
 
         Returns:
-            True if ALL data was successfully cleaned, False if any data remains
-            or errors occurred
+            CleanupOutcome.CLEANED if all local data was removed (assignment may
+            be closed); CleanupOutcome.KEPT if nothing was closed on purpose (no
+            local data here, data intentionally retained pending S3
+            verification, or the user logged back in); CleanupOutcome.ERROR on
+            an unexpected failure. KEPT is a routine outcome, not an error.
         """
         logger.info(f"Cleaning up data for user {user_id}, workspaces: {workspace_ids}")
 
         fully_cleaned = True
         data_found = False
+        had_error = False
         total_experiments_kept = 0
 
         # Experiment outputs live in the user's own bucket, not the shared
@@ -431,7 +459,7 @@ class DataCleanupJob:
             # Check if user logged back in before processing workspace
             if cls._check_user_relogin(user_id):
                 logger.info(f"Aborting cleanup for user {user_id}: user logged back in")
-                return False
+                return CleanupOutcome.KEPT
             try:
                 # Clean input data. Uploads are pushed to S3 synchronously on
                 # the free-tier upload path, but verify the backup before
@@ -524,6 +552,7 @@ class DataCleanupJob:
                     exc_info=True,
                 )
                 fully_cleaned = False
+                had_error = True
 
         if total_experiments_kept > 0:
             logger.warning(
@@ -541,16 +570,20 @@ class DataCleanupJob:
             # stray cross-instance request can point instance_id here. Deleting
             # the record on that basis would orphan the real data on the
             # instance that actually holds it. Retaining the record instead
-            # leaves at most reclaimable local disk on the true owner, which is
-            # cleaned once instance_id settles back to it. Data is also backed
-            # up to S3, so nothing is lost.
+            # leaves at most reclaimable local disk on the true owner. That disk
+            # is cleaned only if the user is active again on the owning instance
+            # *before logout* (activity stops rewriting instance_id after
+            # logout); otherwise it is reclaimed when the instance is recycled.
+            # Data is also backed up to S3, so nothing is lost.
             logger.info(
                 f"No local data for user {user_id} on this instance; "
                 f"keeping DB record (data may live on the owning instance)."
             )
-            return False
+            return CleanupOutcome.KEPT
 
-        return fully_cleaned
+        if had_error:
+            return CleanupOutcome.ERROR
+        return CleanupOutcome.CLEANED if fully_cleaned else CleanupOutcome.KEPT
 
     @classmethod
     def _verify_no_active_workflows(cls, user_id: str) -> bool:
@@ -761,14 +794,23 @@ class DataCleanupJob:
             logger.error(f"Error handling orphaned data: {e}", exc_info=True)
 
     @classmethod
-    def _publish_metrics(cls, cleaned_count: int, error_count: int):
-        """Publish cleanup job metrics to CloudWatch"""
+    def _publish_metrics(
+        cls, cleaned_count: int, error_count: int, kept_count: int = 0
+    ):
+        """Publish cleanup job metrics to CloudWatch.
+
+        ``CleanupKept`` counts deliberate "keep the record" outcomes (no local
+        data here, data retained pending S3 verification, user returned) so
+        they are not conflated with ``CleanupErrors``, which stays a signal of
+        genuine failures for alarms.
+        """
         try:
             import boto3
 
             cloudwatch = boto3.client("cloudwatch")
 
             env_prefix = os.environ.get("ENV_PREFIX", "default")
+            now = get_current_datetime()
             cloudwatch.put_metric_data(
                 Namespace=f"OptiNiSt/BackgroundJobs/{env_prefix}",
                 MetricData=[
@@ -776,19 +818,25 @@ class DataCleanupJob:
                         "MetricName": "DataCleanupCount",
                         "Value": cleaned_count,
                         "Unit": "Count",
-                        "Timestamp": get_current_datetime(),
+                        "Timestamp": now,
                     },
                     {
                         "MetricName": "CleanupErrors",
                         "Value": error_count,
                         "Unit": "Count",
-                        "Timestamp": get_current_datetime(),
+                        "Timestamp": now,
+                    },
+                    {
+                        "MetricName": "CleanupKept",
+                        "Value": kept_count,
+                        "Unit": "Count",
+                        "Timestamp": now,
                     },
                 ],
             )
             logger.debug(
                 f"Published CloudWatch metrics: {cleaned_count} cleaned, "
-                f"{error_count} errors"
+                f"{kept_count} kept, {error_count} errors"
             )
         except Exception as e:
             logger.warning(f"Failed to publish metrics: {e}")

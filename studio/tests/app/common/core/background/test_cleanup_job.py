@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from studio.app.common.core.background.cleanup_job import DataCleanupJob
+from studio.app.common.core.background.cleanup_job import CleanupOutcome, DataCleanupJob
 
 
 @pytest.fixture(autouse=True)
@@ -139,7 +139,7 @@ class TestCleanupUserData:
                                 "123", ["workspace1"]
                             )
 
-        assert result is True
+        assert result == CleanupOutcome.CLEANED
         assert mock_rmtree.call_count >= 1
 
     @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
@@ -162,7 +162,7 @@ class TestCleanupUserData:
                                 "123", ["workspace1"]
                             )
 
-        assert result is False
+        assert result == CleanupOutcome.KEPT
         # Input directory is deleted (backup verified, 1 call); experiments kept
         assert mock_rmtree.call_count == 1
         # Verify it was the input directory that was deleted
@@ -187,7 +187,7 @@ class TestCleanupUserData:
                 with patch("shutil.rmtree") as mock_rmtree:
                     result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
 
-        assert result is False
+        assert result == CleanupOutcome.KEPT
         mock_rmtree.assert_not_called()
 
 
@@ -441,39 +441,29 @@ class TestGetUsersForCleanupInstanceFilter:
 class TestCleanupUserDataNotFound:
     """Test _cleanup_user_data no-data behavior (finding #1)"""
 
-    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="local")
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_false_when_no_data_unfiltered(self, mock_relogin, mock_instance):
-        """Unfiltered run (local / background service): no data → False,
-        because the user's data may live on another instance."""
-        with patch("os.path.exists", return_value=False):
-            result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
-
-        assert result is False
-
-    @patch.object(DataCleanupJob, "_get_current_instance_id", return_value="i-abc12345")
-    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_false_when_no_local_data(self, mock_relogin, mock_instance):
-        """No local data on this instance → keep the DB record (return False).
+    def test_returns_kept_when_no_local_data(self, mock_relogin):
+        """No local data on this instance → KEPT (keep the DB record).
 
         instance_id is refreshed to the serving instance, so "no local data"
         must never close a record: a stray cross-instance request could point
-        instance_id here while the real data lives on another instance.
+        instance_id here while the real data lives on another instance. KEPT is
+        a routine outcome, not an error.
         """
         with patch("os.path.exists", return_value=False):
             result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
 
-        assert result is False
+        assert result == CleanupOutcome.KEPT
 
     @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
     @patch.object(
         DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
     )
     @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
-    def test_returns_true_when_data_exists_and_cleaned(
+    def test_returns_cleaned_when_data_exists_and_cleaned(
         self, mock_relogin, mock_bucket, mock_input_verify
     ):
-        """When data exists and is fully cleaned, returns True"""
+        """When data exists and is fully cleaned, returns CLEANED"""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=True
         ):
@@ -485,7 +475,71 @@ class TestCleanupUserDataNotFound:
                                 "123", ["workspace1"]
                             )
 
-        assert result is True
+        assert result == CleanupOutcome.CLEANED
+
+
+class TestRunOutcomeAccounting:
+    """run() buckets each _cleanup_user_data outcome correctly (finding: metrics)."""
+
+    def _run_with_outcome(self, outcome):
+        import asyncio
+
+        with patch.dict(
+            "os.environ",
+            {"INSTANCE_ID": "i-current", "ENABLE_LOCAL_CLEANUP": "1"},
+        ):
+            with patch.object(DataCleanupJob, "_handle_orphaned_data"):
+                with patch.object(
+                    DataCleanupJob,
+                    "_get_users_for_cleanup",
+                    return_value=[("123", ["ws1"])],
+                ):
+                    with patch.object(
+                        DataCleanupJob, "_check_user_relogin", return_value=False
+                    ):
+                        with patch.object(
+                            DataCleanupJob,
+                            "_verify_no_active_workflows",
+                            return_value=True,
+                        ):
+                            with patch.object(
+                                DataCleanupJob,
+                                "_cleanup_user_data",
+                                return_value=outcome,
+                            ):
+                                with patch.object(
+                                    DataCleanupJob, "_mark_cleaned"
+                                ) as mock_mark:
+                                    with patch.object(
+                                        DataCleanupJob, "_publish_metrics"
+                                    ) as mock_metrics:
+                                        asyncio.run(DataCleanupJob.run())
+        return mock_mark, mock_metrics
+
+    def test_kept_is_not_cleaned_nor_error(self):
+        """A KEPT user must not be closed, and must count as kept — not error."""
+        mock_mark, mock_metrics = self._run_with_outcome(CleanupOutcome.KEPT)
+
+        mock_mark.assert_not_called()
+        mock_metrics.assert_called_once()
+        cleaned, errors, kept = mock_metrics.call_args.args
+        assert (cleaned, errors, kept) == (0, 0, 1)
+
+    def test_cleaned_marks_and_counts_cleaned(self):
+        """A CLEANED user is marked cleaned and counted as cleaned."""
+        mock_mark, mock_metrics = self._run_with_outcome(CleanupOutcome.CLEANED)
+
+        mock_mark.assert_called_once()
+        cleaned, errors, kept = mock_metrics.call_args.args
+        assert (cleaned, errors, kept) == (1, 0, 0)
+
+    def test_error_counts_error_only(self):
+        """An ERROR user is not closed and counts only as an error."""
+        mock_mark, mock_metrics = self._run_with_outcome(CleanupOutcome.ERROR)
+
+        mock_mark.assert_not_called()
+        cleaned, errors, kept = mock_metrics.call_args.args
+        assert (cleaned, errors, kept) == (0, 1, 0)
 
 
 class TestVerifyS3InputBackup:
