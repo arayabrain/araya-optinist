@@ -20,6 +20,8 @@
  *     down the same way.
  *  6. Closing the tab beacons the release (BT-615), and only while there is an
  *     assignment and a beacon token to release with.
+ *  7. A re-login inside the release grace adopts the restored assignment rather
+ *     than requesting a new one.
  *
  * Cross-tab receive is simulated by invoking the registered handler directly
  * (same-document localStorage writes emit no storage event), matching how the
@@ -381,6 +383,69 @@ describe("PremiumAssignmentProvider — full routing lifecycle", () => {
       expect(ctxRef.current?.assignmentResult).toBeNull()
     })
     expectRoutingTornDown()
+  })
+
+  test("re-login inside the grace window adopts the restored row instead of assigning a new one", async () => {
+    // Logout (and a tab close) soft-releases, and a re-login inside the grace
+    // restores the same assignment server-side. The frontend half is adoption:
+    // /status is read and /assign must never be called, since an /assign is
+    // what would strand the restored row behind a second one.
+    const restoredStatus: PremiumStatusResult = {
+      subscription_type: UserTier.PREMIUM,
+      is_premium: true,
+      assignment: {
+        instance_id: "inst-A",
+        instance_id_hash: "hash-A",
+        assigned_at: "2026-07-30T00:00:00Z",
+        status: "active",
+        is_shared: false,
+        assignment_source: "existing",
+      },
+    }
+    mockPremiumApi.getPremiumStatus.mockResolvedValue(restoredStatus)
+
+    const ctxRef: { current: Ctx | null } = { current: null }
+    const { rerender } = render(tree(ctxRef))
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+    routingService.updateRoutingToken("routing-A")
+
+    // --- Logout: soft-release beacon + the logout dispatch ---
+    act(() => {
+      ctxRef.current!.autoReleaseOnLogout()
+    })
+    expectRoutingTornDown()
+
+    mockReduxState.user.currentUser = null
+    mockReduxState.user.logoutGeneration = 1
+    await act(async () => {
+      rerender(tree(ctxRef))
+      await Promise.resolve()
+    })
+    // The re-login can only re-adopt if the logout dropped this tab's
+    // one-shot guard.
+    expect(sessionStorage.getItem("premium_hasAttempted")).toBeNull()
+
+    // --- Re-login within the grace window: the row is back to active ---
+    mockPremiumApi.assignPremiumInstance.mockClear()
+    mockReduxState.user.currentUser = mockUser
+    await act(async () => {
+      rerender(tree(ctxRef))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+    expect(mockPremiumApi.assignPremiumInstance).not.toHaveBeenCalled()
+    expect(routingService.isPremiumAssigned()).toBe(true)
+    expect(routingService.getPremiumInstanceId()).toBe("hash-A")
+    expect(routingService.isPremiumShared()).toBe(false)
+
+    routingService.updateRoutingToken("routing-A-restored")
+    expectNoRoutingDeadlock()
   })
 
   test("explicit release() tears routing down as fully as logout", async () => {

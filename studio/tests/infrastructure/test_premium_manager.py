@@ -5790,3 +5790,353 @@ class TestIdleUserSelectorExcludesActiveWorkflows:
         assert "active_workflow_count = 0" in normalized
         assert "status = 'active'" in normalized
         assert params == ("i-target",)
+
+
+class TestSoftReleaseUserAssignment:
+    """The soft release keeps the row and its ALB resources.
+
+    A beacon-driven release has to leave the assignment recoverable: the row
+    flipped to pending_release with its rule and target group still standing. A
+    release that deleted the row outright looks identical to its caller but
+    makes the restore impossible.
+    """
+
+    def _soft_release(self, mock_env_vars_premium, row):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock(fetchone_values=[row])
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            aws = MagicMock()
+            mock_boto3.return_value = aws
+
+            from premium_manager import soft_release_user_assignment
+
+            return soft_release_user_assignment(42), cursor, aws
+
+    def test_flips_the_row_to_pending_release_without_deleting_it(
+        self, mock_env_vars_premium
+    ):
+        from aws_constants import PremiumAssignment
+
+        result, cursor, aws = self._soft_release(
+            mock_env_vars_premium,
+            MockRow(
+                {
+                    "instance_id": TEST_INSTANCE_ID,
+                    "target_group_arn": "arn:aws:tg/user-42",
+                    "alb_rule_arn": "arn:aws:rule/user-42",
+                    "status": PremiumAssignment.ACTIVE,
+                }
+            ),
+        )
+
+        statements = [
+            (" ".join(call[0][0].split()), call[0][1])
+            for call in cursor.execute.call_args_list
+        ]
+        assert not any(sql.startswith("DELETE") for sql, _ in statements)
+        row_updates = [
+            (sql, params)
+            for sql, params in statements
+            if sql.startswith("UPDATE premium_user_assignments")
+        ]
+        assert len(row_updates) == 1
+        assert "assigned_at" not in row_updates[0][0]
+        assert row_updates[0][1] == (
+            PremiumAssignment.PENDING_RELEASE,
+            42,
+            PremiumAssignment.ACTIVE,
+        )
+        # Usage log closed so grace time is not billed as active premium use.
+        assert any(sql.startswith("UPDATE instance_usage_log") for sql, _ in statements)
+        # The ALB rule and target group must survive, or the restore would have
+        # to recreate them (the whole point of the grace window).
+        aws.delete_rule.assert_not_called()
+        aws.delete_target_group.assert_not_called()
+        assert result["instance_id"] == TEST_INSTANCE_ID
+
+    def test_no_active_assignment_is_a_noop(self, mock_env_vars_premium):
+        """A second beacon (or one after the grace expired) must not write."""
+        result, cursor, _ = self._soft_release(mock_env_vars_premium, None)
+
+        assert result is None
+        assert len(cursor.execute.call_args_list) == 1
+
+    def test_soft_release_does_not_scale_down_but_hard_release_does(
+        self, mock_env_vars_premium
+    ):
+        """The instance is still allocated during the grace, so scaling it down
+        would strand a user who is about to come back."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.soft_release_user_assignment",
+            return_value={"instance_id": TEST_INSTANCE_ID},
+        ), patch(
+            "premium_manager.remove_user_assignment",
+            return_value={
+                "instance_id": TEST_INSTANCE_ID,
+                "target_group_arn": "arn:aws:tg/user-42",
+                "alb_rule_arn": "arn:aws:rule/user-42",
+            },
+        ), patch(
+            "premium_manager._teardown_alb_resources", return_value=[]
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=1
+        ), patch(
+            "premium_manager.scale_down_if_possible"
+        ) as mock_scale_down:
+            from premium_manager import release_premium_user
+
+            soft = release_premium_user(42)
+            assert soft["statusCode"] == 200
+            assert "soft release completed" in json.loads(soft["body"])["message"]
+            mock_scale_down.assert_not_called()
+
+            hard = release_premium_user(42, hard=True)
+            assert "hard release completed" in json.loads(hard["body"])["message"]
+            mock_scale_down.assert_called_once()
+
+
+class TestRestorePendingReleaseTransaction:
+    """restore_pending_release restores the SAME row.
+
+    A reopen inside the grace window has to land the user back on the row they
+    already had: same id, same assigned_at, status back to active, and no ALB
+    resources recreated. TestHeartbeatRestoresPendingRelease covers the
+    heartbeat route to the same outcome; this is the status-check route.
+    """
+
+    ASSIGNED_AT = datetime(2026, 7, 30, 9, 0, 0)
+
+    def _pending_row(self, instance_id=TEST_INSTANCE_ID, **overrides):
+        from aws_constants import PremiumAssignment
+
+        row = {
+            "user_id": 42,
+            "instance_id": instance_id,
+            "target_group_arn": "arn:aws:tg/user-42",
+            "alb_rule_arn": "arn:aws:rule/user-42",
+            "status": PremiumAssignment.PENDING_RELEASE,
+            "instance_state": "running",
+            "is_shared": 0,
+            "assigned_at": self.ASSIGNED_AT,
+        }
+        row.update(overrides)
+        return MockRow(row)
+
+    def _restore(self, mock_env_vars_premium, row, ec2_state="running"):
+        """Run the real restore transaction; returns (result, cursor, aws)."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock(fetchone_values=[row])
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            aws = MagicMock()
+            if ec2_state is None:
+                aws.describe_instances.return_value = {"Reservations": []}
+            else:
+                aws.describe_instances.return_value = {
+                    "Reservations": [{"Instances": [{"State": {"Name": ec2_state}}]}]
+                }
+            mock_boto3.return_value = aws
+
+            from premium_manager import restore_pending_release
+
+            return restore_pending_release(42), cursor, aws
+
+    @staticmethod
+    def _statements(cursor):
+        return [" ".join(call[0][0].split()) for call in cursor.execute.call_args_list]
+
+    def test_restores_same_row_to_active(self, mock_env_vars_premium):
+        """The UPDATE flips status only - assigned_at is never re-stamped, so the
+        restored row stays indistinguishable from the one the user had."""
+        from aws_constants import PremiumAssignment
+
+        result, cursor, _ = self._restore(mock_env_vars_premium, self._pending_row())
+
+        updates = [s for s in self._statements(cursor) if s.startswith("UPDATE")]
+        assert len(updates) == 1
+        assert "SET status = %s, last_activity = NOW()" in updates[0]
+        assert "assigned_at" not in updates[0]
+        assert cursor.execute.call_args_list[-1][0][1] == (
+            PremiumAssignment.ACTIVE,
+            42,
+            PremiumAssignment.PENDING_RELEASE,
+        )
+        assert not any(s.startswith("DELETE") for s in self._statements(cursor))
+        assert result["assigned_at"] == self.ASSIGNED_AT
+
+    def test_restore_creates_no_alb_resources(self, mock_env_vars_premium):
+        """The grace window exists so the restore can reuse the rule and target
+        group; recreating them would defeat the point of keeping the row."""
+        _, _, aws = self._restore(mock_env_vars_premium, self._pending_row())
+
+        aws.create_target_group.assert_not_called()
+        aws.create_rule.assert_not_called()
+        aws.delete_rule.assert_not_called()
+        aws.delete_target_group.assert_not_called()
+
+    def test_autoscaling_pool_skips_the_ec2_liveness_check(self, mock_env_vars_premium):
+        """The pool marker is not a real instance, so describe_instances on it
+        would raise and drop a restorable assignment."""
+        from aws_constants import PremiumAssignment
+
+        result, cursor, aws = self._restore(
+            mock_env_vars_premium,
+            self._pending_row(instance_id=PremiumAssignment.AUTOSCALING_POOL),
+        )
+
+        aws.describe_instances.assert_not_called()
+        assert result is not None
+        assert any(s.startswith("UPDATE") for s in self._statements(cursor))
+
+    def test_dead_instance_deletes_the_row_instead_of_restoring(
+        self, mock_env_vars_premium
+    ):
+        """A terminated instance must not be restored: the row is deleted so the
+        next login assigns fresh (and the ALB leftovers are torn down)."""
+        from aws_constants import PremiumAssignment
+
+        with patch(
+            "premium_manager._teardown_alb_resources", return_value=[]
+        ) as mock_teardown:
+            result, cursor, _ = self._restore(
+                mock_env_vars_premium,
+                self._pending_row(),
+                ec2_state=InstanceState.TERMINATED,
+            )
+
+        assert result is None
+        deletes = [s for s in self._statements(cursor) if s.startswith("DELETE")]
+        assert len(deletes) == 1
+        assert deletes[0].startswith("DELETE FROM premium_user_assignments")
+        delete_params = [
+            call[0][1]
+            for call in cursor.execute.call_args_list
+            if call[0][0].strip().startswith("DELETE")
+        ]
+        assert delete_params == [(42, PremiumAssignment.PENDING_RELEASE)]
+        mock_teardown.assert_called_once_with(
+            42, "arn:aws:rule/user-42", "arn:aws:tg/user-42"
+        )
+
+    def test_returns_none_when_no_pending_release_row(self, mock_env_vars_premium):
+        """Nothing in grace - the caller keeps whatever status it already read."""
+        result, cursor, _ = self._restore(mock_env_vars_premium, None)
+
+        assert result is None
+        statements = self._statements(cursor)
+        assert len(statements) == 1
+        assert statements[0].startswith("SELECT")
+
+
+class TestFinalizeExpiredPendingReleases:
+    """finalize_expired_pending_releases deletes rows past the grace.
+
+    Once the grace lapses the old row has to be gone, so the next login assigns
+    fresh instead of restoring a row whose ALB resources are being torn down.
+    """
+
+    def _finalize(self, mock_env_vars_premium, expired_rows):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(fetchall_values=[expired_rows])
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+
+            from premium_manager import finalize_expired_pending_releases
+
+            return finalize_expired_pending_releases(), cursor
+
+    def test_selects_only_rows_past_the_grace_window(self, mock_env_vars_premium):
+        from aws_constants import PremiumAssignment
+
+        _, cursor = self._finalize(mock_env_vars_premium, [])
+
+        sql = " ".join(cursor.execute.call_args_list[0][0][0].split())
+        params = cursor.execute.call_args_list[0][0][1]
+        assert "last_activity < DATE_SUB(NOW(), INTERVAL %s SECOND)" in sql
+        # FOR UPDATE: the sweep and a concurrent restore must not race.
+        assert sql.endswith("FOR UPDATE")
+        assert params == (
+            PremiumAssignment.PENDING_RELEASE,
+            PremiumAssignment.PENDING_RELEASE_GRACE_SECONDS,
+        )
+
+    def test_deletes_each_expired_row_and_returns_it_for_teardown(
+        self, mock_env_vars_premium
+    ):
+        from aws_constants import PremiumAssignment
+
+        rows = [
+            MockRow(
+                {
+                    "user_id": 11,
+                    "instance_id": "i-dedicated",
+                    "target_group_arn": "arn:aws:tg/user-11",
+                    "alb_rule_arn": "arn:aws:rule/user-11",
+                }
+            ),
+            MockRow(
+                {
+                    "user_id": 22,
+                    "instance_id": PremiumAssignment.AUTOSCALING_POOL,
+                    "target_group_arn": "",
+                    "alb_rule_arn": "",
+                }
+            ),
+        ]
+        expired, cursor = self._finalize(mock_env_vars_premium, rows)
+
+        assert expired == rows
+        statements = [
+            (" ".join(call[0][0].split()), call[0][1])
+            for call in cursor.execute.call_args_list
+        ]
+        deletes = [p for sql, p in statements if sql.startswith("DELETE")]
+        assert deletes == [
+            (11, PremiumAssignment.PENDING_RELEASE),
+            (22, PremiumAssignment.PENDING_RELEASE),
+        ]
+        # Usage log closed per row, so premium minutes stop billing at release.
+        usage_closes = [
+            p for sql, p in statements if sql.startswith("UPDATE instance_usage_log")
+        ]
+        assert usage_closes == [(11,), (22,)]
+
+    def test_no_expired_rows_deletes_nothing(self, mock_env_vars_premium):
+        expired, cursor = self._finalize(mock_env_vars_premium, [])
+
+        assert expired == []
+        assert not any(
+            call[0][0].strip().startswith("DELETE")
+            for call in cursor.execute.call_args_list
+        )
+
+    def test_teardown_drops_the_per_user_tg_but_never_the_shared_one(
+        self, mock_env_vars_premium
+    ):
+        """The monitor hands every finalized row to _teardown_alb_resources, and a
+        pool row carries the shared ASG target group - deleting that one would
+        break routing for every autoscaling-pool user at once."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            elbv2 = MagicMock()
+            mock_boto3.return_value = elbv2
+
+            from premium_manager import _teardown_alb_resources
+
+            shared_tg = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
+            assert _teardown_alb_resources(22, "arn:aws:rule/user-22", shared_tg) == []
+            elbv2.delete_rule.assert_called_once_with(RuleArn="arn:aws:rule/user-22")
+            elbv2.delete_target_group.assert_not_called()
+
+            assert _teardown_alb_resources(11, None, "arn:aws:tg/user-11") == []
+            elbv2.delete_target_group.assert_called_once_with(
+                TargetGroupArn="arn:aws:tg/user-11"
+            )

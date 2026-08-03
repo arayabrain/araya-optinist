@@ -3,7 +3,7 @@
 ## Executive Summary
 
 - **Maps every row** of the `Araya-OptiNiSt Release Test Cases Template` sheets (`BT-1xx` .. `BT-11xx`) to the automated test that covers it, so a release tester only hand-verifies the rows marked manual
-- **82 of 104 exported rows automated** - a green Playwright run checks off exactly the non-manual rows
+- **75 of 104 exported rows automated** - a green Playwright run checks off exactly the non-manual rows
 - **Mostly Playwright** - these sheets are the browser-testable release checklist, so nearly every entry is an e2e ID from `frontend/e2e/`; a few premium rows are covered by jest instead
 - **Release sheets only** - the `Araya-Optinist System Test Cases Template` sheets are a separate, much larger scheme mapped in `infrastructure/documentation/SYSTEM_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the System sheet's `6204` concurrency race
@@ -31,14 +31,14 @@ Setup, credentials, and troubleshooting for the Playwright suite live in
 | --------------------- | ------- | --------- | ------ |
 | 01 Login & Auth       | 8       | 8         | 0      |
 | 02 Workspace          | 6       | 6         | 0      |
-| 03 Workflow Execution | 16      | 16        | 0      |
+| 03 Workflow Execution | 16      | 14        | 2      |
 | 04 Visualize          | 7       | 7         | 0      |
-| 05 Record Management  | 9       | 9         | 0      |
-| 06 Premium Features   | 15      | 9         | 6      |
-| 07 Dataview           | 21      | 20        | 1      |
+| 05 Record Management  | 9       | 8         | 1      |
+| 06 Premium Features   | 15      | 7         | 8      |
+| 07 Dataview           | 21      | 18        | 3      |
 | 08 Subscription       | 11      | 6         | 5      |
 | 11 AWS Monitoring     | 11      | 1         | 10     |
-| **Total**             | **104** | **82**    | **22** |
+| **Total**             | **104** | **75**    | **29** |
 
 Sheets **09 Subscription Registration** and **10 Storage** are mapped below but
 were not part of the exported CSV set, so they carry no row counts here.
@@ -176,18 +176,18 @@ grid).
 
 ## 06 Premium Features
 
-| Sheet row                                   | Subject                                               | Test                                                                                                                            |
-| ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| BT-604                                      | Premium profile display                               | SUB-05                                                                                                                          |
-| BT-605                                      | Premium subscription page                             | SUB-04                                                                                                                          |
-| BT-611                                      | Inactivity warning                                    | LC-14 (frontend lifecycle via fake clock; backend heartbeat/CloudWatch stays manual)                                            |
-| BT-613                                      | Auto-release after 2h inactivity                      | LC-15 (frontend half) + `TestCheckPremiumUserInactivity` / `TestCleanupStaleAssignments` (L1 teardown); real AWS stays manual   |
-| BT-615                                      | Instance release on browser close                     | `PremiumLifecycleIntegration.test.tsx` (beforeunload beacons release) + LC-15; 120s finalize stays manual                       |
-| BT-612                                      | Stay Active button                                    | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual)                                                           |
-| BT-601/602                                  | assignment snackbars                                  | STO-02 (mocked assignment — asserts the success snackbar renders; the real AWS-backed flow stays a manual deployed-env check)   |
-| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle                  | LC-17 (fake-clock companion to the `PremiumLifecycleIntegration` jest L2 test; real AWS state stays manual)                     |
-| BT-614                                      | Instance release on logout                            | `useLogout.test.ts` (logout completes + premium releases via beacon even if the API fails); CloudWatch release log stays manual |
-| BT-603, 606..610                            | instance assignment, concurrency, release (AWS state) | manual                                                                                                                          |
+| Sheet row                                   | Subject                                               | Test                                                                                                                                                                                                                                                           |
+| ------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BT-604                                      | Premium profile display                               | SUB-05                                                                                                                                                                                                                                                         |
+| BT-605                                      | Premium subscription page                             | SUB-04                                                                                                                                                                                                                                                         |
+| BT-611                                      | Inactivity warning                                    | LC-14 (frontend lifecycle via fake clock; backend heartbeat/CloudWatch stays manual)                                                                                                                                                                           |
+| BT-613                                      | Auto-release after 2h inactivity                      | LC-15 (frontend half) + `TestCheckPremiumUserInactivity` / `TestCleanupStaleAssignments` (L1 teardown); real AWS stays manual                                                                                                                                  |
+| BT-615                                      | Instance release on browser close                     | `PremiumLifecycleIntegration.test.tsx` (beforeunload beacons release) + LC-15 + `TestSoftReleaseUserAssignment` (row kept, ALB kept, no scale-down) + `TestFinalizeExpiredPendingReleases` (the 120s finalize deletes the row); real AWS teardown stays manual |
+| BT-612                                      | Stay Active button                                    | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual)                                                                                                                                                                                          |
+| BT-601/602                                  | assignment snackbars                                  | `PremiumNotificationManager.test.tsx` (BT-601 waiting copy + BT-602 success copy) + STO-02 (success snackbar, mocked assignment); the real AWS-backed flow stays a manual deployed-env check                                                                   |
+| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle                  | LC-17 (fake-clock companion to the `PremiumLifecycleIntegration` jest L2 test; real AWS state stays manual)                                                                                                                                                    |
+| BT-614                                      | Instance release on logout                            | `useLogout.test.ts` (logout completes + premium releases via beacon even if the API fails); CloudWatch release log stays manual                                                                                                                                |
+| BT-603, 606..610                            | instance assignment, concurrency, release (AWS state) | manual                                                                                                                                                                                                                                                         |
 
 Note: the `BT-6xx` rows above are the release
 sheet, a separate scheme from the System test sheet. The System sheet's
