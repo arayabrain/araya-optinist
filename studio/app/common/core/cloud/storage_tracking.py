@@ -6,6 +6,8 @@ Extracted from cloud_utils.py for module cohesion.
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from sqlalchemy import update
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -168,23 +170,39 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
     Update storage usage for a user.
     Returns True if successful or if table doesn't exist
     (fallback scenario).
+
+    Writes via a Core UPDATE keyed on user_id so concurrent writers (full
+    scan, incremental updates from multiple processes) do not race on an ORM
+    load-mutate-flush, which raises a stale-data error when a concurrent commit
+    leaves the target row unchanged at flush time. The success is logged only
+    after the commit lands.
     """
     try:
         with session_scope() as db:
             try:
-                query_result = db.execute(
-                    select(UserStorageUsage).where(UserStorageUsage.user_id == user_id)
+                # Existence is checked with a SELECT rather than the UPDATE
+                # rowcount: MySQL reports rows *changed*, so an update to an
+                # identical value returns 0 even though the row exists.
+                exists = (
+                    db.execute(
+                        select(UserStorageUsage.id).where(
+                            UserStorageUsage.user_id == user_id
+                        )
+                    ).first()
+                    is not None
                 )
-                result_row = query_result.first()
-                existing_usage = result_row[0] if result_row else None
 
-                if existing_usage:
-                    existing_usage.storage_usage_bytes = new_usage_bytes
-                    existing_usage.last_updated = (
-                        SubscriptionService.get_current_datetime()
+                if exists:
+                    db.execute(
+                        update(UserStorageUsage)
+                        .where(UserStorageUsage.user_id == user_id)
+                        .values(
+                            storage_usage_bytes=new_usage_bytes,
+                            last_updated=SubscriptionService.get_current_datetime(),
+                        )
                     )
-                    db.add(existing_usage)
                 else:
+                    # No row for this user yet: create it with a plan-based quota.
                     statement = (
                         select(SubscriptionPlans.name.label("plan_name"))
                         .select_from(UserModel)
@@ -205,9 +223,9 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                             UserModel.active.is_(True),
                         )
                     )
-                    result = db.execute(statement).first()
+                    plan_result = db.execute(statement).first()
 
-                    if result and result.plan_name == PlanName.PREMIUM:
+                    if plan_result and plan_result.plan_name == PlanName.PREMIUM:
                         default_quota = StorageQuota.PREMIUM * StorageSize.GB
                     else:
                         default_quota = StorageQuota.FREE * StorageSize.GB
@@ -219,18 +237,19 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
                     )
                     db.add(new_storage_usage)
 
-                logger.info(
-                    f"Updated storage usage for user "
-                    f"{user_id}: {new_usage_bytes} bytes"
-                )
-                return True
-
-            except Exception as orm_error:
+            except (ProgrammingError, OperationalError) as orm_error:
+                # Benign fallback for a missing/inaccessible table only; genuine
+                # write errors (StaleDataError, etc.) propagate and return False.
                 logger.warning(
                     f"UserStorageUsage table not accessible:"
                     f" {orm_error}, skipping storage update"
                 )
                 return True
+
+        logger.info(
+            f"Updated storage usage for user " f"{user_id}: {new_usage_bytes} bytes"
+        )
+        return True
 
     except Exception as e:
         logger.warning(f"Failed to update storage usage for " f"user {user_id}: {e}")
