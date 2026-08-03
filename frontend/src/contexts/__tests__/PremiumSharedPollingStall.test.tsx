@@ -173,7 +173,6 @@ const renderProvider = () => {
 
 /** Status endpoint returning a stable shared assignment. */
 const sharedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -186,7 +185,6 @@ const sharedStatus: PremiumStatusResult = {
 
 /** Status endpoint returning a dedicated assignment (the upgrade). */
 const dedicatedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -199,7 +197,6 @@ const dedicatedStatus: PremiumStatusResult = {
 
 /** Status endpoint returning null assignment (no assignment exists). */
 const nullAssignmentStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: null,

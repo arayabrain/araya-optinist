@@ -87,6 +87,18 @@ alembic_check:
 		$$compose build alembic_check; \
 		$$compose run --rm alembic_check'
 
+.PHONY: premium_lock_it
+premium_lock_it:
+	# Real-MySQL GET_LOCK integration test proving distributed_lock
+	# serializes concurrent sessions. Deferred L3 lane, not part of per-PR CI.
+	# Single shell with an EXIT trap so the throwaway DB is always torn down.
+	@bash -euc '\
+		compose="docker compose -f docker-compose.premium-lock-it.yml"; \
+		trap "$$compose down -v" EXIT; \
+		$$compose down -v; \
+		$$compose build premium_lock_it; \
+		$$compose run --rm premium_lock_it'
+
 
 ############################## For Building ##############################
 
