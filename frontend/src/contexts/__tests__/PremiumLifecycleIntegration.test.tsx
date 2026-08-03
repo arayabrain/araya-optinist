@@ -18,6 +18,8 @@
  *     unused public context method today; this locks its teardown contract.)
  *  5. A cross-tab PREMIUM_RELEASED broadcast received by this tab tears routing
  *     down the same way.
+ *  6. Closing the tab beacons the release (BT-615), and only while there is an
+ *     assignment and a beacon token to release with.
  *
  * Cross-tab receive is simulated by invoking the registered handler directly
  * (same-document localStorage writes emit no storage event), matching how the
@@ -434,5 +436,40 @@ describe("PremiumAssignmentProvider — full routing lifecycle", () => {
 
     expect(ctxRef.current?.assignmentResult).toBeNull()
     expectRoutingTornDown()
+  })
+
+  test("closing the tab beacons the release, and only while an assignment is held (BT-615)", async () => {
+    mockPremiumApi.getPremiumStatus.mockResolvedValue(noAssignmentStatus)
+    mockPremiumApi.assignPremiumInstance.mockResolvedValue(assignedA)
+
+    const ctxRef: { current: Ctx | null } = { current: null }
+    render(tree(ctxRef))
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+    mockSendBeacon.mockClear()
+
+    act(() => {
+      window.dispatchEvent(new Event("beforeunload"))
+    })
+
+    expect(mockSendBeacon).toHaveBeenCalledTimes(1)
+    const [url, body] = mockSendBeacon.mock.calls[0] as [string, Blob]
+    expect(url).toMatch(/\/users\/me\/premium\/release-beacon$/)
+    expect(body).toBeInstanceOf(Blob)
+
+    // Post-release the handler must stay quiet: no assignment and no beacon
+    // token left, so a reload cannot beacon a stale token at the backend.
+    await act(async () => {
+      await ctxRef.current!.release()
+    })
+    mockSendBeacon.mockClear()
+
+    act(() => {
+      window.dispatchEvent(new Event("beforeunload"))
+    })
+
+    expect(mockSendBeacon).not.toHaveBeenCalled()
   })
 })
