@@ -39,10 +39,9 @@ class Workspace(Base, TimestampMixin, table=True):
         ),
     )
     deleted: bool = Field(nullable=False)
-    # Reserved column added ahead of PR #393 (arayabrain/araya-optinist#393).
-    # Not yet used by any code; added early so alembic autogenerate stays
-    # conflict-free until #393 merges. No SQL comment — the migration that
-    # created the column set none, and adding one here would create drift.
+    # NOTE: Reserved column for the pending PR #393. Not yet used by any code;
+    # kept in sync with the migration so alembic autogenerate stays
+    # conflict-free until #393 merges.
     type: int = Field(
         sa_column=Column(Integer, nullable=False, server_default="0"),
         default=0,

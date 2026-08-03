@@ -32,7 +32,6 @@ const mockStore = configureStore([])
 const createMockStorageAlert = (
   overrides: Partial<StorageAlertsApi.StorageAlert> = {},
 ): StorageAlertsApi.StorageAlert => ({
-  user_id: 1,
   user_name: "Test User",
   user_email: "test@example.com",
   alert_level: "critical",

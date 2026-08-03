@@ -158,7 +158,6 @@ const tree = (ctxRef: { current: Ctx | null }) => (
 )
 
 const dedicatedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -295,7 +294,6 @@ describe("PremiumAssignmentProvider — subscription expiry auto-logout", () => 
   test("does NOT auto-logout when there is no active assignment", async () => {
     // Status with no assignment → goes through the assign path.
     mockGetPremiumStatus.mockResolvedValue({
-      user_id: 1,
       subscription_type: UserTier.PREMIUM,
       is_premium: true,
     } as PremiumStatusResult)

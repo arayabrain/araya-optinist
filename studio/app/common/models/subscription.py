@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.sql import func
 from sqlalchemy.sql.functions import current_timestamp
 from sqlmodel import Column, Field, SQLModel
@@ -48,7 +50,8 @@ class SubscriptionPlans(SQLModel, table=True):
         description="True=Active, False=Inactive",
     )
     currency: int = Field(
-        sa_column=Column(BIGINT, nullable=False, default=1),  # Fixed: Use BIGINT
+        # TINYINT UNSIGNED: currency is a small enum (1=USD, 2=JPY).
+        sa_column=Column(TINYINT(unsigned=True), nullable=False, default=1),
         description="Currency code in enum format (e.g., 1 for USD, 2 for JPY)",
     )
     stripe_product_id: Optional[str] = Field(
@@ -120,9 +123,11 @@ class UserSubscription(SQLModel, table=True):
     created_at: Optional[datetime] = Field(
         sa_column_kwargs={"server_default": current_timestamp()},
     )
+    # DATETIME (not TIMESTAMP); changing the type needs a migration.
+    # See DATABASE_DATETIME_TYPE_CONVENTIONS.md
     updated_at: Optional[datetime] = Field(
         sa_column=Column(
-            TIMESTAMP,
+            DateTime,
             server_default=func.current_timestamp(),
             onupdate=func.current_timestamp(),
         ),
@@ -141,7 +146,7 @@ class SubscriptionProvider(SQLModel, table=True):
         default=None,
     )
     name: str = Field(
-        sa_column=Column(String(50), nullable=False),
+        sa_column=Column(String(100), nullable=False),
         description="Provider name (e.g., 'stripe', 'paypal')",
     )
     created_at: Optional[datetime] = Field(
@@ -678,13 +683,13 @@ class Taxes(SQLModel, table=True):
     )
     tax_type: str = Field(sa_column=Column(String(50), nullable=False))
     tax_name: str = Field(sa_column=Column(String(100), nullable=False))
-    tax_rate: float = Field(
+    tax_rate: Decimal = Field(
         sa_column=Column(DECIMAL(precision=5, scale=4), nullable=False)
     )
     is_active: bool = Field(
         sa_column=Column(Boolean, nullable=False, server_default="1"), default=True
     )
-    effective_date: datetime = Field(sa_column=Column(Date, nullable=False))
+    effective_date: date = Field(sa_column=Column(Date, nullable=False))
     created_at: Optional[datetime] = Field(
         sa_column=Column(
             TIMESTAMP, nullable=False, server_default=func.current_timestamp()

@@ -31,13 +31,14 @@ class PremiumUserAssignment(SQLModel, table=True):
         ),
         default=None,
     )
-    user_id: int = Field(
+    user_id: Optional[int] = Field(
         sa_column=Column(
             BIGINT(unsigned=True),
-            ForeignKey("users.id"),
+            ForeignKey("users.id", name="fk_premium_user"),
             unique=True,
-            nullable=False,
-        )
+            nullable=True,
+        ),
+        default=None,
     )
     instance_id: str = Field(sa_column=Column(VARCHAR(20), nullable=False))
     target_group_arn: str = Field(sa_column=Column(VARCHAR(512), nullable=False))

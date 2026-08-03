@@ -13,6 +13,76 @@ from conftest import MockRow, setup_db_mock
 TEST_INSTANCE_ID = "i-testlambda123"
 
 
+def _premium_alb_rule(rule_arn, tg_arn, routing_id, priority="100"):
+    """Build a describe_rules entry shaped like a premium per-user rule."""
+    return {
+        "RuleArn": rule_arn,
+        "Priority": priority,
+        "Conditions": [
+            {
+                "Field": "http-header",
+                "HttpHeaderConfig": {
+                    "HttpHeaderName": RoutingHeaders.ROUTING_ID,
+                    "Values": [routing_id],
+                },
+            },
+            {
+                "Field": "http-header",
+                "HttpHeaderConfig": {
+                    "HttpHeaderName": RoutingHeaders.USER_TIER,
+                    "Values": ["premium"],
+                },
+            },
+        ],
+        "Actions": [{"Type": "forward", "TargetGroupArn": tg_arn}],
+    }
+
+
+def setup_keepset_filtering_db_mock(candidate_rows):
+    """DB mock whose fetchall applies the orphan-sweep keep-set predicate using
+    the params the code actually passed to execute — so the keep-set tests are
+    behavioral, not SQL change-detectors.
+
+    A candidate row is returned iff its status is among the string params
+    (``status IN (...)``) OR the query carries a recency bound (an int param)
+    and the row is flagged recent (``last_activity >= NOW() - grace``). Removing
+    either clause from the production query drops the corresponding param, so the
+    row stops being returned and the sweep reaps it — turning the test red.
+
+    candidate_rows: dicts with alb_rule_arn, target_group_arn, user_id, status,
+    is_recent.
+    """
+    mock_cursor = MagicMock()
+    mock_cursor.rowcount = 1
+
+    def fetchall():
+        params = mock_cursor.execute.call_args.args[1]
+        status_params = {p for p in params if isinstance(p, str)}
+        has_recency_bound = any(isinstance(p, int) for p in params)
+        kept = []
+        for row in candidate_rows:
+            status_match = row["status"] in status_params
+            recency_match = has_recency_bound and row["is_recent"]
+            if status_match or recency_match:
+                kept.append(
+                    MockRow(
+                        {
+                            "alb_rule_arn": row["alb_rule_arn"],
+                            "target_group_arn": row["target_group_arn"],
+                            "user_id": row["user_id"],
+                        }
+                    )
+                )
+        return kept
+
+    mock_cursor.fetchall.side_effect = fetchall
+    mock_connection = MagicMock()
+    mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+    mock_connection.__enter__.return_value = mock_connection
+    mock_connection.__exit__.return_value = None
+    return mock_connection
+
+
 class TestPremiumCleanupHandler:
     """Handler-level tests for premium_cleanup Lambda."""
 
@@ -434,6 +504,108 @@ class TestCleanupOrphanedAlbResources:
 
             assert result["orphaned_rules_deleted"] == 1
             mock_elbv2.delete_rule.assert_called_once_with(RuleArn=orphan_arn)
+
+    def test_keeps_grace_period_assignment(self, mock_env_vars_premium):
+        """Regression (#766): a soft-released row in its grace window
+        (status == PENDING_RELEASE == 'terminating') still owns a live ALB
+        rule and must NOT be reaped as orphaned.
+
+        Behavioral: the DB mock applies the keep-set predicate to the params the
+        code passes, so the ACTIVE-only pre-fix query would drop this row and
+        reap the rule — the assertions below are genuinely red before the fix.
+        """
+        grace_rule_arn = "arn:aws:rule/user-12-grace"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_elbv2.describe_rules.return_value = {
+                "Rules": [
+                    _premium_alb_rule(grace_rule_arn, "arn:aws:tg/premium-12", "rid-12")
+                ]
+            }
+
+            mock_connection = setup_keepset_filtering_db_mock(
+                [
+                    {
+                        "alb_rule_arn": grace_rule_arn,
+                        "target_group_arn": "arn:aws:tg/premium-12",
+                        "user_id": 12,
+                        # Grace row: status aliases PENDING_RELEASE, still recent.
+                        "status": PremiumAssignment.TERMINATING,
+                        "is_recent": True,
+                    }
+                ]
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+            # Live rule survives the sweep (kept via the TERMINATING status).
+            assert result["orphaned_rules_deleted"] == 0
+            assert not mock_elbv2.delete_rule.called
+
+    def test_keeps_recently_active_row_outside_keepset(self, mock_env_vars_premium):
+        """Recency guard (#766): a row whose status is outside the keep-set but
+        that was touched within the grace window must be kept, exercising the
+        ``OR last_activity >= NOW() - grace`` branch on its own.
+
+        Behavioral: with only the status broadening (no recency bound) the
+        pre-fix query would drop this row and reap the rule.
+        """
+        recent_rule_arn = "arn:aws:rule/user-7-recent"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
+            mock_elbv2 = MagicMock()
+
+            def boto3_client_side_effect(service):
+                if service == "elbv2":
+                    return mock_elbv2
+                return MagicMock()
+
+            mock_boto3.side_effect = boto3_client_side_effect
+
+            mock_elbv2.describe_rules.return_value = {
+                "Rules": [
+                    _premium_alb_rule(recent_rule_arn, "arn:aws:tg/premium-7", "rid-7")
+                ]
+            }
+
+            mock_connection = setup_keepset_filtering_db_mock(
+                [
+                    {
+                        "alb_rule_arn": recent_rule_arn,
+                        "target_group_arn": "arn:aws:tg/premium-7",
+                        "user_id": 7,
+                        # Status the keep-set does not enumerate: kept only by
+                        # the recency guard (mid-transition row).
+                        "status": "mid-transition",
+                        "is_recent": True,
+                    }
+                ]
+            )
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+            # Rule survives purely because the row is recent.
+            assert result["orphaned_rules_deleted"] == 0
+            assert not mock_elbv2.delete_rule.called
 
     def test_skips_default_rule(self, mock_env_vars_premium):
         """Default ALB rule is never deleted."""
