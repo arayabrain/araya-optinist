@@ -560,29 +560,25 @@ class DataCleanupJob:
                 f"{total_experiments_kept} experiments kept (S3 backup not verified)"
             )
 
+        # Check errors first so a genuine failure is never classified as KEPT.
+        if had_error:
+            return CleanupOutcome.ERROR
+
         if not data_found:
-            # No local data on this instance → keep the DB record; do NOT
-            # treat "no local data" as a completed cleanup.
-            #
-            # instance_id is refreshed to the serving instance on each request
-            # (see user_activity_middleware), so "this instance == instance_id"
-            # does not guarantee this instance is where the data was written: a
-            # stray cross-instance request can point instance_id here. Deleting
-            # the record on that basis would orphan the real data on the
-            # instance that actually holds it. Retaining the record instead
-            # leaves at most reclaimable local disk on the true owner. That disk
-            # is cleaned only if the user is active again on the owning instance
-            # *before logout* (activity stops rewriting instance_id after
-            # logout); otherwise it is reclaimed when the instance is recycled.
-            # Data is also backed up to S3, so nothing is lost.
+            # No local data here → keep the DB record; do NOT treat it as
+            # cleaned. instance_id is activity-driven, so "this instance ==
+            # instance_id" doesn't prove the data was written here (a stray
+            # cross-instance request can point it here); closing the record
+            # then would orphan the real data on the owning instance. Worst
+            # case of keeping is reclaimable local disk on the owner —
+            # reclaimed on instance recycle, or earlier if the user is active
+            # there again before logout; data is in S3, so nothing is lost.
             logger.info(
                 f"No local data for user {user_id} on this instance; "
                 f"keeping DB record (data may live on the owning instance)."
             )
             return CleanupOutcome.KEPT
 
-        if had_error:
-            return CleanupOutcome.ERROR
         return CleanupOutcome.CLEANED if fully_cleaned else CleanupOutcome.KEPT
 
     @classmethod
