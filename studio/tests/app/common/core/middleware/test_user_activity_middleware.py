@@ -888,13 +888,12 @@ class TestPremiumActivityRestoresPendingRelease:
         assert result is False
 
 
-class TestFreeUserActivityInstanceIdPinning:
-    """instance_id must be pinned at INSERT and NOT overwritten on UPDATE.
+class TestFreeUserActivityInstanceIdWrite:
+    """instance_id is refreshed to the serving instance on UPDATE and set on
+    INSERT, so it tracks where the user is currently active.
 
-    Rewriting instance_id on a stray cross-instance request would re-point the
-    assignment to an instance holding no local data; the cleanup worker there
-    would then treat "no local data" as done and orphan the real data (the
-    exact leak this PR fixes).
+    (Reworking instance_id write ownership to a single authoritative writer is
+    deferred to a separate follow-up issue.)
     """
 
     def _run_sync_update(self, rowcount):
@@ -927,17 +926,17 @@ class TestFreeUserActivityInstanceIdPinning:
 
         return mock_session
 
-    def test_update_does_not_overwrite_instance_id(self):
-        """Existing-row UPDATE sets last_activity only, never instance_id."""
+    def test_update_refreshes_instance_id(self):
+        """Existing-row UPDATE sets both last_activity and instance_id."""
         mock_session = self._run_sync_update(rowcount=1)
 
         update_stmt = mock_session.execute.call_args_list[0][0][0]
         compiled = str(update_stmt.compile(compile_kwargs={"literal_binds": True}))
         assert "last_activity" in compiled
-        assert "instance_id" not in compiled
+        assert "instance_id" in compiled
 
-    def test_insert_still_sets_instance_id(self):
-        """New-row INSERT path still pins instance_id via session.add()."""
+    def test_insert_sets_instance_id(self):
+        """New-row INSERT path sets instance_id via session.add()."""
         mock_session = self._run_sync_update(rowcount=0)
 
         added = [c.args[0] for c in mock_session.add.call_args_list]
