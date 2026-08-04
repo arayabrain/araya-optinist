@@ -1,3 +1,5 @@
+import { readFile } from "fs/promises"
+
 import { test, expect, Page } from "@playwright/test"
 
 import {
@@ -139,6 +141,18 @@ test.describe("Record Management", () => {
     await nwbButton.click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toMatch(/\.nwb$/)
+
+    // The filename alone passed while the API answered 200 with the body
+    // `false`: the button builds the blob from whatever it receives, so a 5-byte
+    // download still fires the event and still ends in .nwb. Assert the payload.
+    const path = await download.path()
+    expect(path).not.toBeNull()
+    const contents = await readFile(path!)
+    expect(contents.byteLength).toBeGreaterThan(64)
+    // HDF5, which NWB is built on, opens with this 8-byte signature.
+    expect(contents.subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]),
+    )
   })
 
   test("REC-08 - Copy multiple records", async ({ page }) => {

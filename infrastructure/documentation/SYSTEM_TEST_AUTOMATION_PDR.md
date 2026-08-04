@@ -1,7 +1,8 @@
 # System Test Automation: Preliminary Design Review
 
-**Status:** proposal, not yet scheduled
-**Baseline:** `SYSTEM_TEST_COVERAGE.md` as of 2026-08-03, after the red-team audit (`TEST_COVERAGE_AUDIT.md`)
+**Status:** PR 1 of 3 implemented on `feature/system-test-automation-1` (30 rows). Open questions resolved 2026-08-04 (see [Resolved questions](#resolved-questions))
+**Baseline:** `SYSTEM_TEST_COVERAGE.md` as of 2026-08-03, after the red-team audit of all mapped rows
+**Stacked on:** [PR #786](https://github.com/arayabrain/araya-optinist/pull/786), so that WP15 and WP16 are readable as code rather than as claims
 **Scope:** the `Araya-Optinist System Test Cases Template` rows currently marked manual
 
 ## Executive Summary
@@ -9,16 +10,17 @@
 - **236 of 409 System sheet rows have no automated test.** This PDR triages them and proposes which to automate
 - **123 rows are automatable** with the test infrastructure that already exists (Playwright, jest, pytest). No new frameworks, services, or CI lanes are required
 - **103 rows should stay manual permanently** - they assert Stripe-hosted UI, Stripe Dashboard state, or live AWS behavior that we cannot own from a test. A further 10 are automatable but deliberately deferred as low value
-- **The single largest win is the admin Account Manager (sheet 03): 37 rows, entirely our own UI and API, currently zero coverage**
+- **The single largest win is the admin Account Manager (sheet 03): 37 rows, entirely our own UI and API, with no coverage beyond the deletion and subscription paths**
 - **Highest risk-reduction per hour is not the biggest package** - the free-user cleanup grace window (1 row) guards irreversible data deletion and is a half-day of work
-- **Recommended split is four PRs**, sequenced so the cheap high-value checks land before the large admin package
+- **Recommended split is three PRs**, grouped by reviewer lens: pytest + repairs, then jest/e2e, then the admin surface. See [Recommended sequencing](#recommended-sequencing)
+- **WP1 carries a production fix.** The admin delete API accepts an admin deleting themselves; only the button is hidden. Firebase is deleted first and irreversibly, so the API call is unrecoverable
 
 ---
 
 ## Problem
 
 The System sheets are the release gate for anything not covered by the Release
-sheets. Today a release run hand-verifies 236 rows. That has three costs:
+sheets. Today a release run hand-verifies 236 rows. That has five costs:
 
 1. **Regression risk between releases.** The admin Account Manager, the storage
    warning thresholds, and the Stripe checkout session configuration have no
@@ -32,8 +34,9 @@ sheets. Today a release run hand-verifies 236 rows. That has three costs:
    execute in CI (see WP13). A skip is indistinguishable from a pass in a summary
    line, so this class of error hides itself.
 5. **Tests that could not fail were counted as coverage.** A red-team audit of all
-   291 mapped rows (`TEST_COVERAGE_AUDIT.md`) found 41 materially wrong and moved
-   34 System rows to `No`. Those 34 are folded in below as WP14-WP21. Two were
+   291 mapped rows found 41 materially wrong and moved 34 System rows to `No`.
+   Those 34 are folded in below as WP14-WP21, and each one's replacement mapping
+   is recorded against its row in `SYSTEM_TEST_COVERAGE.md`. Two were
    _false-positive_ tests that pass while the product is broken - worse than no
    coverage, because the manual check is suppressed too.
 
@@ -93,14 +96,14 @@ assertion fail because of a change in this repository?**
 | WP11 | Dataview workspace filter                        | 07             | 1       | e2e                 | XS     |
 | WP12 | File-sync progress indicator                     | 05             | 1       | jest                | XS     |
 | WP13 | Revive the skipped suites                        | 02, 09         | 2       | pytest              | S      |
-| WP16 | Premium assignment and restore gaps (**landed**) | 06, 06-2       | 6       | pytest + jest       | L      |
+| WP16 | Premium assignment and restore gaps (**landed, PR #786**) | 06, 06-2 | 6       | pytest + jest       | L      |
 | WP21 | Audit fallout: assorted single rows              | 01, 02, 03, 05 | 6       | pytest + jest + e2e | M      |
 | WP17 | Workflow-count tracking, done properly           | 05             | 5       | pytest              | M      |
 | WP20 | Storage-warning scenario gaps                    | 04             | 4       | e2e                 | S      |
 | WP18 | Dataview publish and sync DB-state assertions    | 07             | 3       | pytest              | S      |
 | WP19 | On-demand input sync, per format                 | 08             | 3       | pytest              | S      |
 | WP14 | `SyncStatusView` + `useSyncRetry` suite          | 07             | 2       | jest                | S      |
-| WP15 | `InactivityWarning` suite (**landed**)           | 06-2           | 2       | jest                | S      |
+| WP15 | `InactivityWarning` suite (**landed, PR #786**)    | 06-2           | 2       | jest                | S      |
 |      | **Total**                                        |                | **123** |                     |        |
 
 Effort key: XS = under half a day, S = 1-2 days, L = 4+ days.
@@ -134,8 +137,17 @@ Split by the cheapest layer that can prove each row:
 3. `test_users_admin_subscription.py` already covers the admin _subscription_
    update path. WP1 must not duplicate it - extend that file rather than
    creating a parallel one.
-4. Self-delete is rejected server-side, not only hidden in the UI. If the API
-   currently allows it, that is a bug to file, and the test pins the fix.
+4. Self-delete is rejected server-side, not only hidden in the UI. **It is not
+   today** - see [Q1](#q1-does-the-admin-api-reject-self-delete-server-side), so
+   WP1 carries the production fix and the test pins it.
+
+**Scope addition: server-side self-delete guard.** `delete_user` in
+`users_admin.py` already resolves `current_admin`; `crud_users.delete_user` never
+receives it, so the guard belongs in the router, next to the identity it already
+has. Rejecting `user_id == current_admin.id` there is the whole fix, and it
+covers every caller of that route rather than the one path the UI takes. The
+sheet's `cannot-delete-self` row becomes a real assertion instead of a UI
+observation.
 
 **Risk:** the change-password path calls Firebase. Mock the Admin SDK at the
 boundary the existing suites already mock (`studio/tests/app/conftest.py`
@@ -292,9 +304,14 @@ format with no e2e coverage. HDF5 has `UPL-02` and `UPL-04`; this mirrors them.
 
 **New test IDs:** `UPL-05`, `UPL-06`, `UPL-07`.
 
-**Risk:** needs a small `.mat` fixture committed to the repo. Keep it under a
-few hundred KB, and generate it with a script checked in beside it so it can be
-regenerated rather than trusted.
+**No fixture work required.** `sample_data/tutorial/input/sample_matlab.mat` is
+already tracked, and `10-uploads.spec.ts` already resolves its HDF5 fixture from
+that same directory through its `SAMPLE` constant. WP3 is one more `path.join`
+against a file the repo ships - see [Q3](#q3-is-a-mat-fixture-acceptable-in-repo).
+
+**Risk:** the fixture is 16 MB, the same order as the HDF5 one `UPL-02` and
+`UPL-04` already upload, so the added runtime is a known quantity rather than a
+new one.
 
 ---
 
@@ -365,8 +382,16 @@ logic that gates paid access.
 These eight packages exist because the red-team audit moved 34 rows from
 "covered" to `No`. Three of those are permanently manual (02/288 Stripe past-due
 state, 06/603 the CloudWatch heartbeat line, 06/608 real cross-instance S3
-recovery); the remaining 31 are the packages below. Per-row evidence is in
-`TEST_COVERAGE_AUDIT.md`.
+recovery) and are carried in [Out of scope](#out-of-scope-with-reasons); the
+remaining 31 are the packages below. Per-row evidence is the replacement mapping
+recorded against each row in `SYSTEM_TEST_COVERAGE.md`.
+
+**Where the landed packages live.** WP15 and WP16, and the
+`PremiumHeartbeatRetry` / `PremiumSleepDetection` remediation, are part of
+[PR #786](https://github.com/arayabrain/araya-optinist/pull/786), which this
+document is stacked on. Their tests are present in this tree and reach
+`develop-main` when #786 merges, which is why they are counted in the 123 but
+not scheduled into a PR below.
 
 ### WP14: `SyncStatusView` + `useSyncRetry` suite
 
@@ -385,7 +410,7 @@ unbounded `(partial)`, and closes release rows BT-718 and BT-719.
 `fetchFn`, and if the error branch stops rendering all three of icon, alert and
 button.
 
-### WP15: `InactivityWarning` suite (landed)
+### WP15: `InactivityWarning` suite (landed, [PR #786](https://github.com/arayabrain/araya-optinist/pull/786))
 
 **Rows:** 06-2/6228, 06-2/6230 (2)
 
@@ -405,12 +430,13 @@ the mocked `onActivityFromOtherTab` subscriber is invoked directly, and the test
 asserts the warning clears, no heartbeat of our own is sent, and the release
 deadline moves with the borrowed timestamp. Closes 6228 and 6230, upgrades 6229.
 
-### WP16: Premium assignment and restore gaps (landed)
+### WP16: Premium assignment and restore gaps (landed, [PR #786](https://github.com/arayabrain/araya-optinist/pull/786))
 
 **Rows:** 06/601, 06-2/6203, 06-2/6208, 06-2/6209, 06-2/6213, 06-2/6219 (6)
 
-The largest audit cluster, and the one that matters most: sheet 06-2 is PR #780's
-own acceptance evidence.
+The largest audit cluster, and the one that matters most: sheet 06-2 is
+[PR #786](https://github.com/arayabrain/araya-optinist/pull/786)'s own acceptance
+evidence.
 
 | Row         | What was missing                                                                                                                                                                                                                                             | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -513,9 +539,9 @@ this document.
 
 | Item                                                                                                                   | Why                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Fix `nwb.py` returning HTTP 200 with body `false`** when no `.nwb` exists, and make BT-509 assert a real NWB payload | A product bug. The test passes on a 5-byte `false` blob, so the automated _and_ manual checks are both suppressed                                                                                                                                                                                                                                                                                 |
-| **Fix BT-403 (Cell-ROI)** to assert an ROI-specific artefact                                                           | It re-asserts a plot already awaited before the ROI was selected; a failed ROI fetch does not hide it                                                                                                                                                                                                                                                                                             |
-| **Delete or rewrite `PremiumHeartbeatRetry.test.ts` and `PremiumSleepDetection.test.ts`** (**done**)                   | Both re-implemented the logic under test inside the test file and asserted against their own copies. `PremiumHeartbeatRetry.test.ts` was rewritten against the real provider (attempt count, growing backoff, terminal rethrow, free-tier no-op, device-wake wiring); `PremiumSleepDetection.test.ts` was deleted, its subject being covered by `useSleepDetection.test.ts` against the real hook |
+| **Fix `nwb.py` returning HTTP 200 with body `false`** when no `.nwb` exists, and make BT-509 assert a real NWB payload (**done, PR 1**) | A product bug. The test passed on a 5-byte `false` blob, so the automated _and_ manual checks were both suppressed. Both routes now 404; `test_nwb.py` pins it and REC-07 checks the HDF5 signature. The two pytest cases that lived there asserted `status_code == 200` and `response.url`, so they passed on the bug |
+| **Fix BT-403 (Cell-ROI)** to assert an ROI-specific artefact (**done, PR 1**)                                           | It re-asserted a plot already awaited before the ROI was selected. VIS-02 now counts Plotly traces across the selection (1 -> 2) and asserts the ROI response is 200                                                                                                                                                                                                                              |
+| **Delete or rewrite `PremiumHeartbeatRetry.test.ts` and `PremiumSleepDetection.test.ts`** (**done, PR #786**)            | Both re-implemented the logic under test inside the test file and asserted against their own copies. `PremiumHeartbeatRetry.test.ts` was rewritten against the real provider (attempt count, growing backoff, terminal rethrow, free-tier no-op, device-wake wiring); `PremiumSleepDetection.test.ts` was deleted, its subject being covered by `useSleepDetection.test.ts` against the real hook |
 | **Correct the sample-data precondition** in `helpers.ts` and `RELEASE_TEST_COVERAGE.md`                                | Both claim the import ships pre-computed outputs; it ships metadata YAML only, so snakemake recomputes. Also reconcile the 600s `beforeEach` sitting inside an 840s inner wait                                                                                                                                                                                                                    |
 | **Add a skip gate** to the e2e run                                                                                     | For a sign-off sheet a skipped test proves nothing. Either fail the run when a High-priority mapped test skips, or emit a per-row skip summary the tester reconciles against the sheet                                                                                                                                                                                                            |
 | **Require `(partial)` to name its uncovered half**                                                                     | Most of the 85 MEDIUM audit findings are rows where `(partial)` was doing unbounded work. The premium tables already model the honest style                                                                                                                                                                                                                                                       |
@@ -527,16 +553,25 @@ this document.
 Eight PRs, smallest-risk-first so the branch does not become one unreviewable
 diff. PR 0 comes first: it repairs tests that currently mislead.
 
-| PR  | Contents                  | Rows | Rationale                                                                                                                                                              |
-| --- | ------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | WP5, WP7, WP9, WP10, WP13 | 23   | All pytest, no new harness, highest consequence per line. Lands the data-deletion and tax guards, and stops two rows claiming coverage they do not have                |
-| 2   | WP2, WP4, WP11, WP12, WP3 | 20   | Small jest and e2e additions to specs that already exist                                                                                                               |
-| 3   | WP1                       | 37   | The admin package. Large enough to review on its own, and touches a surface with no existing tests to lean on                                                          |
-| 4   | WP8                       | 16   | Depends on the route-mock and DB-driven patterns being settled; benefits from landing after PR 2                                                                       |
-| 0   | Remediation table         | 0    | **Before any of the above.** Fixes two tests that pass on a broken product and deletes two that cannot fail. Cheap, and it stops the map lying while the rest is built |
-| 5   | WP14, WP15, WP18, WP19    | 10   | Four small suites against components and call sites that have none today. Closes the audit's clearest gaps                                                             |
-| 6   | WP16, WP17                | 11   | The premium restore cluster and workflow-count tracking. WP16 should land before PR #780 merges, since sheet 06-2 is that PR's acceptance evidence                     |
-| 7   | WP20, WP21                | 10   | Scenario gaps and assorted single rows; several also need sheet-copy corrections                                                                                       |
+Reorganised from eight PRs into **three**, grouped so each carries one reviewer
+lens rather than one work package. The eight-PR split minimised individual diff
+size but spread the same review context across several PRs: the pytest packages
+alone appeared in four of them.
+
+| PR  | Branch                        | Contents                                                     | Rows | Reviewer lens                                                                                                     |
+| --- | ----------------------------- | ------------------------------------------------------------ | ---- | ----------------------------------------------------------------------------------------------------------------- |
+| 1   | `feature/system-test-automation-1` | Remediation + WP5, WP6, WP7, WP9, WP10, WP13, WP17, WP18, WP19 | 30   | pytest, terraform config, and the repairs. No new harness. Carries one production fix (`nwb.py`)                  |
+| 2   | `feature/system-test-automation-2` | WP2, WP3, WP4, WP11, WP12, WP14, WP20, WP8                   | 42   | jest and Playwright, all additions to specs that already exist                                                    |
+| 3   | `feature/system-test-automation-3` | WP1 (+ the self-delete fix), WP21                            | 43   | The admin surface. The only PR that changes production code beyond PR 1's `nwb.py` fix                            |
+
+30 + 42 + 43 = 115. The missing 8 are WP15's 2 and WP16's 6, already written in
+PR #786 and so counted in the 123 above but not scheduled again; 115 + 8 = 123.
+
+Two ordering constraints from the original split are preserved: the remediation
+lands first, and WP8's route-mock pattern now settles in the *same* PR as the
+rest of the e2e work rather than in the one after it. WP17, WP18 and WP19 moved
+into PR 1 because they are pytest, and would otherwise be strays in a frontend
+PR.
 
 Each PR updates its rows in `SYSTEM_TEST_COVERAGE.md`. A PR that adds tests
 without updating the map is incomplete, because the map is what the release
@@ -555,9 +590,10 @@ tester reads.
 | 04: 403, 406, 407, 417, 420, 421                                    | 6       | Real S3 bucket and object verification                                                                                                 |
 | 02: 201, 206, 207, 285, 293..296                                    | 8       | Email delivery, renewal waits, Stripe trial lifecycle                                                                                  |
 | 06: 605, 607. 06-2: 6216                                            | 3       | Real-AWS multi-instance and ECS crash-recovery behavior                                                                                |
-|                                                                     | **100** |                                                                                                                                        |
 | 05: 545, 546                                                        | 2       | Hours of real compute; the `@slow` lane already covers single tutorial runs                                                            |
 | 01: 118                                                             | 1       | Live Stripe customer state                                                                                                             |
+| 02: 288. 06: 603, 608                                               | 3       | Audit fallout that is manual, not automatable: Stripe past-due state, the CloudWatch heartbeat line, real cross-instance S3 recovery   |
+|                                                                     | **103** |                                                                                                                                        |
 
 ### Deferred as low value
 
@@ -569,8 +605,11 @@ tester reads.
 | 08: 814                     | 1      | Public experiment detail with visualizations needs published data with a real S3 round-trip                                                                                             |
 |                             | **10** |                                                                                                                                                                                         |
 
-Note: sheet 03 rows 336, 338, 339 and 340 are **already** automated by
-`test_user_deletion.py`, which is why WP1 covers 37 rows and not 41.
+Note: sheet 03 rows 336, 339 and 340 are **already** automated by
+`test_user_deletion.py`. Row 338 was in that set until the audit moved it to
+`No` - `test_contract_firebase_deleted_blocks_login` asserts that Firebase's
+`delete_user` was called, never that a subsequent login is rejected - so it is
+now WP21's. 37 + 3 + 1 = the sheet's 41 rows, which is why WP1 covers 37.
 
 ---
 
@@ -604,14 +643,94 @@ CSVs; they are recorded here because they change what the rows mean.
 Consequence of 4: no System row now covers a Tutorial 3 run to completion.
 `WF-06` does that, but no sheet row claims it.
 
-## Open questions
+## Resolved questions
 
-1. **Does the admin API currently reject self-delete server-side, or only hide
-   the button?** WP1's acceptance criteria assume a server-side check. If there
-   is none, WP1 grows a small production fix and should say so.
-2. **Should `12-admin.spec.ts` run in the weekly CI e2e job?** It needs an admin
-   account, which the current bootstrap script does not create. Either extend
-   `.github/scripts/e2e-bootstrap.sh` or keep WP1's e2e half local-only and
-   carry the API half in CI.
-3. **Is a MAT fixture acceptable in-repo?** WP3 needs one. If binary fixtures
-   are unwanted, WP3 drops to a generated-at-setup fixture, which costs runtime.
+All three questions that blocked this PDR were answered against the code on
+2026-08-04. Each answer changed a work package, so they are recorded with the
+evidence rather than as a decision log.
+
+### Q1: Does the admin API reject self-delete server-side?
+
+**No. The guard is UI-only, and the delete is unrecoverable.**
+
+`AccountManager/index.tsx` hides the Delete and Proxy SignIn buttons for the
+signed-in admin's own row by testing `params.row?.id === user?.id`. Nothing
+mirrors that server-side: `users_admin.py`'s `delete_user` passes only `user_id`
+and `organization_id` into `crud_users.delete_user`, which therefore never
+learns who the caller is and could not enforce the rule even if it wanted to. A
+`DELETE /admin/users/{own_id}` from any admin token is accepted.
+
+The consequence is not cosmetic. `crud_users.delete_user` deletes the Firebase
+account **first**, by design and documented in its own docstring, because that is
+the hardest step to reverse. An admin who calls the route against themselves
+destroys their own auth account before anything else happens.
+
+Both halves came from the same commit, `5194e3357` ("[93] add account manage
+page", 2023-09-22), which added the page and replaced the delete route's stub
+with its real implementation. The author did think about self-deletion - the
+DataGrid check is deliberate, and it suppresses Proxy SignIn on the same row -
+and simply implemented it in the layer they were building. The fix preserves
+that intent rather than reverting anything.
+
+**Effect on the PDR:** WP1 grows a production fix, one guard in
+`users_admin.py::delete_user` where `current_admin` is already resolved. The
+Executive Summary and WP1 both now say so, and PR 3 is flagged as the only PR in
+the sequence that changes production code.
+
+### Q2: Should `12-admin.spec.ts` run in the weekly CI e2e job?
+
+**Yes, and the bootstrap change is three lines.**
+
+`.github/workflows/e2e.yml` runs on `cron: "0 0 * * 1"` plus `workflow_dispatch`,
+and calls `.github/scripts/e2e-bootstrap.sh`. That script registers both CI users
+through `/api/register` with `role_id: 20`, which is `UserRole.operator`;
+`UserRole.admin` is `1`. So the premise of the question holds - CI has no admin.
+
+Registration cannot be asked for one. `crud_users.create_user` overwrites
+`data.role_id` with `UserRole.operator.value` whenever `verified` is false, which
+is exactly the `/register` path, so a client cannot self-elevate. Only the admin
+router calls it with `verified=True` and an honoured `role_id`.
+
+The bootstrap already solves this shape of problem once: it registers the premium
+user normally, then fixes up `subscription_users` and `user_storage_usage` with a
+SQL block. An admin user is the same move against `user_roles` - register a third
+account, then `UPDATE user_roles SET role_id = 1` for it. That is cheaper than
+splitting WP1's e2e half into a local-only lane, and it keeps the sign-off sheet
+reading from one CI run.
+
+**Effect on the PDR:** WP1's e2e half stays in CI. The bootstrap edit belongs in
+PR 3 alongside `12-admin.spec.ts`.
+
+### Q3: Is a MAT fixture acceptable in-repo?
+
+**The question is moot - the fixture is already committed.**
+
+`sample_data/tutorial/input/sample_matlab.mat` is tracked, and it sits in the
+same directory `10-uploads.spec.ts` already reads through its `SAMPLE` constant
+to reach `sample_hdf5.h5` for `UPL-02` and `UPL-04`. WP3 adds a `path.join`, not
+a fixture.
+
+**Effect on the PDR:** WP3's stated risk - commit a small `.mat`, generate it
+from a checked-in script - is deleted. The residual risk is runtime: the file is
+16 MB, comparable to the 16 MB HDF5 the suite already uploads.
+
+---
+
+## Known inconsistency outside this document
+
+Stacking on #786 is what makes the sheet 06-2 rows of `SYSTEM_TEST_COVERAGE.md`
+true: they name `PremiumLifecycleIntegration.test.tsx`,
+`TestSoftReleaseUserAssignment` and `TestRestorePendingReleaseTransaction`, which
+exist in this tree and nowhere on `develop-main`. Landing this document on
+`develop-main` ahead of #786 would reintroduce that gap.
+
+One inconsistency survives the stack: **some rows still carry their pre-audit
+mapping.** 07/717 and 07/718 still read `ImagePlotSimple.test.tsx (partial)`, the
+mapping WP14 exists to replace, and 03/338 still reads
+`test_contract_firebase_deleted_blocks_login`, which asserts that Firebase's
+`delete_user` was called rather than that a later login is rejected - the reason
+the audit moved it to WP21.
+
+That is not a defect in this PDR and it does not change the triage. It is
+recorded because Goal 3 makes the map's truthfulness a deliverable, and because a
+reader reconciling this document against the map will otherwise hit it.

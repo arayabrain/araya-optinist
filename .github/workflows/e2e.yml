@@ -35,7 +35,10 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # RUN_SLOW adds the three tutorial runs (5-10 min each) plus the dataview
+    # mint, and CI retries twice. Playwright's own globalTimeout ends the run
+    # before this fires, so the skip summary and artifacts still get written.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -94,12 +97,35 @@ jobs:
         run: npx playwright test
         env:
           BASE_URL: http://localhost:3000
+          # The tutorial runs are the only thing that produces a completed
+          # workflow, and therefore an enabled NWB download button. Without this
+          # REC-07 skips every week and its payload assertion never executes.
+          RUN_SLOW: 1
           TEST_USER_EMAIL: ${{ secrets.E2E_TEST_USER_EMAIL }}
           TEST_USER_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
           TEST_PREMIUM_EMAIL: ${{ secrets.E2E_TEST_PREMIUM_EMAIL }}
           TEST_PREMIUM_PASSWORD: ${{ secrets.E2E_TEST_PREMIUM_PASSWORD }}
           TEST_LIFECYCLE_EMAIL: e2e_ci_lifecycle@test.com
           TEST_LIFECYCLE_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+
+      - name: Report tests that did not run
+        if: always()
+        working-directory: frontend
+        # Mapped rows that skipped are unverified, not passing. Surfaced in the
+        # job summary so a release sign-off reconciles them against the sheet.
+        run: |
+          if [ -s test-results/skipped-tests.txt ]; then
+            {
+              echo "### Playwright tests that did NOT run"
+              echo
+              echo '| ID | Test | Reason |'
+              echo '| -- | ---- | ------ |'
+              awk -F'\t' '{print "| " $1 " | " $2 " | " $3 " |"}' \
+                test-results/skipped-tests.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No tests were skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Dump backend logs on failure
         if: failure()

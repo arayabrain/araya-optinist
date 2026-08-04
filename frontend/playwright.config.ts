@@ -28,9 +28,19 @@ export default defineConfig({
   // CRA dev-server hydration makes early clicks occasionally no-op; one
   // retry absorbs it without hiding persistent failures
   retries: process.env.CI ? 2 : 1,
-  reporter: [["html", { open: "never" }], ["list"]],
+  reporter: [
+    ["html", { open: "never" }],
+    ["list"],
+    // A skipped test reads as a pass in the summary line the sheets are signed
+    // off against; this names the rows that did not run.
+    ["./e2e/skip-summary-reporter.ts"],
+  ],
   // Workflow runs take 5-10 minutes; opt in with: yarn test:e2e --grep @slow
   grepInvert: process.env.RUN_SLOW ? undefined : /@slow/,
+  // End the run ourselves rather than letting the CI job's timeout kill it: a
+  // runner-level kill skips onEnd, so the skip summary and artifacts are lost
+  // precisely on the runs where they matter most.
+  globalTimeout: process.env.CI ? 150 * 60_000 : undefined,
   use: {
     // Without this, an intercepted click retries until the test timeout
     // (Playwright's default action timeout is unlimited)

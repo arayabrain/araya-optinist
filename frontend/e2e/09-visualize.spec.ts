@@ -76,8 +76,34 @@ test.describe("Visualize", () => {
     page,
   }) => {
     await addImagePlot(page)
+
+    // `.js-plotly-plot` and `text=cell_roi` are both already true before the ROI
+    // loads: addImagePlot awaited the plot, and `cell_roi` is the select's own
+    // displayed value. ImagePlot gates rendering on the *image* error only, so a
+    // failed getRoiData leaves the plot visible and both of those assertions
+    // passing.
+    //
+    // Trace *count* is no good either: ImagePlot always builds a fixed two-trace
+    // array ("images" then "roi"), with the roi trace's z starting as []. So the
+    // ROI-specific artefact is that trace's z gaining rows.
+    const roiRowCount = () =>
+      page.evaluate(() => {
+        const plot = document.querySelector(".js-plotly-plot") as unknown as {
+          data?: { name?: string; z?: unknown[] }[]
+        }
+        return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
+      })
+    expect(await roiRowCount()).toBe(0)
+
+    const roiResponse = page.waitForResponse(
+      (r) => /\/api\/visualizations\/image\/.*roi/i.test(r.url()),
+      { timeout: 60_000 },
+    )
     await selectFromMui(page, "Select Roi", "cell_roi")
-    await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+    expect((await roiResponse).status()).toBe(200)
+
+    await expect.poll(roiRowCount, { timeout: 60_000 }).toBeGreaterThan(0)
+
     // Both selectors keep their values after the plot re-renders
     await expect(
       page.locator("text=sample_mouse2p_image.tiff").first(),

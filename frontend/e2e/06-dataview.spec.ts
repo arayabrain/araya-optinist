@@ -126,7 +126,11 @@ test.describe("Private Dataview", () => {
 
   test.beforeEach(async ({ page }) => {
     skipWithoutCreds()
-    if (!recordsMinted) test.setTimeout(600_000)
+    // The first hook mints its rows with a real Tutorial1 run (the sample data
+    // ships metadata YAML only, so snakemake recomputes). runTutorial's inner
+    // wait is 840s, so a 600s budget here expired mid-run and reported the
+    // timeout against this hook rather than against the run.
+    if (!recordsMinted) test.setTimeout(900_000)
     await gotoDashboard(page)
     dataviewId = await ensureDataviewRows(page)
     await page.goto(`/dataview/${dataviewId}`)
