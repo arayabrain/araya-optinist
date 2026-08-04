@@ -564,9 +564,7 @@ async def publish_dataview_records(
                 await _sync_experiment_config_for_publish(
                     str(record.workspace_id),
                     record.uid,
-                    _resolve_workspace_remote_bucket_name(
-                        db, str(record.workspace_id)
-                    ),
+                    _resolve_workspace_remote_bucket_name(db, str(record.workspace_id)),
                 )
 
                 validation = PublishValidator.validate(

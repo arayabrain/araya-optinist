@@ -750,9 +750,7 @@ class TestSyncExperimentConfigForPublish:
             "studio.app.common.routers.dataview.RemoteStorageController."
             "is_available",
             return_value=False,
-        ), patch(
-            "studio.app.common.routers.dataview.RemoteStorageReader", mock_reader
-        ):
+        ), patch("studio.app.common.routers.dataview.RemoteStorageReader", mock_reader):
             await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
 
         mock_reader.assert_not_called()
@@ -906,8 +904,7 @@ class TestMultiplePublishDataviewRecords:
             "find_user_owned_dataview_record",
             side_effect=lambda db, rid, uid: records.get(rid),
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_sync_experiment_config_for_publish",
+            "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
             new=AsyncMock(),
         ) as mock_sync, patch(
             "studio.app.common.routers.dataview.PublishValidator.validate",
@@ -952,8 +949,7 @@ class TestMultiplePublishDataviewRecords:
             "find_user_owned_dataview_record",
             side_effect=lambda db, rid, uid: records.get(rid),
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_sync_experiment_config_for_publish",
+            "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
             new=AsyncMock(),
         ), patch(
             "studio.app.common.routers.dataview.PublishValidator.validate",
@@ -1021,8 +1017,7 @@ class TestSinglePublishPreSync:
             "find_user_owned_dataview_record",
             return_value=mock_record,
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_sync_experiment_config_for_publish",
+            "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
             new=AsyncMock(side_effect=sync_side),
         ) as mock_sync, patch(
             "studio.app.common.routers.dataview._resolve_workspace_remote_bucket_name",
