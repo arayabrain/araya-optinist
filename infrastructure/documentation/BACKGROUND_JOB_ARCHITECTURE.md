@@ -213,6 +213,13 @@ Safety checks before deletion:
 | `PersistentSyncFailure` | `PublishedExperimentSyncJob` | Count |
 | `DataCleanupCount` | `DataCleanupJob` | Count |
 | `CleanupErrors` | `DataCleanupJob` | Count |
+| `CleanupKept` | `DataCleanupJob` | Count |
+
+> `CleanupErrors` = actionable failures (unexpected exception, or data retained
+> because its S3 backup could not be verified). `CleanupKept` = benign
+> keep-the-record outcomes (no local data on this instance, or the user returned)
+> — deliberately **not** counted as errors. No CloudWatch alarm is wired to this
+> namespace yet; these metrics are the intended signals for such alarms.
 
 ### Logs
 

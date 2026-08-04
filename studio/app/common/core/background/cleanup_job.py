@@ -50,9 +50,10 @@ class CleanupOutcome(Enum):
 
     - ``CLEANED``: local data was removed; the assignment may be closed.
     - ``KEPT``: nothing was closed on purpose — no local data on this instance,
-      data intentionally retained pending S3 verification, or the user logged
-      back in. This is a routine, expected outcome, NOT an error.
-    - ``ERROR``: an unexpected failure occurred while cleaning.
+      or the user logged back in. A routine, expected outcome, NOT an error.
+    - ``ERROR``: cleanup could not complete safely — an unexpected exception, or
+      data retained because its S3 backup could not be verified (an actionable
+      condition worth alerting on; the local disk is not being reclaimed).
     """
 
     CLEANED = "cleaned"
@@ -132,11 +133,14 @@ class DataCleanupJob:
                         # Re-check workflow count and re-login before marking cleaned
                         # Prevents race condition where workflow/login during cleanup
                         if cls._check_user_relogin(user_id):
-                            logger.warning(
+                            # User returned during cleanup — a routine event, not
+                            # an error (same bucket as the relogin abort inside
+                            # _cleanup_user_data).
+                            logger.info(
                                 f"Skipping cleanup completion for user {user_id}: "
                                 f"user logged back in during cleanup"
                             )
-                            error_count += 1
+                            kept_count += 1
                         elif cls._verify_no_active_workflows(user_id):
                             cls._mark_cleaned(user_id)
                             cleaned_count += 1
@@ -147,9 +151,8 @@ class DataCleanupJob:
                             )
                             error_count += 1
                     elif outcome == CleanupOutcome.KEPT:
-                        # Nothing closed on purpose (no local data here, data
-                        # retained pending S3 verification, or user returned).
-                        # Expected, not an error.
+                        # Nothing closed on purpose (no local data here, or the
+                        # user returned). Expected, not an error.
                         kept_count += 1
                     else:
                         error_count += 1
@@ -565,21 +568,21 @@ class DataCleanupJob:
             return CleanupOutcome.ERROR
 
         if not data_found:
-            # No local data here → keep the DB record; do NOT treat it as
-            # cleaned. instance_id is activity-driven, so "this instance ==
-            # instance_id" doesn't prove the data was written here (a stray
-            # cross-instance request can point it here); closing the record
-            # then would orphan the real data on the owning instance. Worst
-            # case of keeping is reclaimable local disk on the owner —
-            # reclaimed on instance recycle, or earlier if the user is active
-            # there again before logout; data is in S3, so nothing is lost.
+            # No local data here → KEEP the record (never treat as cleaned):
+            # instance_id is activity-driven, so a match doesn't prove the data
+            # was written here; closing would orphan real data on the owner.
+            # Worst case: reclaimable local disk (freed on recycle, or earlier
+            # if the user is active there before logout); S3 keeps a backup.
             logger.info(
                 f"No local data for user {user_id} on this instance; "
                 f"keeping DB record (data may live on the owning instance)."
             )
             return CleanupOutcome.KEPT
 
-        return CleanupOutcome.CLEANED if fully_cleaned else CleanupOutcome.KEPT
+        # Data present: fully removed → CLEANED; otherwise some was retained
+        # (S3 backup unverified) → ERROR, not KEPT — an S3 outage / missing
+        # backup is actionable and the local disk is not reclaimed.
+        return CleanupOutcome.CLEANED if fully_cleaned else CleanupOutcome.ERROR
 
     @classmethod
     def _verify_no_active_workflows(cls, user_id: str) -> bool:
@@ -790,15 +793,14 @@ class DataCleanupJob:
             logger.error(f"Error handling orphaned data: {e}", exc_info=True)
 
     @classmethod
-    def _publish_metrics(
-        cls, cleaned_count: int, error_count: int, kept_count: int = 0
-    ):
+    def _publish_metrics(cls, cleaned_count: int, error_count: int, kept_count: int):
         """Publish cleanup job metrics to CloudWatch.
 
-        ``CleanupKept`` counts deliberate "keep the record" outcomes (no local
-        data here, data retained pending S3 verification, user returned) so
-        they are not conflated with ``CleanupErrors``, which stays a signal of
-        genuine failures for alarms.
+        ``CleanupKept`` counts benign "keep the record" outcomes (no local data
+        on this instance, or the user returned) so they are not conflated with
+        ``CleanupErrors``. ``CleanupErrors`` stays the actionable-failure signal
+        and still includes S3-backup-unverified retention (data that could not
+        be safely deleted).
         """
         try:
             import boto3

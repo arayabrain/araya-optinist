@@ -150,7 +150,8 @@ class TestCleanupUserData:
     def test_cleanup_user_data_keeps_unverified(
         self, mock_relogin, mock_bucket, mock_input_verify
     ):
-        """Test cleanup keeps unverified experiment outputs (input backed up)"""
+        """Unverified experiment outputs are kept locally → ERROR (data could
+        not be safely deleted; an S3-backup failure must stay visible)."""
         with patch.object(
             DataCleanupJob, "_verify_s3_backup_exists", return_value=False
         ):
@@ -162,7 +163,7 @@ class TestCleanupUserData:
                                 "123", ["workspace1"]
                             )
 
-        assert result == CleanupOutcome.KEPT
+        assert result == CleanupOutcome.ERROR
         # Input directory is deleted (backup verified, 1 call); experiments kept
         assert mock_rmtree.call_count == 1
         # Verify it was the input directory that was deleted
@@ -175,7 +176,8 @@ class TestCleanupUserData:
     def test_cleanup_keeps_input_when_backup_unverified(
         self, mock_relogin, mock_bucket
     ):
-        """Input with no verified S3 backup is kept, not deleted (data safety)."""
+        """Input with no verified S3 backup is kept, not deleted (data safety);
+        the unsafe-to-delete retention is classified ERROR, not KEPT."""
         with patch.object(
             DataCleanupJob, "_verify_s3_input_backup_exists", return_value=False
         ):
@@ -187,7 +189,7 @@ class TestCleanupUserData:
                 with patch("shutil.rmtree") as mock_rmtree:
                     result = DataCleanupJob._cleanup_user_data("123", ["workspace1"])
 
-        assert result == CleanupOutcome.KEPT
+        assert result == CleanupOutcome.ERROR
         mock_rmtree.assert_not_called()
 
 
@@ -481,39 +483,51 @@ class TestCleanupUserDataNotFound:
 class TestRunOutcomeAccounting:
     """run() buckets each _cleanup_user_data outcome correctly (finding: metrics)."""
 
-    def _run_with_outcome(self, outcome):
+    def _run_with_outcome(self, outcome, relogin=False):
         import asyncio
+        from contextlib import ExitStack
 
-        with patch.dict(
-            "os.environ",
-            {"INSTANCE_ID": "i-current", "ENABLE_LOCAL_CLEANUP": "1"},
-        ):
-            with patch.object(DataCleanupJob, "_handle_orphaned_data"):
-                with patch.object(
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch.dict(
+                    "os.environ",
+                    {"INSTANCE_ID": "i-current", "ENABLE_LOCAL_CLEANUP": "1"},
+                )
+            )
+            enter(patch.object(DataCleanupJob, "_handle_orphaned_data"))
+            enter(
+                patch.object(
                     DataCleanupJob,
                     "_get_users_for_cleanup",
                     return_value=[("123", ["ws1"])],
-                ):
-                    with patch.object(
-                        DataCleanupJob, "_check_user_relogin", return_value=False
-                    ):
-                        with patch.object(
-                            DataCleanupJob,
-                            "_verify_no_active_workflows",
-                            return_value=True,
-                        ):
-                            with patch.object(
-                                DataCleanupJob,
-                                "_cleanup_user_data",
-                                return_value=outcome,
-                            ):
-                                with patch.object(
-                                    DataCleanupJob, "_mark_cleaned"
-                                ) as mock_mark:
-                                    with patch.object(
-                                        DataCleanupJob, "_publish_metrics"
-                                    ) as mock_metrics:
-                                        asyncio.run(DataCleanupJob.run())
+                )
+            )
+            if isinstance(relogin, (list, tuple)):
+                enter(
+                    patch.object(
+                        DataCleanupJob,
+                        "_check_user_relogin",
+                        side_effect=list(relogin),
+                    )
+                )
+            else:
+                enter(
+                    patch.object(
+                        DataCleanupJob, "_check_user_relogin", return_value=relogin
+                    )
+                )
+            enter(
+                patch.object(
+                    DataCleanupJob, "_verify_no_active_workflows", return_value=True
+                )
+            )
+            enter(
+                patch.object(DataCleanupJob, "_cleanup_user_data", return_value=outcome)
+            )
+            mock_mark = enter(patch.object(DataCleanupJob, "_mark_cleaned"))
+            mock_metrics = enter(patch.object(DataCleanupJob, "_publish_metrics"))
+            asyncio.run(DataCleanupJob.run())
         return mock_mark, mock_metrics
 
     def test_kept_is_not_cleaned_nor_error(self):
@@ -540,6 +554,19 @@ class TestRunOutcomeAccounting:
         mock_mark.assert_not_called()
         cleaned, errors, kept = mock_metrics.call_args.args
         assert (cleaned, errors, kept) == (0, 1, 0)
+
+    def test_relogin_during_cleanup_counts_as_kept(self):
+        """A user who returns *during* cleanup is kept, not errored — same
+        bucket as the relogin abort inside _cleanup_user_data."""
+        # 1st relogin check (pre-cleanup) False → proceed; 2nd (post-CLEANED)
+        # True → the user came back mid-cleanup.
+        mock_mark, mock_metrics = self._run_with_outcome(
+            CleanupOutcome.CLEANED, relogin=[False, True]
+        )
+
+        mock_mark.assert_not_called()
+        cleaned, errors, kept = mock_metrics.call_args.args
+        assert (cleaned, errors, kept) == (0, 0, 1)
 
 
 class TestVerifyS3InputBackup:
