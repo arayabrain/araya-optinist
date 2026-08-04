@@ -5,6 +5,7 @@ verify the scheduler is registered with the expected job id / interval and
 that SIGTERM / SIGINT handlers are installed.
 """
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from studio.app.common.core.background.cleanup_job import DataCleanupJob
@@ -37,6 +38,13 @@ def test_main_registers_cleanup_job():
             trigger.interval.total_seconds()
             == SyncStatusConstants.CLEANUP_INTERVAL_MINUTES * 60
         )
+
+        # First run shortly after startup: next_run_time is a small, bounded
+        # delay from now, not a full interval later.
+        next_run_time = kwargs["next_run_time"]
+        delay = (next_run_time - datetime.now()).total_seconds()
+        assert 0 < delay <= SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS
+        assert SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS <= 60
 
         mock_sched.start.assert_called_once()
         mock_loop.run_forever.assert_called_once()

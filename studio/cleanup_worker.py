@@ -16,6 +16,7 @@ SIGTERM / SIGINT (ECS sends SIGTERM on task stop).
 
 import asyncio
 import signal
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -42,11 +43,16 @@ def main() -> None:
     asyncio.set_event_loop(loop)
 
     scheduler = AsyncIOScheduler(event_loop=loop)
+    # First cleanup shortly after startup, not now+interval.
+    first_run = datetime.now() + timedelta(
+        seconds=SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS
+    )
     scheduler.add_job(
         DataCleanupJob.run,
         trigger=IntervalTrigger(minutes=SyncStatusConstants.CLEANUP_INTERVAL_MINUTES),
         id="local_data_cleanup",
         replace_existing=True,
+        next_run_time=first_run,
     )
     scheduler.start()
 
