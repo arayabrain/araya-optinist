@@ -907,6 +907,9 @@ class TestFreeUserActivityInstanceIdWrite:
         exec_result = MagicMock()
         exec_result.rowcount = rowcount
         exec_result.scalar.return_value = 1  # open usage session already exists
+        # rowcount==0 path does an existence SELECT; None → treat as a new user
+        # and take the INSERT branch (a returned row would mean "logged out").
+        exec_result.first.return_value = None
         mock_session.execute.return_value = exec_result
 
         with patch(
@@ -943,3 +946,39 @@ class TestFreeUserActivityInstanceIdWrite:
         assignments = [a for a in added if hasattr(a, "instance_id")]
         assert assignments, "expected a FreeUserAssignment to be added"
         assert any(a.instance_id == "i-current" for a in assignments)
+
+    def test_logged_out_user_is_not_resurrected(self):
+        """The logged_out_at IS NULL guard makes the UPDATE match nothing; with
+        an existing (logged-out) row present, the write must NOT INSERT/resurrect
+        — it returns without adding anything. Cross-process, no reliance on the
+        short-lived in-memory logout map."""
+        from unittest.mock import MagicMock, patch
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_free_user_activity_sync,
+        )
+
+        mock_session = MagicMock()
+        update_result = MagicMock()
+        update_result.rowcount = 0  # guarded UPDATE matched no row (logged out)
+        select_result = MagicMock()
+        select_result.first.return_value = (TEST_USER_ID,)  # assignment exists
+        mock_session.execute.side_effect = [update_result, select_result]
+
+        with patch(
+            "studio.app.common.core.middleware.user_activity_middleware."
+            "is_user_logged_out",
+            return_value=False,  # in-memory map already expired (10s TTL)
+        ), patch(
+            "studio.app.common.core.middleware.user_activity_middleware."
+            "_get_instance_id",
+            return_value="i-current",
+        ), patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_scope:
+            mock_scope.return_value.__enter__.return_value = mock_session
+            result = _update_free_user_activity_sync(TEST_USER_ID)
+
+        assert result is False
+        mock_session.add.assert_not_called()  # no INSERT / no usage-log resurrect

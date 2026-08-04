@@ -426,15 +426,18 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         with session_scope() as session:
             now = get_current_datetime()
 
-            # Try UPDATE first (common path for existing users).
-            #
-            # instance_id is refreshed to the serving instance so it tracks
-            # where the user is currently active. Reworking instance_id write
-            # ownership (single authoritative writer) is deferred to a separate
-            # follow-up issue.
+            # UPDATE first (common path); instance_id is refreshed to the
+            # serving instance. The ``logged_out_at IS NULL`` guard stops a
+            # stray still-authenticated request (in-flight call after logout, a
+            # second tab) from resurrecting a logged-out assignment — a
+            # cross-process guard, unlike the short-lived in-memory logout map.
+            # (instance_id write-ownership rework: separate follow-up.)
+            from sqlalchemy import select
+
             stmt = (
                 update(FreeUserAssignment)
                 .where(FreeUserAssignment.user_id == user_id)
+                .where(FreeUserAssignment.logged_out_at.is_(None))
                 .values(
                     last_activity=now,
                     instance_id=instance_id,
@@ -442,6 +445,17 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
             )
             result = session.execute(stmt)
             if result.rowcount == 0:
+                # UPDATE matched nothing: either no assignment exists yet (new
+                # user → INSERT below) or one exists but is logged out (excluded
+                # by the guard). Never resurrect a logged-out assignment.
+                existing = session.execute(
+                    select(FreeUserAssignment.user_id).where(
+                        FreeUserAssignment.user_id == user_id
+                    )
+                ).first()
+                if existing is not None:
+                    return False
+
                 # No existing row — insert new record
                 assignment = FreeUserAssignment(
                     user_id=user_id,
@@ -464,8 +478,6 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                 # session exists.  After a logout/re-login cycle the
                 # previous InstanceUsageLog has ended_at set, so we
                 # need to start a new one for the current session.
-                from sqlalchemy import select
-
                 open_session = session.execute(
                     select(InstanceUsageLog.id)
                     .where(
