@@ -94,7 +94,7 @@ simple `KEY=VALUE` lines). Nothing is ever committed.
 | -------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TEST_USER_EMAIL` / `TEST_USER_PASSWORD`           | for logged-in tests               | free-plan account; without it only public/validation tests run, the rest skip                                                                                                                                                      |
 | `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD`     | optional                          | enables SUB-04/05 (premium subscription state)                                                                                                                                                                                     |
-| `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..16 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
+| `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..23 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
 | `BASE_URL`                                         | default `http://localhost:3000`   | frontend under test                                                                                                                                                                                                                |
 | `API_URL`                                          | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls                                                                                                                                                                                               |
 | `RUN_SLOW`                                         | optional                          | include the `@slow` workflow-run tests                                                                                                                                                                                             |
@@ -140,7 +140,7 @@ UPDATE user_storage_usage SET storage_quota_bytes = 214748364800  -- 200GB
 On a local stack (no ECS), premium login shows a "Premium assignment
 issue ... Falling back to shared resources" snackbar — expected.
 
-The lifecycle spec (LC-01..16) additionally needs `SKIP_STORAGE_CHECKS=false`
+The lifecycle spec (LC-01..23) additionally needs `SKIP_STORAGE_CHECKS=false`
 in `studio/config/.env` (restart the backend after changing it). The
 local-testing default of `true` disables all storage lookups backend-side —
 deployed environments run with `false` — and the spec skips with a clear
@@ -218,19 +218,19 @@ Understanding these makes failures much easier to read:
 
 ## Test groups
 
-| Spec file          | IDs         | Covers                                                                                    |
-| ------------------ | ----------- | ----------------------------------------------------------------------------------------- |
-| `01-auth`          | AUTH-01..11 | login, logout, session persistence, unverified email, header nav, registration validation |
-| `02-workspace`     | WS-01..06   | workspace create, list, navigate, storage reload, delete                                  |
-| `03-workflow`      | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tabs              |
-| `04-record`        | REC-01..09  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                   |
-| `05-file-handling` | FILE-01..04 | file tree dialog, wildcard filter, check-all, sidebar toggle                              |
-| `06-dataview`      | DV-01..15   | table, filters, sort, pagination, dialogs, public access, thumbnails, publish             |
-| `07-subscription`  | SUB-01..06  | free and premium plan UI, `/thanks` access guard                                          |
-| `08-storage`       | STO-01..02  | under-quota login, premium assignment snackbar                                            |
-| `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                 |
-| `10-uploads`       | UPL-01..04  | CSV and HDF5 node dialogs, image and HDF5 upload                                          |
-| `11-lifecycle`     | LC-01..17   | plan, quota, expiry and inactivity lifecycle. Local stack only                            |
+| Spec file          | IDs         | Covers                                                                                                      |
+| ------------------ | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `01-auth`          | AUTH-01..16 | login, logout, session persistence, unverified email and resend, header nav, registration validation        |
+| `02-workspace`     | WS-01..06   | workspace create, list, navigate, storage reload, delete                                                    |
+| `03-workflow`      | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tabs                                |
+| `04-record`        | REC-01..09  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                                     |
+| `05-file-handling` | FILE-01..04 | file tree dialog, wildcard filter, check-all, sidebar toggle                                                |
+| `06-dataview`      | DV-01..16   | table, filters (incl. workspace), sort, pagination, dialogs, public access, thumbnails, publish             |
+| `07-subscription`  | SUB-01..14  | free and premium plan UI, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs |
+| `08-storage`       | STO-01..03  | under-quota login, dedicated and shared premium assignment snackbars                                        |
+| `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
+| `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
+| `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
 
 ## Coverage maps
 
@@ -247,13 +247,13 @@ the dataview and Visualize tests get their records without a `@slow` run).
 
 ## Troubleshooting
 
-| Symptom                                                    | Cause / fix                                                                                                                                                                                                    |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Nearly everything skips with "TEST_USER_EMAIL ... not set" | `e2e/.env` missing or not readable; env vars beat the file                                                                                                                                                     |
-| `global-setup` login times out                             | Dev server recompiling after idle/wake — retry; it attempts 3 logins with 60s each. Check `BASE_URL` actually serves the login form                                                                            |
-| Tests hang for hours / half the suite flakes at once       | The machine slept mid-run. Use `caffeinate -i`, re-run                                                                                                                                                         |
-| Registration/login 500s on a fresh local DB                | `subscription_plans` not seeded — see [Test environment](#test-environment)                                                                                                                                    |
-| `Cannot find module` from a global npx playwright          | `frontend/node_modules` was pruned (e.g. `yarn install` after a lockfile change) — `yarn install && npx playwright install chromium`                                                                           |
-| Premium account shows Free quota (5GB)                     | `user_storage_usage.storage_quota_bytes` not updated — see the premium bootstrap SQL                                                                                                                           |
+| Symptom                                                                    | Cause / fix                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Nearly everything skips with "TEST_USER_EMAIL ... not set"                 | `e2e/.env` missing or not readable; env vars beat the file                                                                                                                                                                                                                                                               |
+| `global-setup` login times out                                             | Dev server recompiling after idle/wake — retry; it attempts 3 logins with 60s each. Check `BASE_URL` actually serves the login form                                                                                                                                                                                      |
+| Tests hang for hours / half the suite flakes at once                       | The machine slept mid-run. Use `caffeinate -i`, re-run                                                                                                                                                                                                                                                                   |
+| Registration/login 500s on a fresh local DB                                | `subscription_plans` not seeded — see [Test environment](#test-environment)                                                                                                                                                                                                                                              |
+| `Cannot find module` from a global npx playwright                          | `frontend/node_modules` was pruned (e.g. `yarn install` after a lockfile change) — `yarn install && npx playwright install chromium`                                                                                                                                                                                     |
+| Premium account shows Free quota (5GB)                                     | `user_storage_usage.storage_quota_bytes` not updated — see the premium bootstrap SQL                                                                                                                                                                                                                                     |
 | "Import sample data" does nothing, or the click times out on the menu `ul` | Two causes, both handled by `importSampleData`: the item is disabled off the Record tab, and a disabled MUI item passes pointer events to its parent list, so switch to the Record tab first; and the menu silently no-ops until `GET /workspace/{id}` has populated the store, so wait for the workspace name to render |
-| Downloads never fire in new record tests                   | `snakemake-download-link` / `nwb-download-link` testids are on hidden anchors — click the `IconButton` in the same table cell instead                                                                          |
+| Downloads never fire in new record tests                                   | `snakemake-download-link` / `nwb-download-link` testids are on hidden anchors — click the `IconButton` in the same table cell instead                                                                                                                                                                                    |

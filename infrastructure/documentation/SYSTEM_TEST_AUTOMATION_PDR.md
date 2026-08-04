@@ -1,6 +1,6 @@
 # System Test Automation: Preliminary Design Review
 
-**Status:** PR 1 of 3 implemented on `feature/system-test-automation-1` (30 rows). Open questions resolved 2026-08-04 (see [Resolved questions](#resolved-questions))
+**Status:** PR 1 landed (30 rows); PR 2 written and under review (42 rows); PR 3 (the admin surface) outstanding. Open questions resolved 2026-08-04 (see [Resolved questions](#resolved-questions)) and PR 2's five deviations recorded in [What PR 2 did differently](#what-pr-2-did-differently)
 **Baseline:** `SYSTEM_TEST_COVERAGE.md` as of 2026-08-03, after the red-team audit of all mapped rows
 **Stacked on:** [PR #786](https://github.com/arayabrain/araya-optinist/pull/786), so that WP15 and WP16 are readable as code rather than as claims
 **Scope:** the `Araya-Optinist System Test Cases Template` rows currently marked manual
@@ -543,6 +543,8 @@ this document.
 | **Fix BT-403 (Cell-ROI)** to assert an ROI-specific artefact (**done, PR 1**)                                           | It re-asserted a plot already awaited before the ROI was selected. VIS-02 now counts Plotly traces across the selection (1 -> 2) and asserts the ROI response is 200                                                                                                                                                                                                                              |
 | **Delete or rewrite `PremiumHeartbeatRetry.test.ts` and `PremiumSleepDetection.test.ts`** (**done, PR #786**)            | Both re-implemented the logic under test inside the test file and asserted against their own copies. `PremiumHeartbeatRetry.test.ts` was rewritten against the real provider (attempt count, growing backoff, terminal rethrow, free-tier no-op, device-wake wiring); `PremiumSleepDetection.test.ts` was deleted, its subject being covered by `useSleepDetection.test.ts` against the real hook |
 | **Correct the sample-data precondition** in `helpers.ts` and `RELEASE_TEST_COVERAGE.md`                                | Both claim the import ships pre-computed outputs; it ships metadata YAML only, so snakemake recomputes. Also reconcile the 600s `beforeEach` sitting inside an 840s inner wait                                                                                                                                                                                                                    |
+| **Fix `importSampleData` clicking a disabled menu item** (**done, PR 2**) | Hit while verifying WP3 and WP11, which could not run at all without it. `3a86c953a` narrowed the import menu entry from `disabled={!workspaceReady}` to `disabled={!isRecordTab}`, while the helper switched to the Workflow tab first, because that is where it probes for the workspace name that signals the store is populated. The two requirements became contradictory, so every data-dependent spec failed in its `beforeEach` with a misleading pointer-interception error: a disabled `MenuItem` takes no pointer events, so the click lands on the menu list. The helper now probes on Workflow and imports from Record. The same fix was already in flight elsewhere; this one matches it line for line so whichever lands first, the other is a no-op |
+| **Fix REC-07's NWB precondition check** (**done, PR 2**) | Surfaced by the helper repair above, not caused by it: with the spec unblocked, REC-07 became reachable and reliably red. Its guard asked whether the NWB button was enabled, which is always true - the imported tutorial metadata declares an `nwb` section while no `.nwb` ships - so it clicked, the route answered the 404 that PR 1 introduced in place of `200 false`, and no download ever arrived. The guard now keys off the response status: it skips with an accurate reason when there is no completed run, and still asserts the HDF5 signature when there is one (verified with `RUN_SLOW=1`, where WF-04 mints a real NWB first) |
 | **Add a skip gate** to the e2e run                                                                                     | For a sign-off sheet a skipped test proves nothing. Either fail the run when a High-priority mapped test skips, or emit a per-row skip summary the tester reconciles against the sheet                                                                                                                                                                                                            |
 | **Require `(partial)` to name its uncovered half**                                                                     | Most of the 85 MEDIUM audit findings are rows where `(partial)` was doing unbounded work. The premium tables already model the honest style                                                                                                                                                                                                                                                       |
 
@@ -560,7 +562,7 @@ alone appeared in four of them.
 
 | PR  | Branch                        | Contents                                                     | Rows | Reviewer lens                                                                                                     |
 | --- | ----------------------------- | ------------------------------------------------------------ | ---- | ----------------------------------------------------------------------------------------------------------------- |
-| 1   | `feature/system-test-automation-1` | Remediation + WP5, WP6, WP7, WP9, WP10, WP13, WP17, WP18, WP19 | 30   | pytest, terraform config, and the repairs. No new harness. Carries one production fix (`nwb.py`)                  |
+| 1   | `feature/system-test-automation-1` (**landed**) | Remediation + WP5, WP6, WP7, WP9, WP10, WP13, WP17, WP18, WP19 | 30   | pytest, terraform config, and the repairs. No new harness. Carries one production fix (`nwb.py`)                  |
 | 2   | `feature/system-test-automation-2` | WP2, WP3, WP4, WP11, WP12, WP14, WP20, WP8                   | 42   | jest and Playwright, all additions to specs that already exist                                                    |
 | 3   | `feature/system-test-automation-3` | WP1 (+ the self-delete fix), WP21                            | 43   | The admin surface. The only PR that changes production code beyond PR 1's `nwb.py` fix                            |
 
@@ -576,6 +578,54 @@ PR.
 Each PR updates its rows in `SYSTEM_TEST_COVERAGE.md`. A PR that adds tests
 without updating the map is incomplete, because the map is what the release
 tester reads.
+
+---
+
+## What PR 2 did differently
+
+Five things in PR 2 came out other than this document specified. Each is a fact
+about the product that the triage got wrong, not a change of plan.
+
+1. **Rows 110, 111 and 113 have no IDs of their own.** They are extra assertions
+   inside `AUTH-04`, which is what WP4's own risk note asks for ("these rows must
+   reuse that account rather than registering more"). A second `AUTH-1x` test
+   would mean a second throwaway Firebase account per weekly run, and the
+   success screen is redux-only, so reaching it again means registering again.
+   `AUTH-12`..`AUTH-16` cover the other five rows.
+2. **413 / 423's real copy is the waiting notice, not the fallback warning - and
+   that is arguably a product gap.** A premium user parked on shared compute is
+   told only "your dedicated resource is being prepared", indefinitely, with
+   nothing distinguishing that from an assignment still in flight. The rows
+   originally asserted that such a user is told they are on shared resources.
+   Correcting the sheet to match the product closes the row but does not answer
+   whether the product should say something; that is worth a decision rather
+   than a silent sheet edit. `STO-03` therefore asserts the state the routing
+   service records, which is the only thing that distinguishes the two.
+   This document guessed "Falling back to shared resources." That string is the
+   *assignment-error* branch. A successful shared assignment simply is not a
+   dedicated one, so `PremiumNotificationManager` keeps
+   "Please wait while your dedicated premium resource is being prepared." up.
+3. **Row 251 creates no portal session.** WP8 said "the billing-portal button
+   creates a portal session. Assert our request and the redirect target." There
+   is no request: `handleManageBilling` opens a hardcoded
+   `billing.stripe.com/p/login/...` link in a new tab. `SUB-14` asserts the
+   destination host, and the row stays `(partial)`.
+4. **Row 447's Action was wrong about the product**, and is now corrected in the
+   sheet. It says to log out and log back in, but both logout paths clear
+   `storage-refreshed-on-login` deliberately, so the next login refreshes again -
+   correctly, since it may be a different user. The invariant is one refresh per
+   session across repeated auth checks, which is what the test asserts.
+5. **DV-16 runs on `/dataview` (all workspaces), not `/public`.** Both render
+   `DataviewRecords` with no `workspaceId`, so it is the same `filterable:
+   !workspaceId` column and the same server-side filter, and this avoids a
+   publish/unpublish dance that `DV-14` already owns. `DV-16` also asserts the
+   carve-out the row names: no filter menu at `/dataview/{id}`.
+
+Also worth recording for PR 3: rows 429 and 440 needed the ballast in
+`11-lifecycle.spec.ts` to grow past the free limit for real. An expired premium
+account is held to the free-tier quota by `_effective_quota_bytes` whatever its
+quota column says, so no amount of dialing `storage_quota_bytes` reaches that
+state.
 
 ---
 

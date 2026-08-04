@@ -170,7 +170,7 @@ test.describe("Private Dataview", () => {
 
   // The grid filters server-side via per-column menus (no global search
   // box): header menu → Filter → debounced value input
-  async function filterByColumn(page: Page, field: string, value: string) {
+  async function applyColumnFilter(page: Page, field: string, value: string) {
     const header = page.locator(
       `.MuiDataGrid-columnHeader[data-field="${field}"]`,
     )
@@ -178,9 +178,15 @@ test.describe("Private Dataview", () => {
     await header.locator(".MuiDataGrid-menuIcon button").click()
     await page.getByRole("menuitem", { name: /^filter$/i }).click()
     await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+  }
+
+  const rowCount = (page: Page) =>
+    page.locator('[role="grid"] [role="row"]').count()
+
+  async function filterByColumn(page: Page, field: string, value: string) {
+    await applyColumnFilter(page, field, value)
     await expect(async () => {
-      const rows = await page.locator('[role="grid"] [role="row"]').count()
-      expect(rows).toBe(2) // header + 1 match
+      expect(await rowCount(page)).toBe(2) // header + 1 match
     }).toPass({ timeout: 15_000 })
     await page.keyboard.press("Escape")
   }
@@ -199,6 +205,68 @@ test.describe("Private Dataview", () => {
     await expect(
       page.locator('.MuiDataGrid-cell[data-field="name"]').first(),
     ).toHaveText("Tutorial1_copy")
+  })
+
+  // The Workspace column is `filterable: !workspaceId`, so the filter lives on
+  // the all-workspaces view and is deliberately off at /dataview/{id}. Both
+  // that view and the public one render DataviewRecords with no workspaceId, so
+  // this is the same filter the public page offers.
+  test("DV-16 - Filter by workspace narrows the table", async ({ page }) => {
+    test.skip(!(await hasDataRows(page)), "No experiment records")
+
+    // The carve-out the row names: the single-workspace view keeps the column
+    // menu but drops its Filter entry
+    const scopedHeader = page.locator(
+      '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+    )
+    await scopedHeader.hover()
+    await scopedHeader.locator(".MuiDataGrid-menuIcon button").click()
+    await expect(page.getByRole("menuitem").first()).toBeVisible({
+      timeout: 10_000,
+    })
+    await expect(page.getByRole("menuitem", { name: /^filter$/i })).toHaveCount(
+      0,
+    )
+    await page.keyboard.press("Escape")
+
+    await page.goto("/dataview")
+    await expect(page.locator('[role="grid"]')).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
+      {
+        timeout: 30_000,
+      },
+    )
+
+    const filterWorkspace = async (value: string) => {
+      const header = page.locator(
+        '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+      )
+      await header.hover()
+      await header.locator(".MuiDataGrid-menuIcon button").click()
+      await page.getByRole("menuitem", { name: /^filter$/i }).click()
+      await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+      await page.keyboard.press("Escape")
+    }
+
+    await filterWorkspace(DATA_WS)
+    await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
+      {
+        timeout: 15_000,
+      },
+    )
+    // Every surviving row belongs to the workspace that was filtered for
+    const cells = page.locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+    for (const text of await cells.allTextContents()) {
+      expect(text).toContain(DATA_WS)
+    }
+
+    // A workspace that cannot match empties the table, which is what makes the
+    // pass above a narrowing rather than a no-op
+    await filterWorkspace("e2e-no-such-workspace")
+    await expect(async () => {
+      const rows = await page.locator('[role="grid"] [role="row"]').count()
+      expect(rows).toBeLessThanOrEqual(1) // header only
+    }).toPass({ timeout: 15_000 })
   })
 
   test("DV-04 - Sort by column header", async ({ page }) => {

@@ -41,7 +41,6 @@ test.describe("Workflow Execution", () => {
 
     await importSampleData(page, DATA_WS)
 
-    await page.locator('button[role="tab"]:has-text("Record")').click()
     for (const name of ["Tutorial1", "Tutorial2", "Tutorial3", "Tutorial4"]) {
       await expect(page.locator(`tr:has-text("${name}")`).first()).toBeVisible({
         timeout: 30_000,
