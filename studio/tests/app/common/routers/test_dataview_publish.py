@@ -753,7 +753,7 @@ class TestSyncExperimentConfigForPublish:
         ), patch(
             "studio.app.common.routers.dataview.RemoteStorageReader", mock_reader
         ):
-            await _sync_experiment_config_for_publish(MagicMock(), "1", "uid")
+            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
 
         mock_reader.assert_not_called()
 
@@ -774,20 +774,48 @@ class TestSyncExperimentConfigForPublish:
         ), patch(
             "studio.app.common.routers.dataview.os.path.exists", return_value=False
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_resolve_workspace_remote_bucket_name",
-            return_value="test-bucket",
-        ), patch(
             "studio.app.common.routers.dataview.RemoteStorageReader",
             return_value=self._reader_ctx(controller),
         ):
-            await _sync_experiment_config_for_publish(MagicMock(), "1", "uid")
+            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
 
         controller.download_experiment_meta.assert_awaited_once_with("1", "uid")
 
     @pytest.mark.asyncio
     async def test_repairs_stub_then_downloads(self):
-        """A present-but-invalid stub is removed, then re-downloaded."""
+        """A present-but-invalid stub is removed (by path), then re-downloaded."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import (
+            ExptConfigReader,
+            _sync_experiment_config_for_publish,
+        )
+
+        expected_path = ExptConfigReader.get_config_yaml_path("1", "uid")
+        controller = AsyncMock()
+        with patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview.os.path.exists", return_value=True
+        ), patch(
+            "studio.app.common.routers.dataview.ExptConfigReader.read",
+            side_effect=AssertionError("Invalid config yaml file"),
+        ), patch(
+            "studio.app.common.routers.dataview.os.remove"
+        ) as mock_remove, patch(
+            "studio.app.common.routers.dataview.RemoteStorageReader",
+            return_value=self._reader_ctx(controller),
+        ):
+            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
+
+        mock_remove.assert_called_once_with(expected_path)
+        controller.download_experiment_meta.assert_awaited_once_with("1", "uid")
+
+    @pytest.mark.asyncio
+    async def test_stub_removal_failure_is_swallowed(self):
+        """If removing the stub fails, no download runs and no error escapes."""
         from unittest.mock import AsyncMock
 
         from studio.app.common.routers.dataview import (
@@ -805,19 +833,16 @@ class TestSyncExperimentConfigForPublish:
             "studio.app.common.routers.dataview.ExptConfigReader.read",
             side_effect=AssertionError("Invalid config yaml file"),
         ), patch(
-            "studio.app.common.routers.dataview.os.remove"
-        ) as mock_remove, patch(
-            "studio.app.common.routers.dataview."
-            "_resolve_workspace_remote_bucket_name",
-            return_value="test-bucket",
+            "studio.app.common.routers.dataview.os.remove",
+            side_effect=OSError("permission denied"),
         ), patch(
             "studio.app.common.routers.dataview.RemoteStorageReader",
             return_value=self._reader_ctx(controller),
         ):
-            await _sync_experiment_config_for_publish(MagicMock(), "1", "uid")
+            # Must not raise.
+            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
 
-        mock_remove.assert_called_once()
-        controller.download_experiment_meta.assert_awaited_once_with("1", "uid")
+        controller.download_experiment_meta.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_config_valid(self):
@@ -839,7 +864,7 @@ class TestSyncExperimentConfigForPublish:
         ), patch(
             "studio.app.common.routers.dataview.RemoteStorageReader", mock_reader
         ):
-            await _sync_experiment_config_for_publish(MagicMock(), "1", "uid")
+            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
 
         mock_reader.assert_not_called()
 
@@ -947,3 +972,73 @@ class TestMultiplePublishDataviewRecords:
 
         assert exc_info.value.status_code == 400
         mock_service.assert_not_called()
+
+
+class TestSinglePublishPreSync:
+    """Single publish wires the pre-sync helper before validation."""
+
+    @pytest.mark.asyncio
+    async def test_single_publish_presyncs_before_validate(self):
+        """publish_dataview_records calls the sync helper before validating."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import (
+            PublishFlags,
+            publish_dataview_records,
+        )
+
+        mock_db = MagicMock()
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_db.execute.return_value = mock_result
+
+        mock_user = MagicMock()
+        mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
+
+        mock_record = MagicMock()
+        mock_record.id = 1
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
+        mock_record.publish_status = 0
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+        mock_record.version = 0
+
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
+        order = []
+
+        async def sync_side(*args, **kwargs):
+            order.append("sync")
+
+        def validate_side(*args, **kwargs):
+            order.append("validate")
+            return mock_validation
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_user_owned_dataview_record",
+            return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview."
+            "_sync_experiment_config_for_publish",
+            new=AsyncMock(side_effect=sync_side),
+        ) as mock_sync, patch(
+            "studio.app.common.routers.dataview._resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            side_effect=validate_side,
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            new=AsyncMock(return_value=(True, None)),
+        ):
+            result = await publish_dataview_records(
+                id=1, flag=PublishFlags.on, db=mock_db, current_user=mock_user
+            )
+
+        assert result is True
+        mock_sync.assert_awaited_once_with("1", "test_uid", "test-bucket")
+        # Sync must be ordered before validation.
+        assert order == ["sync", "validate"]

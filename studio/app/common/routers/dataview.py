@@ -376,7 +376,7 @@ def _resolve_workspace_remote_bucket_name(db: Session, workspace_id: str) -> str
 
 
 async def _sync_experiment_config_for_publish(
-    db: Session, workspace_id: str, unique_id: str
+    workspace_id: str, unique_id: str, remote_bucket_name: str
 ) -> None:
     """
     Sync metadata from S3 so publish validation reads a valid experiment.yaml.
@@ -386,32 +386,26 @@ async def _sync_experiment_config_for_publish(
     - invalid stub -> remove, then download (download_experiment_meta skips
                       existing files, so the stub must be removed first)
 
-    Best-effort (failures logged, swallowed). If the experiment is absent from
-    S3 the config stays missing and PublishValidator.validate returns 400.
+    Best-effort: any failure is logged and swallowed. If the experiment is
+    absent from S3 the config stays missing and PublishValidator.validate
+    returns 400. The caller resolves the bucket, so this helper does no DB
+    access (safe to run concurrently over one Session via asyncio.gather).
     """
     if not RemoteStorageController.is_available():
         return
 
-    config_path = ExptConfigReader.get_config_yaml_path(workspace_id, unique_id)
-
-    # Skip sync when the local config is already valid.
-    if os.path.exists(config_path):
-        try:
-            ExptConfigReader.read(workspace_id, unique_id)
-            return
-        except Exception:
-            # Invalid stub: remove so the download re-fetches it.
-            try:
-                os.remove(config_path)
-            except OSError as e:
-                logger.warning(
-                    f"Failed to remove stub experiment.yaml for "
-                    f"{workspace_id}/{unique_id}: {e}"
-                )
-                return
-
-    remote_bucket_name = _resolve_workspace_remote_bucket_name(db, workspace_id)
     try:
+        config_path = ExptConfigReader.get_config_yaml_path(workspace_id, unique_id)
+
+        # Skip sync when the local config is already valid.
+        if os.path.exists(config_path):
+            try:
+                ExptConfigReader.read(workspace_id, unique_id)
+                return
+            except Exception:
+                # Invalid stub: remove so the download re-fetches it.
+                os.remove(config_path)
+
         async with RemoteStorageReader(
             remote_bucket_name,
             workspace_id,
@@ -568,7 +562,11 @@ async def publish_dataview_records(
             if flag == PublishFlags.on:
                 # Repair missing/stub local config from S3 before validating.
                 await _sync_experiment_config_for_publish(
-                    db, str(record.workspace_id), record.uid
+                    str(record.workspace_id),
+                    record.uid,
+                    _resolve_workspace_remote_bucket_name(
+                        db, str(record.workspace_id)
+                    ),
                 )
 
                 validation = PublishValidator.validate(
@@ -579,9 +577,12 @@ async def publish_dataview_records(
                 )
                 if not validation.can_publish:
                     logger.warning(
-                        f"Publish rejected for experiment {record.id} "
-                        f"({record.workspace_id}/{record.uid}, name={record.name}): "
-                        f"{validation.reason}"
+                        "Publish rejected for experiment %s (%s/%s, name=%s): %s",
+                        record.id,
+                        record.workspace_id,
+                        record.uid,
+                        record.name,
+                        validation.reason,
                     )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
@@ -725,14 +726,29 @@ async def multiple_publish_dataview_records(
             if record:
                 owned_records.append((record_id, record))
 
+        # Resolve the owner bucket once per workspace (bulk is typically a single
+        # workspace) to avoid redundant queries and keep DB access out of the
+        # gathered coroutines below.
+        bucket_by_workspace = {}
+        for _, record in owned_records:
+            ws_id = str(record.workspace_id)
+            if ws_id not in bucket_by_workspace:
+                bucket_by_workspace[ws_id] = _resolve_workspace_remote_bucket_name(
+                    db, ws_id
+                )
+
         # Repair missing/stub local config from S3 (concurrently) before validating.
+        # return_exceptions keeps one record's failure from aborting the batch.
         await asyncio.gather(
             *(
                 _sync_experiment_config_for_publish(
-                    db, str(record.workspace_id), record.uid
+                    str(record.workspace_id),
+                    record.uid,
+                    bucket_by_workspace[str(record.workspace_id)],
                 )
                 for _, record in owned_records
-            )
+            ),
+            return_exceptions=True,
         )
 
         # Validate each record
