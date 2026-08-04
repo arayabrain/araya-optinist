@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import List, Optional, Sequence, Tuple
 
@@ -14,9 +15,11 @@ from studio.app.common.core.dataview.dataview_services import (
     DataviewService,
     PublishValidator,
 )
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
+    RemoteExperimentSyncMode,
     RemoteStorageController,
     RemoteStorageDownloadUtils,
     RemoteStorageLockError,
@@ -372,6 +375,57 @@ def _resolve_workspace_remote_bucket_name(db: Session, workspace_id: str) -> str
     return owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
 
+async def _sync_experiment_config_for_publish(
+    db: Session, workspace_id: str, unique_id: str
+) -> None:
+    """
+    Sync metadata from S3 so publish validation reads a valid experiment.yaml.
+
+    Repairs a local config that is missing or a corrupt/empty stub:
+    - missing      -> download metadata
+    - invalid stub -> remove, then download (download_experiment_meta skips
+                      existing files, so the stub must be removed first)
+
+    Best-effort (failures logged, swallowed). If the experiment is absent from
+    S3 the config stays missing and PublishValidator.validate returns 400.
+    """
+    if not RemoteStorageController.is_available():
+        return
+
+    config_path = ExptConfigReader.get_config_yaml_path(workspace_id, unique_id)
+
+    # Skip sync when the local config is already valid.
+    if os.path.exists(config_path):
+        try:
+            ExptConfigReader.read(workspace_id, unique_id)
+            return
+        except Exception:
+            # Invalid stub: remove so the download re-fetches it.
+            try:
+                os.remove(config_path)
+            except OSError as e:
+                logger.warning(
+                    f"Failed to remove stub experiment.yaml for "
+                    f"{workspace_id}/{unique_id}: {e}"
+                )
+                return
+
+    remote_bucket_name = _resolve_workspace_remote_bucket_name(db, workspace_id)
+    try:
+        async with RemoteStorageReader(
+            remote_bucket_name,
+            workspace_id,
+            unique_id,
+            sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
+        ) as controller:
+            await controller.download_experiment_meta(workspace_id, unique_id)
+    except Exception as e:
+        logger.warning(
+            f"Publish pre-sync failed for {workspace_id}/{unique_id}: {e}",
+            exc_info=True,
+        )
+
+
 async def _ensure_experiment_downloaded(
     db: Session, workspace_id: str, unique_id: str
 ) -> Optional[JSONResponse]:
@@ -512,6 +566,11 @@ async def publish_dataview_records(
 
             # Validate publish eligibility when publishing
             if flag == PublishFlags.on:
+                # Repair missing/stub local config from S3 before validating.
+                await _sync_experiment_config_for_publish(
+                    db, str(record.workspace_id), record.uid
+                )
+
                 validation = PublishValidator.validate(
                     workspace_id=str(record.workspace_id),
                     unique_id=record.uid,
@@ -519,6 +578,11 @@ async def publish_dataview_records(
                     check_files_on_disk=True,
                 )
                 if not validation.can_publish:
+                    logger.warning(
+                        f"Publish rejected for experiment {record.id} "
+                        f"({record.workspace_id}/{record.uid}, name={record.name}): "
+                        f"{validation.reason}"
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=validation.reason,
@@ -636,7 +700,7 @@ async def publish_dataview_records(
 - Validates each record before publishing; fails if any record cannot be published
 """,
 )
-def multiple_publish_dataview_records(
+async def multiple_publish_dataview_records(
     ids: List[int],
     flag: PublishFlags,
     db: Session = Depends(get_db),
@@ -652,15 +716,28 @@ def multiple_publish_dataview_records(
                 "for your account. Please contact support to enable publishing.",
             )
 
-        # Validate each record
-        failed_records = []
+        # Resolve owned records once (records not owned by the user are skipped)
+        owned_records = []
         for record_id in ids:
             record = DataviewService.find_user_owned_dataview_record(
                 db, record_id, current_user.id
             )
-            if not record:
-                continue  # Skip records not owned by user
+            if record:
+                owned_records.append((record_id, record))
 
+        # Repair missing/stub local config from S3 (concurrently) before validating.
+        await asyncio.gather(
+            *(
+                _sync_experiment_config_for_publish(
+                    db, str(record.workspace_id), record.uid
+                )
+                for _, record in owned_records
+            )
+        )
+
+        # Validate each record
+        failed_records = []
+        for record_id, record in owned_records:
             validation = PublishValidator.validate(
                 workspace_id=str(record.workspace_id),
                 unique_id=record.uid,
@@ -677,6 +754,14 @@ def multiple_publish_dataview_records(
                 )
 
         if failed_records:
+            logger.warning(
+                "Bulk publish rejected %d record(s): %s",
+                len(failed_records),
+                "; ".join(
+                    f"{rec['name']} ({rec['id']}): {rec['reason']}"
+                    for rec in failed_records
+                ),
+            )
             # Return error with details about which records failed
             detail = "Some experiments cannot be published:\n"
             for rec in failed_records[:5]:  # Limit to first 5
