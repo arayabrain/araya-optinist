@@ -295,9 +295,13 @@ export async function runTutorial(
   })
 }
 
-// Cheap way to mint the success record + thumbnails the dataview needs,
-// without a real 5-10 min run: the by-uid rerun of an imported tutorial is
-// a snakemake no-op because the sample data ships WITH outputs.
+// Mints the success record + thumbnails the dataview needs.
+//
+// This is NOT a no-op: `git ls-files sample_data/tutorial/output` is 12 files,
+// all of them experiment/snakemake/workflow YAML. No node output directories, no
+// JSON, no NWB ship at all, and global setup deletes the e2e-* workspace each
+// run, so snakemake recomputes from scratch. Budget a real run (see the 840s
+// inner wait in runTutorial), not the ~15s a rerun-by-uid would take.
 export async function ensureCompletedTutorialRun(
   page: Page,
   wsName: string,

@@ -1807,7 +1807,10 @@ class WebhookService:
                     }
 
         except HTTPException:
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+            # Status preserved for the caller to map; the route applies the one
+            # generic detail. Flattening here reported a handler's 500 as a 400,
+            # so our own failures were indistinguishable from a malformed event.
+            raise
         except Exception as e:
             logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")
             raise HTTPException(

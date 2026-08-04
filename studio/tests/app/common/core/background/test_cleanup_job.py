@@ -4,11 +4,16 @@ Unit tests for data cleanup job.
 Tests cleanup logic with S3 verification and orphaned data handling.
 """
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy.dialects import mysql
 
 from studio.app.common.core.background.cleanup_job import CleanupOutcome, DataCleanupJob
+from studio.app.common.core.subscription.constants import SyncStatusConstants
+
+MODULE = "studio.app.common.core.background.cleanup_job"
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +22,110 @@ def _reset_instance_id_cache():
     DataCleanupJob._instance_id_cache = None
     yield
     DataCleanupJob._instance_id_cache = None
+
+
+def _capture_selection_query(rows=()):
+    """Run ``_get_users_for_cleanup`` against a mock session and return
+    ``(statement, compiled_sql, bound_params, returned_users)``.
+
+    The query is the whole safety boundary, so it is inspected as a compiled
+    statement rather than through ``execute.called``: the values that decide
+    whether a user's data is deleted only exist as bind parameters.
+    """
+    with patch(f"{MODULE}.session_scope") as mock_session:
+        db = MagicMock()
+        mock_session.return_value.__enter__.return_value = db
+        db.execute.return_value = list(rows)
+
+        users = DataCleanupJob._get_users_for_cleanup()
+
+    statement = db.execute.call_args.args[0]
+    compiled = statement.compile(dialect=mysql.dialect())
+    return statement, str(compiled), compiled.params, users
+
+
+class TestGetUsersForCleanupGraceWindow:
+    """The logout grace window before irreversible deletion.
+
+    ``_cleanup_user_data`` deletes the input directory unconditionally and the
+    verified experiment outputs with it, so this WHERE clause is the only thing
+    between a user who just logged out and the loss of their local workspace.
+    Before this class the interval had no test at all.
+    """
+
+    def test_cutoff_is_now_minus_the_logout_grace_period(self):
+        _, _, params, _ = _capture_selection_query()
+
+        cutoffs = [v for v in params.values() if hasattr(v, "tzinfo")]
+        assert len(cutoffs) == 1, f"expected exactly one datetime bind, got {cutoffs}"
+
+        from studio.app.common.core.utils.datetime_utils import get_current_datetime
+
+        expected = get_current_datetime() - timedelta(
+            minutes=SyncStatusConstants.LOGOUT_GRACE_PERIOD_MINUTES
+        )
+        # The job reads the clock itself, so allow for the elapsed test time but
+        # not for a grace period of a different length.
+        drift = abs((cutoffs[0] - expected).total_seconds())
+        assert drift < 60, (
+            f"cutoff {cutoffs[0]} is not now - "
+            f"{SyncStatusConstants.LOGOUT_GRACE_PERIOD_MINUTES}min ({expected})"
+        )
+
+    def test_the_grace_window_is_at_least_an_hour(self):
+        """The assertion above recomputes the cutoff from the same constant, so
+        it pins that production reads it, not how long the window is. Shrinking
+        the constant to a minute would satisfy it while deleting the grace
+        period this row exists to protect."""
+        assert SyncStatusConstants.LOGOUT_GRACE_PERIOD_MINUTES >= 60
+
+    def test_query_excludes_inside_the_window_and_includes_past_it(self):
+        """Column and direction. Together with the cutoff asserted above, these
+        two facts *are* the row's "excludes inside / includes past" behaviour:
+        ``logged_out_at < now - 60min`` is false for a recent logout and true
+        for an old one.
+
+        Asserted as the compiled comparison rather than by feeding rows through
+        a real database, so a flipped operator - which would select exactly the
+        users still inside the window - fails here. The deployed check against
+        real MySQL needs a deployed environment.
+        """
+        _, sql, _, _ = _normalise(_capture_selection_query())
+
+        assert "free_user_assignments.logged_out_at < " in sql
+        assert "free_user_assignments.logged_out_at IS NOT NULL" in sql
+
+    def test_query_keeps_the_other_three_safety_predicates(self):
+        """The interval is one of four conjuncts; dropping any of the others is
+        also a data-loss bug, and they are cheap to pin from the same parse."""
+        _, sql, params, _ = _normalise(_capture_selection_query())
+
+        assert "free_user_assignments.active_workflow_count = " in sql
+        assert "users.active = " in sql
+        assert "workspaces.deleted = " in sql
+
+        # The compiled SQL renders values as %s, so the names above cannot tell
+        # `active_workflow_count = 0` from `= 99`. Assert the bound values too.
+        assert params == {
+            **params,
+            "active_workflow_count_1": 0,
+            "active_1": 1,
+            "deleted_1": 0,
+        }, f"safety predicates bound unexpected values: {params}"
+
+    def test_a_row_with_a_nonzero_workflow_count_is_dropped_after_the_query(self):
+        """The post-query re-check, which exists because the query alone is not
+        trusted. A row that arrives with work in flight must not be returned."""
+        _, _, _, users = _capture_selection_query(rows=[("7", "1,2", 0), ("8", "3", 2)])
+
+        assert users == [("7", ["1", "2"])]
+
+
+def _normalise(captured):
+    """Collapse whitespace in the compiled SQL so assertions are not sensitive
+    to SQLAlchemy's line wrapping."""
+    statement, sql, params, users = captured
+    return statement, " ".join(sql.split()), params, users
 
 
 class TestVerifyS3Backup:

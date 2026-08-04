@@ -3,11 +3,11 @@
 ## Executive Summary
 
 - **Maps every row** of the `Araya-Optinist System Test Cases Template` sheets to the automated test that covers it, so a release tester only hand-verifies the rows marked manual
-- **Ten sheets, 181 of 409 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
+- **Ten sheets, 221 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
 - **Not one suite** - coverage is spread across Playwright e2e, jest, and pytest; the notation below says which
 - **System sheets only** - the `Araya-OptiNiSt Release Test Cases Template` sheets (`BT-1xx` .. `BT-11xx`) are a separate scheme mapped in `infrastructure/documentation/RELEASE_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the `6204` concurrency race
-- **Largest gaps:** the admin Account Manager UI (sheet 03) and Stripe tax configuration (sheet 09) have essentially no automated coverage
+- **Largest remaining gap is the admin Account Manager UI (sheet 03)**, which has no e2e or component coverage at all. Sheet 09's tax configuration is now covered on the input side (see that sheet's notes)
 
 ---
 
@@ -37,17 +37,29 @@ Test levels used in the premium tables:
 
 | Sheet                            | Rows    | Automated | Manual  |
 | -------------------------------- | ------- | --------- | ------- |
-| 01 Authentication & Registration | 27      | 14        | 13      |
-| 02 Subscription & Payment        | 105     | 32        | 73      |
-| 03 Account Profile & Management  | 41      | 3         | 38      |
-| 04 Storage & Limits              | 48      | 24        | 24      |
-| 05 Workflow & Execution          | 46      | 35        | 11      |
+| 01 Authentication & Registration | 27      | 18        | 9       |
+| 02 Subscription & Payment        | 105     | 35        | 70      |
+| 03 Account Profile & Management  | 41      | 4         | 37      |
+| 04 Storage & Limits              | 48      | 28        | 20      |
+| 05 Workflow & Execution          | 46      | 42        | 4       |
 | 06 Premium Features              | 8       | 4         | 4       |
-| 06-2 Premium Assignment          | 39      | 38        | 1       |
-| 07 Dataview                      | 26      | 20        | 6       |
-| 08 Public Instance               | 33      | 9         | 24      |
-| 09 Stripe Prdct Data Sync & Tax  | 36      | 2         | 34      |
-| **Total**                        | **409** | **181**   | **228** |
+| 06-2 Premium Assignment          | 38      | 37        | 1       |
+| 07 Dataview                      | 26      | 25        | 1       |
+| 08 Public Instance               | 33      | 19        | 14      |
+| 09 Stripe Prdct Data Sync & Tax  | 36      | 9         | 27      |
+| **Total**                        | **408** | **221**   | **187** |
+
+**Counting rule.** A row counts as automated if its `Automated by` cell names a
+test, including rows marked `(partial)` - the partial label narrows *what* is
+covered, it does not withdraw the row. Rows whose cell is `manual` count as
+manual. Every row number in a sheet's range appears in exactly one of the two, so
+the columns are derivable from the tables below rather than maintained by hand;
+if you change a row, re-derive rather than adjusting the total by one.
+
+These figures were recomputed from the tables in this PR after an audit found the
+previous headline (203 of 409) reconciled with nothing: it under-counted by 18,
+`06-2` was listed as 39 rows against a sheet of 38, and rows 287, 288, 541 and 542
+were each either double-counted or missing from their sheet entirely.
 
 ---
 
@@ -70,11 +82,18 @@ Test levels used in the premium tables:
 | 123                                                   | Basic cleanup after logout                                                                                                                                     | `test_cleanup_job.py::TestCleanupUserData` (partial - the S3 / ECS Exec half is manual) |
 | 125                                                   | Re-login during grace clears `logged_out_at`                                                                                                                   | `test_cleanup_job_relogin.py`                                                           |
 | 126                                                   | Instance termination during an active workflow                                                                                                                 | `test_common_user_manager.py::TestRecoverStaleWorkflowCounts`                           |
-| 100, 101, 104, 106, 108, 110, 111, 113, 116..118, 124 | header button visibility, name-length and forbidden-char validation, show/hide password, resend verification, DB / Stripe starting state, cleanup grace window | manual                                                                                  |
+| 116                                                   | `users` row exists and is active after registration                                                                                                            | `test_registration_db_state.py::TestRegistrationWritesAnActiveUser` (partial - the ORM rows `create_user` builds, not a real MySQL round trip)                     |
+| 117                                                   | New user starts on Free with the 5GB quota                                                                                                                     | `test_registration_db_state.py::TestRegistrationStartsTheUserOnFree` (partial - as 116)                    |
+| 124                                                   | Cleanup grace window after logout                                                                                                                              | `test_cleanup_job.py::TestGetUsersForCleanupGraceWindow` (partial - query, not real MySQL) |
+| 100, 101, 104, 106, 108, 110, 111, 113, 118           | header button visibility, name-length and forbidden-char validation, show/hide password, resend verification, live Stripe starting state                       | manual                                                                                  |
 
-Note: 124 stays manual because the grace window itself is unasserted -
-`TestGetUsersForCleanupInstanceFilter` only pins the instance filter in that
-query, not the `logged_out_at` interval.
+Note on 124: the automated half is the query - the `logged_out_at < now - 60min`
+comparison and the cutoff it binds, asserted against the compiled statement,
+plus the three sibling safety predicates (`active_workflow_count = 0`,
+`users.active`, `workspaces.deleted`). What stays manual is feeding real rows
+through real MySQL and observing the deletion. The previously cited
+`TestGetUsersForCleanupInstanceFilter` pinned only the instance filter in that
+query, never the interval.
 
 ---
 
@@ -98,12 +117,21 @@ query, not the `logged_out_at` interval.
 | 265                                                                                 | `scheduled_downgrade` flag set                                                                                                                                                              | `test_webhook.py::test_subscription_updated_mirrors_scheduled_downgrade`                 |
 | 272                                                                                 | DB after reactivation                                                                                                                                                                       | `test_webhook.py::test_subscription_updated_resets_scheduled_downgrade_when_uncancelled` |
 | 287                                                                                 | DB after renewal                                                                                                                                                                            | `test_webhook.py::TestInvoicePaymentSucceeded`                                           |
-| 288                                                                                 | Stripe state after a failed payment                                                                                                                                                         | `test_webhook.py::TestPaymentFailureTracking`                                            |
 | 297                                                                                 | Expired user shows both Upgrade and Manage                                                                                                                                                  | LC-06                                                                                    |
 | 299..302                                                                            | Deletion warning (premium / free), option display, execute                                                                                                                                  | LC-16 (299..301 partial - one confirmation dialog is asserted, not the per-tier copy)    |
 | 303                                                                                 | Post-deletion user check                                                                                                                                                                    | `test_user_deletion.py`                                                                  |
 | 304                                                                                 | Subscription preserved after deletion                                                                                                                                                       | `test_user_deletion.py` (partial)                                                        |
-| 201, 206, 207, 214..231, 237..253, 260, 264, 266..271, 273..286, 289..296, 298, 305 | temp-mail, verification email delivery, the whole Stripe checkout and Link flows, invoice pages and PDFs, billing portal, trial conversion, Stripe-dashboard verification, responsive check | manual                                                                                   |
+| 289                                                                                 | Limit Grace boundary: `plan_id` stays 2, expiration past but inside the 30-day grace                                                                                                         | `test_crud_users_context.py` (`..._grace_period_last_day`, `..._one_day_past_grace_is_expired`, `..._expiring_today_enters_grace`) |
+| 201, 206, 207, 214..231, 237..253, 260, 264, 266..271, 273..286, 288, 290..296, 298, 305 | temp-mail, verification email delivery, the whole Stripe checkout and Link flows, invoice pages and PDFs, billing portal, trial conversion, Stripe-dashboard verification, responsive check | manual                                                                                   |
+
+Note on 289: this row previously cited `test_crud_users_context.py`, where **12
+of 14 cases were `@pytest.mark.skip("Requires integration test with real DB")`**
+and so never ran. The skip reason was false - the tier ladder is derived purely
+from the query's result row - and the boundary the row is about was unasserted
+even by the skipped cases, which hedged with `in [LIMIT_GRACE, EXPIRED]`.
+Widening `GRACE_PERIOD_DAYS` by 5 days passed all 14. The three cases now cited
+pin both edges by fixing `now`, and `test_no_dead_tests.py` rejects new
+unconditional skips.
 
 ---
 
@@ -179,7 +207,11 @@ has no e2e or component coverage at all.
 | 531                | Filter with wildcards                                                                   | FILE-02                                                                                                                                                                                                                                  |
 | 532                | Check all / uncheck all                                                                 | FILE-03                                                                                                                                                                                                                                  |
 | 533 / 534          | No-algorithm-nodes and no-input-file errors                                             | WF-07 (533 partial - a fresh workspace surfaces the input-file message first)                                                                                                                                                            |
-| 535..539, 540..544 | `active_workflow_count` baseline, increment, decrement, no leak on failure, concurrency | `test_workflow_tracking.py` (`TestGetActiveWorkflowCount`, `TestIncrementWorkflowCount`, `TestDecrementWorkflowCount`; free and premium tier variants). 538 / 543 and 539 / 544 partial - failure and race paths are modeled, not driven |
+| 535, 536, 537      | `active_workflow_count` baseline, increment, decrement                                  | `test_workflow_tracking.py` (`TestGetActiveWorkflowCount`, `TestIncrementWorkflowCount`, `TestDecrementWorkflowCount`)                                                                                                                    |
+| 538, 543           | No count leak when a workflow fails                                                     | `test_workflow_tracking_tier_branch.py::TestDecrementSurvivesAnExecutionFailure` (the `finally` in `snakemake_execute`, driven by making `future.result()` raise)                                                                          |
+| 540                | Free versus premium: which table the count is written to                                | `test_workflow_tracking_tier_branch.py::TestIncrementWritesToTheTierTable`, `::TestDecrementWritesToTheTierTable` (compiled UPDATE target table, including both-records users)                                                            |
+| 541, 542           | Premium increment / decrement land in `premium_user_assignments`                        | `test_workflow_tracking_tier_branch.py::TestIncrementWritesToTheTierTable::test_a_premium_user_increments_the_premium_table`, `::TestDecrementWritesToTheTierTable::test_a_premium_user_decrements_the_premium_table` |
+| 539, 544           | Concurrent workflow starts / completions                                                 | `test_workflow_tracking_tier_branch.py::TestConcurrentCountsCannotBeLost` (partial - asserts both counters are SQL-side `column +/- 1`, which is what makes the race safe; a real two-connection race stays manual)                       |
 | 526, 529, 545, 546 | MAT structure dialog, sync progress indicator, simultaneous runs, large-dataset run     | manual                                                                                                                                                                                                                                   |
 
 Note: row 516's Action and Expected both describe the rapid-click cooldown, so
@@ -235,7 +267,7 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 6232                       | leader-tab polling for shared -> dedicated promotion                 | `PremiumPollingRoutingRestore.test.tsx`; `unreachableMachine.test.ts` ("does not poll when tab is not leader" - the actual non-leader gate)                                                                                                                                                                                                                                                                                                                                                                                     | L2                           |
 | 6234                       | stale-assignment safety net (>3 h `last_activity`)                   | `test_premium_cleanup.py::TestCleanupStaleAssignments`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | L1                           |
 | 6235 / 6236                | dedicated infra-5xx detection; probe ladder + Retry recovery         | `PremiumUnreachableIntegration.test.tsx`; `axiosPremiumInterceptor.test.ts`; `unreachableMachine.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                                       | L2                           |
-| 6237 / 6237b               | cross-tab propagation: live broadcast / snapshot hydration           | `PremiumUnreachableIntegration.test.tsx` (peer broadcast + snapshot hydration + TTL rejection); `crossTabSync.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                          | L2 (single-jsdom simulation) |
+| 6237                      | cross-tab propagation: live broadcast / snapshot hydration           | `PremiumUnreachableIntegration.test.tsx` (peer broadcast + snapshot hydration + TTL rejection); `crossTabSync.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                          | L2 (single-jsdom simulation) |
 | contract                   | typed `/premium/*` shapes, header names, identifier omission         | `premiumRoutingContract.test.ts` + `test_premium_contract_fixtures.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                          | contract                     |
 | v1.1.10 invariants         | premiumShared teardown gate, staleness watermark, warm-up grace      | `axiosPremiumInterceptor.test.ts`, `PremiumUnreachableIntegration.test.tsx`, `useInstanceUnreachableMachineLeader.test.tsx`, `PremiumSharedPollingStall.test.tsx`                                                                                                                                                                                                                                                                                                                                                               | L2                           |
 
@@ -268,9 +300,10 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 717 / 718 | Sync error status display; manual retry              | `ImagePlotSimple.test.tsx` (partial - sync indicator and retry affordance; the S3 re-sync is manual) |
 | 719       | Concurrent publish conflict (optimistic locking)     | `test_dataview_publish.py::test_publish_concurrent_modification_retry`                               |
 | 720       | Basic sync job execution                             | `test_sync_job.py::TestValidateExperiment`                                                           |
-| 721 / 722 | Sync job error handling; retry of failed experiments | `test_sync_job.py::TestRetryCount` (721 partial - the sheet documents a synced -> error design gap)  |
+| 721       | Sync job error handling: which statuses are retried  | `test_sync_job_db_state.py::TestPendingSelectionStatuses` (the `IN (pending, error)` binds, and that `synced` is excluded); `test_sync_job.py::TestRetryCount` |
+| 722       | Retry of failed experiments; `ExperimentsSynced`     | `test_sync_job_db_state.py::TestSyncStatusTransitions` (the `error -> synced` write and the metric)   |
 | 723       | Batch sync of multiple experiments                   | `test_sync_job.py::TestValidationLogicMetrics` (partial - counts, not a real batch)                  |
-| 724       | Rapid publish / unpublish toggles                    | `test_dataview_publish.py::TestPublishDataviewRecords` (partial)                                     |
+| 724       | Rapid publish / unpublish toggles                    | `test_sync_job_db_state.py::TestPublishToggleIsLastWriteWins` (both columns per toggle, last write wins) |
 | 725       | Auto-retry for pending (202)                         | `test_dataview_publish.py::test_reproduce_pending_sync_returns_202`                                  |
 | 726       | Error-status auto-correction (self-heal to synced)   | `test_dataview_publish.py::test_reproduce_auto_updates_sync_status_when_data_available`              |
 | 714       | Filter by workspace                                  | manual                                                                                               |
@@ -284,11 +317,21 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 808                                                   | Authenticated-only routers are not mounted on the public instance                                                                                                                                                                                                                                                        | `test_instance_mode_routers.py::TestInstanceModePublic`                                                            |
 | 812 / 829                                             | Client error reporting (free stopped / normal operation)                                                                                                                                                                                                                                                                 | `errorReporter.test.ts`; `test_log_report.py` (partial - endpoint behavior, not ALB routing)                       |
 | 813                                                   | Published experiment list with thumbnails                                                                                                                                                                                                                                                                                | DV-10                                                                                                              |
-| 815..818, 822                                         | HDF5 / MAT / CSV / TIFF input loads on the public page; re-fetch after cache cleanup                                                                                                                                                                                                                                     | `test_input_file_lock.py::TestEnsureInputFileSynced` (partial - the on-demand sync primitive, not the public page) |
+| 815, 816                                              | HDF5 / MAT input loads on the public page                                                                                                                                                                                                                                                                                | `test_structured_outputs.py` (the on-demand-sync regression tests from PR #650)                                     |
+| 817                                                   | CSV input loads on the public page                                                                                                                                                                                                                                                                                       | `test_outputs_on_demand_sync.py::TestCsvCallSiteSyncsOnDemand`                                                      |
+| 818                                                   | TIFF input loads on the public page                                                                                                                                                                                                                                                                                      | `test_outputs_on_demand_sync.py::TestTiffCallSiteSyncsOnDemand`                                                     |
+| 822                                                   | Input re-fetched after the cache cleanup                                                                                                                                                                                                                                                                                 | `test_outputs_on_demand_sync.py::TestStructuredCallSiteRefetchesAfterCleanup`                                       |
+| 802                                                   | SPA shell served for a client-side route                                                                                                                                                                                                                                                                                 | `test_spa_shell_and_health.py::TestSpaCatchAllServesTheShell` (both `root()` branches, plus a deep link colliding with a real API route; static-asset delivery is manual)                                                       |
+| 803                                                   | Health check endpoint                                                                                                                                                                                                                                                                                                    | `test_spa_shell_and_health.py::TestHealthEndpoint`                                                                  |
+| 807                                                   | ALB rule priority bands do not collide                                                                                                                                                                                                                                                                                   | `test_public_instance_config.py::TestAlbPriorityBandsAreDisjoint` (terraform band + the Lambda's `MAX_PREMIUM_PRIORITY` cap) |
+| 820                                                   | EFS lifecycle policy (`AFTER_7_DAYS`)                                                                                                                                                                                                                                                                                    | `test_public_instance_config.py::TestPublishedDataEfsLifecycle` (config assertion; AWS applying it is manual)       |
+| 821                                                   | Cleanup Lambda schedule                                                                                                                                                                                                                                                                                                  | `test_public_instance_config.py::TestPublicCleanupSchedule` (daily cron, ENABLED, wired to the Lambda)              |
+| 825                                                   | Public log group name and retention                                                                                                                                                                                                                                                                                      | `test_public_instance_config.py::TestPublicLogGroup` (name, 30 days, and the container logging into it)             |
+| 826                                                   | Public ASG capacity                                                                                                                                                                                                                                                                                                      | `test_public_instance_config.py::TestPublicAsgCapacity` (config assertion; real ASG behaviour is manual)            |
 | 823                                                   | Leader-elected startup sync warms the cache                                                                                                                                                                                                                                                                              | `test_main_unit_startup.py::TestStartupSyncLeaderElection`; `test_startup_leader.py`                               |
 | 828                                                   | Chunk load failure triggers a graceful reload                                                                                                                                                                                                                                                                            | `chunkLoadReload.test.ts`                                                                                          |
 | 830                                                   | Unpublish removes the experiment from the public page                                                                                                                                                                                                                                                                    | DV-14                                                                                                              |
-| 800..807, 809..811, 814, 819..821, 824..827, 831, 832 | SPA shell and static assets from the public tier, health check, ALB target-group routing and rule priorities, behavior with the free instance stopped, EFS persistence and lifecycle policy, cleanup Lambda schedule, CloudWatch alarms and log groups, ASG capacity and replacement, concurrent viewers, `ab` benchmark | manual                                                                                                             |
+| 800, 801, 804..806, 809..811, 814, 819, 824, 827, 831, 832 | Static assets from the public tier, ALB target-group routing, behavior with the free instance stopped, EFS persistence, CloudWatch alarms, ASG replacement, concurrent viewers, `ab` benchmark                                                                                                                       | manual (deployed environment)                                                                                      |
 
 ---
 
@@ -296,10 +339,42 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 
 | Case                                   | Subject                                                                                                                                                                                                        | Automated by                                                        |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 920                                    | Webhook received                                                                                                                                                                                               | `test_webhook.py` (partial - handler dispatch, not a live delivery) |
-| 929                                    | Verify Stripe customer ID against the DB                                                                                                                                                                       | `test_stripe_customer_lookup.py` (partial)                          |
-| 901..919, 921, 922, 923..928, 930..936 | Stripe product and price catalog, tax region and behavior configuration, billing-address collection and validation, tax calculation and breakdown, invoice tax content, and every Stripe-dashboard cross-check | manual                                                              |
+| 903                                          | Plan config agrees with the seeded `subscription_plans` rows                                                                                                                  | `test_checkout_session_tax_config.py::TestPlanConfigAgreesWithTheSeededRows` (partial - asserts only that the seed script maps every field the terraform variable declares; the Stripe-vs-DB *value* comparison the row asks for is not automated) |
+| 906                                          | Checkout does not mutate the Stripe product catalog                                                                                                                            | `test_checkout_session_tax_config.py::TestCheckoutDoesNotMutateTheStripeCatalog`                                                                                     |
+| 909                                          | `automatic_tax` enabled on the checkout session                                                                                                                                | `test_checkout_session_tax_config.py::TestCheckoutSessionTaxConfiguration::test_automatic_tax_is_enabled`                                                            |
+| 910                                          | `billing_address_collection` required                                                                                                                                          | `test_checkout_session_tax_config.py::TestCheckoutSessionTaxConfiguration` (required, plus `customer_update.address` so renewals stay taxed)                         |
+| 917, 918                                     | Purchase record written with the correct `user_id` and `plan_id`                                                                                                                | `test_checkout_session_tax_config.py::TestWebhookRecordsThePurchase` (partial - the arguments handed to `record_purchase`, incl. the string-to-int conversion; the INSERT is mocked, so constraint behaviour is manual)                              |
+| 920                                          | Webhook received                                                                                                                                                               | `test_webhook.py` (partial - handler dispatch, not a live delivery)                                                                                                  |
+| 922                                          | Webhook rejects an unsigned or forged payload                                                                                                                                  | `test_checkout.py::TestCheckoutRoutes` (rejected **and** the dispatcher never invoked)                                                                               |
+| 929                                          | Verify Stripe customer ID against the DB                                                                                                                                       | `test_stripe_customer_lookup.py` (partial)                                                                                                                          |
+| 901, 902, 904, 905, 907, 908, 911..916, 919, 921, 923..928, 930..936 | Stripe product and price catalog, tax region and behavior configuration, address validation, tax calculation and breakdown, invoice tax content, and every Stripe-dashboard cross-check | manual (Stripe-hosted UI or live Stripe state)                                                                                     |
 
-There is **no automated coverage of tax configuration or calculation anywhere in
-the repo** - a `grep` for `tax` / `automatic_tax` / `billing_address` across
-`studio/tests` returns nothing. This whole sheet is Stripe-dashboard work.
+Notes on this sheet:
+
+- **921 stays manual, deliberately.** `CheckoutService.verify_stripe_session` is
+  the only code here that reads tax off a Stripe session, and it has **no
+  caller** - a grep returns the definition and its own tests.
+  `TestSessionVerificationReadsTax` pins the extraction so it cannot rot before
+  the helper is wired up, but a test over unreachable code cannot catch a
+  regression in a tax pipeline that does not exist, so this row is **not** counted
+  as covered. Wire the helper up, or delete it and drop those tests with it.
+- **922 previously cited a test that never ran.** `test_webhook_requires_signature`
+  sat behind a `check_api_running` fixture that skipped unless a live server
+  answered `/docs`, which no lane provides. It now runs against `TestClient`, and
+  asserts that `dispatch_webhook_event` is never invoked for an unverified body -
+  a status check alone cannot separate "rejected before dispatch" from
+  "dispatched, then failed".
+- **Writing 922 surfaced a product bug, fixed here.** The route's outer handler
+  replaced *every* inner `HTTPException` with a hardcoded 400. Stripe retries 5xx
+  and never retries 4xx, so an internal failure during
+  `checkout.session.completed` - for instance `WebhookService`'s
+  `HTTPException(500, "Error retrieving subscription from Stripe: ...")` - was
+  reported to Stripe as the caller's fault and never redelivered, leaving a user
+  who had paid on the Free plan. The handler now keeps the inner status while
+  still suppressing the inner detail, which was the original intent of that
+  block (added in `c883b9bfb`, when both of the handler's own raises were already
+  400). `TestWebhookStatusTellsStripeWhetherToRetry` pins both directions: an
+  unsigned body stays 400, an internal failure is 5xx, and a non-actionable 400
+  from the dispatcher is not promoted into a retry loop.
+- **Tax coverage now exists but is input-side only.** Stripe's tax engine is not
+  ours to assert; what these tests pin is every input we hand it.
