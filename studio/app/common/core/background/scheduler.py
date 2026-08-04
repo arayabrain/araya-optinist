@@ -11,7 +11,7 @@ API services disable their schedulers via DISABLE_BACKGROUND_SCHEDULER=1.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,6 +21,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 logger = AppLogger.get_logger()
 
@@ -155,7 +156,7 @@ class BackgroundScheduler:
 
         kwargs.setdefault(
             "next_run_time",
-            datetime.now()
+            get_current_datetime()
             + timedelta(seconds=SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS),
         )
 

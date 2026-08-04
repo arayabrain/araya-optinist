@@ -4,11 +4,12 @@ add_job defaults next_run_time to now + a small delay so interval jobs run
 shortly after startup (not now+interval), and lets callers override it.
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 from studio.app.common.core.background.scheduler import BackgroundScheduler
 from studio.app.common.core.subscription.constants import SyncStatusConstants
+from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
 
 def _add_job_and_capture(**extra_kwargs):
@@ -35,18 +36,21 @@ def test_add_job_defaults_next_run_time_shortly_after_startup():
     kwargs = _add_job_and_capture()
 
     next_run_time = kwargs["next_run_time"]
-    delay = (next_run_time - datetime.now()).total_seconds()
+    delay = (next_run_time - get_current_datetime()).total_seconds()
     assert 0 < delay <= SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS
-    # First run within ~a minute, not a full interval.
-    assert SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS <= 60
 
 
 def test_add_job_preserves_caller_next_run_time():
     """A caller-supplied next_run_time is not overridden."""
-    explicit = datetime.now() + timedelta(minutes=30)
+    explicit = get_current_datetime() + timedelta(minutes=30)
     kwargs = _add_job_and_capture(next_run_time=explicit)
 
     assert kwargs["next_run_time"] == explicit
+
+
+def test_initial_run_delay_is_bounded():
+    """First run lands within ~a minute of startup, not a full interval."""
+    assert 0 < SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS <= 60
 
 
 def test_add_job_noop_when_not_initialized():
