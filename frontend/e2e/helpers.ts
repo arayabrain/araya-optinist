@@ -180,14 +180,13 @@ export async function openWorkspace(page: Page, name: string): Promise<number> {
 }
 
 export async function importSampleData(page: Page, workspaceName: string) {
-  // The import menu silently no-ops until GET /workspace/{id} populates the
-  // store; the workspace name, rendered only by the Workflow tab, signals
-  // it's ready
+  // The import silently no-ops until GET /workspace/{id} populates the store,
+  // and the Record tab renders nothing that proves it has. Probe on Workflow,
+  // then switch to Record, where the menu entry is enabled.
   await page.locator('button[role="tab"]:has-text("Workflow")').click()
   await expect(page.locator(`text=${workspaceName}`).first()).toBeVisible({
     timeout: 15_000,
   })
-  // The menu item is disabled off the Record tab
   await page.locator('button[role="tab"]:has-text("Record")').click()
   await page.locator('[data-testid="MenuBookIcon"]').click()
   await page.getByText("Import sample data").click()
@@ -329,13 +328,21 @@ const PREMIUM_CONTRACT = JSON.parse(
   ),
 )
 
-// Route-mock an active dedicated premium assignment (status + heartbeat +
-// beacon token) for assignment-dependent UI where the real AWS flow is
-// unreachable. No X-Routing-ID header: the local backend runs non-standalone
-// and rejects a request carrying a routing_id it did not mint, so seeding a
-// fake one here would 403 every later real request. Seeding is covered at the
-// jest interceptor level instead.
-export async function mockPremiumAssignment(page: Page) {
+// Route-mock an active premium assignment (status + heartbeat + beacon token)
+// for assignment-dependent UI where the real AWS flow is unreachable. No
+// X-Routing-ID header: the local backend runs non-standalone and rejects a
+// request carrying a routing_id it did not mint, so seeding a fake one here
+// would 403 every later real request. Seeding is covered at the jest
+// interceptor level instead.
+//
+// `shared` mocks the shared-resource fallback instead of a dedicated instance.
+// That is a different frontend branch: with no dedicated instance the app keeps
+// its "being prepared" notice up rather than announcing success, and it records
+// the fallback in the routing service.
+export async function mockPremiumAssignment(
+  page: Page,
+  { shared = false }: { shared?: boolean } = {},
+) {
   const status = PREMIUM_CONTRACT.premium_status
   await page.route("**/users/me/premium/status", (route) =>
     route.fulfill({
@@ -344,6 +351,7 @@ export async function mockPremiumAssignment(page: Page) {
         assignment: {
           ...status.assignment,
           assigned_at: new Date().toISOString(),
+          is_shared: shared,
         },
       },
     }),

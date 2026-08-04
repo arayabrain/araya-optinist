@@ -123,23 +123,37 @@ test.describe("Record Management", () => {
   })
 
   test("REC-07 - Download NWB file", async ({ page }) => {
-    // NWB only exists after a workflow run — the button is disabled (or the
-    // cell empty) until then
     const nwbButton = page
       .locator('td:has([data-testid="nwb-download-link"]) button:enabled')
       .first()
-    const hasNwb = await nwbButton
+    const hasButton = await nwbButton
       .waitFor({ timeout: 5_000 })
       .then(() => true)
       .catch(() => false)
+    test.skip(!hasButton, "No NWB column rendered")
+
+    // The button being enabled is not evidence the file exists: the imported
+    // tutorial metadata declares an nwb section but ships no .nwb, so the button
+    // enables for records that were never run and the route answers 404. Judge
+    // the precondition on the response, not on the button.
+    const nwbResponse = page.waitForResponse((r) => /\/nwb\//.test(r.url()), {
+      timeout: 60_000,
+    })
+    // Settles either way, so skipping on a 404 cannot leave it dangling
+    const downloadPromise = page
+      .waitForEvent("download", { timeout: 60_000 })
+      .catch(() => null)
+    await nwbButton.click()
+    const status = (await nwbResponse).status()
     test.skip(
-      !hasNwb,
+      status === 404,
       "No NWB output — requires a completed workflow run (WF-04)",
     )
+    expect(status).toBe(200)
 
-    const downloadPromise = page.waitForEvent("download", { timeout: 60_000 })
-    await nwbButton.click()
     const download = await downloadPromise
+    expect(download).not.toBeNull()
+    if (!download) return
     expect(download.suggestedFilename()).toMatch(/\.nwb$/)
 
     // The filename alone passed while the API answered 200 with the body

@@ -3,7 +3,7 @@
 ## Executive Summary
 
 - **Maps every row** of the `Araya-Optinist System Test Cases Template` sheets to the automated test that covers it, so a release tester only hand-verifies the rows marked manual
-- **Ten sheets, 221 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
+- **Ten sheets, 257 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
 - **Not one suite** - coverage is spread across Playwright e2e, jest, and pytest; the notation below says which
 - **System sheets only** - the `Araya-OptiNiSt Release Test Cases Template` sheets (`BT-1xx` .. `BT-11xx`) are a separate scheme mapped in `infrastructure/documentation/RELEASE_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the `6204` concurrency race
@@ -37,17 +37,17 @@ Test levels used in the premium tables:
 
 | Sheet                            | Rows    | Automated | Manual  |
 | -------------------------------- | ------- | --------- | ------- |
-| 01 Authentication & Registration | 27      | 18        | 9       |
-| 02 Subscription & Payment        | 105     | 35        | 70      |
+| 01 Authentication & Registration | 27      | 26        | 1       |
+| 02 Subscription & Payment        | 105     | 51        | 54      |
 | 03 Account Profile & Management  | 41      | 4         | 37      |
-| 04 Storage & Limits              | 48      | 28        | 20      |
-| 05 Workflow & Execution          | 46      | 42        | 4       |
+| 04 Storage & Limits              | 48      | 37        | 11      |
+| 05 Workflow & Execution          | 46      | 44        | 2       |
 | 06 Premium Features              | 8       | 4         | 4       |
 | 06-2 Premium Assignment          | 38      | 37        | 1       |
-| 07 Dataview                      | 26      | 25        | 1       |
+| 07 Dataview                      | 26      | 26        | 0       |
 | 08 Public Instance               | 33      | 19        | 14      |
 | 09 Stripe Prdct Data Sync & Tax  | 36      | 9         | 27      |
-| **Total**                        | **408** | **221**   | **187** |
+| **Total**                        | **408** | **257**   | **151** |
 
 **Counting rule.** A row counts as automated if its `Automated by` cell names a
 test, including rows marked `(partial)` - the partial label narrows *what* is
@@ -56,10 +56,11 @@ manual. Every row number in a sheet's range appears in exactly one of the two, s
 the columns are derivable from the tables below rather than maintained by hand;
 if you change a row, re-derive rather than adjusting the total by one.
 
-These figures were recomputed from the tables in this PR after an audit found the
-previous headline (203 of 409) reconciled with nothing: it under-counted by 18,
-`06-2` was listed as 39 rows against a sheet of 38, and rows 287, 288, 541 and 542
-were each either double-counted or missing from their sheet entirely.
+These figures are re-derived from the tables below on every change. They were
+first recomputed after an audit found the headline of the time (203 of 409)
+reconciled with nothing: it under-counted by 18, `06-2` was listed as 39 rows
+against a sheet of 38, and rows 287, 288, 541 and 542 were each either
+double-counted or missing from their sheet entirely.
 
 ---
 
@@ -85,7 +86,13 @@ were each either double-counted or missing from their sheet entirely.
 | 116                                                   | `users` row exists and is active after registration                                                                                                            | `test_registration_db_state.py::TestRegistrationWritesAnActiveUser` (partial - the ORM rows `create_user` builds, not a real MySQL round trip)                     |
 | 117                                                   | New user starts on Free with the 5GB quota                                                                                                                     | `test_registration_db_state.py::TestRegistrationStartsTheUserOnFree` (partial - as 116)                    |
 | 124                                                   | Cleanup grace window after logout                                                                                                                              | `test_cleanup_job.py::TestGetUsersForCleanupGraceWindow` (partial - query, not real MySQL) |
-| 100, 101, 104, 106, 108, 110, 111, 113, 118           | header button visibility, name-length and forbidden-char validation, show/hide password, resend verification, live Stripe starting state                       | manual                                                                                  |
+| 100                                                   | Login button visible and working on the public page                                                                                                            | AUTH-12                                                                                 |
+| 101                                                   | No header Login or Dashboard button on the auth pages                                                                                                          | AUTH-13                                                                                 |
+| 104                                                   | Name minimum length                                                                                                                                            | AUTH-14                                                                                 |
+| 106                                                   | Password forbidden characters                                                                                                                                  | AUTH-15 (derives the input from `regexIgnoreS`, so the test tracks the allowed set)      |
+| 108                                                   | Show / hide password toggle                                                                                                                                    | AUTH-16                                                                                 |
+| 110, 111, 113                                         | Resend verification from the success screen and from the login alert; Go to Login Page                                                                          | AUTH-04 (extra assertions on the account it already registers; the resend endpoint is route-mocked, so no Firebase send) |
+| 118                                                   | Live Stripe starting state                                                                                                                                     | manual                                                                                  |
 
 Note on 124: the automated half is the query - the `logged_out_at < now - 60min`
 comparison and the cutoff it binds, asserted against the compiled statement,
@@ -122,7 +129,22 @@ query, never the interval.
 | 303                                                                                 | Post-deletion user check                                                                                                                                                                    | `test_user_deletion.py`                                                                  |
 | 304                                                                                 | Subscription preserved after deletion                                                                                                                                                       | `test_user_deletion.py` (partial)                                                        |
 | 289                                                                                 | Limit Grace boundary: `plan_id` stays 2, expiration past but inside the 30-day grace                                                                                                         | `test_crud_users_context.py` (`..._grace_period_last_day`, `..._one_day_past_grace_is_expired`, `..._expiring_today_enters_grace`) |
-| 201, 206, 207, 214..231, 237..253, 260, 264, 266..271, 273..286, 288, 290..296, 298, 305 | temp-mail, verification email delivery, the whole Stripe checkout and Link flows, invoice pages and PDFs, billing portal, trial conversion, Stripe-dashboard verification, responsive check | manual                                                                                   |
+| 214                                                                                 | Upgrade creates a checkout session and leaves for Stripe                                                                                                                                    | SUB-13 (our request and the redirect target; Stripe's own page is out of scope)           |
+| 227                                                                                 | No plan change after a declined checkout | `test_subscription_state_transitions.py::TestDeclinedCheckoutWritesNoSubscription` |
+| 237                                                                                 | `plan_id` = 2 and `expiration` set after a successful checkout                                                                                                                              | `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium` (incl. the expiration coming from Stripe's `current_period_end`, and `idx_user_id_unique` keeping it one row) |
+| 243                                                                                 | Manage on the account profile opens the invoice page                                                                                                                                        | SUB-07                                                                                   |
+| 244                                                                                 | Invoice page renders every section                                                                                                                                                          | SUB-08 (partial - mocked billing responses, and the page renders no default-payment-method indicator for the row to check) |
+| 245                                                                                 | Invoice row date, amount and status                                                                                                                                                         | SUB-09 (mocked billing responses)                                                        |
+| 246                                                                                 | View opens the invoice detail                                                                                                                                                               | SUB-10 (partial - the hosted-invoice target; Stripe renders the contents)                 |
+| 251                                                                                 | Manage Billing reaches the Stripe customer portal                                                                                                                                           | SUB-14 (partial - the destination host; the portal itself is Stripe's)                    |
+| 260                                                                                 | Confirm cancellation                                                                                                                                                                        | SUB-11; server-side counterpart `test_subscription_state_transitions.py::TestCancelTouchesOnlyTheDowngradeFlag` |
+| 264                                                                                 | Profile after cancellation                                                                                                                                                                  | LC-21                                                                                    |
+| 266                                                                                 | Field integrity after a scheduled cancellation                                                                                                                                              | `test_subscription_state_transitions.py::TestCancelTouchesOnlyTheDowngradeFlag` (every other column byte-identical, real session) |
+| 270 / 271                                                                           | Execute reactivation; UI after reactivation                                                                                                                                                 | SUB-12; `test_subscription_state_transitions.py::TestReactivateRejectsAnotherUsersSubscription` (the route's ownership check) |
+| 286                                                                                 | UI after renewal                                                                                                                                                                            | LC-22                                                                                    |
+| 290                                                                                 | Fallback after the retry period                                                                                                                                                             | LC-23 (partial - the derived status and the untouched row; that premium capability is actually refused is not asserted) |
+| 291                                                                                 | DB after fallback: no row is downgraded                                                                                                                                                     | `test_subscription_state_transitions.py::TestFallbackToFreeIsDerivedNotWritten` (partial - as 290) |
+| 201, 206, 207, 215..226, 228..231, 238..242, 247..250, 252, 253, 267, 268, 269, 273..285, 288, 292..296, 298, 305 | temp-mail, verification email delivery, the whole Stripe checkout and Link flows, invoice PDFs, trial conversion, Stripe-dashboard verification, responsive check | manual                                                                                   |
 
 Note on 289: this row previously cited `test_crud_users_context.py`, where **12
 of 14 cases were `@pytest.mark.skip("Requires integration test with real DB")`**
@@ -132,6 +154,23 @@ even by the skipped cases, which hedged with `in [LIMIT_GRACE, EXPIRED]`.
 Widening `GRACE_PERIOD_DAYS` by 5 days passed all 14. The three cases now cited
 pin both edges by fixing `now`, and `test_no_dead_tests.py` rejects new
 unconditional skips.
+
+Notes on the rows added here:
+
+- **The mocked-billing rows are route mocks; what they cover is our UI.** 260 and
+  266 both sit on `TestCancelTouchesOnlyTheDowngradeFlag`, 270/271 gained a pytest
+  over the reactivate route's ownership check, and 227 / 237 / 291 are pytest-only.
+  Everything else behind those endpoints - Stripe errors, 404s - is not covered by
+  the e2e, and each row above says so where it matters.
+- **291's expectation was corrected in the sheet before this PR** and the test
+  follows the corrected text: nothing writes `plan_id = FREE`, and the tier is
+  derived from the expiration. The 30-day window itself is pinned by
+  `test_crud_users_context.py::test_the_grace_window_is_thirty_days`; the new
+  test reads `GRACE_PERIOD_DAYS` so it asserts the derivation, not the constant.
+- **246 and 251 stay `(partial)` by design.** Both buttons hand off to a
+  Stripe-hosted page (`window.open`), and 251 creates no portal session at all -
+  it opens a fixed `billing.stripe.com` login link. What is assertable is the
+  destination, which is what those tests assert.
 
 ---
 
@@ -160,11 +199,19 @@ has no e2e or component coverage at all.
 | 408, 422                                                             | Upload image                                                                                                                                        | UPL-03                                                                          |
 | 411                                                                  | Upload HDF5                                                                                                                                         | UPL-04                                                                          |
 | 412                                                                  | HDF5 data is selectable                                                                                                                             | UPL-02 (partial - structure dialog only)                                        |
-| 413, 423                                                             | Premium login shared-instance snackbar                                                                                                              | STO-02 (partial - mocked assignment)                                            |
+| 413                                                                  | Premium login lands on shared resources                                                                                                             | STO-03 (mocked `is_shared: true`; asserts the routing service recorded the fallback, since the notice alone cannot distinguish it from a pending assignment) |
+| 423                                                                  | Premium over the storage limit lands on shared resources                                                                                            | STO-03 (partial - the shared-assignment half only; the over-quota storage state it names is covered by 429/440) |
 | 414                                                                  | Dedicated-assignment success snackbar                                                                                                               | `PremiumNotificationManager.test.tsx`                                           |
 | 424, 425                                                             | Over-quota modal; Handle Later returns to dashboard                                                                                                 | LC-03                                                                           |
 | 426, 431                                                             | Manage Files redirects to `/workspaces`                                                                                                             | LC-08                                                                           |
-| 429, 430                                                             | Downgraded free user over quota                                                                                                                     | LC-08                                                                           |
+| 429, 440                                                             | Expired premium in grace **and** over the free limit: the combined warning                                                                          | LC-18 (the effective quota drop to 5GB, plus the deletion timeline in the payload) |
+| 430                                                                  | Handle later on the expiry warning returns to the dashboard                                                                                         | LC-19                                                                           |
+| 432                                                                  | Upgrade on the expiry warning redirects to `/subscription`                                                                                         | LC-20                                                                           |
+| 409                                                                  | Upload a MAT file                                                                                                                                  | UPL-05                                                                          |
+| 410                                                                  | Data inside the MAT file is selectable                                                                                                             | UPL-05 (the file it just uploaded); UPL-07 (moving the selection between two paths) |
+| 428, 438                                                             | Progress-bar colour band per usage ratio                                                                                                           | `StorageUsage.test.tsx` (thresholds from `SubscriptionAlertThresholds`, colours from the theme palette) |
+| 445                                                                  | Reload disabled with a spinner while refreshing                                                                                                    | `StorageReload.test.tsx`                                                        |
+| 446, 447                                                             | Storage refreshes once per session                                                                                                                 | `StorageRefreshOnLogin.test.tsx` (one `/workspaces/refresh-storage` across repeated auth checks; sheet Action corrected - see below) |
 | 434, 441                                                             | RUN blocked over quota                                                                                                                              | LC-09                                                                           |
 | 435                                                                  | Dismissed warning persists in-session                                                                                                               | `useLimitAlert.test.ts`                                                         |
 | 436                                                                  | Dismissed warning reappears after logout                                                                                                            | `UserSlice.test.ts` (logout clears `dismissedAlerts`)                           |
@@ -174,8 +221,27 @@ has no e2e or component coverage at all.
 | 443                                                                  | Reload button appears and refreshes                                                                                                                 | WS-04                                                                           |
 | 444                                                                  | Storage values update after a delete                                                                                                                | LC-05                                                                           |
 | 448                                                                  | Total across all workspaces                                                                                                                         | `test_s3_storage_monitor.py::test_get_user_s3_storage_size_multiple_workspaces` |
-| 402, 403, 406, 407, 409, 410, 415..417, 420, 421, 427, 428, 433, 438 | backend log inspection, per-user S3 bucket and object checks, MAT upload and selection, progress-bar colors                                         | manual                                                                          |
-| 432, 440, 445..447                                                   | Upgrade-click redirect to `/subscription`, grace + over-quota combined state, reload-disabled-while-loading, first-vs-second-login refresh throttle | manual                                                                          |
+| 402, 403, 406, 407, 415..417, 420, 421, 427, 433                     | backend log inspection, per-user S3 bucket and object checks                                                                                        | manual                                                                          |
+
+Two sheet corrections applied with these rows:
+
+- **413 / 423 named a snackbar the product does not have.** Neither "temporarily
+  assigned to the shared compute resources" nor "assigned to the main shared
+  instance" exists anywhere in the frontend. What a shared assignment actually
+  produces is the absence of a dedicated one, so `PremiumNotificationManager`
+  keeps its persistent "Please wait while your dedicated premium resource is
+  being prepared." notice up. The one string with "shared" in it - "Falling back
+  to shared resources." - is the *error* branch, not this state. The sheet now
+  names the real copy, and STO-03 asserts it plus the absence of the
+  dedicated-success snackbar.
+- **447's Action described a mechanism the code no longer has.** It said to log
+  out and log in again, but both logout paths (`AuthUtils.logout` and
+  `UserSlice`'s `logout` reducer) deliberately clear
+  `storage-refreshed-on-login`, so the next login *does* refresh - correctly,
+  since it may be a different user. The invariant the row exists for is one
+  refresh per session across repeated auth checks, which is what the test
+  asserts; the sheet Action now says so. `UserSlice.test.ts` already covers the
+  clearing half.
 
 ---
 
@@ -212,7 +278,9 @@ has no e2e or component coverage at all.
 | 540                | Free versus premium: which table the count is written to                                | `test_workflow_tracking_tier_branch.py::TestIncrementWritesToTheTierTable`, `::TestDecrementWritesToTheTierTable` (compiled UPDATE target table, including both-records users)                                                            |
 | 541, 542           | Premium increment / decrement land in `premium_user_assignments`                        | `test_workflow_tracking_tier_branch.py::TestIncrementWritesToTheTierTable::test_a_premium_user_increments_the_premium_table`, `::TestDecrementWritesToTheTierTable::test_a_premium_user_decrements_the_premium_table` |
 | 539, 544           | Concurrent workflow starts / completions                                                 | `test_workflow_tracking_tier_branch.py::TestConcurrentCountsCannotBeLost` (partial - asserts both counters are SQL-side `column +/- 1`, which is what makes the race safe; a real two-connection race stays manual)                       |
-| 526, 529, 545, 546 | MAT structure dialog, sync progress indicator, simultaneous runs, large-dataset run     | manual                                                                                                                                                                                                                                   |
+| 526                | MAT structure dialog                                                                    | UPL-06                                                                                                                                                                                                                                   |
+| 529                | File-tree sync progress indicator                                                       | `FileSelectDialog.test.tsx` (partial - the bar's binding to the tree fetch's loading flag; that the fetch sets and clears the flag is untested) |
+| 545, 546           | Simultaneous runs, large-dataset run                                                    | manual                                                                                                                                                                                                                                   |
 
 Note: row 516's Action and Expected both describe the rapid-click cooldown, so
 its original Subject ("Run Workflow Tutorial 3") was the defect and has been
@@ -297,7 +365,7 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 712 / 713 | Filter by UID / Name                                 | DV-03 / DV-13                                                                                        |
 | 715       | Sort by column header                                | DV-04                                                                                                |
 | 716       | Pagination page size                                 | DV-05                                                                                                |
-| 717 / 718 | Sync error status display; manual retry              | `ImagePlotSimple.test.tsx` (partial - sync indicator and retry affordance; the S3 re-sync is manual) |
+| 717 / 718 | Sync error status display; manual retry              | `SyncStatusView.test.tsx` (partial - the 202 / 423 / 503 / default / network branches, the retry ceiling, and Retry re-firing the fetch; the S3 re-sync itself is manual) |
 | 719       | Concurrent publish conflict (optimistic locking)     | `test_dataview_publish.py::test_publish_concurrent_modification_retry`                               |
 | 720       | Basic sync job execution                             | `test_sync_job.py::TestValidateExperiment`                                                           |
 | 721       | Sync job error handling: which statuses are retried  | `test_sync_job_db_state.py::TestPendingSelectionStatuses` (the `IN (pending, error)` binds, and that `synced` is excluded); `test_sync_job.py::TestRetryCount` |
@@ -306,7 +374,7 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 724       | Rapid publish / unpublish toggles                    | `test_sync_job_db_state.py::TestPublishToggleIsLastWriteWins` (both columns per toggle, last write wins) |
 | 725       | Auto-retry for pending (202)                         | `test_dataview_publish.py::test_reproduce_pending_sync_returns_202`                                  |
 | 726       | Error-status auto-correction (self-heal to synced)   | `test_dataview_publish.py::test_reproduce_auto_updates_sync_status_when_data_available`              |
-| 714       | Filter by workspace                                  | manual                                                                                               |
+| 714       | Filter by workspace                                  | DV-16 (the all-workspaces view, which renders the same `DataviewRecords` columns the public page does, plus the deliberate carve-out at `/dataview/{id}`) |
 
 ---
 

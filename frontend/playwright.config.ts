@@ -46,6 +46,9 @@ export default defineConfig({
     // (Playwright's default action timeout is unlimited)
     actionTimeout: 15_000,
     baseURL: process.env.BASE_URL || "http://localhost:3000",
+    // Dates render through toLocaleDateString, so a runner in a negative
+    // offset would read a fixture timestamp back a day early
+    timezoneId: "UTC",
     screenshot: "only-on-failure",
     trace: "on-first-retry",
   },

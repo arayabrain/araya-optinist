@@ -48,12 +48,31 @@ test.describe("Login", () => {
     await expect(page).toHaveURL(/\/login/)
   })
 
+  // The resend affordances ride on this test's account rather than getting a
+  // test of their own: every registration leaves a Firebase user behind that
+  // nothing cleans up, and the success screen is redux-only, so reaching it
+  // again means registering again.
   test("AUTH-04 - Unverified email login shows Resend Email", async ({
     page,
   }) => {
     // Registers a fresh (never-verified) account, then tries to log in with it
     test.setTimeout(120_000)
     const unverifiedEmail = `e2e_unverified_${Date.now()}@test.com`
+
+    // Resend goes through our own backend, which then asks Firebase to send.
+    // Mocking it keeps the assertion on our UI and off Firebase's mail rate
+    // limit, and the delay is what makes the in-flight state observable.
+    const resendPayloads: unknown[] = []
+    await page.route("**/api/register/resend-verification", async (route) => {
+      resendPayloads.push(route.request().postDataJSON())
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      await route.fulfill({
+        json: { success: true, message: "sent", already_verified: false },
+      })
+    })
+    // The success screen disables Resend for 60s after registering; the fake
+    // clock skips that wait instead of sleeping through it
+    await page.clock.install()
 
     await page.goto("/register")
     await expect(page.locator('button:has-text("Sign Up")')).toBeVisible({
@@ -68,14 +87,40 @@ test.describe("Login", () => {
       page.locator("text=Registration Almost Complete!"),
     ).toBeVisible({ timeout: 30_000 })
 
-    await page.goto("/login")
+    // Resend from the success screen, once the cooldown has elapsed
+    const resendOnSuccess = page.getByRole("button", {
+      name: /Resend Verification Email/,
+    })
+    await expect(resendOnSuccess).toBeDisabled()
+    await page.clock.fastForward(61_000)
+    await expect(resendOnSuccess).toBeEnabled()
+    await resendOnSuccess.click()
+    await expect(page.locator('button:has-text("Sending...")')).toBeVisible()
+    await expect(
+      page.locator("text=Verification email resent successfully"),
+    ).toBeVisible({ timeout: 15_000 })
+    expect(resendPayloads).toEqual([{ email: unverifiedEmail }])
+
+    await page.getByRole("button", { name: "Go to Login Page" }).click()
+    await expect(page).toHaveURL(/\/login/, { timeout: 15_000 })
+
     await page.locator('[data-testid="email"]').fill(unverifiedEmail)
     await page.locator('[data-testid="password"]').fill("Test@123")
     await page.locator('[data-testid="button-submit"]').click()
 
     const alert = page.locator('[role="alert"]').filter({ hasText: "verify" })
     await expect(alert).toBeVisible({ timeout: 30_000 })
-    await expect(page.locator('button:has-text("Resend Email")')).toBeVisible()
+    const resendFromAlert = page.locator('button:has-text("Resend Email")')
+    await expect(resendFromAlert).toBeVisible()
+
+    // No cooldown on the login-alert resend
+    await resendFromAlert.click()
+    await expect(page.locator('button:has-text("Sending...")')).toBeVisible()
+    await expect(
+      page.locator("text=Verification email resent successfully"),
+    ).toBeVisible({ timeout: 15_000 })
+    expect(resendPayloads).toHaveLength(2)
+    expect(resendPayloads[1]).toEqual({ email: unverifiedEmail })
   })
 
   test("AUTH-05 - Successful logout", async ({ page }) => {
@@ -123,6 +168,18 @@ test.describe("Navigation - Public Header", () => {
     await dashboardButton.click()
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 })
   })
+
+  test("AUTH-12 - Login button is shown on /public and navigates", async ({
+    page,
+  }) => {
+    await page.goto("/public")
+    // The nested header means the last link is the clickable one
+    const loginLink = page.locator('a[href="/login"]').last()
+    await expect(loginLink).toBeVisible({ timeout: 15_000 })
+
+    await loginLink.click()
+    await expect(page).toHaveURL(/\/login/, { timeout: 15_000 })
+  })
 })
 
 // Registration form validation
@@ -161,5 +218,84 @@ test.describe("Registration form validation (extra)", () => {
     await expect(page.locator('[role="alert"]')).toContainText(
       "must be at least 6 characters long",
     )
+  })
+
+  test("AUTH-14 - Name shorter than two characters is rejected", async ({
+    page,
+  }) => {
+    await page.locator('input[name="name"]').fill("A")
+    await page.locator('input[name="email"]').fill("test@test.com")
+    await page.locator('input[name="password"]').fill("Test@123")
+    await page.locator('input[name="confirmPassword"]').fill("Test@123")
+    await page.locator('button:has-text("Sign Up")').click()
+    await expect(page.locator('[role="alert"]')).toContainText(
+      "Name must be at least 2 characters",
+    )
+    await expect(page).toHaveURL(/\/register/)
+  })
+
+  test("AUTH-15 - Password with a forbidden character is rejected", async ({
+    page,
+  }) => {
+    const alert = page.locator('[role="alert"]')
+    await page.locator('input[name="name"]').fill("Test User")
+    await page.locator('input[name="email"]').fill("test@test.com")
+    for (const char of ["<", ">", '"', "'"]) {
+      // Satisfies the complexity rule (letter, digit, allowed special) so the
+      // forbidden-character branch is the one that fires
+      const password = `Test@12${char}`
+      await page.locator('input[name="password"]').fill(password)
+      await page.locator('input[name="confirmPassword"]').fill(password)
+      // Typing clears the previous error, so waiting for it to go is what stops
+      // the next assertion passing on the last iteration's alert
+      await expect(alert).toBeHidden()
+
+      await page.locator('button:has-text("Sign Up")').click()
+      await expect(alert).toContainText("Allowed special characters", {
+        timeout: 10_000,
+      })
+      await expect(page).toHaveURL(/\/register/)
+    }
+  })
+
+  test("AUTH-16 - Show Password toggles both password fields", async ({
+    page,
+  }) => {
+    const password = page.locator('input[name="password"]')
+    const confirm = page.locator('input[name="confirmPassword"]')
+    await expect(password).toHaveAttribute("type", "password")
+    await expect(confirm).toHaveAttribute("type", "password")
+
+    await page.locator("#show-password").check()
+    await expect(password).toHaveAttribute("type", "text")
+    await expect(confirm).toHaveAttribute("type", "text")
+
+    await page.locator("#show-password").uncheck()
+    await expect(password).toHaveAttribute("type", "password")
+    await expect(confirm).toHaveAttribute("type", "password")
+  })
+})
+
+// The header drops its Login button on the auth pages themselves. The Dashboard
+// button is not asserted here: it renders only for a signed-in user, and a
+// signed-in visitor is redirected off /login before the header is observable.
+test.describe("Header on auth pages", () => {
+  test("AUTH-13 - Auth pages show no header Login button", async ({ page }) => {
+    await page.goto("/login")
+    await expect(page.locator('[data-testid="button-submit"]')).toBeVisible({
+      timeout: 30_000,
+    })
+    await expect(page.locator('a[href="/login"]')).toHaveCount(0)
+
+    await page.goto("/register")
+    await expect(page.locator('button:has-text("Sign Up")')).toBeVisible({
+      timeout: 30_000,
+    })
+    // The form's own "Already have an account? Login" link stays; the header's
+    // must not, so exactly one /login link may exist and it is that one
+    await expect(page.locator('a[href="/login"]')).toHaveCount(1)
+    await expect(
+      page.locator('p:has-text("Already have an account?") a[href="/login"]'),
+    ).toHaveCount(1)
   })
 })
