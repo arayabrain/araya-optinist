@@ -890,6 +890,7 @@ const DataviewRecords = ({
         ?.response?.data?.detail
       enqueueSnackbar(detail ?? "Failed to publish experiment", {
         variant: "error",
+        style: { whiteSpace: "pre-line" },
       })
     }
   }
@@ -1030,6 +1031,7 @@ const DataviewRecords = ({
         ?.response?.data?.detail
       enqueueSnackbar(detail ?? "Failed to publish experiments", {
         variant: "error",
+        style: { whiteSpace: "pre-line" },
       })
     }
   }
