@@ -248,8 +248,7 @@ class TestWebhookStatusReportsWhoseFaultItWas:
 
         assert response.status_code >= 500, (
             f"an internal failure answered {response.status_code}, reporting our "
-            f"own outage as the caller's fault: it stays out of the 5xx alarm "
-            f"and the delivery log points at Stripe's payload, not our stack"
+            "own outage as the caller's fault and keeping it out of the 5xx alarm"
         )
 
     def test_an_unexpected_exception_during_dispatch_is_5xx(self, client):

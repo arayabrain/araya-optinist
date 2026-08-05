@@ -3,7 +3,7 @@
 ## Executive Summary
 
 - **Maps every row** of the `Araya-Optinist System Test Cases Template` sheets to the automated test that covers it, so a release tester only hand-verifies the rows marked manual
-- **Ten sheets, 294 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
+- **Ten sheets, 295 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
 - **Not one suite** - coverage is spread across Playwright e2e, jest, and pytest; the notation below says which
 - **System sheets only** - the `Araya-OptiNiSt Release Test Cases Template` sheets (`BT-1xx` .. `BT-11xx`) are a separate scheme mapped in `infrastructure/documentation/RELEASE_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the `6204` concurrency race
@@ -42,12 +42,12 @@ Test levels used in the premium tables:
 | 03 Account Profile & Management  | 41      | 41        | 0       |
 | 04 Storage & Limits              | 48      | 37        | 11      |
 | 05 Workflow & Execution          | 46      | 44        | 2       |
-| 06 Premium Features              | 8       | 4         | 4       |
+| 06 Premium Features              | 8       | 5         | 3       |
 | 06-2 Premium Assignment          | 38      | 37        | 1       |
 | 07 Dataview                      | 26      | 26        | 0       |
 | 08 Public Instance               | 33      | 19        | 14      |
 | 09 Stripe Prdct Data Sync & Tax  | 36      | 9         | 27      |
-| **Total**                        | **408** | **294**   | **114** |
+| **Total**                        | **408** | **295**   | **113** |
 
 **Counting rule.** A row counts as automated if its `Automated by` cell names a
 test, including rows marked `(partial)` - the partial label narrows *what* is
@@ -395,6 +395,13 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 607  | Published experiment via public instance (lazy S3)     | -                                                                                                                                                                 | manual (real-AWS cross-instance)                                                                      |
 | 608  | Data survives migration to another instance            | migration decision logic: `TestMigrationWorkflowGuard`, `TestIdleUserSelectorExcludesActiveWorkflows`, `TestInlineMigrationOnAdoption`                            | guard logic automated (L1); the real cross-instance S3 recovery is manual (real AWS)                  |
 
+Note on this sheet's count: 603 and 608 count as automated on the same footing as
+any `(partial)` row - each names a real test over a genuine half, with the
+real-AWS half manual. 604 counts as **manual** despite naming one, because
+`WF-04` runs the tutorial on the free tier rather than on the dedicated-instance
+routing the row is about. Automated is therefore 601, 602, 603, 606, 608 and
+manual is 604, 605, 607.
+
 ---
 
 ## 06-2 Premium Assignment (`62xx`) and routing lifecycle
@@ -536,7 +543,7 @@ Notes on this sheet:
   still suppressing the inner detail, which was the original intent of that
   block (added in `c883b9bfb`, when both of the handler's own raises were already
   400). `TestWebhookStatusReportsWhoseFaultItWas` pins both directions: an
-  unsigned body stays 400, an internal failure is 5xx, and a non-actionable 400
-  from the dispatcher is not promoted into a 5xx that pages.
+  internal failure and an unhandled exception answer 5xx, while a caller-side
+  400 and the 404 lookup race keep their own status rather than being promoted.
 - **Tax coverage now exists but is input-side only.** Stripe's tax engine is not
   ours to assert; what these tests pin is every input we hand it.
