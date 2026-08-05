@@ -9,6 +9,7 @@ from datetime import datetime
 from glob import glob
 from typing import Dict, List
 
+import yaml
 from fastapi import HTTPException, status
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
@@ -70,10 +71,22 @@ class WorkflowResult:
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
         """
-        expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
-
         # validate args
         if not observe_node_ids:
+            return {}
+
+        try:
+            expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+        except (AssertionError, ValueError, KeyError, yaml.YAMLError):
+            # No usable status yet, which during polling is not an error: the
+            # process can die before writing one, or mid-write and leave a torn
+            # file. Answering no results keeps the poller polling rather than
+            # 500ing in a loop. observe_overall() deliberately does not do this -
+            # at finalization an unreadable config is a real failure.
+            logger.debug(
+                f"experiment.yaml is missing or unreadable: "
+                f"[{self.workspace_id}/{self.unique_id}]"
+            )
             return {}
 
         # check for workflow errors

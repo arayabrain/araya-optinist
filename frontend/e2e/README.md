@@ -95,6 +95,7 @@ simple `KEY=VALUE` lines). Nothing is ever committed.
 | `TEST_USER_EMAIL` / `TEST_USER_PASSWORD`           | for logged-in tests               | free-plan account; without it only public/validation tests run, the rest skip                                                                                                                                                      |
 | `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD`     | optional                          | enables SUB-04/05 (premium subscription state)                                                                                                                                                                                     |
 | `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..23 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
+| `TEST_ADMIN_EMAIL` / `TEST_ADMIN_PASSWORD`         | optional, local stack only        | enables ADMIN-01..12 (Account Manager). Defaults to `e2e_ci_admin@test.com` and the free user's password. The spec registers this account itself and promotes it to admin with one `user_roles` UPDATE, because registration always lands as an operator — use a dedicated address |
 | `BASE_URL`                                         | default `http://localhost:3000`   | frontend under test                                                                                                                                                                                                                |
 | `API_URL`                                          | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls                                                                                                                                                                                               |
 | `RUN_SLOW`                                         | optional                          | include the `@slow` workflow-run tests                                                                                                                                                                                             |
@@ -161,6 +162,7 @@ an empty config file and the backend fails to boot — the run then crawls to th
 | `E2E_STUDIO_ENV`                                       | `studio/config/.env`                       | backend/DB config; strip personal AWS keys |
 | `E2E_TEST_USER_EMAIL` / `E2E_TEST_USER_PASSWORD`       | `TEST_USER_*` env                          | free-plan CI user (bootstrap registers it) |
 | `E2E_TEST_PREMIUM_EMAIL` / `E2E_TEST_PREMIUM_PASSWORD` | `TEST_PREMIUM_*` env                       | premium CI user                            |
+| (none)                                                 | `TEST_LIFECYCLE_*`, `TEST_ADMIN_*` env     | fixed addresses reusing `E2E_TEST_USER_PASSWORD`; both specs bootstrap their own account, so no new secret is needed |
 | `SUBSCRIPTION_PLANS_CONFIG` (variable, not secret)     | plan-seed step                             | pulled from the dev task definition        |
 
 The lifecycle user needs no secret — the workflow hardcodes
@@ -231,6 +233,7 @@ Understanding these makes failures much easier to read:
 | `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
 | `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
 | `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
+| `12-admin`         | ADMIN-01..12 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, and one real deletion of a throwaway account. Local stack only |
 
 ## Coverage maps
 

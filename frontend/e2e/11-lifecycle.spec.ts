@@ -1,4 +1,3 @@
-import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
@@ -7,12 +6,19 @@ import { test, expect, Page, request } from "@playwright/test"
 import {
   apiUrl,
   authHeaders,
+  confirmDialog,
   ensureTutorialRecords,
+  localStackSkipReason,
   login,
   logout,
   mockPremiumAssignment,
   openWorkspace,
   reproduceTutorial,
+  REPO_ROOT,
+  runInBackend,
+  runSql,
+  sqlLiteral,
+  verifyEmail,
 } from "./helpers"
 
 // Full subscription/storage warning lifecycle on the LOCAL stack only. The test
@@ -57,28 +63,7 @@ let realUsage = 0
 const overQuota = () => Math.floor(realUsage / 1.1) // usage ≈ 110%
 const nearQuota = () => Math.floor(realUsage / 0.95) // usage ≈ 95%
 
-const REPO_ROOT = path.resolve(__dirname, "../..")
-const COMPOSE = "docker compose -f docker-compose.dev.multiuser.yml"
-
-function runSql(sql: string): string {
-  return execSync(
-    `${COMPOSE} exec -T db sh -c ` +
-      `'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"'`,
-    { cwd: REPO_ROOT, input: sql, stdio: ["pipe", "pipe", "pipe"] },
-  )
-    .toString()
-    .trim()
-}
-
-function runInBackend(cmd: string, input?: string) {
-  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
-    cwd: REPO_ROOT,
-    stdio: ["pipe", "pipe", "pipe"],
-    input,
-  })
-}
-
-const userId = `(SELECT id FROM users WHERE email = '${USER.email.replace(/'/g, "''")}')`
+const userId = `(SELECT id FROM users WHERE email = '${sqlLiteral(USER.email)}')`
 
 // Primes the cached value so the warning check agrees with the ballast even
 // before the login-time refresh has run (20-minute freshness window)
@@ -116,19 +101,6 @@ function ensureBallast(bytes = BALLAST) {
 
 function removeBallast() {
   runInBackend(`rm -f ${ballastPath()}`)
-}
-
-function verifyEmail(email: string) {
-  runInBackend(
-    "poetry run python -",
-    `
-import firebase_admin
-from firebase_admin import auth, credentials
-cred = credentials.Certificate("studio/config/auth/firebase_private.json")
-firebase_admin.initialize_app(cred)
-auth.update_user(auth.get_user_by_email("${email}").uid, email_verified=True)
-`,
-  )
 }
 
 // Register + verify the dedicated lifecycle user if it doesn't exist yet,
@@ -194,7 +166,8 @@ async function loginKeepWarnings(page: Page) {
   await login(page, USER.email, USER.password, false)
 }
 
-const dialog = (page: Page) => page.locator('[role="dialog"]')
+// Same locator the admin spec uses
+const dialog = confirmDialog
 
 test.describe.serial("Subscription/storage warning lifecycle", () => {
   let skipReason = ""
@@ -204,18 +177,8 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       skipReason = "TEST_LIFECYCLE_EMAIL/TEST_LIFECYCLE_PASSWORD not set"
       return
     }
-    const base = process.env.BASE_URL || "http://localhost:3000"
-    if (!/localhost|127\.0\.0\.1/.test(base)) {
-      skipReason =
-        "lifecycle spec mutates the local docker DB; BASE_URL is not local"
-      return
-    }
-    try {
-      runSql("SELECT 1;")
-    } catch {
-      skipReason = "local docker db container not reachable"
-      return
-    }
+    skipReason = localStackSkipReason()
+    if (skipReason) return
     // The local-testing default in studio/config/.env disables every storage
     // lookup backend-side (deployed envs run with it false), so no warning
     // under test can ever fire while it's on

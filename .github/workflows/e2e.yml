@@ -48,6 +48,9 @@ jobs:
           printf '%s' "$FIREBASE_PRIVATE_JSON" > studio/config/auth/firebase_private.json
           printf '%s' "$FIREBASE_CONFIG_JSON" > studio/config/auth/firebase_config.json
           printf '%s' "$STUDIO_ENV" > studio/config/.env
+          # The suite registers throwaway @test.com users, and Firebase would
+          # send real verification mail that bounces into a human's mailbox
+          printf '\nUSE_FIREBASE_EMAIL=False\n' >> studio/config/.env
         env:
           FIREBASE_PRIVATE_JSON: ${{ secrets.E2E_FIREBASE_PRIVATE_JSON }}
           FIREBASE_CONFIG_JSON: ${{ secrets.E2E_FIREBASE_CONFIG_JSON }}
@@ -107,6 +110,12 @@ jobs:
           TEST_PREMIUM_PASSWORD: ${{ secrets.E2E_TEST_PREMIUM_PASSWORD }}
           TEST_LIFECYCLE_EMAIL: e2e_ci_lifecycle@test.com
           TEST_LIFECYCLE_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+          # 12-admin.spec.ts registers this account itself and promotes it with
+          # one UPDATE against user_roles: registration always lands as an
+          # operator (crud_users.create_user overwrites role_id whenever the
+          # address is unverified), so there is no API path to an admin.
+          TEST_ADMIN_EMAIL: e2e_ci_admin@test.com
+          TEST_ADMIN_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
 
       - name: Report tests that did not run
         if: always()

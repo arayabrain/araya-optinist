@@ -1,9 +1,10 @@
-import * as fs from "fs"
-import * as path from "path"
+import { request } from "@playwright/test"
 
-import { chromium, request } from "@playwright/test"
-
-import { authHeaders } from "./helpers"
+import {
+  authHeaders,
+  FREE_STORAGE_STATE,
+  saveStorageState,
+} from "./helpers"
 
 // 1. Checks the credentials over the API, so a bad password fails here.
 // 2. Deletes workspaces named e2e-* left behind by previous runs (leftover
@@ -34,7 +35,7 @@ export default async function globalSetup() {
     const { access_token, ex_token } = await loginRes.json()
     const auth = authHeaders(access_token, ex_token)
 
-    await saveLoginState(baseURL, email, password)
+    await saveStorageState(FREE_STORAGE_STATE, email, password, baseURL)
 
     const listRes = await api.get("/workspaces?offset=0&limit=100", {
       headers: auth,
@@ -55,33 +56,5 @@ export default async function globalSetup() {
     }
   } finally {
     await api.dispose()
-  }
-}
-
-async function saveLoginState(
-  baseURL: string,
-  email: string,
-  password: string,
-) {
-  const statePath = path.join(__dirname, ".auth", "free.json")
-  fs.mkdirSync(path.dirname(statePath), { recursive: true })
-  const browser = await chromium.launch()
-  try {
-    const page = await browser.newPage({ baseURL })
-    for (let attempt = 1; ; attempt++) {
-      await page.goto("/login")
-      await page.locator('[data-testid="email"]').fill(email)
-      await page.locator('[data-testid="password"]').fill(password)
-      await page.locator('[data-testid="button-submit"]').click()
-      try {
-        await page.waitForURL(/\/dashboard/, { timeout: 60_000 })
-        break
-      } catch (e) {
-        if (attempt >= 3) throw e
-      }
-    }
-    await page.context().storageState({ path: statePath })
-  } finally {
-    await browser.close()
   }
 }

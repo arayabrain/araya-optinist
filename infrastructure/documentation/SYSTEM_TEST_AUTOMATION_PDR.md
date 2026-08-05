@@ -1,6 +1,6 @@
 # System Test Automation: Preliminary Design Review
 
-**Status:** PR 1 landed (30 rows); PR 2 written and under review (42 rows); PR 3 (the admin surface) outstanding. Open questions resolved 2026-08-04 (see [Resolved questions](#resolved-questions)) and PR 2's five deviations recorded in [What PR 2 did differently](#what-pr-2-did-differently)
+**Status:** all three PRs written. PR 1 landed (30 rows); PR 2 under review (42 rows); PR 3 written (43 rows, and the one production fix Q1 found). Open questions resolved 2026-08-04 (see [Resolved questions](#resolved-questions)); the deviations each PR hit are recorded in [What PR 2 did differently](#what-pr-2-did-differently) and [What PR 3 did differently](#what-pr-3-did-differently)
 **Baseline:** `SYSTEM_TEST_COVERAGE.md` as of 2026-08-03, after the red-team audit of all mapped rows
 **Stacked on:** [PR #786](https://github.com/arayabrain/araya-optinist/pull/786), so that WP15 and WP16 are readable as code rather than as claims
 **Scope:** the `Araya-Optinist System Test Cases Template` rows currently marked manual
@@ -523,7 +523,7 @@ absent.
 
 | Row    | Work                                                                                                                                                                                               |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 01/126 | Test the real `studio/app/.../workflow_count_recovery.py` (zero test references today) and assert the `_get_users_for_cleanup` predicates. The cited test covers the Lambda implementation instead |
+| 01/126 | Assert the sweep's predicates, not just its row counts. Note the row's own Action imports `studio/app/.../workflow_count_recovery.py`, which has no callers: the logic moved to the Common User Manager Lambda and that copy was left behind, so the mapping belongs on the Lambda |
 | 02/272 | Assert the reset via the upsert or `call_args`, not the event field the handler echoes back                                                                                                        |
 | 02/299 | The Premium-branch deletion warning copy. `LC-16` registers a free user, so the premium lines are unreachable                                                                                      |
 | 03/338 | A login attempt against a deactivated user asserting 401/403                                                                                                                                       |
@@ -563,8 +563,8 @@ alone appeared in four of them.
 | PR  | Branch                        | Contents                                                     | Rows | Reviewer lens                                                                                                     |
 | --- | ----------------------------- | ------------------------------------------------------------ | ---- | ----------------------------------------------------------------------------------------------------------------- |
 | 1   | `feature/system-test-automation-1` (**landed**) | Remediation + WP5, WP6, WP7, WP9, WP10, WP13, WP17, WP18, WP19 | 30   | pytest, terraform config, and the repairs. No new harness. Carries one production fix (`nwb.py`)                  |
-| 2   | `feature/system-test-automation-2` | WP2, WP3, WP4, WP11, WP12, WP14, WP20, WP8                   | 42   | jest and Playwright, all additions to specs that already exist                                                    |
-| 3   | `feature/system-test-automation-3` | WP1 (+ the self-delete fix), WP21                            | 43   | The admin surface. The only PR that changes production code beyond PR 1's `nwb.py` fix                            |
+| 2   | `feature/system-test-automation-2` (**written**) | WP2, WP3, WP4, WP11, WP12, WP14, WP20, WP8                   | 42   | jest and Playwright, all additions to specs that already exist                                                    |
+| 3   | `feature/system-test-automation-3` (**written**) | WP1 (+ the self-delete fix), WP21                            | 43   | The admin surface. The only PR that changes production code beyond PR 1's `nwb.py` fix                            |
 
 30 + 42 + 43 = 115. The missing 8 are WP15's 2 and WP16's 6, already written in
 PR #786 and so counted in the 123 above but not scheduled again; 115 + 8 = 123.
@@ -626,6 +626,98 @@ Also worth recording for PR 3: rows 429 and 440 needed the ballast in
 account is held to the free-tier quota by `_effective_quota_bytes` whatever its
 quota column says, so no amount of dialing `storage_quota_bytes` reaches that
 state.
+
+---
+
+## What PR 3 did differently
+
+Six things came out other than this document specified. Each is a fact about the
+code that the triage got wrong, not a change of plan.
+
+1. **The admin gate is not per route, so WP1's acceptance criterion 1 could not
+   be met as written.** It asks for a 403 "asserted per route rather than once".
+   Each route does take `current_admin: User = Depends(get_admin_user)`, but that
+   parameter is how the route learns who is calling: enforcement is the
+   `dependencies=[Depends(get_admin_user)]` on `include_router`, and **either one
+   alone answers 403**. Removing a single route's parameter is therefore
+   unobservable, and a per-route assertion cannot catch it - verified by mutation,
+   which is how it was found. The tests now do both: a request per route (which
+   fails only when the gate is genuinely gone, from both places) plus an
+   assertion, against the mounted app rather than one router, that every `/admin`
+   route resolves `get_admin_user` in its dependency tree. That second half is
+   the one a newly mounted admin router would fail.
+2. **Rows 311 and 312's real server-side gate is the Pydantic schema, not the
+   Firebase error mapping.** `UserCreate` declares `email: EmailStr` and
+   `password: str = Field(regex=password_regex)`, so both are rejected with 422
+   before `crud_users.create_user` runs; its `INVALID_EMAIL` and `WEAK_PASSWORD`
+   branches are unreachable through the router. The tests pin the schema. And
+   `password_regex` **forbids nothing**: it is three lookaheads over `.{6,255}`,
+   so `abcd1!<` is accepted server-side. The forbidden-character rule the sheet
+   describes is frontend-only. That divergence is recorded in the coverage map
+   rather than asserted, because a test pinning the backend's permissiveness
+   would fail the day someone tightens it.
+3. **Row 338 answers 404, not the 401/403 WP21 predicted.** `authenticate_user`
+   filters `active.is_(True)` in its lookup, so a deactivated account has nothing
+   left to report. The sheet asks for "an appropriate error", which this is.
+4. **WP1's e2e half bootstraps its own admin instead of taking one from the CI
+   script, and Q2's three-line bootstrap edit shrank to one.** Q2 proposed
+   registering a third account in `e2e-bootstrap.sh` and fixing up `user_roles`
+   there. `12-admin.spec.ts` does that itself, the way `11-lifecycle.spec.ts`
+   already bootstraps its own account, so the spec also runs locally rather than
+   only after a CI-only script. The bootstrap change is the one line that deletes
+   the stale Firebase user (dev Firebase persists between runs while the CI DB
+   starts empty), and `e2e.yml` gains a fixed address plus the existing password
+   secret - no new secret.
+5. **Rows 318/319 are jest against the modal, not against the grid.** The row's
+   Edit button lives in the Account Manager grid's last column, which MUI's
+   DataGrid virtualizes away in jsdom (the viewport measures zero wide), so
+   `ModalComponent` is exported and rendered directly. That the modal opens on
+   the right row's values - row 314 - is asserted in `12-admin.spec.ts`, where
+   the viewport is real. This is the only production edit in the PR besides the
+   self-delete guard: one `export` keyword.
+6. **Row 299 is jest, not e2e.** WP21 says `LC-16` registers a free user, so the
+   premium warning lines are unreachable. Reaching them from a real login means a
+   real paid subscription, so the per-tier copy is asserted in
+   `AccountProfile.test.tsx` with the subscription in the store - both the
+   premium lines' presence and their absence for a free and an expired-premium
+   account.
+
+Three items PR 3 first listed as out of scope were then pulled in on request,
+and each turned out to be more than the mechanical change it looked like:
+
+- **`getFilesTree` had no `rejected` case**, so a failed file-tree fetch left
+  `isLoading` set and the progress bar spinning with nothing said. The open
+  question was whether `isLatest` should flip back to `true`; `useFileTree`
+  answers it - it refetches on `!isLatest && !isLoading`, so clearing the loading
+  flag while leaving `isLatest` false would turn one failure into a request loop.
+  It now mirrors `deleteFile.rejected` exactly, and the retry path is the same
+  Select File button that dispatches unconditionally. Writing the test also
+  surfaced that notistack 3 assigns its standalone `enqueueSnackbar` inside
+  `SnackbarProvider`'s constructor, so the real one is undefined in a reducer
+  test - which is why the sibling `deleteFile.rejected` had never been tested.
+- **The SQLite harness is now one module**, `studio/tests/app/common/sqlite_harness.py`,
+  imported by four test files that each carried their own copy of the `@compiles`
+  block and the `ON UPDATE CURRENT_TIMESTAMP` strip. The process-global caveat is
+  documented once, in the one place that causes it. The full app lane is
+  unchanged at 1467 passed, which is what makes it a refactor rather than a
+  change.
+- **A confirmed deletion is now driven through the admin UI** (`ADMIN-08`), on an
+  account the test registers for the purpose. It leaves nothing behind in
+  Firebase, because deleting the Firebase account is step 1 of the pipeline under
+  test. It also found that row 336's `user_roles` expectation does not match the
+  code: `crud_users.delete_user` never deletes from that table, so a tester
+  following the sheet literally would mark the row FAIL. Recorded in the coverage
+  map for a decision rather than silently corrected.
+
+One process note worth carrying forward: **mutation-checking a destructive e2e
+path destroys local state.** Making ADMIN-06's Cancel confirm instead really did
+delete the local free e2e user, Firebase account first. It is recoverable (re-register
+at the same address, which is row 341's behaviour), and the recovery is written
+down at the top of `12-admin.spec.ts`. The same check also found a race in the
+test itself: reading the database straight after Cancel can beat the request it
+is meant to catch, because the modal closes without awaiting the dispatch. Each
+Cancel row now asserts that no write request was issued, with the listing GET as
+the positive control.
 
 ---
 
@@ -692,6 +784,14 @@ CSVs; they are recorded here because they change what the rows mean.
 
 Consequence of 4: no System row now covers a Tutorial 3 run to completion.
 `WF-06` does that, but no sheet row claims it.
+
+5. **Sheet 03, rows 336 and 340** both expected `user_roles` to hold 0 rows after
+   a deletion. `crud_users.delete_user` never touches that table - it deletes
+   `user_preferences` and soft-deletes workspaces, but the role link survives - so
+   a tester following the sheet would have marked both rows FAIL against correct
+   behaviour. Corrected to expect the row to remain, with the reason inline. The
+   link is inert: `users.active` is 0 and every user query filters on it. Found
+   while writing `ADMIN-08` (PR 3).
 
 ## Resolved questions
 
