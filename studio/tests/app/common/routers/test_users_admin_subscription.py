@@ -15,12 +15,6 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import BIGINT as GENERIC_BIGINT
-from sqlalchemy import BigInteger
-from sqlalchemy.dialects.mysql import BIGINT as MYSQL_BIGINT
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
 
 from studio.app.common.core.users import crud_users
 from studio.app.common.models import User as UserModel
@@ -33,18 +27,7 @@ from studio.app.common.schemas.users import (
     SubscriptionAuditSnapshot,
     UserSubscriptionUpdate,
 )
-
-
-# SQLite only autoincrements an INTEGER PRIMARY KEY, not BIGINT.
-# NOTE: @compiles mutates SQLAlchemy's process-global dialect-compiler registry
-# on import, not just this module - every SQLite-backed test in the same process
-# that builds DDL from a BigInteger/BIGINT column will emit INTEGER too.
-@compiles(BigInteger, "sqlite")
-@compiles(GENERIC_BIGINT, "sqlite")
-@compiles(MYSQL_BIGINT, "sqlite")
-def _bigint_as_integer_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
+from studio.tests.app.common.sqlite_harness import sqlite_session
 
 FREE_PLAN = 1
 PREMIUM_PLAN = 2
@@ -233,35 +216,17 @@ class TestSubscriptionAuditSnapshot:
 @pytest.fixture()
 def db():
     """In-memory SQLite session with all tables created."""
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # Only the tables this logic touches — the full metadata includes tables
-    # with MySQL-specific DDL that SQLite cannot create.
-    tables = [
-        UserModel.__table__,
-        UserSubscription.__table__,
-        UserStorageUsage.__table__,
-        SubscriptionAuditLog.__table__,
-    ]
-    # Drop the MySQL "ON UPDATE CURRENT_TIMESTAMP" default (invalid SQLite DDL).
-    # These Table objects are process-global, so restore the defaults afterward.
-    stripped = []
-    for table in tables:
-        for col in table.columns:
-            arg = getattr(col.server_default, "arg", None)
-            if arg is not None and "ON UPDATE" in str(arg):
-                stripped.append((col, col.server_default))
-                col.server_default = None
-    try:
-        SQLModel.metadata.create_all(engine, tables=tables)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for col, default in stripped:
-            col.server_default = default
+    with sqlite_session(
+        [
+            # Only the tables this logic touches - the full metadata includes
+            # tables with MySQL-specific DDL that SQLite cannot create.
+            UserModel.__table__,
+            UserSubscription.__table__,
+            UserStorageUsage.__table__,
+            SubscriptionAuditLog.__table__,
+        ]
+    ) as session:
+        yield session
 
 
 @pytest.fixture()

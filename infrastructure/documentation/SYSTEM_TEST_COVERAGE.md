@@ -3,11 +3,11 @@
 ## Executive Summary
 
 - **Maps every row** of the `Araya-Optinist System Test Cases Template` sheets to the automated test that covers it, so a release tester only hand-verifies the rows marked manual
-- **Ten sheets, 257 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
+- **Ten sheets, 294 of 408 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
 - **Not one suite** - coverage is spread across Playwright e2e, jest, and pytest; the notation below says which
 - **System sheets only** - the `Araya-OptiNiSt Release Test Cases Template` sheets (`BT-1xx` .. `BT-11xx`) are a separate scheme mapped in `infrastructure/documentation/RELEASE_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the `6204` concurrency race
-- **Largest remaining gap is the admin Account Manager UI (sheet 03)**, which has no e2e or component coverage at all. Sheet 09's tax configuration is now covered on the input side (see that sheet's notes)
+- **Largest remaining gaps are sheet 09 (9 of 36) and sheet 02 (51 of 105)**, both of them Stripe-hosted UI or live Stripe Dashboard state. Sheet 03, previously the largest gap, is now fully mapped (see that sheet's notes for the two rows that stay `(partial)`)
 
 ---
 
@@ -39,7 +39,7 @@ Test levels used in the premium tables:
 | -------------------------------- | ------- | --------- | ------- |
 | 01 Authentication & Registration | 27      | 26        | 1       |
 | 02 Subscription & Payment        | 105     | 51        | 54      |
-| 03 Account Profile & Management  | 41      | 4         | 37      |
+| 03 Account Profile & Management  | 41      | 41        | 0       |
 | 04 Storage & Limits              | 48      | 37        | 11      |
 | 05 Workflow & Execution          | 46      | 44        | 2       |
 | 06 Premium Features              | 8       | 4         | 4       |
@@ -47,7 +47,7 @@ Test levels used in the premium tables:
 | 07 Dataview                      | 26      | 26        | 0       |
 | 08 Public Instance               | 33      | 19        | 14      |
 | 09 Stripe Prdct Data Sync & Tax  | 36      | 9         | 27      |
-| **Total**                        | **408** | **257**   | **151** |
+| **Total**                        | **408** | **294**   | **114** |
 
 **Counting rule.** A row counts as automated if its `Automated by` cell names a
 test, including rows marked `(partial)` - the partial label narrows *what* is
@@ -82,7 +82,7 @@ double-counted or missing from their sheet entirely.
 | 122                                                   | Free logout writes `free_user_assignments` + `instance_usage_log`                                                                                              | `test_users_me_logout.py::TestLogoutFreeUser`                                           |
 | 123                                                   | Basic cleanup after logout                                                                                                                                     | `test_cleanup_job.py::TestCleanupUserData` (partial - the S3 / ECS Exec half is manual) |
 | 125                                                   | Re-login during grace clears `logged_out_at`                                                                                                                   | `test_cleanup_job_relogin.py`                                                           |
-| 126                                                   | Instance termination during an active workflow                                                                                                                 | `test_common_user_manager.py::TestRecoverStaleWorkflowCounts`                           |
+| 126                                                   | Instance termination during an active workflow                                                                                                                 | `test_common_user_manager.py::TestRecoverStaleWorkflowCountsPredicates` (which rows the deployed sweep will and will not reset); `test_cleanup_job.py::TestGetUsersForCleanupGraceWindow` (the `active_workflow_count = 0` predicate that blocks the user in step 2) |
 | 116                                                   | `users` row exists and is active after registration                                                                                                            | `test_registration_db_state.py::TestRegistrationWritesAnActiveUser` (partial - the ORM rows `create_user` builds, not a real MySQL round trip)                     |
 | 117                                                   | New user starts on Free with the 5GB quota                                                                                                                     | `test_registration_db_state.py::TestRegistrationStartsTheUserOnFree` (partial - as 116)                    |
 | 124                                                   | Cleanup grace window after logout                                                                                                                              | `test_cleanup_job.py::TestGetUsersForCleanupGraceWindow` (partial - query, not real MySQL) |
@@ -101,6 +101,16 @@ plus the three sibling safety predicates (`active_workflow_count = 0`,
 through real MySQL and observing the deletion. The previously cited
 `TestGetUsersForCleanupInstanceFilter` pinned only the instance filter in that
 query, never the interval.
+
+Note on 126: the row's Action imports
+`studio.app.common.core.workflow.workflow_count_recovery`, which has no callers
+anywhere - the logic moved to the Common User Manager Lambda and the studio copy
+was left behind. Its rule is also not the deployed one: it resets any counter
+whose workflow started over 30 minutes ago, where the Lambda requires an inactive
+heartbeat *and* evidence the workflow ended, precisely so a legitimate multi-hour
+run survives. The mapping therefore points at the Lambda, and the predicates
+deciding which rows it touches are now asserted rather than just its row counts.
+What stays manual is steps 1 and 4 against real MySQL on a real instance.
 
 ---
 
@@ -122,10 +132,11 @@ query, never the interval.
 | 254..259                                                                            | Downgrade modal: title, content, retention notice, buttons, No aborts                                                                                                                       | LC-12 (255 / 258 partial - the exact title string and button styling are not asserted)   |
 | 261..263                                                                            | Cancelled banner, plan status, Continue Plan                                                                                                                                                | LC-13                                                                                    |
 | 265                                                                                 | `scheduled_downgrade` flag set                                                                                                                                                              | `test_webhook.py::test_subscription_updated_mirrors_scheduled_downgrade`                 |
-| 272                                                                                 | DB after reactivation                                                                                                                                                                       | `test_webhook.py::test_subscription_updated_resets_scheduled_downgrade_when_uncancelled` |
+| 272                                                                                 | DB after reactivation                                                                                                                                                                       | `test_subscription_state_transitions.py::TestReactivationIsMirroredOntoTheRow` (the row after the webhook, both directions, against a real session) |
 | 287                                                                                 | DB after renewal                                                                                                                                                                            | `test_webhook.py::TestInvoicePaymentSucceeded`                                           |
 | 297                                                                                 | Expired user shows both Upgrade and Manage                                                                                                                                                  | LC-06                                                                                    |
-| 299..302                                                                            | Deletion warning (premium / free), option display, execute                                                                                                                                  | LC-16 (299..301 partial - one confirmation dialog is asserted, not the per-tier copy)    |
+| 299                                                                                 | Deletion warning as Premium                                                                                                                                                                 | `AccountProfile.test.tsx` (the four premium warning lines, and their absence for a free and an expired-premium account) |
+| 300..302                                                                            | Deletion warning (free), option display, execute                                                                                                                                            | LC-16 (300..301 partial - one confirmation dialog is asserted, not the per-tier copy)    |
 | 303                                                                                 | Post-deletion user check                                                                                                                                                                    | `test_user_deletion.py`                                                                  |
 | 304                                                                                 | Subscription preserved after deletion                                                                                                                                                       | `test_user_deletion.py` (partial)                                                        |
 | 289                                                                                 | Limit Grace boundary: `plan_id` stays 2, expiration past but inside the 30-day grace                                                                                                         | `test_crud_users_context.py` (`..._grace_period_last_day`, `..._one_day_past_grace_is_expired`, `..._expiring_today_enters_grace`) |
@@ -176,16 +187,98 @@ Notes on the rows added here:
 
 ## 03 Account Profile & Management (301-341)
 
-| Case               | Subject                                                                                                                                                                                                               | Automated by                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 336                | Confirm deletion                                                                                                                                                                                                      | `test_user_deletion.py::test_delete_user_success`                                                     |
-| 338                | Deleted user cannot log in                                                                                                                                                                                            | `test_user_deletion.py::test_contract_firebase_deleted_blocks_login`                                  |
-| 339                | Stripe subscription cancelled on delete                                                                                                                                                                               | `test_user_deletion.py::test_delete_user_stripe_failure_continues` (partial - failure tolerance only) |
-| 340                | User data cleaned up                                                                                                                                                                                                  | `test_user_deletion.py` (partial)                                                                     |
-| 301..335, 337, 341 | the entire Account Manager admin UI (access gating, user list, pagination, create / edit user and their validation), change-password modal, inline name editing, cannot-delete-self, re-registering a deleted address | manual                                                                                                |
+| Case          | Subject                                                    | Automated by                                                                                                                                                                                     |
+| ------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 301           | Login with an admin account reaches the Account Manager    | ADMIN-01                                                                                                                                                                                         |
+| 302           | Account Manager menu entry visible to an admin             | ADMIN-02                                                                                                                                                                                         |
+| 303           | A non-admin does not see the menu entry                    | ADMIN-03 (the menu, with the drawer's other entries asserted first); `test_users_admin.py::TestOnlyAnAdminReachesTheAccountManager` (the API the entry would lead to)                              |
+| 304           | Direct URL access as a non-admin                           | ADMIN-03 (redirected to `/dashboard`); `test_users_admin.py::TestOnlyAnAdminReachesTheAccountManager` (403 from every route, plus the mounted-route declaration check)                             |
+| 305           | User list columns                                          | ADMIN-01 (the eight column headers the sheet names, matched exactly so `Name` cannot resolve to `Bucket name`); `test_users_admin.py::TestUserListColumns` (their values in the response)          |
+| 306           | Pagination                                                 | `test_users_admin.py::TestUserListPagination` (limit/offset walk the list without repeating); ADMIN-12 (the page's own rows-per-page control, and a sort on a joined column)                       |
+| 307, 308      | Create an admin / operator user                            | `test_users_admin.py::TestCreateUser` (role honoured, `active = 1`, one Free `subscription_users` row with the 5GB quota, and the account pre-verified so it can log in) |
+| 309           | Create-user required fields                                | `test_users_admin.py::TestCreateUserValidation` (the schema per field, and 422 from the route)                                                                                                    |
+| 310           | Create-user duplicate email                                | `test_users_admin.py::TestCreateUserValidation::test_a_duplicate_email_is_reported_and_writes_nothing`                                                                                            |
+| 311           | Create-user invalid email                                  | `test_users_admin.py::TestCreateUserValidation` (`EmailStr` rejects it at the schema; see the note below)                                                                             |
+| 312           | Create-user weak password                                  | `test_users_admin.py::TestCreateUserValidation` (each rule of `password_regex`, and the allowed special characters against a literal list)                                                        |
+| 313           | Cancel creation                                            | ADMIN-05 (no write request, and no row for the address)                                                                                                                                           |
+| 314           | Open the Edit Account modal                                | ADMIN-04 (opens on the row's own name, role and email); `AccountEditModal.test.tsx`                                                                                                                  |
+| 315, 316, 317 | Update name / role / email                                 | `test_users_admin.py::TestUpdateUser` (the role row is replaced rather than added to, and the new address is pushed to Firebase as well as the DB)                                                 |
+| 318           | Edit-user empty-name validation                             | `AccountEditModal.test.tsx`                                                                                                                                                                          |
+| 319           | Edit-user invalid-email validation                          | `AccountEditModal.test.tsx`                                                                                                                                                                          |
+| 320           | Cancel edit                                                | ADMIN-04 (no write request, and the stored name unchanged); `AccountEditModal.test.tsx`                                                                                                              |
+| 321           | Subscription status column                                 | `test_users_admin.py::TestUserListColumns` (Free / Premium / Limit Grace / Expired derived from plan and expiration, plus the days-remaining figure)                                              |
+| 322           | Storage usage column                                       | `test_users_admin.py::TestUserListColumns` (used, quota, and percent against two different quotas)                                                                                                |
+| 323           | A demoted admin loses access                               | `test_users_admin.py::TestADemotedAdminLosesAccess` (the role is re-read per request, and the gate refuses it)                                                                                    |
+| 324           | Login as the operator user                                 | ADMIN-03 (reaches the dashboard, and has no admin surface)                                                                                                                                       |
+| 325           | Open the change-password modal                             | `ChangePasswordModal.test.tsx`                                                                                                                                                                   |
+| 326           | Change-password empty fields                               | `ChangePasswordModal.test.tsx`                                                                                                                                                                   |
+| 327           | Wrong current password                                     | `AccountProfile.test.tsx` (the server is the only thing that knows, so this is the page's rejection branch)                                                                                       |
+| 328           | Change-password mismatch                                   | `ChangePasswordModal.test.tsx`                                                                                                                                                                    |
+| 329           | Successful password change                                 | `AccountProfile.test.tsx` (the confirmation and the modal closing)                                                                                                                                |
+| 330, 331, 332 | Inline name edit: save, cancel, empty                      | `AccountProfile.test.tsx`                                                                                                                                                                        |
+| 333           | Delete button available                                    | ADMIN-06                                                                                                                                                                                          |
+| 334           | Delete confirmation appears                                | ADMIN-06 (it names the account, and the confirm button stays disabled until `DELETE` is typed exactly - `delete` does not unlock it)                                                              |
+| 335           | Cancel deletion                                            | ADMIN-06 (no write request, the row still active, and the account still logs in)                                                                                                                  |
+| 336           | Confirm deletion                                           | ADMIN-08 (the admin flow end to end on a throwaway account: `active` flips to 0 and the deletion record reaches `completed`); `test_user_deletion.py::test_delete_user_success` (the per-step writes) |
+| 337           | Cannot delete self                                         | `test_users_admin.py::TestSelfDeleteIsRejectedServerSide` (403 with its message over HTTP, before `crud_users.delete_user` is reached, and `/users/me` deletion still working); ADMIN-07 (the button's absence, located by the button's own label rather than the icon library's testid) |
+| 338           | Deleted user cannot log in                                 | `test_deactivated_user_login.py`                                                                                                                                                                  |
+| 339           | Stripe subscription cancelled on delete                    | `test_user_deletion.py::test_delete_user_stripe_failure_continues` (partial - failure tolerance only)                                                                                             |
+| 340           | User data cleaned up                                       | `test_user_deletion.py` (partial)                                                                                                                                                                |
+| 341           | Re-register a deleted address                              | `test_users_admin.py::TestReRegisteringADeletedAddress` (two rows at one address, the old inactive with its original uid)                                                                          |
+| (unnumbered)  | Proxy SignIn confirmation                                  | ADMIN-09 (the dialog names the target account and id; Cancel issues no request and leaves the admin signed in as themselves). Completing the switch stays manual - it would sign the worker in as another user for the rest of the serial group |
+| (unnumbered)  | Edit Subscription modal                                    | ADMIN-10 (Save gated on a non-whitespace reason, the quota clamped to 1-9999 GB, Cancel writing nothing); `test_users_admin_subscription.py` (what a saved change writes)                          |
+| (unnumbered)  | Dashboard tile to the Account Manager                      | ADMIN-11 (a second, independent admin gate: present and navigating for an admin, absent for an operator, with the other tiles asserted first)                                                      |
+| (unnumbered)  | Single-user admin fetch and update over HTTP                | `test_users_admin.py::TestGetOneUser` (role joined in, 404 for absent, soft-deleted and other-organization ids); `TestUpdateUserOverHttp` (the route's own id and organization wiring)              |
+| (unnumbered)  | Admin list search and sort                                 | `test_users_admin.py::TestUserListSearch` (name and email fragments intersect rather than union, and an unmatched fragment is empty rather than everything); `TestUserListSorting` (the default order, and `role` / `role_id` mapped onto their joined tables) |
 
-This sheet is the largest automation gap in the suite: the admin Account Manager
-has no e2e or component coverage at all.
+Notes on this sheet:
+
+- **The admin gate is not per route.** Every route takes
+  `current_admin: User = Depends(get_admin_user)`, but that parameter is how the
+  route learns who is calling; enforcement is the
+  `dependencies=[Depends(get_admin_user)]` on `include_router`. Either alone
+  answers 403, so the per-route requests assert behaviour on every path and a
+  separate test asserts the declaration on every mounted `/admin` route - which
+  is what a newly mounted admin router would miss.
+- **Row 311's real gate is the schema, not the Firebase mapping.** `UserCreate`
+  declares `email: EmailStr`, so an invalid address is rejected with 422 before
+  `crud_users.create_user` runs; the `INVALID_EMAIL` branch inside it is
+  unreachable through the router and is deliberately not pinned.
+- **Row 312: the backend requires an allowed special character but forbids
+  nothing.** `password_regex` is three lookaheads over `.{6,255}`, so
+  `abcd1!<` satisfies it. The forbidden-character rule the sheet describes is
+  frontend-only (`regexIgnoreS`, covered by `const/__tests__/Auth.test.ts` and
+  AUTH-15). Recorded rather than asserted, because a test pinning the backend's
+  permissiveness would fail the day someone tightens it.
+- **Row 338's status is 404, not 401/403.** `authenticate_user` filters
+  `active.is_(True)` in the lookup, so a deactivated account has nothing left to
+  report; the sheet asks for "an appropriate error" and this is it. The previous
+  mapping, `test_contract_firebase_deleted_blocks_login`, asserted that
+  Firebase's `delete_user` was *called*, which says nothing about a later login.
+- **ADMIN-01..12 run on the local docker stack only.** There is no API path to an
+  admin: `/register` is the only unauthenticated route that creates a user, and
+  `crud_users.create_user` overwrites `role_id` with operator whenever the
+  address is unverified (pinned by
+  `test_users_admin.py::test_self_registration_cannot_ask_for_a_role`), so a
+  client cannot self-elevate. The spec registers its own account and promotes it
+  with one `user_roles` UPDATE, the same fix-up the CI bootstrap already does for
+  the premium user's plan.
+- **Rows 336 and 340's `user_roles` check was wrong, and the sheet is corrected.**
+  Both expected `SELECT * FROM user_roles WHERE user_id = <id>` to return 0 rows
+  after a deletion, but `crud_users.delete_user` never touches that table - only
+  `set_role` deletes from it, and the deletion path removes `user_preferences`
+  rather than the role link. A tester following the sheet literally would have
+  marked both rows FAIL. The surviving link is inert (`users.active` is 0 and
+  every user query filters on it), so the sheet now expects the row to remain and
+  says why; ADMIN-08 asserts what the code actually does. The other four checks in
+  that block - `active = 0`, the deletion record reaching `completed`,
+  soft-deleted workspaces, and hard-deleted experiment records - were verified
+  against the code and left alone.
+- **ADMIN-08 is the only destructive test in the spec**, and it registers its own
+  account to destroy. That is also why it leaves nothing behind in Firebase:
+  deleting the Firebase account is step 1 of the pipeline under test, so the
+  throwaway cleans up the half that would otherwise accumulate week on week.
+  LC-16 covers the same flow from the user's own Account page.
 
 ---
 
@@ -258,7 +351,7 @@ Two sheet corrections applied with these rows:
 | 508                | Import sample data                                                                      | WF-02                                                                                                                                                                                                                                    |
 | 509                | Reproduce workflow                                                                      | WF-03                                                                                                                                                                                                                                    |
 | 510 / 515          | Run Tutorial 1 / 2                                                                      | WF-04 / WF-05 (`@slow`)                                                                                                                                                                                                                  |
-| 516                | Run button cooldown (Tutorial 3)                                                        | WF-08 (partial - asserts only the snackbar dedupe on rapid clicks; the 3-second run-POST debounce is explicitly not covered, per the comment in `03-workflow.spec.ts`)                                                                   |
+| 516                | Run button cooldown (Tutorial 3)                                                        | `RunButtons.test.tsx` ("Run request cooldown": repeated clicks send one request, and the window's length is pinned by a click either side of it). WF-08 still covers the snackbar's own duplicate suppression |
 | 511 / 512          | Open Visualize; confirm current workflow                                                | VIS-01                                                                                                                                                                                                                                   |
 | 513                | Add Cell ROI plot                                                                       | VIS-02                                                                                                                                                                                                                                   |
 | 514                | Play visualize image                                                                    | VIS-03                                                                                                                                                                                                                                   |
@@ -268,7 +361,7 @@ Two sheet corrections applied with these rows:
 | 523 / 524          | Delete single / multiple records                                                        | REC-04 / REC-09                                                                                                                                                                                                                          |
 | 525                | HDF5 structure dialog                                                                   | UPL-02                                                                                                                                                                                                                                   |
 | 527                | CSV parameter dialog                                                                    | UPL-01                                                                                                                                                                                                                                   |
-| 528                | Remote file sync on demand                                                              | `test_data_sync.py::TestInputDataSync` (partial - API half; the progress UI is manual)                                                                                                                                                   |
+| 528                | Remote file sync on demand                                                              | `test_data_sync.py::TestInputDataSync` (the API half); `FilesTree.test.ts` ("sync progress flag": the fetch raises `isLoading` and clears it, per file type) alongside `FileSelectDialog.test.tsx`, which binds the bar to that flag |
 | 530                | Sidebar show / hide                                                                     | FILE-04                                                                                                                                                                                                                                  |
 | 531                | Filter with wildcards                                                                   | FILE-02                                                                                                                                                                                                                                  |
 | 532                | Check all / uncheck all                                                                 | FILE-03                                                                                                                                                                                                                                  |

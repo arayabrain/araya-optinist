@@ -1,14 +1,158 @@
+import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
-import { expect, Page, test } from "@playwright/test"
+import { chromium, expect, Page, request, test } from "@playwright/test"
 
-// Storage state saved by global-setup after a single UI login; authed specs
-// reuse it so each run needs only a handful of Firebase logins (rate limits)
-export const FREE_STORAGE_STATE = path.join(__dirname, ".auth", "free.json")
+// ---------------------------------------------------------------------------
+// Local docker stack. Specs that need state no API exposes (a plan, a role, a
+// verified email) drive the containers directly, so they run against the local
+// stack only and skip elsewhere.
+// ---------------------------------------------------------------------------
+
+export const REPO_ROOT = path.resolve(__dirname, "../..")
+const COMPOSE = "docker compose -f docker-compose.dev.multiuser.yml"
+const DOCKER_EXEC_TIMEOUT_MS = 30_000
+
+export function runSql(sql: string): string {
+  return execSync(
+    `${COMPOSE} exec -T db sh -c ` +
+      `'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"'`,
+    {
+      cwd: REPO_ROOT,
+      input: sql,
+      stdio: ["pipe", "pipe", "pipe"],
+      // execSync blocks the event loop, so a hung exec cannot be cut short by
+      // the test timeout: without this the run stalls to the global timeout
+      timeout: DOCKER_EXEC_TIMEOUT_MS,
+    },
+  )
+    .toString()
+    .trim()
+}
+
+export function runInBackend(cmd: string, input?: string) {
+  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+    cwd: REPO_ROOT,
+    stdio: ["pipe", "pipe", "pipe"],
+    input,
+    timeout: DOCKER_EXEC_TIMEOUT_MS,
+  })
+}
+
+// Registration leaves the address unverified, and an unverified account cannot
+// log in. Dev Firebase has no inbox to click through.
+export function verifyEmail(email: string) {
+  runInBackend(
+    "poetry run python -",
+    `
+import firebase_admin
+from firebase_admin import auth, credentials
+cred = credentials.Certificate("studio/config/auth/firebase_private.json")
+firebase_admin.initialize_app(cred)
+auth.update_user(auth.get_user_by_email("${email}").uid, email_verified=True)
+`,
+  )
+}
+
+// Register + verify, idempotently: an "already registered" response falls
+// through to re-verify, so a half-created account from an aborted run self-heals.
+// Throws with the register status when the account still cannot log in, because
+// a silent failure here surfaces much later as an unrelated assertion.
+export async function ensureRegisteredUser(
+  email: string,
+  password: string,
+  name: string,
+  roleId = 20,
+): Promise<void> {
+  const api = await request.newContext({ baseURL: apiUrl() })
+  try {
+    const creds = { email, password }
+    if ((await api.post("/auth/login", { data: creds })).ok()) return
+    const registered = await api.post("/api/register", {
+      data: { name, role_id: roleId, ...creds },
+    })
+    verifyEmail(email)
+    const loggedIn = await api.post("/auth/login", { data: creds })
+    if (!loggedIn.ok()) {
+      throw new Error(
+        `bootstrap failed for ${email}: register ${registered.status()} ` +
+          `${await registered.text()}; login ${loggedIn.status()} ` +
+          `${await loggedIn.text()}`,
+      )
+    }
+  } finally {
+    await api.dispose()
+  }
+}
+
+// The confirm-by-typing dialog used for deletions
+export function confirmDialog(page: Page) {
+  return page.locator('[role="dialog"]')
+}
+
+// Returns the reason a docker-driven spec cannot run here, or "" if it can.
+export function localStackSkipReason(): string {
+  const base = process.env.BASE_URL || "http://localhost:3000"
+  if (!/localhost|127\.0\.0\.1/.test(base)) {
+    return "spec mutates the local docker DB; BASE_URL is not local"
+  }
+  try {
+    runSql("SELECT 1;")
+  } catch {
+    return "local docker db container not reachable"
+  }
+  return ""
+}
+
+export function sqlLiteral(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "''")
+}
+
+// Storage state saved after a single UI login; authed specs reuse it so each run
+// needs only a handful of Firebase logins (rate limits)
+const AUTH_DIR = path.join(__dirname, ".auth")
+export const FREE_STORAGE_STATE = path.join(AUTH_DIR, "free.json")
+export const ADMIN_STORAGE_STATE = path.join(AUTH_DIR, "admin.json")
 
 export function freeStorageState(): string | undefined {
   return fs.existsSync(FREE_STORAGE_STATE) ? FREE_STORAGE_STATE : undefined
+}
+
+// Resolved per test rather than at module load, because the admin account does
+// not exist until the spec's own beforeAll has registered and promoted it
+export function adminStorageState(): string | undefined {
+  return fs.existsSync(ADMIN_STORAGE_STATE) ? ADMIN_STORAGE_STATE : undefined
+}
+
+// One UI login, saved for reuse. Retries because a cold CRA dev server can take
+// longer than the login timeout to compile the login route.
+export async function saveStorageState(
+  statePath: string,
+  email: string,
+  password: string,
+  baseURL = process.env.BASE_URL || "http://localhost:3000",
+) {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true })
+  const browser = await chromium.launch()
+  try {
+    const page = await browser.newPage({ baseURL })
+    for (let attempt = 1; ; attempt++) {
+      await page.goto("/login")
+      await page.locator('[data-testid="email"]').fill(email)
+      await page.locator('[data-testid="password"]').fill(password)
+      await page.locator('[data-testid="button-submit"]').click()
+      try {
+        await page.waitForURL(/\/dashboard/, { timeout: 60_000 })
+        break
+      } catch (e) {
+        if (attempt >= 3) throw e
+      }
+    }
+    await page.context().storageState({ path: statePath })
+  } finally {
+    await browser.close()
+  }
 }
 
 // For specs running with the saved storage state: land on the dashboard

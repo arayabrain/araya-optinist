@@ -19,15 +19,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import BIGINT as GENERIC_BIGINT
-from sqlalchemy import BigInteger
-from sqlalchemy.dialects.mysql import BIGINT as MYSQL_BIGINT
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.constants import (
+    StorageQuota,
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
@@ -40,21 +36,11 @@ from studio.app.common.models import User as UserModel
 from studio.app.common.models.subscription import (
     SubscriptionUserAccount,
     SubscriptionUserPurchase,
+    UserStorageUsage,
     UserSubscription,
 )
 from studio.app.common.routers.subscriptions import reactivate_user_subscription
-
-
-# SQLite only autoincrements an INTEGER PRIMARY KEY, not BIGINT.
-# NOTE: @compiles mutates SQLAlchemy's process-global dialect-compiler registry
-# on import, not just this module - every SQLite-backed test in the same process
-# that builds DDL from a BigInteger/BIGINT column will emit INTEGER too.
-@compiles(BigInteger, "sqlite")
-@compiles(GENERIC_BIGINT, "sqlite")
-@compiles(MYSQL_BIGINT, "sqlite")
-def _bigint_as_integer_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
+from studio.tests.app.common.sqlite_harness import sqlite_session
 
 STRIPE_CUSTOMER = "cus_state_transitions"
 # Every column the transitions could touch except the one they are expected to:
@@ -71,36 +57,22 @@ _CACHE_PATCH = (
 @pytest.fixture()
 def db():
     """In-memory SQLite session with the subscription tables created."""
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # Only the tables these transitions write. The parents they reference
-    # (subscription_plans, subscription_providers) use MySQL column types SQLite
-    # cannot compile, which is also why foreign keys stay unenforced here.
-    tables = [
-        UserModel.__table__,
-        UserSubscription.__table__,
-        SubscriptionUserAccount.__table__,
-        SubscriptionUserPurchase.__table__,
-    ]
-    # MySQL's "ON UPDATE CURRENT_TIMESTAMP" server default is invalid SQLite
-    # DDL. These Table objects are process-global, so restore them afterwards.
-    stripped = []
-    for table in tables:
-        for col in table.columns:
-            arg = getattr(col.server_default, "arg", None)
-            if arg is not None and "ON UPDATE" in str(arg):
-                stripped.append((col, col.server_default))
-                col.server_default = None
-    try:
-        SQLModel.metadata.create_all(engine, tables=tables)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for col, default in stripped:
-            col.server_default = default
+    with sqlite_session(
+        [
+            # Only the tables these transitions write. The parents they reference
+            # (subscription_plans, subscription_providers) use MySQL column types
+            # SQLite cannot compile, which is also why foreign keys stay
+            # unenforced here.
+            UserModel.__table__,
+            UserSubscription.__table__,
+            SubscriptionUserAccount.__table__,
+            SubscriptionUserPurchase.__table__,
+            # The subscription.* handlers sync the quota to the plan in the same
+            # transaction, so the row they write has to exist here too
+            UserStorageUsage.__table__,
+        ]
+    ) as session:
+        yield session
 
 
 def make_user(db, uid, email):
@@ -310,9 +282,8 @@ class TestSuccessfulCheckoutWritesPremium:
         )
 
     def test_expiration_comes_from_stripe_not_from_a_local_month(self):
-        # The sheet's note is explicit that the expiration is Stripe's
-        # current_period_end, not now + 1 month. A local calculation would drift
-        # from what the customer was actually billed for.
+        # The expiration is Stripe's current_period_end, not now + 1 month. A
+        # local calculation would drift from what the customer was billed for.
         period_end = 1795000000  # far-future unix timestamp
         session_data = checkout_session(42)
         mock_db = Mock(spec=Session)
@@ -406,7 +377,7 @@ class TestCancelTouchesOnlyTheDowngradeFlag:
 
 
 class TestFallbackToFreeIsDerivedNotWritten:
-    """Row 291: nothing downgrades the row; the tier comes from the expiration."""
+    """Nothing downgrades the row; the tier comes from the expiration."""
 
     def test_a_failed_renewal_leaves_the_row_on_premium(self, db, premium_user):
         with patch(_CACHE_PATCH):
@@ -497,6 +468,74 @@ class TestFallbackToFreeIsDerivedNotWritten:
             result = await crud_users.get_user_with_context(mock_db, 7)
 
         assert result.subscription_status == expected
+
+
+class TestReactivationIsMirroredOntoTheRow:
+    """The `subscription_users` row after a Stripe-side reactivation.
+
+    `handle_subscription_updated` returns `scheduled_downgrade` by echoing the
+    event's own `cancel_at_period_end` back, so asserting that field proves the
+    payload was read and nothing more. The persisted row is what matters, and
+    nothing writes `scheduled_downgrade = False` explicitly: it is a side effect
+    of the plan upsert, which is exactly the kind of thing a refactor drops.
+    """
+
+    PERIOD_END = 1795000000  # far-future unix timestamp
+
+    def event(self, cancel_at_period_end):
+        return {
+            "id": "sub_stripe_123",
+            "customer": STRIPE_CUSTOMER,
+            "status": "active",
+            "cancel_at_period_end": cancel_at_period_end,
+            "current_period_end": self.PERIOD_END,
+            "trial_end": None,
+            "metadata": {"plan_id": str(SubscriptionPlanIds.PREMIUM)},
+        }
+
+    def test_uncancelling_in_stripe_clears_the_flag_on_the_row(self, db, premium_user):
+        SubscriptionService.update_scheduled_downgrade(db, premium_user, True)
+        assert row_for(db, premium_user).scheduled_downgrade is True
+
+        with patch(_CACHE_PATCH):
+            WebhookService.handle_subscription_updated(db, self.event(False))
+
+        row = snapshot(db, premium_user)
+        assert row["scheduled_downgrade"] is False
+        assert row["plan_id"] == SubscriptionPlanIds.PREMIUM
+
+    def test_cancelling_in_stripe_sets_it_on_the_same_row(self, db, premium_user):
+        """The other direction, so "cleared" cannot be satisfied by a handler
+        that writes False unconditionally."""
+        assert row_for(db, premium_user).scheduled_downgrade is False
+
+        with patch(_CACHE_PATCH):
+            WebhookService.handle_subscription_updated(db, self.event(True))
+
+        row = snapshot(db, premium_user)
+        assert row["scheduled_downgrade"] is True
+        assert row["plan_id"] == SubscriptionPlanIds.PREMIUM
+
+    def test_the_reactivated_period_end_and_quota_come_from_the_event(
+        self, db, premium_user
+    ):
+        SubscriptionService.update_scheduled_downgrade(db, premium_user, True)
+
+        with patch(_CACHE_PATCH):
+            WebhookService.handle_subscription_updated(db, self.event(False))
+
+        row = snapshot(db, premium_user)
+        assert int(row["expiration"].replace(tzinfo=timezone.utc).timestamp()) == (
+            self.PERIOD_END
+        )
+        # A reactivated premium user held to the free quota would be over it
+        quota = (
+            db.query(UserStorageUsage)
+            .filter(UserStorageUsage.user_id == premium_user)
+            .one()
+            .storage_quota_bytes
+        )
+        assert quota == StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
 
 
 class TestReactivateRejectsAnotherUsersSubscription:

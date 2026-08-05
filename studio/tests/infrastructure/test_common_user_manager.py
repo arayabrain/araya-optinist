@@ -2,7 +2,10 @@
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 
 def split_boto3_clients(mock_boto3):
@@ -728,3 +731,141 @@ class TestGetRequiredEnvVar:
         with patch.dict("os.environ", {"EMPTY_TEST": ""}):
             with pytest.raises(ValueError, match="Missing required"):
                 common_user_manager.get_required_env_var("EMPTY_TEST")
+
+
+class TestRecoverStaleWorkflowCountsPredicates:
+    """Which rows the sweep is willing to touch.
+
+    The tests above assert the returned counts against a mocked `rowcount`, which
+    holds whatever the mock was told to hold - so the conditions deciding *which*
+    rows get reset are invisible to them. The statement is inspected here instead,
+    because the deciding values reach the database as bind parameters.
+
+    What makes this worth pinning: resetting `active_workflow_count` on a user
+    whose workflow is still running lets them start a second one on an instance
+    already busy with the first. The guard against that is the conjunction below,
+    not any single condition in it.
+    """
+
+    def compiled_statements(self, mock_env_vars_common):
+        with patch.dict("os.environ", mock_env_vars_common):
+            import common_user_manager
+
+            with patch.object(
+                common_user_manager, "get_sqlalchemy_session"
+            ) as mock_ctx:
+                session = MagicMock()
+                mock_ctx.return_value.__enter__ = Mock(return_value=session)
+                mock_ctx.return_value.__exit__ = Mock(return_value=False)
+                result = MagicMock()
+                result.rowcount = 0
+                session.execute.return_value = result
+
+                common_user_manager.recover_stale_workflow_counts()
+
+        return [
+            call.args[0].compile(compile_kwargs={"literal_binds": False})
+            for call in session.execute.call_args_list
+        ]
+
+    def test_both_tiers_are_swept(self, mock_env_vars_common):
+        statements = self.compiled_statements(mock_env_vars_common)
+
+        assert len(statements) == 2
+        tables = [str(statement).split()[1] for statement in statements]
+        assert tables == ["free_user_assignments", "premium_user_assignments"]
+
+    @pytest.mark.parametrize("tier", [0, 1])
+    def test_only_a_nonzero_counter_is_touched(self, mock_env_vars_common, tier):
+        """A row already at zero is not stale work, and rewriting it to zero would
+        report a recovery that did not happen."""
+        statement = str(self.compiled_statements(mock_env_vars_common)[tier])
+
+        assert "active_workflow_count > " in statement
+
+    @pytest.mark.parametrize("tier", [0, 1])
+    def test_the_counter_is_reset_rather_than_decremented(
+        self, mock_env_vars_common, tier
+    ):
+        statements = self.compiled_statements(mock_env_vars_common)
+        params = statements[tier].params
+
+        assert params["active_workflow_count"] == 0
+
+    @pytest.mark.parametrize("tier", [0, 1])
+    def test_a_user_with_a_live_session_is_left_alone(self, mock_env_vars_common, tier):
+        """The heartbeat is the whole reason a legitimate four-hour run survives
+        the sweep: `last_activity` recent means the user is still at the keyboard,
+        so the workflow is presumed alive however long it has been going."""
+        statement = str(self.compiled_statements(mock_env_vars_common)[tier])
+
+        assert "last_activity IS NOT NULL" in statement
+        assert "last_activity < " in statement
+
+    @pytest.mark.parametrize("tier", [0, 1])
+    def test_inactivity_alone_is_not_enough(self, mock_env_vars_common, tier):
+        """Inactivity is ANDed with a disjunction of two positive signals that the
+        workflow is over. Dropping the OR would reset the counter of every idle
+        user with a running workflow."""
+        statement = str(self.compiled_statements(mock_env_vars_common)[tier])
+
+        assert " OR " in statement
+        assert "last_workflow_end >= " in statement
+        assert "last_workflow_start < " in statement
+
+    @pytest.mark.parametrize("tier", [0, 1])
+    def test_null_timestamps_are_excluded_rather_than_swept(
+        self, mock_env_vars_common, tier
+    ):
+        """A row with no `last_workflow_start` has no evidence either way. MySQL
+        compares NULL as unknown, so an unguarded comparison silently drops it -
+        the explicit checks keep that from depending on SQL trivia."""
+        statement = str(self.compiled_statements(mock_env_vars_common)[tier])
+
+        assert "last_workflow_end IS NOT NULL" in statement
+        assert "last_workflow_start IS NOT NULL" in statement
+
+    def test_the_cutoffs_are_the_configured_thresholds_back_from_now(
+        self, mock_env_vars_common
+    ):
+        with patch.dict("os.environ", mock_env_vars_common):
+            import common_user_manager
+
+        before = datetime.now(timezone.utc)
+        statements = self.compiled_statements(mock_env_vars_common)
+        after = datetime.now(timezone.utc)
+
+        params = statements[0].params
+        cutoffs = sorted(
+            value for value in params.values() if isinstance(value, datetime)
+        )
+        assert len(cutoffs) == 2
+        very_old, inactive = cutoffs
+        assert (
+            before - timedelta(hours=common_user_manager.WORKFLOW_USER_INACTIVITY_HOURS)
+            <= inactive
+            <= after
+            - timedelta(hours=common_user_manager.WORKFLOW_USER_INACTIVITY_HOURS)
+        )
+        assert (
+            before - timedelta(hours=common_user_manager.WORKFLOW_VERY_OLD_HOURS)
+            <= very_old
+            <= after - timedelta(hours=common_user_manager.WORKFLOW_VERY_OLD_HOURS)
+        )
+
+    def test_the_very_old_cutoff_outlasts_a_legitimate_long_run(
+        self, mock_env_vars_common
+    ):
+        """A real analysis run can take hours. The "very old" arm is what reclaims
+        a crashed one, so it has to sit beyond the longest run a user could
+        plausibly still be waiting on - and beyond the inactivity window, or the
+        arm fires on workflows the inactivity check already covers.
+        """
+        with patch.dict("os.environ", mock_env_vars_common):
+            import common_user_manager
+
+        assert common_user_manager.WORKFLOW_VERY_OLD_HOURS >= 4
+        assert (
+            common_user_manager.WORKFLOW_VERY_OLD_HOURS
+            > common_user_manager.WORKFLOW_USER_INACTIVITY_HOURS
+        )
