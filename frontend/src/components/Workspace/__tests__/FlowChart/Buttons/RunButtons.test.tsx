@@ -242,9 +242,84 @@ describe("RunButtons component", () => {
     })
   })
 
+  // Both messages are pinned verbatim here because the e2e regex accepts either
+  // one, and on a fresh workspace the input-file branch always wins.
+  describe("Pre-run validation messages", () => {
+    const renderAndClickRun = async (
+      overrides: Partial<typeof mockProps>,
+    ): Promise<void> => {
+      render(
+        <Provider store={store}>
+          <SnackbarProvider>
+            <RunButtons
+              status={"StartUninitialized"}
+              {...mockProps}
+              {...overrides}
+            />
+          </SnackbarProvider>
+        </Provider>,
+      )
+      await userEvent.click(runButtonFor(RUN_BTN_OPTIONS.RUN_ALREADY))
+    }
+
+    it("asks for algorithm nodes when the flowchart has none", async () => {
+      await renderAndClickRun({
+        algorithmNodeNotExist: true,
+        filePathIsUndefined: false,
+      })
+
+      expect(
+        await screen.findByText(
+          "please add some algorithm nodes to the flowchart",
+        ),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText("please select input file"),
+      ).not.toBeInTheDocument()
+      // The validation short-circuits before the pre-flight storage check
+      expect(mockGetMyStorageAlertApi).not.toHaveBeenCalled()
+      expect(mockProps.handleRunPipelineByUid).not.toHaveBeenCalled()
+    })
+
+    it("asks for an input file when none is selected", async () => {
+      await renderAndClickRun({
+        algorithmNodeNotExist: false,
+        filePathIsUndefined: true,
+      })
+
+      expect(
+        await screen.findByText("please select input file"),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText("please add some algorithm nodes to the flowchart"),
+      ).not.toBeInTheDocument()
+      expect(mockGetMyStorageAlertApi).not.toHaveBeenCalled()
+      expect(mockProps.handleRunPipelineByUid).not.toHaveBeenCalled()
+    })
+
+    // Both missing: the input file is the one the user has to fix first.
+    it("reports only the input file when both are missing", async () => {
+      await renderAndClickRun({
+        algorithmNodeNotExist: true,
+        filePathIsUndefined: true,
+      })
+
+      expect(
+        await screen.findByText("please select input file"),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText("please add some algorithm nodes to the flowchart"),
+      ).not.toBeInTheDocument()
+    })
+  })
+
   // The rapid-click cooldown: a ref that a second click reads before the first
   // has cleared it, so a double-click sends one run rather than two.
   describe("Run request cooldown", () => {
+    it("is three seconds long", () => {
+      expect(RUN_REQUEST_DEBOUNCE_MS).toBe(3000)
+    })
+
     const renderRunButtons = (
       runBtn: RUN_BTN_TYPE = RUN_BTN_OPTIONS.RUN_ALREADY,
     ) => {

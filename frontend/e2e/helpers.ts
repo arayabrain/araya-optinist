@@ -55,10 +55,35 @@ auth.update_user(auth.get_user_by_email("${email}").uid, email_verified=True)
   )
 }
 
-// Register + verify, idempotently: an "already registered" response falls
-// through to re-verify, so a half-created account from an aborted run self-heals.
-// Throws with the register status when the account still cannot log in, because
-// a silent failure here surfaces much later as an unrelated assertion.
+export function deleteFirebaseUser(email: string) {
+  runInBackend(
+    "poetry run python -",
+    `
+import firebase_admin
+from firebase_admin import auth, credentials
+cred = credentials.Certificate("studio/config/auth/firebase_private.json")
+firebase_admin.initialize_app(cred)
+try:
+    auth.delete_user(auth.get_user_by_email("${email}").uid)
+except auth.UserNotFoundError:
+    pass
+`,
+  )
+}
+
+export function activeUserRows(email: string): number {
+  return Number(
+    runSql(
+      `SELECT COUNT(*) FROM users WHERE email = '${sqlLiteral(email)}'
+         AND active = 1;`,
+    ),
+  )
+}
+
+// Register + verify, idempotently. Throws with both statuses when the account
+// still cannot log in, because a silent failure here surfaces much later as an
+// unrelated assertion. Local stack only: the duplicate-row check below reads
+// the docker DB directly, so callers must gate on localStackSkipReason().
 export async function ensureRegisteredUser(
   email: string,
   password: string,
@@ -66,12 +91,37 @@ export async function ensureRegisteredUser(
   roleId = 20,
 ): Promise<void> {
   const api = await request.newContext({ baseURL: apiUrl() })
+  const register = () =>
+    api.post("/api/register", {
+      data: { name, role_id: roleId, email, password },
+    })
   try {
     const creds = { email, password }
-    if ((await api.post("/auth/login", { data: creds })).ok()) return
-    const registered = await api.post("/api/register", {
-      data: { name, role_id: roleId, ...creds },
-    })
+    const existing = await api.post("/auth/login", { data: creds })
+    if (existing.ok()) return
+    // A row means the account is real and the configured password is simply
+    // wrong. Registering anyway adds a SECOND active row at this address,
+    // which nothing in the schema prevents and which then breaks every lookup
+    // expecting a single id - including this spec's own `beforeAll`.
+    if (activeUserRows(email) > 0) {
+      throw new Error(
+        `${email} already has an active row but its password does not match: ` +
+          `${existing.status()} ${await existing.text()}`,
+      )
+    }
+    // A 5xx is the dev backend restarting under --reload, not a verdict on the
+    // account: deleting a real Firebase user on one is unrecoverable.
+    if (existing.status() >= 500) {
+      throw new Error(
+        `login for ${email} failed transiently, not deleting it: ` +
+          `${existing.status()} ${await existing.text()}`,
+      )
+    }
+    // No row, so whatever Firebase still holds is an orphan from a reset stack
+    // or a deletion that stopped after its Firebase step. Left in place it
+    // makes registration answer EMAIL_EXISTS forever.
+    deleteFirebaseUser(email)
+    const registered = await register()
     verifyEmail(email)
     const loggedIn = await api.post("/auth/login", { data: creds })
     if (!loggedIn.ok()) {
@@ -91,10 +141,15 @@ export function confirmDialog(page: Page) {
   return page.locator('[role="dialog"]')
 }
 
+export function isLocalBaseUrl(): boolean {
+  return /localhost|127\.0\.0\.1/.test(
+    process.env.BASE_URL || "http://localhost:3000",
+  )
+}
+
 // Returns the reason a docker-driven spec cannot run here, or "" if it can.
 export function localStackSkipReason(): string {
-  const base = process.env.BASE_URL || "http://localhost:3000"
-  if (!/localhost|127\.0\.0\.1/.test(base)) {
+  if (!isLocalBaseUrl()) {
     return "spec mutates the local docker DB; BASE_URL is not local"
   }
   try {
@@ -136,7 +191,11 @@ export async function saveStorageState(
   fs.mkdirSync(path.dirname(statePath), { recursive: true })
   const browser = await chromium.launch()
   try {
-    const page = await browser.newPage({ baseURL })
+    // storageState must be cleared explicitly: a page opened inside a spec's
+    // `test.use()` scope inherits that scope's state, so this one would start
+    // already signed in as the previous run, be redirected off /login before
+    // the form is filled, and save that stale token back over the file.
+    const page = await browser.newPage({ baseURL, storageState: undefined })
     for (let attempt = 1; ; attempt++) {
       await page.goto("/login")
       await page.locator('[data-testid="email"]').fill(email)
