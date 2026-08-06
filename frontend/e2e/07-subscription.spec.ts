@@ -11,6 +11,52 @@ import {
 // Subscription UI state for free and premium users.
 // DB/Stripe dashboard verification stays manual.
 
+// The features JSON is deployment configuration (the local DB seeds it empty),
+// so the catalogue is mocked in the shape the tfvars declare. Two strings are
+// on both plans, which is what makes the per-plan counts below a real check.
+const SHARED_FEATURES = [
+  "Basic compute access with fair-use limitations",
+  "Standard support through documentation and community",
+]
+const FREE_ONLY_FEATURES = [
+  "Basic data storage of 5GB",
+  "Standard processing speed",
+]
+const PREMIUM_ONLY_FEATURES = [
+  "Priority compute access with guaranteed allocation",
+  "Upgraded data storage of 200GB",
+  "Enhanced support including direct assistance",
+  "Advanced features like extended job history",
+]
+
+async function mockPlanCatalogue(page: Page) {
+  const plan = (id: number, name: string, price: number, texts: string[]) => ({
+    id,
+    name,
+    price,
+    billing_cycle: 1,
+    currency: 1,
+    status: true,
+    features: {
+      [name]: texts.map((text) => ({
+        text,
+        isPremium: PREMIUM_ONLY_FEATURES.includes(text),
+      })),
+    },
+  })
+  await page.route("**/api/subsc/mgmts/plans", (route) =>
+    route.fulfill({
+      json: [
+        plan(1, "Free", 0, [...SHARED_FEATURES, ...FREE_ONLY_FEATURES]),
+        plan(2, "Premium", 2000, [
+          ...SHARED_FEATURES,
+          ...PREMIUM_ONLY_FEATURES,
+        ]),
+      ],
+    }),
+  )
+}
+
 test.describe("Free plan state", () => {
   test.use({ storageState: freeStorageState() })
 
@@ -53,6 +99,29 @@ test.describe("Free plan state", () => {
       timeout: 30_000,
     })
     await expect(page.locator("text=No Invoices Found").first()).toBeVisible()
+  })
+
+  test("SUB-15 - Each plan card lists its own features", async ({ page }) => {
+    await mockPlanCatalogue(page)
+    await page.goto("/subscription")
+
+    // One occurrence per card for the shared strings, one for the plan-specific
+    // ones: a card that dropped its list, or rendered the other plan's, fails
+    for (const text of SHARED_FEATURES) {
+      await expect(page.getByText(text, { exact: true })).toHaveCount(2, {
+        timeout: 30_000,
+      })
+    }
+    for (const text of [...FREE_ONLY_FEATURES, ...PREMIUM_ONLY_FEATURES]) {
+      await expect(page.getByText(text, { exact: true })).toHaveCount(1)
+    }
+
+    // The Premium card's action is the only Upgrade on the page and it has to
+    // be usable; the Free card is the signed-in user's current plan
+    const upgrade = page.locator('button:has-text("Upgrade")')
+    await expect(upgrade).toHaveCount(1)
+    await expect(upgrade).toBeEnabled()
+    await expect(page.locator('button:has-text("Current Plan")')).toBeDisabled()
   })
 
   test("SUB-06 - Payment success page is guarded without a checkout session", async ({
@@ -344,9 +413,15 @@ test.describe("Premium plan state", () => {
   }) => {
     await page.goto("/subscription")
 
+    // A Current Plan button is what the FREE card renders for a free user, so
+    // a premium user wrongly shown as Free passed that on its own. The status
+    // line names the plan, and only a premium user is offered a downgrade.
+    const status = page.getByText(/^Current Plan:/).first()
+    await expect(status).toBeVisible({ timeout: 30_000 })
+    await expect(status).toContainText("Premium")
     await expect(
-      page.locator('button:has-text("Current Plan")').first(),
-    ).toBeVisible({ timeout: 30_000 })
+      page.locator('button:has-text("Downgrade")').first(),
+    ).toBeVisible()
     // Expiration/renewal date is displayed for premium users
     await expect(
       page.locator("text=/renews? on|expires? on|expired on/i").first(),

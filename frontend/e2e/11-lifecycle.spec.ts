@@ -132,6 +132,9 @@ async function ensureUserAndWorkspace() {
     const { access_token, ex_token } = await loginRes.json()
     const headers = authHeaders(access_token, ex_token)
     const list = await api.get("/workspaces?offset=0&limit=100", { headers })
+    if (!list.ok()) {
+      throw new Error(`GET /workspaces ${list.status()}: ${await list.text()}`)
+    }
     const { items } = await list.json()
     const found = items.find(
       (w: { name: string }) => w.name === "e2e-lifecycle",
@@ -539,8 +542,14 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
 
     setStorage(realUsage, nearQuota())
     await runAllButton(page).click()
+    // "Storage usage is high" on its own is also the storage panel's caption;
+    // this is the run-time snackbar, percentage and advice included
     await expect(
-      page.locator("text=Storage usage is high").first(),
+      page
+        .locator(
+          "text=/^Warning: Storage usage is high \\(\\d+\\.\\d% used\\)\\. Consider freeing up space\\.$/",
+        )
+        .first(),
     ).toBeVisible({ timeout: 15_000 })
     // The run-name dialog opening proves the run was not blocked; cancel it
     // so no real workflow executes

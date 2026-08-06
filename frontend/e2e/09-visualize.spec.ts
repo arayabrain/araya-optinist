@@ -137,6 +137,24 @@ test.describe("Visualize", () => {
     await expect(page.locator(".js-plotly-plot")).toHaveCount(2, {
       timeout: 60_000,
     })
+
+    // Two plots is also what two image plots give. The image plot draws a
+    // plotly heatmap and the timeseries one does not, so exactly one of the two
+    // being a heatmap is where "a different type" is observable. (The
+    // timeseries traces stay out of _fullData until a curve is selected, so
+    // their own type is not assertable here.)
+    const heatmapPlots = () =>
+      page.evaluate(
+        () =>
+          Array.from(document.querySelectorAll(".js-plotly-plot")).filter(
+            (el) =>
+              (
+                (el as unknown as { _fullData?: { type?: string }[] })
+                  ._fullData ?? []
+              ).some((trace) => trace.type === "heatmap"),
+          ).length,
+      )
+    await expect.poll(heatmapPlots, { timeout: 60_000 }).toBe(1)
   })
 
   test("VIS-05 - Edit ROI opens the ROI editor; Cancel exits", async ({

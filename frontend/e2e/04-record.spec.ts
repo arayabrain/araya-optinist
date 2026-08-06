@@ -14,10 +14,14 @@ import {
 
 // Record page: list, expand, copy, delete, downloads (single and multi-select).
 
+// The records the hook imports are a precondition, not a maybe: this used to
+// answer null on an unrendered table (isVisible does not wait), and each test
+// then skipped - which reads as a pass in the summary the sheets are signed
+// off against
 async function firstRecordRow(page: Page) {
   const row = page.locator('tr:has([data-testid="reproduce-button"])').first()
-  const visible = await row.isVisible().catch(() => false)
-  return visible ? row : null
+  await expect(row).toBeVisible({ timeout: 30_000 })
+  return row
 }
 
 test.describe("Record Management", () => {
@@ -44,25 +48,35 @@ test.describe("Record Management", () => {
 
   test("REC-02 - Expand record shows workflow parameters", async ({ page }) => {
     const row = await firstRecordRow(page)
-    test.skip(!row, "No records — import sample data first")
 
-    await row!.locator('[aria-label="expand row"]').click()
-    // Expanded panel shows the per-node function/parameter table
-    await expect(page.locator("text=Function").first()).toBeVisible({
-      timeout: 10_000,
-    })
+    await row.locator('[aria-label="expand row"]').click()
+    // `text=Function` is a case-insensitive substring, so it matched the page
+    // with the panel's own table absent. The claim is the per-node table: its
+    // four columns, and a row naming a function and its node id.
+    const panel = page
+      .locator("td")
+      .filter({ has: page.getByText("Details", { exact: true }) })
+    await expect(panel).toBeVisible({ timeout: 10_000 })
+    await expect(panel.locator("thead th")).toHaveText([
+      "Function",
+      "nodeID",
+      "Success",
+      "NWB",
+    ])
+    const nodeCells = panel.locator("tbody tr").first().locator("th, td")
+    await expect(nodeCells.nth(0)).not.toBeEmpty()
+    await expect(nodeCells.nth(1)).not.toBeEmpty()
   })
 
   test("REC-03 - Copy single record", async ({ page }) => {
     test.setTimeout(120_000)
     const row = await firstRecordRow(page)
-    test.skip(!row, "No records — import sample data first")
 
     const rowCount = await page
       .locator('tr:has([data-testid="reproduce-button"])')
       .count()
 
-    await row!.locator('input[type="checkbox"]').check()
+    await row.locator('input[type="checkbox"]').check()
     await page.locator('button:has-text("COPY")').click()
     await page.locator('[role="dialog"] button:has-text("copy")').click()
 
@@ -77,13 +91,12 @@ test.describe("Record Management", () => {
     let copyRow = page.locator('tr:has-text("_copy")').first()
     if (!(await copyRow.isVisible().catch(() => false))) {
       const row = await firstRecordRow(page)
-      test.skip(!row, "No records — import sample data first")
-      await row!.locator('input[type="checkbox"]').check()
+      await row.locator('input[type="checkbox"]').check()
       await page.locator('button:has-text("COPY")').click()
       await page.locator('[role="dialog"] button:has-text("copy")').click()
       copyRow = page.locator('tr:has-text("_copy")').first()
       await expect(copyRow).toBeVisible({ timeout: 60_000 })
-      await row!.locator('input[type="checkbox"]').uncheck()
+      await row.locator('input[type="checkbox"]').uncheck()
     }
 
     const rowCount = await page
@@ -101,22 +114,20 @@ test.describe("Record Management", () => {
 
   test("REC-05 - Download workflow file", async ({ page }) => {
     const row = await firstRecordRow(page)
-    test.skip(!row, "No records — import sample data first")
 
     const downloadPromise = page.waitForEvent("download", { timeout: 30_000 })
-    await row!.locator('[data-testid="workflow-download-button"]').click()
+    await row.locator('[data-testid="workflow-download-button"]').click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toMatch(/\.yaml$/)
   })
 
   test("REC-06 - Download Snakemake file", async ({ page }) => {
     const row = await firstRecordRow(page)
-    test.skip(!row, "No records — import sample data first")
 
     // The testid anchor is hidden; the visible IconButton next to it triggers
     // the download
     const downloadPromise = page.waitForEvent("download", { timeout: 30_000 })
-    await row!
+    await row
       .locator('td:has([data-testid="snakemake-download-link"]) button')
       .click()
     const download = await downloadPromise
@@ -174,7 +185,7 @@ test.describe("Record Management", () => {
     test.setTimeout(180_000)
     const rows = page.locator('tr:has([data-testid="reproduce-button"])')
     const rowCount = await rows.count()
-    test.skip(rowCount < 2, "Needs at least 2 records")
+    expect(rowCount).toBeGreaterThanOrEqual(2)
 
     await rows.nth(0).locator('input[type="checkbox"]').check()
     await rows.nth(1).locator('input[type="checkbox"]').check()
@@ -187,8 +198,8 @@ test.describe("Record Management", () => {
   test("REC-09 - Delete multiple records", async ({ page }) => {
     test.setTimeout(180_000)
     const copies = page.locator('tr:has-text("_copy")')
-    const copyCount = await copies.count()
-    test.skip(copyCount < 2, "Needs 2 copied records (REC-08 creates them)")
+    // The copies REC-08 leaves behind, waited for rather than probed
+    await expect(copies.nth(1)).toBeVisible({ timeout: 30_000 })
 
     const rows = page.locator('tr:has([data-testid="reproduce-button"])')
     const rowCount = await rows.count()
