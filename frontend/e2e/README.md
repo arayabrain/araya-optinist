@@ -173,7 +173,7 @@ PR description.
 ## Running the tests
 
 ```bash
-yarn test:e2e                    # everything except @slow (~5 min)
+yarn test:e2e                    # everything except @slow (~14 min, see below)
 RUN_SLOW=1 yarn test:e2e         # everything including workflow runs
 RUN_SLOW=1 npx playwright test --grep @slow   # only the workflow runs
 yarn test:e2e 01-auth            # one group
@@ -186,10 +186,23 @@ yarn test:e2e:report             # open the last HTML report
 - Local runs get 1 automatic retry (CRA dev-server hydration occasionally
   swallows an early click); CI gets 2. A test listed as "flaky" passed on
   retry.
-- `@slow` = WF-04/05/06, real workflow executions (5–10 min each; slower
-  on an ARM Mac where the backend image is amd64-emulated). Keep the
+- `@slow` = anything that performs a real workflow execution (5–10 min each;
+  slower on an ARM Mac where the backend image is amd64-emulated). Keep the
   machine awake for these — `caffeinate -i RUN_SLOW=1 npx playwright test
---grep @slow` — sleep mid-run is the #1 cause of bogus failures.
+--grep @slow` — sleep mid-run is the #1 cause of bogus failures. Three groups
+  are in this lane:
+  - WF-04/05/06, the tutorial runs, which are the thing being tested.
+  - REC-07, which downloads an NWB file. One exists only after a completed run,
+    and global setup deletes the workspace at the start of every run.
+  - the whole `Private Dataview` group of `06-dataview`, tagged on the describe.
+    Only success records reach the dataview and the sample data ships no
+    computed outputs, so its first test mints them with a real run.
+  - VIS-02, whose `cell_roi` overlay is a suite2p_roi node output. The other
+    VIS tests plot the sample TIFF, which the import does ship.
+- **The default lane runs no workflows**, which is what keeps it under 15
+  minutes. The trade is that a default run leaves 23 release-sheet rows and 14
+  system-sheet rows unchecked; they are labelled `OPT-IN` in the sheets rather
+  than counted as covered by a green default run.
 
 ## How the suite works
 
@@ -213,23 +226,32 @@ Understanding these makes failures much easier to read:
   one workspace named `e2e-data`; `ensureTutorialRecords` imports the sample
   data on first need, so the ~1 min import happens once per run and any spec
   can run standalone.
-- **Skips are preconditions, not failures**: every `test.skip` carries a
-  reason ("No experiment records", "requires a completed workflow run"). On
-  a fresh local stack several tests skip; after `RUN_SLOW=1` produces run
-  outputs, most of those execute. Missing credentials skip, never fail.
+- **Data preconditions are asserted, not skipped**: the record and dataview
+  specs used to open with `test.skip(!hasData)` over a probe that swallowed its
+  own timeout, so an empty grid produced a skip — and a skip reads as a pass in
+  the summary the release sheets are signed off against. They now wait for the
+  rows they need and fail if they never arrive. Where the precondition costs a
+  real workflow run, the test is `@slow` rather than silently paying for it on
+  every default run.
+- **A local run of `11-lifecycle` or `12-admin` fails rather than skips.** Both
+  groups are the only coverage several LC and ADMIN rows have, so on a local
+  BASE_URL every reason they cannot execute (missing credentials, unreachable
+  docker DB, `SKIP_STORAGE_CHECKS=true`) is a broken environment and is raised as
+  an error naming the rows it leaves unverified. Off a local BASE_URL they still
+  skip, because the DB writes they need are only reachable on the docker stack.
 
 ## Test groups
 
 | Spec file          | IDs         | Covers                                                                                                      |
 | ------------------ | ----------- | ----------------------------------------------------------------------------------------------------------- |
 | `01-auth`          | AUTH-01..16 | login, logout, session persistence, unverified email and resend, header nav, registration validation        |
-| `02-workspace`     | WS-01..06   | workspace create, list, navigate, storage reload, delete                                                    |
+| `02-workspace`     | WS-01..07   | workspace create, list, navigate, storage reload, one refresh per session, delete                           |
 | `03-workflow`      | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tabs                                |
 | `04-record`        | REC-01..09  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                                     |
 | `05-file-handling` | FILE-01..04 | file tree dialog, wildcard filter, check-all, sidebar toggle                                                |
-| `06-dataview`      | DV-01..16   | table, filters (incl. workspace), sort, pagination, dialogs, public access, thumbnails, publish             |
-| `07-subscription`  | SUB-01..14  | free and premium plan UI, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs |
-| `08-storage`       | STO-01..03  | under-quota login, dedicated and shared premium assignment snackbars                                        |
+| `06-dataview`      | DV-01..18   | table, filters (incl. workspace, private and public), sort order, pagination, dialogs, public access, thumbnails, publish, concurrent public reads. DV-01..08 and DV-12..17 are `@slow`; DV-09/10/11/18 need no records and run by default |
+| `07-subscription`  | SUB-01..16  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs |
+| `08-storage`       | STO-01..04  | under-quota login, the over-quota modal, dedicated and shared premium assignment snackbars                  |
 | `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
 | `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
 | `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
@@ -246,7 +268,8 @@ outside this README so the two sheet families stay separate:
 | [`infrastructure/documentation/SYSTEM_TEST_COVERAGE.md`](../../infrastructure/documentation/SYSTEM_TEST_COVERAGE.md)   | `Araya-Optinist System Test Cases Template` - a separate, larger scheme, mostly covered by jest and pytest rather than by this suite |
 
 The release map is also where per-test data preconditions are written down (how
-the dataview and Visualize tests get their records without a `@slow` run).
+the dataview and Visualize tests get their records, and why that puts most of
+them in the `@slow` lane).
 
 ## Troubleshooting
 

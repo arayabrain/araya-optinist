@@ -124,6 +124,44 @@ test.describe("Free plan state", () => {
     await expect(page.locator('button:has-text("Current Plan")')).toBeDisabled()
   })
 
+  test("SUB-16 - Subscription and account pages fit every viewport width", async ({
+    page,
+  }) => {
+    // The machine-checkable half of the responsive row: the page still renders
+    // its own landmark, and nothing spills sideways. Overlap and legibility
+    // stay a human read.
+    const pages: [string, string][] = [
+      // Not the "Current Plan:" status line - that renders for paid plans only,
+      // so a free user never has it at any width
+      ["/subscription", 'h3:has-text("Subscription Plans")'],
+      ["/account", 'h2:has-text("Account Profile")'],
+      ["/subscription/manage", "text=Free Plan"],
+    ]
+    const viewports = [
+      { width: 375, height: 812 },
+      { width: 768, height: 1024 },
+      { width: 1280, height: 800 },
+    ]
+
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport)
+      for (const [url, landmark] of pages) {
+        await page.goto(url)
+        await expect(page.locator(landmark).first()).toBeVisible({
+          timeout: 30_000,
+        })
+        // Sub-pixel layout rounding makes an exact comparison flaky
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth - window.innerWidth,
+        )
+        expect(
+          overflow,
+          `${url} at ${viewport.width}px overflows by ${overflow}px`,
+        ).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
   test("SUB-06 - Payment success page is guarded without a checkout session", async ({
     page,
   }) => {

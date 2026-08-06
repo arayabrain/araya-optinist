@@ -132,7 +132,12 @@ async function ensureDataviewRows(page: Page): Promise<number> {
   return id
 }
 
-test.describe("Private Dataview", () => {
+// @slow on the describe tags every test inside it. Only success records reach
+// the dataview (the listing filters on ExperimentRecord.success), the sample
+// data ships metadata YAML only, and global setup wipes the e2e-* workspaces
+// each run - so the first test here always pays for a real snakemake run. The
+// public group below needs no records and stays in the default lane.
+test.describe("Private Dataview @slow", () => {
   test.use({ storageState: freeStorageState() })
 
   let dataviewId = 0

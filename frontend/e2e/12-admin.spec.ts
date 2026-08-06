@@ -381,6 +381,9 @@ test.describe.serial("Admin Account Manager", () => {
     // default test timeout
     test.setTimeout(300_000)
     const email = `e2e_admin_deleted_${Date.now()}@test.com`
+    // Owning something is the point: rows 336 and 340 claim the account's data
+    // goes with it, and an account that owns nothing cannot show that.
+    const wsName = `e2e-admin-deleted-${Date.now()}`
     const api = await request.newContext({ baseURL: apiUrl() })
     try {
       const registered = await api.post("/api/register", {
@@ -395,14 +398,37 @@ test.describe.serial("Admin Account Manager", () => {
         registered.ok(),
         `register ${registered.status()}: ${await registered.text()}`,
       ).toBeTruthy()
+      verifyEmail(email)
+
+      const loggedIn = await api.post("/auth/login", {
+        data: { email, password: ADMIN.password },
+      })
+      expect(
+        loggedIn.ok(),
+        `login ${loggedIn.status()}: ${await loggedIn.text()}`,
+      ).toBeTruthy()
+      const { access_token } = await loggedIn.json()
+      const created = await api.post("/workspace", {
+        data: { name: wsName },
+        headers: { Authorization: `Bearer ${access_token}` },
+      })
+      expect(
+        created.ok(),
+        `create workspace ${created.status()}: ${await created.text()}`,
+      ).toBeTruthy()
     } finally {
       await api.dispose()
     }
-    verifyEmail(email)
     const userId = runSql(
       `SELECT id FROM users WHERE email = '${sqlLiteral(email)}';`,
     )
     expect(userId).not.toBe("")
+    expect(
+      runSql(
+        `SELECT deleted FROM workspaces WHERE user_id = ${userId}
+           AND name = '${sqlLiteral(wsName)}';`,
+      ),
+    ).toBe("0")
 
     const row = await rowFor(page, email)
     await rowAction(row, "Delete Account").click()
@@ -436,6 +462,33 @@ test.describe.serial("Admin Account Manager", () => {
         { timeout: 60_000 },
       )
       .toMatch(/completed\s+completed/)
+
+    // Rows 336 and 340: the owned workspace is soft-deleted (row kept, flag
+    // flipped), its experiments go with it, preferences are removed and the
+    // role link deliberately survives. Polled because the workspace hand-off
+    // runs after the deletion record reaches `completed`.
+    await expect
+      .poll(
+        () =>
+          runSql(`SELECT deleted FROM workspaces WHERE user_id = ${userId};`),
+        { timeout: 30_000 },
+      )
+      .toBe("1")
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM experiment_records er
+           JOIN workspaces w ON w.id = er.workspace_id
+          WHERE w.user_id = ${userId};`,
+      ),
+    ).toBe("0")
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM user_preferences WHERE user_id = ${userId};`,
+      ),
+    ).toBe("0")
+    expect(
+      runSql(`SELECT COUNT(*) FROM user_roles WHERE user_id = ${userId};`),
+    ).toBe("1")
 
     // And it leaves the admin's list, which is what the admin sees. The empty
     // overlay is the positive control: without waiting for it, the count is zero
