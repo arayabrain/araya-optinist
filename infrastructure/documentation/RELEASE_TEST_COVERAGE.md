@@ -145,16 +145,19 @@ no-algorithm-nodes message needs an input file wired in manually.
 | BT-406    | Image thumbnail display          | DV-12                                                                          |
 | BT-407    | Run Edit ROI                     | VIS-05 (editor open + Cancel; the OK commit mutates ROI data and stays manual) |
 
-Note (how the data-backed tests avoid @slow runs): the sample-data import
-ships WITH pre-computed outputs, so the Visualize plot editor has plottable
-items right after a reproduce — no run needed for VIS-02..05. The dataview
-needs a success record + thumbnails, which only a completed run writes;
-`ensureCompletedTutorialRun` reruns the imported Tutorial1 by uid, which
-snakemake treats as already complete (~15s, not 5-10 min). Two gotchas the
-helper absorbs: loading a finished experiment fires a phantom "Workflow
-finished" snackbar (it anchors on the run POST instead), and the success
-record is written shortly AFTER the finished signal (DV-12 reload-polls the
-grid).
+Note (what the data-backed tests need): `sample_data/tutorial` ships the
+input files plus workflow metadata (`experiment/workflow/snakemake.yaml`)
+only — no computed node outputs. So VIS-03/04 need no run, because they plot
+the shipped `sample_mouse2p_image.tiff`, but anything reading a node output
+does: VIS-02 and VIS-05 select `cell_roi` (a `suite2p_roi` output), and the
+dataview needs a success record plus thumbnails, which only a completed run
+writes. `ensureCompletedTutorialRun` mints that state once per run by
+rerunning the imported Tutorial1 by uid; where its outputs already exist
+snakemake short-circuits, but on a fresh stack this is a real execution.
+Two gotchas the helper absorbs: loading a finished experiment fires a
+phantom "Workflow finished" snackbar (it anchors on the run POST instead),
+and the success record is written shortly AFTER the finished signal (DV-12
+reload-polls the grid).
 
 ---
 
