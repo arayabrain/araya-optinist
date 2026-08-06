@@ -295,7 +295,9 @@ test.describe("Private Dataview @slow", () => {
     const header = page.locator('.MuiDataGrid-columnHeader[data-field="name"]')
 
     await header.click()
-    const ascending = [...(await names())].sort()
+    // localeCompare, not the default sort: MySQL orders name under a
+    // case-insensitive collation, so lowercase names are not sorted last
+    const ascending = [...(await names())].sort((a, b) => a.localeCompare(b))
     await expect(async () => {
       expect(await names()).toEqual(ascending)
     }).toPass({ timeout: 15_000 })
