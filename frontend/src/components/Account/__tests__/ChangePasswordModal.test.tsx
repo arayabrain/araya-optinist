@@ -170,6 +170,23 @@ describe("Change password modal", () => {
     expect(screen.getByText("This field is required")).toBeInTheDocument()
   })
 
+  it("reports the missing old password even when another field already errored", () => {
+    // Gating submission on the live error state rather than on a full
+    // revalidation reports only the fields that state happens to hold, so the
+    // user fixes the mismatch, resubmits, and only then learns the old password
+    // was required all along.
+    const { next, confirm, update } = renderModal()
+
+    fill(next, "newPass!1")
+    fill(confirm, "newPass!2")
+    expect(screen.getByText("Passwords do not match")).toBeInTheDocument()
+
+    fireEvent.click(update)
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.getByText("This field is required")).toBeInTheDocument()
+  })
+
   it("flags a mismatch as soon as the new password is edited after confirming", () => {
     // Without re-validating the confirmation on every new-password keystroke, the
     // form looks valid until submit even though the two fields now differ
