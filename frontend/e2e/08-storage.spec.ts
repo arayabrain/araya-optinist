@@ -16,13 +16,68 @@ test("STO-01 - Free user under limit logs in without storage warning", async ({
   page,
 }) => {
   skipWithoutCreds()
+  // The modal is rendered from this response, so a hidden-modal assertion made
+  // before it resolves passes for an over-quota user too
+  const warningSeen = page.waitForResponse(
+    (r) => r.url().endsWith("/storage-limit-alerts/limit-warning"),
+    { timeout: 60_000 },
+  )
   await page.goto("/login")
   await page.locator('[data-testid="email"]').fill(FREE_USER.email)
   await page.locator('[data-testid="password"]').fill(FREE_USER.password)
   await page.locator('[data-testid="button-submit"]').click()
   await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 })
 
+  // No alert for this account is the premise; the modal staying away is the
+  // claim. Both are asserted so a broken premise cannot read as a pass.
+  const warning = await (await warningSeen).json()
+  expect(warning?.has_alert ?? false).toBe(false)
+  // The dashboard having rendered is what makes the absence an absence:
+  // `toBeHidden` resolves on its first poll for an element that has not been
+  // given the chance to render yet.
+  await expect(page.getByRole("link", { name: "Workspaces" })).toBeVisible({
+    timeout: 30_000,
+  })
   await expect(page.locator("text=Storage Limit Exceeded")).toBeHidden()
+})
+
+// The endpoint answers `null` with a 200 for an account with no alert, so the
+// negative above is also satisfied by a backend that says nothing at all. No
+// free account can be put over quota on demand from the UI, so the direction
+// that renders the modal is pinned on a fulfilled response instead.
+const OVER_QUOTA_ALERT = {
+  has_alert: true,
+  alert_type: "storage",
+  days_remaining: 7,
+  excess_data_bytes: 1073741824,
+  excess_data_gb: 1,
+  storage_usage_bytes: 6442450944,
+  storage_usage_gb: 6,
+  storage_quota_bytes: 5368709120,
+  storage_quota_gb: 5,
+  deletion_date: "2099-01-01T00:00:00Z",
+  message: "Storage limit exceeded",
+}
+
+test("STO-04 - An over-quota alert opens the storage modal on login", async ({
+  page,
+}) => {
+  skipWithoutCreds()
+  await page.route("**/storage-limit-alerts/limit-warning", (route) =>
+    route.fulfill({ json: OVER_QUOTA_ALERT }),
+  )
+  // dismissWarning=false: the modal under test is the one login() would close
+  await login(page, FREE_USER.email, FREE_USER.password, false)
+
+  // Exact: the alert body repeats the title in lower case, and getByText is
+  // case-insensitive without it
+  const modal = page.locator('[role="dialog"]')
+  await expect(
+    modal.getByText("Storage Limit Exceeded", { exact: true }),
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    modal.getByRole("button", { name: "Manage Files" }),
+  ).toBeVisible()
 })
 
 // One literal, so a copy change cannot quietly defang the negative assertion

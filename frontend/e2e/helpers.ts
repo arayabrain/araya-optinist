@@ -299,19 +299,6 @@ export async function goToWorkspaces(page: Page) {
   })
 }
 
-// Navigate to workspaces and wait for at least one data row.
-// Returns false if the table stayed empty (tests should then skip).
-export async function goToWorkspacesWithData(page: Page): Promise<boolean> {
-  await goToWorkspaces(page)
-  const workflowButton = page.locator('button:has-text("Workflow")').first()
-  try {
-    await expect(workflowButton).toBeVisible({ timeout: 30_000 })
-    return true
-  } catch {
-    return false
-  }
-}
-
 // Shared workspace for data-dependent specs (03/05/06/07): sample data is
 // imported once per run; global-setup deletes all e2e-* workspaces at start
 export const DATA_WS = "e2e-data"
