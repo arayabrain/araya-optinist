@@ -18,7 +18,6 @@ from sqlalchemy.dialects import mysql
 
 from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
 from studio.app.common.core.dataview.dataview_services import DataviewService
-from studio.app.common.core.subscription.constants import SyncStatusConstants
 from studio.app.common.schemas.dataview import (
     LocalSyncStatus,
     PublishFlags,
@@ -28,14 +27,14 @@ from studio.app.common.schemas.dataview import (
 SYNC_MODULE = "studio.app.common.core.background.sync_job"
 
 
-def _compiled_pending_query(rows=()):
+def _compiled_pending_query(rows=(), limit=None):
     """Capture the statement ``_get_pending_experiments`` executes."""
     with patch(f"{SYNC_MODULE}.session_scope") as mock_session:
         db = MagicMock()
         mock_session.return_value.__enter__.return_value = db
         db.execute.return_value = list(rows)
 
-        experiments = PublishedExperimentSyncJob._get_pending_experiments()
+        experiments = PublishedExperimentSyncJob._get_pending_experiments(limit=limit)
 
     statement = db.execute.call_args.args[0]
     sql = " ".join(str(statement.compile(dialect=mysql.dialect())).split())
@@ -62,6 +61,14 @@ def _selected_sync_statuses(params):
             selected.add(value)
     assert selected, "no local_sync_status values were bound into the query"
     return selected
+
+
+def test_the_sync_statuses_are_the_stored_strings():
+    """``local_sync_status`` is a VARCHAR column holding these values, so renaming
+    a member strands every row already written."""
+    assert LocalSyncStatus.pending.value == "pending"
+    assert LocalSyncStatus.synced.value == "synced"
+    assert LocalSyncStatus.error.value == "error"
 
 
 class TestPendingSelectionStatuses:
@@ -110,10 +117,33 @@ class TestPendingSelectionStatuses:
 
     def test_the_selection_is_bounded_by_the_configured_limit(self):
         """An unbounded query, or one with a limit large enough not to matter,
-        would let a backlogged run exhaust the validation concurrency budget."""
-        _, params, _ = _compiled_pending_query()
+        would let a backlogged run exhaust the validation concurrency budget.
 
-        assert params["param_1"] == SyncStatusConstants.MAX_SYNC_PER_RUN
+        Pinned to literals, not to the constants production reads: comparing a
+        bind against the same attribute the query was built from passes for any
+        value. The previous version also exercised the ``limit is None`` fallback
+        to ``MAX_SYNC_PER_RUN``, which no production caller takes.
+        """
+        assert PublishedExperimentSyncJob.VALIDATION_LIMIT == 50
+        assert PublishedExperimentSyncJob.VALIDATION_CONCURRENCY == 10
+
+        _, params, _ = _compiled_pending_query(
+            limit=PublishedExperimentSyncJob.VALIDATION_LIMIT
+        )
+
+        assert params["param_1"] == 50
+
+    def test_the_validation_run_asks_for_the_validation_limit(self):
+        """``_run_validation_logic`` is the only caller, and it always passes a
+        limit, so ``MAX_SYNC_PER_RUN`` is a dead default."""
+        import asyncio
+
+        with patch.object(
+            PublishedExperimentSyncJob, "_get_pending_experiments", return_value=[]
+        ) as pending, patch.object(PublishedExperimentSyncJob, "_publish_metrics"):
+            asyncio.run(PublishedExperimentSyncJob._run_validation_logic())
+
+        pending.assert_called_once_with(limit=50)
 
     def test_a_users_own_bucket_wins_over_the_default(self):
         """The row tuple carries the bucket each experiment is validated against.
