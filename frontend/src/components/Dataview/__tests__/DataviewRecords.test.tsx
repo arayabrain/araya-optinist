@@ -282,6 +282,15 @@ describe("DataviewRecords Component", () => {
   let store: ReturnType<typeof mockStore>
 
   beforeEach(() => {
+    // Per test, not at the jest.fn(): CRA's jest preset sets resetMocks, which
+    // drops an implementation given at declaration. Deriving the URL from the
+    // requested thumbType keeps the two cards distinguishable - and a bare
+    // jest.fn() resolves undefined, which still renders an <img>, just with an
+    // empty src, so alt text alone holds even if no URL ever reaches it.
+    mockGetThumbnailBlobUrl.mockImplementation((...args) =>
+      Promise.resolve(`blob:${String(args[2])}`),
+    )
+
     const initialState = {
       dataview: {
         data: {
@@ -716,8 +725,17 @@ describe("DataviewRecords Component", () => {
 
       renderWithProviders(<DataviewRecords user={mockUser} />)
 
-      expect(await screen.findByAltText("Input thumbnail")).toBeDefined()
-      expect(await screen.findByAltText("ROI thumbnail")).toBeDefined()
+      // The fetched URL has to reach the src, and each card has to ask for its
+      // own thumbType - an <img> with an empty src is a broken thumbnail, and
+      // both cards requesting "input" would show the same picture twice
+      expect(await screen.findByAltText("Input thumbnail")).toHaveAttribute(
+        "src",
+        "blob:input",
+      )
+      expect(await screen.findByAltText("ROI thumbnail")).toHaveAttribute(
+        "src",
+        "blob:roi",
+      )
 
       // Should not use the WithLoading plot components for PNG thumbnails
       expect(screen.queryByTestId("image-plot-with-loading")).toBeNull()
