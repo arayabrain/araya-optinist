@@ -16,28 +16,59 @@ from studio.app.common.core.subscription.subscription_service import Subscriptio
 
 
 class TestWebhookData:
-    """Test webhook data structure"""
+    """The ``parent.subscription_details`` fallback for ``subscription_id``.
 
-    def test_invoice_data_structure(self):
-        """Test that invoice data has correct structure for subscription_id"""
-        # The correct Stripe invoice structure for subscription_id
-        invoice_data = {
+    Every other renewal test sends a top-level ``subscription``, so the fallback
+    branch is only reachable from here. These cases drive
+    ``handle_subscription_payment_succeeded`` rather than re-implementing the
+    extraction: the previous version asserted its own dict comprehension and
+    omitted the ``type`` discriminator production actually requires.
+    """
+
+    @staticmethod
+    def _invoice(parent):
+        return {
             "id": "in_test123",
             "customer": "cus_test123",
-            "parent": {"subscription_details": {"subscription": "sub_test123"}},
+            "parent": parent,
             "status": "paid",
             "amount_paid": 2999,
             "billing_reason": "subscription_cycle",
         }
 
-        # Test extraction using the same logic as webhook_service.py
-        subscription_id = (
-            invoice_data.get("parent", {})
-            .get("subscription_details", {})
-            .get("subscription")
+    def test_subscription_id_is_read_from_parent_when_absent_at_top_level(self):
+        from studio.app.common.core.subscription.webhook_service import WebhookService
+
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        result = WebhookService.handle_subscription_payment_succeeded(
+            db,
+            self._invoice(
+                {
+                    "type": "subscription_details",
+                    "subscription_details": {"subscription": "sub_test123"},
+                }
+            ),
         )
-        assert subscription_id == "sub_test123"
-        assert subscription_id is not None
+
+        assert result["reason"] == "missing_user_account"
+
+    def test_parent_without_the_type_discriminator_is_rejected(self):
+        from studio.app.common.core.subscription.webhook_service import WebhookService
+
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            WebhookService.handle_subscription_payment_succeeded(
+                db,
+                self._invoice(
+                    {"subscription_details": {"subscription": "sub_test123"}}
+                ),
+            )
+
+        assert exc.value.status_code == 400
 
 
 class TestCheckoutRoutes:
