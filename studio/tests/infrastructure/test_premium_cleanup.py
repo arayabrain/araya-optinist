@@ -270,108 +270,146 @@ class TestCheckInstanceReadiness:
 
 
 class TestCleanupStaleAssignments:
-    """cleanup_stale_assignments tests."""
+    """cleanup_stale_assignments tests.
 
-    def test_no_stale_assignments(self, mock_env_vars_premium):
-        """No stale assignments returns 0 cleaned."""
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "pymysql.connect"
-        ) as mock_pymysql, patch("boto3.client"):
-            mock_connection = setup_db_mock(
-                fetchall_values=[[]],
-            )
+    Every case here used to be handed a pre-filtered row list, so the
+    ``last_activity`` staleness predicate that decides whose premium instance is
+    reclaimed was never inspected: shortening the interval to seconds, or
+    dropping the WHERE clause entirely, kept all three green.
+    """
+
+    @staticmethod
+    def _stale_row(user_id=999, tg_arn="arn:aws:tg/stale-tg", rule_arn=None):
+        return MockRow(
+            {
+                "user_id": user_id,
+                "instance_id": f"i-stale{user_id}",
+                "target_group_arn": tg_arn,
+                "alb_rule_arn": rule_arn or f"arn:aws:rule/stale-{user_id}",
+                "last_activity": "2025-01-01",
+            }
+        )
+
+    def _cleanup(self, env, rows):
+        with patch.dict("os.environ", env), patch("boto3.client") as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect"
+        ) as mock_pymysql:
+            mock_connection = setup_db_mock(fetchall_values=[rows])
             mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+
+            mock_elbv2 = MagicMock()
+            mock_boto3.side_effect = lambda service: (
+                mock_elbv2 if service == "elbv2" else MagicMock()
+            )
 
             from premium_cleanup import cleanup_stale_assignments
 
-            result = cleanup_stale_assignments()
-            assert result["cleaned_assignments"] == 0
+            return cleanup_stale_assignments(), cursor, mock_elbv2
+
+    @staticmethod
+    def _statements(cursor):
+        return [" ".join(c[0][0].split()) for c in cursor.execute.call_args_list]
+
+    @staticmethod
+    def _params_for(cursor, verb):
+        return [
+            c[0][1]
+            for c in cursor.execute.call_args_list
+            if " ".join(c[0][0].split()).startswith(verb)
+        ]
+
+    def test_selects_only_rows_idle_past_the_configured_timeout(
+        self, mock_env_vars_premium
+    ):
+        """The staleness predicate and its bind, not just "a SELECT ran"."""
+        _, cursor, _ = self._cleanup(mock_env_vars_premium, [])
+
+        sql = self._statements(cursor)[0]
+        assert "FROM premium_user_assignments" in sql
+        assert "WHERE status = %s" in sql
+        assert "AND is_standby = 0" in sql
+        assert "AND last_activity < DATE_SUB(NOW(), INTERVAL %s HOUR)" in sql
+        # FOR UPDATE: the sweep and a concurrent heartbeat must not race.
+        assert sql.endswith("FOR UPDATE")
+        assert cursor.execute.call_args_list[0][0][1] == (
+            PremiumAssignment.ACTIVE,
+            int(mock_env_vars_premium["PREMIUM_IDLE_TIMEOUT_HOURS"]),
+        )
+
+    def test_no_stale_assignments(self, mock_env_vars_premium):
+        """No stale assignments returns 0 cleaned and writes nothing."""
+        result, cursor, elbv2 = self._cleanup(mock_env_vars_premium, [])
+
+        assert result["cleaned_assignments"] == 0
+        assert self._params_for(cursor, "DELETE") == []
+        assert self._params_for(cursor, "UPDATE") == []
+        elbv2.delete_rule.assert_not_called()
 
     def test_deletes_alb_and_db(self, mock_env_vars_premium):
         """Stale assignment triggers ALB + DB cleanup."""
         rule_arn = "arn:aws:rule/stale-rule"
         tg_arn = "arn:aws:tg/stale-tg"
 
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
-            mock_connection = setup_db_mock(
-                fetchall_values=[
-                    [
-                        MockRow(
-                            {
-                                "user_id": 999,
-                                "instance_id": "i-stale1",
-                                "target_group_arn": tg_arn,
-                                "alb_rule_arn": rule_arn,
-                                "last_activity": "2025-01-01",
-                            }
-                        )
-                    ],
-                ],
-            )
-            mock_pymysql.return_value = mock_connection
+        result, cursor, elbv2 = self._cleanup(
+            mock_env_vars_premium,
+            [self._stale_row(tg_arn=tg_arn, rule_arn=rule_arn)],
+        )
 
-            mock_elbv2 = MagicMock()
+        assert result["cleaned_assignments"] == 1
+        elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
+        elbv2.delete_target_group.assert_called_once_with(TargetGroupArn=tg_arn)
 
-            def boto3_client_side_effect(service):
-                if service == "elbv2":
-                    return mock_elbv2
-                return MagicMock()
+        # The DB half the name promises: the row goes and the usage log closes.
+        deletes = [s for s in self._statements(cursor) if s.startswith("DELETE")]
+        assert deletes == ["DELETE FROM premium_user_assignments WHERE user_id = %s"]
+        assert self._params_for(cursor, "DELETE") == [(999,)]
 
-            mock_boto3.side_effect = boto3_client_side_effect
-
-            from premium_cleanup import cleanup_stale_assignments
-
-            result = cleanup_stale_assignments()
-
-            assert result["cleaned_assignments"] == 1
-            mock_elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
-            mock_elbv2.delete_target_group.assert_called_once_with(
-                TargetGroupArn=tg_arn
-            )
+        updates = [s for s in self._statements(cursor) if s.startswith("UPDATE")]
+        assert len(updates) == 1
+        assert updates[0].startswith("UPDATE instance_usage_log SET ended_at = NOW()")
+        assert "WHERE user_id = %s AND tier = 'premium' AND ended_at IS NULL" in (
+            updates[0]
+        )
+        assert self._params_for(cursor, "UPDATE") == [(999,)]
 
     def test_skips_autoscaling_tg(self, mock_env_vars_premium):
-        """Autoscaling TG not deleted on stale cleanup."""
+        """Shared-ASG exception: the rule is deleted, the target group is kept.
+
+        The autoscaling target group is shared by every pooled premium instance,
+        so deleting it with one user's assignment would break routing for all of
+        them. The DB row still goes.
+        """
         rule_arn = "arn:aws:rule/stale-asg-rule"
         asg_tg_arn = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
 
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "boto3.client"
-        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
-            mock_connection = setup_db_mock(
-                fetchall_values=[
-                    [
-                        MockRow(
-                            {
-                                "user_id": 888,
-                                "instance_id": "i-asg1",
-                                "target_group_arn": asg_tg_arn,
-                                "alb_rule_arn": rule_arn,
-                                "last_activity": "2025-01-01",
-                            }
-                        )
-                    ],
-                ],
-            )
-            mock_pymysql.return_value = mock_connection
+        result, cursor, elbv2 = self._cleanup(
+            mock_env_vars_premium,
+            [self._stale_row(user_id=888, tg_arn=asg_tg_arn, rule_arn=rule_arn)],
+        )
 
-            mock_elbv2 = MagicMock()
+        assert result["cleaned_assignments"] == 1
+        elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
+        elbv2.delete_target_group.assert_not_called()
+        assert self._params_for(cursor, "DELETE") == [(888,)]
 
-            def boto3_client_side_effect(service):
-                if service == "elbv2":
-                    return mock_elbv2
-                return MagicMock()
+    def test_standby_rows_keep_their_alb_resources(self, mock_env_vars_premium):
+        """A standby marker has no per-user rule or target group to delete."""
+        result, cursor, elbv2 = self._cleanup(
+            mock_env_vars_premium,
+            [
+                self._stale_row(
+                    user_id=777,
+                    tg_arn=PremiumAssignment.STANDBY,
+                    rule_arn=PremiumAssignment.STANDBY,
+                )
+            ],
+        )
 
-            mock_boto3.side_effect = boto3_client_side_effect
-
-            from premium_cleanup import cleanup_stale_assignments
-
-            result = cleanup_stale_assignments()
-
-            assert result["cleaned_assignments"] == 1
-            mock_elbv2.delete_rule.assert_called_once_with(RuleArn=rule_arn)
-            assert not mock_elbv2.delete_target_group.called
+        assert result["cleaned_assignments"] == 1
+        elbv2.delete_rule.assert_not_called()
+        elbv2.delete_target_group.assert_not_called()
+        assert self._params_for(cursor, "DELETE") == [(777,)]
 
 
 class TestCleanupOrphanedAlbResources:
@@ -445,6 +483,10 @@ class TestCleanupOrphanedAlbResources:
 
             assert result["orphaned_rules_deleted"] == 0
             assert not mock_elbv2.delete_rule.called
+            # The whole body is wrapped in ``except Exception`` returning
+            # ``orphaned_rules_deleted: 0``, so both assertions above also hold
+            # when the sweep dies on its first line.
+            assert "error" not in result, result
 
     def test_deletes_orphan(self, mock_env_vars_premium):
         """Orphaned ALB rule (not in DB) deleted."""
@@ -555,6 +597,10 @@ class TestCleanupOrphanedAlbResources:
             # Live rule survives the sweep (kept via the TERMINATING status).
             assert result["orphaned_rules_deleted"] == 0
             assert not mock_elbv2.delete_rule.called
+            # The whole body is wrapped in ``except Exception`` returning
+            # ``orphaned_rules_deleted: 0``, so both assertions above also hold
+            # when the sweep dies on its first line.
+            assert "error" not in result, result
 
     def test_keeps_recently_active_row_outside_keepset(self, mock_env_vars_premium):
         """Recency guard (#766): a row whose status is outside the keep-set but
@@ -606,6 +652,10 @@ class TestCleanupOrphanedAlbResources:
             # Rule survives purely because the row is recent.
             assert result["orphaned_rules_deleted"] == 0
             assert not mock_elbv2.delete_rule.called
+            # The whole body is wrapped in ``except Exception`` returning
+            # ``orphaned_rules_deleted: 0``, so both assertions above also hold
+            # when the sweep dies on its first line.
+            assert "error" not in result, result
 
     def test_skips_default_rule(self, mock_env_vars_premium):
         """Default ALB rule is never deleted."""
@@ -648,6 +698,10 @@ class TestCleanupOrphanedAlbResources:
 
             assert result["orphaned_rules_deleted"] == 0
             assert not mock_elbv2.delete_rule.called
+            # The whole body is wrapped in ``except Exception`` returning
+            # ``orphaned_rules_deleted: 0``, so both assertions above also hold
+            # when the sweep dies on its first line.
+            assert "error" not in result, result
 
 
 class TestReconcileInstanceStates:
@@ -690,10 +744,21 @@ class TestReconcileInstanceStates:
             )
             mock_pymysql.return_value = mock_connection
 
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+
             from premium_cleanup import reconcile_instance_states
 
             result = reconcile_instance_states()
             assert result["cleanup_count"] == 1
+            # The counter alone was satisfied without the DELETE ever running.
+            deletes = [
+                (" ".join(c[0][0].split()), c[0][1])
+                for c in cursor.execute.call_args_list
+                if c[0][0].strip().startswith("DELETE")
+            ]
+            assert deletes == [
+                ("DELETE FROM premium_user_assignments WHERE id = %s", (1,))
+            ]
 
     def test_updates_state_mismatch(self, mock_env_vars_premium):
         """DB state updated when AWS state differs."""
@@ -739,10 +804,24 @@ class TestReconcileInstanceStates:
             )
             mock_pymysql.return_value = mock_connection
 
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+
             from premium_cleanup import reconcile_instance_states
 
             result = reconcile_instance_states()
             assert result["update_count"] == 1
+            updates = [
+                (" ".join(c[0][0].split()), c[0][1])
+                for c in cursor.execute.call_args_list
+                if c[0][0].strip().startswith("UPDATE")
+            ]
+            assert updates == [
+                (
+                    "UPDATE premium_user_assignments SET instance_state = %s, "
+                    "last_state_check = NOW() WHERE id = %s",
+                    ("stopped", 2),
+                )
+            ]
 
     def test_skips_autoscaling_pool(self, mock_env_vars_premium):
         """autoscaling-pool rows are skipped."""
