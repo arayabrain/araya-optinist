@@ -593,8 +593,15 @@ class TestClearFreeUserLoggedOutAt:
             mock_session.commit.assert_called_once()
 
     def test_clear_logged_out_at_updates_last_activity(self):
-        """clear_free_user_logged_out_at should include last_activity in UPDATE"""
+        """The UPDATE has to clear ``logged_out_at`` and bump ``last_activity``.
+
+        This case was a copy of the one above and asserted nothing about either
+        column: without the ``last_activity`` bump the stale-assignment sweep
+        still sees the returning user as idle and reclaims their instance.
+        """
         from unittest.mock import MagicMock, patch
+
+        from sqlalchemy.dialects import mysql
 
         from studio.app.common.core.middleware.user_activity_middleware import (
             clear_free_user_logged_out_at,
@@ -611,9 +618,18 @@ class TestClearFreeUserLoggedOutAt:
 
             result = clear_free_user_logged_out_at(TEST_USER_ID)
 
-            assert result is True
-            mock_session.execute.assert_called_once()
-            mock_session.commit.assert_called_once()
+        assert result is True
+        compiled = mock_session.execute.call_args.args[0].compile(
+            dialect=mysql.dialect()
+        )
+        sql = " ".join(str(compiled).split())
+        assert sql.startswith("UPDATE free_user_assignments SET ")
+        assert "logged_out_at=%s" in sql
+        assert "last_activity=%s" in sql
+        assert "free_user_assignments.logged_out_at IS NOT NULL" in sql
+        assert compiled.params["logged_out_at"] is None
+        assert compiled.params["last_activity"] is not None
+        assert compiled.params["user_id_1"] == TEST_USER_ID
 
     def test_clear_logged_out_at_returns_true_if_no_assignment(self):
         """Should return True even if no rows matched (no assignment)"""
