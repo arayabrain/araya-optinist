@@ -8,9 +8,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+from sqlalchemy.dialects import mysql
 
 from studio.app.common.routers.dataview import publish_dataview_records
 from studio.app.common.schemas.dataview import LocalSyncStatus
+
+
+def _compiled_updates(mock_db):
+    """Return ``[(sql, params), ...]`` for every UPDATE the endpoint executed."""
+    out = []
+    for call in mock_db.execute.call_args_list:
+        compiled = call.args[0].compile(dialect=mysql.dialect())
+        out.append((" ".join(str(compiled).split()), compiled.params))
+    return out
 
 
 class TestPublishDataviewRecords:
@@ -58,9 +69,17 @@ class TestPublishDataviewRecords:
             )
 
         assert result is True
-        # Verify execute() was called (the actual SQL update)
-        assert mock_db.execute.called
         mock_db.commit.assert_called_once()
+
+        # The three written values. Writing ``synced`` instead of ``pending``
+        # keeps the record out of the sync job's retry set, which
+        # ``execute.called`` cannot see.
+        sql, params = _compiled_updates(mock_db)[0]
+        assert sql.startswith("UPDATE experiment_records SET")
+        assert params["publish_status"] == 1
+        assert params["local_sync_status"] == LocalSyncStatus.pending.value
+        assert "version=(experiment_records.version + " in sql
+        assert params["version_1"] == 1
 
     @pytest.mark.asyncio
     async def test_unpublish_success(self):
@@ -91,9 +110,12 @@ class TestPublishDataviewRecords:
             )
 
         assert result is True
-        # Verify execute() was called (the actual SQL update)
-        assert mock_db.execute.called
         mock_db.commit.assert_called_once()
+
+        sql, params = _compiled_updates(mock_db)[0]
+        assert sql.startswith("UPDATE experiment_records SET")
+        assert params["publish_status"] == 0
+        assert params["local_sync_status"] == LocalSyncStatus.synced.value
 
     @pytest.mark.asyncio
     async def test_publish_no_change_needed(self):
@@ -128,7 +150,10 @@ class TestPublishDataviewRecords:
             )
 
         assert result is True
-        assert mock_record.version == 0  # Version not incremented
+        # ``version`` was asserted before, but production never mutates the
+        # attribute: it writes ``version + 1`` in SQL. The observable claim is
+        # that no statement is issued at all.
+        mock_db.execute.assert_not_called()
         mock_db.commit.assert_not_called()
 
     @pytest.mark.asyncio
@@ -153,7 +178,13 @@ class TestPublishDataviewRecords:
 
     @pytest.mark.asyncio
     async def test_publish_concurrent_modification_retry(self):
-        """Test retry on concurrent modification"""
+        """A conflicted attempt is retried and the next success is reported.
+
+        "Version increments exactly once" is not pinnable here: production
+        re-reads the record on every attempt, and a ``MagicMock`` re-read hands
+        back the same stale ``version``, so the retry's WHERE clause is a state
+        production cannot reach. What is pinnable is the retry ladder, below.
+        """
         mock_db = MagicMock()
         mock_user = MagicMock()
         mock_user.id = 123
@@ -204,9 +235,57 @@ class TestPublishDataviewRecords:
             )
 
         assert result is True
-        assert call_count == 2  # Retried once
-        # commit is called on each attempt
+        assert call_count == 2, "a conflict must be retried, not surfaced"
         assert mock_db.commit.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_the_update_is_guarded_by_the_version_it_read(self):
+        """Row 724. The single-record endpoint's optimistic lock.
+
+        ``TestPublishToggleIsLastWriteWins`` drives the bulk endpoint, which
+        carries no version predicate at all, so nothing pinned that a rapid
+        second toggle on one record cannot overwrite the first. Without
+        ``version == current_version`` in the WHERE, two concurrent toggles both
+        report success and the loser's ``local_sync_status`` silently wins.
+        """
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
+        mock_record = MagicMock()
+        mock_record.id = 7
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
+        mock_record.publish_status = 0
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+        mock_record.version = 4
+
+        mock_db.execute.return_value.rowcount = 1
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_user_owned_dataview_record",
+            return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            return_value=(True, None),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            return_value=mock_validation,
+        ):
+            from studio.app.common.routers.dataview import PublishFlags
+
+            await publish_dataview_records(
+                id=7, flag=PublishFlags.on, db=mock_db, current_user=mock_user
+            )
+
+        sql, params = _compiled_updates(mock_db)[0]
+        assert "WHERE experiment_records.id = " in sql
+        assert "AND experiment_records.version = " in sql
+        assert params["id_1"] == 7
+        assert params["version_2"] == 4
 
     @pytest.mark.asyncio
     async def test_publish_concurrent_modification_max_retries(self):
@@ -252,6 +331,9 @@ class TestPublishDataviewRecords:
 
             assert exc_info.value.status_code == 409
             assert "Concurrent modification" in exc_info.value.detail
+            # Exactly three attempts: a smaller ladder surfaces a transient
+            # conflict as a user-visible 409, a larger one holds the request open.
+            assert mock_db.execute.call_count == 3
 
 
 class TestPublicDataviewReproduceWorkflow:
@@ -288,7 +370,9 @@ class TestPublicDataviewReproduceWorkflow:
                 "check_sync_status_unsynced",
                 return_value=False,
             ):
-                with patch("os.environ.get", return_value="test-bucket"):
+                with patch.dict(
+                    "os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}
+                ):
                     with patch(
                         "studio.app.common.routers.dataview.RemoteStorageReader",
                         return_value=mock_remote_reader,
@@ -336,7 +420,9 @@ class TestPublicDataviewReproduceWorkflow:
                 "check_sync_status_unsynced",
                 return_value=False,
             ):
-                with patch("os.environ.get", return_value="test-bucket"):
+                with patch.dict(
+                    "os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}
+                ):
                     with patch(
                         "studio.app.common.routers.dataview.RemoteStorageReader",
                         return_value=mock_remote_reader,
@@ -389,7 +475,9 @@ class TestPublicDataviewReproduceWorkflow:
                     "RemoteStorageController.is_available",
                     return_value=True,
                 ):
-                    with patch("os.environ.get", return_value="test-bucket"):
+                    with patch.dict(
+                        "os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}
+                    ):
                         with patch(
                             "studio.app.common.routers.dataview.RemoteStorageReader",
                             return_value=mock_remote_reader,
@@ -438,8 +526,8 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
-        ), patch("os.path.exists", return_value=True), patch(
-            "os.environ.get", return_value="test-bucket"
+        ), patch("os.path.exists", return_value=True), patch.dict(
+            "os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}
         ), patch(
             "studio.app.common.routers.dataview.PublishValidator."
             "validate_for_display",
@@ -452,7 +540,9 @@ class TestPublicDataviewReproduceWorkflow:
                 "check_sync_status_unsynced",
                 return_value=False,
             ):
-                with patch("os.environ.get", return_value="test-bucket"):
+                with patch.dict(
+                    "os.environ", {"S3_DEFAULT_BUCKET_NAME": "test-bucket"}
+                ):
                     with patch(
                         "studio.app.common.routers.dataview.RemoteStorageReader",
                         return_value=mock_remote_reader,
@@ -464,15 +554,23 @@ class TestPublicDataviewReproduceWorkflow:
                         ):
                             with patch(
                                 "studio.app.common.routers.dataview."
-                                "reproduce_experiment"
+                                "reproduce_experiment",
+                                return_value=JSONResponse(
+                                    status_code=200, content={"ok": True}
+                                ),
                             ):
-                                await public_reproduce_experiment(
+                                response = await public_reproduce_experiment(
                                     workspace_id="1", unique_id="exp123", db=mock_db
                                 )
 
-        # Verify bulk update was executed and committed
+        assert response.status_code == 200
         mock_db.execute.assert_called_once()
         mock_db.commit.assert_called_once()
+        # Which status: the sibling ``..._demotes_to_error`` pins error, this one
+        # has to pin synced, or a promotion writing ``error`` would pass here.
+        params = mock_db.execute.call_args[0][0].compile().params
+        assert params["local_sync_status"] == LocalSyncStatus.synced.value
+        assert params["version_1"] == 1
 
     @pytest.mark.asyncio
     async def test_reproduce_synced_but_missing_in_s3_demotes_to_error(self):
