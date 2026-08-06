@@ -888,7 +888,8 @@ const DataviewRecords = ({
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail
-      enqueueSnackbar(detail ?? "Failed to publish experiment", {
+      const action = status === "on" ? "publish" : "unpublish"
+      enqueueSnackbar(detail ?? `Failed to ${action} experiment`, {
         variant: "error",
         style: { whiteSpace: "pre-line" },
       })
@@ -1029,7 +1030,8 @@ const DataviewRecords = ({
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail
-      enqueueSnackbar(detail ?? "Failed to publish experiments", {
+      const action = openPublishAll.type === "on" ? "publish" : "unpublish"
+      enqueueSnackbar(detail ?? `Failed to ${action} experiments`, {
         variant: "error",
         style: { whiteSpace: "pre-line" },
       })

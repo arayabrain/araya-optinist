@@ -781,6 +781,33 @@ describe("DataviewRecords Component", () => {
       await waitFor(() =>
         expect(mockEnqueueSnackbar).toHaveBeenCalledWith(
           "Some experiments cannot be published:\n- exp: corrupted",
+          expect.objectContaining({
+            variant: "error",
+            // multi-line backend detail must keep its line breaks
+            style: { whiteSpace: "pre-line" },
+          }),
+        ),
+      )
+    })
+
+    it("uses an action-aware fallback message when bulk unpublish is rejected without detail", async () => {
+      mockEnqueueSnackbar.mockClear()
+      // Reject without a `detail` -> the fallback message is used
+      store.dispatch = jest.fn().mockReturnValue({
+        unwrap: () => Promise.reject({ message: "network error" }),
+      }) as unknown as typeof store.dispatch
+
+      renderWithProviders(<DataviewRecords user={mockUser} readonly={false} />)
+
+      fireEvent.click(screen.getAllByRole("checkbox")[0])
+
+      const bulkUnpublish = screen.getAllByLabelText(/bulk unpublish/i)[0]
+      fireEvent.click(bulkUnpublish.querySelector("button") ?? bulkUnpublish)
+      fireEvent.click(screen.getByTestId("confirm-button"))
+
+      await waitFor(() =>
+        expect(mockEnqueueSnackbar).toHaveBeenCalledWith(
+          "Failed to unpublish experiments",
           expect.objectContaining({ variant: "error" }),
         ),
       )
