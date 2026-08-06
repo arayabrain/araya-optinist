@@ -74,6 +74,22 @@ async function waitForDataRows(page: Page, wsId: number, min: number) {
   }).toPass({ timeout: 90_000 })
 }
 
+// Server-side filter on the Workspace column, which is only offered where
+// DataviewRecords renders without a workspaceId: /dataview and /public
+async function filterWorkspace(page: Page, value: string) {
+  const header = page.locator(
+    '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+  )
+  await header.hover()
+  await header.locator(".MuiDataGrid-menuIcon button").click()
+  await page.getByRole("menuitem", { name: /^filter$/i }).click()
+  await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+  await page.keyboard.press("Escape")
+}
+
+const BASE_RECORD = "Tutorial1"
+const COPY_RECORD = "Tutorial1_copy"
+
 let recordsMinted = false
 async function ensureDataviewRows(page: Page): Promise<number> {
   const id = await ensureWorkspaceId(page, DATA_WS)
@@ -212,8 +228,6 @@ test.describe("Private Dataview", () => {
   // that view and the public one render DataviewRecords with no workspaceId, so
   // this is the same filter the public page offers.
   test("DV-16 - Filter by workspace narrows the table", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
-
     // The carve-out the row names: the single-workspace view keeps the column
     // menu but drops its Filter entry
     const scopedHeader = page.locator(
@@ -237,18 +251,7 @@ test.describe("Private Dataview", () => {
       },
     )
 
-    const filterWorkspace = async (value: string) => {
-      const header = page.locator(
-        '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
-      )
-      await header.hover()
-      await header.locator(".MuiDataGrid-menuIcon button").click()
-      await page.getByRole("menuitem", { name: /^filter$/i }).click()
-      await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
-      await page.keyboard.press("Escape")
-    }
-
-    await filterWorkspace(DATA_WS)
+    await filterWorkspace(page, DATA_WS)
     await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
       {
         timeout: 15_000,
@@ -262,10 +265,9 @@ test.describe("Private Dataview", () => {
 
     // A workspace that cannot match empties the table, which is what makes the
     // pass above a narrowing rather than a no-op
-    await filterWorkspace("e2e-no-such-workspace")
+    await filterWorkspace(page, "e2e-no-such-workspace")
     await expect(async () => {
-      const rows = await page.locator('[role="grid"] [role="row"]').count()
-      expect(rows).toBeLessThanOrEqual(1) // header only
+      expect(await page.locator(".MuiDataGrid-row").count()).toBe(0)
     }).toPass({ timeout: 15_000 })
   })
 
