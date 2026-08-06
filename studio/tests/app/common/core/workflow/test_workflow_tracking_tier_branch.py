@@ -380,3 +380,40 @@ class TestDecrementSurvivesAnExecutionFailure:
             snakemake_executor.snakemake_execute("1", "exp1", MagicMock(), user_id=None)
 
         decrement.assert_not_called()
+
+
+class TestIncrementIsWiredToWorkflowStart:
+    """The other half of the pair.
+
+    The decrement wiring is covered above via ``snakemake_execute``'s
+    ``finally``; nothing pinned that anything ever increments. Without the
+    increment the count stays at 0 for the whole run, so the idle sweep reclaims
+    a premium instance and ``DataCleanupJob`` deletes a free user's workspace
+    while their workflow is still running.
+    """
+
+    @staticmethod
+    def _construct(user_id):
+        from studio.app.common.core.workflow import workflow_runner as module
+
+        run_item = MagicMock()
+        run_item.nwbParam = None
+
+        with patch.object(module, "WorkflowConfigWriter"), patch.object(
+            module, "ExptConfigWriter"
+        ), patch.object(module, "get_typecheck_params", return_value={}), patch.object(
+            module, "Runner"
+        ), patch(
+            f"{MODULE}.increment_workflow_count"
+        ) as increment:
+            module.WorkflowRunner("bucket", "1", "exp1", run_item, user_id)
+
+        return increment
+
+    def test_constructing_a_runner_increments_the_count(self):
+        self._construct(USER_ID).assert_called_once_with(USER_ID)
+
+    def test_a_standalone_run_still_reaches_the_guard(self):
+        """``increment_workflow_count`` owns the ``user_id is None`` decision, so
+        the runner must hand it through rather than filtering first."""
+        self._construct(None).assert_called_once_with(None)

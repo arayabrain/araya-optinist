@@ -179,7 +179,19 @@ class TestHealthEndpoint:
             route for route in app.routes if getattr(route, "path", None) == "/health"
         )
 
+        # ``route.dependencies`` only holds the decorator's ``dependencies=[...]``.
+        # A ``Depends`` in the handler signature lands in ``dependant`` instead,
+        # which is the shape that actually gets written by accident.
+        resolved = [
+            getattr(dep.call, "__name__", dep.call)
+            for dep in health.dependant.dependencies
+        ]
         assert not health.dependencies, (
             f"/health gained dependencies {health.dependencies}; the ALB health "
             f"check cannot satisfy any of them"
         )
+        assert not resolved, (
+            f"/health gained signature-level dependencies {resolved}; the ALB "
+            f"health check cannot satisfy any of them"
+        )
+        assert not health.dependant.security_requirements

@@ -19,7 +19,10 @@ What is asserted here:
   tfvars are gitignored, so comparing a deployed price against Stripe cannot be
   done from CI.
 - The webhook records the purchase against the ``user_id`` and ``plan_id`` from
-  the session metadata, converted from Stripe's strings.
+  the session metadata, converted from Stripe's strings, and the same handler
+  run over a database really leaves that row behind.
+- A trial is offered to a first-time buyer and to nobody else, with a payment
+  method collected so the conversion at the end of it has something to charge.
 - The session-verification helper reads ``total_details`` / ``amount_tax``.
   That helper currently has no caller, so these cases pin the extraction against
   rot rather than proving a tax figure reaches anything.
@@ -33,6 +36,7 @@ import pytest
 import stripe
 
 from studio.app.common.core.subscription.checkout_service import CheckoutService
+from studio.app.common.core.subscription.constants import SubscriptionPeriods
 from studio.app.common.core.subscription.webhook_service import WebhookService
 
 # studio/tests/app/common/core/subscription/<this file> -> 7 levels to the root.
@@ -62,14 +66,18 @@ CATALOG_MUTATING_APIS = [
 
 
 @pytest.fixture
-def created_session():
+def created_session(request):
     """Run ``handle_checkout_session`` and return the kwargs it passed to
     ``stripe.checkout.Session.create``, plus the patched stripe module.
 
     Everything outside the session-creation call is stubbed at the boundary:
     the plan comes from the DB, the customer from ``get_or_create_stripe_customer``.
     The subject under test is the parameter dict.
+
+    Parametrise indirectly with ``True`` for a caller who has never bought
+    anything, which is the only state the trial branch fires in.
     """
+    first_time = getattr(request, "param", False)
     plan = Mock(
         id=2,
         name="Premium",
@@ -77,7 +85,7 @@ def created_session():
         stripe_product_id="prod_seeded_by_terraform",
     )
     user = Mock(id=42, email="user@example.com")
-    request = Mock(plan_id="2")
+    checkout_request = Mock(plan_id="2")
 
     with patch(
         "studio.app.common.core.subscription.checkout_service.SubscriptionService"
@@ -85,15 +93,21 @@ def created_session():
         "studio.app.common.core.subscription.stripe_service."
         "get_or_create_stripe_customer"
     ) as get_customer, patch.object(
-        CheckoutService, "get_existing_subscription", return_value=Mock()
+        CheckoutService,
+        "get_existing_subscription",
+        return_value=None if first_time else Mock(),
     ), patch.object(
-        CheckoutService, "has_stripe_purchase_history", return_value=True
+        CheckoutService, "recover_existing_stripe_subscription", return_value=None
+    ), patch.object(
+        CheckoutService, "has_stripe_purchase_history", return_value=not first_time
     ), patch(
         "studio.app.common.core.subscription.checkout_service.stripe"
     ) as mock_stripe:
         subscription_service.get_plan_by_id.return_value = plan
         subscription_service.get_base_url.return_value = "https://optinist.example"
-        subscription_service.get_user_subscription_purchase.return_value = Mock()
+        subscription_service.get_user_subscription_purchase.return_value = (
+            None if first_time else Mock()
+        )
 
         async def _customer(db, user):
             return Mock(id="cus_existing")
@@ -106,7 +120,7 @@ def created_session():
         # still behaves.
         mock_stripe.error = stripe.error
 
-        yield _CreatedSession(mock_stripe, request, user)
+        yield _CreatedSession(mock_stripe, checkout_request, user)
 
 
 class _CreatedSession:
@@ -197,6 +211,54 @@ class TestCheckoutDoesNotMutateTheStripeCatalog:
         params = await created_session.params()
 
         assert params["line_items"][0]["price"] == "price_seeded_by_terraform"
+
+
+class TestOnlyAFirstTimeUserGetsATrial:
+    """Row 293. The trial branch of ``handle_checkout_session``.
+
+    Nothing in the suite reached ``subscription_data`` before this: every other
+    case here stubs the caller into a returning customer. Both directions matter
+    and for opposite reasons: no trial for a first-time user is the feature
+    missing, a trial for a returning one is a free month given away on every
+    repeat purchase.
+    """
+
+    @pytest.mark.parametrize("created_session", [True], indirect=True)
+    @pytest.mark.asyncio
+    async def test_a_first_time_user_is_given_the_trial_period(self, created_session):
+        params = await created_session.params()
+
+        assert params["subscription_data"]["trial_period_days"] == (
+            SubscriptionPeriods.TRIAL_PERIOD_DAYS
+        )
+        assert SubscriptionPeriods.TRIAL_PERIOD_DAYS == 30
+
+    @pytest.mark.parametrize("created_session", [True], indirect=True)
+    @pytest.mark.asyncio
+    async def test_the_trial_still_collects_a_payment_method(self, created_session):
+        """Stripe skips card collection on a trial unless it is asked for, and
+        then the conversion at the end of the trial has nothing to charge. This
+        parameter is what makes row 294's auto-conversion possible at all."""
+        params = await created_session.params()
+
+        assert params["payment_method_collection"] == "always"
+
+    @pytest.mark.parametrize("created_session", [True], indirect=True)
+    @pytest.mark.asyncio
+    async def test_the_subscription_is_marked_as_a_trial(self, created_session):
+        params = await created_session.params()
+
+        assert params["subscription_data"]["metadata"] == {
+            "is_trial": "true",
+            "trial_days": str(SubscriptionPeriods.TRIAL_PERIOD_DAYS),
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_returning_customer_is_given_no_trial(self, created_session):
+        params = await created_session.params()
+
+        assert "subscription_data" not in params
+        assert "payment_method_collection" not in params
 
 
 class TestPlanConfigAgreesWithTheSeededRows:
