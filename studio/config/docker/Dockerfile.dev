@@ -55,7 +55,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 # this environment, so installing the lock replaces packages poetry itself
 # imports mid-run (distlib, via build isolation) and the install fails at random.
 RUN poetry export -f requirements.txt -o requirements.studio.txt --with dev
-RUN pip3 install -r requirements.studio.txt
+RUN pip3 install --no-cache-dir -r requirements.studio.txt
 
 # setup optinist: download caiman model files
 COPY studio/app/optinist/wrappers/caiman/run_download_model_files.sh ./
