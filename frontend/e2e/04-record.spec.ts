@@ -7,6 +7,7 @@ import {
   freeStorageState,
   gotoDashboard,
   openWorkspace,
+  ensureCompletedTutorialRun,
   ensureTutorialRecords,
   DATA_WS,
 } from "./helpers"
@@ -123,37 +124,37 @@ test.describe("Record Management", () => {
   })
 
   test("REC-07 - Download NWB file", async ({ page }) => {
-    const nwbButton = page
-      .locator('td:has([data-testid="nwb-download-link"]) button:enabled')
-      .first()
-    const hasButton = await nwbButton
-      .waitFor({ timeout: 5_000 })
-      .then(() => true)
-      .catch(() => false)
-    test.skip(!hasButton, "No NWB column rendered")
+    // An NWB exists only after a completed run, and global setup deletes the
+    // workspace at the start of every run, so the run is this test's
+    // precondition. It used to skip on the resulting 404 - on every default
+    // run, against a High-priority row.
+    test.setTimeout(900_000)
+    await ensureCompletedTutorialRun(page, DATA_WS)
 
-    // The button being enabled is not evidence the file exists: the imported
-    // tutorial metadata declares an nwb section but ships no .nwb, so the button
-    // enables for records that were never run and the route answers 404. Judge
-    // the precondition on the response, not on the button.
+    const nwbButton = page
+      .locator('tr:has([data-testid="reproduce-button"])')
+      .filter({ has: page.getByText("Tutorial1", { exact: true }) })
+      .first()
+      .locator('td:has([data-testid="nwb-download-link"]) button')
+    // The record's nwb flag lands after "Workflow finished", and the table only
+    // reads it when the tab mounts
+    await expect(async () => {
+      await page.reload()
+      await page.locator('button[role="tab"]:has-text("Record")').click()
+      await expect(nwbButton).toBeEnabled({ timeout: 15_000 })
+    }).toPass({ timeout: 180_000 })
+
     const nwbResponse = page.waitForResponse((r) => /\/nwb\//.test(r.url()), {
       timeout: 60_000,
     })
-    // Settles either way, so skipping on a 404 cannot leave it dangling
-    const downloadPromise = page
-      .waitForEvent("download", { timeout: 60_000 })
-      .catch(() => null)
+    const downloadPromise = page.waitForEvent("download", { timeout: 60_000 })
     await nwbButton.click()
-    const status = (await nwbResponse).status()
-    test.skip(
-      status === 404,
-      "No NWB output — requires a completed workflow run (WF-04)",
-    )
-    expect(status).toBe(200)
+    // The button being enabled is not evidence the file exists: the imported
+    // tutorial metadata declares an nwb section but ships no .nwb, so the
+    // button enables for records that were never run and the route 404s.
+    expect((await nwbResponse).status()).toBe(200)
 
     const download = await downloadPromise
-    expect(download).not.toBeNull()
-    if (!download) return
     expect(download.suggestedFilename()).toMatch(/\.nwb$/)
 
     // The filename alone passed while the API answered 200 with the body

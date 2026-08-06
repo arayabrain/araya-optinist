@@ -90,6 +90,16 @@ const PAID_INVOICE = {
   invoice_url: "https://invoice.stripe.com/i/e2e-hosted-invoice",
 }
 
+// A second, deliberately different row: with one fixture the assertions were
+// satisfied by any hardcoded "$20.00 / Paid" render
+const OPEN_INVOICE = {
+  id: "in_e2e_2",
+  date: "2026-06-08T00:00:00Z",
+  total: "$99.00",
+  status: "Open",
+  invoice_url: "https://invoice.stripe.com/i/e2e-hosted-invoice-2",
+}
+
 async function mockPremiumBilling(
   page: Page,
   overrides: Partial<typeof PREMIUM_SUBSCRIPTION> = {},
@@ -112,7 +122,7 @@ async function mockPremiumBilling(
     }),
   )
   await page.route("**/api/subsc/invoices/**", (route) =>
-    route.fulfill({ json: [PAID_INVOICE] }),
+    route.fulfill({ json: [PAID_INVOICE, OPEN_INVOICE] }),
   )
   // Cancel and reactivate both mutate Stripe. Mocking the round trip is enough
   // for the UI: the slice flips scheduled_downgrade on fulfillment and the page
@@ -169,18 +179,22 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     ).toBeVisible()
   })
 
-  test("SUB-09 - Invoice row shows its date, amount and paid status", async ({
+  test("SUB-09 - Each invoice row shows its own date, amount and status", async ({
     page,
   }) => {
     await mockPremiumBilling(page)
     await page.goto("/subscription/manage")
 
-    const row = page.locator("tbody tr").first()
-    await expect(row).toBeVisible({ timeout: 30_000 })
-    // The page renders the ISO date in the reader's locale, not raw
-    await expect(row).toContainText("May 7, 2026")
-    await expect(row).toContainText(PAID_INVOICE.total)
-    await expect(row).toContainText("Paid")
+    const rows = page.locator("tbody tr")
+    await expect(rows).toHaveCount(2, { timeout: 30_000 })
+    // The page renders the ISO date in the reader's locale, not raw, and each
+    // row carries its own values rather than the first row's
+    await expect(rows.nth(0)).toContainText("May 7, 2026")
+    await expect(rows.nth(0)).toContainText(PAID_INVOICE.total)
+    await expect(rows.nth(0)).toContainText(PAID_INVOICE.status)
+    await expect(rows.nth(1)).toContainText("June 8, 2026")
+    await expect(rows.nth(1)).toContainText(OPEN_INVOICE.total)
+    await expect(rows.nth(1)).toContainText(OPEN_INVOICE.status)
   })
 
   test("SUB-10 - View opens the hosted invoice", async ({ page }) => {
@@ -215,6 +229,14 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
       '[role="dialog"]:has-text("Cancel Subscription")',
     )
     await expect(confirm).toBeVisible({ timeout: 15_000 })
+    // The date access actually ends, taken from the subscription rather than
+    // written into the test
+    const endsOn = new Date(PREMIUM_SUBSCRIPTION.expiration).toLocaleDateString(
+      "en-US",
+    )
+    await expect(
+      confirm.getByText(`Your subscription will be canceled at ${endsOn}.`),
+    ).toBeVisible()
     const cancelRequest = page.waitForRequest(
       (r) =>
         r.url().includes("/api/subsc/mgmts/cancel") && r.method() === "DELETE",
@@ -239,6 +261,13 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     await page.goto("/subscription")
     const banner = page.locator("text=Subscription Canceled:").first()
     await expect(banner).toBeVisible({ timeout: 30_000 })
+
+    // A scheduled downgrade does not take premium access away yet: the status
+    // line still names Premium and the only offer is reactivation
+    await expect(page.getByText(/^Current Plan:/).first()).toContainText(
+      "Premium",
+    )
+    await expect(page.locator('button:has-text("Upgrade")')).toHaveCount(0)
 
     // The route is per-user and refuses an id that is not the caller's, which is
     // asserted server-side; here the point is that we POST to it at all
