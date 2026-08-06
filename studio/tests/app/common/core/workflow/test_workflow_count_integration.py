@@ -18,6 +18,7 @@ instance or the cleanup job deletes the workspace.
 import os
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -46,7 +47,12 @@ def _stored_count(user_id):
 
 
 def _all_at_once(operation, user_id):
-    """Run ``operation(user_id)`` on every thread, released together."""
+    """Run ``operation(user_id)`` on every thread, released together.
+
+    Results are collected rather than joined: a bare ``Thread`` swallows what
+    its target raised, so a database error would reach the reader only as a
+    count that came out short, with the cause left in stderr.
+    """
     # A thread that dies before the barrier has to fail the lane, not hang it.
     released = threading.Barrier(CONCURRENCY, timeout=60)
 
@@ -54,11 +60,9 @@ def _all_at_once(operation, user_id):
         released.wait()
         operation(user_id)
 
-    threads = [threading.Thread(target=run) for _ in range(CONCURRENCY)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        for result in [pool.submit(run) for _ in range(CONCURRENCY)]:
+            result.result()
 
 
 @pytest.fixture()
