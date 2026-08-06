@@ -154,11 +154,13 @@ class BackgroundScheduler:
             logger.warning("Scheduler not initialized, cannot add job")
             return
 
-        kwargs.setdefault(
-            "next_run_time",
-            get_current_datetime()
-            + timedelta(seconds=SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS),
-        )
+        # Apply the default when next_run_time is absent OR explicitly None:
+        # APScheduler treats next_run_time=None as "paused" (never fires), so
+        # setdefault alone would let a None slip through. get()-check covers both.
+        if kwargs.get("next_run_time") is None:
+            kwargs["next_run_time"] = get_current_datetime() + timedelta(
+                seconds=SyncStatusConstants.INITIAL_RUN_DELAY_SECONDS
+            )
 
         cls._scheduler.add_job(
             func,
