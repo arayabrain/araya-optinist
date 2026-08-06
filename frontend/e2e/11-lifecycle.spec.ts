@@ -6,6 +6,7 @@ import { test, expect, Page, request } from "@playwright/test"
 
 import {
   apiUrl,
+  authHeaders,
   ensureTutorialRecords,
   login,
   logout,
@@ -149,8 +150,8 @@ async function ensureUserAndWorkspace() {
         )
       }
     }
-    const { access_token } = await loginRes.json()
-    const headers = { Authorization: `Bearer ${access_token}` }
+    const { access_token, ex_token } = await loginRes.json()
+    const headers = authHeaders(access_token, ex_token)
     const list = await api.get("/workspaces?offset=0&limit=100", { headers })
     const { items } = await list.json()
     const found = items.find(
