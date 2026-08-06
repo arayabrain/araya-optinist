@@ -330,7 +330,7 @@ describe("RoutingService", () => {
       expect(routingService.requiresPremiumRouting()).toBe(false)
     })
 
-    test("should stay aligned with getRoutingHeaders — both true or both false", () => {
+    test("should stay aligned with getRoutingHeaders in both directions", () => {
       // After page reload with localStorage state
       localStorageMock.setItem("routing_id", "stored-token")
       localStorageMock.setItem("premium_assigned", "true")
@@ -338,10 +338,18 @@ describe("RoutingService", () => {
 
       const newService = new RoutingService()
 
-      const headersActive =
-        Object.keys(newService.getRoutingHeaders()).length > 0
-      const fallbackActive = newService.requiresPremiumRouting()
-      expect(headersActive).toBe(fallbackActive)
+      // Both active: headers are emitted and the 503 fallback gate is open.
+      expect(newService.getRoutingHeaders()).toEqual({
+        [RoutingHeaders.ROUTING_ID]: "stored-token",
+        [RoutingHeaders.USER_TIER]: UserTier.PREMIUM,
+      })
+      expect(newService.requiresPremiumRouting()).toBe(true)
+
+      // Both inactive: dropping the assignment closes both at once.
+      newService.setPremiumAssigned(false)
+
+      expect(newService.getRoutingHeaders()).toEqual({})
+      expect(newService.requiresPremiumRouting()).toBe(false)
     })
   })
 

@@ -362,17 +362,56 @@ describe("PremiumNotificationManager — assignment success and waiting snackbar
     })
   }
 
+  // Asserted verbatim rather than by substring: this is the only confirmation a
+  // premium user gets that the dedicated instance is theirs.
+  const SUCCESS_COPY =
+    "Premium instance assigned successfully! " +
+    "You now have dedicated compute resources."
+
   test("success snackbar persists and inherits the default close action", () => {
     renderAndMigrate()
 
-    const successCall = snackbarLog.find((c) =>
-      c.message.includes("Premium instance assigned successfully"),
-    )
+    const successCall = snackbarLog.find((c) => c.message === SUCCESS_COPY)
     expect(successCall).toBeDefined()
     expect(successCall?.options?.variant).toBe("success")
     expect(successCall?.options?.persist).toBe(true)
     expect(successCall?.options?.autoHideDuration).toBeUndefined()
     expect(successCall?.options?.action).toBeUndefined()
+    expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+      "dedicated_instance_ready",
+      { instance_id: "inst-A" },
+    )
+  })
+
+  // The once-per-session gate. A stale sessionStorage entry silently swallowing
+  // the notification is a plausible cause of a "no popup appeared" report, so
+  // both directions of the gate are pinned.
+  test("the assigned instance id is recorded so a refresh does not re-notify", () => {
+    renderAndMigrate()
+
+    expect(sessionStorage.getItem("premium_notified_instance_id")).toBe(
+      "inst-A",
+    )
+  })
+
+  test("no success snackbar when this session already notified for this instance", () => {
+    sessionStorage.setItem("premium_notified_instance_id", "inst-A")
+
+    renderAndMigrate()
+
+    expect(snackbarLog.filter((c) => c.message === SUCCESS_COPY)).toHaveLength(
+      0,
+    )
+  })
+
+  test("a different instance in sessionStorage does not suppress the snackbar", () => {
+    sessionStorage.setItem("premium_notified_instance_id", "inst-OLD")
+
+    renderAndMigrate()
+
+    expect(snackbarLog.filter((c) => c.message === SUCCESS_COPY)).toHaveLength(
+      1,
+    )
   })
 
   // Asserted verbatim: this is the only signal a premium user gets while the

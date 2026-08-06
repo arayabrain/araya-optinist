@@ -5,7 +5,14 @@ import { MemoryRouter } from "react-router-dom"
 import configureStore from "redux-mock-store"
 import thunk from "redux-thunk"
 
-import { describe, it, expect, jest, beforeEach } from "@jest/globals"
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeAll,
+  beforeEach,
+} from "@jest/globals"
 import { render, screen, fireEvent } from "@testing-library/react"
 
 import { UserDTO } from "api/users/UsersApiDTO"
@@ -18,6 +25,14 @@ const mockStore = configureStore([thunk])
 jest.mock("store/slice/Dataview/DataviewActions", () => ({
   getDataviewRecords: () => ({ type: "GET_DATAVIEW_RECORDS" }),
   getPublicDataviewRecords: () => ({ type: "GET_PUBLIC_DATAVIEW_RECORDS" }),
+}))
+
+// ThumbnailImage fetches through this; without it every PNG thumbnail falls
+// into its error branch and no <img> is ever rendered.
+const mockGetThumbnailBlobUrl = jest.fn<Promise<string>, unknown[]>()
+
+jest.mock("api/visualizations/Outputs", () => ({
+  getThumbnailBlobUrl: (...args: unknown[]) => mockGetThumbnailBlobUrl(...args),
 }))
 
 // Mock react-plotlyjs-ts to avoid d3-interpolate issues
@@ -202,12 +217,66 @@ const mockDataviewRecordWithLegacyThumbs: DataviewType = {
   },
 }
 
+// Record whose run produced no thumbnails at all
+const mockDataviewRecordWithoutThumbs: DataviewType = {
+  ...mockDataviewRecord,
+  id: 4,
+  uid: "test-uid-no-thumb",
+  thumbnails: {},
+}
+
 const mockUser: UserDTO = {
   id: 1,
   name: "Test User",
   email: "test@example.com",
   data_usage: 0,
 }
+
+const stateWithPrivateItems = (items: DataviewType[]) => ({
+  dataview: {
+    data: {
+      private: { items, total: items.length, offset: 0, limit: 50 },
+      public: { items: [], total: 0, offset: 0, limit: 50 },
+    },
+    loading: false,
+    error: { private: null, public: null },
+  },
+  inputNode: {},
+  flowElement: {
+    flowNodes: [],
+    flowEdges: [],
+    flowPosition: { x: 0, y: 0 },
+    elementCoord: {},
+    loading: false,
+  },
+  flowElements: {
+    nodeDict: {},
+  },
+  algorithmNode: {},
+  pipeline: {
+    nodeDict: {},
+    run: { status: "SUCCESS", runResult: {} },
+    runBtn: false,
+    currentPipeline: null,
+  },
+  experiments: {
+    status: "fulfilled",
+    experimentList: {},
+  },
+})
+
+// The DataGrid sizes its column render window from the scroller's clientWidth,
+// which is 0 in jsdom, so without this only the first three columns exist.
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get: () => 1800,
+  })
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get: () => 900,
+  })
+})
 
 describe("DataviewRecords Component", () => {
   let store: ReturnType<typeof mockStore>
@@ -431,7 +500,10 @@ describe("DataviewRecords Component", () => {
 
       renderWithProviders(<DataviewRecords user={mockUser} workspaceId="1" />)
 
-      expect(screen.getByText("Test Workspace")).toBeDefined()
+      // Scoped to the chip: the workspace column renders the same text.
+      expect(
+        screen.getByText("Test Workspace", { selector: ".MuiChip-label" }),
+      ).toBeDefined()
     })
   })
 
@@ -454,14 +526,29 @@ describe("DataviewRecords Component", () => {
   })
 
   describe("Row click handling", () => {
-    it("calls handleRowClick when provided", () => {
+    it("calls handleRowClick with the clicked row", () => {
       const mockHandleRowClick = jest.fn()
       renderWithProviders(
         <DataviewRecords user={mockUser} handleRowClick={mockHandleRowClick} />,
       )
 
-      const grid = screen.getByRole("grid")
-      expect(grid).toBeDefined()
+      fireEvent.click(screen.getByText("Test Workflow"))
+
+      expect(mockHandleRowClick).toHaveBeenCalledTimes(1)
+      expect(mockHandleRowClick.mock.calls[0][0]).toEqual(
+        expect.objectContaining({
+          id: mockDataviewRecord.id,
+          row: expect.objectContaining({ uid: "test-uid-123" }),
+        }),
+      )
+    })
+
+    it("does not break when no handleRowClick is provided", () => {
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      expect(() =>
+        fireEvent.click(screen.getByText("Test Workflow")),
+      ).not.toThrow()
     })
   })
 
@@ -622,65 +709,15 @@ describe("DataviewRecords Component", () => {
   })
 
   describe("Thumbnail rendering", () => {
-    it("renders PNG thumbnails as img tags for input_thumb.png pattern", () => {
-      const stateWithPngThumbs = {
-        dataview: {
-          data: {
-            private: {
-              items: [mockDataviewRecordWithPngThumbs],
-              total: 1,
-              offset: 0,
-              limit: 50,
-            },
-            public: {
-              items: [],
-              total: 0,
-              offset: 0,
-              limit: 50,
-            },
-          },
-          loading: false,
-          error: { private: null, public: null },
-        },
-        inputNode: {},
-        flowElement: {
-          flowNodes: [],
-          flowEdges: [],
-          flowPosition: { x: 0, y: 0 },
-          elementCoord: {},
-          loading: false,
-        },
-        flowElements: {
-          nodeDict: {},
-        },
-        algorithmNode: {},
-        pipeline: {
-          nodeDict: {},
-          run: { status: "SUCCESS", runResult: {} },
-          runBtn: false,
-          currentPipeline: null,
-        },
-        experiments: {
-          status: "fulfilled",
-          experimentList: {},
-        },
-      }
-      store = mockStore(stateWithPngThumbs)
+    it("renders PNG thumbnails as img tags for input_thumb.png pattern", async () => {
+      store = mockStore(
+        stateWithPrivateItems([mockDataviewRecordWithPngThumbs]),
+      )
 
       renderWithProviders(<DataviewRecords user={mockUser} />)
 
-      // DataGrid should render
-      expect(screen.getByRole("grid")).toBeDefined()
-
-      // PNG thumbnails should render as img tags - find by alt text
-      const inputThumbnail = screen.queryByAltText("Input thumbnail")
-      const roiThumbnail = screen.queryByAltText("ROI thumbnail")
-
-      // At least one should be present if DataGrid renders cells
-      // Note: DataGrid virtualization may prevent rendering in tests
-      if (inputThumbnail || roiThumbnail) {
-        expect(inputThumbnail || roiThumbnail).toBeDefined()
-      }
+      expect(await screen.findByAltText("Input thumbnail")).toBeDefined()
+      expect(await screen.findByAltText("ROI thumbnail")).toBeDefined()
 
       // Should not use the WithLoading plot components for PNG thumbnails
       expect(screen.queryByTestId("image-plot-with-loading")).toBeNull()
@@ -688,58 +725,38 @@ describe("DataviewRecords Component", () => {
     })
 
     it("does not render PNG img tags for legacy TIFF/JSON thumbnails", () => {
-      const stateWithLegacyThumbs = {
-        dataview: {
-          data: {
-            private: {
-              items: [mockDataviewRecordWithLegacyThumbs],
-              total: 1,
-              offset: 0,
-              limit: 50,
-            },
-            public: {
-              items: [],
-              total: 0,
-              offset: 0,
-              limit: 50,
-            },
-          },
-          loading: false,
-          error: { private: null, public: null },
-        },
-        inputNode: {},
-        flowElement: {
-          flowNodes: [],
-          flowEdges: [],
-          flowPosition: { x: 0, y: 0 },
-          elementCoord: {},
-          loading: false,
-        },
-        flowElements: {
-          nodeDict: {},
-        },
-        algorithmNode: {},
-        pipeline: {
-          nodeDict: {},
-          run: { status: "SUCCESS", runResult: {} },
-          runBtn: false,
-          currentPipeline: null,
-        },
-        experiments: {
-          status: "fulfilled",
-          experimentList: {},
-        },
-      }
-      store = mockStore(stateWithLegacyThumbs)
+      store = mockStore(
+        stateWithPrivateItems([mockDataviewRecordWithLegacyThumbs]),
+      )
 
       renderWithProviders(<DataviewRecords user={mockUser} />)
 
-      // DataGrid should render
-      expect(screen.getByRole("grid")).toBeDefined()
-
-      // Legacy TIFF/JSON thumbnails should NOT render as img tags with these alt texts
+      // The legacy path routes to the on-demand-sync plot components instead
+      expect(screen.getByTestId("image-plot-with-loading")).toBeDefined()
+      expect(screen.getByTestId("roi-plot-with-loading")).toBeDefined()
       expect(screen.queryByAltText("Input thumbnail")).toBeNull()
       expect(screen.queryByAltText("ROI thumbnail")).toBeNull()
+    })
+
+    // A run with no thumbnails must still give the user a way into the record.
+    it("falls back to a clickable placeholder icon when a record has no thumbnails", () => {
+      store = mockStore(
+        stateWithPrivateItems([mockDataviewRecordWithoutThumbs]),
+      )
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      const placeholders = screen.getAllByTestId("ImageIcon")
+      expect(placeholders).toHaveLength(2)
+      expect(screen.queryByAltText("Input thumbnail")).toBeNull()
+      expect(screen.queryByTestId("image-plot-with-loading")).toBeNull()
+      expect(screen.queryByTestId("roi-plot-with-loading")).toBeNull()
+
+      fireEvent.click(placeholders[0])
+      expect(screen.getByTestId("inputs-view")).toHaveAttribute(
+        "data-open",
+        "true",
+      )
     })
   })
 })

@@ -226,6 +226,16 @@ const dedicatedStatus: PremiumStatusResult = {
   },
 }
 
+/** As above, plus the hash the real endpoint returns, so routing can re-arm. */
+const dedicatedStatusWithHash: PremiumStatusResult = {
+  subscription_type: UserTier.PREMIUM,
+  is_premium: true,
+  assignment: {
+    ...dedicatedStatus.assignment!,
+    instance_id_hash: "hash-A",
+  },
+}
+
 /** Simulate a pointerdown event on the window (as a user click). */
 const simulateClick = () => {
   window.dispatchEvent(new Event("pointerdown"))
@@ -754,5 +764,106 @@ describe("PremiumAssignmentProvider — re-trigger assign during polling", () =>
     // snackbar stays visible until a real premium 200 fires
     // emitPremiumReachable.
     expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+  })
+
+  // An ECS task crash takes the container down but leaves the EC2 instance and
+  // the assignment row intact, so recovery must be a plain 200 with no new row.
+  test("ECS task crash: a 200 from the same instance recovers with no re-assign", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatusWithHash)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+    mockAssignPremiumInstance.mockClear()
+
+    // The ALB answers 502 while ECS places the replacement task, which is what
+    // the axios teardown turns into an unreachable emission.
+    act(() => {
+      routingService.setPremiumAssigned(false)
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 502,
+        sentAt: 1000,
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+    expect(routingService.isPremiumAssigned()).toBe(false)
+
+    // Replacement task is HEALTHY: the next request is served by the same
+    // instance hash, so routing re-arms without touching /premium/assign.
+    act(() => {
+      routingService.emitPremiumReachable({
+        url: "/api/test",
+        status: 200,
+        sentAt: 2000,
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(false)
+    })
+    expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    expect(ctxRef.current?.unreachable.state.failedProbes).toBe(0)
+    expect(routingService.isPremiumAssigned()).toBe(true)
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+  })
+
+  // Chain B: after EventBridge cleanup the per-user ALB rule is gone, so the
+  // request succeeds (200) but from the wrong instance. Terminate is
+  // irreversible, so recovery has to land on a different instance.
+  test("terminated instance, Chain B detection: a wrong-instance 200 drives recovery onto a new instance", async () => {
+    mockGetPremiumStatus.mockResolvedValue(dedicatedStatusWithHash)
+
+    const ctxRef = renderProvider()
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-A")
+    })
+
+    // The row is gone from the backend, and /assign will hand out a new one.
+    mockGetPremiumStatus.mockResolvedValue(nullAssignmentStatus)
+    mockAssignPremiumInstance.mockClear()
+    mockAssignPremiumInstance.mockResolvedValue({
+      message: "dedicated",
+      instance_id: "inst-B",
+      instance_id_hash: "hash-B",
+      assigned: true,
+      is_shared: false,
+      assignment_source: "new",
+    })
+
+    // Chain B carries a 200, not a 5xx: the response arrived, just not from us.
+    act(() => {
+      routingService.setPremiumAssigned(false)
+      routingService.emitPremiumUnreachable({
+        url: "/api/test",
+        status: 200,
+        sentAt: 1000,
+      })
+    })
+
+    await waitFor(() => {
+      expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(true)
+    })
+
+    await advanceOnePollCycle()
+    await advanceOnePollCycle()
+    expect(mockAssignPremiumInstance).not.toHaveBeenCalled()
+
+    await advanceOnePollCycle()
+    expect(mockAssignPremiumInstance).toHaveBeenCalledTimes(1)
+
+    await waitFor(() => {
+      expect(ctxRef.current?.assignmentResult?.instance_id).toBe("inst-B")
+    })
+    // A different instance clears the unreachable state outright, unlike the
+    // same-id restart above.
+    expect(ctxRef.current?.unreachable.state.instanceUnreachable).toBe(false)
+    expect(routingService.isPremiumAssigned()).toBe(true)
   })
 })
