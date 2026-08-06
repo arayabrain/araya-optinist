@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -5392,7 +5393,13 @@ class TestAssignCascadeTiers:
         active_users=0,
     ):
         """Force one cascade branch via pool-state stubs, run the real assign
-        path, and return the parsed 200 response body."""
+        path, and return ``(body, stubs)``.
+
+        ``stubs`` exposes the follow-up calls each branch is supposed to fire.
+        They were stubbed out and never asserted, so 6206's expected #3 (a
+        replacement standby is created) and the whole of 6207 (the pool row is
+        scaled and migrated to a dedicated instance) rested on nothing.
+        """
         from contextlib import ExitStack
 
         assigned_users = [] if assigned_users is None else assigned_users
@@ -5406,10 +5413,14 @@ class TestAssignCascadeTiers:
         def boto3_client(service):
             return mock_elbv2 if service == "elbv2" else MagicMock()
 
+        stubs = {}
+
         with ExitStack() as stack:
 
             def stub(name, **kwargs):
-                stack.enter_context(patch.object(premium_manager, name, **kwargs))
+                stubs[name] = stack.enter_context(
+                    patch.object(premium_manager, name, **kwargs)
+                )
 
             stub("restore_pending_release", return_value=None)
             stub("get_existing_user_assignment", return_value=None)
@@ -5443,14 +5454,14 @@ class TestAssignCascadeTiers:
             )
 
         assert result["statusCode"] == 200, result["body"]
-        return json.loads(result["body"])
+        return json.loads(result["body"]), SimpleNamespace(**stubs)
 
     def test_tier1_dedicated(self, mock_env_vars_premium):
         """Idle running instance with 0 users -> dedicated, is_shared False."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
-            body = self._run_assign(
+            body, stubs = self._run_assign(
                 premium_manager,
                 all_instances=[
                     {"instance_id": "i-ded", "state": InstanceState.RUNNING}
@@ -5461,13 +5472,18 @@ class TestAssignCascadeTiers:
             )
         assert body["assignment_source"] == "dedicated"
         assert body["is_shared"] is False
+        # A dedicated instance needs no follow-up: no pool consumed, no
+        # migration owed.
+        stubs.invoke_standby_replenishment_async.assert_not_called()
+        stubs.invoke_migration_async.assert_not_called()
+        stubs.scale_premium_instances_if_needed.assert_not_called()
 
     def test_tier2_shared(self, mock_env_vars_premium):
         """All running instances occupied -> shared on least-loaded, is_shared True."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
-            body = self._run_assign(
+            body, stubs = self._run_assign(
                 premium_manager,
                 all_instances=[
                     {"instance_id": "i-run", "state": InstanceState.RUNNING}
@@ -5478,19 +5494,23 @@ class TestAssignCascadeTiers:
             )
         assert body["assignment_source"] == "shared"
         assert body["is_shared"] is True
+        stubs.invoke_standby_replenishment_async.assert_not_called()
 
     def test_tier3_standby(self, mock_env_vars_premium):
         """No running instances, standby available -> standby, is_shared False."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
-            body = self._run_assign(
+            body, stubs = self._run_assign(
                 premium_manager,
                 all_instances=[],
                 standby=[{"instance_id": "i-standby1"}],
             )
         assert body["assignment_source"] == "standby"
         assert body["is_shared"] is False
+        # 6206 expected #3: consuming the last standby must schedule a
+        # replacement, or the next fresh login pays the full boot latency.
+        stubs.invoke_standby_replenishment_async.assert_called_once_with()
 
     def test_tier3_5_autoscaling_pool(self, mock_env_vars_premium):
         """No premium capacity at all -> autoscaling_temp sentinel, is_shared True."""
@@ -5501,10 +5521,16 @@ class TestAssignCascadeTiers:
         with patch.dict("os.environ", env):
             import premium_manager
 
-            body = self._run_assign(premium_manager, all_instances=[], standby=[])
+            body, stubs = self._run_assign(
+                premium_manager, all_instances=[], standby=[]
+            )
         assert body["assignment_source"] == "autoscaling_temp"
         assert body["is_shared"] is True
         assert body["instance_id"] == premium_manager.PremiumAssignment.AUTOSCALING_POOL
+        # 6207's whole point: the sentinel row is temporary. Without these the
+        # user stays on the shared free pool indefinitely.
+        stubs.scale_premium_instances_if_needed.assert_called_once_with()
+        stubs.invoke_migration_async.assert_called_once_with()
 
     def test_aws_fallback_is_shadowed_by_autoscaling(self, mock_env_vars_premium):
         """PRIORITY 4 (aws_fallback) is unreachable. With only a stopped AWS
@@ -5521,7 +5547,7 @@ class TestAssignCascadeTiers:
         with patch.dict("os.environ", env):
             import premium_manager
 
-            body = self._run_assign(
+            body, _ = self._run_assign(
                 premium_manager,
                 all_instances=[
                     {"instance_id": "i-stopped", "state": InstanceState.STOPPED}
