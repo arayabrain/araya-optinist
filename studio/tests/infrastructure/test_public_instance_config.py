@@ -1,14 +1,14 @@
 """Configuration assertions for the public tier, read from the terraform source.
 
 These are *configuration* assertions, not behavioral ones: terraform declaring
-``AFTER_7_DAYS`` is not proof AWS applied it, and the deployed check stays a
-a deployed check. What they do catch is a PR that changes the declaration -
-which is where our own regressions live.
+``AFTER_7_DAYS`` is not proof AWS applied it, so the deployed check stays
+manual. What they do catch is a PR that changes the declaration - which is where
+our own regressions live.
 
 The ALB priority band check is the exception and is a real invariant test: the
-premium band is
-allocated at runtime by the premium-manager Lambda while the public and free
-bands are static terraform, so nothing but this test connects the two halves.
+premium band is allocated at runtime by the premium-manager Lambda while the
+public and free bands are static terraform, so nothing but this test connects
+the two halves.
 """
 
 import re

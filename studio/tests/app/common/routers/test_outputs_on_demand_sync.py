@@ -16,6 +16,7 @@ These assert the wiring at each call site. ``ensure_input_file_synced``'s own
 behaviour is ``test_input_file_lock.py``'s; the real S3 round-trip is manual.
 """
 
+import inspect
 import os
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -318,7 +319,7 @@ def test_the_three_call_sites_are_all_covered():
     """
     import studio.app.common.routers.outputs as outputs_module
 
-    source = open(outputs_module.__file__).read()
+    source = inspect.getsource(outputs_module)
     call_sites = source.count("ensure_input_file_synced(")
 
     assert call_sites == 3, (
