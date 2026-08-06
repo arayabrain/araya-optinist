@@ -96,10 +96,16 @@ const ChangePasswordModal: FC<ChangePasswordModalProps> = ({
       setErrors((pre) => ({ ...pre, new_password: "This field is required" }))
   }
 
+  // The mismatch check belongs here and not only in onChangeValue: this is the
+  // whole of submit-time validity, so submission can be gated on this alone.
+  // Consulting the live `errors` state instead would skip the fields it has no
+  // entry for, and report only some of the reasons the form was refused.
   const validateForm = () => {
     const errorPassword = !values.password ? "This field is required" : ""
     const errorNewPass = validatePassword(values.new_password)
-    const errorConfirmPass = validatePassword(values.confirm_password)
+    const errorConfirmPass =
+      validatePassword(values.confirm_password) ||
+      validateReEnter(values.confirm_password)
     return {
       password: errorPassword,
       new_password: errorNewPass,
@@ -109,7 +115,6 @@ const ChangePasswordModal: FC<ChangePasswordModalProps> = ({
 
   const onChangePass = async () => {
     const newErrors: { [key: string]: string } = validateForm()
-    if (errors.new_password || errors.confirm_password) return
     if (Object.values(newErrors).some(Boolean)) {
       setErrors(newErrors)
       return
