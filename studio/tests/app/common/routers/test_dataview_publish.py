@@ -4,13 +4,60 @@ Integration tests for dataview publish endpoint with optimistic locking.
 Tests concurrent publish/unpublish operations.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from fastapi import HTTPException
 
 from studio.app.common.routers.dataview import publish_dataview_records
 from studio.app.common.schemas.dataview import LocalSyncStatus
+
+# A minimal experiment.yaml that passes PublishValidator (all required fields,
+# success == SUCCESS).
+_VALID_CONFIG = {
+    "workspace_id": "1",
+    "unique_id": "uid",
+    "name": "exp",
+    "started_at": "2025-01-01 00:00:00",
+    "finished_at": "2025-01-01 00:01:00",
+    "success": "success",
+    "hasNWB": True,
+    "function": {},
+    "nwb": {"session_description": "optinist"},
+    "snakemake": {"use_conda": True},
+}
+
+# Parses (read() succeeds) but fails validation: nwb/snakemake are required but
+# read via .get(), so their absence does not raise.
+_INCOMPLETE_CONFIG = {
+    "workspace_id": "1",
+    "unique_id": "uid",
+    "name": "exp",
+    "started_at": "2025-01-01 00:00:00",
+    "success": "success",
+    "hasNWB": True,
+    "function": {},
+}
+
+
+def _config_path(workspace_id, unique_id):
+    from studio.app.common.routers.dataview import ExptConfigReader
+
+    return ExptConfigReader.get_config_yaml_path(workspace_id, unique_id)
+
+
+def _write_config(path, config):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        yaml.safe_dump(config, f)
+
+
+def _can_publish(workspace_id, unique_id):
+    from studio.app.common.routers.dataview import _local_config_can_publish
+
+    return _local_config_can_publish(workspace_id, unique_id)
 
 
 class TestPublishDataviewRecords:
@@ -726,145 +773,148 @@ class TestValidateExperimentExistsInS3:
 
 
 class TestSyncExperimentConfigForPublish:
-    """Publish pre-sync helper: repair missing/stub local config from S3."""
+    """Behaviour of the publish pre-sync helper on a real filesystem.
 
-    @staticmethod
-    def _reader_ctx(controller):
-        """Build an async-context-manager mock yielding `controller`."""
-        from unittest.mock import AsyncMock
+    Only the S3 download is faked; validation runs against the real
+    PublishValidator and real files, so the tests pin the repaired behaviour
+    (not just that the code calls a mock).
+    """
 
-        ctx = AsyncMock()
-        ctx.__aenter__ = AsyncMock(return_value=controller)
-        ctx.__aexit__ = AsyncMock(return_value=False)
-        return ctx
+    class _FakeReader:
+        """Stands in for RemoteStorageReader.
 
-    @pytest.mark.asyncio
-    async def test_noop_when_remote_unavailable(self):
-        """No sync attempt when remote storage is not configured."""
+        Records constructor args, and on ``download_experiment_meta`` writes
+        ``s3_config`` to the local config path (``None`` => S3 has nothing).
+        """
+
+        def __init__(self, s3_config):
+            self._s3_config = s3_config
+            self.calls = []
+
+        def __call__(self, bucket, workspace_id, unique_id, sync_mode=None):
+            self.calls.append((bucket, workspace_id, unique_id, sync_mode))
+            outer = self
+
+            class _Ctx:
+                async def __aenter__(self_ctx):
+                    return self_ctx
+
+                async def __aexit__(self_ctx, *exc):
+                    return False
+
+                async def download_experiment_meta(self_ctx, ws, uid):
+                    if outer._s3_config is not None:
+                        _write_config(_config_path(ws, uid), outer._s3_config)
+                    return True
+
+            return _Ctx()
+
+    async def _run(self, tmp_path, monkeypatch, *, local, s3, bucket="test-bucket"):
+        """Seed ``local`` config (or None), fake S3 to yield ``s3``, run the
+        helper, and return (fake_reader, config_path)."""
         from studio.app.common.routers.dataview import (
             _sync_experiment_config_for_publish,
         )
+        from studio.app.dir_path import DIRPATH
 
-        mock_reader = MagicMock()
-        with patch(
-            "studio.app.common.routers.dataview.RemoteStorageController."
-            "is_available",
-            return_value=False,
-        ), patch("studio.app.common.routers.dataview.RemoteStorageReader", mock_reader):
-            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
+        monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+        config_path = _config_path("1", "uid")
+        if local is not None:
+            _write_config(config_path, local)
 
-        mock_reader.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_downloads_when_config_missing(self):
-        """Missing local config triggers a metadata download."""
-        from unittest.mock import AsyncMock
-
-        from studio.app.common.routers.dataview import (
-            _sync_experiment_config_for_publish,
-        )
-
-        controller = AsyncMock()
-        with patch(
-            "studio.app.common.routers.dataview.RemoteStorageController."
-            "is_available",
-            return_value=True,
-        ), patch(
-            "studio.app.common.routers.dataview.os.path.exists", return_value=False
-        ), patch(
-            "studio.app.common.routers.dataview.RemoteStorageReader",
-            return_value=self._reader_ctx(controller),
-        ):
-            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
-
-        controller.download_experiment_meta.assert_awaited_once_with("1", "uid")
-
-    @pytest.mark.asyncio
-    async def test_repairs_stub_then_downloads(self):
-        """A present-but-invalid stub is removed (by path), then re-downloaded."""
-        from unittest.mock import AsyncMock
-
-        from studio.app.common.routers.dataview import (
-            ExptConfigReader,
-            _sync_experiment_config_for_publish,
-        )
-
-        expected_path = ExptConfigReader.get_config_yaml_path("1", "uid")
-        controller = AsyncMock()
+        fake = self._FakeReader(s3)
         with patch(
             "studio.app.common.routers.dataview.RemoteStorageController."
             "is_available",
             return_value=True,
-        ), patch(
-            "studio.app.common.routers.dataview.os.path.exists", return_value=True
-        ), patch(
-            "studio.app.common.routers.dataview.ExptConfigReader.read",
-            side_effect=AssertionError("Invalid config yaml file"),
-        ), patch(
-            "studio.app.common.routers.dataview.os.remove"
-        ) as mock_remove, patch(
-            "studio.app.common.routers.dataview.RemoteStorageReader",
-            return_value=self._reader_ctx(controller),
-        ):
-            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
-
-        mock_remove.assert_called_once_with(expected_path)
-        controller.download_experiment_meta.assert_awaited_once_with("1", "uid")
+        ), patch("studio.app.common.routers.dataview.RemoteStorageReader", fake):
+            await _sync_experiment_config_for_publish("1", "uid", bucket)
+        return fake, config_path
 
     @pytest.mark.asyncio
-    async def test_stub_removal_failure_is_swallowed(self):
-        """If removing the stub fails, no download runs and no error escapes."""
-        from unittest.mock import AsyncMock
-
-        from studio.app.common.routers.dataview import (
-            _sync_experiment_config_for_publish,
+    async def test_absent_local_valid_in_s3_becomes_publishable(
+        self, tmp_path, monkeypatch
+    ):
+        """Probe A: no local config, valid in S3 -> downloaded and publishable."""
+        fake, config_path = await self._run(
+            tmp_path, monkeypatch, local=None, s3=_VALID_CONFIG
         )
-
-        controller = AsyncMock()
-        with patch(
-            "studio.app.common.routers.dataview.RemoteStorageController."
-            "is_available",
-            return_value=True,
-        ), patch(
-            "studio.app.common.routers.dataview.os.path.exists", return_value=True
-        ), patch(
-            "studio.app.common.routers.dataview.ExptConfigReader.read",
-            side_effect=AssertionError("Invalid config yaml file"),
-        ), patch(
-            "studio.app.common.routers.dataview.os.remove",
-            side_effect=OSError("permission denied"),
-        ), patch(
-            "studio.app.common.routers.dataview.RemoteStorageReader",
-            return_value=self._reader_ctx(controller),
-        ):
-            # Must not raise.
-            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
-
-        controller.download_experiment_meta.assert_not_awaited()
+        assert os.path.exists(config_path)
+        assert _can_publish("1", "uid") is True
 
     @pytest.mark.asyncio
-    async def test_skips_when_config_valid(self):
-        """A valid local config is left untouched (no sync)."""
-        from studio.app.common.routers.dataview import (
-            _sync_experiment_config_for_publish,
+    async def test_stub_local_valid_in_s3_is_repaired(self, tmp_path, monkeypatch):
+        """Probe B: `{}` stub, valid in S3 -> repaired, backup discarded."""
+        fake, config_path = await self._run(
+            tmp_path, monkeypatch, local={}, s3=_VALID_CONFIG
+        )
+        assert _can_publish("1", "uid") is True
+        assert not os.path.exists(f"{config_path}.bak")
+
+    @pytest.mark.asyncio
+    async def test_incomplete_local_valid_in_s3_is_repaired(
+        self, tmp_path, monkeypatch
+    ):
+        """Probe C: parses but missing required fields -> re-synced from S3.
+
+        This is the case the previous read()-based skip did NOT repair.
+        """
+        # Sanity: the seeded local config is not publishable to begin with.
+        from studio.app.dir_path import DIRPATH
+
+        monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+        _write_config(_config_path("1", "uid"), _INCOMPLETE_CONFIG)
+        assert _can_publish("1", "uid") is False
+
+        await self._run(
+            tmp_path, monkeypatch, local=_INCOMPLETE_CONFIG, s3=_VALID_CONFIG
+        )
+        assert _can_publish("1", "uid") is True
+
+    @pytest.mark.asyncio
+    async def test_stub_local_absent_in_s3_preserves_original(
+        self, tmp_path, monkeypatch
+    ):
+        """Probe E: `{}` stub, absent in S3 -> file is NOT destroyed."""
+        fake, config_path = await self._run(tmp_path, monkeypatch, local={}, s3=None)
+        # The only local copy must survive (restored from backup).
+        assert os.path.exists(config_path)
+        with open(config_path) as f:
+            assert yaml.safe_load(f) == {}
+        assert not os.path.exists(f"{config_path}.bak")
+        assert _can_publish("1", "uid") is False
+
+    @pytest.mark.asyncio
+    async def test_valid_local_skips_download(self, tmp_path, monkeypatch):
+        """A valid local config is left untouched (no S3 call)."""
+        fake, _ = await self._run(
+            tmp_path, monkeypatch, local=_VALID_CONFIG, s3=_VALID_CONFIG
+        )
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_download_uses_metadata_only_and_correct_args(
+        self, tmp_path, monkeypatch
+    ):
+        """The reader is constructed with (bucket, ws, uid, METADATA_ONLY)."""
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteExperimentSyncMode,
         )
 
-        mock_reader = MagicMock()
-        with patch(
-            "studio.app.common.routers.dataview.RemoteStorageController."
-            "is_available",
-            return_value=True,
-        ), patch(
-            "studio.app.common.routers.dataview.os.path.exists", return_value=True
-        ), patch(
-            "studio.app.common.routers.dataview.ExptConfigReader.read",
-            return_value=MagicMock(),
-        ), patch(
-            "studio.app.common.routers.dataview.RemoteStorageReader", mock_reader
-        ):
-            await _sync_experiment_config_for_publish("1", "uid", "test-bucket")
+        fake, _ = await self._run(
+            tmp_path, monkeypatch, local=None, s3=_VALID_CONFIG, bucket="b1"
+        )
+        assert fake.calls == [
+            ("b1", "1", "uid", RemoteExperimentSyncMode.METADATA_ONLY)
+        ]
 
-        mock_reader.assert_not_called()
+    @pytest.mark.asyncio
+    async def test_noop_without_bucket(self, tmp_path, monkeypatch):
+        """No bucket -> return early, do not construct the reader."""
+        fake, _ = await self._run(
+            tmp_path, monkeypatch, local=None, s3=_VALID_CONFIG, bucket=""
+        )
+        assert fake.calls == []
 
 
 class TestMultiplePublishDataviewRecords:
@@ -907,6 +957,13 @@ class TestMultiplePublishDataviewRecords:
             "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
             new=AsyncMock(),
         ) as mock_sync, patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview._resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
             "studio.app.common.routers.dataview.PublishValidator.validate",
             return_value=mock_validation,
         ), patch(
@@ -1020,6 +1077,10 @@ class TestSinglePublishPreSync:
             "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
             new=AsyncMock(side_effect=sync_side),
         ) as mock_sync, patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
             "studio.app.common.routers.dataview._resolve_workspace_remote_bucket_name",
             return_value="test-bucket",
         ), patch(

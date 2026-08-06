@@ -51,6 +51,10 @@ public_router = APIRouter(tags=["Dataview"], prefix="/api/public/dataview")
 
 logger = AppLogger.get_logger()
 
+# Max concurrent S3 pre-sync operations during bulk publish (bounds the
+# per-request fan-out of RemoteStorageReader clients on one uvicorn process).
+PUBLISH_PRESYNC_CONCURRENCY = 8
+
 
 RECORDS_SORT_MAPPING = {
     "user_name": models.User.name,
@@ -375,44 +379,76 @@ def _resolve_workspace_remote_bucket_name(db: Session, workspace_id: str) -> str
     return owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
 
+def _local_config_can_publish(workspace_id: str, unique_id: str) -> bool:
+    """Whether the local experiment.yaml already passes publish validation.
+
+    Uses the same PublishValidator the handler uses, so the pre-sync skip
+    condition matches the validator's notion of "valid" (a config that merely
+    parses may still be missing required fields or be stale).
+    """
+    return PublishValidator.validate(
+        workspace_id=workspace_id,
+        unique_id=unique_id,
+        user_has_s3_bucket=True,
+        check_files_on_disk=True,
+    ).can_publish
+
+
 async def _sync_experiment_config_for_publish(
     workspace_id: str, unique_id: str, remote_bucket_name: str
 ) -> None:
     """
     Sync metadata from S3 so publish validation reads a valid experiment.yaml.
 
-    Repairs a local config that is missing or a corrupt/empty stub:
-    - missing      -> download metadata
-    - invalid stub -> remove, then download (download_experiment_meta skips
-                      existing files, so the stub must be removed first)
+    Repairs a local config that is missing or fails validation (empty stub,
+    missing required fields, stale success state) by downloading fresh metadata
+    from S3. An existing invalid config is moved aside first (the download skips
+    files that already exist) and restored if the download produces nothing, so
+    the only local copy is never lost when S3 has no replacement.
 
-    Best-effort: any failure is logged and swallowed. If the experiment is
-    absent from S3 the config stays missing and PublishValidator.validate
-    returns 400. The caller resolves the bucket, so this helper does no DB
-    access (safe to run concurrently over one Session via asyncio.gather).
+    Best-effort: any failure is logged and swallowed. If the experiment cannot
+    be synced the local config is left as-is and PublishValidator.validate
+    reports the real 400. The caller resolves the bucket, so this helper does no
+    DB access (safe to run concurrently over one Session via asyncio.gather).
     """
-    if not RemoteStorageController.is_available():
+    if not RemoteStorageController.is_available() or not remote_bucket_name:
         return
 
     try:
         config_path = ExptConfigReader.get_config_yaml_path(workspace_id, unique_id)
 
-        # Skip sync when the local config is already valid.
-        if os.path.exists(config_path):
-            try:
-                ExptConfigReader.read(workspace_id, unique_id)
-                return
-            except Exception:
-                # Invalid stub: remove so the download re-fetches it.
-                os.remove(config_path)
+        # Skip when the local config already passes publish validation.
+        if os.path.exists(config_path) and _local_config_can_publish(
+            workspace_id, unique_id
+        ):
+            return
 
-        async with RemoteStorageReader(
-            remote_bucket_name,
-            workspace_id,
-            unique_id,
-            sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
-        ) as controller:
-            await controller.download_experiment_meta(workspace_id, unique_id)
+        # Move an existing (invalid) config aside so the download re-fetches it,
+        # keeping a backup to restore if the download yields no replacement.
+        backup_path = None
+        if os.path.exists(config_path):
+            backup_path = f"{config_path}.bak"
+            try:
+                os.replace(config_path, backup_path)
+            except FileNotFoundError:
+                # Raced with another remover; nothing to move.
+                backup_path = None
+
+        try:
+            async with RemoteStorageReader(
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
+            ) as controller:
+                await controller.download_experiment_meta(workspace_id, unique_id)
+        finally:
+            # Discard the backup on a successful download; restore it otherwise.
+            if backup_path and os.path.exists(backup_path):
+                if os.path.exists(config_path):
+                    os.remove(backup_path)
+                else:
+                    os.replace(backup_path, config_path)
     except Exception as e:
         logger.warning(
             f"Publish pre-sync failed for {workspace_id}/{unique_id}: {e}",
@@ -561,11 +597,16 @@ async def publish_dataview_records(
             # Validate publish eligibility when publishing
             if flag == PublishFlags.on:
                 # Repair missing/stub local config from S3 before validating.
-                await _sync_experiment_config_for_publish(
-                    str(record.workspace_id),
-                    record.uid,
-                    _resolve_workspace_remote_bucket_name(db, str(record.workspace_id)),
-                )
+                # Guard on is_available() so the bucket lookup (a DB join) is
+                # skipped when remote storage is off.
+                if RemoteStorageController.is_available():
+                    await _sync_experiment_config_for_publish(
+                        str(record.workspace_id),
+                        record.uid,
+                        _resolve_workspace_remote_bucket_name(
+                            db, str(record.workspace_id)
+                        ),
+                    )
 
                 validation = PublishValidator.validate(
                     workspace_id=str(record.workspace_id),
@@ -715,39 +756,50 @@ async def multiple_publish_dataview_records(
                 "for your account. Please contact support to enable publishing.",
             )
 
-        # Resolve owned records once (records not owned by the user are skipped)
+        # Resolve owned records once, de-duplicating ids (select-all across
+        # pages can repeat ids; duplicates would collide on the sync lock file).
         owned_records = []
+        seen_ids = set()
         for record_id in ids:
+            if record_id in seen_ids:
+                continue
+            seen_ids.add(record_id)
             record = DataviewService.find_user_owned_dataview_record(
                 db, record_id, current_user.id
             )
             if record:
                 owned_records.append((record_id, record))
 
-        # Resolve the owner bucket once per workspace (bulk is typically a single
-        # workspace) to avoid redundant queries and keep DB access out of the
-        # gathered coroutines below.
-        bucket_by_workspace = {}
-        for _, record in owned_records:
-            ws_id = str(record.workspace_id)
-            if ws_id not in bucket_by_workspace:
-                bucket_by_workspace[ws_id] = _resolve_workspace_remote_bucket_name(
-                    db, ws_id
-                )
+        # Repair missing/stub local config from S3 before validating.
+        # Guarded on is_available() so bucket lookups (DB joins) are skipped when
+        # remote storage is off.
+        if RemoteStorageController.is_available():
+            # Resolve the owner bucket once per workspace (bulk is typically a
+            # single workspace) and keep DB access out of the gathered coroutines.
+            bucket_by_workspace = {}
+            for _, record in owned_records:
+                ws_id = str(record.workspace_id)
+                if ws_id not in bucket_by_workspace:
+                    bucket_by_workspace[ws_id] = _resolve_workspace_remote_bucket_name(
+                        db, ws_id
+                    )
 
-        # Repair missing/stub local config from S3 (concurrently) before validating.
-        # return_exceptions keeps one record's failure from aborting the batch.
-        await asyncio.gather(
-            *(
-                _sync_experiment_config_for_publish(
-                    str(record.workspace_id),
-                    record.uid,
-                    bucket_by_workspace[str(record.workspace_id)],
-                )
-                for _, record in owned_records
-            ),
-            return_exceptions=True,
-        )
+            # Bound the fan-out of concurrent RemoteStorageReader clients.
+            semaphore = asyncio.Semaphore(PUBLISH_PRESYNC_CONCURRENCY)
+
+            async def _bounded_sync(record):
+                async with semaphore:
+                    await _sync_experiment_config_for_publish(
+                        str(record.workspace_id),
+                        record.uid,
+                        bucket_by_workspace[str(record.workspace_id)],
+                    )
+
+            # return_exceptions keeps one record's failure from aborting the batch.
+            await asyncio.gather(
+                *(_bounded_sync(record) for _, record in owned_records),
+                return_exceptions=True,
+            )
 
         # Validate each record
         failed_records = []
