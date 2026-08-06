@@ -11,9 +11,10 @@ import {
 } from "./helpers"
 
 // Visualize tab. VIS-01 asserts the sidebar info; VIS-02..05 drive the plot
-// editor against the imported Tutorial1 outputs (the sample data ships with
-// outputs, so no workflow run is needed). Left manual: Edit ROI commit (OK
-// mutates the ROI data and kicks a processing run).
+// editor against Tutorial1's node outputs. `sample_data/tutorial/output` ships
+// workflow YAML only, so those outputs come from a run earlier in the session,
+// not from the import. Left manual: Edit ROI commit (OK mutates the ROI data and
+// kicks a processing run).
 
 // MUI standard Select: the label's FormControl wraps the select div. The
 // sidebar stacks one control group per plot box, so pick the box's group.
@@ -72,10 +73,13 @@ test.describe("Visualize", () => {
     await expect(page.locator("text=Tutorial1").first()).toBeVisible()
   })
 
-  test("VIS-02 - Add Cell ROI plot renders image with ROI overlay", async ({
+  test("VIS-02 - Add Cell ROI plot renders image with ROI overlay @slow", async ({
     page,
   }) => {
     await addImagePlot(page)
+    // @slow because `cell_roi` is a suite2p_roi node output, not shipped input:
+    // without a completed run the ROI route answers 503. The other VIS tests
+    // plot the sample TIFF, which the import does ship.
 
     // `.js-plotly-plot` and `text=cell_roi` are both already true before the ROI
     // loads: addImagePlot awaited the plot, and `cell_roi` is the select's own

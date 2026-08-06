@@ -134,11 +134,11 @@ test.describe("Record Management", () => {
     expect(download.suggestedFilename()).toMatch(/^snakemake_.*\.yaml$/)
   })
 
-  test("REC-07 - Download NWB file", async ({ page }) => {
+  test("REC-07 - Download NWB file @slow", async ({ page }) => {
     // An NWB exists only after a completed run, and global setup deletes the
     // workspace at the start of every run, so the run is this test's
-    // precondition. It used to skip on the resulting 404 - on every default
-    // run, against a High-priority row.
+    // precondition. It used to skip on the resulting 404; now it runs the
+    // workflow, which is what puts it in the @slow lane.
     test.setTimeout(900_000)
     await ensureCompletedTutorialRun(page, DATA_WS)
 

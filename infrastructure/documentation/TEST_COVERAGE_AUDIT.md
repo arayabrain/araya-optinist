@@ -4,6 +4,21 @@
 **Scope:** all 291 rows across the 19 manual test-case CSVs whose "Test exists" column named a test
 **Method:** six independent adversarial reviewers, one per sheet group, each instructed to assume the mapping over-claims. Every reviewer read the row's Action/Expected, then the cited test body, and judged existence, semantic match, and regression value.
 
+> **Status, 2026-08-06.** This is a dated snapshot, kept for the reasoning rather
+> than the row list. Since it was written the system-test automation stack
+> (#788 -> #796 -> #797 -> #801) has closed almost all of it. What is resolved:
+> both false-positive tests and the `nwb.py` 200-on-missing-file bug behind
+> BT-509; `SyncStatusView.test.tsx`; the `MagicMock` DB-state rows (pattern 4)
+> now compile their statements and assert the predicates; the skip gate
+> (recommendation 5) landed as assertions replacing the `hasDataRows` guards,
+> plus a hard failure when `11-lifecycle` or `12-admin` cannot run locally; and
+> the MEDIUM relabel backlog is applied as the sheets' `PARTIAL` verdict, each
+> with its uncovered half stated. What is **not**: the probe-ladder timings
+> behind 6236, and the e2e half of 336/340. Recommendation 7 is moot, the PDR was
+> removed once its work packages shipped. Current counts live in
+> `SYSTEM_TEST_COVERAGE.md` and `RELEASE_TEST_COVERAGE.md`, which are re-derived
+> from the sheets, not from this document.
+
 ## Executive Summary
 
 - **Every cited test exists.** Across 291 rows there was not one phantom file, class, ID, or function. The mapping's problem is not fabrication
@@ -86,8 +101,9 @@ A skip is indistinguishable from a pass in a summary line.
 | `test_checkout.py::TestCheckoutIntegration` | `check_api_running` fixture calls `pytest.skip()` unless a live API answers `/docs`. This is why the routers lane reports exactly 3 skips                       |
 | `test_premium_lock_integration.py`          | `skipif` on `RUN_PREMIUM_LOCK_IT`, which is set only in `docker-compose.premium-lock-it.yml`, never in `tests.yml`                                              |
 | All Playwright IDs                          | `e2e.yml` runs on a **weekly cron and manual dispatch only** - never on a PR                                                                                    |
-| `WF-04` / `WF-05` / `WF-06`                 | `@slow`, excluded unless `RUN_SLOW=1`, which is set in **no** workflow. These run in no automated lane at all                                                   |
-| ~20 e2e rows                                | Guarded by `test.skip(!(await hasDataRows(page)))` or `skipWithoutCreds()`. A regression that empties the dataview converts eight mapped rows from FAIL to SKIP |
+| `WF-04` / `WF-05` / `WF-06`                 | `@slow`, excluded unless `RUN_SLOW=1`. **Correction (2026-08-06):** `e2e.yml` does set it, so these run on that workflow's weekly cron and manual dispatch, never on a PR. The sheets mark those rows `OPT-IN` rather than automated |
+| `REC-07` and `06-dataview`'s Private Dataview group | Also `@slow` as of 2026-08-06. Both need a success record, which costs a real snakemake run, and keeping them in the default lane made every `yarn test:e2e` a 30-minute-plus compute. Their 21 release rows and 13 system rows are `OPT-IN` |
+| ~20 e2e rows                                | Guarded by `test.skip(!(await hasDataRows(page)))` or `skipWithoutCreds()`. A regression that empties the dataview converts eight mapped rows from FAIL to SKIP. **Closed 2026-08-06:** `hasDataRows` and `goToWorkspacesWithData` are deleted and those specs assert their preconditions |
 
 ---
 
@@ -125,7 +141,9 @@ silently depend on an earlier mint rather than shipped outputs, so running
 `-g VIS` in isolation has no outputs at all.
 
 **This claim originated in PR #727 and I propagated it into the coverage doc
-without verifying it.** It needs correcting in both places.
+without verifying it.** **Closed 2026-08-06:** both places now say the run is
+real, the `beforeEach` budget is 900s, and the tests that depend on the mint are
+tagged `@slow` instead of paying for it on every default run.
 
 ---
 
@@ -178,7 +196,7 @@ The audit found existing tests that cover rows better than the cited ones:
 | Row              | Better test                                                                                                   |
 | ---------------- | ------------------------------------------------------------------------------------------------------------- |
 | 6203, 6208, 6210 | `test_premium_manager.py::TestHeartbeatRestoresPendingRelease` - the actual pending-release restore mechanism |
-| 6232             | `unreachableMachine.test.ts` "does not poll when tab is not leader" - the actual non-leader gate              |
+| 6232             | `unreachableMachine.test.ts` "does not poll when tab is not leader" - the actual non-leader gate. **Superseded 2026-08-06** by `PremiumNonLeaderTab.test.tsx`, which runs the provider itself as leader and as follower; the row now cites both |
 | 08/815, 08/816   | `test_structured_outputs.py` on-demand-sync cases (PR #650's own regression tests)                            |
 | 07/702           | `DataviewRecords.test.tsx` owner-column and publish-button private/public cases                               |
 | 04/448           | `test_s3_storage_monitor.py` critical/danger threshold cases, for the alert half                              |
