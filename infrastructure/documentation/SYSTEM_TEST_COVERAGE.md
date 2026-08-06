@@ -365,16 +365,17 @@ Notes on this sheet:
   a status check alone cannot separate "rejected before dispatch" from
   "dispatched, then failed".
 - **Writing 922 surfaced a product bug, fixed here.** The route's outer handler
-  replaced *every* inner `HTTPException` with a hardcoded 400. Stripe retries 5xx
-  and never retries 4xx, so an internal failure during
-  `checkout.session.completed` - for instance `WebhookService`'s
+  replaced *every* inner `HTTPException` with a hardcoded 400. Stripe treats
+  every non-2xx alike, so this is not about redelivery: an internal failure
+  during `checkout.session.completed` - for instance `WebhookService`'s
   `HTTPException(500, "Error retrieving subscription from Stripe: ...")` - was
-  reported to Stripe as the caller's fault and never redelivered, leaving a user
-  who had paid on the Free plan. The handler now keeps the inner status while
+  still retried, but it was reported as the caller's fault, which kept our own
+  outage out of the 5xx alarm and pointed the delivery log at Stripe's payload
+  instead of at our stack trace. The handler now keeps the inner status while
   still suppressing the inner detail, which was the original intent of that
   block (added in `c883b9bfb`, when both of the handler's own raises were already
-  400). `TestWebhookStatusTellsStripeWhetherToRetry` pins both directions: an
+  400). `TestWebhookStatusReportsWhoseFaultItWas` pins both directions: an
   unsigned body stays 400, an internal failure is 5xx, and a non-actionable 400
-  from the dispatcher is not promoted into a retry loop.
+  from the dispatcher is not promoted into a 5xx that pages.
 - **Tax coverage now exists but is input-side only.** Stripe's tax engine is not
   ours to assert; what these tests pin is every input we hand it.
