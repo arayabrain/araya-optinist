@@ -21,7 +21,12 @@ cd frontend
 yarn install
 npx playwright install chromium
 
-# credentials (see below) — this file is gitignored
+# point the app at the backend — without REACT_APP_SERVER_* it derives the
+# API host from window.location and calls itself, so the first request
+# (GET /is_standalone) never answers. Both files are gitignored.
+cp .env.example .env
+
+# credentials (see below)
 cat > e2e/.env <<'EOF'
 TEST_USER_EMAIL=<free-plan test account email>
 TEST_USER_PASSWORD=<password>
@@ -48,6 +53,7 @@ containerized frontend for e2e):
 docker compose -f docker-compose.dev.multiuser.yml up -d db studio-dev-be
 
 # frontend on the host — pick a free port and match BASE_URL
+# (needs frontend/.env from the quick start, or the app calls itself for the API)
 cd frontend && PORT=3003 BROWSER=none yarn start
 ```
 

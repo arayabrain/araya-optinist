@@ -3,9 +3,12 @@ import * as path from "path"
 
 import { chromium, request } from "@playwright/test"
 
-// 1. Deletes workspaces named e2e-* left behind by previous runs (leftover
+import { authHeaders } from "./helpers"
+
+// 1. Checks the credentials over the API, so a bad password fails here.
+// 2. Deletes workspaces named e2e-* left behind by previous runs (leftover
 //    rows push new ones out of the virtualized grid).
-// 2. Logs in once via the UI and saves storage state for the authed specs,
+// 3. Logs in once via the UI and saves storage state for the authed specs,
 //    keeping Firebase logins per run to a handful (rate limits).
 export default async function globalSetup() {
   const email = process.env.TEST_USER_EMAIL
@@ -15,21 +18,33 @@ export default async function globalSetup() {
   const baseURL = process.env.BASE_URL || "http://localhost:3000"
   const apiURL = process.env.API_URL || baseURL.replace(/:\d+$/, ":8000")
 
-  await saveLoginState(baseURL, email, password)
-
   const api = await request.newContext({ baseURL: apiURL })
   try {
+    // Before the browser login: bad credentials there are three silent 60s
+    // waits for /dashboard, which reads as a hang rather than an auth error
     const loginRes = await api.post("/auth/login", {
       data: { email, password },
     })
-    if (!loginRes.ok()) return
-    const { access_token } = await loginRes.json()
-    const auth = { Authorization: `Bearer ${access_token}` }
+    if (!loginRes.ok()) {
+      throw new Error(
+        `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiURL}/auth/login ` +
+          `(${loginRes.status()}): ${await loginRes.text()}`,
+      )
+    }
+    const { access_token, ex_token } = await loginRes.json()
+    const auth = authHeaders(access_token, ex_token)
+
+    await saveLoginState(baseURL, email, password)
 
     const listRes = await api.get("/workspaces?offset=0&limit=100", {
       headers: auth,
     })
-    if (!listRes.ok()) return
+    if (!listRes.ok()) {
+      throw new Error(
+        `Startup cleanup could not list workspaces ` +
+          `(${listRes.status()}): ${await listRes.text()}`,
+      )
+    }
     const { items } = await listRes.json()
     for (const ws of items) {
       if (/^e2e-/.test(ws.name)) {
