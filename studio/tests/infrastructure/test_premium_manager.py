@@ -1532,9 +1532,17 @@ class TestConcurrentAssignLock:
                 timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
             )
 
-    def test_lock_acquired_calls_impl_under_lock(self, mock_env_vars_premium):
-        """When the lock is acquired, _assign_premium_user_impl is
-        called INSIDE the lock for full mutual exclusion."""
+    def test_lock_acquired_does_not_consult_the_existing_assignment(
+        self, mock_env_vars_premium
+    ):
+        """The winner assigns; only the loser reads back what the winner stored.
+
+        This case used to assert only ``mock_impl.assert_called_once()``, which
+        ``test_assign_impl_runs_inside_the_lock`` already covers more strictly.
+        The distinct claim is the branch: reading the existing assignment on the
+        acquired path would hand a stale row back as the fresh assignment and
+        skip the impl.
+        """
         impl_response = {
             "statusCode": 200,
             "body": json.dumps({"instance_id": "i-new", "assigned": True}),
@@ -1545,6 +1553,8 @@ class TestConcurrentAssignLock:
             "premium_manager.distributed_lock",
             new=self._lock_ctx(True),
         ), patch(
+            "premium_manager.get_existing_user_assignment"
+        ) as mock_existing, patch(
             "premium_manager._assign_premium_user_impl",
             return_value=impl_response,
         ) as mock_impl:
@@ -1552,10 +1562,11 @@ class TestConcurrentAssignLock:
 
             result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
 
-            assert result["statusCode"] == 200
-            body = json.loads(result["body"])
-            assert body["instance_id"] == "i-new"
-            mock_impl.assert_called_once()
+        assert result is impl_response
+        assert json.loads(result["body"])["instance_id"] == "i-new"
+        mock_impl.assert_called_once()
+        assert mock_impl.call_args.args[:3] == (123, {"tier": "premium"}, "uid_123")
+        mock_existing.assert_not_called()
 
     def test_assign_impl_runs_inside_the_lock(self, mock_env_vars_premium):
         """The critical section (_assign_premium_user_impl) must execute strictly
@@ -2782,6 +2793,17 @@ class TestRoutingIdContract:
         assert numeric_id != firebase_uid
 
 
+def _assert_no_scale_down(capsys, expected):
+    """``scale_down_if_possible`` wraps its whole body in ``except Exception``, so a
+    test whose only assertion is ``assert_not_called()`` also passes when the
+    function dies on its first line. The printed decision is the proof it ran to
+    the end, and it is also the only thing that separates a refused scale-down
+    from an entered branch that found nothing to stop."""
+    out = capsys.readouterr().out
+    assert "Error scaling down premium instances" not in out, out
+    assert expected in out, out
+
+
 class TestScaleDownIfPossible:
     """scale_down_if_possible stops idle instances and registers
     them as standby in the database for later termination."""
@@ -2842,7 +2864,9 @@ class TestScaleDownIfPossible:
                 assert call[1]["instance_state"] == "stopped"
                 assert call[1]["is_standby"] is True
 
-    def test_no_scale_down_when_idle_below_threshold(self, mock_env_vars_premium):
+    def test_no_scale_down_when_idle_below_threshold(
+        self, mock_env_vars_premium, capsys
+    ):
         """No scale-down when fewer than 2 idle instances."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -2874,6 +2898,65 @@ class TestScaleDownIfPossible:
 
             mock_ec2.stop_instances.assert_not_called()
             mock_store.assert_not_called()
+            _assert_no_scale_down(
+                capsys, "No scale-down: running=1, min_needed=1, idle=1"
+            )
+
+    def test_no_scale_down_when_only_one_of_three_running_is_idle(
+        self, mock_env_vars_premium, capsys
+    ):
+        """``idle_instances >= 2`` declines this scale-down, but only in the log.
+
+        With 3 running, 2 occupied and 1 active user min_running_needed is 2, so
+        ``len(running) > min_running_needed`` holds and the idle count is what
+        refuses. The clause is a second layer whose only observable effect is the
+        printed decision: drop it and ``min(idle_instances - 1, ...)`` is 0, the
+        collection loop breaks immediately and nothing is stopped either way. It
+        becomes load-bearing only if that ``- 1`` is ever removed, so the printed
+        line is what this test reads.
+        """
+        occupied = {"i-busy1": [10], "i-busy2": [11], "i-idle1": []}
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=1
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance",
+            side_effect=lambda iid: occupied[iid],
+        ), patch(
+            "premium_manager.deregister_container_instance_from_ecs"
+        ) as mock_deregister, patch(
+            "premium_manager.store_user_assignment"
+        ) as mock_store, patch(
+            "premium_manager.update_premium_service_desired_count"
+        ) as mock_desired_count:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+
+            mock_get_instances.return_value = [
+                self._make_instance("i-busy1"),
+                self._make_instance("i-busy2"),
+                self._make_instance("i-idle1"),
+            ]
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+            mock_ec2.stop_instances.assert_not_called()
+            mock_deregister.assert_not_called()
+            mock_store.assert_not_called()
+            mock_desired_count.assert_not_called()
+            _assert_no_scale_down(
+                capsys, "No scale-down: running=3, min_needed=2, idle=1"
+            )
 
     def test_standby_registration_failure_does_not_block(self, mock_env_vars_premium):
         """If store_user_assignment fails for one instance, the
@@ -2971,6 +3054,74 @@ class TestScaleDownIfPossible:
             assert "i-occupied" not in stopped_ids
             # All stopped instances registered as standby
             assert mock_store.call_count == len(stopped_ids)
+
+    def test_every_instance_is_deregistered_from_ecs_before_it_is_stopped(
+        self, mock_env_vars_premium
+    ):
+        """Row 6221's third expected result. ``test_stops_idle_and_registers_standby``
+        asserts both calls happened but not their order, and each mock records its
+        own calls only. Stopping an instance ECS still holds a registration for
+        leaves a ghost registration that draws tasks to a dead host, which is the
+        failure 6231's cleanup sweep exists to mop up.
+        """
+        recorder = MagicMock()
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_manager.get_dynamic_max_capacity", return_value=10
+        ), patch(
+            "premium_manager.count_active_premium_users", return_value=0
+        ), patch(
+            "premium_manager.count_total_premium_users", return_value=5
+        ), patch(
+            "premium_manager.get_all_premium_instances_with_states"
+        ) as mock_get_instances, patch(
+            "premium_manager.get_assigned_users_for_instance", return_value=[]
+        ), patch(
+            "premium_manager.deregister_container_instance_from_ecs",
+            recorder.deregister,
+        ), patch(
+            "premium_manager.store_user_assignment"
+        ), patch(
+            "premium_manager.update_premium_service_desired_count"
+        ):
+            mock_boto3.return_value = recorder.ec2
+
+            mock_get_instances.return_value = [
+                self._make_instance(f"i-idle{index}") for index in range(4)
+            ]
+
+            from premium_manager import scale_down_if_possible
+
+            scale_down_if_possible()
+
+        stopped_ids = recorder.ec2.stop_instances.call_args[1]["InstanceIds"]
+        assert stopped_ids, "nothing was stopped, so the ordering claim is vacuous"
+
+        names = [call[0] for call in recorder.mock_calls]
+        assert names.count("ec2.stop_instances") == 1
+        deregistered_before_stop = [
+            call[1][0]
+            for call in recorder.mock_calls[: names.index("ec2.stop_instances")]
+            if call[0] == "deregister"
+        ]
+        assert deregistered_before_stop == stopped_ids
+
+
+def _assert_orphan_sweep_completed(capsys):
+    """Both sweeps wrap their whole body in ``except Exception``, so a test whose
+    only assertion is ``assert_not_called()`` also passes when the function dies
+    on its first line. The tail print is the proof it ran to the end."""
+    out = capsys.readouterr().out
+    assert "Error cleaning up orphaned EC2 instances" not in out, out
+    assert "Orphan cleanup: stopped 0 instance(s)" in out, out
+
+
+def _assert_ghost_sweep_completed(capsys):
+    out = capsys.readouterr().out
+    assert "Error cleaning up ghost ECS registrations" not in out, out
+    assert "No ghost ECS registrations found" in out, out
 
 
 class TestCleanupOrphanedEC2Instances:
@@ -3087,7 +3238,7 @@ class TestCleanupOrphanedEC2Instances:
             # Both registrations attempted
             assert mock_store.call_count == 2
 
-    def test_skips_instance_within_grace_period(self, mock_env_vars_premium):
+    def test_skips_instance_within_grace_period(self, mock_env_vars_premium, capsys):
         """EC2 instance running 5 min is within grace period
         and must NOT be stopped."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -3138,8 +3289,9 @@ class TestCleanupOrphanedEC2Instances:
             cleanup_orphaned_ec2_instances()
 
             mock_ec2.stop_instances.assert_not_called()
+            _assert_orphan_sweep_completed(capsys)
 
-    def test_skips_instance_registered_in_ecs(self, mock_env_vars_premium):
+    def test_skips_instance_registered_in_ecs(self, mock_env_vars_premium, capsys):
         """EC2 instance registered as ECS container instance
         must NOT be stopped even if old."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -3198,6 +3350,7 @@ class TestCleanupOrphanedEC2Instances:
             cleanup_orphaned_ec2_instances()
 
             mock_ec2.stop_instances.assert_not_called()
+            _assert_orphan_sweep_completed(capsys)
 
 
 class TestHandleScheduledMonitoring:
@@ -3783,7 +3936,7 @@ class TestCleanupGhostECSRegistrations:
             assert tag_call.kwargs["Resources"] == ["i-pending1"]
             assert tag_call.kwargs["Tags"][0]["Key"] == "optinist:agent-disconnected-at"
 
-    def test_skips_within_grace_period(self, mock_env_vars_premium):
+    def test_skips_within_grace_period(self, mock_env_vars_premium, capsys):
         """Running EC2 tagged recently is within grace period — skip."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
@@ -3829,6 +3982,7 @@ class TestCleanupGhostECSRegistrations:
             cleanup_ghost_ecs_registrations()
 
             mock_ecs.deregister_container_instance.assert_not_called()
+            _assert_ghost_sweep_completed(capsys)
 
     def test_deregisters_after_grace_period(self, mock_env_vars_premium):
         """Running EC2 tagged over 5 minutes ago gets deregistered."""
