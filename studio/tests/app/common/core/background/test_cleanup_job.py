@@ -248,8 +248,16 @@ class TestCleanupUserData:
                                 "123", ["workspace1"]
                             )
 
+        from studio.app.dir_path import DIRPATH
+
         assert result == CleanupOutcome.CLEANED
-        assert mock_rmtree.call_count >= 1
+        # >= 1 was satisfied by the input directory alone, hiding the experiment
+        assert mock_rmtree.call_count == 2
+        deleted = [call[0][0] for call in mock_rmtree.call_args_list]
+        assert deleted == [
+            f"{DIRPATH.INPUT_DIR}/workspace1",
+            f"{DIRPATH.OUTPUT_DIR}/workspace1/exp123",
+        ]
 
     @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
     @patch.object(
