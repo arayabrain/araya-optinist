@@ -765,6 +765,37 @@ class TestCreateUser:
         assert storage.storage_quota_bytes == 5 * GB
         assert storage.storage_usage_bytes == 0
 
+    @pytest.mark.parametrize("role_id", [UserRole.admin.value, UserRole.operator.value])
+    def test_no_stripe_row_is_written_for_an_admin_created_account(
+        self, db, no_firebase, admin_id, role_id
+    ):
+        """Rows 307 and 308. An admin-created account has never been near
+        Stripe, so a customer or purchase row at this point would either bill
+        somebody who has not bought anything or mis-key the first real purchase.
+        """
+        created = create(db, no_firebase, "nostripe@example.com", role_id)
+        new_id = created["user"].id
+
+        # The counts below are only meaningful if the creation really ran
+        assert (
+            db.query(UserSubscription)
+            .filter(UserSubscription.user_id == new_id)
+            .count()
+            == 1
+        )
+        assert (
+            db.query(SubscriptionUserAccount)
+            .filter(SubscriptionUserAccount.user_id == new_id)
+            .count()
+            == 0
+        )
+        assert (
+            db.query(SubscriptionUserPurchase)
+            .filter(SubscriptionUserPurchase.user_id == new_id)
+            .count()
+            == 0
+        )
+
     def test_the_firebase_account_is_created_pre_verified(
         self, db, no_firebase, admin_id
     ):
@@ -1065,10 +1096,17 @@ class TestSelfDeleteIsRejectedServerSide:
 
 
 class TestReRegisteringADeletedAddress:
-    """Deletion is a soft delete, so the old row keeps the address."""
+    """Deletion is a soft delete, so the old row keeps the address.
 
+    Row 341 describes the *self-registration* form, which reaches
+    `create_user(verified=False)`; the admin path is `verified=True`. Both are
+    exercised because the unverified branch rewrites `role_id` and sends a
+    verification email before the row set is settled.
+    """
+
+    @pytest.mark.parametrize("verified", [True, False])
     def test_the_address_can_be_registered_again_as_a_new_row(
-        self, db, no_firebase, admin_id
+        self, db, no_firebase, admin_id, verified
     ):
         email = "returning@example.com"
         old_id = seed_user(db, "uid-old", email)
@@ -1077,7 +1115,14 @@ class TestReRegisteringADeletedAddress:
 
         no_firebase.create_user.side_effect = None
         no_firebase.create_user.return_value = MagicMock(uid="uid-new", email=email)
-        created = create(db, no_firebase, email, UserRole.operator.value)
+        with patch.object(
+            crud_users.AuthEmailService, "send_verification_email"
+        ) as send_email:
+            created = create(
+                db, no_firebase, email, UserRole.operator.value, verified=verified
+            )
+
+        assert send_email.call_count == (0 if verified else 1)
 
         rows = (
             db.query(UserModel)

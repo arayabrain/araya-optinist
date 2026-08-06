@@ -9,6 +9,7 @@ import {
   ensureRegisteredUser,
   freeStorageState,
   FREE_USER,
+  isLocalBaseUrl,
   localStackSkipReason,
   login,
   logout,
@@ -31,15 +32,27 @@ import {
 // confirmation dialog, so the shared accounts survive.
 
 const ADMIN = {
-  email: process.env.TEST_ADMIN_EMAIL || "e2e_ci_admin@test.com",
+  // A local default distinct from CI's `e2e_ci_admin@test.com`: one dev
+  // Firebase project serves both, so sharing the address means a local run
+  // re-creates the account CI's bootstrap just deleted, and CI's own
+  // registration then answers EMAIL_EXISTS with no DB row to log in to.
+  email: process.env.TEST_ADMIN_EMAIL || "e2e_local_admin@test.com",
   // Defaults to the free user's password so a local run needs no extra config
   password: process.env.TEST_ADMIN_PASSWORD || FREE_USER.password,
 }
 
 const ADMIN_ROLE_ID = 1
 
+// Sign-off rows that this group alone covers, named in the skip reason so a run
+// that does not execute it says which rows it left unverified
+const UNCOVERED_ELSEWHERE = "ADMIN-01..12 (rows 301, 302, 313, 333, 334, 335)"
+
+// LIMIT 1 because nothing in the schema stops two active rows sharing an
+// address; as a scalar subquery a second one is error 1242, which takes the
+// whole group down in beforeAll rather than failing the row it belongs to.
 const userIdSql = (email: string) =>
-  `(SELECT id FROM users WHERE email = '${sqlLiteral(email)}' AND active = 1)`
+  `(SELECT id FROM users WHERE email = '${sqlLiteral(email)}' AND active = 1
+      ORDER BY id DESC LIMIT 1)`
 
 async function ensureAdminUser() {
   await ensureRegisteredUser(ADMIN.email, ADMIN.password, "E2E Admin")
@@ -119,29 +132,42 @@ test.describe.serial("Admin Account Manager", () => {
   let freeUserName = ""
   let freeUserId = ""
 
+  // A local run that cannot execute this group is a broken environment, not a
+  // configuration choice: skipping there hands a green summary to a sign-off
+  // sheet whose rows nothing else covers. Elsewhere the group genuinely cannot
+  // run, because promoting a role needs the docker DB.
+  function unrunnable(reason: string) {
+    if (isLocalBaseUrl()) {
+      throw new Error(`${reason}; ${UNCOVERED_ELSEWHERE} cannot run`)
+    }
+    skipReason = `${reason}; leaves ${UNCOVERED_ELSEWHERE} unverified`
+  }
+
   test.beforeAll(async () => {
-    if (!ADMIN.email || !ADMIN.password) {
-      skipReason = "TEST_ADMIN_EMAIL/TEST_ADMIN_PASSWORD not set"
+    // The admin credentials default to the free user's, so this covers both
+    if (!FREE_USER.email || !FREE_USER.password) {
+      unrunnable("TEST_USER_EMAIL/TEST_USER_PASSWORD not set")
       return
     }
-    if (!FREE_USER.email) {
-      skipReason = "TEST_USER_EMAIL not set; the spec needs a non-admin to list"
+    const localStack = localStackSkipReason()
+    if (localStack) {
+      unrunnable(localStack)
       return
     }
-    skipReason = localStackSkipReason()
-    if (skipReason) return
     await ensureAdminUser()
     freeUserName = runSql(
       `SELECT name FROM users WHERE email = '${sqlLiteral(FREE_USER.email)}'
-         AND active = 1;`,
+         AND active = 1 ORDER BY id DESC LIMIT 1;`,
     )
     if (!freeUserName) {
-      skipReason = `no active user row for ${FREE_USER.email}`
-      return
+      throw new Error(
+        `no active user row for ${FREE_USER.email}; ` +
+          `${UNCOVERED_ELSEWHERE} cannot run`,
+      )
     }
     freeUserId = runSql(
       `SELECT id FROM users WHERE email = '${sqlLiteral(FREE_USER.email)}'
-         AND active = 1;`,
+         AND active = 1 ORDER BY id DESC LIMIT 1;`,
     )
     // One Firebase sign-in for the whole group. The project is rate limited and
     // this describe is `.serial`, so a single flake re-runs every test in it.
@@ -253,7 +279,7 @@ test.describe.serial("Admin Account Manager", () => {
     expect(
       runSql(
         `SELECT name FROM users WHERE email = '${sqlLiteral(FREE_USER.email)}'
-           AND active = 1;`,
+           AND active = 1 ORDER BY id DESC LIMIT 1;`,
       ),
     ).toBe(freeUserName)
   })

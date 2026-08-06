@@ -24,6 +24,7 @@ from sqlmodel import Session
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.constants import (
     StorageQuota,
+    StorageSize,
     SubscriptionPeriods,
     SubscriptionPlanIds,
     SubscriptionStatus,
@@ -528,14 +529,17 @@ class TestReactivationIsMirroredOntoTheRow:
         assert int(row["expiration"].replace(tzinfo=timezone.utc).timestamp()) == (
             self.PERIOD_END
         )
-        # A reactivated premium user held to the free quota would be over it
+        # A reactivated premium user held to the free quota would be over it.
+        # Pinned to the literal: comparing against production's own
+        # ``bytes_for_plan`` passes for any value it happens to return.
+        assert StorageQuota.PREMIUM == 200
         quota = (
             db.query(UserStorageUsage)
             .filter(UserStorageUsage.user_id == premium_user)
             .one()
             .storage_quota_bytes
         )
-        assert quota == StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
+        assert quota == 200 * StorageSize.GB
 
 
 class TestReactivateRejectsAnotherUsersSubscription:

@@ -8,6 +8,7 @@ import {
   authHeaders,
   confirmDialog,
   ensureTutorialRecords,
+  isLocalBaseUrl,
   localStackSkipReason,
   login,
   logout,
@@ -34,8 +35,11 @@ import {
 // sizes sum st_size) sits in the user's workspace and each test dials
 // storage_quota_bytes to put the measured real usage at the percentage
 // under test.
-// Skips (never fails) when creds are missing, BASE_URL is not local, or the
-// docker containers are unreachable.
+// On a local run every reason this group cannot execute is a broken
+// environment, and it FAILS rather than skipping: several LC rows have no
+// coverage but this spec, and a skipped row reads as a pass on the sheet. It
+// still skips where BASE_URL is not local, because the DB writes it needs are
+// only reachable on the docker stack.
 
 const USER = {
   email: process.env.TEST_LIFECYCLE_EMAIL || "",
@@ -169,16 +173,30 @@ async function loginKeepWarnings(page: Page) {
 // Same locator the admin spec uses
 const dialog = confirmDialog
 
+// Sign-off rows this group alone covers, named in the reason so a run that does
+// not execute it says which rows it left unverified
+const UNCOVERED_ELSEWHERE = "LC-01..LC-23"
+
 test.describe.serial("Subscription/storage warning lifecycle", () => {
   let skipReason = ""
 
+  function unrunnable(reason: string) {
+    if (isLocalBaseUrl()) {
+      throw new Error(`${reason}; ${UNCOVERED_ELSEWHERE} cannot run`)
+    }
+    skipReason = `${reason}; leaves ${UNCOVERED_ELSEWHERE} unverified`
+  }
+
   test.beforeAll(async () => {
     if (!USER.email || !USER.password) {
-      skipReason = "TEST_LIFECYCLE_EMAIL/TEST_LIFECYCLE_PASSWORD not set"
+      unrunnable("TEST_LIFECYCLE_EMAIL/TEST_LIFECYCLE_PASSWORD not set")
       return
     }
-    skipReason = localStackSkipReason()
-    if (skipReason) return
+    const localStack = localStackSkipReason()
+    if (localStack) {
+      unrunnable(localStack)
+      return
+    }
     // The local-testing default in studio/config/.env disables every storage
     // lookup backend-side (deployed envs run with it false), so no warning
     // under test can ever fire while it's on
@@ -187,8 +205,9 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       fs.existsSync(backendEnv) &&
       /^SKIP_STORAGE_CHECKS=true/m.test(fs.readFileSync(backendEnv, "utf-8"))
     ) {
-      skipReason =
-        "SKIP_STORAGE_CHECKS=true in studio/config/.env disables storage warnings"
+      unrunnable(
+        "SKIP_STORAGE_CHECKS=true in studio/config/.env disables storage warnings",
+      )
       return
     }
     await ensureUserAndWorkspace()
