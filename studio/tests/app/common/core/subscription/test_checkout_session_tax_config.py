@@ -508,3 +508,331 @@ class TestSessionVerificationReadsTax:
         assert result["amount_total"] == 2200
         assert result["amount_subtotal"] == 2000
         assert result["currency"] == "jpy"
+
+
+class TestPurchaseRowSurvivesTheDatabase:
+    """Row 918. The insert, against a real database.
+
+    ``TestWebhookRecordsThePurchase`` patches ``record_purchase`` out entirely,
+    so no row is ever written and "no constraint or foreign-key errors" is
+    unobservable from it. These cases run the real insert.
+    """
+
+    PLAN_PREMIUM = 2
+    USER_ID = 42
+
+    @pytest.fixture()
+    def db(self):
+        from studio.app.common.models.subscription import SubscriptionUserPurchase
+        from studio.tests.app.common.sqlite_harness import sqlite_session
+
+        with sqlite_session([SubscriptionUserPurchase.__table__]) as session:
+            yield session
+
+    def test_the_purchase_row_is_inserted_with_integer_keys(self, db):
+        from studio.app.common.models.subscription import SubscriptionUserPurchase
+
+        purchase = CheckoutService.record_purchase(db, self.PLAN_PREMIUM, self.USER_ID)
+        db.commit()
+        db.expire_all()
+
+        row = db.query(SubscriptionUserPurchase).one()
+        assert row.id == purchase.id
+        assert row.user_id == self.USER_ID
+        assert row.plan_id == self.PLAN_PREMIUM
+        assert isinstance(row.user_id, int) and isinstance(row.plan_id, int)
+        assert row.created_at is not None
+        assert row.updated_at is not None
+
+    def test_a_null_key_is_refused_by_the_column_constraint(self, db):
+        """The other direction: the NOT NULL constraints the row's "no
+        constraint errors" criterion depends on are really enforced, so the
+        positive case above is not passing on a permissive schema."""
+        from sqlalchemy.exc import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            CheckoutService.record_purchase(db, None, self.USER_ID)
+
+    def test_two_purchases_for_one_user_are_both_kept(self, db):
+        """Purchase history is append-only: a renewal must not collide with the
+        original purchase."""
+        from studio.app.common.models.subscription import SubscriptionUserPurchase
+
+        first = CheckoutService.record_purchase(db, self.PLAN_PREMIUM, self.USER_ID)
+        second = CheckoutService.record_purchase(db, self.PLAN_PREMIUM, self.USER_ID)
+        db.commit()
+
+        assert first.id != second.id
+        assert db.query(SubscriptionUserPurchase).count() == 2
+
+
+class TestTheWebhookItselfWritesThePurchaseRow:
+    """Row 917. The whole ``checkout.session.completed`` handler, over a database.
+
+    ``TestWebhookRecordsThePurchase`` above patches ``record_purchase`` out, so it
+    proves the arguments and nothing about the row; the class above it calls
+    ``record_purchase`` directly, so it proves the row and nothing about the
+    handler reaching it. Only Stripe is stubbed here, and every write the handler
+    performs lands in the same session it is handed.
+    """
+
+    PLAN_PREMIUM = 2
+    STRIPE_CUSTOMER = "cus_row_917"
+    PERIOD_END = 1_795_000_000
+
+    @pytest.fixture()
+    def db(self):
+        from studio.app.common.models import User as UserModel
+        from studio.app.common.models.subscription import (
+            SubscriptionPlans,
+            SubscriptionProvider,
+            SubscriptionUserAccount,
+            SubscriptionUserPurchase,
+            UserStorageUsage,
+            UserSubscription,
+        )
+        from studio.tests.app.common.sqlite_harness import sqlite_session
+
+        with sqlite_session(
+            [
+                UserModel.__table__,
+                SubscriptionPlans.__table__,
+                SubscriptionProvider.__table__,
+                SubscriptionUserAccount.__table__,
+                SubscriptionUserPurchase.__table__,
+                UserSubscription.__table__,
+                UserStorageUsage.__table__,
+            ]
+        ) as session:
+            session.add(
+                SubscriptionPlans(
+                    id=self.PLAN_PREMIUM,
+                    name="Premium",
+                    price=20,
+                    billing_cycle=1,
+                    features={},
+                    status=True,
+                    currency=1,
+                )
+            )
+            session.commit()
+            yield session
+
+    @pytest.fixture()
+    def user_id(self, db):
+        from studio.app.common.models import User as UserModel
+
+        user = UserModel(
+            organization_id=1,
+            uid="uid-row-917",
+            name="Buyer",
+            email="buyer@example.com",
+            attributes={},
+            active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user.id
+
+    def _run_webhook(self, db, user_id):
+        session_data = {
+            "id": "cs_row_917",
+            "customer": self.STRIPE_CUSTOMER,
+            "payment_status": "paid",
+            "subscription": "sub_row_917",
+            "metadata": {"user_id": str(user_id), "plan_id": str(self.PLAN_PREMIUM)},
+        }
+
+        with patch.object(CheckoutService, "set_default_payment_method"), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "stripe.Subscription.retrieve",
+            return_value={
+                "current_period_end": self.PERIOD_END,
+                "trial_end": None,
+                "current_period_start": self.PERIOD_END - 86_400,
+            },
+        ):
+            return WebhookService.handle_checkout_completed(db, session_data)
+
+    def test_one_purchase_row_is_written_for_the_session_user(self, db, user_id):
+        from studio.app.common.models.subscription import SubscriptionUserPurchase
+
+        result = self._run_webhook(db, user_id)
+        db.expire_all()
+
+        assert result["success"] is True
+        row = db.query(SubscriptionUserPurchase).one()
+        assert row.user_id == user_id
+        assert row.plan_id == self.PLAN_PREMIUM
+        assert row.created_at is not None
+        assert result["purchase_id"] == row.id
+
+    def test_the_purchase_the_subscription_and_the_account_all_land(self, db, user_id):
+        """The handler commits once, at the end. A row set that is only
+        partially present is the "constraint or foreign-key error" the sibling
+        row describes, seen from the other side.
+        """
+        from studio.app.common.core.subscription.constants import STRIPE_PROVIDER_NAME
+        from studio.app.common.models.subscription import (
+            SubscriptionProvider,
+            SubscriptionUserAccount,
+            SubscriptionUserPurchase,
+            UserSubscription,
+        )
+
+        # Creating the provider row commits on its own, so seed it and the
+        # handler's own commit is the only one left to count.
+        db.add(SubscriptionProvider(name=STRIPE_PROVIDER_NAME))
+        db.commit()
+
+        with patch.object(db, "commit", wraps=db.commit) as commit:
+            self._run_webhook(db, user_id)
+        db.expire_all()
+
+        # Autoflush makes the rows below visible inside the open transaction, so
+        # the commit is observable only as a call.
+        assert commit.call_count == 1
+        assert db.query(SubscriptionUserPurchase).count() == 1
+        subscription = db.query(UserSubscription).one()
+        assert subscription.plan_id == self.PLAN_PREMIUM
+        assert int(subscription.expiration.timestamp()) == self.PERIOD_END
+        account = db.query(SubscriptionUserAccount).one()
+        assert account.user_id == user_id
+        assert account.provider_customer_id == self.STRIPE_CUSTOMER
+
+    def test_an_unpaid_session_writes_no_purchase_row(self, db, user_id):
+        """The negative control for the count above: it has to be able to be 0."""
+        from fastapi import HTTPException
+
+        from studio.app.common.models.subscription import SubscriptionUserPurchase
+
+        with patch.object(CheckoutService, "set_default_payment_method"):
+            with pytest.raises(HTTPException):
+                WebhookService.handle_checkout_completed(
+                    db,
+                    {
+                        "id": "cs_row_917_unpaid",
+                        "customer": self.STRIPE_CUSTOMER,
+                        "payment_status": "unpaid",
+                        "subscription": "sub_row_917",
+                        "metadata": {
+                            "user_id": str(user_id),
+                            "plan_id": str(self.PLAN_PREMIUM),
+                        },
+                    },
+                )
+
+        assert db.query(SubscriptionUserPurchase).count() == 0
+
+
+class TestSeededPlanValuesMatchTheConfig:
+    """Row 903, the value half.
+
+    ``TestPlanConfigAgreesWithTheSeededRows`` compares *field-name* sets, so a
+    seeded price of 200 where the config says 20 passes it. These cases run the
+    seed script's own ``main()`` against an in-memory database and compare the
+    written values. The Stripe-side comparison stays manual: the live tfvars are
+    gitignored.
+    """
+
+    CONFIG = [
+        {
+            "id": 1,
+            "name": "Free",
+            "price": 0,
+            "billing_cycle": 1,
+            "currency": 1,
+            "status": 1,
+            "stripe_product_id": "prod_free",
+            "stripe_price_id": "price_free",
+        },
+        {
+            "id": 2,
+            "name": "Premium",
+            "price": 20,
+            "billing_cycle": 1,
+            "currency": 1,
+            "status": 1,
+            "stripe_product_id": "prod_premium",
+            "stripe_price_id": "price_premium",
+        },
+    ]
+
+    @staticmethod
+    def _seed_module():
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("seed_plans", SEED_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture()
+    def seeded(self):
+        """Run ``main()`` with its engine redirected at the harness session."""
+        import json as json_module
+
+        from studio.app.common.models.subscription import SubscriptionPlans
+        from studio.tests.app.common.sqlite_harness import sqlite_session
+
+        module = self._seed_module()
+        with sqlite_session([SubscriptionPlans.__table__]) as session:
+            with patch.dict(
+                "os.environ",
+                {"SUBSCRIPTION_PLANS_CONFIG": json_module.dumps(self.CONFIG)},
+            ), patch.object(module, "create_engine"), patch.object(
+                module, "sessionmaker", return_value=lambda: session
+            ), patch.object(
+                module, "get_database_url", return_value="sqlite://"
+            ), patch(
+                "studio.app.common.db.config.get_ssl_creator", return_value=None
+            ), patch.object(
+                session, "close"
+            ):
+                module.main()
+
+            session.expire_all()
+            yield session
+
+    def test_every_configured_value_is_written_verbatim(self, seeded):
+        from studio.app.common.models.subscription import SubscriptionPlans
+
+        rows = {row.id: row for row in seeded.query(SubscriptionPlans).all()}
+
+        assert set(rows) == {plan["id"] for plan in self.CONFIG}
+        for plan in self.CONFIG:
+            row = rows[plan["id"]]
+            assert row.name == plan["name"]
+            assert row.price == plan["price"]
+            assert row.billing_cycle == plan["billing_cycle"]
+            assert row.currency == plan["currency"]
+            assert row.status is bool(plan["status"])
+            assert row.stripe_product_id == plan["stripe_product_id"]
+            assert row.stripe_price_id == plan["stripe_price_id"]
+
+    def test_the_premium_price_is_not_defaulted(self, seeded):
+        """The specific failure the field-name test cannot see."""
+        from studio.app.common.models.subscription import SubscriptionPlans
+
+        premium = seeded.query(SubscriptionPlans).filter_by(id=2).one()
+
+        assert premium.price == 20, "the seeded premium price diverged from the config"
+
+    def test_no_seeded_plan_is_missing_a_stripe_id(self, seeded):
+        """BT-810, against the seeded harness rather than the deployed RDS.
+
+        Both columns are nullable, so a dropped mapping seeds NULL rather than
+        failing, and the first symptom is a checkout session created with no
+        price.
+        """
+        from studio.app.common.models.subscription import SubscriptionPlans
+
+        rows = seeded.query(SubscriptionPlans).all()
+
+        assert len(rows) == len(self.CONFIG)
+        assert [
+            (row.id, row.stripe_product_id, row.stripe_price_id)
+            for row in rows
+            if row.stripe_product_id is None or row.stripe_price_id is None
+        ] == []

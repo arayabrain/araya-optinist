@@ -562,3 +562,117 @@ class TestReactivateRejectsAnotherUsersSubscription:
         # Still cancelled: the refusal happened before the flag was cleared
         assert snapshot(db, premium_user)["scheduled_downgrade"] is True
         assert before["plan_id"] == snapshot(db, premium_user)["plan_id"]
+
+
+class TestARenewalStillLandsAfterTheSubscriptionExpired:
+    """Row 294, the branch half. The wall-clock trial expiry stays manual.
+
+    When a trial ends, Stripe charges the card and sends
+    `invoice.payment_succeeded`; by then the row's expiration is already in the
+    past, so the handler's first lookup (`expiration > now`) finds nothing. Every
+    existing case for this handler hands a `Mock` session a subscription on that
+    first query, so the post-expiry lookups below it have never run. Without
+    them, converting from trial to paid answers "subscription not found" and the
+    user who has just been charged is left on the free tier.
+    """
+
+    PERIOD_END = 1795000000  # far-future unix timestamp
+
+    def invoice(self):
+        return {
+            "id": "in_trial_conversion",
+            "customer": STRIPE_CUSTOMER,
+            "subscription": "sub_stripe_123",
+            "status": "paid",
+            "amount_paid": 2000,
+            "billing_reason": "subscription_cycle",
+            "lines": {"data": [{"period": {"end": self.PERIOD_END}}]},
+        }
+
+    @pytest.fixture()
+    def expired_premium_user(self, db):
+        """Premium, with the period already over: the state a trial conversion
+        arrives in."""
+        user_id = make_user(db, "uid-expired", "expired@example.com")
+        db.add(
+            SubscriptionUserAccount(
+                user_id=user_id,
+                provider_id=1,
+                provider_customer_id=STRIPE_CUSTOMER,
+            )
+        )
+        db.add(
+            UserSubscription(
+                plan_id=SubscriptionPlanIds.PREMIUM,
+                user_id=user_id,
+                expiration=datetime.now(timezone.utc) - timedelta(days=1),
+                sync_status=SyncStatus.SYNCED,
+                scheduled_downgrade=False,
+            )
+        )
+        db.commit()
+        return user_id
+
+    def renew(self, db):
+        with patch.object(
+            CheckoutService,
+            "get_subscription_plan",
+            return_value=Mock(id=SubscriptionPlanIds.PREMIUM),
+        ), patch(_CACHE_PATCH):
+            return WebhookService.handle_subscription_payment_succeeded(
+                db, self.invoice()
+            )
+
+    def test_the_expired_period_is_extended_to_the_invoices_period_end(
+        self, db, expired_premium_user
+    ):
+        result = self.renew(db)
+
+        assert result["success"] is True
+        row = snapshot(db, expired_premium_user)
+        assert int(row["expiration"].replace(tzinfo=timezone.utc).timestamp()) == (
+            self.PERIOD_END
+        )
+
+    def test_the_conversion_changes_nothing_but_the_expiration(
+        self, db, expired_premium_user
+    ):
+        """The row's wording is "no service interruption": the plan must not
+        drop to free and the downgrade flag must not be set on the way through.
+        """
+        before = snapshot(db, expired_premium_user)
+
+        self.renew(db)
+
+        after = snapshot(db, expired_premium_user)
+        assert {
+            column for column in TRACKED_COLUMNS if before[column] != after[column]
+        } == {"expiration"}
+        assert after["plan_id"] == SubscriptionPlanIds.PREMIUM
+
+    def test_the_renewal_is_recorded_as_a_purchase(self, db, expired_premium_user):
+        self.renew(db)
+        db.expire_all()
+
+        purchase = db.query(SubscriptionUserPurchase).one()
+        assert purchase.user_id == expired_premium_user
+        assert purchase.plan_id == SubscriptionPlanIds.PREMIUM
+
+    def test_a_customer_with_no_subscription_row_is_refused(self, db):
+        """The negative control. Without it the lookups above could be satisfied
+        by a handler that renews whatever row it finds first."""
+        user_id = make_user(db, "uid-no-row", "no-row@example.com")
+        db.add(
+            SubscriptionUserAccount(
+                user_id=user_id,
+                provider_id=1,
+                provider_customer_id=STRIPE_CUSTOMER,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as raised:
+            self.renew(db)
+
+        assert raised.value.status_code == 400
+        assert db.query(SubscriptionUserPurchase).count() == 0
