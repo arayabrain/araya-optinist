@@ -68,6 +68,12 @@ class DataCleanupJob:
     # avoid repeating IMDS round-trips when INSTANCE_ID is unset.
     _instance_id_cache = None
 
+    # Whether the grace-less orphan sweep has been skipped once at startup.
+    # The first run now fires ~10s after boot (INITIAL_RUN_DELAY_SECONDS),
+    # inside the deploy window; skip orphan detection on that first run so a
+    # rolling deploy's instance handoff can complete before we sweep.
+    _orphan_sweep_warmup_done = False
+
     @classmethod
     def _get_current_instance_id(cls) -> str:
         """Return the EC2 instance ID for the current host (cached).
@@ -102,7 +108,16 @@ class DataCleanupJob:
             # run orphan detection — that responsibility stays with the
             # background service which has EC2 describe permissions.
             if os.environ.get("ENABLE_LOCAL_CLEANUP") != "1":
-                cls._handle_orphaned_data()
+                # Defer the grace-less sweep past the first (startup) run so it
+                # does not delete assignments for an instance still handing off
+                # during a rolling deploy. Resumes on the next interval.
+                if cls._orphan_sweep_warmup_done:
+                    cls._handle_orphaned_data()
+                else:
+                    cls._orphan_sweep_warmup_done = True
+                    logger.info(
+                        "Skipping orphaned-data sweep on first run (startup warm-up)"
+                    )
 
             # Get users eligible for cleanup
             users_to_cleanup = cls._get_users_for_cleanup()

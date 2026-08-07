@@ -457,7 +457,10 @@ class TestHandleOrphanedData:
                     mock_orphan.assert_not_called()
 
     def test_handle_orphaned_data_runs_on_background_service(self):
-        """Test _handle_orphaned_data runs when ENABLE_LOCAL_CLEANUP is not set"""
+        """Test _handle_orphaned_data runs when ENABLE_LOCAL_CLEANUP is not set
+
+        (after the first, startup run — see the warm-up skip test below).
+        """
         import asyncio
 
         with patch.dict("os.environ", {"INSTANCE_ID": "i-bg"}, clear=False):
@@ -467,14 +470,41 @@ class TestHandleOrphanedData:
 
                 _os.environ.pop("ENABLE_LOCAL_CLEANUP", None)
 
-                with patch.object(
-                    DataCleanupJob, "_handle_orphaned_data"
-                ) as mock_orphan:
+                # Simulate a process past its startup warm-up run.
+                with patch.object(DataCleanupJob, "_orphan_sweep_warmup_done", True):
                     with patch.object(
-                        DataCleanupJob, "_get_users_for_cleanup", return_value=[]
-                    ):
-                        asyncio.run(DataCleanupJob.run())
-                    mock_orphan.assert_called_once()
+                        DataCleanupJob, "_handle_orphaned_data"
+                    ) as mock_orphan:
+                        with patch.object(
+                            DataCleanupJob, "_get_users_for_cleanup", return_value=[]
+                        ):
+                            asyncio.run(DataCleanupJob.run())
+                        mock_orphan.assert_called_once()
+
+    def test_handle_orphaned_data_skipped_on_first_run(self):
+        """First run after startup skips the grace-less orphan sweep.
+
+        Deferring it past the deploy window avoids deleting assignments for an
+        instance that is still handing off during a rolling deploy.
+        """
+        import asyncio
+
+        with patch.dict("os.environ", {"INSTANCE_ID": "i-bg"}, clear=False):
+            with patch.dict("os.environ", {}, clear=False):
+                import os as _os
+
+                _os.environ.pop("ENABLE_LOCAL_CLEANUP", None)
+
+                # Fresh process: warm-up run not yet done.
+                with patch.object(DataCleanupJob, "_orphan_sweep_warmup_done", False):
+                    with patch.object(
+                        DataCleanupJob, "_handle_orphaned_data"
+                    ) as mock_orphan:
+                        with patch.object(
+                            DataCleanupJob, "_get_users_for_cleanup", return_value=[]
+                        ):
+                            asyncio.run(DataCleanupJob.run())
+                        mock_orphan.assert_not_called()
 
 
 class TestGetCurrentInstanceId:
