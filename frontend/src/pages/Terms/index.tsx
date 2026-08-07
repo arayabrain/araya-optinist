@@ -1,11 +1,11 @@
 import LegalPageLayout from "components/common/LegalPageLayout"
-import { ExternalLink, H2, P } from "components/common/LegalText"
+import { ExternalLink, H2, InternalLink, P } from "components/common/LegalText"
 
-// ponytail: content is a legal draft pasted verbatim from the team; render it
-// directly rather than building a markdown parser for a one-off page.
+// Legal copy is owned by the team and pasted verbatim, so it is rendered
+// directly rather than through a markdown parser.
 const Terms = () => {
   return (
-    <LegalPageLayout title="Terms of Service">
+    <LegalPageLayout title="Terms of Service" lastUpdated="2026-08-01">
       <P>
         These Terms of Service (the &quot;Terms&quot;) govern your use of
         &quot;Araya-OptiNiSt Cloud&quot; (the &quot;Service&quot;), provided by
@@ -192,7 +192,7 @@ const Terms = () => {
         <li>
           Personal information: The handling of personal information is
           otherwise governed by our{" "}
-          <ExternalLink href="/privacy">Privacy Policy</ExternalLink>.
+          <InternalLink to="/privacy">Privacy Policy</InternalLink>.
         </li>
       </ul>
 

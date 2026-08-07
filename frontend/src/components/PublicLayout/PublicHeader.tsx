@@ -30,6 +30,8 @@ const PublicHeader: FC = () => {
         </HeaderLogoLink>
       )}
       <NavSection>
+        <NavLink to="/terms">Terms of Service</NavLink>
+        <NavLink to="/privacy">Privacy Policy</NavLink>
         {user ? (
           <DashboardButton to="/dashboard">Dashboard</DashboardButton>
         ) : (
@@ -89,6 +91,15 @@ const NavSection = styled(Box)({
   display: "flex",
   alignItems: "center",
   gap: 16,
+})
+
+const NavLink = styled(Link)({
+  fontSize: 14,
+  color: "#000000",
+  textDecoration: "none",
+  ":hover": {
+    textDecoration: "underline",
+  },
 })
 
 const DashboardButton = styled(Link)({

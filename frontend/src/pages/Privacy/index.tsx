@@ -3,11 +3,11 @@ import { Table, TableBody, TableCell, TableHead, TableRow } from "@mui/material"
 import LegalPageLayout from "components/common/LegalPageLayout"
 import { ExternalLink, H2, H3, P } from "components/common/LegalText"
 
-// ponytail: content is a legal draft pasted verbatim from the team; render it
-// directly rather than building a markdown/table parser for a one-off page.
+// Legal copy is owned by the team and pasted verbatim, so it is rendered
+// directly rather than through a markdown parser.
 const Privacy = () => {
   return (
-    <LegalPageLayout title="Privacy Policy">
+    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-08-01">
       <P>
         Araya Inc. (&quot;we,&quot; &quot;us,&quot; or &quot;Araya&quot;)
         provides the cloud service &quot;Araya-OptiNiSt Cloud&quot; (the
