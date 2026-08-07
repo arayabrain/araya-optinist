@@ -308,11 +308,39 @@ Every push creates **two tags**:
 - `:latest` — used by ECS task definitions (always current)
 - `:YYYYMMDD-HHMMSS-<git-sha>` — immutable version for history and rollback (e.g., `20260317-143022-a1b2c3d`)
 
+### Cycling All Services
+
+**Pushing `:latest` does not deploy anything, and cycling one service does not deploy everywhere.** ECS resolves the image tag to a digest when a deployment is *created*, so existing tasks keep running the digest they started with. A `:latest` retag followed by a single `update-service` updates only that service and leaves every other service on the old image.
+
+The cluster runs several services (currently main, premium, public, and background). Discover them rather than typing the list, so a newly added service is never missed:
+
+```bash
+CLUSTER=development-optinist-cloud-cluster
+REGION=ap-northeast-1
+
+SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
+  --query 'serviceArns[]' --output text)
+echo "Cycling: $SERVICES"
+
+for SERVICE in $SERVICES; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+    --force-new-deployment --region "$REGION" >/dev/null
+done
+```
+
+Then confirm every service settled on one deployment, rather than assuming it did:
+
+```bash
+aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
+  --services $SERVICES \
+  --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
+```
+
 ### Safe Deployment Workflow
 
 1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
 2. Build and push dev image: `cd ../scripts && ./ecr_build_push.sh`
-3. Force ECS redeployment: `aws ecs update-service --cluster development-optinist-cloud --service <service-name> --force-new-deployment --region ap-northeast-1`
+3. Force ECS redeployment across **every** service, using the loop in [Cycling All Services](#cycling-all-services)
 4. Verify in development
 5. When ready for production: switch backend, rebuild, push, and redeploy
 
@@ -345,13 +373,20 @@ aws ecr put-image \
   --image-manifest "$MANIFEST" \
   --region ap-northeast-1
 
-# 3. Force ECS to pull the rolled-back image
-aws ecs update-service \
-  --cluster development-optinist-cloud \
-  --service <service-name> \
-  --force-new-deployment \
-  --region ap-northeast-1
+# 3. Force ECS to pull the rolled-back image, across EVERY service
+CLUSTER=development-optinist-cloud-cluster
+REGION=ap-northeast-1
+
+SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
+  --query 'serviceArns[]' --output text)
+
+for SERVICE in $SERVICES; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+    --force-new-deployment --region "$REGION" >/dev/null
+done
 ```
+
+A rollback that cycles only one service is the worst case of the digest-pinning behaviour described in [Cycling All Services](#cycling-all-services): the image you are rolling back *away from* keeps serving on every service you did not cycle. Confirm all of them settled before declaring the rollback complete.
 
 ### Image Cleanup
 

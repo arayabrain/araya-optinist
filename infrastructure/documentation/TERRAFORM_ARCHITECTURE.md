@@ -209,7 +209,7 @@ The core blocker is domain management, not cost (~$0.50/month is negligible). A 
 
 ## How Firebase Configuration Flows
 
-Firebase config must reach both the **frontend** (React app, build-time) and **backend** (Python API, runtime). The source of truth is the `firebase_config_json` and `firebase_private_json` variables in each environment's `.tfvars` file, which Terraform stores in AWS Secrets Manager.
+Firebase config reaches the **backend only** (Python API, runtime). The frontend has no Firebase dependency and no `REACT_APP_FIREBASE_*` variables: every Firebase call is proxied by the backend, as described in [FIREBASE_AUTH_ARCHITECTURE.md](FIREBASE_AUTH_ARCHITECTURE.md). The source of truth is the `firebase_config_json` and `firebase_private_json` variables in each environment's `.tfvars` file, which Terraform stores in AWS Secrets Manager.
 
 ### Config Flow Diagram
 
@@ -221,27 +221,21 @@ Secrets Manager
     ├── ${env}-optinist/firebase/config        (web config JSON)
     └── ${env}-optinist/firebase/private-key   (service account JSON)
     │
-    ├──────────────────────────┐
-    │  BUILD TIME (frontend)   │  RUNTIME (backend)
-    │                          │
-    ▼                          ▼
-ecr_build_push.sh          cloud-startup.sh
-    │                          │
-    │  Reads from Secrets      │  Reads from Secrets
-    │  Manager, injects into   │  Manager, writes to
-    │  .env.production as      │  /app/studio/config/auth/
-    │  REACT_APP_FIREBASE_*    │  firebase_config.json
-    │                          │  firebase_private.json
-    ▼                          ▼
-React app (baked into JS)  Python API (loaded at startup)
+    ▼
+cloud-startup.sh   (RUNTIME, backend)
+    │
+    │  Reads from Secrets Manager, writes to
+    │  /app/studio/config/auth/firebase_config.json
+    │                          firebase_private.json
+    ▼
+Python API (loaded at startup)
 ```
 
 ### Why This Is Necessary
 
-The Docker image is shared across environments (single ECR repository). Without Secrets Manager injection:
+The Docker image is shared across environments (single ECR repository) and contains **no** Firebase credentials at all: `.dockerignore` excludes `studio/config/auth/*.json` and keeps only the `*.example.json` templates. `cloud-startup.sh` creates both real files at container startup from the correct environment's secrets.
 
-- **Frontend**: The React build would use `frontend/.env` defaults, which may point to the wrong Firebase project. Since React env vars are baked into the JS bundle at build time, there is no way to change them at runtime.
-- **Backend**: The Docker image contains `studio/config/auth/firebase_config.json` and `firebase_private.json` from the source repo. `cloud-startup.sh` overwrites these files at container startup with the correct environment's config from Secrets Manager.
+The failure mode therefore is not "wrong Firebase project", it is "no credentials". If the fetch fails, `firebase_config.json` and `firebase_private.json` never exist, Admin SDK initialization fails silently, and every authenticated request returns `401`. Note that the `Using defaults` wording in the script's own warning is misleading: there are no defaults to fall back on. See Edge Case 1 in [FIREBASE_AUTH_ARCHITECTURE.md](FIREBASE_AUTH_ARCHITECTURE.md).
 
 ### IAM Permissions
 
@@ -303,7 +297,7 @@ Subnets are derived automatically via `cidrsubnet(var.vpc_cidr, 4, N)`:
 | Category           | Resources                                                                                    | Named As                                                           |
 | ------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | **Networking**     | VPC, 2 public + 2 private subnets, IGW, NAT instances, route tables                          | `${env}-optinist-cloud-*`                                          |
-| **Compute**        | ECS cluster, ASG, launch template, 2 ECS services (free + premium), EC2 premium instances    | `${env}-optinist-cloud-*`                                          |
+| **Compute**        | ECS cluster, ASG, launch template, 4 ECS services (main, premium, public, background), EC2 premium instances | `${env}-optinist-cloud-*`                          |
 | **Load Balancing** | ALB, target groups, listeners                                                                | `${env}-optinist-lb`, `${env}-optinist-tg`                         |
 | **Database**       | RDS MySQL, RDS Proxy, subnet group                                                           | `${env}-optinist-rds-*`                                            |
 | **Storage**        | S3 bucket, EFS filesystem                                                                    | `${env}-optinist-app-storage`, `${env}-optinist-cloud-snmk-volume` |
