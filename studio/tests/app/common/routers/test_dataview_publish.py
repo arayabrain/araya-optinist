@@ -4,15 +4,62 @@ Integration tests for dataview publish endpoint with optimistic locking.
 Tests concurrent publish/unpublish operations.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.dialects import mysql
 
 from studio.app.common.routers.dataview import publish_dataview_records
 from studio.app.common.schemas.dataview import LocalSyncStatus
+
+# A minimal experiment.yaml that passes PublishValidator (all required fields,
+# success == SUCCESS).
+_VALID_CONFIG = {
+    "workspace_id": "1",
+    "unique_id": "uid",
+    "name": "exp",
+    "started_at": "2025-01-01 00:00:00",
+    "finished_at": "2025-01-01 00:01:00",
+    "success": "success",
+    "hasNWB": True,
+    "function": {},
+    "nwb": {"session_description": "optinist"},
+    "snakemake": {"use_conda": True},
+}
+
+# Parses (read() succeeds) but fails validation: nwb/snakemake are required but
+# read via .get(), so their absence does not raise.
+_INCOMPLETE_CONFIG = {
+    "workspace_id": "1",
+    "unique_id": "uid",
+    "name": "exp",
+    "started_at": "2025-01-01 00:00:00",
+    "success": "success",
+    "hasNWB": True,
+    "function": {},
+}
+
+
+def _config_path(workspace_id, unique_id):
+    from studio.app.common.routers.dataview import ExptConfigReader
+
+    return ExptConfigReader.get_config_yaml_path(workspace_id, unique_id)
+
+
+def _write_config(path, config):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        yaml.safe_dump(config, f)
+
+
+def _can_publish(workspace_id, unique_id):
+    from studio.app.common.routers.dataview import _local_config_can_publish
+
+    return _local_config_can_publish(workspace_id, unique_id)
 
 
 def _compiled_updates(mock_db):
@@ -821,3 +868,331 @@ class TestValidateExperimentExistsInS3:
         )
         assert exists is None
         assert error is not None
+
+
+class TestSyncExperimentConfigForPublish:
+    """Behaviour of the publish pre-sync helper on a real filesystem.
+
+    Only the S3 download is faked; validation runs against the real
+    PublishValidator and real files, so the tests pin the repaired behaviour
+    (not just that the code calls a mock).
+    """
+
+    class _FakeReader:
+        """Stands in for RemoteStorageReader.
+
+        Records constructor args, and on ``download_experiment_meta`` writes
+        ``s3_config`` to the local config path (``None`` => S3 has nothing).
+        """
+
+        def __init__(self, s3_config):
+            self._s3_config = s3_config
+            self.calls = []
+
+        def __call__(self, bucket, workspace_id, unique_id, sync_mode=None):
+            self.calls.append((bucket, workspace_id, unique_id, sync_mode))
+            outer = self
+
+            class _Ctx:
+                async def __aenter__(self_ctx):
+                    return self_ctx
+
+                async def __aexit__(self_ctx, *exc):
+                    return False
+
+                async def download_experiment_meta(self_ctx, ws, uid):
+                    if outer._s3_config is not None:
+                        _write_config(_config_path(ws, uid), outer._s3_config)
+                    return True
+
+            return _Ctx()
+
+    async def _run(self, tmp_path, monkeypatch, *, local, s3, bucket="test-bucket"):
+        """Seed ``local`` config (or None), fake S3 to yield ``s3``, run the
+        helper, and return (fake_reader, config_path)."""
+        from studio.app.common.routers.dataview import (
+            _sync_experiment_config_for_publish,
+        )
+        from studio.app.dir_path import DIRPATH
+
+        monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+        config_path = _config_path("1", "uid")
+        if local is not None:
+            _write_config(config_path, local)
+
+        fake = self._FakeReader(s3)
+        with patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch("studio.app.common.routers.dataview.RemoteStorageReader", fake):
+            await _sync_experiment_config_for_publish("1", "uid", bucket)
+        return fake, config_path
+
+    @pytest.mark.asyncio
+    async def test_absent_local_valid_in_s3_becomes_publishable(
+        self, tmp_path, monkeypatch
+    ):
+        """Probe A: no local config, valid in S3 -> downloaded and publishable."""
+        fake, config_path = await self._run(
+            tmp_path, monkeypatch, local=None, s3=_VALID_CONFIG
+        )
+        assert os.path.exists(config_path)
+        assert _can_publish("1", "uid") is True
+
+    @pytest.mark.asyncio
+    async def test_stub_local_valid_in_s3_is_repaired(self, tmp_path, monkeypatch):
+        """Probe B: `{}` stub, valid in S3 -> repaired, backup discarded."""
+        fake, config_path = await self._run(
+            tmp_path, monkeypatch, local={}, s3=_VALID_CONFIG
+        )
+        assert _can_publish("1", "uid") is True
+        assert not os.path.exists(f"{config_path}.bak")
+
+    @pytest.mark.asyncio
+    async def test_incomplete_local_valid_in_s3_is_repaired(
+        self, tmp_path, monkeypatch
+    ):
+        """Probe C: parses but missing required fields -> re-synced from S3.
+
+        This is the case the previous read()-based skip did NOT repair.
+        """
+        # Sanity: the seeded local config is not publishable to begin with.
+        from studio.app.dir_path import DIRPATH
+
+        monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+        _write_config(_config_path("1", "uid"), _INCOMPLETE_CONFIG)
+        assert _can_publish("1", "uid") is False
+
+        await self._run(
+            tmp_path, monkeypatch, local=_INCOMPLETE_CONFIG, s3=_VALID_CONFIG
+        )
+        assert _can_publish("1", "uid") is True
+
+    @pytest.mark.asyncio
+    async def test_stub_local_absent_in_s3_preserves_original(
+        self, tmp_path, monkeypatch
+    ):
+        """Probe E: `{}` stub, absent in S3 -> file is NOT destroyed."""
+        fake, config_path = await self._run(tmp_path, monkeypatch, local={}, s3=None)
+        # The only local copy must survive (restored from backup).
+        assert os.path.exists(config_path)
+        with open(config_path) as f:
+            assert yaml.safe_load(f) == {}
+        assert not os.path.exists(f"{config_path}.bak")
+        assert _can_publish("1", "uid") is False
+
+    @pytest.mark.asyncio
+    async def test_valid_local_skips_download(self, tmp_path, monkeypatch):
+        """A valid local config is left untouched (no S3 call)."""
+        fake, _ = await self._run(
+            tmp_path, monkeypatch, local=_VALID_CONFIG, s3=_VALID_CONFIG
+        )
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_download_uses_metadata_only_and_correct_args(
+        self, tmp_path, monkeypatch
+    ):
+        """The reader is constructed with (bucket, ws, uid, METADATA_ONLY)."""
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteExperimentSyncMode,
+        )
+
+        fake, _ = await self._run(
+            tmp_path, monkeypatch, local=None, s3=_VALID_CONFIG, bucket="b1"
+        )
+        assert fake.calls == [
+            ("b1", "1", "uid", RemoteExperimentSyncMode.METADATA_ONLY)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_noop_without_bucket(self, tmp_path, monkeypatch):
+        """No bucket -> return early, do not construct the reader."""
+        fake, _ = await self._run(
+            tmp_path, monkeypatch, local=None, s3=_VALID_CONFIG, bucket=""
+        )
+        assert fake.calls == []
+
+
+class TestMultiplePublishDataviewRecords:
+    """Bulk publish: pre-sync + all-or-nothing validation."""
+
+    @staticmethod
+    def _make_record(record_id):
+        record = MagicMock()
+        record.id = record_id
+        record.workspace_id = "1"
+        record.uid = f"uid{record_id}"
+        record.name = f"exp{record_id}"
+        return record
+
+    @pytest.mark.asyncio
+    async def test_bulk_publish_success_presyncs_each_record(self):
+        """All valid: pre-sync runs per record and the service is invoked."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import (
+            PublishFlags,
+            multiple_publish_dataview_records,
+        )
+
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
+
+        records = {1: self._make_record(1), 2: self._make_record(2)}
+
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_user_owned_dataview_record",
+            side_effect=lambda db, rid, uid: records.get(rid),
+        ), patch(
+            "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
+            new=AsyncMock(),
+        ) as mock_sync, patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview._resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            return_value=mock_validation,
+        ), patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "multiple_publish_dataview_records"
+        ) as mock_service:
+            result = await multiple_publish_dataview_records(
+                ids=[1, 2], flag=PublishFlags.on, db=mock_db, current_user=mock_user
+            )
+
+        assert result is True
+        assert mock_sync.await_count == 2
+        mock_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bulk_publish_blocks_when_a_record_invalid(self):
+        """One invalid record blocks the whole batch with 400; no publish."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import (
+            PublishFlags,
+            multiple_publish_dataview_records,
+        )
+
+        mock_db = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
+
+        records = {1: self._make_record(1), 2: self._make_record(2)}
+
+        def validate(workspace_id, unique_id, **kwargs):
+            result = MagicMock()
+            result.can_publish = unique_id != "uid2"
+            result.reason = None if result.can_publish else "corrupted"
+            return result
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_user_owned_dataview_record",
+            side_effect=lambda db, rid, uid: records.get(rid),
+        ), patch(
+            "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
+            new=AsyncMock(),
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            side_effect=validate,
+        ), patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "multiple_publish_dataview_records"
+        ) as mock_service:
+            with pytest.raises(HTTPException) as exc_info:
+                await multiple_publish_dataview_records(
+                    ids=[1, 2],
+                    flag=PublishFlags.on,
+                    db=mock_db,
+                    current_user=mock_user,
+                )
+
+        assert exc_info.value.status_code == 400
+        mock_service.assert_not_called()
+
+
+class TestSinglePublishPreSync:
+    """Single publish wires the pre-sync helper before validation."""
+
+    @pytest.mark.asyncio
+    async def test_single_publish_presyncs_before_validate(self):
+        """publish_dataview_records calls the sync helper before validating."""
+        from unittest.mock import AsyncMock
+
+        from studio.app.common.routers.dataview import (
+            PublishFlags,
+            publish_dataview_records,
+        )
+
+        mock_db = MagicMock()
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_db.execute.return_value = mock_result
+
+        mock_user = MagicMock()
+        mock_user.id = 123
+        mock_user.remote_bucket_name = "test-bucket"
+
+        mock_record = MagicMock()
+        mock_record.id = 1
+        mock_record.workspace_id = "1"
+        mock_record.uid = "test_uid"
+        mock_record.publish_status = 0
+        mock_record.local_sync_status = LocalSyncStatus.synced.value
+        mock_record.version = 0
+
+        mock_validation = MagicMock()
+        mock_validation.can_publish = True
+
+        order = []
+
+        async def sync_side(*args, **kwargs):
+            order.append("sync")
+
+        def validate_side(*args, **kwargs):
+            order.append("validate")
+            return mock_validation
+
+        with patch(
+            "studio.app.common.routers.dataview.DataviewService."
+            "find_user_owned_dataview_record",
+            return_value=mock_record,
+        ), patch(
+            "studio.app.common.routers.dataview." "_sync_experiment_config_for_publish",
+            new=AsyncMock(side_effect=sync_side),
+        ) as mock_sync, patch(
+            "studio.app.common.routers.dataview.RemoteStorageController."
+            "is_available",
+            return_value=True,
+        ), patch(
+            "studio.app.common.routers.dataview._resolve_workspace_remote_bucket_name",
+            return_value="test-bucket",
+        ), patch(
+            "studio.app.common.routers.dataview.PublishValidator.validate",
+            side_effect=validate_side,
+        ), patch(
+            "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
+            new=AsyncMock(return_value=(True, None)),
+        ):
+            result = await publish_dataview_records(
+                id=1, flag=PublishFlags.on, db=mock_db, current_user=mock_user
+            )
+
+        assert result is True
+        mock_sync.assert_awaited_once_with("1", "test_uid", "test-bucket")
+        # Sync must be ordered before validation.
+        assert order == ["sync", "validate"]

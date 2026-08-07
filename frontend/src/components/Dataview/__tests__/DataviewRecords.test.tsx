@@ -13,7 +13,7 @@ import {
   beforeAll,
   beforeEach,
 } from "@jest/globals"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
 
 import { UserDTO } from "api/users/UsersApiDTO"
 import DataviewRecords from "components/Dataview/DataviewRecords"
@@ -21,10 +21,19 @@ import { DataviewType } from "store/slice/Dataview/DataviewType"
 
 const mockStore = configureStore([thunk])
 
+// Mock notistack so snackbar calls can be asserted.
+// (mock-prefixed name is required to reference it inside the jest.mock factory)
+const mockEnqueueSnackbar = jest.fn()
+jest.mock("notistack", () => ({
+  enqueueSnackbar: (...args: unknown[]) => mockEnqueueSnackbar(...args),
+}))
+
 // Mock Dataview Actions
 jest.mock("store/slice/Dataview/DataviewActions", () => ({
   getDataviewRecords: () => ({ type: "GET_DATAVIEW_RECORDS" }),
   getPublicDataviewRecords: () => ({ type: "GET_PUBLIC_DATAVIEW_RECORDS" }),
+  postPublish: () => ({ type: "POST_PUBLISH" }),
+  postPublishAll: () => ({ type: "POST_PUBLISH_ALL" }),
 }))
 
 // ThumbnailImage fetches through this; without it every PNG thumbnail falls
@@ -774,6 +783,69 @@ describe("DataviewRecords Component", () => {
       expect(screen.getByTestId("inputs-view")).toHaveAttribute(
         "data-open",
         "true",
+      )
+    })
+  })
+
+  describe("Publish error handling", () => {
+    it("shows an error snackbar with the backend detail when bulk publish is rejected", async () => {
+      mockEnqueueSnackbar.mockClear()
+      // dispatch(...).unwrap() rejects with a FastAPI-shaped error body
+      store.dispatch = jest.fn().mockReturnValue({
+        unwrap: () =>
+          Promise.reject({
+            response: {
+              data: {
+                detail:
+                  "Some experiments cannot be published:\n- exp: corrupted",
+              },
+            },
+          }),
+      }) as unknown as typeof store.dispatch
+
+      renderWithProviders(<DataviewRecords user={mockUser} readonly={false} />)
+
+      // Select records (header select-all checkbox is always rendered)
+      fireEvent.click(screen.getAllByRole("checkbox")[0])
+
+      // Open the bulk-publish confirm dialog (label is on the Tooltip wrapper;
+      // click the inner button), then confirm.
+      const bulkPublish = screen.getAllByLabelText(/bulk publish/i)[0]
+      fireEvent.click(bulkPublish.querySelector("button") ?? bulkPublish)
+      fireEvent.click(screen.getByTestId("confirm-button"))
+
+      await waitFor(() =>
+        expect(mockEnqueueSnackbar).toHaveBeenCalledWith(
+          "Some experiments cannot be published:\n- exp: corrupted",
+          expect.objectContaining({
+            variant: "error",
+            // multi-line backend detail must keep its line breaks
+            style: { whiteSpace: "pre-line" },
+          }),
+        ),
+      )
+    })
+
+    it("uses an action-aware fallback message when bulk unpublish is rejected without detail", async () => {
+      mockEnqueueSnackbar.mockClear()
+      // Reject without a `detail` -> the fallback message is used
+      store.dispatch = jest.fn().mockReturnValue({
+        unwrap: () => Promise.reject({ message: "network error" }),
+      }) as unknown as typeof store.dispatch
+
+      renderWithProviders(<DataviewRecords user={mockUser} readonly={false} />)
+
+      fireEvent.click(screen.getAllByRole("checkbox")[0])
+
+      const bulkUnpublish = screen.getAllByLabelText(/bulk unpublish/i)[0]
+      fireEvent.click(bulkUnpublish.querySelector("button") ?? bulkUnpublish)
+      fireEvent.click(screen.getByTestId("confirm-button"))
+
+      await waitFor(() =>
+        expect(mockEnqueueSnackbar).toHaveBeenCalledWith(
+          "Failed to unpublish experiments",
+          expect.objectContaining({ variant: "error" }),
+        ),
       )
     })
   })
