@@ -1,7 +1,11 @@
 /**
- * Tests for InactivityWarning's two outcomes of the Stay Active button.
+ * Tests for InactivityWarning's snackbar copy and the two outcomes of the
+ * Stay Active button.
  *
  * Covers:
+ *  - Copy: the idle time and the release countdown are both derived from
+ *    PremiumTiming, so the snackbar cannot disagree with the thresholds the
+ *    context actually enforces.
  *  - Success: the heartbeat lands, the warning is dismissed, and the button is
  *    the only way a user can do this (there is no auto-hide).
  *  - Expired token: a 401 out of recordActivity flips the alert to the
@@ -141,5 +145,14 @@ describe("InactivityWarning", () => {
     expect(mockDismissInactivityWarning).toHaveBeenCalledTimes(1)
     expect(screen.queryByText(/session expired/i)).not.toBeInTheDocument()
     expect(mockPerformLogout).not.toHaveBeenCalled()
+  })
+
+  test("states the idle time and the remaining release countdown", () => {
+    render(<InactivityWarning />)
+
+    const alert = screen.getByRole("alert").textContent ?? ""
+    expect(alert).toContain("inactive for 1h.")
+    expect(alert).toContain("released in 1h if no activity")
+    expect(alert).not.toContain("1h 0m")
   })
 })
