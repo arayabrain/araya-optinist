@@ -4,8 +4,9 @@ from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.dir_path import DIRPATH
 
 workspace_id = "default"
-unique_id = "0123"
-output_test_dir = f"{DIRPATH.DATA_DIR}/output_test"
+# Not "0123": test_experiment.py copies a fixture aa.nwb there, and the route
+# returns whichever .nwb the glob hits first.
+unique_id = "nwb_download"
 
 
 def test_nwb_params(client):
