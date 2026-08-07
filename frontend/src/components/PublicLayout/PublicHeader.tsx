@@ -10,7 +10,6 @@ import {
   BORDER_COLOR,
   FONT_SIZE,
   FONT_WEIGHT,
-  NAV_LINK,
   TEXT_COLOR,
 } from "const/Style"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
@@ -38,8 +37,6 @@ const PublicHeader: FC = () => {
         </HeaderLogoLink>
       )}
       <NavSection>
-        <NavLink to="/terms">Terms of Service</NavLink>
-        <NavLink to="/privacy">Privacy Policy</NavLink>
         {user ? (
           <NavButton to="/dashboard">Dashboard</NavButton>
         ) : (
@@ -100,8 +97,6 @@ const NavSection = styled(Box)({
   alignItems: "center",
   gap: 16,
 })
-
-const NavLink = styled(Link)(NAV_LINK)
 
 const NavButton = styled(Link)({
   display: "inline-block",

@@ -74,17 +74,6 @@ export const BORDER_COLOR = {
   DEFAULT: "#e5e7eb",
 } as const
 
-// Shared header nav link style
-export const NAV_LINK = {
-  fontSize: FONT_SIZE.SMALL,
-  color: TEXT_COLOR.BLACK,
-  textDecoration: "none",
-  whiteSpace: "nowrap",
-  ":hover": {
-    textDecoration: "underline",
-  },
-} as const
-
 // Shared icon container style (48x48 rounded square)
 export const ICON_BOX = {
   width: 48,
