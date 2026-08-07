@@ -29,7 +29,7 @@ import {
   RoutingInfo,
 } from "api/premium/PremiumAssignmentApi"
 import { BASE_URL } from "const/API"
-import { PlanName, SubscriptionStatus } from "const/Subscription"
+import { PlanName, PremiumTiming, SubscriptionStatus } from "const/Subscription"
 import { shouldPoll } from "contexts/premium/unreachableMachine"
 import {
   InstanceUnreachableHandle,
@@ -789,15 +789,15 @@ export const PremiumAssignmentProvider: React.FC<{
       )
       const timeSinceLastActivity = now - effectiveLastActivity
 
-      const oneHourMs = 60 * 60 * 1000 // 1 hour
-      const twoHoursMs = 2 * 60 * 60 * 1000 // 2 hours
+      const warningMs = PremiumTiming.INACTIVITY_WARNING_MINUTES * 60 * 1000
+      const releaseMs = PremiumTiming.INACTIVITY_RELEASE_MINUTES * 60 * 1000
       // eslint-disable-next-line no-console
       console.log(
         `Inactivity check: ${Math.round(timeSinceLastActivity / 1000 / 60)}min ` +
           "since last activity (any tab)",
       )
 
-      if (timeSinceLastActivity >= twoHoursMs) {
+      if (timeSinceLastActivity >= releaseMs) {
         // eslint-disable-next-line no-console
         console.warn(
           "2 hours of inactivity detected - auto-releasing premium instance",
@@ -812,7 +812,7 @@ export const PremiumAssignmentProvider: React.FC<{
         // Flag that the next user gesture should trigger reassignment.
         needsReassignAfterReleaseRef.current = true
       } else if (
-        timeSinceLastActivity >= oneHourMs &&
+        timeSinceLastActivity >= warningMs &&
         !showInactivityWarningRef.current
       ) {
         // eslint-disable-next-line no-console
