@@ -54,7 +54,9 @@ describe("ConsentBanner", () => {
   })
 
   it("renders nothing before the backend has confirmed the mode", () => {
-    renderBanner({ loading: false })
+    // The slice's own pre-confirmation state: `mode` is only ever set by
+    // `fulfilled`, which also clears `loading`, so an undefined mode implies it.
+    renderBanner({ mode: undefined, loading: true })
     expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
   })
 
