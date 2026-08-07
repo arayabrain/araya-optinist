@@ -14,8 +14,8 @@ const Terms = () => {
         interface are provided in English.
       </P>
       <P>
-        Operational details of the Service — such as available plans, fees,
-        storage limits, and retention periods — are described on the Service
+        Operational details of the Service (such as available plans, fees,
+        storage limits, and retention periods) are described on the Service
         website and in its documentation, which are the authoritative and most
         current source. These Terms refer to them rather than restating values
         that may change.
@@ -445,10 +445,10 @@ const Terms = () => {
           caused by events beyond our reasonable control.
         </li>
         <li>
-          Survival: Provisions that by their nature should survive termination —
+          Survival: Provisions that by their nature should survive termination,
           including those on ownership and handling of User Data, intellectual
           property, disclaimers, limitation of liability, indemnification, and
-          governing law — survive termination of these Terms or your account.
+          governing law, survive termination of these Terms or your account.
         </li>
         <li>
           Notices: We may provide notices to you by email or by posting on the
@@ -459,7 +459,7 @@ const Terms = () => {
       <H2>19. Contact</H2>
       <P>For questions about these Terms:</P>
       <P>
-        Araya Inc. — Araya-OptiNiSt Cloud Support
+        Araya Inc., Araya-OptiNiSt Cloud Support
         <br />
         Email:{" "}
         <ExternalLink href="mailto:optinist-support@araya.org">

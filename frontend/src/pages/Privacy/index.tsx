@@ -1,7 +1,13 @@
 import { Table, TableBody, TableCell, TableHead, TableRow } from "@mui/material"
 
 import LegalPageLayout from "components/common/LegalPageLayout"
-import { ExternalLink, H2, H3, P } from "components/common/LegalText"
+import {
+  ExternalLink,
+  H2,
+  H3,
+  InternalLink,
+  P,
+} from "components/common/LegalText"
 
 // Legal copy is owned by the team and pasted verbatim, so it is rendered
 // directly rather than through a markdown parser.
@@ -17,8 +23,8 @@ const Privacy = () => {
         This Policy and the Service interface are provided in English.
       </P>
       <P>
-        Operational details of the Service — such as available plans, storage
-        limits, supported data formats, and retention periods — may change over
+        Operational details of the Service (such as available plans, storage
+        limits, supported data formats, and retention periods) may change over
         time. Those details are described on the Service website and in its
         documentation, which are the authoritative and most current source. This
         Policy intentionally refers to them rather than restating values that
@@ -132,10 +138,11 @@ const Privacy = () => {
         Whether your research data contains personal information depends on how
         you use the Service. If it may contain personal information or
         special-category data relating to identifiable third parties, please see
-        the Terms of Service (including the restrictions on the data you may
-        upload) and Section 7 of this Policy, and ensure you have the necessary
-        rights and approvals. Wherever possible, you should anonymize or
-        de-identify research data before uploading it.
+        the <InternalLink to="/terms">Terms of Service</InternalLink> (including
+        the restrictions on the data you may upload) and Section 7 of this
+        Policy, and ensure you have the necessary rights and approvals. Wherever
+        possible, you should anonymize or de-identify research data before
+        uploading it.
       </P>
 
       <H3>2.4 Device and network information</H3>
@@ -189,21 +196,21 @@ const Privacy = () => {
       </P>
       <ul>
         <li>
-          Authentication and notification provider — for account sign-in and
+          Authentication and notification provider: for account sign-in and
           authentication-related email (currently Google LLC / Firebase).
         </li>
         <li>
-          Cloud infrastructure provider — for hosting, storage, databases,
+          Cloud infrastructure provider: for hosting, storage, databases,
           compute, and monitoring (currently Amazon Web Services, Inc.).
         </li>
         <li>
-          Payment processing provider — for subscription billing (currently
+          Payment processing provider: for subscription billing (currently
           Stripe, Inc.). Payment card details are collected and handled directly
           by this provider; we do not store card numbers.
         </li>
         <li>
-          Analytics provider — for website and usage analytics (planned: Google
-          LLC / Google Analytics — not yet active; see Section 5).
+          Analytics provider: for website and usage analytics (planned: Google
+          LLC / Google Analytics, not yet active; see Section 5).
         </li>
       </ul>
       <P>
@@ -238,7 +245,7 @@ const Privacy = () => {
         <TableBody>
           <TableRow>
             <TableCell>
-              Google LLC — authentication (analytics planned)
+              Google LLC: authentication (analytics planned)
             </TableCell>
             <TableCell>United States and other countries</TableCell>
             <TableCell>
@@ -249,10 +256,10 @@ const Privacy = () => {
           </TableRow>
           <TableRow>
             <TableCell>
-              Amazon Web Services, Inc. — cloud infrastructure (storage,
+              Amazon Web Services, Inc.: cloud infrastructure (storage,
               database, compute)
             </TableCell>
-            <TableCell>Japan — Asia Pacific (Tokyo) / ap-northeast-1</TableCell>
+            <TableCell>Japan: Asia Pacific (Tokyo) / ap-northeast-1</TableCell>
             <TableCell>
               Data is stored in Japan; for any processing outside Japan, the AWS
               Data Processing Addendum incorporates the EU-U.S. DPF and EU
@@ -260,7 +267,7 @@ const Privacy = () => {
             </TableCell>
           </TableRow>
           <TableRow>
-            <TableCell>Stripe, Inc. — payment processing</TableCell>
+            <TableCell>Stripe, Inc.: payment processing</TableCell>
             <TableCell>United States and other countries</TableCell>
             <TableCell>
               Stripe is certified under the EU-U.S. Data Privacy Framework
@@ -306,9 +313,9 @@ const Privacy = () => {
         adequacy decision for Japan (and the equivalent UK and Swiss
         recognitions), so they do not require Standard Contractual Clauses; your
         research data itself is not transferred to the United States or other
-        third countries. (2) A limited set of personal data — such as your name,
+        third countries. (2) A limited set of personal data (such as your name,
         email address, authentication tokens, and payment-related information,
-        but not your research data — is processed by Google (Firebase) and
+        but not your research data) is processed by Google (Firebase) and
         Stripe, which may process it in the United States or other countries.
         These transfers rely on the recipients&apos; EU-U.S. Data Privacy
         Framework certifications and/or the European Commission&apos;s 2021
@@ -487,7 +494,7 @@ const Privacy = () => {
       <H2>10. Contact</H2>
       <P>For questions about this Policy or your personal information:</P>
       <P>
-        Araya Inc. — Araya-OptiNiSt Cloud Support
+        Araya Inc., Araya-OptiNiSt Cloud Support
         <br />
         Email:{" "}
         <ExternalLink href="mailto:optinist-support@araya.org">
