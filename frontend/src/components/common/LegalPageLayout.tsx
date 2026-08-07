@@ -5,6 +5,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack"
 import { Box, Button, styled, Typography } from "@mui/material"
 
 import PublicHeader from "components/PublicLayout/PublicHeader"
+import { FONT_SIZE, TEXT_COLOR } from "const/Style"
 
 type LegalPageLayoutProps = {
   title: string
@@ -33,14 +34,21 @@ const LegalPageLayout: FC<LegalPageLayoutProps> = ({
           size="small"
           startIcon={<ArrowBackIcon />}
           onClick={goBack}
-          sx={{ mb: 2, color: "inherit", textTransform: "none" }}
+          sx={{
+            mb: 2,
+            color: TEXT_COLOR.BLACK,
+            fontSize: FONT_SIZE.SMALL,
+            textTransform: "none",
+          }}
         >
           Back
         </Button>
         <Typography variant="h4" component="h1" sx={{ mb: 1 }}>
           {title}
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+        <Typography
+          sx={{ mb: 3, fontSize: FONT_SIZE.SMALL, color: TEXT_COLOR.SECONDARY }}
+        >
           Last updated: {lastUpdated}
         </Typography>
         {children}

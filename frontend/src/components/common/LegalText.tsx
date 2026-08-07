@@ -3,6 +3,8 @@ import { Link } from "react-router-dom"
 
 import { Typography, styled } from "@mui/material"
 
+import { FONT_WEIGHT } from "const/Style"
+
 export const P: FC<{ children: ReactNode }> = ({ children }) => (
   <Typography sx={{ mb: 2 }}>{children}</Typography>
 )
@@ -11,7 +13,7 @@ export const H2: FC<{ children: ReactNode }> = ({ children }) => (
   <Typography
     variant="h6"
     component="h2"
-    sx={{ mt: 4, mb: 1.5, fontWeight: 700 }}
+    sx={{ mt: 4, mb: 1.5, fontWeight: FONT_WEIGHT.BOLD }}
   >
     {children}
   </Typography>
@@ -21,7 +23,7 @@ export const H3: FC<{ children: ReactNode }> = ({ children }) => (
   <Typography
     variant="subtitle1"
     component="h3"
-    sx={{ mt: 2, mb: 1, fontWeight: 700 }}
+    sx={{ mt: 2, mb: 1, fontWeight: FONT_WEIGHT.BOLD }}
   >
     {children}
   </Typography>

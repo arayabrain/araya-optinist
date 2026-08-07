@@ -15,6 +15,13 @@ import Tooltips from "components/Layout/Tooltips"
 import Logo from "components/logo.png"
 import WorkspaceTabs from "components/Workspace/WorkspaceTabs"
 import { APP_BAR_HEIGHT } from "const/Layout"
+import {
+  BG_COLOR,
+  FONT_SIZE,
+  FONT_WEIGHT,
+  NAV_LINK,
+  TEXT_COLOR,
+} from "const/Style"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
 
 const Header: FC<{
@@ -66,6 +73,8 @@ const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
           </HeaderLogoLink>
         </Box>
         {showTabsRegex.test(location.pathname) && <WorkspaceTabs />}
+        <NavLink to="/terms">Terms</NavLink>
+        <NavLink to="/privacy">Privacy</NavLink>
         <Profile />
         <Tooltips />
       </Toolbar>
@@ -75,10 +84,12 @@ const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
 
 const StyledAppBar = styled(MuiAppBar)({
   position: "fixed",
-  backgroundColor: "#E1DEDB",
-  color: "#000000",
+  backgroundColor: BG_COLOR.HEADER,
+  color: TEXT_COLOR.BLACK,
   height: APP_BAR_HEIGHT,
 })
+
+const NavLink = styled(Link)({ ...NAV_LINK, marginRight: 16 })
 
 const HeaderLogoLink = styled(Link)({
   textDecoration: "none",
@@ -97,9 +108,9 @@ const HeaderLogo = styled("img")({
 })
 
 const TitleLogo = styled(Typography)({
-  fontWeight: 600,
-  fontSize: 20,
-  color: "#000000",
+  fontWeight: FONT_WEIGHT.SEMIBOLD,
+  fontSize: FONT_SIZE.CARD_TITLE,
+  color: TEXT_COLOR.BLACK,
   whiteSpace: "nowrap",
 })
 

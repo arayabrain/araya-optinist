@@ -30,6 +30,7 @@ import {
   regexIgnoreS,
   regexPassword,
 } from "const/Auth"
+import { FONT_WEIGHT, TEXT_COLOR } from "const/Style"
 import {
   registerUser,
   resendVerificationEmail,
@@ -646,9 +647,9 @@ const LoginLink = styled(Link)({
 })
 
 const PolicyLink = styled(Link)({
-  color: "#000000",
+  color: TEXT_COLOR.BLACK,
   textDecoration: "underline",
-  fontWeight: 500,
+  fontWeight: FONT_WEIGHT.MEDIUM,
 })
 
 const SuccessContent = styled(Box)({ textAlign: "center" })

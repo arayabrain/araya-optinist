@@ -8,7 +8,7 @@ import {
   TEXT_COLOR,
   BG_COLOR,
   BORDER_COLOR,
-} from "pages/LandingPage/constants"
+} from "const/Style"
 
 export const Footer = () => {
   return (
