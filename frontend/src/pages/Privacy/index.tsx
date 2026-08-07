@@ -1,7 +1,13 @@
 import { Table, TableBody, TableCell, TableHead, TableRow } from "@mui/material"
 
 import LegalPageLayout from "components/common/LegalPageLayout"
-import { ExternalLink, H2, H3, P } from "components/common/LegalText"
+import {
+  ExternalLink,
+  H2,
+  H3,
+  InternalLink,
+  P,
+} from "components/common/LegalText"
 
 // Legal copy is owned by the team and pasted verbatim, so it is rendered
 // directly rather than through a markdown parser.
@@ -132,10 +138,11 @@ const Privacy = () => {
         Whether your research data contains personal information depends on how
         you use the Service. If it may contain personal information or
         special-category data relating to identifiable third parties, please see
-        the Terms of Service (including the restrictions on the data you may
-        upload) and Section 7 of this Policy, and ensure you have the necessary
-        rights and approvals. Wherever possible, you should anonymize or
-        de-identify research data before uploading it.
+        the <InternalLink to="/terms">Terms of Service</InternalLink> (including
+        the restrictions on the data you may upload) and Section 7 of this
+        Policy, and ensure you have the necessary rights and approvals. Wherever
+        possible, you should anonymize or de-identify research data before
+        uploading it.
       </P>
 
       <H3>2.4 Device and network information</H3>
