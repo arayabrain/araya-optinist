@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom"
+
 import { Box, styled, Typography } from "@mui/material"
 
 import {
@@ -81,6 +83,10 @@ export const Footer = () => {
               <span>Araya Inc.</span>
             </CompanyLink>
           </CompanyLine>
+          <FooterLegal>
+            <LegalLink to="/terms">Terms of Service</LegalLink>
+            <LegalLink to="/privacy">Privacy Policy</LegalLink>
+          </FooterLegal>
           <FooterCopyright>
             &copy; 2025 ARAYA OptiNiSt. Built for Science.
           </FooterCopyright>
@@ -191,6 +197,21 @@ const CompanyLink = styled("a")({
   color: TEXT_COLOR.SECONDARY,
   fontSize: FONT_SIZE.SMALL,
   textDecoration: "none",
+  transition: "color 0.2s",
+  "&:hover": {
+    color: TEXT_COLOR.ACCENT,
+  },
+})
+
+const FooterLegal = styled(Box)({
+  display: "flex",
+  gap: "1rem",
+})
+
+const LegalLink = styled(Link)({
+  fontSize: FONT_SIZE.SMALL,
+  color: TEXT_COLOR.SECONDARY,
+  textDecoration: "underline",
   transition: "color 0.2s",
   "&:hover": {
     color: TEXT_COLOR.ACCENT,

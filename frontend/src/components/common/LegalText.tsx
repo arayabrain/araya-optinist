@@ -38,14 +38,22 @@ const StyledAnchor = styled("a")(linkStyle)
 
 const StyledLink = styled(Link)(linkStyle)
 
+// mailto: hands off to the mail client, so a new tab would just be left blank
 export const ExternalLink: FC<{ href: string; children: ReactNode }> = ({
   href,
   children,
-}) => (
-  <StyledAnchor href={href} target="_blank" rel="noopener noreferrer">
-    {children}
-  </StyledAnchor>
-)
+}) => {
+  const opensNewTab = href.startsWith("http")
+  return (
+    <StyledAnchor
+      href={href}
+      target={opensNewTab ? "_blank" : undefined}
+      rel={opensNewTab ? "noopener noreferrer" : undefined}
+    >
+      {children}
+    </StyledAnchor>
+  )
+}
 
 export const InternalLink: FC<{ to: string; children: ReactNode }> = ({
   to,
