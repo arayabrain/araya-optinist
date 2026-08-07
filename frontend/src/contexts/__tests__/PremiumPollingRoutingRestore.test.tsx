@@ -184,7 +184,6 @@ const dedicatedAssignment: PremiumAssignmentResult = {
 }
 
 const sharedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -196,7 +195,6 @@ const sharedStatus: PremiumStatusResult = {
 }
 
 const dedicatedStatus: PremiumStatusResult = {
-  user_id: 1,
   subscription_type: UserTier.PREMIUM,
   is_premium: true,
   assignment: {
@@ -390,11 +388,12 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
     expect(ctxRef.current?.error).toBeNull()
   })
 
-  test("polling on shared neither terminates nor increments pollAttempts", async () => {
-    // Isolates the cap-bypass + counter-freeze: across multiple shared polls,
-    // error must stay null and pollAttempts must not be persisted (the provider
-    // only writes the SS key when the counter is >0, so a null read proves no
-    // increment occurred).
+  test("polling on shared does not terminate and keeps the counter advancing", async () => {
+    // Cap-bypass: across multiple shared polls error stays null and the
+    // assignment stays shared (the MAX_POLL_ATTEMPTS stop excludes shared).
+    // pollAttempts must advance every cycle — that dependency change is what
+    // re-runs the effect and reschedules the next poll once pollInterval
+    // saturates, so the loop cannot stall (a frozen counter used to kill it).
     mockGetPremiumStatus.mockResolvedValue(sharedStatus)
 
     const ctxRef = renderProvider()
@@ -412,7 +411,8 @@ describe("PremiumAssignmentProvider — polling routing restore", () => {
 
     expect(ctxRef.current?.assignmentResult?.is_shared).toBe(true)
     expect(ctxRef.current?.error).toBeNull()
-    expect(sessionStorage.getItem(SS_POLL_ATTEMPTS)).toBeNull()
+    // Counter advanced (>0) and is persisted — proves the loop kept re-running.
+    expect(Number(sessionStorage.getItem(SS_POLL_ATTEMPTS))).toBeGreaterThan(0)
   })
 
   test("repeated shared-status polls do not churn assignmentResult identity", async () => {

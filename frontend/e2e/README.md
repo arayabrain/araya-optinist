@@ -238,7 +238,7 @@ provisioning, AWS monitoring.
 | Registration/login 500s on a fresh local DB | `subscription_plans` not seeded — see [Test environment](#test-environment) |
 | `Cannot find module` from a global npx playwright | `frontend/node_modules` was pruned (e.g. `yarn install` after a lockfile change) — `yarn install && npx playwright install chromium` |
 | Premium account shows Free quota (5GB) | `user_storage_usage.storage_quota_bytes` not updated — see the premium bootstrap SQL |
-| "Import sample data" does nothing | Known app quirk: the menu item silently no-ops until the workspace has loaded into the store, and its menu stays open over the page. The helpers wait for readiness and press Escape; do the same in new tests |
+| "Import sample data" click times out on the menu `ul` | The item is disabled off the Record tab, and a disabled MUI item passes pointer events to its parent list. Switch to the Record tab first, as `importSampleData` does |
 | Downloads never fire in new record tests | `snakemake-download-link` / `nwb-download-link` testids are on hidden anchors — click the `IconButton` in the same table cell instead |
 
 ## Appendix: release-sheet coverage map

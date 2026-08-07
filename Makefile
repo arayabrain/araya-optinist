@@ -73,6 +73,20 @@ test_contract:
 	# build/run
 	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/common/routers/test_*_contract.py -v)
 
+.PHONY: alembic_check
+alembic_check:
+	# Migrate a fresh DB to head, then run `alembic check` to assert the
+	# SQLAlchemy models and the migrations describe the same schema.
+	# Run in a single shell with an EXIT trap so the DB stack is always torn
+	# down, even when `alembic check` exits non-zero (expected while models
+	# drift). set -e still propagates that non-zero status out to CI.
+	@bash -euc '\
+		compose="docker compose -f docker-compose.alembic-check.yml"; \
+		trap "$$compose down -v" EXIT; \
+		$$compose down -v; \
+		$$compose build alembic_check; \
+		$$compose run --rm alembic_check'
+
 
 ############################## For Building ##############################
 
