@@ -69,26 +69,23 @@ export const Footer = () => {
               OIST
             </FooterLink>
           </FooterAttribution>
-          <CompanyLine>
-            <CompanyLink
-              href="https://www.araya.org/en/"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <img
-                src="/static/araya_logo.png"
-                alt="ARAYA"
-                style={{ height: 20, width: "auto" }}
-              />
-              <span>Araya Inc.</span>
-            </CompanyLink>
-          </CompanyLine>
           <FooterLegal>
             <LegalLink to="/terms">Terms of Service</LegalLink>
             <LegalLink to="/privacy">Privacy Policy</LegalLink>
           </FooterLegal>
           <FooterCopyright>
-            &copy; 2025 ARAYA OptiNiSt. Built for Science.
+            <CompanyLink
+              href="https://www.araya.org/en/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span>&copy; {`${new Date().getFullYear()}`}</span>
+              <img
+                src="/static/araya_logo.png"
+                alt="Araya Inc"
+                style={{ height: 20, width: "auto" }}
+              />
+            </CompanyLink>
           </FooterCopyright>
         </FooterBottom>
       </Container>
@@ -184,7 +181,7 @@ const FooterLink = styled("a")({
   },
 })
 
-const CompanyLine = styled(Box)({
+const FooterCopyright = styled(Box)({
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -216,9 +213,4 @@ const LegalLink = styled(Link)({
   "&:hover": {
     color: TEXT_COLOR.ACCENT,
   },
-})
-
-const FooterCopyright = styled(Typography)({
-  fontSize: FONT_SIZE.SMALL,
-  color: TEXT_COLOR.SECONDARY,
 })
