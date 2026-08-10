@@ -2,12 +2,10 @@ import { Box, styled } from "@mui/material"
 
 import DataviewRecords from "components/Dataview/DataviewRecords"
 import PublicDataviewWrapper from "components/Dataview/PublicDataviewWrapper"
-import PublicHeader from "components/PublicLayout/PublicHeader"
 
 const PublicDataview = () => {
   return (
     <>
-      <PublicHeader />
       <PageWrapper>
         <Title>OptiNiSt Public Repository</Title>
         <PublicDataviewWrapper>

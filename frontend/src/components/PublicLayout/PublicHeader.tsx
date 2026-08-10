@@ -38,8 +38,6 @@ const PublicHeader: FC = () => {
         </HeaderLogoLink>
       )}
       <NavSection>
-        <NavLink to="/terms">Terms of Service</NavLink>
-        <NavLink to="/privacy">Privacy Policy</NavLink>
         {user ? (
           <NavButton to="/dashboard">Dashboard</NavButton>
         ) : (
