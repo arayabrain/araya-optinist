@@ -1,6 +1,6 @@
 """A host clock running behind Google's rejects a token the client just got.
 
-The failure is `Token used too early, <iat> < <now>` on the request that
+The failure is `Token used too early, <now> < <iat>` on the request that
 immediately follows a successful login, so every path that verifies a Firebase
 token has to allow the same tolerance - one path without it is enough to 401 a
 freshly signed-in user.
