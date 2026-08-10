@@ -48,7 +48,8 @@ route_change                pages/PublicDataview -> view_public_data
 | ------------------------------------------ | --------------------------------------------------------------------------------- |
 | `public/index.html`                        | Consent Mode defaults, `gtag` shim, guarded container load                        |
 | `utils/analytics.ts`                       | Guard, consent state, buffering, path sanitization, the single `dataLayer` writer |
-| `components/common/ConsentBanner.tsx`      | Collects and persists the decision                                                |
+| `components/common/ConsentBanner.tsx`      | Collects and persists the first decision                                          |
+| `pages/Account/index.tsx`                  | Analytics Cookies switch: withdraws or re-grants an existing decision             |
 | `components/common/RouteChangeTracker.tsx` | Pageviews on route transitions                                                    |
 | `store/analyticsMiddleware.ts`             | Maps fulfilled thunks to custom events                                            |
 | `infrastructure/scripts/ecr_build_push.sh` | Supplies the per-environment container ID at build time                           |
@@ -60,6 +61,8 @@ route_change                pages/PublicDataview -> view_public_data
 The head snippet runs before the deferred CRA bundle, so `window.dataLayer` and the `gtag` shim always exist by the time application code runs, and the Consent Mode default is always registered before `gtm.js` can load. The loader is a no-op unless the compiled-in container ID matches the guard, which is what makes an un-configured build byte-for-byte inert at runtime.
 
 Inside the bundle, `initAnalyticsConsent()` runs at module scope in `index.tsx`, before `root.render`, so a returning visitor's decision is applied before the first event can be produced. `trackEvent` is the single writer to `dataLayer`; it holds events in a FIFO buffer (max 10) while no decision exists, flushes them in order on a grant, and discards them on a denial. That buffer is why a first-time visitor's entry pageview is still recorded if they accept, and why nothing at all is recorded if they decline.
+
+Withdrawal needs no reload. `trackEvent` calls `getAnalyticsConsent()` on every event and that reads the in-memory session value before `localStorage`, so flipping the `/account` switch off stops the very next event. The switch appears only once a decision exists, which is what keeps it and the notice from ever describing different states without any shared state between them.
 
 `RouteChangeTracker` deduplicates on the raw `location.pathname` but pushes the normalized value, so navigating between two different workspace ids is two pageviews rather than one. `analyticsMiddleware` calls `next(action)` first and never alters the action or the dispatch result; it looks up event names by exact action type, so sibling thunks that merely share a type prefix are not captured.
 
@@ -118,6 +121,37 @@ No event carries parameters other than `route_change`'s sanitized path fields.
 
 ---
 
+## Before setting a container ID
+
+Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until it is set there is nothing to review: no third-party request, no notice, no `dataLayer` writes. The items below are blocking, and none of them can be satisfied from this repository alone.
+
+### Access and supply chain
+
+1. **Restrict GTM container publish rights to a named, minimal set of people, with 2FA enforced on those Google accounts.** GTM is by design a mechanism for injecting arbitrary JavaScript into the page from a console outside this repository. That page runs authenticated scientific workflows and admin impersonation (`proxyLogin`), so publish rights on the container are equivalent to code execution in an authenticated session. This is the single largest security consideration of the whole feature.
+2. **Prefer a locked-down container.** Avoid Custom HTML tags; if the threat model warrants it, use server-side GTM.
+3. **Decide and record the CSP posture.** There is currently **no Content-Security-Policy anywhere in this repository** - no meta tag in `index.html`, no nginx layer, no CloudFront distribution, and the ALB rules in `infrastructure/terraform/public_alb_rules.tf` only match request headers, they do not add response headers. The absence pre-dates this subsystem (the app already loads `fonts.googleapis.com`), and adding GTM does not preclude a nonce-based CSP later, but GTM materially raises what an injection is worth. Either add one following Google's CSP guidance for GTM, or record the decision to accept the current posture.
+
+### Compliance
+
+4. **Link the privacy policy from the consent notice.** GDPR and ePrivacy expect the notice to link to the policy describing the processing. The Terms of Service and Privacy Policy pages are being added separately; wire the link in once those routes exist.
+5. **Have the notice copy reviewed.** It has had no legal review.
+6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload. A restyle of either surface can regress this.
+
+### Verification, once a container exists
+
+The client-side test suite stops at `window.dataLayer`. A correct `dataLayer` does **not** prove correct GA4 data: every automated test still passes if the GA4 tag keeps its automatic `page_view`, if the `page_location` override is missing, or if a custom-event trigger was never created. Run these in GTM Preview and GA4 DebugView / Realtime and record the results.
+
+| #   | Case                                          | Expected result                                                                                                                                 |
+| --- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | One client-side route change, GTM Preview     | The GA4 configuration tag fires exactly once and sends `page_view`; `page_location` is the sanitized value with no query string                 |
+| 2   | Exercise all five events, GA4 DebugView       | `route_change` (as `page_view`), `sign_up`, `login`, `run_pipeline` and `view_public_data` all appear, with correct names and no PII parameters |
+| 3   | Two navigations, GA4 Realtime                 | Exactly two pageviews. Three means the automatic `page_view` was left on                                                                        |
+| 4   | Decline at the notice, then navigate          | DebugView receives nothing at all                                                                                                               |
+| 5   | Visit `/account-manager?email=...`, DebugView | `page_location` carries no email and no query string                                                                                            |
+| 6   | Trigger cross-check in the container          | All four custom-event triggers exist and fire                                                                                                   |
+
+---
+
 ## Required GTM container configuration
 
 The code side is inert without these console-side settings. Configure them **before** setting `REACT_APP_GTM_ID`, or measurement will be wrong from the first hit.
@@ -147,7 +181,6 @@ The code side is inert without these console-side settings. Configure them **bef
 
 ## Known gaps
 
-- **No consent-withdrawal UI.** GDPR requires withdrawal to be as easy as granting. This must be added before enabling the container for EEA/UK traffic. The current manual workaround is to clear the `analyticsConsent` localStorage key **and reload** - the in-memory session value takes precedence until the page is reloaded.
 - **The notice does not link to a privacy policy.** Terms and privacy pages are being added separately; link them from the notice once they exist.
 - **Consent does not sync across tabs.** Granting in one tab leaves another tab's notice up until it reloads.
 - **`canonical` and `og:url` in `index.html` are hardcoded to the site root**, so `/login`, `/register` and `/public` in `sitemap.xml` self-canonicalize to `/`. Submitting that sitemap to Search Console will report those URLs as duplicates. Fix the canonical handling before submitting the sitemap.
@@ -161,7 +194,8 @@ The code side is inert without these console-side settings. Configure them **bef
 | Suite                                                                  | Covers                                                                                                                                                                                                                                        |
 | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `frontend/src/utils/__tests__/analytics.test.ts`                       | Guard, consent storage, buffering and flush, path sanitization. Also reads the inline scripts out of `public/index.html` and evaluates them, so the `gtag` shim, the consent defaults and the loader guard are asserted rather than described |
-| `frontend/src/components/common/__tests__/ConsentBanner.test.tsx`      | Visibility rules, both decisions, accessibility role                                                                                                                                                                                          |
+| `frontend/src/components/common/__tests__/ConsentBanner.test.tsx`      | Visibility rules, both decisions, equal button prominence, accessibility role                                                                                                                                                                 |
+| `frontend/src/pages/Account/__tests__/AnalyticsConsent.test.tsx`       | The withdrawal switch: visibility rules, withdrawal and re-grant, and that withdrawal silences the next event without a reload                                                                                                                |
 | `frontend/src/components/common/__tests__/RouteChangeTracker.test.tsx` | Initial and subsequent pageviews, dedupe, query-string exclusion, standalone suppression                                                                                                                                                      |
 | `frontend/src/store/__tests__/analyticsMiddleware.test.ts`             | Action-to-event mapping, impersonation exclusion, standalone suppression                                                                                                                                                                      |
 

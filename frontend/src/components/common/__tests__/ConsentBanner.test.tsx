@@ -109,6 +109,13 @@ describe("ConsentBanner", () => {
     expect(window.dataLayer).toEqual([])
   })
 
+  it("gives Decline and Accept identical visual weight", () => {
+    renderBanner()
+    expect(screen.getByTestId("consent-decline").className).toBe(
+      screen.getByTestId("consent-accept").className,
+    )
+  })
+
   it("uses a labelled region rather than role=alert", () => {
     renderBanner()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()

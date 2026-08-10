@@ -55,8 +55,10 @@ const ConsentBanner: FC = () => {
         We use analytics cookies to measure site usage.
       </Typography>
       <Box sx={{ display: "flex", gap: 1, ml: "auto" }}>
+        {/* Identical styling on both: a de-emphasised Decline is a dark pattern. */}
         <Button
           size="small"
+          variant="outlined"
           onClick={() => decide("denied")}
           data-testid="consent-decline"
         >
@@ -64,7 +66,7 @@ const ConsentBanner: FC = () => {
         </Button>
         <Button
           size="small"
-          variant="contained"
+          variant="outlined"
           onClick={() => decide("granted")}
           data-testid="consent-accept"
         >

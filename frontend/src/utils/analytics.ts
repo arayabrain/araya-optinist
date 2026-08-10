@@ -11,8 +11,7 @@ type AnalyticsEvent = {
 
 const MAX_PENDING_EVENTS = 10
 
-// Must stay identical to the container loader's own guard: a value accepted by
-// one and rejected by the other means a consent notice with nothing behind it.
+// Must stay identical to the copies in public/index.html, config-overrides.js and ecr_build_push.sh: divergence means a consent notice with nothing behind it.
 const GTM_ID_PATTERN = /^GTM-[A-Z0-9]+$/
 
 // Events raised before the visitor answered the banner, so accepting still
