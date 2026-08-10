@@ -1,7 +1,7 @@
-"""Rows 539 and 544. Concurrent workflow counting over real connections.
+"""Concurrent workflow counting over real connections.
 
-Deferred L3 lane, opt-in: the cases run only with ``RUN_WORKFLOW_COUNT_IT=1``
-and the application's own database reachable. The per-PR lane collects this
+Opt-in: the cases run only with ``RUN_WORKFLOW_COUNT_IT=1`` and the
+application's own database reachable. The per-PR lane collects this
 module and skips it, so a missing database never fails or hangs it. Every
 import that needs a database is inside a test or fixture body for the same
 reason.

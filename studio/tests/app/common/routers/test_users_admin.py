@@ -769,7 +769,7 @@ class TestCreateUser:
     def test_no_stripe_row_is_written_for_an_admin_created_account(
         self, db, no_firebase, admin_id, role_id
     ):
-        """Rows 307 and 308. An admin-created account has never been near
+        """An admin-created account has never been near
         Stripe, so a customer or purchase row at this point would either bill
         somebody who has not bought anything or mis-key the first real purchase.
         """
@@ -1098,7 +1098,7 @@ class TestSelfDeleteIsRejectedServerSide:
 class TestReRegisteringADeletedAddress:
     """Deletion is a soft delete, so the old row keeps the address.
 
-    Row 341 describes the *self-registration* form, which reaches
+    The *self-registration* form reaches
     `create_user(verified=False)`; the admin path is `verified=True`. Both are
     exercised because the unverified branch rewrites `role_id` and sends a
     verification email before the row set is settled.

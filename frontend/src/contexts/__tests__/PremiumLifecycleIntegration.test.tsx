@@ -1,6 +1,5 @@
 /**
- * L2 lifecycle integration test for premium routing.
- * (test levels defined in frontend/e2e/README.md)
+ * Lifecycle integration test for premium routing.
  *
  * Drives the real provider through one continuous session — login → assign →
  * 2h inactivity release → reassign on gesture → logout — and asserts the
@@ -18,7 +17,7 @@
  *     unused public context method today; this locks its teardown contract.)
  *  5. A cross-tab PREMIUM_RELEASED broadcast received by this tab tears routing
  *     down the same way.
- *  6. Closing the tab beacons the release (BT-615), and only while there is an
+ *  6. Closing the tab beacons the release, and only while there is an
  *     assignment and a beacon token to release with.
  *  7. A re-login inside the release grace adopts the restored assignment rather
  *     than requesting a new one.
@@ -503,7 +502,7 @@ describe("PremiumAssignmentProvider — full routing lifecycle", () => {
     expectRoutingTornDown()
   })
 
-  test("closing the tab beacons the release, and only while an assignment is held (BT-615)", async () => {
+  test("closing the tab beacons the release, and only while an assignment is held", async () => {
     mockPremiumApi.getPremiumStatus.mockResolvedValue(noAssignmentStatus)
     mockPremiumApi.assignPremiumInstance.mockResolvedValue(assignedA)
 

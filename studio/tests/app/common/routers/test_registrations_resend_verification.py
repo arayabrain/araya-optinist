@@ -1,4 +1,4 @@
-"""Rows 110 and 113. `POST /api/register/resend-verification`.
+"""`POST /api/register/resend-verification`.
 
 The endpoint has four outcomes and `test_registrations_api_contract.py` reaches
 none of them: it builds dicts and validates their shape without a request. What

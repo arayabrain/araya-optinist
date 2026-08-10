@@ -92,9 +92,9 @@ class TestInstanceModePublic:
         assert not any(p.startswith("/subscriptions") for p in paths)
 
     def test_experiments_router_is_not_registered(self):
-        """Row 808's own reproduction hits ``/experiments``: a public task has no
-        access to a user's experiment records, and the row was checkable against
-        every other prefix but this one."""
+        """A public task has no access to a user's experiment records, and
+        ``/experiments`` was the one prefix left unchecked while every other
+        one was covered."""
         paths = _registered_paths("public")
         assert not any(p.startswith("/experiments") for p in paths)
 

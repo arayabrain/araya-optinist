@@ -1,5 +1,5 @@
 /**
- * The floating Show Logs button (system case 416).
+ * The floating Show Logs button.
  *
  * Driven against a real reducer rather than a mock store, so the click, the
  * action and the selector the layout gates the dialog on are all exercised.

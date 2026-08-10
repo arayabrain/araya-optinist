@@ -287,7 +287,7 @@ class TestPublishDataviewRecords:
 
     @pytest.mark.asyncio
     async def test_the_update_is_guarded_by_the_version_it_read(self):
-        """Row 724. The single-record endpoint's optimistic lock.
+        """The single-record endpoint's optimistic lock.
 
         ``TestPublishToggleIsLastWriteWins`` drives the bulk endpoint, which
         carries no version predicate at all, so nothing pinned that a rapid

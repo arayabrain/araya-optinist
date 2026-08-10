@@ -170,6 +170,27 @@ The lifecycle user needs no secret — the workflow hardcodes
 one-time `gh secret set` commands are in the internal drive doc linked from the
 PR description.
 
+## The weekly regression, and running it on a branch
+
+Nothing opt-in runs per PR. `.github/workflows/e2e.yml` gathers all of it into
+one Monday 00:00 UTC job: the Playwright suite with `RUN_SLOW=1`, the two
+real-database pytest lanes (`make premium_lock_it`, `make workflow_count_it`),
+and a re-run of the per-PR unit lanes. A sheet row marked `OPT-IN` is checked
+off by that run, not by a green PR.
+
+The schedule only ever fires from the default branch. To exercise a feature
+branch's version of the workflow before it merges, dispatch it against that
+branch by name. A PR number is not a ref:
+
+```bash
+gh workflow run e2e.yml --ref <branch>
+gh run list --workflow e2e.yml -L 3
+```
+
+`--ref` picks both the workflow definition and the checked-out code, so a job
+that exists only on the branch still runs. Locally the same lanes are
+`RUN_SLOW=1 yarn test:e2e`, `make premium_lock_it` and `make workflow_count_it`.
+
 ## Running the tests
 
 ```bash

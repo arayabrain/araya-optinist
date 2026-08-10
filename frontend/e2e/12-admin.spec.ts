@@ -45,7 +45,7 @@ const ADMIN_ROLE_ID = 1
 
 // Sign-off rows that this group alone covers, named in the skip reason so a run
 // that does not execute it says which rows it left unverified
-const UNCOVERED_ELSEWHERE = "ADMIN-01..12 (rows 301, 302, 313, 333, 334, 335)"
+const UNCOVERED_ELSEWHERE = "ADMIN-01..12"
 
 // LIMIT 1 because nothing in the schema stops two active rows sharing an
 // address; as a scalar subquery a second one is error 1242, which takes the
@@ -381,8 +381,8 @@ test.describe.serial("Admin Account Manager", () => {
     // default test timeout
     test.setTimeout(300_000)
     const email = `e2e_admin_deleted_${Date.now()}@test.com`
-    // Owning something is the point: rows 336 and 340 claim the account's data
-    // goes with it, and an account that owns nothing cannot show that.
+    // Owning something is the point: deleting an account takes its data with
+    // it, and an account that owns nothing cannot show that.
     const wsName = `e2e-admin-deleted-${Date.now()}`
     const api = await request.newContext({ baseURL: apiUrl() })
     try {
@@ -463,7 +463,7 @@ test.describe.serial("Admin Account Manager", () => {
       )
       .toMatch(/completed\s+completed/)
 
-    // Rows 336 and 340: the owned workspace is soft-deleted (row kept, flag
+    // The owned workspace is soft-deleted (row kept, flag
     // flipped), its experiments go with it, preferences are removed and the
     // role link deliberately survives. Polled because the workspace hand-off
     // runs after the deletion record reaches `completed`.

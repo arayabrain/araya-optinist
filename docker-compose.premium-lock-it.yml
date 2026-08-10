@@ -1,7 +1,6 @@
 # Brings up a throwaway MySQL and runs the real-GET_LOCK
 # integration test, proving distributed_lock serializes concurrent sessions.
-# Deferred L3 lane (test levels defined in frontend/e2e/README.md) - opt-in,
-# not part of the per-PR test lambda job.
+# Opt-in: needs a real database, so it is not part of the per-PR lambda job.
 # Credentials are inline (not from studio/config/.env) so it runs unchanged.
 # Invoked via `make premium_lock_it`.
 #

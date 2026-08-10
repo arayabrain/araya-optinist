@@ -214,7 +214,7 @@ class TestCheckoutDoesNotMutateTheStripeCatalog:
 
 
 class TestOnlyAFirstTimeUserGetsATrial:
-    """Row 293. The trial branch of ``handle_checkout_session``.
+    """The trial branch of ``handle_checkout_session``.
 
     Nothing in the suite reached ``subscription_data`` before this: every other
     case here stubs the caller into a returning customer. Both directions matter
@@ -238,7 +238,7 @@ class TestOnlyAFirstTimeUserGetsATrial:
     async def test_the_trial_still_collects_a_payment_method(self, created_session):
         """Stripe skips card collection on a trial unless it is asked for, and
         then the conversion at the end of the trial has nothing to charge. This
-        parameter is what makes row 294's auto-conversion possible at all."""
+        parameter is what makes the auto-conversion to paid possible at all."""
         params = await created_session.params()
 
         assert params["payment_method_collection"] == "always"
@@ -511,7 +511,7 @@ class TestSessionVerificationReadsTax:
 
 
 class TestPurchaseRowSurvivesTheDatabase:
-    """Row 918. The insert, against a real database.
+    """The insert, against a real database.
 
     ``TestWebhookRecordsThePurchase`` patches ``record_purchase`` out entirely,
     so no row is ever written and "no constraint or foreign-key errors" is
@@ -567,7 +567,7 @@ class TestPurchaseRowSurvivesTheDatabase:
 
 
 class TestTheWebhookItselfWritesThePurchaseRow:
-    """Row 917. The whole ``checkout.session.completed`` handler, over a database.
+    """The whole ``checkout.session.completed`` handler, over a database.
 
     ``TestWebhookRecordsThePurchase`` above patches ``record_purchase`` out, so it
     proves the arguments and nothing about the row; the class above it calls
@@ -727,7 +727,7 @@ class TestTheWebhookItselfWritesThePurchaseRow:
 
 
 class TestSeededPlanValuesMatchTheConfig:
-    """Row 903, the value half.
+    """The value half of the plan-config comparison.
 
     ``TestPlanConfigAgreesWithTheSeededRows`` compares *field-name* sets, so a
     seeded price of 200 where the config says 20 passes it. These cases run the
@@ -820,7 +820,8 @@ class TestSeededPlanValuesMatchTheConfig:
         assert premium.price == 20, "the seeded premium price diverged from the config"
 
     def test_no_seeded_plan_is_missing_a_stripe_id(self, seeded):
-        """BT-810, against the seeded harness rather than the deployed RDS.
+        """Seeded plans carry their Stripe ids, against the seeded harness
+        rather than the deployed RDS.
 
         Both columns are nullable, so a dropped mapping seeds NULL rather than
         failing, and the first symptom is a checkout session created with no

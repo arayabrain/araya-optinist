@@ -565,7 +565,7 @@ class TestReactivateRejectsAnotherUsersSubscription:
 
 
 class TestARenewalStillLandsAfterTheSubscriptionExpired:
-    """Row 294, the branch half. The wall-clock trial expiry stays manual.
+    """The trial-to-paid conversion branch. The wall-clock trial expiry stays manual.
 
     When a trial ends, Stripe charges the card and sends
     `invoice.payment_succeeded`; by then the row's expiration is already in the

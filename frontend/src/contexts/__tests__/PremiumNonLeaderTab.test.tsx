@@ -1,5 +1,5 @@
 /**
- * Leader-gated polling in PremiumAssignmentProvider (system case 6232).
+ * Leader-gated polling in PremiumAssignmentProvider.
  *
  * Every other provider suite stubs the election to "this tab is the leader", so
  * the non-leader half of the gate has no coverage anywhere. Here the stub is a

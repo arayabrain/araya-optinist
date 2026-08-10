@@ -3058,11 +3058,11 @@ class TestScaleDownIfPossible:
     def test_every_instance_is_deregistered_from_ecs_before_it_is_stopped(
         self, mock_env_vars_premium
     ):
-        """Row 6221's third expected result. ``test_stops_idle_and_registers_standby``
+        """Deregistration order. ``test_stops_idle_and_registers_standby``
         asserts both calls happened but not their order, and each mock records its
         own calls only. Stopping an instance ECS still holds a registration for
         leaves a ghost registration that draws tasks to a dead host, which is the
-        failure 6231's cleanup sweep exists to mop up.
+        failure the cleanup sweep exists to mop up.
         """
         recorder = MagicMock()
 
@@ -5550,9 +5550,10 @@ class TestAssignCascadeTiers:
         path, and return ``(body, stubs)``.
 
         ``stubs`` exposes the follow-up calls each branch is supposed to fire.
-        They were stubbed out and never asserted, so 6206's expected #3 (a
-        replacement standby is created) and the whole of 6207 (the pool row is
-        scaled and migrated to a dedicated instance) rested on nothing.
+        They were stubbed out and never asserted, so the standby branch's
+        replacement-standby creation and the whole autoscaling-pool branch
+        (the pool row is scaled and migrated to a dedicated instance) rested
+        on nothing.
         """
         from contextlib import ExitStack
 
@@ -5681,8 +5682,8 @@ class TestAssignCascadeTiers:
         assert body["assignment_source"] == "autoscaling_temp"
         assert body["is_shared"] is True
         assert body["instance_id"] == premium_manager.PremiumAssignment.AUTOSCALING_POOL
-        # 6207's whole point: the sentinel row is temporary. Without these the
-        # user stays on the shared free pool indefinitely.
+        # The sentinel row is temporary. Without these the user stays on the
+        # shared free pool indefinitely.
         stubs.scale_premium_instances_if_needed.assert_called_once_with()
         stubs.invoke_migration_async.assert_called_once_with()
 

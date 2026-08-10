@@ -1,5 +1,5 @@
 /**
- * Fault-tolerant logout (system case 600-1 § 606 / release BT-614).
+ * Fault-tolerant logout.
  *
  * The logout API call is fire-and-forget: local cleanup (dispatch(logout) +
  * redirect to /login) must happen regardless of whether the backend call
@@ -42,7 +42,7 @@ jest.mock("utils/errorReporter", () => ({
 // eslint-disable-next-line import/first
 import { useLogout } from "hooks/useLogout"
 
-describe("useLogout — fault-tolerant logout (606 / BT-614)", () => {
+describe("useLogout - fault-tolerant logout", () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockLogout.mockReturnValue({ type: "user/logout" })

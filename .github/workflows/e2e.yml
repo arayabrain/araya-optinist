@@ -1,8 +1,8 @@
 name: Weekly Regression
 
 # Everything that is not a per-PR gate, run once a week against the default
-# branch: the Playwright release suite, the opt-in real-MySQL lock lane, and a
-# re-run of the per-PR unit lanes so a merge that broke them without opening a
+# branch: the Playwright release suite, the two opt-in real-database lanes, and
+# a re-run of the per-PR unit lanes so a merge that broke them without opening a
 # PR is still caught.
 # The e2e job runs the LOCAL docker stack in the runner (db + backend via docker
 # compose, frontend via yarn start) — it does NOT test the deployed AWS
@@ -32,6 +32,17 @@ jobs:
 
       - name: Run the premium lock integration lane
         run: make premium_lock_it
+
+  # Concurrent workflow counting over real connections. Opt-in for the same
+  # reason: its own compose project and a throwaway migrated database.
+  workflow_count_it:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the workflow count integration lane
+        run: make workflow_count_it
 
   e2e:
     runs-on: ubuntu-latest

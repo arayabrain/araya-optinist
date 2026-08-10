@@ -50,10 +50,12 @@ them.
 41 rows across all 19 sheets are `OPT-IN`, 23 of them here: sheet 03's
 BT-304..306 (the tutorial runs, `WF-04`..`WF-06`), BT-509 (`REC-07`, the NWB
 download), BT-403 (`VIS-02`, the ROI overlay), BT-406 (`DV-12`) and the whole of
-sheet 07 except BT-707, BT-708, BT-718 and BT-719. All of them need
-`RUN_SLOW=1`, which only the weekly `e2e.yml` sets. The common cause is one real
-workflow run: the sample data ships input files and workflow YAML but no
-computed node outputs, and only success records reach the dataview.
+sheet 07 except BT-707, BT-708, BT-718 and BT-719. Every one of the 41 is a
+`@slow` Playwright test and needs `RUN_SLOW=1`, which only the weekly `e2e.yml`
+sets; dispatch it against a branch with `gh workflow run e2e.yml --ref <branch>`.
+The common cause is one real workflow run: the sample data ships input files and
+workflow YAML but no computed node outputs, and only success records reach the
+dataview.
 
 Sheets **09 Subscription Registration** and **10 Storage** are mapped below but
 were not part of the exported CSV set, so they carry no row counts here.

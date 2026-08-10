@@ -1,7 +1,6 @@
 """Real-MySQL GET_LOCK integration test for distributed_lock.
 
-Deferred L3 lane (test levels defined in frontend/e2e/README.md), opt-in.
-The three lock tests are skipped unless
+Opt-in. The three lock tests are skipped unless
 RUN_PREMIUM_LOCK_IT=1 with RDS_* env pointing at a reachable MySQL (see
 docker-compose.premium-lock-it.yml). The per-PR lambda lane collects this
 module but skips them (no DB there), so it never hangs CI.

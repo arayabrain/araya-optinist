@@ -1076,7 +1076,7 @@ class TestDeleteUserWhoOwnsData:
     async def test_the_subscription_and_purchase_history_survive_unchanged(
         self, db, externals
     ):
-        """Row 304. Billing history is the audit trail for a paid account and
+        """Billing history is the audit trail for a paid account and
         must outlive the account itself."""
         from studio.app.common.models.subscription import (
             SubscriptionUserPurchase,
