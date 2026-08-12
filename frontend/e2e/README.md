@@ -175,8 +175,8 @@ PR description.
 Nothing opt-in runs per PR. `.github/workflows/e2e.yml` gathers all of it into
 one Monday 00:00 UTC job: the Playwright suite with `RUN_SLOW=1`, the two
 real-database pytest lanes (`make premium_lock_it`, `make workflow_count_it`),
-and a re-run of the per-PR unit lanes. A sheet row marked `OPT-IN` is checked
-off by that run, not by a green PR.
+and a re-run of the per-PR unit lanes. A sheet row whose e2e citation ends in
+`@slow` is checked off by that run, not by a green PR.
 
 The schedule only ever fires from the default branch. To exercise a feature
 branch's version of the workflow before it merges, dispatch it against that
@@ -222,8 +222,8 @@ yarn test:e2e:report             # open the last HTML report
     VIS tests plot the sample TIFF, which the import does ship.
 - **The default lane runs no workflows**, which is what keeps it under 15
   minutes. The trade is that a default run leaves 23 release-sheet rows and 14
-  system-sheet rows unchecked; they are labelled `OPT-IN` in the sheets rather
-  than counted as covered by a green default run.
+  system-sheet rows unchecked; their e2e citations are marked `@slow` in the
+  sheets rather than counted as covered by a green default run.
 
 ## How the suite works
 

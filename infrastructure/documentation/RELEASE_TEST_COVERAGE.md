@@ -23,10 +23,11 @@
 Setup, credentials, and troubleshooting for the Playwright suite live in
 `frontend/e2e/README.md`.
 
-The CSV sheets carry `Test exists` and `Verdict` columns, and they are the source
-of truth for the counts below: `AUTOMATED`, `PARTIAL` and `OPT-IN` are automated
-here, `MANUAL` is not. `OPT-IN` means the row's only test is `@slow` or otherwise
-gated, so a default run does not check it off. Re-derive from the sheets rather
+The CSV sheets carry `Tests: e2e`, `Tests: unit` and `Coverage` columns, and they
+are the source of truth for the counts below: `FULL` and `PARTIAL` are automated
+here, `MANUAL` is not. An e2e citation ending in `@slow` is gated behind
+`RUN_SLOW=1`, so a default run does not check that row off, whatever its
+`Coverage` label says. Re-derive from the sheets rather
 than adjusting a total by hand: on 2026-08-06 this table was found 10 rows behind
 them.
 
@@ -47,12 +48,11 @@ them.
 | 11 AWS Monitoring     | 11      | 1         | 10     |
 | **Total**             | **104** | **85**    | **19** |
 
-41 rows across all 19 sheets are `OPT-IN`, 23 of them here: sheet 03's
+43 rows across all 19 sheets cite an `@slow` e2e test, 23 of them here: sheet 03's
 BT-304..306 (the tutorial runs, `WF-04`..`WF-06`), BT-509 (`REC-07`, the NWB
 download), BT-403 (`VIS-02`, the ROI overlay), BT-406 (`DV-12`) and the whole of
-sheet 07 except BT-707, BT-708, BT-718 and BT-719. Every one of the 41 is a
-`@slow` Playwright test and needs `RUN_SLOW=1`, which only the weekly `e2e.yml`
-sets; dispatch it against a branch with `gh workflow run e2e.yml --ref <branch>`.
+sheet 07 except BT-707, BT-708, BT-718 and BT-719. All of them need `RUN_SLOW=1`,
+which only the weekly `e2e.yml` sets; dispatch it against a branch with `gh workflow run e2e.yml --ref <branch>`.
 The common cause is one real workflow run: the sample data ships input files and
 workflow YAML but no computed node outputs, and only success records reach the
 dataview.
@@ -200,8 +200,8 @@ Note (BT-509 costs a real run, so it is `@slow`): an NWB file exists only after
 a completed workflow, and global setup deletes the `e2e-*` workspaces at the
 start of every run, so REC-07 calls `ensureCompletedTutorialRun` itself rather
 than skipping on the resulting 404 as it did before 2026-08-06. That is a real
-snakemake execution, so the row is `OPT-IN` and checked off by `RUN_SLOW=1`
-runs only.
+snakemake execution, so the row's citation is `@slow` and checked off by
+`RUN_SLOW=1` runs only.
 
 ---
 

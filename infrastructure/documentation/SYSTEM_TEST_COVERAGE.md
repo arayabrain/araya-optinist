@@ -59,16 +59,15 @@ Test levels used in the premium tables:
 **Counting rule.** A row counts as automated if its `Automated by` cell names a
 test, including rows marked `(partial)` - the partial label narrows *what* is
 covered, it does not withdraw the row. Rows whose cell is `manual` count as
-manual. `uncovered` - a row with no test that also has nothing worth a human's
-time - is a label the sheets currently apply to no row. Every
+manual. Every
 row number in a sheet's range appears in exactly one of the categories, so the
 columns are derivable from the tables below rather than maintained by hand; if you
 change a row, re-derive rather than adjusting the total by one.
 
 **The CSV sheets are the source of truth for these counts**, since that is where
-a release tester reads them. The sheets carry `Test exists` and `Verdict`
-columns whose verdicts map onto this table as: `AUTOMATED`, `PARTIAL` and
-`OPT-IN` are automated, `MANUAL` and `UNCOVERED` are not. Re-derive from the
+a release tester reads them. The sheets carry `Tests: e2e`, `Tests: unit` and
+`Coverage` columns whose labels map onto this table as: `FULL` and `PARTIAL` are
+automated, `MANUAL` is not. Re-derive from the
 sheets, not from memory: on 2026-08-06 an audit found this table 26 rows behind
 them, almost all of it sheet 08's terraform coverage being counted manual while
 its own rows named tests.
