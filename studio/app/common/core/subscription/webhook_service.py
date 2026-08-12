@@ -6,6 +6,7 @@ import stripe
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from sqlalchemy import update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
@@ -352,19 +353,15 @@ class WebhookService:
 
             # 10. Update storage quota based on new subscription plan
             storage_quota_bytes = StorageQuota.bytes_for_plan(plan_id)
-            rows_updated = db.execute(
-                update(UserStorageUsage)
-                .where(UserStorageUsage.user_id == user_id)
-                .values(storage_quota_bytes=storage_quota_bytes)
-            ).rowcount
-            if not rows_updated:
-                db.add(
-                    UserStorageUsage(
-                        user_id=user_id,
-                        storage_usage_bytes=0,
-                        storage_quota_bytes=storage_quota_bytes,
-                    )
+            db.execute(
+                mysql_insert(UserStorageUsage)
+                .values(
+                    user_id=user_id,
+                    storage_usage_bytes=0,
+                    storage_quota_bytes=storage_quota_bytes,
                 )
+                .on_duplicate_key_update(storage_quota_bytes=storage_quota_bytes)
+            )
 
             # 11. Commit all changes atomically
             db.commit()
@@ -751,8 +748,9 @@ class WebhookService:
             )
 
         except HTTPException:
+            # bare raise: the generic arm below would turn this into a 500
             db.rollback()
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+            raise
         except Exception as e:
             logger.error(
                 f"Error processing subscription_schedule.released webhook: {str(e)}"
@@ -959,7 +957,8 @@ class WebhookService:
                 )
 
             except HTTPException:
-                raise HTTPException(status_code=400, detail="Invalid webhook data")
+                # bare raise: the generic arm below would turn this into a 500
+                raise
             except Exception as e:
                 logger.error(f"Webhook: Error finding subscription: {str(e)}")
                 raise HTTPException(
@@ -977,7 +976,8 @@ class WebhookService:
                     )
 
             except HTTPException:
-                raise HTTPException(status_code=400, detail="Invalid webhook data")
+                # bare raise: the generic arm below would turn this into a 500
+                raise
             except Exception as e:
                 logger.error(f"Webhook: Error getting subscription plan: {str(e)}")
                 raise HTTPException(
@@ -1097,8 +1097,9 @@ class WebhookService:
             }
 
         except HTTPException:
+            # bare raise: the generic arm below would turn this into a 500
             db.rollback()
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+            raise
         except Exception as e:
             logger.error(
                 f"Webhook: Error processing subscription payment for invoice "
@@ -1806,8 +1807,10 @@ class WebhookService:
                         "message": f"Unhandled event type: {event_type}",
                     }
 
-        except HTTPException:
-            raise HTTPException(status_code=400, detail="Invalid webhook data")
+        except HTTPException as e:
+            log_fn = logger.error if e.status_code >= 500 else logger.warning
+            log_fn(f"Webhook {event_type} failed: {e.status_code} {e.detail}")
+            raise
         except Exception as e:
             logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")
             raise HTTPException(
