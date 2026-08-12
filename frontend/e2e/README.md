@@ -201,6 +201,7 @@ yarn test:e2e 01-auth            # one group
 npx playwright test -g "WS-06"   # one test case
 yarn test:e2e:headed             # watch the browser
 yarn test:e2e:report             # open the last HTML report
+yarn test:e2e:cleanup            # delete the run's e2e-* data, on demand
 ```
 
 - Tests run sequentially in one worker (they share account state).
@@ -237,7 +238,12 @@ Understanding these makes failures much easier to read:
   test.
 - **Startup cleanup** (`global-setup.ts`): deletes the test account's
   `e2e-*` workspaces via the API so leftovers can't push rows out of the
-  virtualized workspace grid.
+  virtualized workspace grid. There is deliberately no teardown: a run's data
+  survives until the next run, so it can be inspected. To drop it sooner, run
+  the cleanup group (`12-cleanup`) — same `deleteE2eWorkspaces` helper, opt-in
+  via `RUN_CLEANUP` so an ordinary run can never delete data mid-inspection.
+  `DELETE /workspace/{id}` removes the workspace's input and output data with
+  it, in S3 too when remote storage is on.
 - **API-based setup, UI-based assertions** (`helpers.ts`): specs that need a
   workspace find-or-create it via the API (`ensureWorkspaceId`, reading the
   app's Bearer token from localStorage) and navigate straight to
@@ -277,6 +283,7 @@ Understanding these makes failures much easier to read:
 | `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
 | `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
 | `12-admin`         | ADMIN-01..12 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, and one real deletion of a throwaway account. Local stack only |
+| `12-cleanup`       | CLEAN-01    | on-demand deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`    |
 
 ## Coverage maps
 
