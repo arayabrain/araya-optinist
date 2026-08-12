@@ -1,9 +1,9 @@
 import * as fs from "fs"
 import * as path from "path"
 
-import { chromium, request } from "@playwright/test"
+import { chromium } from "@playwright/test"
 
-import { authHeaders } from "./helpers"
+import { apiLogin, deleteE2eWorkspaces } from "./helpers"
 
 // 1. Checks the credentials over the API, so a bad password fails here.
 // 2. Deletes workspaces named e2e-* left behind by previous runs (leftover
@@ -16,43 +16,13 @@ export default async function globalSetup() {
   if (!email || !password) return
 
   const baseURL = process.env.BASE_URL || "http://localhost:3000"
-  const apiURL = process.env.API_URL || baseURL.replace(/:\d+$/, ":8000")
 
-  const api = await request.newContext({ baseURL: apiURL })
+  // Before the browser login: bad credentials there are three silent 60s
+  // waits for /dashboard, which reads as a hang rather than an auth error
+  const { api, headers } = await apiLogin(email, password)
   try {
-    // Before the browser login: bad credentials there are three silent 60s
-    // waits for /dashboard, which reads as a hang rather than an auth error
-    const loginRes = await api.post("/auth/login", {
-      data: { email, password },
-    })
-    if (!loginRes.ok()) {
-      throw new Error(
-        `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiURL}/auth/login ` +
-          `(${loginRes.status()}): ${await loginRes.text()}`,
-      )
-    }
-    const { access_token, ex_token } = await loginRes.json()
-    const auth = authHeaders(access_token, ex_token)
-
     await saveLoginState(baseURL, email, password)
-
-    const listRes = await api.get("/workspaces?offset=0&limit=100", {
-      headers: auth,
-    })
-    if (!listRes.ok()) {
-      throw new Error(
-        `Startup cleanup could not list workspaces ` +
-          `(${listRes.status()}): ${await listRes.text()}`,
-      )
-    }
-    const { items } = await listRes.json()
-    for (const ws of items) {
-      if (/^e2e-/.test(ws.name)) {
-        await api
-          .delete(`/workspace/${ws.id}`, { headers: auth })
-          .catch(() => {})
-      }
-    }
+    await deleteE2eWorkspaces(api, headers)
   } finally {
     await api.dispose()
   }
