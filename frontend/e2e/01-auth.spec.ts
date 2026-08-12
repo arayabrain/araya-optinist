@@ -82,6 +82,9 @@ test.describe("Login", () => {
     await page.locator('input[name="email"]').fill(unverifiedEmail)
     await page.locator('input[name="password"]').fill("Test@123")
     await page.locator('input[name="confirmPassword"]').fill("Test@123")
+    // Branches not yet rebased onto the terms-agreement change have no checkbox
+    const agree = page.locator("#agree-to-terms")
+    if (await agree.count()) await agree.check()
     await page.locator('button:has-text("Sign Up")').click()
     await expect(
       page.locator("text=Registration Almost Complete!"),
