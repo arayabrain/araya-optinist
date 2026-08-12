@@ -11,6 +11,7 @@ import IconButton from "@mui/material/IconButton"
 import BackendUnavailable from "components/common/BackendUnavailable"
 import ErrorBoundary from "components/common/ErrorBoundary"
 import Loading from "components/common/Loading"
+import RouteChangeTracker from "components/common/RouteChangeTracker"
 import ScrollToTop from "components/common/ScrollToTop"
 import Layout from "components/Layout"
 import { RETRY_MAX_COUNT, RETRY_WAIT, RETRY_WAIT_LONG } from "const/Mode"
@@ -122,6 +123,7 @@ const App: FC = () => {
       >
         <BrowserRouter>
           <ScrollToTop />
+          <RouteChangeTracker />
           <Routes>
             {/* Landing page - outside Layout */}
             <Route path="/" element={<LandingPage />} />

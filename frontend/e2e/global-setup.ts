@@ -65,6 +65,11 @@ async function saveLoginState(
         if (attempt >= 3) throw e
       }
     }
+    // Keeps the analytics consent notice from fronting the UI when the build
+    // under test was compiled with a GTM container ID.
+    await page.evaluate(() =>
+      localStorage.setItem("analyticsConsent", "denied"),
+    )
     await page.context().storageState({ path: statePath })
   } finally {
     await browser.close()
