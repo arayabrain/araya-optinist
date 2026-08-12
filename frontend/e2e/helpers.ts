@@ -2,7 +2,14 @@ import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
-import { chromium, expect, Page, request, test } from "@playwright/test"
+import {
+  APIRequestContext,
+  chromium,
+  expect,
+  Page,
+  request,
+  test,
+} from "@playwright/test"
 
 // ---------------------------------------------------------------------------
 // Local docker stack. Specs that need state no API exposes (a plan, a role, a
@@ -327,6 +334,46 @@ export function authHeaders(token: string, exToken?: string | null) {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
   if (exToken) headers.ExToken = exToken
   return headers
+}
+
+// A request context authenticated by API login, for work that has no page:
+// global-setup (before any browser exists) and the cleanup group
+export async function apiLogin(
+  email = FREE_USER.email,
+  password = FREE_USER.password,
+): Promise<{ api: APIRequestContext; headers: Record<string, string> }> {
+  const api = await request.newContext({ baseURL: apiUrl() })
+  const res = await api.post("/auth/login", { data: { email, password } })
+  if (!res.ok()) {
+    await api.dispose()
+    throw new Error(
+      `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiUrl()}/auth/login ` +
+        `(${res.status()}): ${await res.text()}`,
+    )
+  }
+  const { access_token, ex_token } = await res.json()
+  return { api, headers: authHeaders(access_token, ex_token) }
+}
+
+// Deletes the account's e2e-* workspaces and returns the names removed.
+// DELETE /workspace/{id} also drops the workspace's input/output data, in S3
+// too when remote storage is on.
+export async function deleteE2eWorkspaces(
+  api: APIRequestContext,
+  headers: Record<string, string>,
+): Promise<string[]> {
+  const list = await api.get("/workspaces?offset=0&limit=100", { headers })
+  if (!list.ok()) {
+    throw new Error(`GET /workspaces ${list.status()}: ${await list.text()}`)
+  }
+  const { items } = await list.json()
+  const deleted: string[] = []
+  for (const ws of items as { id: number; name: string }[]) {
+    if (!/^e2e-/.test(ws.name)) continue
+    const res = await api.delete(`/workspace/${ws.id}`, { headers })
+    if (res.ok()) deleted.push(ws.name)
+  }
+  return deleted
 }
 
 // The app keeps its tokens in localStorage, so page.request needs them
