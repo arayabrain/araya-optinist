@@ -1,10 +1,19 @@
 import { FC, MouseEvent, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
+import { Link } from "react-router-dom"
 
 import { useSnackbar } from "notistack"
 
-import { Addchart, GitHub, MenuBook, OpenInNew } from "@mui/icons-material"
 import {
+  Addchart,
+  Description,
+  GitHub,
+  MenuBook,
+  OpenInNew,
+  PrivacyTip,
+} from "@mui/icons-material"
+import {
+  Divider,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -92,7 +101,7 @@ const Tooltips: FC = () => {
           <ListItemIcon>
             <OpenInNew />
           </ListItemIcon>
-          <ListItemText>Go to documentation page</ListItemText>
+          <ListItemText>User Guide</ListItemText>
         </MenuItem>
         <MenuItem
           disabled={!isRecordTab}
@@ -104,7 +113,20 @@ const Tooltips: FC = () => {
           <ListItemIcon>
             <Addchart />
           </ListItemIcon>
-          <ListItemText>Import sample data</ListItemText>
+          <ListItemText>Import Sample Data</ListItemText>
+        </MenuItem>
+        <Divider />
+        <MenuItem component={Link} to="/privacy" onClick={handleClose}>
+          <ListItemIcon>
+            <PrivacyTip />
+          </ListItemIcon>
+          <ListItemText>Privacy Policy</ListItemText>
+        </MenuItem>
+        <MenuItem component={Link} to="/terms" onClick={handleClose}>
+          <ListItemIcon>
+            <Description />
+          </ListItemIcon>
+          <ListItemText>Terms of Service</ListItemText>
         </MenuItem>
       </Menu>
       <ConfirmDialog

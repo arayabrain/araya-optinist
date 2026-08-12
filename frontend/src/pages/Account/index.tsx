@@ -21,6 +21,7 @@ import {
   MenuItem,
   Select,
   styled,
+  Switch,
   Tooltip,
   Typography,
 } from "@mui/material"
@@ -55,6 +56,11 @@ import {
 import { selectCurrentUser, selectLoading } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
+import {
+  getAnalyticsConsent,
+  isGtmEnabled,
+  setAnalyticsConsent,
+} from "utils/analytics"
 
 const Account = () => {
   const user = useSelector(selectCurrentUser)
@@ -73,6 +79,8 @@ const Account = () => {
   const [isEditName, setIsEditName] = useState(false)
   const [isEditDeletionPriority, setIsEditDeletionPriority] = useState(false)
   const [isName, setIsName] = useState<string>()
+  const [analyticsConsent, setAnalyticsConsentState] =
+    useState(getAnalyticsConsent)
 
   const ref = useRef<HTMLInputElement>(null)
 
@@ -488,6 +496,21 @@ const Account = () => {
           </>
         )}
       </BoxFlex>
+      {/* ponytail: shown only once a decision exists, so this and the notice cannot disagree without any shared state. */}
+      {isGtmEnabled() && analyticsConsent !== null && (
+        <BoxFlex>
+          <TitleData>Analytics Cookies</TitleData>
+          <Switch
+            checked={analyticsConsent === "granted"}
+            onChange={(e) => {
+              const decision = e.target.checked ? "granted" : "denied"
+              setAnalyticsConsent(decision)
+              setAnalyticsConsentState(decision)
+            }}
+            inputProps={{ "aria-label": "Allow analytics cookies" }}
+          />
+        </BoxFlex>
+      )}
       <BoxFlex sx={{ justifyContent: "space-between", mt: 10, maxWidth: 600 }}>
         <Button variant="contained" color="primary" onClick={onChangePwClick}>
           Change Password
