@@ -1524,12 +1524,13 @@ class TestWebhookErrorDetailPassthrough:
         assert not [r for r in caplog.records if "failed" in r.getMessage()]
 
 
-class TestWebhookRouteErrorDetailPassthrough:
+class TestWebhookRouteErrorStatusPassthrough:
     """
-    The route arm used to rewrite every inner HTTPException to
-    400 "Webhook processing failed". The other tests in this file call
-    dispatch_webhook_event directly, so only an HTTP-level request covers
-    the status and detail that Stripe actually receives.
+    The route arm used to rewrite every inner HTTPException to 400. It now
+    keeps the inner status and masks the detail, so a handler's 500 stays out
+    of the malformed-request bucket without naming which check failed. The
+    other tests in this file call dispatch_webhook_event directly, so only an
+    HTTP-level request covers what Stripe actually receives.
     """
 
     WEBHOOK_URL = "/api/subsc/webhooks/stripe"
@@ -1570,23 +1571,24 @@ class TestWebhookRouteErrorDetailPassthrough:
                 headers={"stripe-signature": "t=1,v1=sig"},
             )
 
-    def test_inner_detail_survives_the_route(self, webhook_client):
+    def test_inner_status_survives_the_route(self, webhook_client):
         response = self._post(
             webhook_client,
             HTTPException(status_code=404, detail="Subscription plan not found: 3"),
         )
 
         assert response.status_code == 404
-        assert response.json()["detail"] == "Subscription plan not found: 3"
+        # Masked on purpose: the plan id must not reach Stripe's delivery log
+        assert response.json()["detail"] == "Webhook processing failed"
 
-    def test_server_error_is_not_relabelled_at_the_route(self, webhook_client):
+    def test_server_error_keeps_its_status_at_the_route(self, webhook_client):
         response = self._post(
             webhook_client,
             HTTPException(status_code=500, detail="Failed to update subscription"),
         )
 
         assert response.status_code == 500
-        assert response.json()["detail"] == "Failed to update subscription"
+        assert response.json()["detail"] == "Webhook processing failed"
 
 
 if __name__ == "__main__":
