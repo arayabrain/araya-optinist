@@ -757,9 +757,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         # about redelivery: a masked 400 reports our own failures as malformed
         # requests, which keeps them out of the 5xx alarm and sends whoever reads
         # the delivery log to debug the wrong side.
-        logger.error(
-            f"Webhook processing failed ({e.status_code}): {e.detail}", exc_info=True
-        )
+        # Logged at the raise site (dispatch, signature checks), not again here
         raise HTTPException(
             status_code=e.status_code, detail="Webhook processing failed"
         )
