@@ -53,13 +53,17 @@ export const Footer = () => {
         <FooterBottom>
           <FooterAttribution>
             ARAYA OptiNiSt is based on OptiNiSt. OptiNiSt was developed by{" "}
-            <FooterLink
-              href="https://www.araya.org/en/"
+            <LogoLink
+              href="https://www.araya.org/"
               target="_blank"
               rel="noopener noreferrer"
             >
-              ARAYA
-            </FooterLink>{" "}
+              <img
+                src="/static/araya_logo.png"
+                alt="Araya Inc"
+                style={{ height: 20, width: "auto", verticalAlign: "middle" }}
+              />
+            </LogoLink>{" "}
             and{" "}
             <FooterLink
               href="https://www.oist.jp/"
@@ -74,18 +78,7 @@ export const Footer = () => {
             <LegalLink to="/privacy">Privacy Policy</LegalLink>
           </FooterLegal>
           <FooterCopyright>
-            <CompanyLink
-              href="https://www.araya.org/en/"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <span>&copy; {`${new Date().getFullYear()}`}</span>
-              <img
-                src="/static/araya_logo.png"
-                alt="Araya Inc"
-                style={{ height: 20, width: "auto" }}
-              />
-            </CompanyLink>
+            &copy; {`${new Date().getFullYear()}`} ARAYA Inc.
           </FooterCopyright>
         </FooterBottom>
       </Container>
@@ -181,23 +174,23 @@ const FooterLink = styled("a")({
   },
 })
 
-const FooterCopyright = styled(Box)({
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
+// Logo link: fade the image slightly on hover to signal it is a link
+const LogoLink = styled(FooterLink)({
+  display: "inline-block",
+  verticalAlign: "middle",
+  fontSize: 0,
+  textDecoration: "none",
+  "& img": {
+    transition: "opacity 0.2s",
+  },
+  "&:hover img": {
+    opacity: 0.7,
+  },
 })
 
-const CompanyLink = styled("a")({
-  display: "inline-flex",
-  alignItems: "center",
-  gap: "0.5rem",
-  color: TEXT_COLOR.SECONDARY,
+const FooterCopyright = styled(Typography)({
   fontSize: FONT_SIZE.SMALL,
-  textDecoration: "none",
-  transition: "color 0.2s",
-  "&:hover": {
-    color: TEXT_COLOR.ACCENT,
-  },
+  color: TEXT_COLOR.SECONDARY,
 })
 
 const FooterLegal = styled(Box)({
