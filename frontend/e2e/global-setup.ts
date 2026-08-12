@@ -10,6 +10,7 @@ import { authHeaders } from "./helpers"
 //    rows push new ones out of the virtualized grid).
 // 3. Logs in once via the UI and saves storage state for the authed specs,
 //    keeping Firebase logins per run to a handful (rate limits).
+// 4. Deletes the Firebase accounts AUTH-04 leaves behind, if admin creds exist.
 export default async function globalSetup() {
   const email = process.env.TEST_USER_EMAIL
   const password = process.env.TEST_USER_PASSWORD
@@ -53,6 +54,8 @@ export default async function globalSetup() {
           .catch(() => {})
       }
     }
+
+    await deleteStaleUnverifiedUsers(api)
   } finally {
     await api.dispose()
   }
@@ -88,5 +91,38 @@ async function saveLoginState(
     await page.context().storageState({ path: statePath })
   } finally {
     await browser.close()
+  }
+}
+
+// The admin delete drops the Firebase user first, so the accounts AUTH-04
+// leaves behind stop accumulating in the console, not just in the DB
+async function deleteStaleUnverifiedUsers(
+  api: Awaited<ReturnType<typeof request.newContext>>,
+) {
+  const email = process.env.TEST_ADMIN_EMAIL
+  const password = process.env.TEST_ADMIN_PASSWORD
+  if (!email || !password) return
+
+  const loginRes = await api.post("/auth/login", { data: { email, password } })
+  if (!loginRes.ok()) return
+  const { access_token, ex_token } = await loginRes.json()
+  const auth = authHeaders(access_token, ex_token)
+
+  const listRes = await api.get(
+    "/admin/users?email=e2e_unverified&offset=0&limit=100",
+    { headers: auth },
+  )
+  if (!listRes.ok()) {
+    // 403 here means TEST_ADMIN_* is not an admin account, silent otherwise
+    console.warn(
+      `Stale-user sweep skipped (${listRes.status()}): ${await listRes.text()}`,
+    )
+    return
+  }
+  const { items } = await listRes.json()
+  for (const user of items) {
+    await api
+      .delete(`/admin/users/${user.id}`, { headers: auth })
+      .catch(() => {})
   }
 }
