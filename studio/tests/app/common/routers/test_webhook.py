@@ -3,8 +3,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+from studio.__main_unit__ import app
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.constants import (
     SubscriptionPlanIds,
@@ -13,6 +15,7 @@ from studio.app.common.core.subscription.constants import (
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.app.common.db.database import get_db
 
 
 class TestInvoicePaymentSucceeded:
@@ -1519,6 +1522,71 @@ class TestWebhookErrorDetailPassthrough:
 
         assert result["success"] is True
         assert not [r for r in caplog.records if "failed" in r.getMessage()]
+
+
+class TestWebhookRouteErrorDetailPassthrough:
+    """
+    The route arm used to rewrite every inner HTTPException to
+    400 "Webhook processing failed". The other tests in this file call
+    dispatch_webhook_event directly, so only an HTTP-level request covers
+    the status and detail that Stripe actually receives.
+    """
+
+    WEBHOOK_URL = "/api/subsc/webhooks/stripe"
+    CONSTRUCT_EVENT = (
+        "studio.app.common.routers.subscriptions.stripe.Webhook.construct_event"
+    )
+
+    @pytest.fixture
+    def webhook_client(self):
+        original_overrides = app.dependency_overrides.copy()
+        app.dependency_overrides[get_db] = lambda: Mock(spec=Session)
+        yield TestClient(app)
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original_overrides)
+
+    def _post(self, client, dispatch_exc):
+        with (
+            patch.object(
+                WebhookService, "get_webhook_secret", return_value="whsec_test"
+            ),
+            patch(
+                self.CONSTRUCT_EVENT,
+                return_value={
+                    "type": "checkout.session.completed",
+                    "data": {"object": {}},
+                },
+            ),
+            patch.object(
+                WebhookService,
+                "dispatch_webhook_event",
+                new_callable=AsyncMock,
+                side_effect=dispatch_exc,
+            ),
+        ):
+            return client.post(
+                self.WEBHOOK_URL,
+                content=b"{}",
+                headers={"stripe-signature": "t=1,v1=sig"},
+            )
+
+    def test_inner_detail_survives_the_route(self, webhook_client):
+        response = self._post(
+            webhook_client,
+            HTTPException(status_code=404, detail="Subscription plan not found: 3"),
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Subscription plan not found: 3"
+
+    def test_server_error_is_not_relabelled_at_the_route(self, webhook_client):
+        response = self._post(
+            webhook_client,
+            HTTPException(status_code=500, detail="Failed to update subscription"),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to update subscription"
 
 
 if __name__ == "__main__":
