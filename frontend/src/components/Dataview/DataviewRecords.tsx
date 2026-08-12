@@ -1244,9 +1244,13 @@ const DataviewRecords = ({
   )
 }
 
+// Vertical space reserved for surrounding chrome; the grid fills the rest of
+// the viewport and scrolls internally.
+export const DATAVIEW_GRID_RESERVED_HEIGHT = 280
+
 const DataviewRecordsWrapper = styled(Box)(() => ({
   width: "100%",
-  height: "calc(100vh - 280px)",
+  height: `calc(100vh - ${DATAVIEW_GRID_RESERVED_HEIGHT}px)`,
   display: "flex",
   flexDirection: "column",
 }))

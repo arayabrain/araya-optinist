@@ -38,6 +38,16 @@ This document covers **application code deployment, release procedures, and Git 
 brew install terraform
 ```
 
+### Optional Build Configuration
+
+`infrastructure/.env.deploy` (gitignored) supplies build-time frontend values that Terraform does not own. Currently only the analytics container ID, keyed per environment. Without it the frontend is built with analytics disabled, which the build log states explicitly. See [ANALYTICS_ARCHITECTURE.md](ANALYTICS_ARCHITECTURE.md).
+
+```bash
+# infrastructure/.env.deploy
+REACT_APP_GTM_ID_SUBSCR=GTM-XXXXXXX       # production
+REACT_APP_GTM_ID_DEVELOPMENT=GTM-YYYYYYY  # development
+```
+
 ### Required AWS Permissions
 
 The deploying user needs the following AWS permissions:

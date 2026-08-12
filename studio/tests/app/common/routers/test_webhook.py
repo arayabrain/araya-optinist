@@ -2,8 +2,11 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+from studio.__main_unit__ import app
 from studio.app.common.core.subscription.checkout_service import CheckoutService
 from studio.app.common.core.subscription.constants import (
     SubscriptionPlanIds,
@@ -15,6 +18,7 @@ from studio.app.common.core.utils.datetime_utils import (
     datetime_from_timestamp,
     get_current_datetime,
 )
+from studio.app.common.db.database import get_db
 
 
 class TestInvoicePaymentSucceeded:
@@ -784,14 +788,8 @@ class TestCheckoutStorageQuotaUpdate:
         }
         return patches
 
-    def test_existing_storage_record_updated_via_execute(
-        self, mock_db, session_data, mock_user
-    ):
-        """When storage record exists, db.execute(update) should be called"""
+    def _run_checkout(self, mock_db, session_data, mock_user):
         patches = self._setup_checkout_mocks(mock_db, mock_user)
-        # db.execute returns a result with rowcount=1 (existing record updated)
-        mock_db.execute.return_value.rowcount = 1
-
         with (
             patches["plan"],
             patches["provider"],
@@ -803,53 +801,52 @@ class TestCheckoutStorageQuotaUpdate:
             patches["cache"],
             patches["datetime"],
         ):
-            result = WebhookService.handle_checkout_completed(mock_db, session_data)
+            return WebhookService.handle_checkout_completed(mock_db, session_data)
 
-        assert result["success"] is True
-        # Verify db.execute was called (the update statement)
-        mock_db.execute.assert_called_once()
-        # Verify db.add was NOT called for storage (no new record needed)
-        mock_db.add.assert_not_called()
-        # Verify single atomic commit
-        mock_db.commit.assert_called_once()
-
-    def test_no_storage_record_creates_new_via_add(
+    def test_storage_quota_written_as_single_upsert(
         self, mock_db, session_data, mock_user
     ):
-        """When no storage record exists, db.add(UserStorageUsage) should be called"""
-        from studio.app.common.models.subscription import UserStorageUsage
-
-        patches = self._setup_checkout_mocks(mock_db, mock_user)
-        # db.execute returns rowcount=0 (no existing record)
-        mock_db.execute.return_value.rowcount = 0
-
-        with (
-            patches["plan"],
-            patches["provider"],
-            patches["account"],
-            patches["payment"],
-            patches["subscription"],
-            patches["purchase"],
-            patches["stripe"],
-            patches["cache"],
-            patches["datetime"],
-        ):
-            result = WebhookService.handle_checkout_completed(mock_db, session_data)
-
-        assert result["success"] is True
-        # Verify db.add was called with a UserStorageUsage instance
-        mock_db.add.assert_called_once()
-        added_obj = mock_db.add.call_args[0][0]
-        assert isinstance(added_obj, UserStorageUsage)
-        assert added_obj.user_id == 42
-        assert added_obj.storage_usage_bytes == 0
+        """Quota write is one statement, whether or not the row already exists."""
         from studio.app.common.core.subscription.constants import (
             StorageQuota,
             SubscriptionPlanIds,
         )
 
-        expected_quota = StorageQuota.bytes_for_plan(SubscriptionPlanIds.PREMIUM)
-        assert added_obj.storage_quota_bytes == expected_quota
+        result = self._run_checkout(mock_db, session_data, mock_user)
+
+        assert result["success"] is True
+        mock_db.execute.assert_called_once()
+        # No separate INSERT path to get out of sync with the UPDATE path.
+        mock_db.add.assert_not_called()
+        mock_db.commit.assert_called_once()
+
+        stmt = mock_db.execute.call_args[0][0]
+        params = stmt.compile().params
+        assert params["user_id"] == 42
+        assert params["storage_usage_bytes"] == 0
+        assert params["storage_quota_bytes"] == StorageQuota.bytes_for_plan(
+            SubscriptionPlanIds.PREMIUM
+        )
+
+    def test_quota_write_is_idempotent_for_an_existing_row(
+        self, mock_db, session_data, mock_user
+    ):
+        """
+        Re-upgrading a user whose quota already equals the target must not
+        attempt a fresh INSERT. MySQL reports 0 affected rows both for "no
+        such row" and for "row matched but value unchanged", so a rowcount
+        check cannot tell them apart and raises a duplicate-key error here.
+        """
+        from sqlalchemy.dialects import mysql
+
+        self._run_checkout(mock_db, session_data, mock_user)
+
+        sql = str(
+            mock_db.execute.call_args[0][0].compile(dialect=mysql.dialect())
+        ).upper()
+        assert "INSERT INTO USER_STORAGE_USAGE" in sql
+        assert "ON DUPLICATE KEY UPDATE" in sql
+        assert "ROWCOUNT" not in sql
 
 
 class TestCustomerSubscriptionDeleted:
@@ -1391,6 +1388,197 @@ class TestSubscriptionLifecycleWebhooks:
         mock_db.rollback.assert_not_called()
         # execute() called once for fallback UPDATE
         mock_db.execute.assert_called_once()
+
+
+class TestWebhookErrorDetailPassthrough:
+    """
+    Webhook handlers used to collapse every inner HTTPException into
+    400 "Invalid webhook data", at up to four nesting levels, without
+    logging any of them. The originating status and detail must now
+    survive to the caller, and be logged exactly once at the dispatch
+    boundary.
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        db = Mock(spec=Session)
+        db.query = Mock()
+        db.add = Mock()
+        db.commit = Mock()
+        db.rollback = Mock()
+        db.execute = Mock()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_inner_detail_survives_dispatch(self, mock_db):
+        """A handler's own 404 is not rewritten into 400 Invalid webhook data."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(
+                status_code=404, detail="Subscription plan not found: 3"
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert exc.value.status_code == 404
+        assert exc.value.detail == "Subscription plan not found: 3"
+
+    @pytest.mark.asyncio
+    async def test_server_error_is_not_downgraded_to_400(self, mock_db):
+        """A 5xx must not be relabelled as a client-side 400."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(
+                status_code=500, detail="Failed to update subscription"
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == "Failed to update subscription"
+
+    @pytest.mark.asyncio
+    async def test_client_error_logged_once_as_warning(self, mock_db, caplog):
+        """4xx logs at WARNING with the event type, status and detail."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(status_code=404, detail="Nope"),
+        ):
+            with caplog.at_level("WARNING"):
+                with pytest.raises(HTTPException):
+                    await WebhookService.dispatch_webhook_event(
+                        mock_db, "checkout.session.completed", {}
+                    )
+
+        matches = [r for r in caplog.records if "Webhook checkout" in r.getMessage()]
+        assert len(matches) == 1
+        assert matches[0].levelname == "WARNING"
+        assert "404" in matches[0].getMessage()
+        assert "Nope" in matches[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_server_error_logged_as_error(self, mock_db, caplog):
+        """5xx must page at ERROR, not hide at WARNING with the 4xx traffic."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=HTTPException(status_code=500, detail="Boom"),
+        ):
+            with caplog.at_level("WARNING"):
+                with pytest.raises(HTTPException):
+                    await WebhookService.dispatch_webhook_event(
+                        mock_db, "checkout.session.completed", {}
+                    )
+
+        matches = [r for r in caplog.records if "Webhook checkout" in r.getMessage()]
+        assert len(matches) == 1
+        assert matches[0].levelname == "ERROR"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_still_becomes_500(self, mock_db):
+        """The generic arm is untouched: non-HTTP errors still surface as 500."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            side_effect=RuntimeError("kaboom"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert exc.value.status_code == 500
+        assert "kaboom" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_success_path_logs_no_failure(self, mock_db, caplog):
+        """A healthy event must not emit a failure line."""
+        with patch.object(
+            WebhookService,
+            "handle_checkout_completed",
+            return_value={"success": True},
+        ):
+            with caplog.at_level("WARNING"):
+                result = await WebhookService.dispatch_webhook_event(
+                    mock_db, "checkout.session.completed", {}
+                )
+
+        assert result["success"] is True
+        assert not [r for r in caplog.records if "failed" in r.getMessage()]
+
+
+class TestWebhookRouteErrorDetailPassthrough:
+    """
+    The route arm used to rewrite every inner HTTPException to
+    400 "Webhook processing failed". The other tests in this file call
+    dispatch_webhook_event directly, so only an HTTP-level request covers
+    the status and detail that Stripe actually receives.
+    """
+
+    WEBHOOK_URL = "/api/subsc/webhooks/stripe"
+    CONSTRUCT_EVENT = (
+        "studio.app.common.routers.subscriptions.stripe.Webhook.construct_event"
+    )
+
+    @pytest.fixture
+    def webhook_client(self):
+        original_overrides = app.dependency_overrides.copy()
+        app.dependency_overrides[get_db] = lambda: Mock(spec=Session)
+        yield TestClient(app)
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original_overrides)
+
+    def _post(self, client, dispatch_exc):
+        with (
+            patch.object(
+                WebhookService, "get_webhook_secret", return_value="whsec_test"
+            ),
+            patch(
+                self.CONSTRUCT_EVENT,
+                return_value={
+                    "type": "checkout.session.completed",
+                    "data": {"object": {}},
+                },
+            ),
+            patch.object(
+                WebhookService,
+                "dispatch_webhook_event",
+                new_callable=AsyncMock,
+                side_effect=dispatch_exc,
+            ),
+        ):
+            return client.post(
+                self.WEBHOOK_URL,
+                content=b"{}",
+                headers={"stripe-signature": "t=1,v1=sig"},
+            )
+
+    def test_inner_detail_survives_the_route(self, webhook_client):
+        response = self._post(
+            webhook_client,
+            HTTPException(status_code=404, detail="Subscription plan not found: 3"),
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Subscription plan not found: 3"
+
+    def test_server_error_is_not_relabelled_at_the_route(self, webhook_client):
+        response = self._post(
+            webhook_client,
+            HTTPException(status_code=500, detail="Failed to update subscription"),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to update subscription"
 
 
 if __name__ == "__main__":

@@ -149,14 +149,34 @@ if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGIO
     exit 1
 fi
 
+# infrastructure/.env.deploy (gitignored) holds build-time values Terraform does
+# not own. Keyed per environment so a development build can never be published
+# with the production analytics container. Sourced in a subshell so a stray
+# assignment in that file cannot clobber the variables used below.
+GTM_ID_VAR="REACT_APP_GTM_ID_$(echo "$ENVIRONMENT" | tr '[:lower:]-' '[:upper:]_')"
+REACT_APP_GTM_ID=$(
+    set +e
+    if [ -f "$REPO_ROOT/infrastructure/.env.deploy" ]; then
+        . "$REPO_ROOT/infrastructure/.env.deploy"
+    fi
+    printf '%s' "${!GTM_ID_VAR:-}"
+)
+
+if [ -n "$REACT_APP_GTM_ID" ] && ! [[ "$REACT_APP_GTM_ID" =~ ^GTM-[A-Z0-9]+$ ]]; then
+    echo "ERROR: malformed $GTM_ID_VAR ('$REACT_APP_GTM_ID'). Expected GTM-XXXXXXX."
+    exit 1
+fi
+
 # Build frontend with custom domain for autoscaling
 echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
+echo "Analytics ($ENVIRONMENT): ${REACT_APP_GTM_ID:-<$GTM_ID_VAR unset, analytics disabled>}"
 cd "$REPO_ROOT/frontend"
 cat > .env.production << ENV_EOF
 REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
 REACT_APP_SERVER_PORT=${AUTOSCALING_PORT}
 REACT_APP_SERVER_PROTO=${AUTOSCALING_PROTO}
 REACT_APP_EXPDB_METADATA_EDITABLE=true
+REACT_APP_GTM_ID=${REACT_APP_GTM_ID:-}
 ENV_EOF
 
 yarn install

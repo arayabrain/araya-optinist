@@ -1,6 +1,7 @@
 /* eslint-disable no-undef */
 import "@testing-library/jest-dom"
 import { Provider } from "react-redux"
+import { MemoryRouter } from "react-router-dom"
 
 import configureMockStore from "redux-mock-store"
 
@@ -26,7 +27,9 @@ const renderWithTab = (
   })
   return render(
     <Provider store={store}>
-      <Tooltips />
+      <MemoryRouter>
+        <Tooltips />
+      </MemoryRouter>
     </Provider>,
   )
 }
@@ -36,19 +39,19 @@ const openDocumentationMenu = () => {
 }
 
 describe("Tooltips documentation menu", () => {
-  it("disables 'Import sample data' when not on the Record tab", () => {
+  it("disables 'Import Sample Data' when not on the Record tab", () => {
     renderWithTab(1, 0)
     openDocumentationMenu()
 
-    const item = screen.getByText("Import sample data").closest("li")
+    const item = screen.getByText("Import Sample Data").closest("li")
     expect(item).toHaveAttribute("aria-disabled", "true")
   })
 
-  it("enables 'Import sample data' on the Record tab", () => {
+  it("enables 'Import Sample Data' on the Record tab", () => {
     renderWithTab(1, 2)
     openDocumentationMenu()
 
-    const item = screen.getByText("Import sample data").closest("li")
+    const item = screen.getByText("Import Sample Data").closest("li")
     expect(item).not.toHaveAttribute("aria-disabled", "true")
   })
 
@@ -56,13 +59,11 @@ describe("Tooltips documentation menu", () => {
     renderWithTab(1, 2)
     openDocumentationMenu()
 
-    fireEvent.click(screen.getByText("Import sample data"))
+    fireEvent.click(screen.getByText("Import Sample Data"))
 
     expect(screen.getByText("Import sample data?")).toBeInTheDocument()
     await waitFor(() =>
-      expect(
-        screen.queryByText("Go to documentation page"),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByText("User Guide")).not.toBeInTheDocument(),
     )
   })
 })
