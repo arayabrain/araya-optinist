@@ -15,7 +15,8 @@ $COMPOSE exec -T -e SUBSCRIPTION_PLANS_CONFIG -e DB_HOST=db -e DB_PORT=3306 \
 # leftover Firebase user makes registration 400 without creating the DB
 # row, so remove the CI users first and register them fresh each run
 $COMPOSE exec -T studio-dev-be poetry run python - \
-  "$TEST_USER_EMAIL" "$TEST_PREMIUM_EMAIL" "e2e_ci_lifecycle@test.com" <<'PY'
+  "$TEST_USER_EMAIL" "$TEST_PREMIUM_EMAIL" "e2e_ci_lifecycle@test.com" \
+  "e2e_ci_admin@test.com" <<'PY'
 import sys
 import firebase_admin
 from firebase_admin import auth, credentials

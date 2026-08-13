@@ -1429,6 +1429,7 @@ class WebhookService:
     def get_webhook_secret() -> str:
         webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
         if not webhook_secret:
+            logger.error("STRIPE_WEBHOOK_SECRET is not set")
             raise HTTPException(
                 status_code=500,
                 detail="STRIPE_WEBHOOK_SECRET environment variable is not set",
@@ -1808,8 +1809,12 @@ class WebhookService:
                     }
 
         except HTTPException as e:
-            log_fn = logger.error if e.status_code >= 500 else logger.warning
-            log_fn(f"Webhook {event_type} failed: {e.status_code} {e.detail}")
+            # 4xx is our own validation refusing an event, so only 5xx should page
+            log = logger.warning if e.status_code < 500 else logger.error
+            log(f"Webhook {event_type} failed ({e.status_code}): {e.detail}")
+            # Status preserved for the caller to map; the route applies the one
+            # generic detail. Flattening here reported a handler's 500 as a 400,
+            # so our own failures were indistinguishable from a malformed event.
             raise
         except Exception as e:
             logger.error(f"Error dispatching webhook event {event_type}: {str(e)}")

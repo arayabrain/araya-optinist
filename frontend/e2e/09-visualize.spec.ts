@@ -11,9 +11,10 @@ import {
 } from "./helpers"
 
 // Visualize tab. VIS-01 asserts the sidebar info; VIS-02..05 drive the plot
-// editor against the imported Tutorial1 outputs (the sample data ships with
-// outputs, so no workflow run is needed). Left manual: Edit ROI commit (OK
-// mutates the ROI data and kicks a processing run).
+// editor against Tutorial1's node outputs. `sample_data/tutorial/output` ships
+// workflow YAML only, so those outputs come from a run earlier in the session,
+// not from the import. Left manual: Edit ROI commit (OK mutates the ROI data and
+// kicks a processing run).
 
 // MUI standard Select: the label's FormControl wraps the select div. The
 // sidebar stacks one control group per plot box, so pick the box's group.
@@ -72,12 +73,41 @@ test.describe("Visualize", () => {
     await expect(page.locator("text=Tutorial1").first()).toBeVisible()
   })
 
-  test("VIS-02 - Add Cell ROI plot renders image with ROI overlay", async ({
+  test("VIS-02 - Add Cell ROI plot renders image with ROI overlay @slow", async ({
     page,
   }) => {
     await addImagePlot(page)
+    // @slow because `cell_roi` is a suite2p_roi node output, not shipped input:
+    // without a completed run the ROI route answers 503. The other VIS tests
+    // plot the sample TIFF, which the import does ship.
+
+    // `.js-plotly-plot` and `text=cell_roi` are both already true before the ROI
+    // loads: addImagePlot awaited the plot, and `cell_roi` is the select's own
+    // displayed value. ImagePlot gates rendering on the *image* error only, so a
+    // failed getRoiData leaves the plot visible and both of those assertions
+    // passing.
+    //
+    // Trace *count* is no good either: ImagePlot always builds a fixed two-trace
+    // array ("images" then "roi"), with the roi trace's z starting as []. So the
+    // ROI-specific artefact is that trace's z gaining rows.
+    const roiRowCount = () =>
+      page.evaluate(() => {
+        const plot = document.querySelector(".js-plotly-plot") as unknown as {
+          data?: { name?: string; z?: unknown[] }[]
+        }
+        return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
+      })
+    expect(await roiRowCount()).toBe(0)
+
+    const roiResponse = page.waitForResponse(
+      (r) => /\/api\/visualizations\/image\/.*roi/i.test(r.url()),
+      { timeout: 60_000 },
+    )
     await selectFromMui(page, "Select Roi", "cell_roi")
-    await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+    expect((await roiResponse).status()).toBe(200)
+
+    await expect.poll(roiRowCount, { timeout: 60_000 }).toBeGreaterThan(0)
+
     // Both selectors keep their values after the plot re-renders
     await expect(
       page.locator("text=sample_mouse2p_image.tiff").first(),
@@ -111,6 +141,24 @@ test.describe("Visualize", () => {
     await expect(page.locator(".js-plotly-plot")).toHaveCount(2, {
       timeout: 60_000,
     })
+
+    // Two plots is also what two image plots give. The image plot draws a
+    // plotly heatmap and the timeseries one does not, so exactly one of the two
+    // being a heatmap is where "a different type" is observable. (The
+    // timeseries traces stay out of _fullData until a curve is selected, so
+    // their own type is not assertable here.)
+    const heatmapPlots = () =>
+      page.evaluate(
+        () =>
+          Array.from(document.querySelectorAll(".js-plotly-plot")).filter(
+            (el) =>
+              (
+                (el as unknown as { _fullData?: { type?: string }[] })
+                  ._fullData ?? []
+              ).some((trace) => trace.type === "heatmap"),
+          ).length,
+      )
+    await expect.poll(heatmapPlots, { timeout: 60_000 }).toBe(1)
   })
 
   test("VIS-05 - Edit ROI opens the ROI editor; Cancel exits", async ({

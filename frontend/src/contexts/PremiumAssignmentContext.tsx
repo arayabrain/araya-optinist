@@ -549,7 +549,7 @@ export const PremiumAssignmentProvider: React.FC<{
       // Defensive — covers refs outside the reducer that the hook's mirror effect doesn't touch.
       unreachable.reset()
 
-      routingService.setPremiumAssigned(false)
+      routingService.resetForRelease()
       // Notify other tabs about premium release
       tabSync.broadcastPremiumReleased()
 

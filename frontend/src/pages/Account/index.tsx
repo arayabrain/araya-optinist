@@ -368,6 +368,7 @@ const Account = () => {
             autoFocus
             onBlur={onBlur}
             placeholder="Name"
+            inputProps={{ "aria-label": "Name" }}
             value={isName}
             onChange={onEditName}
             onKeyDown={handleName}
@@ -376,7 +377,11 @@ const Account = () => {
         ) : (
           <>
             <Box>{isName ? isName : user?.name}</Box>
-            <IconButton sx={{ ml: 1 }} onClick={() => setIsEditName(true)}>
+            <IconButton
+              sx={{ ml: 1 }}
+              aria-label="Edit name"
+              onClick={() => setIsEditName(true)}
+            >
               <Edit />
             </IconButton>
           </>
@@ -482,6 +487,7 @@ const Account = () => {
             </BoxData>
             <IconButton
               sx={{ ml: 1 }}
+              aria-label="Edit deletion priority"
               onClick={() => setIsEditDeletionPriority(true)}
               disabled={deletionPriorityLoading}
             >

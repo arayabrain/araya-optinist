@@ -22,6 +22,7 @@ import {
 const SAMPLE = path.join(__dirname, "..", "..", "sample_data")
 const IMAGE_FIXTURE = path.join(SAMPLE, "dev_mouse2p_short_image.tiff")
 const HDF5_FIXTURE = path.join(SAMPLE, "tutorial", "input", "sample_hdf5.h5")
+const MAT_FIXTURE = path.join(SAMPLE, "tutorial", "input", "sample_matlab.mat")
 
 // Upload a fixture through a node's hidden file input under a unique name,
 // then confirm it lands in the workspace inputs (shows in the select dialog).
@@ -37,13 +38,11 @@ async function uploadAndVerify(
     page.waitForResponse((r) => /\/files\/\d+\/upload\//.test(r.url()), {
       timeout: 120_000,
     }),
-    node
-      .locator('input[type="file"]')
-      .setInputFiles({
-        name: uniqueName,
-        mimeType,
-        buffer: fs.readFileSync(fixture),
-      }),
+    node.locator('input[type="file"]').setInputFiles({
+      name: uniqueName,
+      mimeType,
+      buffer: fs.readFileSync(fixture),
+    }),
   ])
   expect(response.ok()).toBeTruthy()
 
@@ -57,6 +56,17 @@ async function uploadAndVerify(
   await expect(dialog.locator(`text=${uniqueName}`).first()).toBeVisible({
     timeout: 15_000,
   })
+}
+
+async function openStructureDialog(page: Page, nodeClass: string) {
+  const node = page.locator(nodeClass)
+  await expect(node).toBeVisible({ timeout: 15_000 })
+  await node.locator('[data-testid="AccountTreeIcon"]').click()
+  const dialog = page.locator('[role="dialog"]:has-text("Select Structure")')
+  await expect(dialog.locator('[role="treeitem"]').first()).toBeVisible({
+    timeout: 30_000,
+  })
+  return { node, dialog }
 }
 
 test.describe("Input node dialogs and uploads", () => {
@@ -134,5 +144,81 @@ test.describe("Input node dialogs and uploads", () => {
       `e2e_upload_${Date.now()}.hdf5`,
       "application/x-hdf5",
     )
+  })
+
+  // Tutorial4 carries the MAT input node as well as the HDF5 one
+  test("UPL-05 - An uploaded MAT file appears in inputs and can be read", async ({
+    page,
+  }) => {
+    await reproduceTutorial(page, "Tutorial4")
+    const uniqueName = `e2e_upload_${Date.now()}.mat`
+    await uploadAndVerify(
+      page,
+      ".react-flow__node-MatlabFileNode",
+      MAT_FIXTURE,
+      uniqueName,
+      "application/octet-stream",
+    )
+
+    // Point the node at the file just uploaded, so the structure below is read
+    // from it rather than from the copy the tutorial import placed
+    const selectFile = page.locator('[role="dialog"]:has-text("Select File")')
+    await selectFile.locator(`text=${uniqueName}`).first().click()
+    await selectFile.getByRole("button", { name: "OK" }).click()
+    // Repointing an input while a workflow is loaded asks to branch the run
+    const confirmChange = page.locator(
+      '[role="dialog"]:has-text("Change this parameter?")',
+    )
+    await expect(confirmChange).toBeVisible({ timeout: 15_000 })
+    await confirmChange.getByRole("button", { name: "OK" }).click()
+    await expect(selectFile).toBeHidden({ timeout: 15_000 })
+
+    const structure = await openStructureDialog(
+      page,
+      ".react-flow__node-MatlabFileNode",
+    )
+    await expect(structure.dialog.getByText("Selected Path")).toBeVisible()
+  })
+
+  test("UPL-06 - MAT node structure dialog shows the tree", async ({
+    page,
+  }) => {
+    await reproduceTutorial(page, "Tutorial4")
+    await openStructureDialog(page, ".react-flow__node-MatlabFileNode")
+  })
+
+  test("UPL-07 - A data path inside the MAT file can be selected", async ({
+    page,
+  }) => {
+    await reproduceTutorial(page, "Tutorial4")
+    const { node: matNode, dialog } = await openStructureDialog(
+      page,
+      ".react-flow__node-MatlabFileNode",
+    )
+
+    // The dialog opens with Tutorial4's own matPath already ticked, so picking
+    // that same leaf would assert nothing. Tick a different one and require the
+    // selection to move: sample_matlab.mat carries both data/behavior and
+    // data/image.
+    await expect(dialog.getByText("Selected Path")).toBeVisible()
+    const selectedPath = dialog.locator("h6").first()
+    const before = await selectedPath.textContent()
+    // "---" is the placeholder, and it is truthy; without this the test would
+    // silently weaken to "the placeholder was replaced"
+    expect(before?.trim()).not.toBe("---")
+
+    await dialog.locator('input[type="checkbox"]:not(:checked)').first().check()
+    await expect(selectedPath).not.toHaveText(before ?? "")
+    const chosen = (await selectedPath.textContent())?.trim() ?? ""
+    expect(chosen).toBeTruthy()
+
+    // OK writes the choice back onto the node
+    await dialog.getByRole("button", { name: "OK" }).click()
+    await expect(dialog).toBeHidden({ timeout: 15_000 })
+    // The node renders two .selectFilePath captions - the file path and the
+    // structure path; the arrow prefix is the structure one
+    await expect(
+      matNode.locator(".selectFilePath").filter({ hasText: "↳" }),
+    ).toHaveText(`↳ ${chosen}`, { timeout: 15_000 })
   })
 })

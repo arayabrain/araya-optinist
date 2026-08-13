@@ -256,6 +256,16 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# Both role columns live on joined tables while the list query groups by
+# users.id, so they have to be ordered by an aggregate: MySQL's
+# only_full_group_by rejects a bare joined column here (1055) and the request
+# fails outright. min() matches the role_id the query already selects.
+USER_LIST_SORT_MAPPING = {
+    "role_id": func.min(UserRoleModel.role_id),
+    "role": func.min(RoleModel.role),
+}
+
+
 async def list_user(
     db: Session,
     organization_id: int,
@@ -272,7 +282,7 @@ async def list_user(
     try:
         sa_sort_list = sortOptions.get_sa_sort_list(
             sa_table=UserModel,
-            mapping={"role_id": UserRoleModel.role_id, "role": RoleModel.role},
+            mapping=USER_LIST_SORT_MAPPING,
         )
         users = paginate(
             db,
@@ -301,8 +311,8 @@ async def list_user(
                 UserModel.organization_id == organization_id,
             )
             .filter(
-                UserModel.name.like("%{0}%".format(options.name)),
-                UserModel.email.like("%{0}%".format(options.email)),
+                UserModel.name.contains(options.name, autoescape=True),
+                UserModel.email.contains(options.email, autoescape=True),
             )
             .group_by(UserModel.id)
             .order_by(*sa_sort_list),

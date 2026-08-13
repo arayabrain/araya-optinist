@@ -1,4 +1,3 @@
-import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
@@ -6,19 +5,26 @@ import { test, expect, Page, request } from "@playwright/test"
 
 import {
   apiUrl,
+  authHeaders,
+  confirmDialog,
   ensureTutorialRecords,
+  isLocalBaseUrl,
+  localStackSkipReason,
   login,
+  logout,
   mockPremiumAssignment,
   openWorkspace,
   reproduceTutorial,
+  REPO_ROOT,
+  runInBackend,
+  runSql,
+  sqlLiteral,
+  verifyEmail,
 } from "./helpers"
 
-// Full subscription/storage warning lifecycle on the LOCAL stack only:
-// free baseline → upgrade → over-quota warning modal (110%) → usage-high
-// indicator (95%) → storage reload reset → expired premium (grace) →
-// overdue → downgraded free over quota → run block/warn at quota →
-// expiration captions → cancel-subscription dialog → cancelled banner →
-// inactivity warning (fake clock + mocked premium assignment).
+// Full subscription/storage warning lifecycle on the LOCAL stack only. The test
+// names are the index; each writes its own DB scenario up front, so the serial
+// group survives retries.
 //
 // Plan and expiry are driven directly in the docker DB (the same knobs the
 // README documents for manual account bootstrap) because there is no Stripe
@@ -29,9 +35,11 @@ import {
 // sizes sum st_size) sits in the user's workspace and each test dials
 // storage_quota_bytes to put the measured real usage at the percentage
 // under test.
-// Each test writes its full DB scenario up front, so the serial group
-// survives retries. Skips (never fails) when creds are missing, BASE_URL is
-// not local, or the docker containers are unreachable.
+// On a local run every reason this group cannot execute is a broken
+// environment, and it FAILS rather than skipping: several LC rows have no
+// coverage but this spec, and a skipped row reads as a pass on the sheet. It
+// still skips where BASE_URL is not local, because the DB writes it needs are
+// only reachable on the docker stack.
 
 const USER = {
   email: process.env.TEST_LIFECYCLE_EMAIL || "",
@@ -41,6 +49,10 @@ const USER = {
 const GB = 1073741824
 const FREE_QUOTA = 5 * GB
 const PREMIUM_QUOTA = 200 * GB
+// An expired premium account is held to the free-tier limit whatever its quota
+// record says (`_effective_quota_bytes`), so the combined grace + over-quota
+// state needs real usage above that limit rather than a dialed quota
+const OVER_FREE_QUOTA = 6 * GB
 // Well under the 5GiB free quota (even with sample data imported on top) so
 // the ballast only "exceeds" when a test shrinks the quota; also under the
 // hardcoded free limit that grace/overdue states compare against, keeping
@@ -55,28 +67,7 @@ let realUsage = 0
 const overQuota = () => Math.floor(realUsage / 1.1) // usage ≈ 110%
 const nearQuota = () => Math.floor(realUsage / 0.95) // usage ≈ 95%
 
-const REPO_ROOT = path.resolve(__dirname, "../..")
-const COMPOSE = "docker compose -f docker-compose.dev.multiuser.yml"
-
-function runSql(sql: string): string {
-  return execSync(
-    `${COMPOSE} exec -T db sh -c ` +
-      `'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"'`,
-    { cwd: REPO_ROOT, input: sql, stdio: ["pipe", "pipe", "pipe"] },
-  )
-    .toString()
-    .trim()
-}
-
-function runInBackend(cmd: string, input?: string) {
-  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
-    cwd: REPO_ROOT,
-    stdio: ["pipe", "pipe", "pipe"],
-    input,
-  })
-}
-
-const userId = `(SELECT id FROM users WHERE email = '${USER.email.replace(/'/g, "''")}')`
+const userId = `(SELECT id FROM users WHERE email = '${sqlLiteral(USER.email)}')`
 
 // Primes the cached value so the warning check agrees with the ballast even
 // before the login-time refresh has run (20-minute freshness window)
@@ -102,28 +93,18 @@ let workspaceId = 0
 const ballastPath = () =>
   `/app/studio_data/input/${workspaceId}/e2e-ballast.bin`
 
-function ensureBallast() {
+// Always (re)sizes rather than only creating, so a test that grew the ballast
+// cannot leak that size into the next one
+function ensureBallast(bytes = BALLAST) {
   runInBackend(
     `sh -c "mkdir -p /app/studio_data/input/${workspaceId} && ` +
-      `dd if=/dev/zero of=${ballastPath()} bs=1 count=0 seek=${BALLAST} 2>/dev/null"`,
+      `rm -f ${ballastPath()} && ` +
+      `dd if=/dev/zero of=${ballastPath()} bs=1 count=0 seek=${bytes} 2>/dev/null"`,
   )
 }
 
 function removeBallast() {
   runInBackend(`rm -f ${ballastPath()}`)
-}
-
-function verifyEmail(email: string) {
-  runInBackend(
-    "poetry run python -",
-    `
-import firebase_admin
-from firebase_admin import auth, credentials
-cred = credentials.Certificate("studio/config/auth/firebase_private.json")
-firebase_admin.initialize_app(cred)
-auth.update_user(auth.get_user_by_email("${email}").uid, email_verified=True)
-`,
-  )
 }
 
 // Register + verify the dedicated lifecycle user if it doesn't exist yet,
@@ -148,9 +129,12 @@ async function ensureUserAndWorkspace() {
         )
       }
     }
-    const { access_token } = await loginRes.json()
-    const headers = { Authorization: `Bearer ${access_token}` }
+    const { access_token, ex_token } = await loginRes.json()
+    const headers = authHeaders(access_token, ex_token)
     const list = await api.get("/workspaces?offset=0&limit=100", { headers })
+    if (!list.ok()) {
+      throw new Error(`GET /workspaces ${list.status()}: ${await list.text()}`)
+    }
     const { items } = await list.json()
     const found = items.find(
       (w: { name: string }) => w.name === "e2e-lifecycle",
@@ -189,26 +173,31 @@ async function loginKeepWarnings(page: Page) {
   await login(page, USER.email, USER.password, false)
 }
 
-const dialog = (page: Page) => page.locator('[role="dialog"]')
+// Same locator the admin spec uses
+const dialog = confirmDialog
+
+// Sign-off rows this group alone covers, named in the reason so a run that does
+// not execute it says which rows it left unverified
+const UNCOVERED_ELSEWHERE = "LC-01..LC-23"
 
 test.describe.serial("Subscription/storage warning lifecycle", () => {
   let skipReason = ""
 
+  function unrunnable(reason: string) {
+    if (isLocalBaseUrl()) {
+      throw new Error(`${reason}; ${UNCOVERED_ELSEWHERE} cannot run`)
+    }
+    skipReason = `${reason}; leaves ${UNCOVERED_ELSEWHERE} unverified`
+  }
+
   test.beforeAll(async () => {
     if (!USER.email || !USER.password) {
-      skipReason = "TEST_LIFECYCLE_EMAIL/TEST_LIFECYCLE_PASSWORD not set"
+      unrunnable("TEST_LIFECYCLE_EMAIL/TEST_LIFECYCLE_PASSWORD not set")
       return
     }
-    const base = process.env.BASE_URL || "http://localhost:3000"
-    if (!/localhost|127\.0\.0\.1/.test(base)) {
-      skipReason =
-        "lifecycle spec mutates the local docker DB; BASE_URL is not local"
-      return
-    }
-    try {
-      runSql("SELECT 1;")
-    } catch {
-      skipReason = "local docker db container not reachable"
+    const localStack = localStackSkipReason()
+    if (localStack) {
+      unrunnable(localStack)
       return
     }
     // The local-testing default in studio/config/.env disables every storage
@@ -219,8 +208,9 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       fs.existsSync(backendEnv) &&
       /^SKIP_STORAGE_CHECKS=true/m.test(fs.readFileSync(backendEnv, "utf-8"))
     ) {
-      skipReason =
-        "SKIP_STORAGE_CHECKS=true in studio/config/.env disables storage warnings"
+      unrunnable(
+        "SKIP_STORAGE_CHECKS=true in studio/config/.env disables storage warnings",
+      )
       return
     }
     await ensureUserAndWorkspace()
@@ -238,6 +228,13 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
 
   test.beforeEach(() => {
     test.skip(!!skipReason, skipReason)
+  })
+
+  // A test that grew the ballast must not leave it grown: the percentages every
+  // later test dials are derived from a measurement taken at the default size,
+  // and an inline restore does not run when the test fails
+  test.afterEach(() => {
+    if (!skipReason) ensureBallast()
   })
 
   test.afterAll(() => {
@@ -411,6 +408,84 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await expect(page).toHaveURL(/\/workspaces/, { timeout: 15_000 })
   })
 
+  // Expired premium still inside the grace window AND over the free limit: the
+  // one combined state neither the grace-only nor the free-over-quota case
+  // reaches. The ballast has to grow for real, because the effective quota is
+  // the hardcoded free limit rather than the quota column - no amount of dialing
+  // storage_quota_bytes puts a grace user over it.
+  async function loginExpiredPremiumOverQuota(page: Page) {
+    // A real login, whose retry ladder is up to 45s, on top of the DB writes and
+    // a ballast resize: the default 60s budget can expire during setup
+    test.setTimeout(120_000)
+    ensureBallast(OVER_FREE_QUOTA)
+    setPlan(2, "INTERVAL -1 DAY")
+    setStorage(OVER_FREE_QUOTA, PREMIUM_QUOTA)
+    await loginKeepWarnings(page)
+  }
+
+  test("LC-18 - Expired premium in grace and over quota: combined warning", async ({
+    page,
+  }) => {
+    // Not the sibling `/limit-warning/check`, which returns a different shape
+    const warningSeen = page.waitForResponse((r) =>
+      r.url().endsWith("/storage-limit-alerts/limit-warning"),
+    )
+    await loginExpiredPremiumOverQuota(page)
+
+    // The payload carries the whole deletion timeline; the modal renders only
+    // the expiry date and the time remaining, so assert the dates where they
+    // actually exist.
+    const warning = await (await warningSeen).json()
+    expect(warning.alert_type).toBe("grace")
+    expect(warning.subscription_end_date).toBeTruthy()
+    expect(warning.grace_end_date).toBeTruthy()
+    expect(warning.deletion_date).toBeTruthy()
+    // The quota that bites is the free one, not the premium 200GB on the record
+    expect(warning.storage_quota_gb).toBe(FREE_QUOTA / GB)
+    expect(warning.excess_data_gb).toBeGreaterThan(0)
+
+    const modal = dialog(page)
+    // The subscription-expiry variant, not the plain storage one
+    await expect(
+      modal.getByText("Premium Subscription Expired", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    await expect(modal.getByText(/exceeds the free plan limit/)).toBeVisible()
+    await expect(modal.getByText("Time Remaining")).toBeVisible()
+    // Both recovery paths: pay again, or delete data
+    await expect(modal.getByRole("button", { name: "Upgrade" })).toBeVisible()
+    await expect(
+      modal.getByRole("button", { name: "Manage Files" }),
+    ).toBeVisible()
+  })
+
+  test("LC-19 - Handle later on the expiry warning returns to the dashboard", async ({
+    page,
+  }) => {
+    await loginExpiredPremiumOverQuota(page)
+
+    const modal = dialog(page)
+    await expect(
+      modal.getByText("Premium Subscription Expired", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    await modal.getByRole("button", { name: "Handle later" }).click()
+    await expect(modal).toBeHidden()
+    await expect(page).toHaveURL(/\/dashboard/)
+  })
+
+  test("LC-20 - Upgrade on the expiry warning lands on /subscription", async ({
+    page,
+  }) => {
+    await loginExpiredPremiumOverQuota(page)
+
+    const modal = dialog(page)
+    await expect(
+      modal.getByText("Premium Subscription Expired", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    await modal.getByRole("button", { name: "Upgrade" }).click()
+    await expect(modal).toBeHidden()
+    await expect(page).toHaveURL(/\/subscription$/, { timeout: 15_000 })
+  })
+
   // LC-09/10 need a runnable workflow: sample data is imported into the
   // lifecycle workspace on first need (records persist across runs), then
   // Tutorial1 is reproduced. Quota is only shrunk AFTER the import — uploads
@@ -467,8 +542,14 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
 
     setStorage(realUsage, nearQuota())
     await runAllButton(page).click()
+    // "Storage usage is high" on its own is also the storage panel's caption;
+    // this is the run-time snackbar, percentage and advice included
     await expect(
-      page.locator("text=Storage usage is high").first(),
+      page
+        .locator(
+          "text=/^Warning: Storage usage is high \\(\\d+\\.\\d% used\\)\\. Consider freeing up space\\.$/",
+        )
+        .first(),
     ).toBeVisible({ timeout: 15_000 })
     // The run-name dialog opening proves the run was not blocked; cancel it
     // so no real workflow executes
@@ -524,6 +605,91 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await expect(
       page.locator('button:has-text("Current Plan")').first(),
     ).toBeVisible()
+  })
+
+  test("LC-21 - Profile after cancellation still reads Premium", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 1 MONTH", 1)
+    await loginKeepWarnings(page)
+
+    await page.goto("/account")
+    await expect(page.locator("text=Premium").first()).toBeVisible({
+      timeout: 15_000,
+    })
+    // Cancelled but not yet lapsed: the caption says Expires, not Expired, and
+    // the only action is Manage - there is nothing to upgrade to
+    await expect(page.locator("text=/\\(Expires on/").first()).toBeVisible()
+    await expect(page.locator('button:has-text("Manage")')).toBeVisible()
+    await expect(page.locator('button:has-text("Upgrade")')).toBeHidden()
+  })
+
+  test("LC-22 - After renewal the plan stays Premium with a later expiry", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 2 DAY")
+    await loginKeepWarnings(page)
+
+    // The renewal writes a new period end and nothing else
+    setPlan(2, "INTERVAL 1 MONTH")
+    await page.goto("/account")
+    await expect(page.locator("text=Premium").first()).toBeVisible({
+      timeout: 15_000,
+    })
+    // The caption has to name the stored expiration, not just some later date
+    // The caption renders the stored UTC date in the browser's short locale
+    // format, and the run pins that timezone to UTC
+    const renewedOn = runSql(
+      `SELECT DATE_FORMAT(expiration, '%c/%e/%Y') FROM subscription_users
+         WHERE user_id = ${userId};`,
+    )
+    await expect(
+      page.locator(`text=/\\(Renew on\\s+${renewedOn}/`).first(),
+    ).toBeVisible()
+
+    await page.goto("/subscription")
+    await expect(
+      page.locator('button:has-text("Current Plan")').first(),
+    ).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator("text=Subscription Canceled:")).toBeHidden()
+  })
+
+  test("LC-23 - Past the grace the account reads Expired, not Free", async ({
+    page,
+  }) => {
+    // Past expiry plus the 30-day grace. No row is downgraded; the tier is
+    // derived from the expiration.
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL -40 DAY")
+    const meSeen = page.waitForResponse(
+      (r) => r.url().endsWith("/users/me") && r.request().method() === "GET",
+    )
+    await loginKeepWarnings(page)
+
+    const me = await (await meSeen).json()
+    expect(me.subscription_status).toBe("Expired")
+    // The row itself is untouched; only the derived status changed
+    expect(
+      runSql(
+        `SELECT plan_id FROM subscription_users WHERE user_id = ${userId};`,
+      ),
+    ).toBe("2")
+
+    // The expiry modal carries its own Upgrade button and re-renders on this
+    // route, so dismiss the one on the page under test, not the dashboard's
+    await page.goto("/account")
+    const modal = dialog(page)
+    await expect(
+      modal.getByText("Premium Subscription Expired", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    await modal.getByRole("button", { name: "Handle later" }).click()
+    await expect(modal).toBeHidden()
+
+    await expect(page.locator("text=/\\(Expired on/").first()).toBeVisible({
+      timeout: 15_000,
+    })
   })
 
   test("LC-13 - Cancelled subscription shows banner and Continue Plan", async ({
@@ -659,5 +825,54 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
         { timeout: 60_000 },
       )
       .not.toBe("0")
+  })
+
+  test("LC-17 - Release clears every routing key; a gesture re-seeds them", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 1 MONTH")
+
+    await mockPremiumAssignment(page)
+    await page.route("**/users/me/premium/release-beacon", (route) =>
+      route.fulfill({ json: { released: true } }),
+    )
+    await loginWithArmedInactivityMonitor(page)
+
+    const routingKeys = () =>
+      page.evaluate(() => ({
+        routingId: localStorage.getItem("routing_id"),
+        assigned: localStorage.getItem("premium_assigned"),
+        instanceId: localStorage.getItem("premium_instance_id"),
+        shared: localStorage.getItem("premium_shared"),
+      }))
+
+    await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+
+    // Release boundary: 2h of inactivity fires the release beacon.
+    const beaconFired = page.waitForRequest(
+      (r) => r.url().includes("/users/me/premium/release-beacon"),
+      { timeout: 15_000 },
+    )
+    await page.clock.fastForward(125 * 60 * 1000)
+    await beaconFired
+
+    // Every routing key is cleared so premium_assigned never outlives the
+    // token (the unrecoverable pair).
+    await expect.poll(routingKeys).toEqual({
+      routingId: null,
+      assigned: "false",
+      instanceId: null,
+      shared: "false",
+    })
+
+    // Reassign boundary: a gesture re-runs auto-assign.
+    await page.mouse.click(5, 5)
+    await expect.poll(async () => (await routingKeys()).assigned).toBe("true")
+
+    // Logout boundary: teardown clears the token and drops the assigned flag.
+    await logout(page)
+    await expect.poll(async () => (await routingKeys()).routingId).toBe(null)
+    expect((await routingKeys()).assigned).not.toBe("true")
   })
 })

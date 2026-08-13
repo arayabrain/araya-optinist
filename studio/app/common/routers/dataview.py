@@ -111,23 +111,25 @@ def get_records_filtered_query(
 ) -> Select:
     if options.uid:
         query = query.filter(
-            models.ExperimentRecord.uid.like("%{0}%".format(options.uid))
+            models.ExperimentRecord.uid.contains(options.uid, autoescape=True)
         )
 
     if options.name:
         query = query.filter(
-            models.ExperimentRecord.name.like("%{0}%".format(options.name))
+            models.ExperimentRecord.name.contains(options.name, autoescape=True)
         )
 
     if options.user_name:
-        query = query.filter(models.User.name.like("%{0}%".format(options.user_name)))
+        query = query.filter(
+            models.User.name.contains(options.user_name, autoescape=True)
+        )
 
     if options.workspace_id:
         query = query.filter(models.Workspace.id == int(options.workspace_id))
 
     if options.workspace_name:
         query = query.filter(
-            models.Workspace.name.like("%{0}%".format(options.workspace_name))
+            models.Workspace.name.contains(options.workspace_name, autoescape=True)
         )
 
     if options.publish_status is not None:

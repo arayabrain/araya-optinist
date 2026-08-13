@@ -87,16 +87,24 @@ import { convertBytes } from "utils"
 
 let timeout: NodeJS.Timeout | undefined = undefined
 
-type ModalComponentProps = {
+// The grid row an edit is opened from. `id` is numeric and absent when adding.
+export type UserFormDTO = {
+  id?: number
+  name?: string
+  email: string
+  // temporarily use role's name (like "ADMIN") for select modal
+  role_id?: string
+  uid?: string
+}
+
+type AccountEditModalProps = {
   open: boolean
   onSubmitEdit: (
-    id: number | string | undefined,
+    id: number | undefined,
     data: { [key: string]: string },
   ) => void
   setOpenModal: (v: boolean) => void
-  dataEdit?: {
-    [key: string]: string
-  }
+  dataEdit?: UserFormDTO
 }
 
 const initState = {
@@ -107,14 +115,17 @@ const initState = {
   confirmPassword: "",
 }
 
-const ModalComponent = ({
+export const AccountEditModal = ({
   open,
   onSubmitEdit,
   setOpenModal,
   dataEdit,
-}: ModalComponentProps) => {
+}: AccountEditModalProps) => {
   const [formData, setFormData] = useState<{ [key: string]: string }>(
-    dataEdit || initState,
+    // The row's string fields seed the form. `id` rides along unread: the submit
+    // takes it from `dataEdit`, and neither request body is built from this map
+    // wholesale.
+    (dataEdit as unknown as { [key: string]: string }) || initState,
   )
   const [isFormDisabled, setIsFormDisabled] = useState(false)
   const [errors, setErrors] = useState<{ [key: string]: string }>(initState)
@@ -458,7 +469,7 @@ const AccountManager = () => {
   const admin = useSelector(isAdmin)
 
   const [openModal, setOpenModal] = useState(false)
-  const [dataEdit, setDataEdit] = useState({})
+  const [dataEdit, setDataEdit] = useState<UserFormDTO | undefined>()
   const [subscriptionEditOpen, setSubscriptionEditOpen] = useState(false)
   const [subscriptionEditUser, setSubscriptionEditUser] =
     useState<UserDTO | null>(null)
@@ -650,20 +661,13 @@ const AccountManager = () => {
     setOpenModal(true)
   }
 
-  type UserFormDTO = {
-    id?: number
-    name?: string
-    email: string
-    // temporarily use role's name (like "ADMIN") for select modal
-    role_id?: string
-  }
   const handleEdit = (dataEdit: UserFormDTO) => {
     setOpenModal(true)
     setDataEdit(dataEdit)
   }
 
   const onSubmitEdit = async (
-    id: number | string | undefined,
+    id: number | undefined,
     data: { [key: string]: string },
   ) => {
     const { role_id, ...newData } = data
@@ -679,7 +683,7 @@ const AccountManager = () => {
     if (id !== undefined) {
       const data = await dispatch(
         updateUser({
-          id: id as number,
+          id,
           data: { name: newData.name, email: newData.email, role_id: newRole },
           params: { ...filterParams, ...sortParams, ...params },
         }),
@@ -1135,13 +1139,13 @@ const AccountManager = () => {
         confirmLabel="Ok"
       />
       {openModal ? (
-        <ModalComponent
+        <AccountEditModal
           open={openModal}
           onSubmitEdit={onSubmitEdit}
           setOpenModal={(flag) => {
             setOpenModal(flag)
             if (!flag) {
-              setDataEdit({})
+              setDataEdit(undefined)
             }
           }}
           dataEdit={dataEdit}

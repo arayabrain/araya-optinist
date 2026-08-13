@@ -14,7 +14,10 @@ from studio.app.common.core.subscription.constants import (
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
-from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_datetime,
+)
 from studio.app.common.db.database import get_db
 
 
@@ -171,6 +174,68 @@ class TestInvoicePaymentSucceeded:
             # Verify subscription was updated
             assert mock_subscription.expiration is not None
             assert mock_subscription.updated_at is not None
+
+    @pytest.mark.parametrize("period_end", [1702678399, 1735300799])
+    def test_renewal_writes_the_invoice_period_end_and_leaves_the_plan_alone(
+        self,
+        period_end,
+        mock_db,
+        mock_user_account,
+        mock_subscription,
+        mock_plan,
+        mock_user,
+        invoice_data_subscription_cycle,
+    ):
+        """The renewal's only job is to move ``expiration`` to the invoice's
+        period end.
+
+        The fixture pre-seeds ``expiration`` five days out, so
+        ``expiration is not None`` holds even if the write is deleted. Two
+        distinct period ends make the seeded value unable to satisfy either run.
+        """
+        invoice_data_subscription_cycle["lines"]["data"][0]["period"][
+            "end"
+        ] = period_end
+        invoice_data_subscription_cycle["period_end"] = period_end
+        seeded_expiration = mock_subscription.expiration
+
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(
+                        order_by=Mock(
+                            return_value=Mock(
+                                first=Mock(return_value=mock_subscription)
+                            )
+                        )
+                    )
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch.object(
+            CheckoutService, "get_subscription_plan", return_value=mock_plan
+        ), patch.object(
+            SubscriptionService,
+            "get_current_datetime",
+            return_value=get_current_datetime(),
+        ):
+            result = WebhookService.handle_subscription_payment_succeeded(
+                mock_db, invoice_data_subscription_cycle
+            )
+
+        expected = datetime_from_timestamp(period_end)
+        assert mock_subscription.expiration == expected
+        assert mock_subscription.expiration != seeded_expiration
+        assert result["new_expiration"] == expected.isoformat()
+        assert result["old_expiration"] == seeded_expiration.isoformat()
+        assert mock_subscription.plan_id == "plan_123"
 
     def test_skip_initial_payment(self, mock_db, invoice_data_initial_payment):
         """Test that initial subscription payments are skipped"""
@@ -347,79 +412,6 @@ class TestInvoicePaymentSucceeded:
                 )
 
             mock_db.rollback.assert_called()
-
-
-# Additional integration test with real-like webhook payload
-def test_full_webhook_payload():
-    """Test with a full realistic Stripe webhook payload"""
-    full_invoice_payload = {
-        "id": "in_1QLzTh2eZvKYlo2C1234abcd",
-        "object": "invoice",
-        "account_country": "US",
-        "account_name": "Your Company",
-        "amount_due": 2999,
-        "amount_paid": 2999,
-        "amount_remaining": 0,
-        "application_fee_amount": None,
-        "attempt_count": 1,
-        "attempted": True,
-        "billing_reason": "subscription_cycle",
-        "charge": "ch_1QLzTh2eZvKYlo2C5678efgh",
-        "collection_method": "charge_automatically",
-        "created": 1699999999,
-        "currency": "usd",
-        "customer": "cus_test123456",
-        "customer_email": "customer@example.com",
-        "customer_name": "Test Customer",
-        "customer_phone": None,
-        "description": None,
-        "hosted_invoice_url": "https://invoice.stripe.com/i/acct_test/test_link",
-        "invoice_pdf": "https://pay.stripe.com/invoice/test/pdf",
-        "lines": {
-            "object": "list",
-            "data": [
-                {
-                    "id": "il_1QLzTh2eZvKYlo2C9999",
-                    "object": "line_item",
-                    "amount": 2999,
-                    "currency": "usd",
-                    "description": "1 × Premium Plan (at $29.99 / month)",
-                    "period": {"end": 1702678399, "start": 1699999999},
-                    "plan": {
-                        "id": "price_1234567890",
-                        "object": "plan",
-                        "active": True,
-                        "interval": "month",
-                        "interval_count": 1,
-                    },
-                    "quantity": 1,
-                }
-            ],
-        },
-        "paid": True,
-        "payment_intent": "pi_1QLzTh2eZvKYlo2C1111",
-        "period_end": 1702678399,
-        "period_start": 1699999999,
-        "status": "paid",
-        "parent": {
-            "subscription_details": {"subscription": "sub_1QLzTh2eZvKYlo2C2222"}
-        },
-        "subtotal": 2999,
-        "total": 2999,
-    }
-
-    # This payload structure matches what your webhook service expects
-    assert full_invoice_payload["billing_reason"] == "subscription_cycle"
-    assert full_invoice_payload["status"] == "paid"
-    assert full_invoice_payload["amount_paid"] == 2999
-
-    # Test extraction using the same logic as webhook_service.py
-    subscription_id = (
-        full_invoice_payload.get("parent", {})
-        .get("subscription_details", {})
-        .get("subscription")
-    )
-    assert subscription_id == "sub_1QLzTh2eZvKYlo2C2222"
 
 
 class TestSubscriptionLookbackWindow:
@@ -1524,12 +1516,13 @@ class TestWebhookErrorDetailPassthrough:
         assert not [r for r in caplog.records if "failed" in r.getMessage()]
 
 
-class TestWebhookRouteErrorDetailPassthrough:
+class TestWebhookRouteErrorStatusPassthrough:
     """
-    The route arm used to rewrite every inner HTTPException to
-    400 "Webhook processing failed". The other tests in this file call
-    dispatch_webhook_event directly, so only an HTTP-level request covers
-    the status and detail that Stripe actually receives.
+    The route arm used to rewrite every inner HTTPException to 400. It now
+    keeps the inner status and masks the detail, so a handler's 500 stays out
+    of the malformed-request bucket without naming which check failed. The
+    other tests in this file call dispatch_webhook_event directly, so only an
+    HTTP-level request covers what Stripe actually receives.
     """
 
     WEBHOOK_URL = "/api/subsc/webhooks/stripe"
@@ -1570,23 +1563,24 @@ class TestWebhookRouteErrorDetailPassthrough:
                 headers={"stripe-signature": "t=1,v1=sig"},
             )
 
-    def test_inner_detail_survives_the_route(self, webhook_client):
+    def test_inner_status_survives_the_route(self, webhook_client):
         response = self._post(
             webhook_client,
             HTTPException(status_code=404, detail="Subscription plan not found: 3"),
         )
 
         assert response.status_code == 404
-        assert response.json()["detail"] == "Subscription plan not found: 3"
+        # Masked on purpose: the plan id must not reach Stripe's delivery log
+        assert response.json()["detail"] == "Webhook processing failed"
 
-    def test_server_error_is_not_relabelled_at_the_route(self, webhook_client):
+    def test_server_error_keeps_its_status_at_the_route(self, webhook_client):
         response = self._post(
             webhook_client,
             HTTPException(status_code=500, detail="Failed to update subscription"),
         )
 
         assert response.status_code == 500
-        assert response.json()["detail"] == "Failed to update subscription"
+        assert response.json()["detail"] == "Webhook processing failed"
 
 
 if __name__ == "__main__":

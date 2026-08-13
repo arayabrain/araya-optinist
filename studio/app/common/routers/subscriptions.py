@@ -751,9 +751,16 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         logger.info(f"Successfully processed {event_type}")
         return {"received": True, "processed": event_type}
 
-    except HTTPException:
-        # bare raise: the generic arm below would turn this into a 500
-        raise
+    except HTTPException as e:
+        # Generic detail so the response cannot name which check failed, but the
+        # inner status is kept. Stripe retries every non-2xx alike, so this is not
+        # about redelivery: a masked 400 reports our own failures as malformed
+        # requests, which keeps them out of the 5xx alarm and sends whoever reads
+        # the delivery log to debug the wrong side.
+        # Logged at the raise site (dispatch, signature checks), not again here
+        raise HTTPException(
+            status_code=e.status_code, detail="Webhook processing failed"
+        )
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")

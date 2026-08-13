@@ -1241,7 +1241,7 @@ The browser-close path also calls `POST /users/me/premium/release-beacon` direct
 | `frontend/src/api/premium/PremiumAssignmentApi.ts` | API client functions (7 endpoints; `release-beacon` is called directly via `navigator.sendBeacon`) |
 | `frontend/src/contexts/__tests__/PremiumHeartbeatRetry.test.ts` | Tests for heartbeat retry logic |
 | `frontend/src/contexts/__tests__/PremiumPollingBackoff.test.ts` | Tests for polling backoff behavior |
-| `frontend/src/contexts/__tests__/PremiumSleepDetection.test.ts` | Tests for sleep/wake detection |
+| `frontend/src/hooks/__tests__/useSleepDetection.test.ts` | Tests for sleep/wake detection |
 | `frontend/src/contexts/__tests__/PremiumInstanceUnreachable.test.ts` | Unit tests for the unreachable reducer and helper guards (`shouldPoll`, `shouldHydrateFromSnapshot`, probe backoff) |
 | `frontend/src/contexts/__tests__/PremiumUnreachableIntegration.test.tsx` | Integration tests covering the full unreachable -> probe -> recovery lifecycle through the provider |
 

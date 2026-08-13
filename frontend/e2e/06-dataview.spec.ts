@@ -19,16 +19,6 @@ import {
 // dialogs, thumbnails, publish/unpublish (UI + public listing). Left manual:
 // DB/S3 sync verification, sync status states.
 
-async function hasDataRows(page: Page): Promise<boolean> {
-  // Wait out the data fetch rather than counting immediately
-  return await page
-    .locator('[role="grid"] [role="row"]')
-    .nth(1)
-    .waitFor({ timeout: 10_000 })
-    .then(() => true)
-    .catch(() => false)
-}
-
 // Global-setup wipes the e2e-* workspaces each run, so the success records
 // the data-dependent tests need are minted once per run: the fast no-op
 // rerun of the imported Tutorial1, then a record COPY of it (bulk operations
@@ -74,38 +64,65 @@ async function waitForDataRows(page: Page, wsId: number, min: number) {
   }).toPass({ timeout: 90_000 })
 }
 
+// Server-side filter on the Workspace column, which is only offered where
+// DataviewRecords renders without a workspaceId: /dataview and /public
+async function filterWorkspace(page: Page, value: string) {
+  const header = page.locator(
+    '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+  )
+  await header.hover()
+  await header.locator(".MuiDataGrid-menuIcon button").click()
+  await page.getByRole("menuitem", { name: /^filter$/i }).click()
+  await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+  await page.keyboard.press("Escape")
+}
+
+const BASE_RECORD = "Tutorial1"
+const COPY_RECORD = "Tutorial1_copy"
+
 let recordsMinted = false
 async function ensureDataviewRows(page: Page): Promise<number> {
   const id = await ensureWorkspaceId(page, DATA_WS)
   if (!recordsMinted) {
-    // Read the record count from the list response — counting grid rows
-    // right after the container renders races the data fetch and causes
-    // spurious re-mints
-    const listSeen = page.waitForResponse((r) =>
-      r.url().includes("/api/dataview"),
+    // Read the names from the list response: counting grid rows right after
+    // the container renders races the data fetch and causes spurious re-mints.
+    // The gate is the copy's presence, not a row count: under RUN_SLOW the
+    // tutorial specs leave two success records behind, so a count of 2 was
+    // satisfied without Tutorial1_copy ever being made and DV-13 / DV-15 then
+    // failed looking for it.
+    // Explicit budget: the run's first load of this route compiles it, which
+    // outlasts the config's 15s default action timeout
+    const listSeen = page.waitForResponse(
+      (r) => r.url().includes("/api/dataview"),
+      { timeout: 60_000 },
     )
     await page.goto(`/dataview/${id}`)
-    const total = ((await (await listSeen).json()) as { total?: number }).total
-    if ((total ?? 0) < 2) {
-      await openWorkspace(page, DATA_WS)
-      await ensureCompletedTutorialRun(page, DATA_WS, "Tutorial1")
-      // The record is registered slightly AFTER "Workflow finished" — the
-      // copy must wait for it, or it duplicates a not-yet-successful row
-      // that the dataview never lists
-      await waitForDataRows(page, id, 1)
+    const listed = (await (await listSeen).json()) as {
+      items?: { name?: string }[]
+    }
+    const names = (listed.items ?? []).map((item) => item.name)
+    if (!names.includes(COPY_RECORD)) {
+      if (!names.includes(BASE_RECORD)) {
+        await openWorkspace(page, DATA_WS)
+        await ensureCompletedTutorialRun(page, DATA_WS, BASE_RECORD)
+        // The record is registered slightly AFTER "Workflow finished": the
+        // copy must wait for it, or it duplicates a not-yet-successful row
+        // that the dataview never lists
+        await waitForDataRows(page, id, 1)
+      }
 
       // Copy the success record; the copy keeps its success state in the DB
       await openWorkspace(page, DATA_WS)
       await page.locator('button[role="tab"]:has-text("Record")').click()
       const t1row = page
         .locator('tr:has([data-testid="reproduce-button"])')
-        .filter({ has: page.getByText("Tutorial1", { exact: true }) })
+        .filter({ has: page.getByText(BASE_RECORD, { exact: true }) })
         .first()
       await t1row.locator('input[type="checkbox"]').check()
       await page.locator('button:has-text("COPY")').click()
       await page.locator('[role="dialog"] button:has-text("copy")').click()
       await expect(
-        page.getByText("Tutorial1_copy", { exact: true }).first(),
+        page.getByText(COPY_RECORD, { exact: true }).first(),
       ).toBeVisible({ timeout: 60_000 })
 
       await waitForDataRows(page, id, 2)
@@ -115,7 +132,12 @@ async function ensureDataviewRows(page: Page): Promise<number> {
   return id
 }
 
-test.describe("Private Dataview", () => {
+// @slow on the describe tags every test inside it. Only success records reach
+// the dataview (the listing filters on ExperimentRecord.success), the sample
+// data ships metadata YAML only, and global setup wipes the e2e-* workspaces
+// each run - so the first test here always pays for a real snakemake run. The
+// public group below needs no records and stays in the default lane.
+test.describe("Private Dataview @slow", () => {
   test.use({ storageState: freeStorageState() })
 
   let dataviewId = 0
@@ -126,12 +148,22 @@ test.describe("Private Dataview", () => {
 
   test.beforeEach(async ({ page }) => {
     skipWithoutCreds()
-    if (!recordsMinted) test.setTimeout(600_000)
+    // The first hook mints its rows with a real Tutorial1 run (the sample data
+    // ships metadata YAML only, so snakemake recomputes). runTutorial's inner
+    // wait is 840s, so a 600s budget here expired mid-run and reported the
+    // timeout against this hook rather than against the run.
+    if (!recordsMinted) test.setTimeout(900_000)
     await gotoDashboard(page)
     dataviewId = await ensureDataviewRows(page)
     await page.goto(`/dataview/${dataviewId}`)
     await expect(page.locator('[role="grid"]')).toBeVisible({
       timeout: 15_000,
+    })
+    // The minted rows are a precondition, not a maybe. Each test used to open
+    // with a skip whose probe swallowed its own timeout, and a skipped test
+    // reads as a pass in the summary the sheets are signed off against.
+    await expect(page.locator(".MuiDataGrid-row").first()).toBeVisible({
+      timeout: 30_000,
     })
   })
 
@@ -151,22 +183,23 @@ test.describe("Private Dataview", () => {
   })
 
   test("DV-02 - Publish toggle shown per record", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
-
     const headers = page.locator('[role="grid"] [role="columnheader"]')
     await expect(headers.filter({ hasText: "Publish" }).first()).toBeVisible()
-    await expect(
-      page
-        .locator(
-          '[role="grid"] input[type="checkbox"], [role="grid"] .MuiSwitch-root',
-        )
-        .first(),
-    ).toBeVisible()
+
+    // Scoped to the Publish cell: an unscoped checkbox/switch selector resolves
+    // to the grid's own selection checkbox, which is there with the publish
+    // renderer deleted. One switch per record is the row's actual claim.
+    const rows = page.locator(".MuiDataGrid-row")
+    const toggles = page.locator(
+      '.MuiDataGrid-cell[data-field="publish_status"] .MuiSwitch-root',
+    )
+    await expect(toggles.first()).toBeVisible()
+    await expect(toggles).toHaveCount(await rows.count())
   })
 
   // The grid filters server-side via per-column menus (no global search
   // box): header menu → Filter → debounced value input
-  async function filterByColumn(page: Page, field: string, value: string) {
+  async function applyColumnFilter(page: Page, field: string, value: string) {
     const header = page.locator(
       `.MuiDataGrid-columnHeader[data-field="${field}"]`,
     )
@@ -174,15 +207,20 @@ test.describe("Private Dataview", () => {
     await header.locator(".MuiDataGrid-menuIcon button").click()
     await page.getByRole("menuitem", { name: /^filter$/i }).click()
     await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+  }
+
+  const rowCount = (page: Page) =>
+    page.locator('[role="grid"] [role="row"]').count()
+
+  async function filterByColumn(page: Page, field: string, value: string) {
+    await applyColumnFilter(page, field, value)
     await expect(async () => {
-      const rows = await page.locator('[role="grid"] [role="row"]').count()
-      expect(rows).toBe(2) // header + 1 match
+      expect(await rowCount(page)).toBe(2) // header + 1 match
     }).toPass({ timeout: 15_000 })
     await page.keyboard.press("Escape")
   }
 
   test("DV-03 - Filter by ID via the column menu", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
     await filterByColumn(page, "uid", "tutorial1")
     await expect(
       page.locator('.MuiDataGrid-cell[data-field="uid"]').first(),
@@ -190,31 +228,87 @@ test.describe("Private Dataview", () => {
   })
 
   test("DV-13 - Filter by name via the column menu", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
     await filterByColumn(page, "name", "copy")
     await expect(
       page.locator('.MuiDataGrid-cell[data-field="name"]').first(),
     ).toHaveText("Tutorial1_copy")
   })
 
-  test("DV-04 - Sort by column header", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
+  // The Workspace column is `filterable: !workspaceId`, so the filter lives on
+  // the all-workspaces view and is deliberately off at /dataview/{id}. Both
+  // that view and the public one render DataviewRecords with no workspaceId, so
+  // this is the same filter the public page offers.
+  test("DV-16 - Filter by workspace narrows the table", async ({ page }) => {
+    // The carve-out the row names: the single-workspace view keeps the column
+    // menu but drops its Filter entry
+    const scopedHeader = page.locator(
+      '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+    )
+    await scopedHeader.hover()
+    await scopedHeader.locator(".MuiDataGrid-menuIcon button").click()
+    await expect(page.getByRole("menuitem").first()).toBeVisible({
+      timeout: 10_000,
+    })
+    await expect(page.getByRole("menuitem", { name: /^filter$/i })).toHaveCount(
+      0,
+    )
+    await page.keyboard.press("Escape")
 
-    const timestampHeader = page
-      .locator('[role="columnheader"]')
-      .filter({ hasText: "Timestamp" })
-      .first()
-    await timestampHeader.click()
-    await expect(
-      timestampHeader.locator(
-        '[data-testid="ArrowUpwardIcon"], [data-testid="ArrowDownwardIcon"]',
-      ),
-    ).toBeVisible({ timeout: 10_000 })
+    await page.goto("/dataview")
+    await expect(page.locator('[role="grid"]')).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
+      {
+        timeout: 30_000,
+      },
+    )
+
+    await filterWorkspace(page, DATA_WS)
+    await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
+      {
+        timeout: 15_000,
+      },
+    )
+    // Every surviving row belongs to the workspace that was filtered for
+    const cells = page.locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+    for (const text of await cells.allTextContents()) {
+      expect(text).toContain(DATA_WS)
+    }
+
+    // A workspace that cannot match empties the table, which is what makes the
+    // pass above a narrowing rather than a no-op
+    await filterWorkspace(page, "e2e-no-such-workspace")
+    await expect(async () => {
+      expect(await page.locator(".MuiDataGrid-row").count()).toBe(0)
+    }).toPass({ timeout: 15_000 })
+  })
+
+  test("DV-04 - Sort by column header inverts the row order", async ({
+    page,
+  }) => {
+    // The sort arrow is no evidence: MUI renders it from its own local sort
+    // model, so it appears with the server sort unwired. Sorting is on the
+    // Name column rather than Timestamp because the copy inherits its
+    // original's analyzed_at, and the API returns tied timestamps in the same
+    // order for asc and desc.
+    const names = () =>
+      page.locator('.MuiDataGrid-cell[data-field="name"]').allTextContents()
+    const header = page.locator('.MuiDataGrid-columnHeader[data-field="name"]')
+
+    await header.click()
+    // localeCompare, not the default sort: MySQL orders name under a
+    // case-insensitive collation, so lowercase names are not sorted last
+    const ascending = [...(await names())].sort((a, b) => a.localeCompare(b))
+    await expect(async () => {
+      expect(await names()).toEqual(ascending)
+    }).toPass({ timeout: 15_000 })
+
+    await header.click()
+    await expect(async () => {
+      expect(await names()).toEqual([...ascending].reverse())
+    }).toPass({ timeout: 15_000 })
   })
 
   test("DV-05 - Change page size", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
-
     // Custom pagination: a native <select name="limit"> (10/50/100)
     const limitSelect = page.locator('select[name="limit"]')
     const refetch = page.waitForResponse(
@@ -229,8 +323,6 @@ test.describe("Private Dataview", () => {
   })
 
   test("DV-06 - Inputs dialog opens", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
-
     // The cell's click target is the thumbnail (a spinner while loading)
     // or the fallback icon when no thumbnail exists
     const cellinput = page
@@ -246,8 +338,6 @@ test.describe("Private Dataview", () => {
   })
 
   test("DV-07 - Outputs dialog opens", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
-
     // The cell's click target is the thumbnail (a spinner while loading)
     // or the fallback icon when no thumbnail exists
     const celloutput = page
@@ -263,8 +353,6 @@ test.describe("Private Dataview", () => {
   })
 
   test("DV-08 - Details dialog opens and closes", async ({ page }) => {
-    test.skip(!(await hasDataRows(page)), "No experiment records")
-
     await page
       .locator(
         '.MuiDataGrid-cell[data-field="details"] button, .MuiDataGrid-cell[data-field="details"] svg',
@@ -280,13 +368,20 @@ test.describe("Private Dataview", () => {
   })
 
   test("DV-12 - Records show image and ROI thumbnails", async ({ page }) => {
-    // Both thumbnails render: image plot and ROI plot
+    // Two <img> per grid is also what two rows of input thumbnails alone
+    // produce, so each thumbnail is asserted in its own cell by its own alt
     await expect(
-      page.locator('[role="grid"] [role="row"] img').first(),
-    ).toBeVisible({ timeout: 15_000 })
+      page
+        .locator('.MuiDataGrid-cell[data-field="input_data"]')
+        .locator('img[alt="Input thumbnail"]')
+        .first(),
+    ).toBeVisible({ timeout: 30_000 })
     await expect(
-      page.locator('[role="grid"] [role="row"] img').nth(1),
-    ).toBeVisible()
+      page
+        .locator('.MuiDataGrid-cell[data-field="output_data"]')
+        .locator('img[alt="ROI thumbnail"]')
+        .first(),
+    ).toBeVisible({ timeout: 30_000 })
   })
 
   // Exact text match — "Tutorial1" is a substring of "Tutorial1_copy"
@@ -299,44 +394,105 @@ test.describe("Private Dataview", () => {
       '[data-field="publish_status"] input[type="checkbox"]',
     )
 
+  // No confirmation for single records; the switch state is the acknowledgment
+  async function setPublish(page: Page, name: string, on: boolean) {
+    await rowByName(page, name).locator('[data-field="publish_status"]').click()
+    const state = expect(publishSwitch(page, name))
+    await (on
+      ? state.toBeChecked({ timeout: 15_000 })
+      : state.not.toBeChecked({ timeout: 15_000 }))
+  }
+
+  // Entry state is established, not asserted: a retry re-runs the whole test,
+  // so a failure after publishing would otherwise fail on its first line.
+  async function ensurePublish(page: Page, name: string, on: boolean) {
+    const checked = await publishSwitch(page, name).isChecked({
+      timeout: 15_000,
+    })
+    if (checked !== on) await setPublish(page, name, on)
+  }
+
+  const publicNameCell = (page: Page, name: string) =>
+    page
+      .locator('.MuiDataGrid-cell[data-field="name"]')
+      .getByText(name, { exact: true })
+
   test("DV-14 - Publish lists the record publicly; unpublish removes it", async ({
     page,
   }) => {
-    // Publish Tutorial1 from its toggle (no confirmation for single records)
-    await expect(publishSwitch(page, "Tutorial1")).not.toBeChecked()
-    await rowByName(page, "Tutorial1")
-      .locator('[data-field="publish_status"]')
-      .click()
-    await expect(publishSwitch(page, "Tutorial1")).toBeChecked({
-      timeout: 15_000,
-    })
+    await ensurePublish(page, "Tutorial1", false)
+    await setPublish(page, "Tutorial1", true)
 
     // Listed on the public dataview (S3 sync stays manual — the listing
     // gates on publish_status only)
     await page.goto("/public")
-    await expect(
-      page
-        .locator('.MuiDataGrid-cell[data-field="name"]')
-        .getByText("Tutorial1", { exact: true }),
-    ).toBeVisible({ timeout: 15_000 })
+    await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
+      timeout: 15_000,
+    })
 
     // Unpublish removes it from the public page
     await page.goto(`/dataview/${dataviewId}`)
-    await rowByName(page, "Tutorial1")
-      .locator('[data-field="publish_status"]')
-      .click()
-    await expect(publishSwitch(page, "Tutorial1")).not.toBeChecked({
-      timeout: 15_000,
-    })
+    await setPublish(page, "Tutorial1", false)
     await page.goto("/public")
-    await expect(page.locator('[role="grid"]')).toBeVisible({
+    // Positive pin before the absence: the grid rendering its own columns is
+    // what makes the count below an absence rather than an unrendered table
+    await expect(
+      page.locator('.MuiDataGrid-columnHeader[data-field="name"]'),
+    ).toBeVisible({ timeout: 15_000 })
+    await expect(publicNameCell(page, "Tutorial1")).toHaveCount(0)
+  })
+
+  test("DV-17 - Public dataview filters by workspace", async ({ page }) => {
+    await ensurePublish(page, "Tutorial1", true)
+    await page.goto("/public")
+    await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
       timeout: 15_000,
     })
-    await expect(
-      page
-        .locator('.MuiDataGrid-cell[data-field="name"]')
-        .getByText("Tutorial1", { exact: true }),
-    ).toBeHidden()
+
+    await filterWorkspace(page, DATA_WS)
+    await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
+      timeout: 15_000,
+    })
+    // Iterating an empty list asserts nothing, so the rows are counted first
+    const cells = await page
+      .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+      .allTextContents()
+    expect(cells.length).toBeGreaterThan(0)
+    for (const text of cells) {
+      expect(text).toContain(DATA_WS)
+    }
+
+    // A workspace that cannot match empties the table, which is what makes the
+    // pass above a narrowing rather than a no-op
+    await filterWorkspace(page, "e2e-no-such-workspace")
+    await expect(async () => {
+      expect(await page.locator(".MuiDataGrid-row").count()).toBe(0)
+    }).toPass({ timeout: 15_000 })
+
+    await page.goto(`/dataview/${dataviewId}`)
+    await ensurePublish(page, "Tutorial1", false)
+  })
+
+  test("DV-18 - Concurrent public reads return the same payload", async ({
+    page,
+  }) => {
+    await ensurePublish(page, "Tutorial1", true)
+
+    const url = `${apiUrl()}/api/public/dataview?limit=50&offset=0`
+    const responses = await Promise.all(
+      [0, 1, 2].map(() => page.request.get(url)),
+    )
+    for (const response of responses) {
+      expect(response.status()).toBe(200)
+    }
+    const bodies = await Promise.all(responses.map((r) => r.text()))
+    // Non-vacuous: an empty listing would make three identical payloads
+    // trivially true
+    expect(bodies[0]).toContain("Tutorial1")
+    expect(bodies[1]).toBe(bodies[0])
+    expect(bodies[2]).toBe(bodies[0])
+
+    await ensurePublish(page, "Tutorial1", false)
   })
 
   test("DV-15 - Bulk publish and unpublish with confirmation", async ({
@@ -384,15 +540,15 @@ test.describe("Public Dataview", () => {
       page.locator("text=OptiNiSt Public Repository").first(),
     ).toBeVisible({ timeout: 15_000 })
 
+    // Positive pin first: the public grid renders its own columns (Owner is
+    // public-only), so the absence of Publish is an absence rather than a grid
+    // that never rendered
     const headers = page.locator('[role="grid"] [role="columnheader"]')
-    if (
-      await headers
-        .first()
-        .isVisible()
-        .catch(() => false)
-    ) {
-      await expect(headers.filter({ hasText: "Publish" })).toHaveCount(0)
-    }
+    await expect(headers.filter({ hasText: "Name" }).first()).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(headers.filter({ hasText: "Owner" }).first()).toBeVisible()
+    await expect(headers.filter({ hasText: "Publish" })).toHaveCount(0)
   })
 
   test("DV-10 - Public dataview loads without authentication", async ({

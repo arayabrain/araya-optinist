@@ -1,14 +1,224 @@
+import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
-import { expect, Page, test } from "@playwright/test"
+import {
+  APIRequestContext,
+  chromium,
+  expect,
+  Page,
+  request,
+  test,
+} from "@playwright/test"
 
-// Storage state saved by global-setup after a single UI login; authed specs
-// reuse it so each run needs only a handful of Firebase logins (rate limits)
-export const FREE_STORAGE_STATE = path.join(__dirname, ".auth", "free.json")
+// ---------------------------------------------------------------------------
+// Local docker stack. Specs that need state no API exposes (a plan, a role, a
+// verified email) drive the containers directly, so they run against the local
+// stack only and skip elsewhere.
+// ---------------------------------------------------------------------------
+
+export const REPO_ROOT = path.resolve(__dirname, "../..")
+const COMPOSE = "docker compose -f docker-compose.dev.multiuser.yml"
+const DOCKER_EXEC_TIMEOUT_MS = 30_000
+
+export function runSql(sql: string): string {
+  return execSync(
+    `${COMPOSE} exec -T db sh -c ` +
+      `'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"'`,
+    {
+      cwd: REPO_ROOT,
+      input: sql,
+      stdio: ["pipe", "pipe", "pipe"],
+      // execSync blocks the event loop, so a hung exec cannot be cut short by
+      // the test timeout: without this the run stalls to the global timeout
+      timeout: DOCKER_EXEC_TIMEOUT_MS,
+    },
+  )
+    .toString()
+    .trim()
+}
+
+export function runInBackend(cmd: string, input?: string) {
+  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+    cwd: REPO_ROOT,
+    stdio: ["pipe", "pipe", "pipe"],
+    input,
+    timeout: DOCKER_EXEC_TIMEOUT_MS,
+  })
+}
+
+// Registration leaves the address unverified, and an unverified account cannot
+// log in. Dev Firebase has no inbox to click through.
+export function verifyEmail(email: string) {
+  runInBackend(
+    "poetry run python -",
+    `
+import firebase_admin
+from firebase_admin import auth, credentials
+cred = credentials.Certificate("studio/config/auth/firebase_private.json")
+firebase_admin.initialize_app(cred)
+auth.update_user(auth.get_user_by_email("${email}").uid, email_verified=True)
+`,
+  )
+}
+
+export function deleteFirebaseUser(email: string) {
+  runInBackend(
+    "poetry run python -",
+    `
+import firebase_admin
+from firebase_admin import auth, credentials
+cred = credentials.Certificate("studio/config/auth/firebase_private.json")
+firebase_admin.initialize_app(cred)
+try:
+    auth.delete_user(auth.get_user_by_email("${email}").uid)
+except auth.UserNotFoundError:
+    pass
+`,
+  )
+}
+
+export function activeUserRows(email: string): number {
+  return Number(
+    runSql(
+      `SELECT COUNT(*) FROM users WHERE email = '${sqlLiteral(email)}'
+         AND active = 1;`,
+    ),
+  )
+}
+
+// Register + verify, idempotently. Throws with both statuses when the account
+// still cannot log in, because a silent failure here surfaces much later as an
+// unrelated assertion. Local stack only: the duplicate-row check below reads
+// the docker DB directly, so callers must gate on localStackSkipReason().
+export async function ensureRegisteredUser(
+  email: string,
+  password: string,
+  name: string,
+  roleId = 20,
+): Promise<void> {
+  const api = await request.newContext({ baseURL: apiUrl() })
+  const register = () =>
+    api.post("/api/register", {
+      data: { name, role_id: roleId, email, password },
+    })
+  try {
+    const creds = { email, password }
+    const existing = await api.post("/auth/login", { data: creds })
+    if (existing.ok()) return
+    // A row means the account is real and the configured password is simply
+    // wrong. Registering anyway adds a SECOND active row at this address,
+    // which nothing in the schema prevents and which then breaks every lookup
+    // expecting a single id - including this spec's own `beforeAll`.
+    if (activeUserRows(email) > 0) {
+      throw new Error(
+        `${email} already has an active row but its password does not match: ` +
+          `${existing.status()} ${await existing.text()}`,
+      )
+    }
+    // A 5xx is the dev backend restarting under --reload, not a verdict on the
+    // account: deleting a real Firebase user on one is unrecoverable.
+    if (existing.status() >= 500) {
+      throw new Error(
+        `login for ${email} failed transiently, not deleting it: ` +
+          `${existing.status()} ${await existing.text()}`,
+      )
+    }
+    // No row, so whatever Firebase still holds is an orphan from a reset stack
+    // or a deletion that stopped after its Firebase step. Left in place it
+    // makes registration answer EMAIL_EXISTS forever.
+    deleteFirebaseUser(email)
+    const registered = await register()
+    verifyEmail(email)
+    const loggedIn = await api.post("/auth/login", { data: creds })
+    if (!loggedIn.ok()) {
+      throw new Error(
+        `bootstrap failed for ${email}: register ${registered.status()} ` +
+          `${await registered.text()}; login ${loggedIn.status()} ` +
+          `${await loggedIn.text()}`,
+      )
+    }
+  } finally {
+    await api.dispose()
+  }
+}
+
+// The confirm-by-typing dialog used for deletions
+export function confirmDialog(page: Page) {
+  return page.locator('[role="dialog"]')
+}
+
+export function isLocalBaseUrl(): boolean {
+  return /localhost|127\.0\.0\.1/.test(
+    process.env.BASE_URL || "http://localhost:3000",
+  )
+}
+
+// Returns the reason a docker-driven spec cannot run here, or "" if it can.
+export function localStackSkipReason(): string {
+  if (!isLocalBaseUrl()) {
+    return "spec mutates the local docker DB; BASE_URL is not local"
+  }
+  try {
+    runSql("SELECT 1;")
+  } catch {
+    return "local docker db container not reachable"
+  }
+  return ""
+}
+
+export function sqlLiteral(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "''")
+}
+
+// Storage state saved after a single UI login; authed specs reuse it so each run
+// needs only a handful of Firebase logins (rate limits)
+const AUTH_DIR = path.join(__dirname, ".auth")
+export const FREE_STORAGE_STATE = path.join(AUTH_DIR, "free.json")
+export const ADMIN_STORAGE_STATE = path.join(AUTH_DIR, "admin.json")
 
 export function freeStorageState(): string | undefined {
   return fs.existsSync(FREE_STORAGE_STATE) ? FREE_STORAGE_STATE : undefined
+}
+
+// Resolved per test rather than at module load, because the admin account does
+// not exist until the spec's own beforeAll has registered and promoted it
+export function adminStorageState(): string | undefined {
+  return fs.existsSync(ADMIN_STORAGE_STATE) ? ADMIN_STORAGE_STATE : undefined
+}
+
+// One UI login, saved for reuse. Retries because a cold CRA dev server can take
+// longer than the login timeout to compile the login route.
+export async function saveStorageState(
+  statePath: string,
+  email: string,
+  password: string,
+  baseURL = process.env.BASE_URL || "http://localhost:3000",
+) {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true })
+  const browser = await chromium.launch()
+  try {
+    // storageState must be cleared explicitly: a page opened inside a spec's
+    // `test.use()` scope inherits that scope's state, so this one would start
+    // already signed in as the previous run, be redirected off /login before
+    // the form is filled, and save that stale token back over the file.
+    const page = await browser.newPage({ baseURL, storageState: undefined })
+    for (let attempt = 1; ; attempt++) {
+      await page.goto("/login")
+      await page.locator('[data-testid="email"]').fill(email)
+      await page.locator('[data-testid="password"]').fill(password)
+      await page.locator('[data-testid="button-submit"]').click()
+      try {
+        await page.waitForURL(/\/dashboard/, { timeout: 60_000 })
+        break
+      } catch (e) {
+        if (attempt >= 3) throw e
+      }
+    }
+    await page.context().storageState({ path: statePath })
+  } finally {
+    await browser.close()
+  }
 }
 
 // For specs running with the saved storage state: land on the dashboard
@@ -96,19 +306,6 @@ export async function goToWorkspaces(page: Page) {
   })
 }
 
-// Navigate to workspaces and wait for at least one data row.
-// Returns false if the table stayed empty (tests should then skip).
-export async function goToWorkspacesWithData(page: Page): Promise<boolean> {
-  await goToWorkspaces(page)
-  const workflowButton = page.locator('button:has-text("Workflow")').first()
-  try {
-    await expect(workflowButton).toBeVisible({ timeout: 30_000 })
-    return true
-  } catch {
-    return false
-  }
-}
-
 // Shared workspace for data-dependent specs (03/05/06/07): sample data is
 // imported once per run; global-setup deletes all e2e-* workspaces at start
 export const DATA_WS = "e2e-data"
@@ -118,16 +315,67 @@ export function apiUrl(): string {
   return process.env.API_URL || baseURL.replace(/:\d+$/, ":8000")
 }
 
-// The app keeps its Bearer token in localStorage, so page.request needs it
+// A backend on USE_FIREBASE_TOKEN=False validates ExToken, not the Bearer
+// token, so both have to be sent to cover either auth mode
+export function authHeaders(token: string, exToken?: string | null) {
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+  if (exToken) headers.ExToken = exToken
+  return headers
+}
+
+// A request context authenticated by API login, for work that has no page:
+// global-setup (before any browser exists) and the cleanup group
+export async function apiLogin(
+  email = FREE_USER.email,
+  password = FREE_USER.password,
+): Promise<{ api: APIRequestContext; headers: Record<string, string> }> {
+  const api = await request.newContext({ baseURL: apiUrl() })
+  const res = await api.post("/auth/login", { data: { email, password } })
+  if (!res.ok()) {
+    await api.dispose()
+    throw new Error(
+      `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiUrl()}/auth/login ` +
+        `(${res.status()}): ${await res.text()}`,
+    )
+  }
+  const { access_token, ex_token } = await res.json()
+  return { api, headers: authHeaders(access_token, ex_token) }
+}
+
+// Deletes the account's e2e-* workspaces and returns the names removed.
+// DELETE /workspace/{id} also drops the workspace's input/output data, in S3
+// too when remote storage is on.
+export async function deleteE2eWorkspaces(
+  api: APIRequestContext,
+  headers: Record<string, string>,
+): Promise<string[]> {
+  const list = await api.get("/workspaces?offset=0&limit=100", { headers })
+  if (!list.ok()) {
+    throw new Error(`GET /workspaces ${list.status()}: ${await list.text()}`)
+  }
+  const { items } = await list.json()
+  const deleted: string[] = []
+  for (const ws of items as { id: number; name: string }[]) {
+    if (!/^e2e-/.test(ws.name)) continue
+    const res = await api.delete(`/workspace/${ws.id}`, { headers })
+    if (res.ok()) deleted.push(ws.name)
+  }
+  return deleted
+}
+
+// The app keeps its tokens in localStorage, so page.request needs them
 // passed explicitly; the page must already be on the app origin
 async function apiHeaders(page: Page) {
-  const token = await page.evaluate(() => localStorage.getItem("access_token"))
+  const { token, exToken } = await page.evaluate(() => ({
+    token: localStorage.getItem("access_token"),
+    exToken: localStorage.getItem("ExToken"),
+  }))
   if (!token) {
     throw new Error(
       "No access_token in localStorage — is the storage state stale? Delete e2e/.auth and rerun.",
     )
   }
-  return { Authorization: `Bearer ${token}` }
+  return authHeaders(token, exToken)
 }
 
 // Find-or-create a workspace via the API — avoids the virtualized grid
@@ -169,14 +417,13 @@ export async function openWorkspace(page: Page, name: string): Promise<number> {
 }
 
 export async function importSampleData(page: Page, workspaceName: string) {
-  // The import menu silently no-ops until GET /workspace/{id} populates the
-  // store; the workspace name, rendered only by the Workflow tab, signals
-  // it's ready
+  // The import silently no-ops until GET /workspace/{id} populates the store,
+  // and the Record tab renders nothing that proves it has. Probe on Workflow,
+  // then switch to Record, where the menu entry is enabled.
   await page.locator('button[role="tab"]:has-text("Workflow")').click()
   await expect(page.locator(`text=${workspaceName}`).first()).toBeVisible({
     timeout: 15_000,
   })
-  // The menu item is disabled off the Record tab
   await page.locator('button[role="tab"]:has-text("Record")').click()
   await page.locator('[data-testid="MenuBookIcon"]').click()
   await page.getByText("Import sample data").click()
@@ -284,9 +531,13 @@ export async function runTutorial(
   })
 }
 
-// Cheap way to mint the success record + thumbnails the dataview needs,
-// without a real 5-10 min run: the by-uid rerun of an imported tutorial is
-// a snakemake no-op because the sample data ships WITH outputs.
+// Mints the success record + thumbnails the dataview needs.
+//
+// This is NOT a no-op: `git ls-files sample_data/tutorial/output` is 12 files,
+// all of them experiment/snakemake/workflow YAML. No node output directories, no
+// JSON, no NWB ship at all, and global setup deletes the e2e-* workspace each
+// run, so snakemake recomputes from scratch. Budget a real run (see the 840s
+// inner wait in runTutorial), not the ~15s a rerun-by-uid would take.
 export async function ensureCompletedTutorialRun(
   page: Page,
   wsName: string,
@@ -296,36 +547,54 @@ export async function ensureCompletedTutorialRun(
   await runTutorial(page, tutorialName, "RUN")
 }
 
-// Route-mock an active dedicated premium assignment (status + heartbeat +
-// beacon token), for exercising assignment-dependent UI on stacks where the
-// real AWS-backed flow is unreachable
-export async function mockPremiumAssignment(page: Page) {
+// Shared routing contract fixture: sourcing the mock bodies from it keeps them
+// on the real response shape and guarantees no body carries a user_id.
+const PREMIUM_CONTRACT = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "src",
+      "utils",
+      "routing",
+      "__fixtures__",
+      "premium_routing",
+      "premium_contract.json",
+    ),
+    "utf-8",
+  ),
+)
+
+// Route-mock an active premium assignment (status + heartbeat + beacon token)
+// for assignment-dependent UI where the real AWS flow is unreachable. No
+// X-Routing-ID header: the local backend runs non-standalone and rejects a
+// request carrying a routing_id it did not mint, so seeding a fake one here
+// would 403 every later real request. Seeding is covered at the jest
+// interceptor level instead.
+//
+// `shared` mocks the shared-resource fallback instead of a dedicated instance.
+// That is a different frontend branch: with no dedicated instance the app keeps
+// its "being prepared" notice up rather than announcing success, and it records
+// the fallback in the routing service.
+export async function mockPremiumAssignment(
+  page: Page,
+  { shared = false }: { shared?: boolean } = {},
+) {
+  const status = PREMIUM_CONTRACT.premium_status
   await page.route("**/users/me/premium/status", (route) =>
     route.fulfill({
       json: {
-        user_id: 0,
-        subscription_type: "premium",
-        is_premium: true,
+        ...status,
         assignment: {
-          instance_id: "i-e2e-fake",
+          ...status.assignment,
           assigned_at: new Date().toISOString(),
-          status: "active",
-          is_shared: false,
-          assignment_source: "existing",
+          is_shared: shared,
         },
       },
     }),
   )
   await page.route("**/users/me/premium/heartbeat", (route) =>
-    route.fulfill({
-      json: {
-        message: "ok",
-        updated: true,
-        user_id: 0,
-        user_tier: "premium",
-        assignment_active: true,
-      },
-    }),
+    route.fulfill({ json: PREMIUM_CONTRACT.premium_heartbeat }),
   )
   await page.route("**/users/me/premium/beacon-token", (route) =>
     route.fulfill({ json: { token: "e2e" } }),

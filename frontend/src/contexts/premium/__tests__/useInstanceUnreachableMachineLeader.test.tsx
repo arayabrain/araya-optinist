@@ -37,7 +37,9 @@ jest.mock("api/premium/PremiumAssignmentApi", () => ({
   logPremiumUiEvent: mockLogPremiumUiEvent,
 }))
 
-// tabSync mock — no-op broadcast; register-only handlers.
+const mockTabSyncBroadcast = jest.fn<void, [TabSyncMessage]>()
+
+// tabSync mock: recorded broadcast, register-only handlers.
 jest.mock("utils/crossTabSync", () => {
   const handlers = new Map<
     TabSyncMessageType,
@@ -46,7 +48,7 @@ jest.mock("utils/crossTabSync", () => {
   return {
     __esModule: true,
     tabSync: {
-      broadcast: () => {},
+      broadcast: mockTabSyncBroadcast,
       broadcastPremiumReleased: () => {},
       on: (type: TabSyncMessageType, h: (m: TabSyncMessage) => void) => {
         if (!handlers.has(type)) handlers.set(type, new Set())
@@ -239,6 +241,104 @@ describe("useInstanceUnreachableMachine — leader-gated side effects", () => {
         instance_id: "inst-A",
         failed_probes: 0,
         delay_ms: INITIAL_PROBE_DELAY_MS,
+      }),
+    )
+  })
+
+  // The ladder is walked against the wall clock rather than read off
+  // computeNextProbeDelayMs, so a re-arm that fires early (hammering a dead
+  // instance) or never (stranding the tab) shows up here.
+  test("the probe re-arm ladder walks 30s, 60s, 120s, 240s and caps at 300s", () => {
+    jest.useFakeTimers()
+
+    const { ref } = renderHook({ isTabLeader: true })
+
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
+      routingService.emitPremiumUnreachable({ status: 503, sentAt: 1 })
+    })
+    expect(ref.current?.state.instanceUnreachable).toBe(true)
+
+    const ladderMs = [30000, 60000, 120000, 240000, 300000]
+
+    ladderMs.forEach((delay, rung) => {
+      routingService.setPremiumAssigned(false)
+      mockLogPremiumUiEvent.mockClear()
+
+      act(() => {
+        jest.advanceTimersByTime(delay - 1)
+      })
+      expect(routingService.isPremiumAssigned()).toBe(false)
+
+      act(() => {
+        jest.advanceTimersByTime(1)
+      })
+      expect(routingService.isPremiumAssigned()).toBe(true)
+      expect(mockLogPremiumUiEvent).toHaveBeenCalledWith(
+        "instance_probe_armed",
+        expect.objectContaining({ failed_probes: rung, delay_ms: delay }),
+      )
+
+      // The armed probe fails, which is what moves us up a rung.
+      act(() => {
+        routingService.emitPremiumUnreachable({ status: 503, sentAt: 1 })
+      })
+      expect(ref.current?.state.failedProbes).toBe(rung + 1)
+    })
+
+    // Budget spent: terminal, and no further probe is ever armed.
+    expect(ref.current?.state.isUnreachableTerminal).toBe(true)
+    routingService.setPremiumAssigned(false)
+    mockLogPremiumUiEvent.mockClear()
+
+    act(() => {
+      jest.advanceTimersByTime(300000 * 4)
+    })
+
+    expect(routingService.isPremiumAssigned()).toBe(false)
+    expect(mockLogPremiumUiEvent).not.toHaveBeenCalledWith(
+      "instance_probe_armed",
+      expect.anything(),
+    )
+  })
+
+  // Recovery resets the probe budget in a ref as well as in the reducer,
+  // because the reducer has not committed while the next listener runs: a peer
+  // applying a stale count re-arms its own probe a backoff rung late, or not at
+  // all once the stale count reads as terminal.
+  test("a recovery resets the probe budget the next unreachable broadcast carries", () => {
+    jest.useFakeTimers()
+
+    const { ref } = renderHook({ isTabLeader: true })
+
+    act(() => {
+      jest.advanceTimersByTime(DEDICATED_HANDOFF_GRACE_MS + 1)
+      routingService.emitPremiumUnreachable({ status: 503, sentAt: 1 })
+    })
+    // Arm the probe, then fail it, so there is a budget to reset
+    act(() => {
+      jest.advanceTimersByTime(INITIAL_PROBE_DELAY_MS)
+    })
+    act(() => {
+      routingService.emitPremiumUnreachable({ status: 503, sentAt: 2 })
+    })
+    expect(ref.current?.state.failedProbes).toBe(1)
+
+    mockTabSyncBroadcast.mockClear()
+    // Both in one tick: a 200 and a 5xx from requests that were already in
+    // flight together, which is the case the reducer cannot cover.
+    act(() => {
+      routingService.emitPremiumReachable({ status: 200, sentAt: 3 })
+      routingService.emitPremiumUnreachable({ status: 503, sentAt: 4 })
+    })
+
+    expect(mockTabSyncBroadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "PREMIUM_INSTANCE_UNREACHABLE",
+        payload: expect.objectContaining({
+          failed_probes: 0,
+          is_terminal: false,
+        }),
       }),
     )
   })

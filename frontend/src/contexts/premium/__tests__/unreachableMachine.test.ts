@@ -87,25 +87,23 @@ describe("shouldFlipToUnreachable", () => {
 })
 
 describe("computeNextProbeDelayMs", () => {
-  it("starts at the initial delay for zero prior failures", () => {
-    expect(computeNextProbeDelayMs(0)).toBe(INITIAL_PROBE_DELAY_MS)
+  // Literals, not expressions over the constants: the sign-off sheet quotes a
+  // wall clock ("~T0+30s, ~T0+90s"), and a derived expectation stays green
+  // with the initial delay set to 3s.
+  it("pins the constants the ladder is built from", () => {
+    expect(INITIAL_PROBE_DELAY_MS).toBe(30_000)
+    expect(MAX_PROBE_DELAY_MS).toBe(300_000)
+    expect(PROBE_BACKOFF_MULTIPLIER).toBe(2)
   })
 
-  it("doubles with each failure up to the cap", () => {
-    expect(computeNextProbeDelayMs(1)).toBe(
-      INITIAL_PROBE_DELAY_MS * PROBE_BACKOFF_MULTIPLIER,
-    )
-    expect(computeNextProbeDelayMs(2)).toBe(
-      INITIAL_PROBE_DELAY_MS * PROBE_BACKOFF_MULTIPLIER ** 2,
-    )
-  })
-
-  it("caps the delay at MAX_PROBE_DELAY_MS", () => {
-    expect(computeNextProbeDelayMs(100)).toBe(MAX_PROBE_DELAY_MS)
+  it("walks 30s, 60s, 120s, 240s and then holds at the 300s cap", () => {
+    expect([0, 1, 2, 3, 4, 5].map(computeNextProbeDelayMs)).toEqual([
+      30_000, 60_000, 120_000, 240_000, 300_000, 300_000,
+    ])
   })
 
   it("treats negative counts as zero rather than shrinking the delay", () => {
-    expect(computeNextProbeDelayMs(-5)).toBe(INITIAL_PROBE_DELAY_MS)
+    expect(computeNextProbeDelayMs(-5)).toBe(30_000)
   })
 })
 
