@@ -211,7 +211,7 @@ yarn test:e2e:cleanup            # delete the run's e2e-* data, on demand
 - `@slow` = anything that performs a real workflow execution (5–10 min each;
   slower on an ARM Mac where the backend image is amd64-emulated). Keep the
   machine awake for these — `caffeinate -i RUN_SLOW=1 npx playwright test
---grep @slow` — sleep mid-run is the #1 cause of bogus failures. Three groups
+--grep @slow` — sleep mid-run is the #1 cause of bogus failures. These groups
   are in this lane:
   - WF-04/05/06, the tutorial runs, which are the thing being tested.
   - REC-07, which downloads an NWB file. One exists only after a completed run,
@@ -221,8 +221,12 @@ yarn test:e2e:cleanup            # delete the run's e2e-* data, on demand
     computed outputs, so its first test mints them with a real run.
   - VIS-02, whose `cell_roi` overlay is a suite2p_roi node output. The other
     VIS tests plot the sample TIFF, which the import does ship.
+  - PUB-05/06 in `14-public`, which publish records and read their input data
+    back anonymously on the public page. Tutorial1 carries the CSV and TIFF
+    input nodes, Tutorial4 the HDF5 and MAT pair; minting either costs a real
+    run when the records don't already exist.
 - **The default lane runs no workflows**, which is what keeps it under 15
-  minutes. The trade is that a default run leaves 23 release-sheet rows and 14
+  minutes. The trade is that a default run leaves 23 release-sheet rows and 25
   system-sheet rows unchecked; their e2e citations are marked `@slow` in the
   sheets rather than counted as covered by a green default run.
 
@@ -286,6 +290,7 @@ Understanding these makes failures much easier to read:
 | `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
 | `12-admin`         | ADMIN-01..22 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, the create / edit / role-change / demotion happy paths and their validation, the subscription and storage columns against the DB, one real deletion of a throwaway account, and re-registration of the deleted address. All mutations land on disposable per-run accounts. Local stack only |
 | `13-account`       | ACC-01..06  | Account Profile self-service: change-password modal (validation, wrong current password, a real change verified at login) and the inline name edit, on a disposable per-run account. Local stack only |
+| `14-public`        | PUB-01..06  | public-instance behaviour: deep-link SPA shell and client routing, `/health`, chunk-load auto-reload, frontend error reporting, and anonymous public-page loads of published HDF5 / MAT / CSV / TIFF input data. PUB-05/06 are `@slow` (they mint and publish real records) |
 | `12-cleanup`       | CLEAN-01    | on-demand deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`    |
 
 ## Coverage maps

@@ -365,7 +365,7 @@ export async function deleteE2eWorkspaces(
 
 // The app keeps its tokens in localStorage, so page.request needs them
 // passed explicitly; the page must already be on the app origin
-async function apiHeaders(page: Page) {
+export async function apiHeaders(page: Page) {
   const { token, exToken } = await page.evaluate(() => ({
     token: localStorage.getItem("access_token"),
     exToken: localStorage.getItem("ExToken"),
@@ -547,6 +547,26 @@ export async function ensureCompletedTutorialRun(
   await runTutorial(page, tutorialName, "RUN")
 }
 
+// Publishing requires a cloud bucket on the account (the backend 400s
+// without one). Local-stack users have none, so set a placeholder attribute
+// - the S3-existence check is skipped in local storage mode, and all S3
+// size lookups swallow errors. On deployed envs (no docker) this silently
+// no-ops; users there have real buckets.
+export function ensurePublishableAccount() {
+  const email = process.env.TEST_USER_EMAIL
+  if (!email) return
+  try {
+    runSql(
+      `UPDATE users SET attributes = JSON_SET(
+         COALESCE(attributes, JSON_OBJECT()),
+         '$.remote_bucket_name', 'e2e-local-placeholder')
+       WHERE email = '${sqlLiteral(email)}';`,
+    )
+  } catch {
+    // Not a local stack
+  }
+}
+
 // Shared routing contract fixture: sourcing the mock bodies from it keeps them
 // on the real response shape and guarantees no body carries a user_id.
 const PREMIUM_CONTRACT = JSON.parse(
@@ -599,6 +619,19 @@ export async function mockPremiumAssignment(
   await page.route("**/users/me/premium/beacon-token", (route) =>
     route.fulfill({ json: { token: "e2e" } }),
   )
+}
+
+// Server-side filter on the Workspace column, which is only offered where
+// DataviewRecords renders without a workspaceId: /dataview and /public
+export async function filterWorkspace(page: Page, value: string) {
+  const header = page.locator(
+    '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+  )
+  await header.hover()
+  await header.locator(".MuiDataGrid-menuIcon button").click()
+  await page.getByRole("menuitem", { name: /^filter$/i }).click()
+  await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+  await page.keyboard.press("Escape")
 }
 
 export async function createWorkspace(page: Page, name: string) {

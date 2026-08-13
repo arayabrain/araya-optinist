@@ -46,9 +46,10 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    # RUN_SLOW adds the three tutorial runs (5-10 min each) plus the dataview
-    # mint, and CI retries twice. Playwright's own globalTimeout ends the run
-    # before this fires, so the skip summary and artifacts still get written.
+    # RUN_SLOW adds the four tutorial runs (5-10 min each) plus the dataview
+    # and public-page mints, and CI retries twice. Playwright's own
+    # globalTimeout ends the run before this fires, so the skip summary and
+    # artifacts still get written.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4

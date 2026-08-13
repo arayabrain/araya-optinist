@@ -1,6 +1,3 @@
-import { execSync } from "child_process"
-import * as path from "path"
-
 import { test, expect, Page } from "@playwright/test"
 
 import {
@@ -10,6 +7,8 @@ import {
   gotoDashboard,
   ensureWorkspaceId,
   ensureCompletedTutorialRun,
+  ensurePublishableAccount,
+  filterWorkspace,
   openWorkspace,
   apiUrl,
   DATA_WS,
@@ -25,31 +24,6 @@ import {
 // need "multiple" records, and only Tutorial1's rerun is a reliable no-op —
 // Tutorial2's recomputes CaImAn locally and fails). The registration lands
 // slightly after "Workflow finished", hence the reload-poll.
-// Publishing requires a cloud bucket on the account (the backend 400s
-// without one). Local-stack users have none, so set a placeholder attribute
-// — the S3-existence check is skipped in local storage mode, and all S3
-// size lookups swallow errors. On deployed envs (no docker) this silently
-// no-ops; users there have real buckets.
-function ensurePublishableAccount() {
-  const email = process.env.TEST_USER_EMAIL
-  if (!email) return
-  try {
-    execSync(
-      `docker compose -f docker-compose.dev.multiuser.yml exec -T db sh -c ` +
-        `'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"'`,
-      {
-        cwd: path.resolve(__dirname, "../.."),
-        stdio: ["pipe", "pipe", "pipe"],
-        input: `UPDATE users SET attributes = JSON_SET(
-             COALESCE(attributes, JSON_OBJECT()),
-             '$.remote_bucket_name', 'e2e-local-placeholder')
-           WHERE email = '${email.replace(/'/g, "''")}';`,
-      },
-    )
-  } catch {
-    // Not a local stack
-  }
-}
 
 // Reload-poll the dataview until it lists `min` data rows; each attempt
 // must WAIT for the grid to render — counting right after reload races the
@@ -62,19 +36,6 @@ async function waitForDataRows(page: Page, wsId: number, min: number) {
       page.locator('[role="grid"] [role="row"]').nth(min),
     ).toBeVisible({ timeout: 8_000 })
   }).toPass({ timeout: 90_000 })
-}
-
-// Server-side filter on the Workspace column, which is only offered where
-// DataviewRecords renders without a workspaceId: /dataview and /public
-async function filterWorkspace(page: Page, value: string) {
-  const header = page.locator(
-    '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
-  )
-  await header.hover()
-  await header.locator(".MuiDataGrid-menuIcon button").click()
-  await page.getByRole("menuitem", { name: /^filter$/i }).click()
-  await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
-  await page.keyboard.press("Escape")
 }
 
 const BASE_RECORD = "Tutorial1"
