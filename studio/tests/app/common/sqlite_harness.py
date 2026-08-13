@@ -8,7 +8,9 @@ Two operational facts, both of which outlive any single caller:
 
 - Importing this module mutates SQLAlchemy's dialect-compiler registry for the
   whole process, so every SQLite-backed test afterwards emits INTEGER for BIGINT
-  and TINYINT columns. There is no way to undo a ``@compiles`` registration.
+  and TINYINT columns, and renders MySQL's ``ON DUPLICATE KEY UPDATE`` as
+  SQLite's ``ON CONFLICT ... DO UPDATE``. There is no way to undo a ``@compiles``
+  registration.
 - What the harness cannot show, and which therefore stays a production check:
   ``SELECT ... FOR UPDATE`` compiles away, ``SQLEnum`` emits no CHECK constraint,
   and foreign keys are unenforced. Column-level behaviour does hold, including
@@ -21,8 +23,10 @@ from sqlalchemy import BIGINT as GENERIC_BIGINT
 from sqlalchemy import BigInteger
 from sqlalchemy.dialects.mysql import BIGINT as MYSQL_BIGINT
 from sqlalchemy.dialects.mysql import TINYINT as MYSQL_TINYINT
+from sqlalchemy.dialects.mysql.dml import OnDuplicateClause
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.sql import coercions, roles
 from sqlmodel import Session, SQLModel, create_engine
 
 
@@ -34,6 +38,25 @@ from sqlmodel import Session, SQLModel, create_engine
 @compiles(MYSQL_TINYINT, "sqlite")
 def _integer_on_sqlite(type_, compiler, **kw):
     return "INTEGER"
+
+
+# MySQL infers which unique key collided; SQLite needs it named.
+@compiles(OnDuplicateClause, "sqlite")
+def _on_conflict_on_sqlite(clause, compiler, **kw):
+    table = compiler.statement.table
+    target = [col.name for col in table.columns if col.unique] or list(
+        table.primary_key.columns.keys()
+    )
+    assignments = ", ".join(
+        "{} = {}".format(
+            name,
+            compiler.process(
+                coercions.expect(roles.ExpressionElementRole, value), **kw
+            ),
+        )
+        for name, value in clause.update.items()
+    )
+    return f"ON CONFLICT ({', '.join(target)}) DO UPDATE SET {assignments}"
 
 
 @contextmanager

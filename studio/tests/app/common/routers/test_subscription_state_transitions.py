@@ -674,5 +674,5 @@ class TestARenewalStillLandsAfterTheSubscriptionExpired:
         with pytest.raises(HTTPException) as raised:
             self.renew(db)
 
-        assert raised.value.status_code == 400
+        assert raised.value.status_code == 404
         assert db.query(SubscriptionUserPurchase).count() == 0
