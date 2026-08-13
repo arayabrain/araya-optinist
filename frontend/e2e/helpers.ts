@@ -596,23 +596,44 @@ const PREMIUM_CONTRACT = JSON.parse(
 // That is a different frontend branch: with no dedicated instance the app keeps
 // its "being prepared" notice up rather than announcing success, and it records
 // the fallback in the routing service.
+// `scaling` mocks the instance-still-starting state: no assignment yet, and the
+// assign call answers the retryable scaling shape the app polls on.
 export async function mockPremiumAssignment(
   page: Page,
-  { shared = false }: { shared?: boolean } = {},
+  {
+    shared = false,
+    scaling = false,
+  }: { shared?: boolean; scaling?: boolean } = {},
 ) {
   const status = PREMIUM_CONTRACT.premium_status
   await page.route("**/users/me/premium/status", (route) =>
     route.fulfill({
       json: {
         ...status,
-        assignment: {
-          ...status.assignment,
-          assigned_at: new Date().toISOString(),
-          is_shared: shared,
-        },
+        assignment: scaling
+          ? null
+          : {
+              ...status.assignment,
+              assigned_at: new Date().toISOString(),
+              is_shared: shared,
+            },
       },
     }),
   )
+  if (scaling) {
+    // The retry branch emits exactly these fields (response_model_exclude_unset
+    // strips the rest), so the mock must not carry instance fields with it
+    await page.route("**/users/me/premium/assign", (route) =>
+      route.fulfill({
+        json: {
+          message: "Premium instance is being prepared",
+          assigned: false,
+          scaling_in_progress: true,
+          retry_after: 30,
+        },
+      }),
+    )
+  }
   await page.route("**/users/me/premium/heartbeat", (route) =>
     route.fulfill({ json: PREMIUM_CONTRACT.premium_heartbeat }),
   )

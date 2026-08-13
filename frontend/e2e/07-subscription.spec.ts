@@ -438,6 +438,96 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     await manageBilling.click()
     expect((await popup).url()).toContain("billing.stripe.com")
   })
+
+  test("SUB-17 - Browser Back out of checkout returns to a working page", async ({
+    page,
+  }) => {
+    // The no-charge and no-webhook halves stay with
+    // test_subscription_state_transitions.py; what the browser can prove is
+    // the gesture: Back lands on /subscription with the plan unchanged, and a
+    // retry mints a fresh session, not a reused one
+    let sessions = 0
+    await page.route(
+      "**/api/subsc/checkout/create-checkout-session",
+      (route) => {
+        sessions++
+        route.fulfill({
+          json: {
+            checkout_url: `https://checkout.stripe.com/c/pay/e2e-${sessions}`,
+          },
+        })
+      },
+    )
+    await page.route("https://checkout.stripe.com/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<h1>stripe</h1>" }),
+    )
+
+    await page.goto("/subscription")
+    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    await expect(upgrade).toBeVisible({ timeout: 30_000 })
+    await upgrade.click()
+    await expect(page).toHaveURL(/checkout\.stripe\.com\/c\/pay\/e2e-1/, {
+      timeout: 30_000,
+    })
+
+    await page.goBack()
+    await expect(page).toHaveURL(/\/subscription/, { timeout: 30_000 })
+    // Still on the Free plan: the Free card reads Current Plan, the Premium
+    // card still offers Upgrade, and clicking it creates a second session
+    // and leaves again without an error
+    await expect(
+      page.locator('button:has-text("Current Plan")').first(),
+    ).toBeVisible({ timeout: 30_000 })
+    await expect(upgrade).toBeVisible({ timeout: 30_000 })
+    await upgrade.click()
+    await expect(page).toHaveURL(/checkout\.stripe\.com\/c\/pay\/e2e-2/, {
+      timeout: 30_000,
+    })
+  })
+
+  test("SUB-18 - A click storm on Upgrade creates one checkout session", async ({
+    page,
+  }) => {
+    let sessions = 0
+    await page.route(
+      "**/api/subsc/checkout/create-checkout-session",
+      async (route) => {
+        sessions++
+        // Held open so every later click lands while the first is in flight
+        await new Promise((resolve) => setTimeout(resolve, 1_000))
+        await route.fulfill({
+          json: { checkout_url: "https://checkout.stripe.com/c/pay/e2e-storm" },
+        })
+      },
+    )
+    await page.route("https://checkout.stripe.com/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<h1>stripe</h1>" }),
+    )
+
+    await page.goto("/subscription")
+    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    await expect(upgrade).toBeVisible({ timeout: 30_000 })
+    await upgrade.click()
+    // The guard itself: the button relabels to Processing and disables for
+    // the whole held round trip
+    await expect(
+      page.getByRole("button", { name: /Processing/ }),
+    ).toBeDisabled()
+    // The rest of the storm fires synchronously in-page, guaranteed to land
+    // while the response is still held (a Playwright click loop can lose that
+    // race to the redirect). A disabled button swallows these clicks.
+    await page.evaluate(() => {
+      const target = Array.from(document.querySelectorAll("button")).find(
+        (button) => /Upgrade|Processing/.test(button.textContent ?? ""),
+      )
+      for (let i = 0; i < 4; i++) target?.click()
+    })
+
+    await expect(page).toHaveURL(/checkout\.stripe\.com\/c\/pay\/e2e-storm/, {
+      timeout: 30_000,
+    })
+    expect(sessions).toBe(1)
+  })
 })
 
 test.describe("Premium plan state", () => {

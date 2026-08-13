@@ -94,7 +94,7 @@ simple `KEY=VALUE` lines). Nothing is ever committed.
 | -------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TEST_USER_EMAIL` / `TEST_USER_PASSWORD`           | for logged-in tests               | free-plan account; without it only public/validation tests run, the rest skip                                                                                                                                                      |
 | `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD`     | optional                          | enables SUB-04/05 (premium subscription state)                                                                                                                                                                                     |
-| `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..23 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
+| `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..25 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
 | `TEST_ADMIN_EMAIL` / `TEST_ADMIN_PASSWORD`         | optional, local stack only        | enables ADMIN-01..22 (Account Manager). Defaults to `e2e_ci_admin@test.com` and the free user's password. The spec registers this account itself and promotes it to admin with one `user_roles` UPDATE, because registration always lands as an operator — use a dedicated address |
 | `BASE_URL`                                         | default `http://localhost:3000`   | frontend under test                                                                                                                                                                                                                |
 | `API_URL`                                          | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls                                                                                                                                                                                               |
@@ -226,7 +226,7 @@ yarn test:e2e:cleanup            # delete the run's e2e-* data, on demand
     input nodes, Tutorial4 the HDF5 and MAT pair; minting either costs a real
     run when the records don't already exist.
 - **The default lane runs no workflows**, which is what keeps it under 15
-  minutes. The trade is that a default run leaves 23 release-sheet rows and 25
+  minutes. The trade is that a default run leaves 23 release-sheet rows and 27
   system-sheet rows unchecked; their e2e citations are marked `@slow` in the
   sheets rather than counted as covered by a green default run.
 
@@ -281,13 +281,13 @@ Understanding these makes failures much easier to read:
 | `02-workspace`     | WS-01..07   | workspace create, list, navigate, storage reload, one refresh per session, delete                           |
 | `03-workflow`      | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tabs                                |
 | `04-record`        | REC-01..09  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                                     |
-| `05-file-handling` | FILE-01..04 | file tree dialog, wildcard filter, check-all, sidebar toggle                                                |
-| `06-dataview`      | DV-01..18   | table, filters (incl. workspace, private and public), sort order, pagination, dialogs, public access, thumbnails, publish, concurrent public reads. DV-01..08 and DV-12..17 are `@slow`; DV-09/10/11/18 need no records and run by default |
-| `07-subscription`  | SUB-01..16  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs |
-| `08-storage`       | STO-01..04  | under-quota login, the over-quota modal, dedicated and shared premium assignment snackbars                  |
+| `05-file-handling` | FILE-01..06 | file tree dialog, wildcard filter, check-all, sidebar toggle, sync progress indicators (file tree and CSV settings) |
+| `06-dataview`      | DV-01..20   | table, filters (incl. workspace, private and public), sort order, pagination, dialogs, public access, thumbnails, publish, concurrent public reads, rapid-toggle last-action-wins and concurrent-publish version integrity. DV-01..08 and DV-12..20 are `@slow` (DV-20 additionally needs the local docker DB and skips elsewhere); DV-09/10/11/18 need no records and run by default |
+| `07-subscription`  | SUB-01..18  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs, browser-Back out of checkout, the upgrade click-storm guard |
+| `08-storage`       | STO-01..09  | under-quota login, the over-quota modal, dedicated / shared / still-scaling premium assignment snackbars, storage-bar colours by threshold, warning-dismissal persistence and its logout reset, the reload button's in-flight state |
 | `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
 | `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
-| `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
+| `11-lifecycle`     | LC-01..25   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle, plus free-logout DB bookkeeping and its re-login reset. Local stack only |
 | `12-admin`         | ADMIN-01..22 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, the create / edit / role-change / demotion happy paths and their validation, the subscription and storage columns against the DB, one real deletion of a throwaway account, and re-registration of the deleted address. All mutations land on disposable per-run accounts. Local stack only |
 | `13-account`       | ACC-01..06  | Account Profile self-service: change-password modal (validation, wrong current password, a real change verified at login) and the inline name edit, on a disposable per-run account. Local stack only |
 | `14-public`        | PUB-01..06  | public-instance behaviour: deep-link SPA shell and client routing, `/health`, chunk-load auto-reload, frontend error reporting, and anonymous public-page loads of published HDF5 / MAT / CSV / TIFF input data. PUB-05/06 are `@slow` (they mint and publish real records) |

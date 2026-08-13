@@ -1,7 +1,10 @@
 import { test, expect, Page } from "@playwright/test"
 
 import {
+  apiHeaders,
   login,
+  localStackSkipReason,
+  runSql,
   skipWithoutCreds,
   freeStorageState,
   gotoDashboard,
@@ -486,6 +489,116 @@ test.describe("Private Dataview @slow", () => {
       timeout: 15_000,
     })
     await expect(publishSwitch(page, "Tutorial1_copy")).not.toBeChecked()
+  })
+
+  test("DV-19 - Rapid publish toggles end on the last action", async ({
+    page,
+  }) => {
+    await ensurePublish(page, "Tutorial1", false)
+
+    // Three clicks with no waits between them. Which flags they send depends
+    // on how fresh the renderer's row state was for each, so the invariant is
+    // asserted against the requests actually observed: the final state must
+    // match the LAST flag that went out, whatever the sequence was.
+    const flags: string[] = []
+    page.on("request", (request) => {
+      const match = request
+        .url()
+        .match(/\/api\/dataview\/publish\/\d+\/(on|off)$/)
+      if (match && request.method() === "POST") flags.push(match[1])
+    })
+    const cell = rowByName(page, "Tutorial1").locator(
+      '[data-field="publish_status"]',
+    )
+    await cell.click()
+    await cell.click()
+    await cell.click()
+
+    await expect.poll(() => flags.length).toBeGreaterThanOrEqual(3)
+    const shouldBePublished = flags[flags.length - 1] === "on"
+
+    const uiState = expect(publishSwitch(page, "Tutorial1"))
+    await (shouldBePublished
+      ? uiState.toBeChecked({ timeout: 15_000 })
+      : uiState.not.toBeChecked({ timeout: 15_000 }))
+    // The server agrees with the UI on the public listing
+    await expect
+      .poll(
+        async () => {
+          const listed = await page.request.get(
+            `${apiUrl()}/api/public/dataview?limit=50&offset=0`,
+          )
+          const { items } = await listed.json()
+          return (items as { name?: string }[]).some(
+            (item) => item.name === "Tutorial1",
+          )
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(shouldBePublished)
+
+    await ensurePublish(page, "Tutorial1", false)
+  })
+
+  test("DV-20 - Concurrent publishes move the version exactly once", async ({
+    page,
+  }) => {
+    // The version column is the optimistic lock the row is about, and only
+    // the docker DB exposes it
+    const local = localStackSkipReason()
+    test.skip(!!local, `row 719 reads experiment_records.version: ${local}`)
+
+    await ensurePublish(page, "Tutorial1", false)
+    const headers = await apiHeaders(page)
+    const listed = await page.request.get(
+      `${apiUrl()}/api/dataview?limit=100&offset=0`,
+      { headers },
+    )
+    const { items } = await listed.json()
+    const record = (items as { id: number; name?: string }[]).find(
+      (item) => item.name === "Tutorial1",
+    )
+    expect(record).toBeTruthy()
+
+    const versionOf = () =>
+      Number(
+        runSql(
+          `SELECT version FROM experiment_records WHERE id = ${record!.id};`,
+        ),
+      )
+    const before = versionOf()
+
+    // Concurrent as issued; the single-worker dev backend serializes them, so
+    // what this pins is the no-double-publish half of the row: the second
+    // request must land in "already published, no change" rather than write
+    // again. The read-overlap retry ladder itself stays with
+    // test_dataview_publish.py::test_publish_concurrent_modification_retry.
+    const [first, second] = await Promise.all([
+      page.request.post(`${apiUrl()}/api/dataview/publish/${record!.id}/on`, {
+        headers,
+      }),
+      page.request.post(`${apiUrl()}/api/dataview/publish/${record!.id}/on`, {
+        headers,
+      }),
+    ])
+    expect(first.status()).toBe(200)
+    expect(second.status()).toBe(200)
+
+    expect(versionOf() - before).toBe(1)
+    expect(
+      runSql(
+        `SELECT publish_status FROM experiment_records
+           WHERE id = ${record!.id};`,
+      ),
+    ).toBe("1")
+
+    // The grid never saw these API posts, so the switch is stale and the UI
+    // helper would no-op; unpublish through the same endpoint instead
+    const unpublished = await page.request.post(
+      `${apiUrl()}/api/dataview/publish/${record!.id}/off`,
+      { headers },
+    )
+    expect(unpublished.ok()).toBe(true)
   })
 })
 
