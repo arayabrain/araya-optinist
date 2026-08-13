@@ -95,7 +95,7 @@ simple `KEY=VALUE` lines). Nothing is ever committed.
 | `TEST_USER_EMAIL` / `TEST_USER_PASSWORD`           | for logged-in tests               | free-plan account; without it only public/validation tests run, the rest skip                                                                                                                                                      |
 | `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD`     | optional                          | enables SUB-04/05 (premium subscription state)                                                                                                                                                                                     |
 | `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional, local stack only        | enables LC-01..23 (subscription/storage warning lifecycle). The spec registers and verifies this account itself on first run and rewrites its plan/expiry/usage in the docker DB — use a dedicated address, never a shared account |
-| `TEST_ADMIN_EMAIL` / `TEST_ADMIN_PASSWORD`         | optional, local stack only        | enables ADMIN-01..12 (Account Manager). Defaults to `e2e_ci_admin@test.com` and the free user's password. The spec registers this account itself and promotes it to admin with one `user_roles` UPDATE, because registration always lands as an operator — use a dedicated address |
+| `TEST_ADMIN_EMAIL` / `TEST_ADMIN_PASSWORD`         | optional, local stack only        | enables ADMIN-01..22 (Account Manager). Defaults to `e2e_ci_admin@test.com` and the free user's password. The spec registers this account itself and promotes it to admin with one `user_roles` UPDATE, because registration always lands as an operator — use a dedicated address |
 | `BASE_URL`                                         | default `http://localhost:3000`   | frontend under test                                                                                                                                                                                                                |
 | `API_URL`                                          | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls                                                                                                                                                                                               |
 | `RUN_SLOW`                                         | optional                          | include the `@slow` workflow-run tests                                                                                                                                                                                             |
@@ -260,12 +260,14 @@ Understanding these makes failures much easier to read:
   rows they need and fail if they never arrive. Where the precondition costs a
   real workflow run, the test is `@slow` rather than silently paying for it on
   every default run.
-- **A local run of `11-lifecycle` or `12-admin` fails rather than skips.** Both
-  groups are the only coverage several LC and ADMIN rows have, so on a local
-  BASE_URL every reason they cannot execute (missing credentials, unreachable
-  docker DB, `SKIP_STORAGE_CHECKS=true`) is a broken environment and is raised as
-  an error naming the rows it leaves unverified. Off a local BASE_URL they still
-  skip, because the DB writes they need are only reachable on the docker stack.
+- **A local run of `11-lifecycle`, `12-admin` or `13-account` fails rather than
+  skips.** These groups are the only coverage several LC, ADMIN and ACC rows
+  have, so on a local BASE_URL every reason they cannot execute (missing
+  credentials, unreachable docker DB, `SKIP_STORAGE_CHECKS=true`) is a broken
+  environment and is raised as an error naming the rows it leaves unverified.
+  Off a local BASE_URL they still skip, because the DB writes they need are only
+  reachable on the docker stack. A deployed smoke run therefore leaves those
+  rows unverified.
 
 ## Test groups
 
@@ -282,7 +284,8 @@ Understanding these makes failures much easier to read:
 | `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
 | `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
 | `11-lifecycle`     | LC-01..23   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle. Local stack only                      |
-| `12-admin`         | ADMIN-01..12 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, and one real deletion of a throwaway account. Local stack only |
+| `12-admin`         | ADMIN-01..22 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, the create / edit / role-change / demotion happy paths and their validation, the subscription and storage columns against the DB, one real deletion of a throwaway account, and re-registration of the deleted address. All mutations land on disposable per-run accounts. Local stack only |
+| `13-account`       | ACC-01..06  | Account Profile self-service: change-password modal (validation, wrong current password, a real change verified at login) and the inline name edit, on a disposable per-run account. Local stack only |
 | `12-cleanup`       | CLEAN-01    | on-demand deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`    |
 
 ## Coverage maps

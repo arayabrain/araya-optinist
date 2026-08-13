@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from firebase_admin.exceptions import FirebaseError
+from firebase_admin.auth import EmailAlreadyExistsError
 from pydantic import ValidationError
 
 from studio.__main_unit__ import app
@@ -898,8 +898,12 @@ class TestCreateUserValidation:
     def test_a_duplicate_email_is_reported_and_writes_nothing(
         self, db, no_firebase, admin_id
     ):
-        no_firebase.create_user.side_effect = FirebaseError(
-            code="EMAIL_ALREADY_EXISTS", message="email already exists"
+        # The real SDK error: typed, code ALREADY_EXISTS. Faking a bespoke code
+        # here is how a 500 on real duplicates went unnoticed.
+        no_firebase.create_user.side_effect = EmailAlreadyExistsError(
+            "The user with the provided email already exists (EMAIL_EXISTS).",
+            None,
+            None,
         )
         before = db.query(UserModel).count()
 
