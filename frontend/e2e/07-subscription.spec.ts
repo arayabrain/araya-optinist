@@ -528,6 +528,49 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     })
     expect(sessions).toBe(1)
   })
+
+  test("SUB-19 - A second tab shows Premium after an upgrade in the first", async ({
+    page,
+  }) => {
+    // Both tabs share one session. Tab B opens on Free before the upgrade;
+    // after Tab A leaves for checkout and the plan flips (mocked at the
+    // context, standing in for the webhook write), a plain refresh in Tab B
+    // must re-read /mgmts with the shared token and render Premium - no
+    // re-login, no stale Free state.
+    const tabB = await page.context().newPage()
+    await tabB.goto("/subscription")
+    await expect(
+      tabB.locator('button:has-text("Upgrade")').first(),
+    ).toBeVisible({ timeout: 30_000 })
+
+    await page.route("**/api/subsc/checkout/create-checkout-session", (route) =>
+      route.fulfill({
+        json: { checkout_url: "https://checkout.stripe.com/c/pay/e2e-tabs" },
+      }),
+    )
+    await page.route("https://checkout.stripe.com/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<h1>stripe</h1>" }),
+    )
+    await page.goto("/subscription")
+    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    await expect(upgrade).toBeVisible({ timeout: 30_000 })
+    await upgrade.click()
+    await expect(page).toHaveURL(/checkout\.stripe\.com/, { timeout: 30_000 })
+
+    let mgmtsReads = 0
+    await page.context().route("**/api/subsc/mgmts", (route) => {
+      mgmtsReads++
+      route.fulfill({ json: PREMIUM_SUBSCRIPTION })
+    })
+
+    await tabB.reload()
+    const status = tabB.getByText(/^Current Plan:/).first()
+    await expect(status).toBeVisible({ timeout: 30_000 })
+    await expect(status).toContainText("Premium")
+    await expect(tabB).not.toHaveURL(/\/login/)
+    expect(mgmtsReads).toBeGreaterThan(0)
+    await tabB.close()
+  })
 })
 
 test.describe("Premium plan state", () => {

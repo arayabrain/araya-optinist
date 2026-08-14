@@ -332,10 +332,12 @@ export async function apiLogin(
   const api = await request.newContext({ baseURL: apiUrl() })
   const res = await api.post("/auth/login", { data: { email, password } })
   if (!res.ok()) {
+    // Read the body before dispose(), which tears the response down with it
+    const body = await res.text()
     await api.dispose()
     throw new Error(
       `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiUrl()}/auth/login ` +
-        `(${res.status()}): ${await res.text()}`,
+        `(${res.status()}): ${body}`,
     )
   }
   const { access_token, ex_token } = await res.json()

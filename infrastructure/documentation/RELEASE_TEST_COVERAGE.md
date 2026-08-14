@@ -286,15 +286,18 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 
 | Sheet row                                 | Subject                                                              | Test                                                                         |
 | ----------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| BT-901                                    | Upgrade transitions to checkout                                      | SUB-13 (session created, browser leaves for the checkout URL, route-mocked; the real Stripe-hosted page stays manual) |
 | BT-906                                    | Prevent direct access to /thanks                                     | SUB-06                                                                       |
 | BT-907                                    | Subscription page updated to Premium                                 | SUB-04 (standing premium account)                                            |
 | BT-908                                    | Account Profile updated to Premium                                   | SUB-05 (standing premium account)                                            |
+| BT-915 / BT-916                           | Invoice page sections; invoice row data                              | SUB-08 / SUB-09 (mocked billing data; a real invoice from a real checkout stays manual) |
 | BT-917                                    | Initiate downgrade                                                   | LC-12 (confirmation modal + 30-day retention notice)                         |
 | BT-918                                    | Cancel downgrade (click No)                                          | LC-12                                                                        |
+| BT-919 / BT-921                           | Confirm cancellation; execute reactivation                           | SUB-11 / SUB-12 (the banner and its clearing, cancel/reactivate APIs mocked; the real Stripe side stays manual) |
 | BT-920                                    | Reactivation option                                                  | LC-13 (banner + Continue Plan visible; clicking it is Stripe-backed, manual) |
 | BT-922                                    | Expired premium user buttons                                         | LC-06 (Upgrade + Manage both visible)                                        |
 | BT-925                                    | Delete test user account                                             | LC-16 (per-run throwaway account; active=0 + deletion records completed)     |
-| BT-901..905, 909..916, 919, 921, 923, 924 | checkout flow, DB/Stripe verification, confirmed cancel/reactivation | manual                                                                       |
+| BT-902..905, 909..914, 923, 924           | checkout flow on the Stripe-hosted page, DB/Stripe verification      | manual                                                                       |
 
 ---
 

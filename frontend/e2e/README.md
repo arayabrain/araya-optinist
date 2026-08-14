@@ -277,13 +277,13 @@ Understanding these makes failures much easier to read:
 
 | Spec file          | IDs         | Covers                                                                                                      |
 | ------------------ | ----------- | ----------------------------------------------------------------------------------------------------------- |
-| `01-auth`          | AUTH-01..16 | login, logout, session persistence, unverified email and resend, header nav, registration validation        |
+| `01-auth`          | AUTH-01..17 | login, logout, session persistence, unverified email and resend, header nav, registration validation, the logged-out guard on protected routes |
 | `02-workspace`     | WS-01..07   | workspace create, list, navigate, storage reload, one refresh per session, delete                           |
 | `03-workflow`      | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tabs                                |
 | `04-record`        | REC-01..09  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                                     |
 | `05-file-handling` | FILE-01..06 | file tree dialog, wildcard filter, check-all, sidebar toggle, sync progress indicators (file tree and CSV settings) |
 | `06-dataview`      | DV-01..20   | table, filters (incl. workspace, private and public), sort order, pagination, dialogs, public access, thumbnails, publish, concurrent public reads, rapid-toggle last-action-wins and concurrent-publish version integrity. DV-01..08 and DV-12..20 are `@slow` (DV-20 additionally needs the local docker DB and skips elsewhere); DV-09/10/11/18 need no records and run by default |
-| `07-subscription`  | SUB-01..18  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs, browser-Back out of checkout, the upgrade click-storm guard |
+| `07-subscription`  | SUB-01..19  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs, browser-Back out of checkout, the upgrade click-storm guard, two-tab premium consistency |
 | `08-storage`       | STO-01..09  | under-quota login, the over-quota modal, dedicated / shared / still-scaling premium assignment snackbars, storage-bar colours by threshold, warning-dismissal persistence and its logout reset, the reload button's in-flight state |
 | `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
 | `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
