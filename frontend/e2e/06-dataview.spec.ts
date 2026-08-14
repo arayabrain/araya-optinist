@@ -526,7 +526,7 @@ test.describe("Private Dataview @slow", () => {
       .poll(
         async () => {
           const listed = await page.request.get(
-            `${apiUrl()}/api/public/dataview?limit=50&offset=0`,
+            `${apiUrl()}/api/public/dataview?limit=50&offset=0&workspace_id=${dataviewId}`,
           )
           const { items } = await listed.json()
           return (items as { name?: string }[]).some(
@@ -551,7 +551,7 @@ test.describe("Private Dataview @slow", () => {
     await ensurePublish(page, "Tutorial1", false)
     const headers = await apiHeaders(page)
     const listed = await page.request.get(
-      `${apiUrl()}/api/dataview?limit=100&offset=0`,
+      `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${dataviewId}`,
       { headers },
     )
     const { items } = await listed.json()

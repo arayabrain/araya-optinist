@@ -5,6 +5,7 @@ import {
   apiUrl,
   ensureCompletedTutorialRun,
   ensurePublishableAccount,
+  ensureWorkspaceId,
   filterWorkspace,
   freeStorageState,
   gotoDashboard,
@@ -143,13 +144,18 @@ test.describe("Frontend error reporting", () => {
 
 type DataviewItem = { id: number; name?: string }
 
+// Scoped to DATA_WS: an unscoped name match could publish (and expose) a
+// same-named record from another workspace on a shared environment
+let dataWsId = 0
+
 async function findRecord(
   page: Page,
   name: string,
 ): Promise<DataviewItem | undefined> {
+  if (!dataWsId) dataWsId = await ensureWorkspaceId(page, DATA_WS)
   const headers = await apiHeaders(page)
   const res = await page.request.get(
-    `${apiUrl()}/api/dataview?limit=100&offset=0`,
+    `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${dataWsId}`,
     { headers },
   )
   if (!res.ok()) {
