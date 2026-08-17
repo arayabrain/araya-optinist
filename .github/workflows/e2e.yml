@@ -154,6 +154,8 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
+        # The report is diagnostic: an artifact-service timeout must not red a run whose tests passed
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
