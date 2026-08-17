@@ -148,6 +148,14 @@ export function confirmDialog(page: Page) {
   return page.locator('[role="dialog"]')
 }
 
+// Hold a request open until the test releases it, so an assertion on an
+// in-flight state never races a wall clock. No Promise.withResolvers on node 20
+export function routeGate() {
+  let release = () => {}
+  const held = new Promise<void>((resolve) => (release = resolve))
+  return { held, release: () => release() }
+}
+
 export function isLocalBaseUrl(): boolean {
   return /localhost|127\.0\.0\.1/.test(
     process.env.BASE_URL || "http://localhost:3000",
@@ -332,10 +340,12 @@ export async function apiLogin(
   const api = await request.newContext({ baseURL: apiUrl() })
   const res = await api.post("/auth/login", { data: { email, password } })
   if (!res.ok()) {
+    // Read the body before dispose(), which tears the response down with it
+    const body = await res.text()
     await api.dispose()
     throw new Error(
       `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiUrl()}/auth/login ` +
-        `(${res.status()}): ${await res.text()}`,
+        `(${res.status()}): ${body}`,
     )
   }
   const { access_token, ex_token } = await res.json()
@@ -365,7 +375,7 @@ export async function deleteE2eWorkspaces(
 
 // The app keeps its tokens in localStorage, so page.request needs them
 // passed explicitly; the page must already be on the app origin
-async function apiHeaders(page: Page) {
+export async function apiHeaders(page: Page) {
   const { token, exToken } = await page.evaluate(() => ({
     token: localStorage.getItem("access_token"),
     exToken: localStorage.getItem("ExToken"),
@@ -547,6 +557,26 @@ export async function ensureCompletedTutorialRun(
   await runTutorial(page, tutorialName, "RUN")
 }
 
+// Publishing requires a cloud bucket on the account (the backend 400s
+// without one). Local-stack users have none, so set a placeholder attribute
+// - the S3-existence check is skipped in local storage mode, and all S3
+// size lookups swallow errors. On deployed envs (no docker) this silently
+// no-ops; users there have real buckets.
+export function ensurePublishableAccount() {
+  const email = process.env.TEST_USER_EMAIL
+  if (!email) return
+  try {
+    runSql(
+      `UPDATE users SET attributes = JSON_SET(
+         COALESCE(attributes, JSON_OBJECT()),
+         '$.remote_bucket_name', 'e2e-local-placeholder')
+       WHERE email = '${sqlLiteral(email)}';`,
+    )
+  } catch {
+    // Not a local stack
+  }
+}
+
 // Shared routing contract fixture: sourcing the mock bodies from it keeps them
 // on the real response shape and guarantees no body carries a user_id.
 const PREMIUM_CONTRACT = JSON.parse(
@@ -576,29 +606,63 @@ const PREMIUM_CONTRACT = JSON.parse(
 // That is a different frontend branch: with no dedicated instance the app keeps
 // its "being prepared" notice up rather than announcing success, and it records
 // the fallback in the routing service.
+// `scaling` mocks the instance-still-starting state: no assignment yet, and the
+// assign call answers the retryable scaling shape the app polls on.
 export async function mockPremiumAssignment(
   page: Page,
-  { shared = false }: { shared?: boolean } = {},
+  {
+    shared = false,
+    scaling = false,
+  }: { shared?: boolean; scaling?: boolean } = {},
 ) {
   const status = PREMIUM_CONTRACT.premium_status
   await page.route("**/users/me/premium/status", (route) =>
     route.fulfill({
       json: {
         ...status,
-        assignment: {
-          ...status.assignment,
-          assigned_at: new Date().toISOString(),
-          is_shared: shared,
-        },
+        assignment: scaling
+          ? null
+          : {
+              ...status.assignment,
+              assigned_at: new Date().toISOString(),
+              is_shared: shared,
+            },
       },
     }),
   )
+  if (scaling) {
+    // The retry branch emits exactly these fields (response_model_exclude_unset
+    // strips the rest), so the mock must not carry instance fields with it
+    await page.route("**/users/me/premium/assign", (route) =>
+      route.fulfill({
+        json: {
+          message: "Premium instance is being prepared",
+          assigned: false,
+          scaling_in_progress: true,
+          retry_after: 30,
+        },
+      }),
+    )
+  }
   await page.route("**/users/me/premium/heartbeat", (route) =>
     route.fulfill({ json: PREMIUM_CONTRACT.premium_heartbeat }),
   )
   await page.route("**/users/me/premium/beacon-token", (route) =>
     route.fulfill({ json: { token: "e2e" } }),
   )
+}
+
+// Server-side filter on the Workspace column, which is only offered where
+// DataviewRecords renders without a workspaceId: /dataview and /public
+export async function filterWorkspace(page: Page, value: string) {
+  const header = page.locator(
+    '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+  )
+  await header.hover()
+  await header.locator(".MuiDataGrid-menuIcon button").click()
+  await page.getByRole("menuitem", { name: /^filter$/i }).click()
+  await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+  await page.keyboard.press("Escape")
 }
 
 export async function createWorkspace(page: Page, name: string) {

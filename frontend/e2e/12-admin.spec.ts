@@ -2,9 +2,11 @@ import { test, expect, Locator, Page, request } from "@playwright/test"
 
 import {
   ADMIN_STORAGE_STATE,
+  activeUserRows,
   adminStorageState,
   apiUrl,
   confirmDialog,
+  deleteFirebaseUser,
   dismissStorageWarning,
   ensureRegisteredUser,
   freeStorageState,
@@ -43,9 +45,13 @@ const ADMIN = {
 
 const ADMIN_ROLE_ID = 1
 
+// For throwaway accounts created through forms: those enforce the frontend
+// character-class rule, so the env-supplied password cannot be trusted there
+const SCRATCH_PASSWORD = "e2ePass!1"
+
 // Sign-off rows that this group alone covers, named in the skip reason so a run
 // that does not execute it says which rows it left unverified
-const UNCOVERED_ELSEWHERE = "ADMIN-01..12"
+const UNCOVERED_ELSEWHERE = "ADMIN-01..22"
 
 // LIMIT 1 because nothing in the schema stops two active rows sharing an
 // address; as a scalar subquery a second one is error 1242, which takes the
@@ -131,6 +137,8 @@ test.describe.serial("Admin Account Manager", () => {
   let skipReason = ""
   let freeUserName = ""
   let freeUserId = ""
+  // Set by ADMIN-08 once its throwaway is really gone; ADMIN-22 re-registers it
+  let deletedEmail = ""
 
   // A local run that cannot execute this group is a broken environment, not a
   // configuration choice: skipping there hands a green summary to a sign-off
@@ -504,6 +512,7 @@ test.describe.serial("Admin Account Manager", () => {
     await expect(page.locator(`[role="row"]:has-text("${email}")`)).toHaveCount(
       0,
     )
+    deletedEmail = email
   })
 
   test("ADMIN-09 - Proxy SignIn asks before switching session, and Cancel keeps it", async ({
@@ -625,6 +634,479 @@ test.describe.serial("Admin Account Manager", () => {
     expect((await relimited).status()).toBe(200)
     await expect(page.getByText(/1 - \d+ of \d+/)).toBeVisible({
       timeout: 15_000,
+    })
+  })
+
+  // The happy paths the Cancel tests above deliberately stop short of. All
+  // mutations land on disposable accounts, never on the shared ones, because a
+  // changed password, email or role would invalidate the saved storage state
+  // for every spec after this one.
+  test.describe("Mutating paths (ADMIN-13..21)", () => {
+    // Tests that rename this account update `mutable`, so later tests and the
+    // cleanup below always address its current identity
+    const mutable = { email: "", name: "", id: "" }
+    const scratch: { email: string; id: string }[] = [mutable]
+
+    test.beforeAll(async () => {
+      if (skipReason) return
+      mutable.email = `e2e_admin_mutable_${Date.now()}@test.com`
+      mutable.name = "E2E Mutable"
+      await ensureRegisteredUser(mutable.email, ADMIN.password, mutable.name)
+      mutable.id = runSql(
+        `SELECT id FROM users WHERE email = '${sqlLiteral(mutable.email)}'
+           AND active = 1 ORDER BY id DESC LIMIT 1;`,
+      )
+      expect(mutable.id).not.toBe("")
+    })
+
+    // Retired the light way: these accounts own nothing, so the full deletion
+    // pipeline (and its extra Firebase sign-in) buys nothing here
+    test.afterAll(() => {
+      if (skipReason) return
+      for (const account of scratch) {
+        if (!account.id) continue
+        deleteFirebaseUser(account.email)
+        runSql(`UPDATE users SET active = 0 WHERE id = ${account.id};`)
+      }
+    })
+
+    async function openAddModal(page: Page) {
+      await gotoAccountManager(page)
+      await page.getByRole("button", { name: "Add" }).click()
+      const modal = confirmDialog(page)
+      await expect(modal.getByText("Add Account")).toBeVisible({
+        timeout: 15_000,
+      })
+      return modal
+    }
+
+    // The role Select opens into a portal, so the option lives on the page
+    // rather than in the dialog
+    async function pickRole(page: Page, modal: Locator, role: string) {
+      await modal.locator(".MuiSelect-select").click()
+      await page.getByRole("option", { name: role }).click()
+    }
+
+    // One contract for both roles: the account exists and is usable, the role
+    // stuck, the free subscription row exists, and nothing touched Stripe
+    async function createAndExpect(
+      page: Page,
+      role: "ADMIN" | "OPERATOR",
+      roleCell: string,
+      roleId: number,
+    ) {
+      const email = `e2e_admin_created_${role.toLowerCase()}_${Date.now()}@test.com`
+      const name = `E2E Created ${role}`
+      const modal = await openAddModal(page)
+      await modal.locator('input[name="name"]').fill(name)
+      await pickRole(page, modal, role)
+      await modal.locator('input[name="email"]').fill(email)
+      await modal.locator('input[name="password"]').fill(SCRATCH_PASSWORD)
+      await modal
+        .locator('input[name="confirmPassword"]')
+        .fill(SCRATCH_PASSWORD)
+      await modal.getByRole("button", { name: "Ok" }).click()
+
+      await expect(
+        page.getByText("Your account has been created successfully!"),
+      ).toBeVisible({ timeout: 30_000 })
+      const row = await rowFor(page, email)
+      await expect(row.getByText(name)).toBeVisible()
+      await expect(row.getByText(roleCell, { exact: true })).toBeVisible()
+
+      const userId = runSql(
+        `SELECT id FROM users WHERE email = '${sqlLiteral(email)}'
+           AND active = 1 ORDER BY id DESC LIMIT 1;`,
+      )
+      expect(userId).not.toBe("")
+      scratch.push({ email, id: userId })
+      expect(
+        runSql(`SELECT role_id FROM user_roles WHERE user_id = ${userId};`),
+      ).toBe(String(roleId))
+      expect(
+        runSql(
+          `SELECT COUNT(*), MIN(plan_id) FROM subscription_users
+             WHERE user_id = ${userId};`,
+        ),
+      ).toMatch(/^1\s+1$/)
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM subscription_user_accounts
+             WHERE user_id = ${userId};`,
+        ),
+      ).toBe("0")
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM subscription_user_purchases
+             WHERE user_id = ${userId};`,
+        ),
+      ).toBe("0")
+
+      // Admin-created accounts arrive verified, so the login must work at once
+      const api = await request.newContext({ baseURL: apiUrl() })
+      try {
+        const loggedIn = await api.post("/auth/login", {
+          data: { email, password: SCRATCH_PASSWORD },
+        })
+        expect(
+          loggedIn.ok(),
+          `created account login ${loggedIn.status()}: ${await loggedIn.text()}`,
+        ).toBeTruthy()
+      } finally {
+        await api.dispose()
+      }
+    }
+
+    test("ADMIN-13 - Add creates an admin account", async ({ page }) => {
+      test.setTimeout(120_000)
+      await createAndExpect(page, "ADMIN", "Admin", ADMIN_ROLE_ID)
+    })
+
+    test("ADMIN-14 - Add creates an operator account", async ({ page }) => {
+      test.setTimeout(120_000)
+      await createAndExpect(page, "OPERATOR", "OPERATOR", 20)
+    })
+
+    test("ADMIN-15 - Add refuses empty fields, a bad email and a weak password", async ({
+      page,
+    }) => {
+      const requests = watchAdminRequests(page)
+      const modal = await openAddModal(page)
+
+      await modal.getByRole("button", { name: "Ok" }).click()
+      // All five fields report at once, and the refused submit keeps the modal up
+      await expect(modal.getByText("This field is required")).toHaveCount(5)
+      await expect(modal.getByText("Add Account")).toBeVisible()
+
+      await modal.locator('input[name="email"]').fill("not-an-email")
+      await expect(modal.getByText("Invalid email format")).toBeVisible()
+
+      await modal.locator('input[name="password"]').fill("abc")
+      await expect(modal.getByText(/at least 6 characters/)).toBeVisible()
+      // Only the frontend rule forbids characters outside the allowed set; the
+      // backend regex would accept this one
+      await modal.locator('input[name="password"]').fill("Passw0rd!?")
+      await expect(
+        modal.getByText("Allowed special characters (!#$%&()*+,-./@_|)"),
+      ).toBeVisible()
+
+      await modal.getByRole("button", { name: "Cancel" }).click()
+      await expect(modal).toBeHidden({ timeout: 15_000 })
+      expectNoAdminWrites(requests)
+    })
+
+    test("ADMIN-16 - A duplicate email is reported and writes nothing", async ({
+      page,
+    }) => {
+      const rowsBefore = runSql(
+        `SELECT COUNT(*) FROM users
+           WHERE email = '${sqlLiteral(FREE_USER.email)}';`,
+      )
+      const modal = await openAddModal(page)
+      await modal.locator('input[name="name"]').fill("Duplicate Address")
+      await pickRole(page, modal, "OPERATOR")
+      await modal.locator('input[name="email"]').fill(FREE_USER.email)
+      await modal.locator('input[name="password"]').fill(SCRATCH_PASSWORD)
+      await modal
+        .locator('input[name="confirmPassword"]')
+        .fill(SCRATCH_PASSWORD)
+
+      const created = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          /\/admin\/users/.test(response.url()),
+      )
+      await modal.getByRole("button", { name: "Ok" }).click()
+      // The server refused it, not just the UI: any snackbar-only assertion
+      // would also pass on a network error
+      expect((await created).status()).toBe(400)
+      await expect(page.getByText("This email already exists!")).toBeVisible({
+        timeout: 15_000,
+      })
+      expect(activeUserRows(FREE_USER.email)).toBe(1)
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM users
+             WHERE email = '${sqlLiteral(FREE_USER.email)}';`,
+        ),
+      ).toBe(rowsBefore)
+    })
+
+    test("ADMIN-17 - Editing name and email saves to the DB and the list", async ({
+      page,
+    }) => {
+      const renamed = "E2E Mutable Renamed"
+      const newEmail = `e2e_admin_mutable_renamed_${Date.now()}@test.com`
+      const row = await rowFor(page, mutable.email)
+      await rowAction(row, "Edit Account").click()
+
+      const modal = confirmDialog(page)
+      await expect(modal.getByText("Edit Account")).toBeVisible({
+        timeout: 15_000,
+      })
+      await modal.locator('input[name="name"]').fill(renamed)
+      await modal.locator('input[name="email"]').fill(newEmail)
+      await modal.getByRole("button", { name: "Ok" }).click()
+
+      await expect(
+        page.getByText("Your account has been edited successfully!"),
+      ).toBeVisible({ timeout: 30_000 })
+      // Track the new identity as soon as the save is announced, or a failed
+      // assertion below would leave the cleanup pointed at the old address
+      mutable.name = renamed
+      mutable.email = newEmail
+
+      const renamedRow = await rowFor(page, newEmail)
+      await expect(renamedRow.getByText(renamed)).toBeVisible()
+      expect(
+        runSql(`SELECT name, email FROM users WHERE id = ${mutable.id};`),
+      ).toBe(`${renamed}\t${newEmail}`)
+    })
+
+    test("ADMIN-18 - Edit refuses an empty name and a bad email, saving nothing", async ({
+      page,
+    }) => {
+      const requests = watchAdminRequests(page)
+      const row = await rowFor(page, mutable.email)
+      await rowAction(row, "Edit Account").click()
+
+      const modal = confirmDialog(page)
+      await expect(modal.getByText("Edit Account")).toBeVisible({
+        timeout: 15_000,
+      })
+      await modal.locator('input[name="name"]').fill("")
+      await modal.getByRole("button", { name: "Ok" }).click()
+      await expect(modal.getByText("This field is required")).toBeVisible()
+      await expect(modal.getByText("Edit Account")).toBeVisible()
+
+      await modal.locator('input[name="name"]').fill("Never Saved")
+      await modal.locator('input[name="email"]').fill("not-an-email")
+      await modal.getByRole("button", { name: "Ok" }).click()
+      await expect(modal.getByText("Invalid email format")).toBeVisible()
+      await expect(modal.getByText("Edit Account")).toBeVisible()
+
+      await modal.getByRole("button", { name: "Cancel" }).click()
+      await expect(modal).toBeHidden({ timeout: 15_000 })
+      expectNoAdminWrites(requests)
+      expect(runSql(`SELECT name FROM users WHERE id = ${mutable.id};`)).toBe(
+        mutable.name,
+      )
+    })
+
+    test("ADMIN-19 - A role change saves, and a demoted admin loses access", async ({
+      page,
+      browser,
+    }) => {
+      // Two modal round-trips plus a real login as the demoted account
+      test.setTimeout(180_000)
+      const saved = page.getByText("Your account has been edited successfully!")
+
+      let row = await rowFor(page, mutable.email)
+      await rowAction(row, "Edit Account").click()
+      let modal = confirmDialog(page)
+      await expect(modal.getByText("Edit Account")).toBeVisible({
+        timeout: 15_000,
+      })
+      await pickRole(page, modal, "ADMIN")
+      await modal.getByRole("button", { name: "Ok" }).click()
+      await expect(saved).toBeVisible({ timeout: 30_000 })
+      expect(
+        runSql(`SELECT role_id FROM user_roles WHERE user_id = ${mutable.id};`),
+      ).toBe("1")
+
+      // Let the first snackbar clear so the second assertion cannot match it
+      await expect(saved).toBeHidden({ timeout: 15_000 })
+
+      row = await rowFor(page, mutable.email)
+      await rowAction(row, "Edit Account").click()
+      modal = confirmDialog(page)
+      await expect(modal.getByText("Edit Account")).toBeVisible({
+        timeout: 15_000,
+      })
+      await pickRole(page, modal, "OPERATOR")
+      await modal.getByRole("button", { name: "Ok" }).click()
+      await expect(saved).toBeVisible({ timeout: 30_000 })
+      expect(
+        runSql(
+          `SELECT COUNT(*), MIN(role_id) FROM user_roles
+             WHERE user_id = ${mutable.id};`,
+        ),
+      ).toMatch(/^1\s+20$/)
+
+      // The demotion holds where it matters: the demoted account's own fresh
+      // session. The empty storageState is load-bearing: a manual newContext
+      // inherits the file-level admin state, and an omitted (or undefined)
+      // value hands this "fresh" session the admin's login.
+      const context = await browser.newContext({
+        baseURL: process.env.BASE_URL || "http://localhost:3000",
+        storageState: { cookies: [], origins: [] },
+      })
+      try {
+        const demoted = await context.newPage()
+        const demotedMe = demoted.waitForResponse(
+          (response) =>
+            response.ok() &&
+            response.request().method() === "GET" &&
+            /\/users\/me$/.test(new URL(response.url()).pathname),
+          { timeout: 60_000 },
+        )
+        await demoted.goto("/login")
+        await demoted.locator('[data-testid="email"]').fill(mutable.email)
+        await demoted.locator('[data-testid="password"]').fill(ADMIN.password)
+        await demoted.locator('[data-testid="button-submit"]').click()
+        await expect(demoted).toHaveURL(/\/dashboard/, { timeout: 60_000 })
+        await dismissStorageWarning(demoted)
+        // The session's own view of the role, not just the admin's
+        expect((await (await demotedMe).json()).role_id).toBe(20)
+
+        // Positive control first: the tiles rendered, so the absence is real
+        await expect(
+          demoted.getByRole("link", { name: "Workspaces" }),
+        ).toBeVisible({ timeout: 15_000 })
+        await expect(
+          demoted.getByRole("link", { name: "Account Manager" }),
+        ).toHaveCount(0)
+
+        await demoted.goto("/account-manager")
+        await expect(demoted).toHaveURL(/\/dashboard/, { timeout: 15_000 })
+        await expect(
+          demoted.getByRole("heading", { name: "Account Manager" }),
+        ).toBeHidden()
+      } finally {
+        await context.close()
+      }
+    })
+
+    test("ADMIN-20 - The Subscription Status column tracks the plan in the DB", async ({
+      page,
+    }) => {
+      // The sheet's own mapping: plan_id 1 = Free, 2 = Premium
+      expect(
+        runSql(
+          `SELECT plan_id FROM subscription_users
+             WHERE user_id = ${mutable.id};`,
+        ),
+      ).toBe("1")
+      let row = await rowFor(page, mutable.email)
+      await expect(row.getByText("Free", { exact: true })).toBeVisible()
+
+      // The extra hour keeps the day count at 30 for the minutes this test runs
+      runSql(
+        `UPDATE subscription_users
+            SET plan_id = 2,
+                expiration = DATE_ADD(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 DAY),
+                                      INTERVAL 1 HOUR)
+          WHERE user_id = ${mutable.id};`,
+      )
+      row = await rowFor(page, mutable.email)
+      await expect(row.getByText("Premium (30 days left)")).toBeVisible()
+    })
+
+    test("ADMIN-21 - The Storage Usage column mirrors the DB after Reload", async ({
+      page,
+    }) => {
+      const row = await rowFor(page, mutable.email)
+      // The account's real state first, so the change below is provably the
+      // Reload's doing and not a leftover render
+      await expect(row.getByText("0 Bytes / 5 GB")).toBeVisible({
+        timeout: 15_000,
+      })
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM user_storage_usage
+             WHERE user_id = ${mutable.id};`,
+        ),
+      ).toBe("1")
+      // 1 GB of a non-default 8 GB quota: a hardcoded default cannot pass, and
+      // 12.5% is exact under both the backend's rounding and the cell's
+      runSql(
+        `UPDATE user_storage_usage
+            SET storage_usage_bytes = 1073741824,
+                storage_quota_bytes = 8589934592
+          WHERE user_id = ${mutable.id};`,
+      )
+
+      const relisted = page.waitForResponse(
+        (response) => /\/admin\/users\?/.test(response.url()) && response.ok(),
+      )
+      await page.getByRole("button", { name: "Reload" }).click()
+      await relisted
+      await expect(row.getByText("1 GB / 8 GB")).toBeVisible({
+        timeout: 15_000,
+      })
+      await expect(row.getByText("12.5% used")).toBeVisible()
+    })
+  })
+
+  // The address ADMIN-08 deleted registers again as a brand-new account. A
+  // clean session, because registration is for the signed-out.
+  test.describe(() => {
+    test.use({ storageState: { cookies: [], origins: [] } })
+
+    test("ADMIN-22 - A deleted address can register again as a new account", async ({
+      page,
+    }) => {
+      test.setTimeout(120_000)
+      expect(
+        deletedEmail,
+        "ADMIN-08 must have deleted its account first",
+      ).not.toBe("")
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM users
+             WHERE email = '${sqlLiteral(deletedEmail)}';`,
+        ),
+      ).toBe("1")
+
+      await page.goto("/register")
+      await expect(page.locator('button:has-text("Sign Up")')).toBeVisible({
+        timeout: 30_000,
+      })
+      await page.locator('input[name="name"]').fill("E2E Deleted Reborn")
+      await page.locator('input[name="email"]').fill(deletedEmail)
+      await page.locator('input[name="password"]').fill(SCRATCH_PASSWORD)
+      await page.locator('input[name="confirmPassword"]').fill(SCRATCH_PASSWORD)
+      const agree = page.locator("#agree-to-terms")
+      if (await agree.count()) await agree.check()
+      await page.locator('button:has-text("Sign Up")').click()
+      await expect(
+        page.locator("text=Registration Almost Complete!"),
+      ).toBeVisible({ timeout: 30_000 })
+
+      // Two rows now share the address: the deleted one stays inactive with
+      // its original uid, the new one is active under a fresh uid
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM users
+             WHERE email = '${sqlLiteral(deletedEmail)}';`,
+        ),
+      ).toBe("2")
+      expect(
+        runSql(
+          `SELECT active FROM users
+             WHERE email = '${sqlLiteral(deletedEmail)}'
+             ORDER BY id ASC LIMIT 1;`,
+        ),
+      ).toBe("0")
+      expect(
+        runSql(
+          `SELECT active FROM users
+             WHERE email = '${sqlLiteral(deletedEmail)}'
+             ORDER BY id DESC LIMIT 1;`,
+        ),
+      ).toBe("1")
+      expect(
+        runSql(
+          `SELECT COUNT(DISTINCT uid) FROM users
+             WHERE email = '${sqlLiteral(deletedEmail)}';`,
+        ),
+      ).toBe("2")
+
+      deleteFirebaseUser(deletedEmail)
+      runSql(
+        `UPDATE users SET active = 0
+           WHERE email = '${sqlLiteral(deletedEmail)}' AND active = 1;`,
+      )
     })
   })
 })

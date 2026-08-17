@@ -4,7 +4,7 @@ from typing import Type, TypeVar
 from fastapi import HTTPException
 from fastapi_pagination.ext.sqlmodel import paginate
 from firebase_admin import auth as firebase_auth
-from firebase_admin.auth import UserNotFoundError, UserRecord
+from firebase_admin.auth import EmailAlreadyExistsError, UserNotFoundError, UserRecord
 from firebase_admin.exceptions import FirebaseError
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -352,9 +352,12 @@ async def create_user(
                 f"Firebase error during user creation: {error_code} - {error_message}"
             )
 
-            # Map Firebase error codes to user-friendly messages
+            # Map Firebase error codes to user-friendly messages. The SDK
+            # raises the typed error with code ALREADY_EXISTS, so the string
+            # checks alone never match a real duplicate.
             if (
-                error_code == "EMAIL_ALREADY_EXISTS"
+                isinstance(firebase_error, EmailAlreadyExistsError)
+                or error_code == "EMAIL_ALREADY_EXISTS"
                 or "email-already-exists" in error_message.lower()
             ):
                 raise HTTPException(

@@ -7,6 +7,7 @@ import {
   openWorkspace,
   ensureTutorialRecords,
   reproduceTutorial,
+  routeGate,
   DATA_WS,
 } from "./helpers"
 
@@ -128,5 +129,71 @@ test.describe("File Select Dialog", () => {
     await expect(openSidebar).toBeVisible()
     await openSidebar.click()
     await expect(openSidebar).toBeHidden()
+  })
+
+  test("FILE-05 - CSV settings show progress until the data displays", async ({
+    page,
+  }) => {
+    // The S3 on-demand download itself needs remote storage no e2e lane runs;
+    // what the browser can prove is the indicator-then-data sequence around
+    // the same fetch, held open until the indicator has been observed
+    await page.locator('[role="dialog"] button:has-text("cancel")').click()
+    await expect(page.locator('[role="dialog"]')).toBeHidden()
+    const csvFetch = routeGate()
+    await page.route("**/api/visualizations/csv/**", async (route) => {
+      await csvFetch.held
+      await route.continue()
+    })
+
+    // Tutorial1's behavior node reads a CSV, so it carries the Settings button
+    await page
+      .locator('.react-flow__node [data-testid="SettingsIcon"]')
+      .first()
+      .click()
+    const dialog = page.locator('[role="dialog"]:has-text("Csv Setting")')
+    await expect(dialog).toBeVisible({ timeout: 30_000 })
+    await expect(
+      dialog.locator(".MuiLinearProgress-root").first(),
+    ).toBeVisible()
+    // The held fetch resolves, the indicator yields to the CSV content
+    csvFetch.release()
+    await expect(dialog.locator(".MuiDataGrid-row").first()).toBeVisible({
+      timeout: 30_000,
+    })
+    await expect(dialog.locator(".MuiLinearProgress-root")).toHaveCount(0)
+  })
+
+  test("FILE-06 - File tree shows a progress bar until the files list", async ({
+    page,
+  }) => {
+    await page.locator('[role="dialog"] button:has-text("cancel")').click()
+    await expect(page.locator('[role="dialog"]')).toBeHidden()
+    // Only the merged-tree fetch drives isLoading; a broad /files glob would
+    // also hold shape/sync/upload requests open
+    const treeFetch = routeGate()
+    await page.route("**/files/*/merged*", async (route) => {
+      await treeFetch.held
+      await route.continue()
+    })
+    // A reload clears the cached tree (reopening the dialog alone does not
+    // refetch) and resets the flowchart to its default image node, which
+    // carries the same select button and lists the same workspace files
+    await page.reload()
+    const selectFile = page
+      .locator(
+        '.react-flow__node-ImageFileNode button:has([data-testid="ChecklistRtlIcon"])',
+      )
+      .first()
+    await expect(selectFile).toBeVisible({ timeout: 30_000 })
+    await selectFile.click()
+
+    const dialog = page.locator('[role="dialog"]')
+    await expect(dialog).toBeVisible({ timeout: 15_000 })
+    await expect(dialog.locator(".MuiLinearProgress-root")).toBeVisible()
+    treeFetch.release()
+    await expect(dialog.locator('[role="treeitem"]').first()).toBeVisible({
+      timeout: 30_000,
+    })
+    await expect(dialog.locator(".MuiLinearProgress-root")).toBeHidden()
   })
 })

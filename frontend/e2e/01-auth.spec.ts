@@ -302,3 +302,25 @@ test.describe("Header on auth pages", () => {
     ).toHaveCount(1)
   })
 })
+
+// This project carries no storage state, so the browser holds no token. The
+// guard (Layout's checkAuth) must send a protected deep link to /login without
+// rendering the page behind it. Needs no credentials, so it always runs.
+test.describe("Auth guard", () => {
+  test("AUTH-17 - Protected routes without a session redirect to login", async ({
+    page,
+  }) => {
+    for (const path of ["/subscription", "/subscription/manage"]) {
+      await page.goto(path)
+      await expect(page, `${path} must redirect to /login`).toHaveURL(
+        /\/login/,
+        { timeout: 15_000 },
+      )
+      await expect(page.locator('[data-testid="email"]')).toBeVisible({
+        timeout: 15_000,
+      })
+      // No subscription content may have rendered behind the redirect
+      await expect(page.getByText(/^Current Plan/)).toHaveCount(0)
+    }
+  })
+})

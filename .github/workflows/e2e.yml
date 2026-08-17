@@ -46,9 +46,10 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    # RUN_SLOW adds the three tutorial runs (5-10 min each) plus the dataview
-    # mint, and CI retries twice. Playwright's own globalTimeout ends the run
-    # before this fires, so the skip summary and artifacts still get written.
+    # RUN_SLOW adds the four tutorial runs (5-10 min each) plus the dataview
+    # and public-page mints, and CI retries twice. Playwright's own
+    # globalTimeout ends the run before this fires, so the skip summary and
+    # artifacts still get written.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +116,10 @@ jobs:
           # workflow, and therefore an enabled NWB download button. Without this
           # REC-07 skips every week and its payload assertion never executes.
           RUN_SLOW: 1
+          # CLEAN-01 is a mapped row, so a permanent skip leaves it unverified
+          # on the sign-off sheet. 99-cleanup sorts last, and the runner's stack
+          # is thrown away afterwards, so there is nothing to inspect.
+          RUN_CLEANUP: 1
           TEST_USER_EMAIL: ${{ secrets.E2E_TEST_USER_EMAIL }}
           TEST_USER_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
           TEST_PREMIUM_EMAIL: ${{ secrets.E2E_TEST_PREMIUM_EMAIL }}
@@ -153,6 +158,8 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
+        # The report is diagnostic: an artifact-service timeout must not red a run whose tests passed
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report

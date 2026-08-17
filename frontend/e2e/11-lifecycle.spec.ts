@@ -239,10 +239,15 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
 
   test.afterAll(() => {
     if (skipReason) return
-    // Leave the user as a clean free account for the next run
+    // Leave the user as a clean free account for the next run, without the
+    // fake instance rows LC-24/25 seeded
     removeBallast()
     setPlan(1, "INTERVAL 0 DAY")
     setStorage(0, FREE_QUOTA)
+    runSql(
+      `DELETE FROM free_user_assignments WHERE user_id = ${userId};
+       DELETE FROM instance_usage_log WHERE user_id = ${userId};`,
+    )
   })
 
   test("LC-01 - Free baseline: no warning, account shows Free", async ({
@@ -874,5 +879,84 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await logout(page)
     await expect.poll(async () => (await routingKeys()).routingId).toBe(null)
     expect((await routingKeys()).assigned).not.toBe("true")
+  })
+
+  // The local stack never creates these rows on its own (the activity
+  // middleware refuses instance_id "local"), so the assignment a deployed
+  // login would have made is seeded directly; the endpoints under test only
+  // ever UPDATE them.
+  function seedFreeAssignment(loggedOut: boolean) {
+    const stamp = loggedOut ? "UTC_TIMESTAMP()" : "NULL"
+    runSql(
+      `DELETE FROM free_user_assignments WHERE user_id = ${userId};
+       DELETE FROM instance_usage_log WHERE user_id = ${userId};
+       INSERT INTO free_user_assignments
+         (user_id, instance_id, assigned_at, last_activity, logged_out_at)
+         VALUES (${userId}, 'i-e2e', UTC_TIMESTAMP(), UTC_TIMESTAMP(), ${stamp});
+       INSERT INTO instance_usage_log
+         (user_id, instance_id, tier, started_at, ended_at)
+         VALUES (${userId}, 'i-e2e', 'free', UTC_TIMESTAMP(), ${stamp});`,
+    )
+  }
+
+  test("LC-24 - Free logout stamps the assignment and closes the usage log", async ({
+    page,
+  }) => {
+    setPlan(1, "INTERVAL 1 MONTH")
+    seedFreeAssignment(false)
+    await login(page, USER.email, USER.password)
+
+    const freeLogout = page.waitForResponse(
+      (r) =>
+        r.url().includes("/users/me/free/logout") &&
+        r.request().method() === "POST",
+      { timeout: 30_000 },
+    )
+    await logout(page)
+    const response = await freeLogout
+    expect(response.status()).toBe(200)
+    expect((await response.json()).logged_out).toBe(true)
+
+    // logout() asserted the redirect; the session tokens must be gone too
+    expect(
+      await page.evaluate(() => localStorage.getItem("access_token")),
+    ).toBeNull()
+
+    expect(
+      runSql(
+        `SELECT logged_out_at IS NOT NULL FROM free_user_assignments
+           WHERE user_id = ${userId};`,
+      ),
+    ).toBe("1")
+    expect(
+      runSql(
+        `SELECT ended_at IS NOT NULL FROM instance_usage_log
+           WHERE user_id = ${userId} AND tier = 'free'
+           ORDER BY id DESC LIMIT 1;`,
+      ),
+    ).toBe("1")
+  })
+
+  test("LC-25 - Re-login during the grace period clears logged_out_at", async ({
+    page,
+  }) => {
+    setPlan(1, "INTERVAL 1 MONTH")
+    seedFreeAssignment(true)
+    await login(page, USER.email, USER.password)
+
+    // The auth path cleared the stamp, so the cleanup job's
+    // "logged_out_at IS NOT NULL" filter no longer selects this user
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM free_user_assignments
+           WHERE user_id = ${userId} AND logged_out_at IS NOT NULL;`,
+      ),
+    ).toBe("0")
+    // Cleared, not deleted: the assignment row itself survives
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM free_user_assignments WHERE user_id = ${userId};`,
+      ),
+    ).toBe("1")
   })
 })

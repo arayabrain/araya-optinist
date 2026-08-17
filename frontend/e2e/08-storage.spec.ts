@@ -3,13 +3,20 @@ import { test, expect, Page } from "@playwright/test"
 import {
   FREE_USER,
   PREMIUM_USER,
+  freeStorageState,
+  goToWorkspaces,
+  gotoDashboard,
   login,
+  logout,
   mockPremiumAssignment,
+  routeGate,
   skipWithoutCreds,
 } from "./helpers"
 
 // Storage warnings on login (manual storage reload is covered by WS-04;
-// over-limit/threshold states by 11-lifecycle on a local stack).
+// over-limit/threshold states by 11-lifecycle on a local stack), plus the
+// storage bar colours, warning-dismissal persistence, the reload button's
+// in-flight state, and the premium scaling notice.
 // Left manual: S3 verification, auto-refresh network tracing.
 
 test("STO-01 - Free user under limit logs in without storage warning", async ({
@@ -126,4 +133,174 @@ test("STO-03 - Premium login on shared resources records the fallback", async ({
   // guards; give the success effect a chance to fire before ruling it out
   await page.waitForTimeout(1_000)
   await expect(page.locator(`text=${DEDICATED_SNACKBAR}`)).toHaveCount(0)
+})
+
+test("STO-09 - Scaling in progress keeps the preparing notice up", async ({
+  page,
+}) => {
+  skipWithoutCreds(PREMIUM_USER, "TEST_PREMIUM_EMAIL/TEST_PREMIUM_PASSWORD")
+
+  // No assignment yet and a retryable assign response: the instance is still
+  // being started, which is neither the dedicated nor the shared-fallback state
+  await mockPremiumAssignment(page, { scaling: true })
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+
+  await expect(page.locator(`text=${PREPARING_SNACKBAR}`).first()).toBeVisible({
+    timeout: 30_000,
+  })
+  // Scaling must not announce an instance or record any routing verdict, and
+  // the notice must persist rather than flash
+  await page.waitForTimeout(1_000)
+  await expect(page.locator(`text=${PREPARING_SNACKBAR}`).first()).toBeVisible()
+  await expect(page.locator(`text=${DEDICATED_SNACKBAR}`)).toHaveCount(0)
+  expect(await premiumShared(page)).toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// Storage panel detail on /workspaces: bar colours, warning dismissal, and
+// the reload button's in-flight state. These reuse the saved session - none
+// of them is about login itself.
+// ---------------------------------------------------------------------------
+
+const usageAt = (percent: number) => ({
+  storage_usage_bytes: 1073741824,
+  storage_usage_formatted: "1.0 GB",
+  storage_quota_bytes: 5368709120,
+  storage_quota_formatted: "5.0 GB",
+  storage_usage_percent: percent,
+  alert_level: null,
+  thresholds: { critical: 100, danger: 90 },
+})
+
+test.describe("Storage panel detail", () => {
+  test.use({ storageState: freeStorageState() })
+
+  test("STO-05 - Storage bar colour tracks the usage thresholds", async ({
+    page,
+  }) => {
+    skipWithoutCreds()
+    let percent = 0
+    await page.route("**/storage-limit-alerts/usage", (route) =>
+      route.fulfill({ json: usageAt(percent) }),
+    )
+
+    // StorageUsage.test.tsx reads its expected colours from theme.palette, so
+    // a wrong palette cannot fail it; these literals are what the rows pin.
+    // Theme.ts sets no palette, so they are MUI's stock primary/warning/error
+    // mains and move only on a MUI major. 90 and 100 sit on the >= thresholds.
+    const cases: [number, string][] = [
+      [50, "rgb(25, 118, 210)"], // primary below 90
+      [90, "rgb(237, 108, 2)"], // warning from exactly 90
+      [95, "rgb(237, 108, 2)"],
+      [100, "rgb(211, 47, 47)"], // error from exactly 100
+      [105, "rgb(211, 47, 47)"],
+    ]
+    for (const [level, colour] of cases) {
+      percent = level
+      await page.goto("/workspaces")
+      // The printed percent stays real even where the bar itself caps
+      const readout = page.getByText(`${level.toFixed(1)}%`)
+      await expect(readout).toBeVisible({ timeout: 15_000 })
+      const track = readout.locator(
+        "xpath=preceding-sibling::span[contains(@class,'MuiLinearProgress-root')]",
+      )
+      await expect(track.locator("span").first()).toHaveCSS(
+        "background-color",
+        colour,
+      )
+      // The bar's fill value caps at 100
+      await expect(track).toHaveAttribute(
+        "aria-valuenow",
+        String(Math.min(level, 100)),
+      )
+    }
+  })
+
+  test("STO-06 - A dismissed storage warning stays dismissed on later pages", async ({
+    page,
+  }) => {
+    skipWithoutCreds()
+    await page.route("**/storage-limit-alerts/limit-warning", (route) =>
+      route.fulfill({ json: OVER_QUOTA_ALERT }),
+    )
+    await page.goto("/dashboard")
+    const modal = page.locator('[role="dialog"]')
+    await expect(
+      modal.getByText("Storage Limit Exceeded", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    await modal.getByRole("button", { name: "Handle later" }).click()
+    await expect(modal).toBeHidden()
+
+    // Full page loads remount the alert, so staying hidden proves the
+    // dismissal was persisted rather than held in component state. The
+    // absence is read only after the alert fetch resolved - before it, a
+    // broken dismissal also shows nothing (the STO-01 hazard).
+    const pages: [string, ReturnType<Page["locator"]>][] = [
+      ["/workspaces", page.locator('button:has-text("Reload")')],
+      ["/dashboard", page.getByRole("link", { name: "Workspaces" })],
+    ]
+    for (const [path, pin] of pages) {
+      const alertChecked = page.waitForResponse(
+        (r) => r.url().endsWith("/storage-limit-alerts/limit-warning"),
+        { timeout: 30_000 },
+      )
+      await page.goto(path)
+      await alertChecked
+      await expect(pin).toBeVisible({ timeout: 30_000 })
+      await expect(page.getByText("Storage Limit Exceeded")).toHaveCount(0)
+    }
+  })
+
+  test("STO-07 - Logout clears the dismissal so the warning returns", async ({
+    page,
+  }) => {
+    skipWithoutCreds()
+    await page.route("**/storage-limit-alerts/limit-warning", (route) =>
+      route.fulfill({ json: OVER_QUOTA_ALERT }),
+    )
+    await page.goto("/dashboard")
+    const modal = page.locator('[role="dialog"]')
+    await expect(
+      modal.getByText("Storage Limit Exceeded", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    await modal.getByRole("button", { name: "Handle later" }).click()
+    await expect(modal).toBeHidden()
+
+    // Persisted before the logout, cleared by it (the user slice's logout
+    // reducer): without the before-state the after-state proves nothing
+    expect(
+      await page.evaluate(() => localStorage.getItem("dismissedAlerts")),
+    ).not.toBeNull()
+    await logout(page)
+    expect(
+      await page.evaluate(() => localStorage.getItem("dismissedAlerts")),
+    ).toBeNull()
+    await login(page, FREE_USER.email, FREE_USER.password, false)
+    await expect(
+      modal.getByText("Storage Limit Exceeded", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+  })
+
+  test("STO-08 - Reload is disabled with a spinner while refreshing", async ({
+    page,
+  }) => {
+    skipWithoutCreds()
+    // Hold the refresh open until the in-flight state has been observed
+    const refresh = routeGate()
+    await page.route("**/workspaces/refresh-storage", async (route) => {
+      await refresh.held
+      await route.continue()
+    })
+    await gotoDashboard(page)
+    await goToWorkspaces(page)
+
+    const reload = page.locator('button:has-text("Reload")')
+    await expect(reload).toBeEnabled({ timeout: 15_000 })
+    await reload.click()
+    await expect(reload).toBeDisabled()
+    await expect(reload.locator(".MuiCircularProgress-root")).toBeVisible()
+    // Completes and re-arms
+    refresh.release()
+    await expect(reload).toBeEnabled({ timeout: 30_000 })
+  })
 })
