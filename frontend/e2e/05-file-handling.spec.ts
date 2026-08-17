@@ -7,6 +7,7 @@ import {
   openWorkspace,
   ensureTutorialRecords,
   reproduceTutorial,
+  routeGate,
   DATA_WS,
 } from "./helpers"
 
@@ -135,11 +136,12 @@ test.describe("File Select Dialog", () => {
   }) => {
     // The S3 on-demand download itself needs remote storage no e2e lane runs;
     // what the browser can prove is the indicator-then-data sequence around
-    // the same fetch, held open long enough to observe
+    // the same fetch, held open until the indicator has been observed
     await page.locator('[role="dialog"] button:has-text("cancel")').click()
     await expect(page.locator('[role="dialog"]')).toBeHidden()
+    const csvFetch = routeGate()
     await page.route("**/api/visualizations/csv/**", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      await csvFetch.held
       await route.continue()
     })
 
@@ -154,6 +156,7 @@ test.describe("File Select Dialog", () => {
       dialog.locator(".MuiLinearProgress-root").first(),
     ).toBeVisible()
     // The held fetch resolves, the indicator yields to the CSV content
+    csvFetch.release()
     await expect(dialog.locator(".MuiDataGrid-row").first()).toBeVisible({
       timeout: 30_000,
     })
@@ -167,8 +170,9 @@ test.describe("File Select Dialog", () => {
     await expect(page.locator('[role="dialog"]')).toBeHidden()
     // Only the merged-tree fetch drives isLoading; a broad /files glob would
     // also hold shape/sync/upload requests open
+    const treeFetch = routeGate()
     await page.route("**/files/*/merged*", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      await treeFetch.held
       await route.continue()
     })
     // A reload clears the cached tree (reopening the dialog alone does not
@@ -186,6 +190,7 @@ test.describe("File Select Dialog", () => {
     const dialog = page.locator('[role="dialog"]')
     await expect(dialog).toBeVisible({ timeout: 15_000 })
     await expect(dialog.locator(".MuiLinearProgress-root")).toBeVisible()
+    treeFetch.release()
     await expect(dialog.locator('[role="treeitem"]').first()).toBeVisible({
       timeout: 30_000,
     })

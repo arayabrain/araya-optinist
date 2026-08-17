@@ -148,6 +148,14 @@ export function confirmDialog(page: Page) {
   return page.locator('[role="dialog"]')
 }
 
+// Hold a request open until the test releases it, so an assertion on an
+// in-flight state never races a wall clock. No Promise.withResolvers on node 20
+export function routeGate() {
+  let release = () => {}
+  const held = new Promise<void>((resolve) => (release = resolve))
+  return { held, release: () => release() }
+}
+
 export function isLocalBaseUrl(): boolean {
   return /localhost|127\.0\.0\.1/.test(
     process.env.BASE_URL || "http://localhost:3000",

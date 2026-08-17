@@ -9,6 +9,7 @@ import {
   login,
   logout,
   mockPremiumAssignment,
+  routeGate,
   skipWithoutCreds,
 } from "./helpers"
 
@@ -185,7 +186,8 @@ test.describe("Storage panel detail", () => {
 
     // StorageUsage.test.tsx reads its expected colours from theme.palette, so
     // a wrong palette cannot fail it; these literals are what the rows pin.
-    // 90 and 100 sit exactly on the >= thresholds.
+    // Theme.ts sets no palette, so they are MUI's stock primary/warning/error
+    // mains and move only on a MUI major. 90 and 100 sit on the >= thresholds.
     const cases: [number, string][] = [
       [50, "rgb(25, 118, 210)"], // primary below 90
       [90, "rgb(237, 108, 2)"], // warning from exactly 90
@@ -283,9 +285,10 @@ test.describe("Storage panel detail", () => {
     page,
   }) => {
     skipWithoutCreds()
-    // Hold the refresh open long enough to observe the in-flight state
+    // Hold the refresh open until the in-flight state has been observed
+    const refresh = routeGate()
     await page.route("**/workspaces/refresh-storage", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      await refresh.held
       await route.continue()
     })
     await gotoDashboard(page)
@@ -297,6 +300,7 @@ test.describe("Storage panel detail", () => {
     await expect(reload).toBeDisabled()
     await expect(reload.locator(".MuiCircularProgress-root")).toBeVisible()
     // Completes and re-arms
+    refresh.release()
     await expect(reload).toBeEnabled({ timeout: 30_000 })
   })
 })

@@ -73,7 +73,7 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:report": "playwright show-report",
-    "test:e2e:cleanup": "cross-env RUN_CLEANUP=1 playwright test e2e/12-cleanup.spec.ts",
+    "test:e2e:cleanup": "cross-env RUN_CLEANUP=1 playwright test e2e/99-cleanup.spec.ts",
     "eject": "react-scripts eject",
     "format": "prettier --write .",
     "prepare": "cd .. && husky install frontend/.husky && chmod ug+x frontend/.husky/pre-commit"

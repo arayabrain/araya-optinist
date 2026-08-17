@@ -5,6 +5,7 @@ import {
   skipWithoutCreds,
   freeStorageState,
   gotoDashboard,
+  routeGate,
   PREMIUM_USER,
 } from "./helpers"
 
@@ -489,12 +490,13 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     page,
   }) => {
     let sessions = 0
+    const checkout = routeGate()
     await page.route(
       "**/api/subsc/checkout/create-checkout-session",
       async (route) => {
         sessions++
         // Held open so every later click lands while the first is in flight
-        await new Promise((resolve) => setTimeout(resolve, 1_000))
+        await checkout.held
         await route.fulfill({
           json: { checkout_url: "https://checkout.stripe.com/c/pay/e2e-storm" },
         })
@@ -522,6 +524,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
       )
       for (let i = 0; i < 4; i++) target?.click()
     })
+    checkout.release()
 
     await expect(page).toHaveURL(/checkout\.stripe\.com\/c\/pay\/e2e-storm/, {
       timeout: 30_000,

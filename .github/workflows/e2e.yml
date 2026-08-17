@@ -116,6 +116,10 @@ jobs:
           # workflow, and therefore an enabled NWB download button. Without this
           # REC-07 skips every week and its payload assertion never executes.
           RUN_SLOW: 1
+          # CLEAN-01 is a mapped row, so a permanent skip leaves it unverified
+          # on the sign-off sheet. 99-cleanup sorts last, and the runner's stack
+          # is thrown away afterwards, so there is nothing to inspect.
+          RUN_CLEANUP: 1
           TEST_USER_EMAIL: ${{ secrets.E2E_TEST_USER_EMAIL }}
           TEST_USER_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
           TEST_PREMIUM_EMAIL: ${{ secrets.E2E_TEST_PREMIUM_EMAIL }}

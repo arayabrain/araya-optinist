@@ -244,8 +244,11 @@ Understanding these makes failures much easier to read:
   `e2e-*` workspaces via the API so leftovers can't push rows out of the
   virtualized workspace grid. There is deliberately no teardown: a run's data
   survives until the next run, so it can be inspected. To drop it sooner, run
-  the cleanup group (`12-cleanup`) — same `deleteE2eWorkspaces` helper, opt-in
+  the cleanup group (`99-cleanup`) — same `deleteE2eWorkspaces` helper, opt-in
   via `RUN_CLEANUP` so an ordinary run can never delete data mid-inspection.
+  The `99-` prefix is load-bearing: workers are serial and files run in name
+  order, so any earlier prefix deletes `e2e-data` out from under the groups
+  that follow it.
   `DELETE /workspace/{id}` removes the workspace's input and output data with
   it, in S3 too when remote storage is on.
 - **API-based setup, UI-based assertions** (`helpers.ts`): specs that need a
@@ -291,7 +294,7 @@ Understanding these makes failures much easier to read:
 | `12-admin`         | ADMIN-01..22 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, the create / edit / role-change / demotion happy paths and their validation, the subscription and storage columns against the DB, one real deletion of a throwaway account, and re-registration of the deleted address. All mutations land on disposable per-run accounts. Local stack only |
 | `13-account`       | ACC-01..06  | Account Profile self-service: change-password modal (validation, wrong current password, a real change verified at login) and the inline name edit, on a disposable per-run account. Local stack only |
 | `14-public`        | PUB-01..06  | public-instance behaviour: deep-link SPA shell and client routing, `/health`, chunk-load auto-reload, frontend error reporting, and anonymous public-page loads of published HDF5 / MAT / CSV / TIFF input data. PUB-05/06 are `@slow` (they mint and publish real records) |
-| `12-cleanup`       | CLEAN-01    | on-demand deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`    |
+| `99-cleanup`       | CLEAN-01    | deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`; runs last so the groups above keep their fixtures |
 
 ## Coverage maps
 
