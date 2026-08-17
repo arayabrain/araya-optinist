@@ -11,6 +11,7 @@ import {
   gotoDashboard,
   openWorkspace,
   skipWithoutCreds,
+  RUN_TEST_TIMEOUT_MS,
   DATA_WS,
 } from "./helpers"
 
@@ -187,8 +188,8 @@ async function setPublished(page: Page, name: string, on: boolean) {
 // assertions stay on the public UI
 async function ensurePublishedRecord(page: Page, tutorialName: string) {
   if (!(await findRecord(page, tutorialName))) {
-    // Minting costs a real workflow run (see runTutorial's 840s wait)
-    test.setTimeout(900_000)
+    // Minting costs a real workflow run (see RUN_TIMEOUT_MS)
+    test.setTimeout(RUN_TEST_TIMEOUT_MS)
     await openWorkspace(page, DATA_WS)
     await ensureCompletedTutorialRun(page, DATA_WS, tutorialName)
     // The record registers slightly after "Workflow finished"

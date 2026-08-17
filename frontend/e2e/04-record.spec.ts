@@ -9,6 +9,7 @@ import {
   openWorkspace,
   ensureCompletedTutorialRun,
   ensureTutorialRecords,
+  RUN_TEST_TIMEOUT_MS,
   DATA_WS,
 } from "./helpers"
 
@@ -139,7 +140,7 @@ test.describe("Record Management", () => {
     // workspace at the start of every run, so the run is this test's
     // precondition. It used to skip on the resulting 404; now it runs the
     // workflow, which is what puts it in the @slow lane.
-    test.setTimeout(900_000)
+    test.setTimeout(RUN_TEST_TIMEOUT_MS)
     await ensureCompletedTutorialRun(page, DATA_WS)
 
     const nwbButton = page

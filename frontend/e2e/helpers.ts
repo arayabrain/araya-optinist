@@ -518,7 +518,28 @@ async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
     await dialog.locator("input").fill("e2e-runall")
     await dialog.getByRole("button", { name: "Run", exact: true }).click()
   }
-  await runStarted
+  // Both /run/{ws} and /run/{ws}/{uid} answer the run's uid as a bare string
+  const response = await runStarted
+  return {
+    workspaceId: response.url().match(/\/run\/(\d+)/)?.[1] ?? "",
+    uid: String(await response.json()),
+  }
+}
+
+// experiment.yaml's own success flag, which finalization writes: "running"
+// until the pipeline settles, then "success" or "error".
+async function recordedRunStatus(
+  page: Page,
+  workspaceId: string,
+  uid: string,
+): Promise<string> {
+  const headers = await apiHeaders(page)
+  const res = await page.request.get(`${apiUrl()}/experiments/${workspaceId}`, {
+    headers,
+  })
+  if (!res.ok()) return `GET /experiments/${workspaceId} -> ${res.status()}`
+  const experiments = (await res.json()) as Record<string, { success?: string }>
+  return experiments?.[uid]?.success ?? "absent"
 }
 
 // Reproduce a tutorial and run it to completion. Loading an already-finished
@@ -526,19 +547,51 @@ async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
 // before waiting for the real one. "RUN ALL" = fresh uid, full pipeline
 // compute (5-10 min, @slow); "RUN" = by-uid rerun, which snakemake treats
 // as already complete for the imported tutorials (seconds).
+// A real snakemake run. The ceiling is environment-dependent: the docker stack
+// CI uses clears a tutorial well inside the default, a deployed environment can
+// take far longer, so RUN_TIMEOUT_MS raises it without a code edit.
+export const RUN_TIMEOUT_MS = Number(process.env.RUN_TIMEOUT_MS ?? 840_000)
+// After the snackbar, how long the recorded result may take to settle
+const RECORD_TIMEOUT_MS = 300_000
+// The surrounding reproduce/start steps need headroom above the run itself
+export const RUN_TEST_TIMEOUT_MS = RUN_TIMEOUT_MS + RECORD_TIMEOUT_MS + 60_000
+
 export async function runTutorial(
   page: Page,
   tutorialName: string,
   mode: "RUN" | "RUN ALL" = "RUN ALL",
 ) {
   await reproduceTutorial(page, tutorialName)
-  await startRun(page, mode)
-  await expect(page.locator("text=Workflow finished")).toBeHidden({
-    timeout: 30_000,
+  const { workspaceId, uid } = await startRun(page, mode)
+  const finished = page.locator("text=Workflow finished")
+  const aborted = page.locator("text=Workflow aborted")
+  await expect(finished).toBeHidden({ timeout: 30_000 })
+  // Race the two terminal snackbars: waiting on success alone burns the whole
+  // ceiling on a run that already died, and reports it as a plain timeout
+  await expect(finished.or(aborted).first()).toBeVisible({
+    timeout: RUN_TIMEOUT_MS,
   })
-  await expect(page.locator("text=Workflow finished")).toBeVisible({
-    timeout: 840_000,
-  })
+  await expect(
+    aborted,
+    `${tutorialName} aborted instead of finishing`,
+  ).toHaveCount(0)
+
+  // The snackbar alone is not proof. Where the workflow PID file is not visible
+  // to the API process, unrun nodes are reported errored, no node is left
+  // pending, and the frontend calls that FINISHED seconds into the run.
+  let recorded = ""
+  await expect
+    .poll(
+      async () => (recorded = await recordedRunStatus(page, workspaceId, uid)),
+      {
+        timeout: RECORD_TIMEOUT_MS,
+        message: `${tutorialName} (${uid}) never settled in experiment.yaml`,
+      },
+    )
+    .toMatch(/^(success|error)$/)
+  expect(recorded, `${tutorialName} recorded "${recorded}", not success`).toBe(
+    "success",
+  )
 }
 
 // Mints the success record + thumbnails the dataview needs.
@@ -546,7 +599,7 @@ export async function runTutorial(
 // This is NOT a no-op: `git ls-files sample_data/tutorial/output` is 12 files,
 // all of them experiment/snakemake/workflow YAML. No node output directories, no
 // JSON, no NWB ship at all, and global setup deletes the e2e-* workspace each
-// run, so snakemake recomputes from scratch. Budget a real run (see the 840s
+// run, so snakemake recomputes from scratch. Budget a real run (see RUN_TIMEOUT_MS
 // inner wait in runTutorial), not the ~15s a rerun-by-uid would take.
 export async function ensureCompletedTutorialRun(
   page: Page,
