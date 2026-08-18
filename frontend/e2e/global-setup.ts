@@ -7,7 +7,7 @@ import {
   apiLogin,
   authHeaders,
   deleteE2eWorkspaces,
-  localStackSkipReason,
+  isLocalBaseUrl,
   sweepE2eFirebaseUsers,
 } from "./helpers"
 
@@ -73,7 +73,7 @@ async function saveLoginState(
 // Firebase-side truth: catches the throwaways whose DB row is already gone, so
 // an aborted run's accounts do not pile up in the console forever
 function sweepStaleFirebaseUsers() {
-  if (localStackSkipReason()) return
+  if (!isLocalBaseUrl()) return
   try {
     console.log(`Swept ${sweepE2eFirebaseUsers()} stale Firebase test users`)
   } catch (e) {

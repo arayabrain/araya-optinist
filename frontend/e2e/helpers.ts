@@ -83,9 +83,11 @@ except auth.UserNotFoundError:
 // A run that dies before its afterAll orphans the Firebase user even though the
 // DB row is gone, which puts it beyond the reach of any DB-driven cleanup.
 // Returns how many accounts the sweep removed.
-export function sweepE2eFirebaseUsers(): string {
-  return runInBackend(
-    "poetry run python infrastructure/scripts/sweep_e2e_firebase_users.py",
+export function sweepE2eFirebaseUsers(): number {
+  return Number(
+    runInBackend(
+      "poetry run python .github/scripts/sweep_e2e_firebase_users.py",
+    ),
   )
 }
 
