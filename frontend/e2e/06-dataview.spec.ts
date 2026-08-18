@@ -14,6 +14,7 @@ import {
   filterWorkspace,
   openWorkspace,
   apiUrl,
+  RUN_TEST_TIMEOUT_MS,
   DATA_WS,
 } from "./helpers"
 
@@ -113,10 +114,10 @@ test.describe("Private Dataview @slow", () => {
   test.beforeEach(async ({ page }) => {
     skipWithoutCreds()
     // The first hook mints its rows with a real Tutorial1 run (the sample data
-    // ships metadata YAML only, so snakemake recomputes). runTutorial's inner
-    // wait is 840s, so a 600s budget here expired mid-run and reported the
-    // timeout against this hook rather than against the run.
-    if (!recordsMinted) test.setTimeout(900_000)
+    // ships metadata YAML only, so snakemake recomputes). A budget below
+    // runTutorial's own wait expires mid-run and reports the timeout against
+    // this hook rather than against the run.
+    if (!recordsMinted) test.setTimeout(RUN_TEST_TIMEOUT_MS)
     await gotoDashboard(page)
     dataviewId = await ensureDataviewRows(page)
     await page.goto(`/dataview/${dataviewId}`)

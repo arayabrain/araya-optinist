@@ -146,6 +146,8 @@ class ExptConfigWriter:
                 get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
             )  # Update time
             .set_success(WorkflowRunStatus.RUNNING.value)
+            # rewritten with started_at above, or the pair disagrees on a rerun
+            .set_timezone(self.timezone)
             .build()
         )
 

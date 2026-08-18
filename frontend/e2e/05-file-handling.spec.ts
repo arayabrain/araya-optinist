@@ -168,17 +168,19 @@ test.describe("File Select Dialog", () => {
   }) => {
     await page.locator('[role="dialog"] button:has-text("cancel")').click()
     await expect(page.locator('[role="dialog"]')).toBeHidden()
+    // A reload clears the cached tree (reopening the dialog alone does not
+    // refetch), but it also restores the workspace's persisted workflow, which
+    // need not carry an image node at all - so put Tutorial1 back explicitly
+    await page.reload()
+    await reproduceTutorial(page, "Tutorial1")
     // Only the merged-tree fetch drives isLoading; a broad /files glob would
-    // also hold shape/sync/upload requests open
+    // also hold shape/sync/upload requests open. Registered after the
+    // reproduce, which never fetches the tree itself.
     const treeFetch = routeGate()
     await page.route("**/files/*/merged*", async (route) => {
       await treeFetch.held
       await route.continue()
     })
-    // A reload clears the cached tree (reopening the dialog alone does not
-    // refetch) and resets the flowchart to its default image node, which
-    // carries the same select button and lists the same workspace files
-    await page.reload()
     const selectFile = page
       .locator(
         '.react-flow__node-ImageFileNode button:has([data-testid="ChecklistRtlIcon"])',
