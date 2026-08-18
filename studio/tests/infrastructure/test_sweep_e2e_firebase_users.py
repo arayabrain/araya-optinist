@@ -22,9 +22,9 @@ _spec = importlib.util.spec_from_file_location("sweep_e2e_firebase_users", MODUL
 sweeper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sweeper)
 
-# Every fixture address below is stamped before this, so the grace period only
-# spares accounts a test stamps deliberately close to it.
-NOW_MS = 1786940000000
+# Every fixture address below is stamped well before this, so the grace period
+# only spares accounts a test stamps deliberately close to it.
+NOW_MS = 1787000000000
 
 
 def user(email):
@@ -82,14 +82,15 @@ def stamped(age_ms):
 
 
 # Concrete ages rather than offsets from GRACE_MS: expressed against the
-# constant, these still pass when the grace period is mutated to zero.
-@pytest.mark.parametrize("age_ms", [0, 10 * 60 * 1000])
+# constant, these still pass when the grace period is mutated to zero. Three
+# hours is a suite still inside playwright's 165-minute globalTimeout.
+@pytest.mark.parametrize("age_ms", [0, 10 * 60 * 1000, 3 * 60 * 60 * 1000])
 def test_a_concurrent_runs_accounts_are_left_alone(age_ms):
     assert stale_uids([user(stamped(age_ms))]) == []
 
 
 def test_an_account_from_an_earlier_run_is_swept():
-    email = stamped(2 * 60 * 60 * 1000)
+    email = stamped(6 * 60 * 60 * 1000)
     assert stale_uids([user(email)]) == [f"uid-{email}"]
 
 

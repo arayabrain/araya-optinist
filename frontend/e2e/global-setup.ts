@@ -17,7 +17,11 @@ import {
 // 3. Logs in once via the UI and saves storage state for the authed specs,
 //    keeping Firebase logins per run to a handful (rate limits).
 // 4. Deletes the Firebase accounts AUTH-04 leaves behind, if admin creds exist.
+// The Firebase sweep runs first because AUTH-02/03/04 need no credentials: a
+// run that returns below still registers the throwaways the sweep clears.
 export default async function globalSetup() {
+  sweepStaleFirebaseUsers()
+
   const email = process.env.TEST_USER_EMAIL
   const password = process.env.TEST_USER_PASSWORD
   if (!email || !password) return
@@ -31,7 +35,6 @@ export default async function globalSetup() {
     await saveLoginState(baseURL, email, password)
     await deleteE2eWorkspaces(api, headers)
     await deleteStaleUnverifiedUsers(api)
-    sweepStaleFirebaseUsers()
   } finally {
     await api.dispose()
   }

@@ -25,9 +25,10 @@ FIREBASE_PRIVATE_PATH = "studio/config/auth/firebase_private.json"
 # (e2e_ci_free, e2e_local_admin) have none, so they can never match.
 THROWAWAY = re.compile(r"e2e_[a-z_]+_([0-9]{13})@test\.com")
 
-# A suite running concurrently against the same Firebase project still needs
-# the accounts it registered moments ago.
-GRACE_MS = 60 * 60 * 1000
+# One Firebase project is shared by CI and local runs, so a concurrent suite
+# still needs whatever it registered. Covers playwright.config's 165-minute
+# globalTimeout, the longest a run can hold an account open.
+GRACE_MS = 4 * 60 * 60 * 1000
 
 DELETE_BATCH = 1000  # firebase_admin's per-call cap for delete_users
 
