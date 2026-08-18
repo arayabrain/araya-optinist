@@ -11,6 +11,7 @@ import {
   ensureTutorialRecords,
   reproduceTutorial,
   runTutorial,
+  RUN_TEST_TIMEOUT_MS,
   DATA_WS,
 } from "./helpers"
 
@@ -94,7 +95,7 @@ test.describe("Workflow Execution", () => {
     test(`${id} - Run ${tutorial} workflow via ${mode} @slow`, async ({
       page,
     }) => {
-      test.setTimeout(900_000)
+      test.setTimeout(RUN_TEST_TIMEOUT_MS)
       await openWorkspace(page, DATA_WS)
       await ensureTutorialRecords(page, DATA_WS)
 

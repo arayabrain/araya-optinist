@@ -5,7 +5,6 @@ import signal
 import time
 from abc import ABCMeta, abstractmethod
 from dataclasses import asdict
-from datetime import datetime
 from glob import glob
 from typing import Dict, List
 
@@ -28,6 +27,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     datetime_from_timestamp,
     get_datetime_for_timezone_formatted,
+    parse_datetime_for_timezone,
 )
 from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
@@ -538,8 +538,11 @@ class WorkflowMonitor:
             # Refer experiment_data instead of pid_data
             expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
             try:
-                expt_started_time = datetime.strptime(
-                    expt_config.started_at, DATE_FORMAT
+                # Read back in the zone it was written in: a naive parse resolves
+                # against the container's TZ, inflating elapsed_time by that
+                # offset and expiring the startup grace on the very first poll
+                expt_started_time = parse_datetime_for_timezone(
+                    expt_config.started_at, DATE_FORMAT, expt_config.timezone
                 )
             except ValueError:
                 expt_started_time = datetime_from_timestamp(0)
