@@ -38,13 +38,15 @@ export function runSql(sql: string): string {
     .trim()
 }
 
-export function runInBackend(cmd: string, input?: string) {
-  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+export function runInBackend(cmd: string, input?: string): string {
+  return execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
     cwd: REPO_ROOT,
     stdio: ["pipe", "pipe", "pipe"],
     input,
     timeout: DOCKER_EXEC_TIMEOUT_MS,
   })
+    .toString()
+    .trim()
 }
 
 // Registration leaves the address unverified, and an unverified account cannot
@@ -74,6 +76,30 @@ try:
     auth.delete_user(auth.get_user_by_email("${email}").uid)
 except auth.UserNotFoundError:
     pass
+`,
+  )
+}
+
+// A run that dies before its afterAll orphans the Firebase user even though the
+// DB row is gone, so sweep by the throwaway shape `<prefix>_<Date.now()>@test.com`
+// rather than by what the DB still knows; fixed accounts carry no timestamp.
+export function sweepE2eFirebaseUsers(): string {
+  return runInBackend(
+    "poetry run python -",
+    `
+import re
+import firebase_admin
+from firebase_admin import auth, credentials
+cred = credentials.Certificate("studio/config/auth/firebase_private.json")
+firebase_admin.initialize_app(cred)
+stale = [
+    u.uid
+    for u in auth.list_users().iterate_all()
+    if re.fullmatch(r"e2e_[a-z_]+_\\d{13}@test\\.com", u.email or "")
+]
+for i in range(0, len(stale), 1000):
+    auth.delete_users(stale[i : i + 1000])
+print(len(stale))
 `,
   )
 }
