@@ -2,9 +2,13 @@ import { test, expect } from "@playwright/test"
 
 import {
   FREE_USER,
+  ensureRegisteredUser,
+  localStackSkipReason,
   login,
   logout,
+  runSql,
   skipWithoutCreds,
+  sqlLiteral,
   dismissStorageWarning,
 } from "./helpers"
 
@@ -322,5 +326,36 @@ test.describe("Auth guard", () => {
       // No subscription content may have rendered behind the redirect
       await expect(page.getByText(/^Current Plan/)).toHaveCount(0)
     }
+  })
+})
+
+// Rows 116 / 117: the sheets' own SQL row checks after a registration. The
+// unit suite asserts the ORM rows create_user builds; this is the real MySQL
+// round trip, so it is local-stack only.
+test.describe("Registration DB rows", () => {
+  test("AUTH-18 - Registration writes the active free-plan rows", async () => {
+    const reason = localStackSkipReason()
+    test.skip(!!reason, `rows 116 / 117: ${reason}`)
+    test.setTimeout(120_000)
+
+    const email = "e2e_unverified_dbrows@test.com"
+    await ensureRegisteredUser(email, "Test@123", "E2E DB Rows User")
+
+    // Inner joins on purpose: a registration that skipped any of these rows
+    // must fail this query, not be papered over by a LEFT JOIN default
+    const row = runSql(
+      `SELECT u.active, u.uid <> '', u.created_at IS NOT NULL, r.role_id,
+              s.plan_id, st.storage_quota_bytes
+         FROM users u
+         JOIN user_roles r ON r.user_id = u.id
+         JOIN subscription_users s ON s.user_id = u.id
+         JOIN user_storage_usage st ON st.user_id = u.id
+        WHERE u.email = '${sqlLiteral(email)}';`,
+    )
+    expect(
+      row,
+      `registration rows for ${email} (active, uid set, created_at set, ` +
+        `role_id, plan_id, quota): "${row}"`,
+    ).toMatch(/^1\s+1\s+1\s+20\s+1\s+5368709120$/)
   })
 })

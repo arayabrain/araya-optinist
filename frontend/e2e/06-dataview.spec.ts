@@ -3,7 +3,7 @@ import { test, expect, Page } from "@playwright/test"
 import {
   apiHeaders,
   login,
-  localStackSkipReason,
+  sqlSkipReason,
   runSql,
   skipWithoutCreds,
   freeStorageState,
@@ -233,11 +233,18 @@ test.describe("Private Dataview @slow", () => {
         timeout: 15_000,
       },
     )
-    // Every surviving row belongs to the workspace that was filtered for
-    const cells = page.locator('.MuiDataGrid-cell[data-field="workspace_name"]')
-    for (const text of await cells.allTextContents()) {
-      expect(text).toContain(DATA_WS)
-    }
+    // Every surviving row belongs to the workspace that was filtered for.
+    // Re-read until the grid has re-fetched: a single read can still sample
+    // the pre-filter rows.
+    await expect(async () => {
+      const texts = await page
+        .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+        .allTextContents()
+      expect(texts.length).toBeGreaterThan(0)
+      for (const text of texts) {
+        expect(text).toContain(DATA_WS)
+      }
+    }).toPass({ timeout: 15_000 })
 
     // A workspace that cannot match empties the table, which is what makes the
     // pass above a narrowing rather than a no-op
@@ -418,14 +425,18 @@ test.describe("Private Dataview @slow", () => {
     await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
       timeout: 15_000,
     })
+    // Re-read until the grid has re-fetched: the filter is applied
+    // asynchronously, so a single read can still sample the pre-filter rows.
     // Iterating an empty list asserts nothing, so the rows are counted first
-    const cells = await page
-      .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
-      .allTextContents()
-    expect(cells.length).toBeGreaterThan(0)
-    for (const text of cells) {
-      expect(text).toContain(DATA_WS)
-    }
+    await expect(async () => {
+      const cells = await page
+        .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+        .allTextContents()
+      expect(cells.length).toBeGreaterThan(0)
+      for (const text of cells) {
+        expect(text).toContain(DATA_WS)
+      }
+    }).toPass({ timeout: 15_000 })
 
     // A workspace that cannot match empties the table, which is what makes the
     // pass above a narrowing rather than a no-op
@@ -544,10 +555,12 @@ test.describe("Private Dataview @slow", () => {
   test("DV-20 - Concurrent publishes move the version exactly once", async ({
     page,
   }) => {
-    // The version column is the optimistic lock the row is about, and only
-    // the docker DB exposes it
-    const local = localStackSkipReason()
-    test.skip(!!local, `row 719 reads experiment_records.version: ${local}`)
+    // The version column is the optimistic lock the row is about; reachable on
+    // the docker DB and on the deployed RDS over SSM. Each SSM SQL round trip
+    // costs tens of seconds, so the 60s default test budget cannot hold.
+    test.setTimeout(10 * 60_000)
+    const noSql = sqlSkipReason()
+    test.skip(!!noSql, `row 719 reads experiment_records.version: ${noSql}`)
 
     await ensurePublish(page, "Tutorial1", false)
     const headers = await apiHeaders(page)
@@ -574,12 +587,16 @@ test.describe("Private Dataview @slow", () => {
     // request must land in "already published, no change" rather than write
     // again. The read-overlap retry ladder itself stays with
     // test_dataview_publish.py::test_publish_concurrent_modification_retry.
+    // Publish syncs and validates against S3 in-request on a deployed env,
+    // so the config's 15s actionTimeout would abort it mid-flight
     const [first, second] = await Promise.all([
       page.request.post(`${apiUrl()}/api/dataview/publish/${record!.id}/on`, {
         headers,
+        timeout: 120_000,
       }),
       page.request.post(`${apiUrl()}/api/dataview/publish/${record!.id}/on`, {
         headers,
+        timeout: 120_000,
       }),
     ])
     expect(first.status()).toBe(200)
@@ -597,7 +614,7 @@ test.describe("Private Dataview @slow", () => {
     // helper would no-op; unpublish through the same endpoint instead
     const unpublished = await page.request.post(
       `${apiUrl()}/api/dataview/publish/${record!.id}/off`,
-      { headers },
+      { headers, timeout: 120_000 },
     )
     expect(unpublished.ok()).toBe(true)
   })

@@ -21,7 +21,110 @@ export const REPO_ROOT = path.resolve(__dirname, "../..")
 const COMPOSE = "docker compose -f docker-compose.dev.multiuser.yml"
 const DOCKER_EXEC_TIMEOUT_MS = 30_000
 
+// The deployed RDS is private and behind a TLS-only proxy, so SQL there runs
+// through SSM on an in-VPC instance that fetches its own credentials.
+const SSM_INSTANCE = process.env.RDS_SSM_INSTANCE || "i-017fc6d527df4ca4d"
+const RDS_PROXY_HOST =
+  process.env.RDS_PROXY_HOST ||
+  "development-optinist-rds-proxy.proxy-cdmeogcuo1v2.ap-northeast-1.rds.amazonaws.com"
+const RDS_SECRET_ID =
+  process.env.RDS_SECRET_ID || "development-optinist/database/config"
+const SSM_POLL_TIMEOUT_MS = 120_000
+
+function aws(args: string, input?: string): string {
+  return execSync(`aws ${args}`, {
+    input,
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 60_000,
+  })
+    .toString()
+    .trim()
+}
+
+function runSqlOverSsm(sql: string): string {
+  const py =
+    "python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])'"
+  const script = [
+    "set -e",
+    `CFG=$(aws secretsmanager get-secret-value --region ap-northeast-1 --secret-id ${RDS_SECRET_ID} --query SecretString --output text)`,
+    `export MYSQL_PWD=$(printf '%s' "$CFG" | ${py} password)`,
+    `DBU=$(printf '%s' "$CFG" | ${py} username)`,
+    `DBN=$(printf '%s' "$CFG" | ${py} database)`,
+    `mariadb --ssl -h ${RDS_PROXY_HOST} -u "$DBU" --connect-timeout=10 "$DBN" -N`,
+  ]
+  const paramsFile = path.join(
+    fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-ssm-")),
+    "params.json",
+  )
+  fs.writeFileSync(
+    paramsFile,
+    JSON.stringify({
+      commands: [
+        ...script.slice(0, -1),
+        `${script[script.length - 1]} <<'SQL'\n${sql}\nSQL`,
+      ],
+    }),
+  )
+  let commandId: string
+  try {
+    commandId = aws(
+      `ssm send-command --region ap-northeast-1 --instance-ids ${SSM_INSTANCE} ` +
+        `--document-name AWS-RunShellScript --parameters file://${paramsFile} ` +
+        `--query Command.CommandId --output text`,
+    )
+  } finally {
+    fs.rmSync(path.dirname(paramsFile), { recursive: true, force: true })
+  }
+
+  const deadline = Date.now() + SSM_POLL_TIMEOUT_MS
+  for (;;) {
+    const raw = aws(
+      `ssm get-command-invocation --region ap-northeast-1 --command-id ${commandId} ` +
+        `--instance-id ${SSM_INSTANCE} --output json`,
+    )
+    const inv = JSON.parse(raw)
+    if (inv.Status === "Success")
+      return (inv.StandardOutputContent || "").trim()
+    if (!["Pending", "InProgress", "Delayed"].includes(inv.Status)) {
+      throw new Error(
+        `SSM SQL failed (${inv.Status}): ${inv.StandardErrorContent || inv.StatusDetails}`,
+      )
+    }
+    if (Date.now() > deadline) throw new Error(`SSM SQL timed out: ${sql}`)
+    execSync("sleep 2")
+  }
+}
+
+// Off the local stack this reaches the shared dev RDS, where the throwaway
+// rows a spec may delete locally are real. Reads are allowed there; anything
+// that writes must say so by running against a local stack.
+function assertReadOnly(sql: string) {
+  const statement = sql
+    .replace(/--[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim()
+  // The mysql CLI executes every statement it is piped, so a read-only
+  // first statement must not smuggle a second one behind a semicolon
+  if (/;\s*\S/.test(statement)) {
+    throw new Error(
+      `runSql refused a multi-statement query against ${process.env.BASE_URL}: ` +
+        `${statement.split("\n")[0]}`,
+    )
+  }
+  if (!/^(select|show)\b/i.test(statement)) {
+    throw new Error(
+      `runSql refused a non-read statement against ${process.env.BASE_URL}: ` +
+        `${statement.split("\n")[0]}. Specs that mutate the database are ` +
+        `local-stack only; gate them on localStackSkipReason().`,
+    )
+  }
+}
+
 export function runSql(sql: string): string {
+  if (!isLocalBaseUrl()) {
+    assertReadOnly(sql)
+    return runSqlOverSsm(sql)
+  }
   return execSync(
     `${COMPOSE} exec -T db sh -c ` +
       `'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -N "$MYSQL_DATABASE"'`,
@@ -36,6 +139,92 @@ export function runSql(sql: string): string {
   )
     .toString()
     .trim()
+}
+
+// ---------------------------------------------------------------------------
+// Deployed-env AWS assertions, shared by the opt-in real-AWS lanes
+// (15-premium-aws, 16-storage-aws).
+// ---------------------------------------------------------------------------
+
+export const AWS_REGION = "ap-northeast-1"
+// Where each backend log line lands. /users/me/* routes to the public tier
+// (premium routing headers only exist after assignment and only the app sends
+// them), workflow compute logs on the tier that ran it, and login-time lines
+// land on the default (free) tier.
+export const FREE_LOG_GROUP = "/ecs/development-optinist-cloud-taskdef"
+export const PREMIUM_LOG_GROUP =
+  "/ecs/development-premium-optinist-cloud-taskdef"
+export const PUBLIC_LOG_GROUP = "/ecs/development-public-optinist-cloud-taskdef"
+
+export const CLOUDWATCH_POLL = { timeout: 240_000, intervals: [15_000] }
+
+// Small clock-skew slack for --start-time windows. Deliberately tight: a
+// wide window would match lines a PREVIOUS test's teardown logged for the
+// same user, making the assert pass without this test's action.
+export function windowStart(): number {
+  return Date.now() - 15_000
+}
+
+// One CloudWatch probe; positive assertions expect.poll it (propagation takes
+// up to ~2 min), negative ones sample it once AFTER a positive passed - the
+// awslogs driver runs non-blocking, so absence is only meaningful once
+// presence of a same-window line proves delivery caught up.
+// pattern is matched as a single quoted term: no double quotes inside.
+export function cloudwatchHas(
+  logGroup: string,
+  pattern: string,
+  sinceMs: number,
+): boolean {
+  if (pattern.includes('"')) {
+    throw new Error(`cloudwatchHas pattern must not contain '"': ${pattern}`)
+  }
+  const out = execSync(
+    `aws logs filter-log-events --log-group-name ${logGroup} ` +
+      `--start-time ${sinceMs} --filter-pattern '"${pattern}"' ` +
+      `--max-items 1 --query 'events[0].message' --output text ` +
+      `--region ${AWS_REGION}`,
+    { timeout: 30_000 },
+  )
+    .toString()
+    .trim()
+  return out !== "" && out !== "None"
+}
+
+// Throws on CLI failure instead of returning a vacuous empty result, so
+// "the prefix is empty" can never pass on a throttled or misconfigured call
+export function s3ObjectCount(bucket: string, prefix: string): number {
+  const out = execSync(
+    `aws s3api list-objects-v2 --bucket ${bucket} --prefix '${prefix}' ` +
+      `--query 'KeyCount' --output text --region ${AWS_REGION}`,
+    { timeout: 60_000, stdio: ["pipe", "pipe", "pipe"] },
+  )
+    .toString()
+    .trim()
+  const count = Number(out)
+  if (!Number.isFinite(count)) {
+    throw new Error(`list-objects-v2 KeyCount for ${bucket}/${prefix}: ${out}`)
+  }
+  return count
+}
+
+// apiHeaders plus the premium routing headers the app itself would send.
+// Playwright's request context bypasses the axios interceptor, so without
+// these a premium user's helper API calls route to the free tier - which
+// never saw a premium instance's local files (/experiments would report a
+// premium run absent forever).
+export async function routedApiHeaders(
+  page: Page,
+): Promise<Record<string, string>> {
+  const headers = await apiHeaders(page)
+  const routing = await page.evaluate(() => ({
+    id: localStorage.getItem("routing_id"),
+    tier: localStorage.getItem("routing_tier"),
+  }))
+  if (routing.id && routing.tier) {
+    headers["X-Routing-ID"] = routing.id
+    headers["X-User-Tier"] = routing.tier
+  }
+  return headers
 }
 
 export function runInBackend(cmd: string, input?: string) {
@@ -171,6 +360,20 @@ export function localStackSkipReason(): string {
     runSql("SELECT 1;")
   } catch {
     return "local docker db container not reachable"
+  }
+  return ""
+}
+
+// Returns the reason SQL is unreachable here, or "" if it can run. Unlike
+// localStackSkipReason this accepts the deployed RDS, for specs that only read
+// or write rows and need no docker-only helper.
+export function sqlSkipReason(): string {
+  try {
+    runSql("SELECT 1;")
+  } catch (e) {
+    return isLocalBaseUrl()
+      ? "local docker db container not reachable"
+      : `deployed RDS not reachable over SSM: ${(e as Error).message.split("\n")[0]}`
   }
   return ""
 }
@@ -496,7 +699,7 @@ export async function reproduceTutorial(page: Page, tutorialName: string) {
 // (immediate, same uid, reuses existing outputs); "RUN ALL" starts a fresh
 // run under a new uid via the name dialog. Select the mode explicitly so a
 // test exercises the path it claims to.
-async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
+export async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
   await page.locator('button:has([data-testid="ArrowDropDownIcon"])').click()
   await page.locator(`li:text-is("${mode}")`).click()
   // Anchor on the run POST actually going out (the click's storage
@@ -533,7 +736,7 @@ async function recordedRunStatus(
   workspaceId: string,
   uid: string,
 ): Promise<string> {
-  const headers = await apiHeaders(page)
+  const headers = await routedApiHeaders(page)
   const res = await page.request.get(`${apiUrl()}/experiments/${workspaceId}`, {
     headers,
   })
@@ -592,6 +795,7 @@ export async function runTutorial(
   expect(recorded, `${tutorialName} recorded "${recorded}", not success`).toBe(
     "success",
   )
+  return { workspaceId, uid }
 }
 
 // Mints the success record + thumbnails the dataview needs.
@@ -613,9 +817,10 @@ export async function ensureCompletedTutorialRun(
 // Publishing requires a cloud bucket on the account (the backend 400s
 // without one). Local-stack users have none, so set a placeholder attribute
 // - the S3-existence check is skipped in local storage mode, and all S3
-// size lookups swallow errors. On deployed envs (no docker) this silently
-// no-ops; users there have real buckets.
+// size lookups swallow errors. Deployed users have real buckets, and
+// overwriting one with the placeholder breaks publishing for that account.
 export function ensurePublishableAccount() {
+  if (!isLocalBaseUrl()) return
   const email = process.env.TEST_USER_EMAIL
   if (!email) return
   try {

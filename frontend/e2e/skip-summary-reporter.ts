@@ -133,7 +133,7 @@ export default class SkipSummaryReporter implements Reporter {
 }
 
 function mappedId(title: string): string | undefined {
-  return title.match(/^([A-Z]+-\d+)/)?.[1]
+  return title.match(/^([A-Z][A-Z0-9]*-\d+)/)?.[1]
 }
 
 function sanitise(reason: string): string {

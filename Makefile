@@ -191,3 +191,9 @@ push_dockerhub:
 	docker tag oistncu/optinist:latest oistncu/optinist:${VERSION}
 	docker push oistncu/optinist:${VERSION}
 	docker push oistncu/optinist:latest
+
+# Read-only AWS release health probes (release sheet 11, BT-1101..1111).
+# ENV=development|subscr, APP_URL=<https frontend origin> for the curl rows.
+.PHONY: release_health_check
+release_health_check:
+	@bash scripts/release_health_check.sh
