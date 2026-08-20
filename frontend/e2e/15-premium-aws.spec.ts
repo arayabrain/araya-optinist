@@ -142,6 +142,87 @@ async function skipUnlessPremiumTargetHealthy(rows: string, userId: number) {
   )
 }
 
+// Premium instances not yet at rest: an assign racing a still-stopping
+// instance can land on it, so cooling waits for none of these.
+function transitioningPremiumInstanceCount(): number {
+  return Number(
+    execSync(
+      `aws ec2 describe-instances --region ${REGION} ` +
+        `--filters "Name=tag:Name,Values=*premium*" ` +
+        `"Name=instance-state-name,Values=pending,running,stopping,shutting-down" ` +
+        `--query 'length(Reservations[].Instances[])' --output text`,
+      { timeout: 30_000 },
+    )
+      .toString()
+      .trim(),
+  )
+}
+
+// The cascade grants the shared tier instantly while a warm shared-marked
+// instance runs, which starves the dedicated-tier rows whenever an earlier
+// test warmed the pool. A shared grant with no DB owner of premium capacity
+// is pool temperature, not a capacity limit: release it, park the pool cold
+// (desired 0, instances stopped), and let one re-assign take the cold-start
+// migrate path to a dedicated grant. A shared grant that survives the cooled
+// re-assign, or capacity someone else owns, still skips with its reason.
+async function dedicatedAssignmentCoolingIfNeeded(
+  page: Page,
+  rows: string,
+): Promise<NonNullable<PremiumStatus["assignment"]>> {
+  let assignment = (await waitForAssignment(page, rows)).assignment!
+  if (isDedicated(assignment)) return assignment
+
+  const release = await page.request.delete(
+    `${apiUrl()}/users/me/premium/assign`,
+    { headers: await apiHeaders(page), timeout: RELEASE_REQUEST_TIMEOUT_MS },
+  )
+  expect(release.ok(), await release.text()).toBe(true)
+
+  const sqlReason = sqlSkipReason()
+  const owners = sqlReason
+    ? `unknown (${sqlReason})`
+    : runSql(
+        "SELECT COUNT(*) FROM premium_user_assignments WHERE is_standby = 0" +
+          " AND status IN ('active', 'migrating', 'terminating');",
+      ).trim()
+  test.skip(
+    owners !== "0",
+    `rows ${rows}: the cascade granted ${JSON.stringify(assignment)} and the ` +
+      `pool cannot be cooled: premium capacity owners=${owners}`,
+  )
+
+  const running = runningPremiumInstanceIds()
+  if (running.length) {
+    execSync(
+      `aws ecs update-service --cluster ${CLUSTER} ` +
+        `--service ${PREMIUM_SERVICE} --desired-count 0 --region ${REGION}`,
+      { timeout: 30_000 },
+    )
+    execSync(
+      `aws ec2 stop-instances --instance-ids ${running.join(" ")} ` +
+        `--region ${REGION}`,
+      { timeout: 30_000 },
+    )
+  }
+  await expect
+    .poll(() => transitioningPremiumInstanceCount(), {
+      timeout: 5 * 60_000,
+      intervals: [15_000],
+      message: `premium instances never finished stopping while cooling for rows ${rows}`,
+    })
+    .toBe(0)
+
+  // A mount with no assignment re-runs the provider's assign flow
+  await page.reload()
+  assignment = (await waitForAssignment(page, rows)).assignment!
+  test.skip(
+    !isDedicated(assignment),
+    `rows ${rows}: the cascade did not grant a dedicated instance even from ` +
+      `a cold pool (${JSON.stringify(assignment)})`,
+  )
+  return assignment
+}
+
 // A window that provably excludes older matches of the same pattern: when a
 // previous test's teardown logged the line within the slack, tighten to now.
 function freshWindow(logGroup: string, pattern: string): number {
@@ -896,109 +977,6 @@ test("PREM-05 - Free-tier requests carry no premium routing headers @slow", asyn
     .toBe(true)
 })
 
-test("PREM-06 - The sweep stops a released idle instance and keeps the last one warm @slow", async () => {
-  const rows = "6221 / 6222"
-  skipUnlessOptedIn(rows)
-  test.skip(
-    !PREMIUM2_USER.email || !PREMIUM2_USER.password,
-    `rows ${rows}: TEST_PREMIUM2_EMAIL/TEST_PREMIUM2_PASSWORD not set - needs two concurrent premium users`,
-  )
-  test.setTimeout(TEST_TIMEOUT_MS * 2)
-
-  const s1 = await apiLogin(PREMIUM_USER.email, PREMIUM_USER.password)
-  const s2 = await apiLogin(PREMIUM2_USER.email, PREMIUM2_USER.password)
-  try {
-    const post = (s: typeof s1) => () =>
-      s.api.post("/users/me/premium/assign", {
-        headers: s.headers,
-        timeout: ASSIGN_REQUEST_TIMEOUT_MS,
-      })
-    const release = async (s: typeof s1) => {
-      const res = await s.api.delete("/users/me/premium/assign", {
-        headers: s.headers,
-        timeout: RELEASE_REQUEST_TIMEOUT_MS,
-      })
-      expect(res.ok(), await res.text()).toBe(true)
-    }
-
-    const a1 = await assignUntilSettled(post(s1), rows)
-    const a2 = await assignUntilSettled(post(s2), rows)
-    if (!a1.is_shared || !a2.is_shared) heldDedicated = true
-    const distinctDedicated =
-      isDedicated(a1) && isDedicated(a2) && a1.instance_id !== a2.instance_id
-
-    await release(s1)
-    await release(s2)
-    const runningBefore = runningPremiumInstanceIds()
-
-    // Run the sweep and assert its analysis line even when the cascade could
-    // not grant two distinct instances: that partial verifies every run, while
-    // the EC2-state halves below need capacity dev does not have (standby pool
-    // of one), so they are booked manual rather than left permanently skipped.
-    // The invoke's Tail is only the last 4KB and a busy sweep pushes the
-    // analysis line out of it, so the line is read from the full CloudWatch log.
-    const tSweep = Date.now() - 5_000
-    invokeMonitoringSweep()
-    let analysisLine = ""
-    await expect
-      .poll(() => (analysisLine = latestSweepAnalysis(tSweep)), {
-        ...CLOUDWATCH_POLL,
-        message: `no Scale-down analysis line in ${PREMIUM_MANAGER_LOG_GROUP} after the sweep`,
-      })
-      .toContain("Scale-down analysis:")
-    const analysis = analysisLine.match(
-      /Scale-down analysis: \d+ total, (\d+) occupied, (\d+) idle, (\d+) active users/,
-    )
-    expect(analysis, analysisLine).toBeTruthy()
-
-    test.skip(
-      !distinctDedicated,
-      `rows ${rows}: the cascade did not grant two distinct dedicated instances ` +
-        `this run (${JSON.stringify([a1, a2])}) - sweep analysis verified; ` +
-        `the instance stop/keep-warm halves stay manual in dev`,
-    )
-    expect(runningBefore.length).toBeGreaterThanOrEqual(2)
-    const [, occupied, idle, active] = analysis!.map(Number)
-    const running = occupied + idle
-    const minRunningNeeded = Math.max(1, active + 1)
-    // Another user active on the shared cluster raises the floor and blocks
-    // the scale-down legitimately - that leaves the rows unverified, not failed
-    test.skip(
-      running <= minRunningNeeded || idle < 2,
-      `rows ${rows}: sweep saw running=${running}, idle=${idle}, active=${active} - ` +
-        `the shared cluster's state blocks idle scale-down this run`,
-    )
-
-    // 6221: the sweep really stopped idle capacity; 6222: never all of it
-    let runningAfter: string[] = []
-    await expect
-      .poll(() => (runningAfter = runningPremiumInstanceIds()).length, {
-        timeout: 4 * 60_000,
-        intervals: [15_000],
-        message: `no idle premium instance left the running state after the sweep`,
-      })
-      .toBeLessThan(runningBefore.length)
-    expect(
-      runningAfter.length,
-      "the sweep stopped the last warm instance",
-    ).toBeGreaterThanOrEqual(1)
-
-    // 6221's ordering guarantee, observed from the end state: whatever was
-    // stopped must also be out of the ECS cluster, not a ghost registration
-    const stopped = runningBefore.filter((id) => !runningAfter.includes(id))
-    await expect
-      .poll(() => ecsContainerEc2Ids().filter((id) => stopped.includes(id)), {
-        timeout: 3 * 60_000,
-        intervals: [15_000],
-        message: `stopped instance(s) ${stopped} still registered in ECS`,
-      })
-      .toHaveLength(0)
-  } finally {
-    await s1.api.dispose()
-    await s2.api.dispose()
-  }
-})
-
 test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance @slow", async ({
   page,
 }) => {
@@ -1008,16 +986,10 @@ test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance 
 
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
   expectGenuinelyPremium(await statusViaPage(page))
-  const status = await waitForAssignment(page, rows)
-  const assignment = status.assignment!
-  if (!assignment.is_shared) heldDedicated = true
-  // The flagship 604 row is about the dedicated instance specifically; any
-  // other granted tier leaves the rows unverified, not failed
-  test.skip(
-    !isDedicated(assignment),
-    `rows ${rows}: the cascade did not grant a dedicated instance this run ` +
-      `(${JSON.stringify(assignment)})`,
-  )
+  // The flagship 604 row is about the dedicated instance specifically: cool
+  // the pool for a dedicated grant when a warm shared one stands in the way
+  const assignment = await dedicatedAssignmentCoolingIfNeeded(page, rows)
+  heldDedicated = true
 
   // Routing truth: every workflow-run POST must go out through the premium
   // routing the assignment established
@@ -1149,14 +1121,10 @@ test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slo
 
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
   expectGenuinelyPremium(await statusViaPage(page))
-  const status = await waitForAssignment(page, rows)
-  const assignment = status.assignment!
-  if (!assignment.is_shared) heldDedicated = true
-  test.skip(
-    !isDedicated(assignment),
-    `rows ${rows}: the cascade did not grant a dedicated instance this run ` +
-      `(${JSON.stringify(assignment)})`,
-  )
+  // 605 needs the dedicated tier: cool the pool when a warm shared grant
+  // stands in the way
+  const assignment = await dedicatedAssignmentCoolingIfNeeded(page, rows)
+  heldDedicated = true
 
   // 605's premise is the same dedicated instance serving three runs: gate on its
   // target group being healthy before driving any workflow through the ALB.
@@ -1266,6 +1234,109 @@ test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slo
         })
         .catch(() => {})
     }
+  }
+})
+
+test("PREM-06 - The sweep stops a released idle instance and keeps the last one warm @slow", async () => {
+  const rows = "6221 / 6222"
+  skipUnlessOptedIn(rows)
+  test.skip(
+    !PREMIUM2_USER.email || !PREMIUM2_USER.password,
+    `rows ${rows}: TEST_PREMIUM2_EMAIL/TEST_PREMIUM2_PASSWORD not set - needs two concurrent premium users`,
+  )
+  test.setTimeout(TEST_TIMEOUT_MS * 2)
+
+  const s1 = await apiLogin(PREMIUM_USER.email, PREMIUM_USER.password)
+  const s2 = await apiLogin(PREMIUM2_USER.email, PREMIUM2_USER.password)
+  try {
+    const post = (s: typeof s1) => () =>
+      s.api.post("/users/me/premium/assign", {
+        headers: s.headers,
+        timeout: ASSIGN_REQUEST_TIMEOUT_MS,
+      })
+    const release = async (s: typeof s1) => {
+      const res = await s.api.delete("/users/me/premium/assign", {
+        headers: s.headers,
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      })
+      expect(res.ok(), await res.text()).toBe(true)
+    }
+
+    const a1 = await assignUntilSettled(post(s1), rows)
+    const a2 = await assignUntilSettled(post(s2), rows)
+    if (!a1.is_shared || !a2.is_shared) heldDedicated = true
+    const distinctDedicated =
+      isDedicated(a1) && isDedicated(a2) && a1.instance_id !== a2.instance_id
+
+    await release(s1)
+    await release(s2)
+    const runningBefore = runningPremiumInstanceIds()
+
+    // Run the sweep and assert its analysis line even when the cascade could
+    // not grant two distinct instances: that partial verifies every run, while
+    // the EC2-state halves below need capacity dev does not have (standby pool
+    // of one), so they are booked manual rather than left permanently skipped.
+    // The invoke's Tail is only the last 4KB and a busy sweep pushes the
+    // analysis line out of it, so the line is read from the full CloudWatch log.
+    const tSweep = Date.now() - 5_000
+    invokeMonitoringSweep()
+    let analysisLine = ""
+    await expect
+      .poll(() => (analysisLine = latestSweepAnalysis(tSweep)), {
+        ...CLOUDWATCH_POLL,
+        message: `no Scale-down analysis line in ${PREMIUM_MANAGER_LOG_GROUP} after the sweep`,
+      })
+      .toContain("Scale-down analysis:")
+    const analysis = analysisLine.match(
+      /Scale-down analysis: \d+ total, (\d+) occupied, (\d+) idle, (\d+) active users/,
+    )
+    expect(analysis, analysisLine).toBeTruthy()
+
+    test.skip(
+      !distinctDedicated,
+      `rows ${rows}: the cascade did not grant two distinct dedicated instances ` +
+        `this run (${JSON.stringify([a1, a2])}) - sweep analysis verified; ` +
+        `the instance stop/keep-warm halves stay manual in dev`,
+    )
+    expect(runningBefore.length).toBeGreaterThanOrEqual(2)
+    const [, occupied, idle, active] = analysis!.map(Number)
+    const running = occupied + idle
+    const minRunningNeeded = Math.max(1, active + 1)
+    // Another user active on the shared cluster raises the floor and blocks
+    // the scale-down legitimately - that leaves the rows unverified, not failed
+    test.skip(
+      running <= minRunningNeeded || idle < 2,
+      `rows ${rows}: sweep saw running=${running}, idle=${idle}, active=${active} - ` +
+        `the shared cluster's state blocks idle scale-down this run`,
+    )
+
+    // 6221: the sweep really stopped idle capacity; 6222: never all of it
+    let runningAfter: string[] = []
+    await expect
+      .poll(() => (runningAfter = runningPremiumInstanceIds()).length, {
+        timeout: 4 * 60_000,
+        intervals: [15_000],
+        message: `no idle premium instance left the running state after the sweep`,
+      })
+      .toBeLessThan(runningBefore.length)
+    expect(
+      runningAfter.length,
+      "the sweep stopped the last warm instance",
+    ).toBeGreaterThanOrEqual(1)
+
+    // 6221's ordering guarantee, observed from the end state: whatever was
+    // stopped must also be out of the ECS cluster, not a ghost registration
+    const stopped = runningBefore.filter((id) => !runningAfter.includes(id))
+    await expect
+      .poll(() => ecsContainerEc2Ids().filter((id) => stopped.includes(id)), {
+        timeout: 3 * 60_000,
+        intervals: [15_000],
+        message: `stopped instance(s) ${stopped} still registered in ECS`,
+      })
+      .toHaveLength(0)
+  } finally {
+    await s1.api.dispose()
+    await s2.api.dispose()
   }
 })
 
