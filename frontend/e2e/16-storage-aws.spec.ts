@@ -313,18 +313,33 @@ test.describe("Published experiment via the public instance", () => {
         .toBeGreaterThan(0)
 
       // Find the record BEFORE the negative, so the 404 below can only mean
-      // the published_only gate, never a record that does not exist yet
-      const listRes = await page.request.get(
-        `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${wsId}`,
-        { headers, timeout: REQUEST_TIMEOUT_MS },
-      )
-      expect(listRes.ok(), await listRes.text()).toBe(true)
-      const { items } = await listRes.json()
-      const record = (items as { id: number; uid?: string }[]).find(
-        (r) => r.uid === uid,
-      )
-      expect(record, `no dataview record for run ${uid}`).toBeTruthy()
-      recordId = record!.id
+      // the published_only gate, never a record that does not exist yet.
+      // Polled, not read once: the executor writes the experiment record
+      // asynchronously after the last node finishes, so it can land after
+      // the run reports success and the outputs are already in S3.
+      await expect
+        .poll(
+          async () => {
+            const listRes = await page.request.get(
+              `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${wsId}`,
+              { headers, timeout: REQUEST_TIMEOUT_MS },
+            )
+            if (!listRes.ok()) return `HTTP ${listRes.status()}`
+            const { items } = await listRes.json()
+            const record = (items as { id: number; uid?: string }[]).find(
+              (r) => r.uid === uid,
+            )
+            if (!record) return "absent"
+            recordId = record.id
+            return "found"
+          },
+          {
+            timeout: 120_000,
+            intervals: [10_000],
+            message: `no dataview record for run ${uid}`,
+          },
+        )
+        .toBe("found")
 
       // The published_only gate: anonymous reproduce of the existing but
       // not-yet-published experiment is a 404

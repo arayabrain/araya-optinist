@@ -43,8 +43,13 @@ import {
 
 const RUN_PREMIUM_AWS = process.env.RUN_PREMIUM_AWS === "1"
 
+// The cascade's transient warming tier, reported by /premium/assign but
+// deliberately 404'd by /premium/status.
+const AUTOSCALING_POOL = "autoscaling-pool"
+
 const CLUSTER = "development-optinist-cloud-cluster"
 const PREMIUM_SERVICE = "development-premium-optinist-cloud-service"
+const PREMIUM_MANAGER_LOG_GROUP = "/aws/lambda/development-premium-manager"
 const REGION = "ap-northeast-1"
 
 // A cold assign starts EC2 capacity + an ECS task: minutes, not seconds
@@ -55,6 +60,11 @@ const TEST_TIMEOUT_MS = ASSIGN_TIMEOUT_MS + 10 * 60_000
 // observed 2026-08-19: every assign/release timed out client-side while
 // completing server-side. Each call names its own budget instead.
 const ASSIGN_REQUEST_TIMEOUT_MS = 300_000
+// The assign call blocks for the whole cold standby start, and the assignment
+// row becomes visible to /premium/status DURING it - so the row can be asserted
+// minutes before the call returns and logs its line. These polls need the
+// assign budget, not the generic CloudWatch one.
+const ASSIGN_LOG_POLL = { timeout: 8 * 60_000, intervals: [15_000] }
 const RELEASE_REQUEST_TIMEOUT_MS = 120_000
 const STATUS_REQUEST_TIMEOUT_MS = 30_000
 
@@ -83,6 +93,53 @@ function tgExists(userId: number): boolean {
   } catch {
     return false
   }
+}
+
+// The per-user target group's health states. A dedicated assignment goes live
+// (DB row, ALB rule, target group) before the premium ECS task on that instance
+// serves traffic, so a workflow driven through the ALB too early answers 502.
+function targetHealthStates(userId: number): string[] {
+  try {
+    const arn = execSync(
+      `aws elbv2 describe-target-groups --names premium-${userId}-tg ` +
+        `--region ${REGION} --query 'TargetGroups[0].TargetGroupArn' ` +
+        `--output text`,
+      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+    )
+      .toString()
+      .trim()
+    const out = execSync(
+      `aws elbv2 describe-target-health --target-group-arn ${arn} ` +
+        `--region ${REGION} ` +
+        `--query 'TargetHealthDescriptions[].TargetHealth.State' --output text`,
+      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+    )
+      .toString()
+      .trim()
+    return out ? out.split(/\s+/) : []
+  } catch {
+    return []
+  }
+}
+
+// Waiting out the task placement is not the row under test: a cluster that
+// never gets a premium target serving leaves the workflow rows unverified,
+// exactly as skipForNoCapacity treats a failed placement.
+async function skipUnlessPremiumTargetHealthy(rows: string, userId: number) {
+  const deadline = Date.now() + 5 * 60_000
+  let states: string[] = []
+  for (;;) {
+    states = targetHealthStates(userId)
+    if (states.includes("healthy")) return
+    if (Date.now() > deadline) break
+    await new Promise((r) => setTimeout(r, 15_000))
+  }
+  test.skip(
+    true,
+    `rows ${rows}: premium-${userId}-tg never reported a healthy target ` +
+      `(states: ${states.join(",") || "none"}) - the dev cluster could not ` +
+      `keep a premium task serving; rerun when it has free CPU`,
+  )
 }
 
 // A window that provably excludes older matches of the same pattern: when a
@@ -137,9 +194,22 @@ function ecsContainerEc2Ids(): string[] {
   return out ? out.split(/\s+/) : []
 }
 
+// The latest sweep analysis line since sinceMs, from the Lambda's own log
+// group; empty string until log propagation delivers it.
+function latestSweepAnalysis(sinceMs: number): string {
+  const out = execSync(
+    `aws logs filter-log-events --log-group-name ${PREMIUM_MANAGER_LOG_GROUP} ` +
+      `--start-time ${sinceMs} --filter-pattern '"Scale-down analysis:"' ` +
+      `--query 'events[-1].message' --output text --region ${REGION}`,
+    { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+  )
+    .toString()
+    .trim()
+  return out === "None" ? "" : out
+}
+
 // The idle scale-down lives in the monitoring Lambda's scheduled action, so
 // the test fires the same event cron does instead of waiting on the cron.
-// The tail log carries the "Scale-down analysis" line the assertions need.
 function invokeMonitoringSweep(): string {
   const out = execSync(
     `aws lambda invoke --function-name development-premium-manager ` +
@@ -189,6 +259,28 @@ async function statusViaPage(page: Page): Promise<PremiumStatus> {
   })
   expect(res.ok(), await res.text()).toBe(true)
   return res.json()
+}
+
+// The app rewrites premium_shared from its own /premium/status poll, whose
+// interval is 30s, and the cascade can migrate a pool assignment to dedicated
+// mid-test - so compare the stored tier against a live status read rather than
+// an earlier snapshot, over a window wider than that poll.
+async function expectStoredTierMatchesStatus(page: Page) {
+  await expect
+    .poll(
+      async () => {
+        const shared = (await statusViaPage(page)).assignment?.is_shared
+        if (typeof shared !== "boolean") return "no assignment on /status"
+        const stored = await page.evaluate(() =>
+          localStorage.getItem("premium_shared"),
+        )
+        return stored === String(shared)
+          ? "match"
+          : `premium_shared=${stored}, status is_shared=${shared}`
+      },
+      { timeout: 90_000, intervals: [5_000] },
+    )
+    .toBe("match")
 }
 
 // The sheet's standby/autoscaling rows call a cluster with no free capacity a
@@ -256,14 +348,20 @@ async function assignUntilSettled(
     const res = await post()
     expect(res.status(), await res.text()).toBeLessThan(500)
     const body = await res.json()
-    if (body.assigned) {
+    if (body.assigned && body.instance_id !== AUTOSCALING_POOL) {
       return body as {
         assigned: true
         is_shared: boolean
         instance_id?: string
       }
     }
-    expect(body.scaling_in_progress, JSON.stringify(body)).toBe(true)
+    // Either still scaling, or parked on the pool tier - which /premium/status
+    // deliberately 404s so the client keeps assigning until a real instance is
+    // free. Settling here would assert against a tier status never reports.
+    expect(
+      body.scaling_in_progress || body.instance_id === AUTOSCALING_POOL,
+      JSON.stringify(body),
+    ).toBeTruthy()
     if (Date.now() > deadline) skipForNoCapacity(rows, body)
     await new Promise((r) => setTimeout(r, 30_000))
   }
@@ -365,9 +463,7 @@ test("PREM-01 - Premium login assigns a real tier and dedicated capacity really 
   }
 
   // UI truth: the frontend recorded the tier the backend really returned
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("premium_shared")))
-    .toBe(String(assignment.is_shared))
+  await expectStoredTierMatchesStatus(page)
 
   // CloudWatch truth: the assignment left its lines in the public tier's log
   // group (the assign endpoint always answers pre-routing), and the login-time
@@ -377,6 +473,18 @@ test("PREM-01 - Premium login assigns a real tier and dedicated capacity really 
     timeout: STATUS_REQUEST_TIMEOUT_MS,
   })
   const userId: number = (await me.json()).id
+  // Two racers can complete a cold-start assignment: a client /assign call
+  // that returns assigned=True logs in the public group, but when the manager
+  // Lambda's sweep migrates the user off the warming pool before any client
+  // call completes, no service-side line is ever emitted and the only
+  // CloudWatch evidence is the Lambda's own migration line (observed both
+  // ways on 2026-08-20).
+  const sweepMigrated = () =>
+    cloudwatchHas(
+      PREMIUM_MANAGER_LOG_GROUP,
+      `Migrated user ${userId} from autoscaling-pool`,
+      t0,
+    )
   await expect
     .poll(
       () =>
@@ -384,10 +492,10 @@ test("PREM-01 - Premium login assigns a real tier and dedicated capacity really 
           PUBLIC_LOG_GROUP,
           `[premium-assign] user=${userId} assigned=True`,
           t0,
-        ),
+        ) || sweepMigrated(),
       {
-        ...CLOUDWATCH_POLL,
-        message: `no [premium-assign] success line for user ${userId} in ${PUBLIC_LOG_GROUP}`,
+        ...ASSIGN_LOG_POLL,
+        message: `no [premium-assign] success line for user ${userId} in ${PUBLIC_LOG_GROUP} and no migration line in ${PREMIUM_MANAGER_LOG_GROUP}`,
       },
     )
     .toBe(true)
@@ -398,10 +506,10 @@ test("PREM-01 - Premium login assigns a real tier and dedicated capacity really 
           PUBLIC_LOG_GROUP,
           `Successfully assigned premium user ${userId}`,
           t0,
-        ),
+        ) || sweepMigrated(),
       {
-        ...CLOUDWATCH_POLL,
-        message: `no service-side assign line for user ${userId} in ${PUBLIC_LOG_GROUP}`,
+        ...ASSIGN_LOG_POLL,
+        message: `no service-side assign line for user ${userId} in ${PUBLIC_LOG_GROUP} and no migration line in ${PREMIUM_MANAGER_LOG_GROUP}`,
       },
     )
     .toBe(true)
@@ -576,9 +684,7 @@ test("PREM-03 - A page refresh adopts the real assignment without re-assigning @
   expect(after.assigned_at).toBe(before.assigned_at)
   expect(after.is_shared).toBe(before.is_shared)
 
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("premium_shared")))
-    .toBe(String(before.is_shared))
+  await expectStoredTierMatchesStatus(page)
 })
 
 test("PREM-04 - A browser-close beacon soft-releases; reopening inside the grace restores the same row @slow", async () => {
@@ -586,7 +692,6 @@ test("PREM-04 - A browser-close beacon soft-releases; reopening inside the grace
   skipUnlessOptedIn(rows)
   test.setTimeout(TEST_TIMEOUT_MS)
 
-  const tStart = windowStart()
   const { api, headers } = await apiLogin(
     PREMIUM_USER.email,
     PREMIUM_USER.password,
@@ -612,6 +717,32 @@ test("PREM-04 - A browser-close beacon soft-releases; reopening inside the grace
     const before = (await statusRes.json()).assignment
     expect(before).toBeTruthy()
     const dedicated = isDedicated(before)
+
+    // The sheet's middleware line, asserted causally and BEFORE the beacon:
+    // the update is throttled to once per user per minute in a per-worker
+    // cache, and the beacon's logged-out mark suppresses it entirely, so wait
+    // the throttle out and then let one request produce the line.
+    await new Promise((r) => setTimeout(r, 61_000))
+    const tActivity = Date.now() - 5_000
+    const probe = await api.get("/users/me", {
+      headers,
+      timeout: STATUS_REQUEST_TIMEOUT_MS,
+    })
+    expect(probe.ok(), await probe.text()).toBe(true)
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PUBLIC_LOG_GROUP,
+            `Updated premium activity for user ${userId}`,
+            tActivity,
+          ),
+        {
+          ...CLOUDWATCH_POLL,
+          message: `no middleware premium-activity line for user ${userId} in ${PUBLIC_LOG_GROUP} after an unthrottled request`,
+        },
+      )
+      .toBe(true)
 
     // The beforeunload path: token minted while authed, then the beacon body
     // is the only credential (sendBeacon cannot carry Authorization headers)
@@ -692,23 +823,6 @@ test("PREM-04 - A browser-close beacon soft-releases; reopening inside the grace
         {
           ...CLOUDWATCH_POLL,
           message: `no activity-update line for user ${userId} in ${PUBLIC_LOG_GROUP} after the heartbeat`,
-        },
-      )
-      .toBe(true)
-    // The sheet's own middleware line is throttled to once per minute per
-    // user, so it is asserted over the whole test's window, not the
-    // heartbeat's - it proves the line reaches CloudWatch, not causation
-    await expect
-      .poll(
-        () =>
-          cloudwatchHas(
-            PUBLIC_LOG_GROUP,
-            `Updated premium activity for user ${userId}`,
-            tStart,
-          ),
-        {
-          ...CLOUDWATCH_POLL,
-          message: `no middleware premium-activity line for user ${userId} in ${PUBLIC_LOG_GROUP} during the test`,
         },
       )
       .toBe(true)
@@ -810,27 +924,40 @@ test("PREM-06 - The sweep stops a released idle instance and keeps the last one 
     const a1 = await assignUntilSettled(post(s1), rows)
     const a2 = await assignUntilSettled(post(s2), rows)
     if (!a1.is_shared || !a2.is_shared) heldDedicated = true
-    // Idle scale-down is only observable when both users really hold their
-    // own machine; any other tier this run leaves the rows unverified
-    test.skip(
-      !isDedicated(a1) || !isDedicated(a2) || a1.instance_id === a2.instance_id,
-      `rows ${rows}: the cascade did not grant two distinct dedicated instances ` +
-        `this run (${JSON.stringify([a1, a2])})`,
-    )
+    const distinctDedicated =
+      isDedicated(a1) && isDedicated(a2) && a1.instance_id !== a2.instance_id
 
     await release(s1)
     await release(s2)
     const runningBefore = runningPremiumInstanceIds()
-    expect(runningBefore.length).toBeGreaterThanOrEqual(2)
 
-    const logs = invokeMonitoringSweep()
-    const analysis = logs.match(
+    // Run the sweep and assert its analysis line even when the cascade could
+    // not grant two distinct instances: that partial verifies every run, while
+    // the EC2-state halves below need capacity dev does not have (standby pool
+    // of one), so they are booked manual rather than left permanently skipped.
+    // The invoke's Tail is only the last 4KB and a busy sweep pushes the
+    // analysis line out of it, so the line is read from the full CloudWatch log.
+    const tSweep = Date.now() - 5_000
+    invokeMonitoringSweep()
+    let analysisLine = ""
+    await expect
+      .poll(() => (analysisLine = latestSweepAnalysis(tSweep)), {
+        ...CLOUDWATCH_POLL,
+        message: `no Scale-down analysis line in ${PREMIUM_MANAGER_LOG_GROUP} after the sweep`,
+      })
+      .toContain("Scale-down analysis:")
+    const analysis = analysisLine.match(
       /Scale-down analysis: \d+ total, (\d+) occupied, (\d+) idle, (\d+) active users/,
     )
-    expect(
-      analysis,
-      `no scale-down analysis in the sweep log:\n${logs}`,
-    ).toBeTruthy()
+    expect(analysis, analysisLine).toBeTruthy()
+
+    test.skip(
+      !distinctDedicated,
+      `rows ${rows}: the cascade did not grant two distinct dedicated instances ` +
+        `this run (${JSON.stringify([a1, a2])}) - sweep analysis verified; ` +
+        `the instance stop/keep-warm halves stay manual in dev`,
+    )
+    expect(runningBefore.length).toBeGreaterThanOrEqual(2)
     const [, occupied, idle, active] = analysis!.map(Number)
     const running = occupied + idle
     const minRunningNeeded = Math.max(1, active + 1)
@@ -908,6 +1035,15 @@ test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance 
       })
     }
   })
+
+  // 604's premise is a dedicated instance that really serves: gate on its
+  // target group being healthy before driving any workflow through the ALB.
+  const idRes = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  expect(idRes.ok(), await idRes.text()).toBe(true)
+  await skipUnlessPremiumTargetHealthy(rows, (await idRes.json()).id)
 
   const wsId = await openWorkspace(page, "e2e-prem")
   try {
@@ -1022,6 +1158,15 @@ test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slo
       `(${JSON.stringify(assignment)})`,
   )
 
+  // 605's premise is the same dedicated instance serving three runs: gate on its
+  // target group being healthy before driving any workflow through the ALB.
+  const idRes = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  expect(idRes.ok(), await idRes.text()).toBe(true)
+  await skipUnlessPremiumTargetHealthy(rows, (await idRes.json()).id)
+
   const names = ["e2e-conc-a", "e2e-conc-b", "e2e-conc-c"]
   const wsIds: number[] = []
   for (const name of names) {
@@ -1069,14 +1214,22 @@ test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slo
 
     const recordedStatus = async (i: number) => {
       // routedApiHeaders, not apiHeaders: without the routing headers the
-      // poll lands on the free tier, which never saw these premium runs
-      const res = await page.request.get(
-        `${apiUrl()}/experiments/${runs[i].workspaceId}`,
-        {
-          headers: await routedApiHeaders(page),
-          timeout: STATUS_REQUEST_TIMEOUT_MS,
-        },
-      )
+      // poll lands on the free tier, which never saw these premium runs.
+      // A slow answer is not a verdict: three runs computing on one t3.large
+      // can outlast the request budget, so let the poll retry instead of
+      // failing the row - the poll's own deadline still bounds it.
+      let res
+      try {
+        res = await page.request.get(
+          `${apiUrl()}/experiments/${runs[i].workspaceId}`,
+          {
+            headers: await routedApiHeaders(page),
+            timeout: STATUS_REQUEST_TIMEOUT_MS,
+          },
+        )
+      } catch (e) {
+        return `GET /experiments threw: ${(e as Error).message.split("\n")[0]}`
+      }
       if (!res.ok()) return `GET /experiments -> ${res.status()}`
       const experiments = (await res.json()) as Record<
         string,

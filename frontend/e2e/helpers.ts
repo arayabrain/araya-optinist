@@ -22,8 +22,11 @@ const COMPOSE = "docker compose -f docker-compose.dev.multiuser.yml"
 const DOCKER_EXEC_TIMEOUT_MS = 30_000
 
 // The deployed RDS is private and behind a TLS-only proxy, so SQL there runs
-// through SSM on an in-VPC instance that fetches its own credentials.
-const SSM_INSTANCE = process.env.RDS_SSM_INSTANCE || "i-017fc6d527df4ca4d"
+// through SSM on an in-VPC instance that fetches its own credentials. The
+// host is resolved by Name tag because the environment's daily stop/start
+// replaces its ASG instances, so any hardcoded id rots within a day.
+const SSM_INSTANCE_NAME =
+  process.env.RDS_SSM_INSTANCE_NAME || "development-optinist-background"
 const RDS_PROXY_HOST =
   process.env.RDS_PROXY_HOST ||
   "development-optinist-rds-proxy.proxy-cdmeogcuo1v2.ap-northeast-1.rds.amazonaws.com"
@@ -39,6 +42,23 @@ function aws(args: string, input?: string): string {
   })
     .toString()
     .trim()
+}
+
+let ssmInstance = ""
+function ssmInstanceId(): string {
+  if (ssmInstance) return ssmInstance
+  ssmInstance =
+    process.env.RDS_SSM_INSTANCE ||
+    aws(
+      `ec2 describe-instances --region ap-northeast-1 ` +
+        `--filters Name=tag:Name,Values=${SSM_INSTANCE_NAME} ` +
+        `Name=instance-state-name,Values=running ` +
+        `--query 'Reservations[0].Instances[0].InstanceId' --output text`,
+    )
+  if (!ssmInstance || ssmInstance === "None") {
+    throw new Error(`no running ${SSM_INSTANCE_NAME} instance for SSM SQL`)
+  }
+  return ssmInstance
 }
 
 function runSqlOverSsm(sql: string): string {
@@ -68,7 +88,7 @@ function runSqlOverSsm(sql: string): string {
   let commandId: string
   try {
     commandId = aws(
-      `ssm send-command --region ap-northeast-1 --instance-ids ${SSM_INSTANCE} ` +
+      `ssm send-command --region ap-northeast-1 --instance-ids ${ssmInstanceId()} ` +
         `--document-name AWS-RunShellScript --parameters file://${paramsFile} ` +
         `--query Command.CommandId --output text`,
     )
@@ -80,7 +100,7 @@ function runSqlOverSsm(sql: string): string {
   for (;;) {
     const raw = aws(
       `ssm get-command-invocation --region ap-northeast-1 --command-id ${commandId} ` +
-        `--instance-id ${SSM_INSTANCE} --output json`,
+        `--instance-id ${ssmInstanceId()} --output json`,
     )
     const inv = JSON.parse(raw)
     if (inv.Status === "Success")
@@ -193,16 +213,20 @@ export function cloudwatchHas(
 // Throws on CLI failure instead of returning a vacuous empty result, so
 // "the prefix is empty" can never pass on a throttled or misconfigured call
 export function s3ObjectCount(bucket: string, prefix: string): number {
+  // length(Contents), not KeyCount: the CLI auto-paginates list-objects-v2 and
+  // its merged result drops KeyCount, so that query answers "None" even for a
+  // prefix holding objects - which made every caller throw.
   const out = execSync(
     `aws s3api list-objects-v2 --bucket ${bucket} --prefix '${prefix}' ` +
-      `--query 'KeyCount' --output text --region ${AWS_REGION}`,
+      "--query 'length(Contents || `[]`)' " +
+      `--output text --region ${AWS_REGION}`,
     { timeout: 60_000, stdio: ["pipe", "pipe", "pipe"] },
   )
     .toString()
     .trim()
   const count = Number(out)
   if (!Number.isFinite(count)) {
-    throw new Error(`list-objects-v2 KeyCount for ${bucket}/${prefix}: ${out}`)
+    throw new Error(`list-objects-v2 count for ${bucket}/${prefix}: ${out}`)
   }
   return count
 }
@@ -721,8 +745,15 @@ export async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
     await dialog.locator("input").fill("e2e-runall")
     await dialog.getByRole("button", { name: "Run", exact: true }).click()
   }
-  // Both /run/{ws} and /run/{ws}/{uid} answer the run's uid as a bare string
+  // Both /run/{ws} and /run/{ws}/{uid} answer the run's uid as a bare string.
+  // Assert the status first: an ALB 502 answers HTML, and parsing that as the
+  // uid reports a JSON SyntaxError instead of the status that caused it.
   const response = await runStarted
+  expect(
+    response.ok(),
+    `run POST ${response.url()} answered ${response.status()}: ` +
+      `${(await response.text()).slice(0, 200)}`,
+  ).toBe(true)
   return {
     workspaceId: response.url().match(/\/run\/(\d+)/)?.[1] ?? "",
     uid: String(await response.json()),
