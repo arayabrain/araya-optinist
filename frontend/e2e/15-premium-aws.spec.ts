@@ -148,7 +148,7 @@ function transitioningPremiumInstanceCount(): number {
   return Number(
     execSync(
       `aws ec2 describe-instances --region ${REGION} ` +
-        `--filters "Name=tag:Name,Values=*premium*" ` +
+        `--filters "Name=tag:Name,Values=development-premium-*" ` +
         `"Name=instance-state-name,Values=pending,running,stopping,shutting-down" ` +
         `--query 'length(Reservations[].Instances[])' --output text`,
       { timeout: 30_000 },
@@ -245,7 +245,7 @@ const PREMIUM2_USER = {
 function runningPremiumInstanceIds(): string[] {
   const out = execSync(
     `aws ec2 describe-instances --region ${REGION} ` +
-      `--filters "Name=tag:Name,Values=*premium*" ` +
+      `--filters "Name=tag:Name,Values=development-premium-*" ` +
       `"Name=instance-state-name,Values=running" ` +
       `--query 'Reservations[].Instances[].InstanceId' --output text`,
     { timeout: 30_000 },
@@ -318,6 +318,15 @@ function skipUnlessOptedIn(
     isLocalBaseUrl(),
     `rows ${rows}: needs the deployed dev environment; BASE_URL is local`,
   )
+  // The AWS side (ECS, Lambda, EC2 stops in the cooling path) is hardcoded to
+  // development, so a non-development BASE_URL would mutate one environment's
+  // accounts while cooling another's infrastructure.
+  expect(
+    process.env.BASE_URL || "",
+    "this lane only runs against the development environment",
+  ).toContain("development-optinist")
+  // A pass on retry hides real-AWS flakiness from the sign-off sheet
+  expect(test.info().project.retries, "run this lane with --retries 0").toBe(0)
 }
 
 type Assignment = {
@@ -506,6 +515,28 @@ test.afterAll(async () => {
         assignment ?? null,
         `the lane finished with ${user.email} still assigned`,
       ).toBeNull()
+      // The ALB half of the invariant: a hard release can delete the row and
+      // rule but fail the TG deletion, stranding a rule-less TG no sweep can
+      // find (issue #814) - so only a genuine NotFound counts as absence.
+      const me = await api.get("/users/me", {
+        headers,
+        timeout: STATUS_REQUEST_TIMEOUT_MS,
+      })
+      const userId: number = (await me.json()).id
+      try {
+        execSync(
+          `aws elbv2 describe-target-groups --names premium-${userId}-tg ` +
+            `--region ${REGION}`,
+          { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+        )
+        throw new Error(
+          `the lane finished with premium-${userId}-tg still existing`,
+        )
+      } catch (e) {
+        const msg =
+          (e as Error).message + String((e as { stderr?: Buffer }).stderr || "")
+        if (!msg.includes("TargetGroupNotFound")) throw e
+      }
     } finally {
       await api.dispose()
     }

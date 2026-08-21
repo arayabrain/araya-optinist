@@ -338,7 +338,9 @@ test.describe("Registration DB rows", () => {
     test.skip(!!reason, `rows 116 / 117: ${reason}`)
     test.setTimeout(120_000)
 
-    const email = "e2e_unverified_dbrows@test.com"
+    // Per-run address: a reused account makes ensureRegisteredUser a no-op
+    // and the row would then assert stale rows instead of a real registration
+    const email = `e2e_dbrows_${Date.now()}@test.com`
     await ensureRegisteredUser(email, "Test@123", "E2E DB Rows User")
 
     // Inner joins on purpose: a registration that skipped any of these rows

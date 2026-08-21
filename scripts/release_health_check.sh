@@ -152,8 +152,11 @@ fi
 # is a review row, not a failure.
 alarms=$(aws cloudwatch describe-alarms --alarm-name-prefix "${ENV}-optinist-" \
   --state-value ALARM --region "$REGION" \
-  --query "MetricAlarms[].[AlarmName, join(' ', AlarmActions)]" --output text)
-if [ -z "$alarms" ] || [ "$alarms" = "None" ]; then
+  --query "MetricAlarms[].[AlarmName, join(' ', AlarmActions)]" --output text) \
+  || alarms=QUERYFAIL
+if [ "$alarms" = "QUERYFAIL" ]; then
+  fail BT-1106 "describe-alarms failed (CLI error) - empty is not proof of healthy"
+elif [ -z "$alarms" ] || [ "$alarms" = "None" ]; then
   pass BT-1106 "no alarm in ALARM state"
 else
   alarm_ok=1
@@ -211,11 +214,21 @@ metrics=$(aws cloudwatch list-metrics --namespace "$METRIC_NS" \
   --region "$REGION" --query 'Metrics[].MetricName' --output text)
 review BT-1108 "published metric names (~2-week lookback, reference only; DataCleanupCount absent is NORMAL): ${metrics:-none}"
 if echo "$metrics" | grep -q PersistentSyncFailure; then
-  recent=$(aws cloudwatch get-metric-statistics --namespace "$METRIC_NS" \
-    --metric-name PersistentSyncFailure --statistics Sum --period 300 \
-    --start-time "$((NOW - 3600))" --end-time "$NOW" --region "$REGION" \
-    --query 'length(Datapoints)' --output text)
-  if [ "${recent:-0}" -ge 1 ] 2>/dev/null; then
+  # The metric is emitted with ExperimentId/WorkspaceId dimensions and metric
+  # identity includes the dimension set, so a dimensionless query never sees
+  # it: SEARCH across all dimensioned series instead.
+  psf_query=$(mktemp)
+  cat > "$psf_query" <<EOF
+[{"Id":"psf","Expression":"SUM(SEARCH('{$METRIC_NS,ExperimentId,WorkspaceId} MetricName=\"PersistentSyncFailure\"', 'Sum', 300))","Period":300}]
+EOF
+  recent=$(aws cloudwatch get-metric-data --region "$REGION" \
+    --start-time "$((NOW - 3600))" --end-time "$NOW" \
+    --metric-data-queries "file://$psf_query" \
+    --query 'length(MetricDataResults[0].Values)' --output text) || recent=QUERYFAIL
+  rm -f "$psf_query"
+  if [ "$recent" = "QUERYFAIL" ]; then
+    fail BT-1108 "PersistentSyncFailure query failed (CLI error)"
+  elif [ "${recent:-0}" -ge 1 ] 2>/dev/null; then
     fail BT-1108 "PersistentSyncFailure has a datapoint in the last hour"
   else
     pass BT-1108 "PersistentSyncFailure is historical only (no datapoint in 1h)"

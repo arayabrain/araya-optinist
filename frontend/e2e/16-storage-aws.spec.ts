@@ -56,6 +56,14 @@ function skipUnlessOptedIn(rows: string) {
     isLocalBaseUrl(),
     `rows ${rows}: needs the deployed dev environment (remote storage is S3 there, the local stack runs none); BASE_URL is local`,
   )
+  // S3-02 deletes a workspace and its real bucket prefixes: never point this
+  // lane anywhere but the development environment.
+  expect(
+    process.env.BASE_URL || "",
+    "this lane only runs against the development environment",
+  ).toContain("development-optinist")
+  // A pass on retry hides real-AWS flakiness from the sign-off sheet
+  expect(test.info().project.retries, "run this lane with --retries 0").toBe(0)
 }
 
 function bucketExists(bucket: string): boolean {
@@ -237,35 +245,44 @@ test.describe("Import and delete round-trip the real bucket", () => {
     const inputPrefix = `app/studio_data/input/${wsId}/`
     const outputPrefix = `app/studio_data/output/${wsId}/`
 
-    await importSampleData(page, "e2e-s3import")
-    await expect
-      .poll(() => s3ObjectCount(bucket, inputPrefix), {
-        timeout: 120_000,
-        intervals: [10_000],
-        message: `no imported input objects under s3://${bucket}/${inputPrefix}`,
+    let deleted = false
+    const deleteWorkspace = () =>
+      page.request.delete(`${apiUrl()}/workspace/${wsId}`, {
+        headers,
+        timeout: UPLOAD_TIMEOUT_MS,
       })
-      .toBeGreaterThan(0)
+    try {
+      await importSampleData(page, "e2e-s3import")
+      await expect
+        .poll(() => s3ObjectCount(bucket, inputPrefix), {
+          timeout: 120_000,
+          intervals: [10_000],
+          message: `no imported input objects under s3://${bucket}/${inputPrefix}`,
+        })
+        .toBeGreaterThan(0)
 
-    // DELETE /workspace answers 200 even when its S3 cleanup threw (the
-    // server swallows the error and soft-deletes anyway), so the empty
-    // prefix is the assertion, not the status code. s3ObjectCount throws on
-    // a failed CLI call rather than reporting a vacuous empty result.
-    const res = await page.request.delete(`${apiUrl()}/workspace/${wsId}`, {
-      headers,
-      timeout: UPLOAD_TIMEOUT_MS,
-    })
-    expect(res.ok(), await res.text()).toBe(true)
-    await expect
-      .poll(() => s3ObjectCount(bucket, inputPrefix), {
-        timeout: 60_000,
-        intervals: [10_000],
-        message: `input objects survived the workspace delete under s3://${bucket}/${inputPrefix}`,
-      })
-      .toBe(0)
-    expect(
-      s3ObjectCount(bucket, outputPrefix),
-      `output objects survived the workspace delete under s3://${bucket}/${outputPrefix}`,
-    ).toBe(0)
+      // DELETE /workspace answers 200 even when its S3 cleanup threw (the
+      // server swallows the error and soft-deletes anyway), so the empty
+      // prefix is the assertion, not the status code. s3ObjectCount throws on
+      // a failed CLI call rather than reporting a vacuous empty result.
+      const res = await deleteWorkspace()
+      deleted = true
+      expect(res.ok(), await res.text()).toBe(true)
+      await expect
+        .poll(() => s3ObjectCount(bucket, inputPrefix), {
+          timeout: 60_000,
+          intervals: [10_000],
+          message: `input objects survived the workspace delete under s3://${bucket}/${inputPrefix}`,
+        })
+        .toBe(0)
+      expect(
+        s3ObjectCount(bucket, outputPrefix),
+        `output objects survived the workspace delete under s3://${bucket}/${outputPrefix}`,
+      ).toBe(0)
+    } finally {
+      // A failure above must not strand the workspace and its real objects
+      if (!deleted) await deleteWorkspace().catch(() => {})
+    }
   })
 })
 
