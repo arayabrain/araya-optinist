@@ -527,6 +527,33 @@ export function stripeSubscriptionFor(email: string): Record<string, any> {
   return active[0]
 }
 
+// The per-user premium target group's health states, empty when the group does
+// not exist. Shared by the premium lane and the disruptive lane, which both use
+// it as the ALB's own answer to "is this user's instance really serving".
+export function premiumTargetHealth(userId: number): string[] {
+  try {
+    const arn = execSync(
+      `aws elbv2 describe-target-groups --names premium-${userId}-tg ` +
+        `--region ${AWS_REGION} --query 'TargetGroups[0].TargetGroupArn' ` +
+        `--output text`,
+      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+    )
+      .toString()
+      .trim()
+    const out = execSync(
+      `aws elbv2 describe-target-health --target-group-arn ${arn} ` +
+        `--region ${AWS_REGION} ` +
+        `--query 'TargetHealthDescriptions[].TargetHealth.State' --output text`,
+      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+    )
+      .toString()
+      .trim()
+    return out ? out.split(/\s+/) : []
+  } catch {
+    return []
+  }
+}
+
 // A @disruptive test degrades the shared environment while it runs - an outage,
 // a stopped task, a filled disk - so it may only run when nobody else is on it.
 // This asks the environment itself rather than trusting a coordination message:

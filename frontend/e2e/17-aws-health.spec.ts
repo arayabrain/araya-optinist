@@ -104,11 +104,107 @@ function isScaleInTrigger(alarm: { name: string; actions: string[] }): boolean {
   )
 }
 
+// An alarm's own metric, over the window it evaluates. Only ever called for an
+// alarm already in ALARM, so the happy path pays nothing.
+type AlarmDetail = {
+  name: string
+  state: string
+  actions: string[]
+  namespace: string
+  metric: string
+  dimensions: { Name: string; Value: string }[]
+  period: number
+  statistic?: string
+  extendedStatistic?: string
+  threshold: number
+  operator: string
+  evaluationPeriods: number
+}
+
+function breaches(value: number, threshold: number, operator: string): boolean {
+  switch (operator) {
+    case "GreaterThanThreshold":
+      return value > threshold
+    case "GreaterThanOrEqualToThreshold":
+      return value >= threshold
+    case "LessThanThreshold":
+      return value < threshold
+    case "LessThanOrEqualToThreshold":
+      return value <= threshold
+    default:
+      // An operator we do not model must not be silently waved through.
+      return true
+  }
+}
+
+// Is the alarm's metric still breaching right now? An ALARM state lags its
+// metric by evaluation_periods, and treat_missing_data=missing holds the old
+// state indefinitely once the metric stops publishing, so "the state says
+// ALARM" and "the environment is unhealthy" are different questions. A metric
+// that has gone quiet answers "unknown", which counts as still breaching:
+// silence is not evidence of health.
+//
+// get-metric-data, not get-metric-statistics: it takes a percentile and a plain
+// statistic as the same `Stat` string and answers with one flat Values array
+// either way, where get-metric-statistics puts a plain statistic at the
+// datapoint's top level and a percentile inside ExtendedStatistics.
+function stillBreaching(alarm: AlarmDetail): boolean {
+  const window = Math.max(alarm.period * alarm.evaluationPeriods, 300)
+  const query = JSON.stringify([
+    {
+      Id: "m",
+      MetricStat: {
+        Metric: {
+          Namespace: alarm.namespace,
+          MetricName: alarm.metric,
+          Dimensions: alarm.dimensions,
+        },
+        Period: alarm.period,
+        Stat: alarm.extendedStatistic || alarm.statistic || "Maximum",
+      },
+    },
+  ])
+  // The query rides inside single quotes in the shell command below.
+  expect(query, "alarm metadata carries a quote character").not.toContain("'")
+  const values = awsJson<number[]>(
+    `cloudwatch get-metric-data --metric-data-queries '${query}' ` +
+      `--start-time ${new Date(Date.now() - window * 1000).toISOString()} ` +
+      `--end-time ${new Date().toISOString()} ` +
+      `--scan-by TimestampDescending ` +
+      `--query 'MetricDataResults[0].Values'`,
+  )
+  if (!values.length) return true
+  return breaches(values[0], alarm.threshold, alarm.operator)
+}
+
+// The dev scheduler starts this environment at 23:00 UTC Sun-Thu (08:00 JST) and
+// the public tier's health-check grace period is 900s, so for the first half
+// hour the tasks, targets, logs and alarms this lane reads are all mid-boot -
+// the public target group really does hold two unhealthy targets and its alarm
+// really is in ALARM. Grading that is grading the clock: measured 2026-08-19 to
+// 2026-08-23, the alarm sits in ALARM from 23:08 to 23:23 every weekday start.
+// A skip says so; a failure sends someone hunting an outage that ends itself.
+function startUpWindowReason(): string {
+  if (ENV !== "development") return ""
+  const now = new Date()
+  const day = now.getUTCDay()
+  const minutes = now.getUTCHours() * 60 + now.getUTCMinutes()
+  const start = 23 * 60
+  if (day > 4 || minutes < start || minutes >= start + 30) return ""
+  return (
+    `the ${ENV} environment starts on its schedule at 23:00 UTC and is ` +
+    `${minutes - start} minutes into that start-up: its targets, tasks and ` +
+    `alarms are still settling. Rerun after 23:30 UTC (08:30 JST).`
+  )
+}
+
 function skipUnlessDeployed(rows: string) {
   test.skip(
     isLocalBaseUrl(),
     `rows ${rows}: reads the deployed environment's AWS resources; BASE_URL is local`,
   )
+  const booting = startUpWindowReason()
+  test.skip(!!booting, `rows ${rows}: ${booting}`)
   // A BASE_URL from a different environment than HEALTH_ENV would read one
   // environment's AWS resources while calling another one's HTTP endpoints.
   expect(
@@ -575,12 +671,13 @@ test.describe("Alarms, logs and metrics", () => {
     // The prefix is the environment, not "development-optinist": the
     // background, premium and public alarms live outside that narrower one and
     // an ALARM on any of them is exactly what this row is looking for.
-    const alarms = awsJson<
-      { name: string; state: string; actions: string[] }[]
-    >(
+    const alarms = awsJson<AlarmDetail[]>(
       `cloudwatch describe-alarms --alarm-name-prefix ${ENV}- ` +
         `--query 'MetricAlarms[].{name:AlarmName,state:StateValue,` +
-        `actions:AlarmActions}'`,
+        `actions:AlarmActions,namespace:Namespace,metric:MetricName,` +
+        `dimensions:Dimensions,period:Period,statistic:Statistic,` +
+        `extendedStatistic:ExtendedStatistic,threshold:Threshold,` +
+        `operator:ComparisonOperator,evaluationPeriods:EvaluationPeriods}'`,
     )
     // Filtering server-side on ALARM would let a mistyped prefix answer with an
     // empty list, which reads as "nothing is firing" instead of "nothing was
@@ -589,11 +686,88 @@ test.describe("Alarms, logs and metrics", () => {
       alarms.length,
       `no alarm matched the ${ENV}- prefix`,
     ).toBeGreaterThan(EXPECTED_ALARMS.length - 1)
-    const firing = alarms
+    const inAlarm = alarms
       .filter((a) => a.state === "ALARM")
       .filter((a) => a.name !== COST_ALARM && !isScaleInTrigger(a))
+    // An alarm whose metric has already recovered is reported, not failed: with
+    // two evaluation periods the state trails the metric by minutes, so a run
+    // that lands in that gap was describing the clock. The scheduled 08:00 JST
+    // start-up is the routine case - the public tier boots with no healthy
+    // target, and the alarm stays in ALARM for a few minutes after the targets
+    // come back.
+    const recovering = inAlarm.filter((a) => !stillBreaching(a))
+    if (recovering.length) {
+      console.log(
+        `alarms in ALARM whose metric has already recovered (not treated as ` +
+          `firing): ${recovering.map((a) => a.name).join(", ")}`,
+      )
+    }
+    const firing = inAlarm
+      .filter((a) => stillBreaching(a))
       .map((a) => `${a.name} (actions: ${a.actions.join(" ") || "none"})`)
-    expect(firing).toEqual([])
+    expect(
+      firing,
+      "alarms whose metric is breaching right now. If this names " +
+        "public-tg-unhealthy-hosts within ~25 minutes of the scheduled 08:00 " +
+        "JST start-up, the environment is still booting rather than broken",
+    ).toEqual([])
+  })
+
+  // Row 824's first half, read-only. The alarm's own history records the
+  // datapoints CloudWatch evaluated when it fired, so this asserts the alarm
+  // fires because ALB-published data crossed the threshold - the half of the row
+  // a `set-alarm-state` test can never prove, since a hand-written state carries
+  // a caller-supplied reason and no evaluated datapoints. Costs nothing and
+  // disturbs nothing: this environment produces a real transition every weekday
+  // start-up. The row's remaining half, traffic continuing to the surviving
+  // target, needs the outage itself (ASG-01).
+  test("HEALTH-27 - the public TG alarm's last ALARM was driven by real datapoints", () => {
+    skipUnlessDeployed("824")
+
+    const name = `${ENV}-optinist-public-tg-unhealthy-hosts`
+    const history = awsJson<{ summary: string; data: string }[]>(
+      `cloudwatch describe-alarm-history --alarm-name ${name} ` +
+        `--history-item-type StateUpdate --max-items 30 ` +
+        `--query 'AlarmHistoryItems[].{summary:HistorySummary,data:HistoryData}'`,
+    )
+    const into = history.find((item) => item.summary.includes("to ALARM"))
+    // Alarm history is retained for two weeks. An environment that has not been
+    // unhealthy in that time has nothing to read, which is not a failure.
+    test.skip(
+      !into,
+      `row 824: ${name} has no ALARM transition in its retained history`,
+    )
+
+    const record = JSON.parse(into!.data) as {
+      newState: {
+        stateValue: string
+        stateReason: string
+        stateReasonData: {
+          threshold: number
+          evaluatedDatapoints: { value?: number }[]
+        }
+      }
+    }
+    expect(record.newState.stateValue).toBe("ALARM")
+    // CloudWatch's own wording for an evaluation. set-alarm-state puts the
+    // caller's string here instead.
+    expect(
+      record.newState.stateReason,
+      "the transition was written by hand, not evaluated from the metric",
+    ).toContain("Threshold Crossed")
+
+    const evaluated = record.newState.stateReasonData.evaluatedDatapoints
+      .map((d) => d.value)
+      .filter((v): v is number => typeof v === "number")
+    expect(
+      evaluated.length,
+      "the ALARM transition carries no evaluated datapoints",
+    ).toBeGreaterThan(0)
+    expect(
+      Math.max(...evaluated),
+      "every evaluated datapoint was within the threshold, so the alarm " +
+        "fired on something other than its metric",
+    ).toBeGreaterThan(record.newState.stateReasonData.threshold)
   })
 
   test("HEALTH-12 - the free and public tiers log live and hit no fatal fault", () => {

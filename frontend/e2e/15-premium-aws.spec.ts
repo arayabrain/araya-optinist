@@ -14,11 +14,13 @@ import {
   apiHeaders,
   apiLogin,
   apiUrl,
+  awsJson,
   cloudwatchHas,
   importSampleData,
   isLocalBaseUrl,
   login,
   openWorkspace,
+  premiumTargetHealth,
   reproduceTutorial,
   routedApiHeaders,
   runSql,
@@ -98,28 +100,35 @@ function tgExists(userId: number): boolean {
 // The per-user target group's health states. A dedicated assignment goes live
 // (DB row, ALB rule, target group) before the premium ECS task on that instance
 // serves traffic, so a workflow driven through the ALB too early answers 502.
-function targetHealthStates(userId: number): string[] {
-  try {
-    const arn = execSync(
-      `aws elbv2 describe-target-groups --names premium-${userId}-tg ` +
-        `--region ${REGION} --query 'TargetGroups[0].TargetGroupArn' ` +
-        `--output text`,
-      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
-    )
-      .toString()
-      .trim()
-    const out = execSync(
-      `aws elbv2 describe-target-health --target-group-arn ${arn} ` +
-        `--region ${REGION} ` +
-        `--query 'TargetHealthDescriptions[].TargetHealth.State' --output text`,
-      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
-    )
-      .toString()
-      .trim()
-    return out ? out.split(/\s+/) : []
-  } catch {
-    return []
-  }
+// The premium service's task on a given instance, as the console's Tasks tab
+// shows it. Rows 1203/1204 are written against that view.
+function premiumTaskStatusOn(instanceId: string): string {
+  const arns = awsJson<{ taskArns: string[] }>(
+    `ecs list-tasks --cluster ${CLUSTER} --service-name ${PREMIUM_SERVICE}`,
+  ).taskArns
+  if (!arns.length) return "none"
+  const tasks = awsJson<{
+    tasks: { lastStatus: string; containerInstanceArn?: string }[]
+  }>(`ecs describe-tasks --cluster ${CLUSTER} --tasks ${arns.join(" ")}`).tasks
+  const cis = tasks
+    .map((t) => t.containerInstanceArn)
+    .filter((a): a is string => !!a)
+  if (!cis.length) return "none"
+  const owners = awsJson<{
+    containerInstances: {
+      containerInstanceArn: string
+      ec2InstanceId: string
+    }[]
+  }>(
+    `ecs describe-container-instances --cluster ${CLUSTER} ` +
+      `--container-instances ${cis.join(" ")}`,
+  ).containerInstances
+  const mine = owners.find((c) => c.ec2InstanceId === instanceId)
+  if (!mine) return "none"
+  return (
+    tasks.find((t) => t.containerInstanceArn === mine.containerInstanceArn)
+      ?.lastStatus ?? "none"
+  )
 }
 
 // Waiting out the task placement is not the row under test: a cluster that
@@ -129,7 +138,7 @@ async function skipUnlessPremiumTargetHealthy(rows: string, userId: number) {
   const deadline = Date.now() + 5 * 60_000
   let states: string[] = []
   for (;;) {
-    states = targetHealthStates(userId)
+    states = premiumTargetHealth(userId)
     if (states.includes("healthy")) return
     if (Date.now() > deadline) break
     await new Promise((r) => setTimeout(r, 15_000))
@@ -697,6 +706,23 @@ test("PREM-02 - Assign, release, and reassign round-trip the real backend @slow"
       ).toBe(true)
     }
 
+    // Row 1203: the grant is backed by a premium ECS task really RUNNING on the
+    // instance it named, within the sheet's 8 minutes. A warm pool means the
+    // task predates the assignment rather than being created by it, which is
+    // why the assertion is on the task's state and not on its age.
+    const grantedInstance = status.assignment!.instance_id
+    if (grantedInstance?.startsWith("i-")) {
+      await expect
+        .poll(() => premiumTaskStatusOn(grantedInstance), {
+          timeout: 480_000,
+          intervals: [15_000],
+          message:
+            `no RUNNING premium task on ${grantedInstance} within 8 minutes ` +
+            `of the assignment`,
+        })
+        .toBe("RUNNING")
+    }
+
     // Hard release (the logout path): the row must be gone immediately,
     // not soft-released into the 120s grace. freshWindow, not windowStart:
     // the previous test's afterEach hard-released this same user, and its
@@ -704,6 +730,10 @@ test("PREM-02 - Assign, release, and reassign round-trip the real backend @slow"
     const tRelease = freshWindow(
       PUBLIC_LOG_GROUP,
       `Released premium user ${userId}`,
+    )
+    const tReleasing = freshWindow(
+      PUBLIC_LOG_GROUP,
+      `Releasing (hard) premium user ${userId}`,
     )
     const released = await release()
     expect(released.ok(), await released.text()).toBe(true)
@@ -725,6 +755,23 @@ test("PREM-02 - Assign, release, and reassign round-trip the real backend @slow"
         {
           ...CLOUDWATCH_POLL,
           message: `no release line for user ${userId} in ${PUBLIC_LOG_GROUP}`,
+        },
+      )
+      .toBe(true)
+    // Row 1207 wants both halves: the request going out as well as the instance
+    // coming back. This is the "Releasing (hard) premium user {id} (uid: ...)
+    // from assigned instance" line that precedes it.
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PUBLIC_LOG_GROUP,
+            `Releasing (hard) premium user ${userId}`,
+            tReleasing,
+          ),
+        {
+          ...CLOUDWATCH_POLL,
+          message: `no "Releasing (hard)" line for user ${userId} in ${PUBLIC_LOG_GROUP}`,
         },
       )
       .toBe(true)
