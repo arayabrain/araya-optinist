@@ -646,12 +646,51 @@ test.describe("Public Dataview", () => {
   test("DV-10 - Public dataview loads without authentication", async ({
     page,
   }) => {
+    // Row 813: the grid's thumbnails are served by /api/visualizations/*, which
+    // only reaches the public tier through an ALB rule keyed on the
+    // DATAVIEW_PUBLIC_REQUEST header the app sends. A broken rule leaves the
+    // page loading fine with every image missing, so the statuses are the row.
+    const thumbnails: number[] = []
+    page.on("response", (r) => {
+      if (r.url().includes("/api/visualizations/thumbnail/")) {
+        thumbnails.push(r.status())
+      }
+    })
+
     const response = await page.goto("/public")
     expect(response?.status()).toBe(200)
     await expect(
       page.locator("text=OptiNiSt Public Repository").first(),
     ).toBeVisible({ timeout: 15_000 })
     await expect(page).not.toHaveURL(/\/login/)
+
+    await expect
+      .poll(() => thumbnails.length, {
+        timeout: 30_000,
+        message:
+          "the public grid requested no thumbnails - if the grid is empty this " +
+          "environment has no published records, which is a missing fixture " +
+          "rather than a broken ALB rule (publish one, or run DV-20 first)",
+      })
+      .toBeGreaterThan(0)
+    // The poll returns on the FIRST response, so filtering here judged one or
+    // two thumbnails and let a partial regression through. Wait for the grid to
+    // stop requesting before reading the whole set.
+    let settled = 0
+    await expect
+      .poll(
+        () => {
+          const stable = thumbnails.length === settled
+          settled = thumbnails.length
+          return stable
+        },
+        { timeout: 30_000, intervals: [2_000] },
+      )
+      .toBe(true)
+    expect(
+      thumbnails.filter((status) => status !== 200),
+      `thumbnail responses that were not 200 (of ${thumbnails.length})`,
+    ).toEqual([])
   })
 
   test("DV-11 - Public API is open, private API rejects a bad token", async ({

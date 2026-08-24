@@ -8,14 +8,15 @@ import {
   authHeaders,
   confirmDialog,
   ensureTutorialRecords,
+  ERROR_RED,
   isLocalBaseUrl,
   localStackSkipReason,
   login,
   logout,
   mockPremiumAssignment,
   openWorkspace,
-  reproduceTutorial,
   REPO_ROOT,
+  reproduceTutorial,
   runInBackend,
   runSql,
   sqlLiteral,
@@ -602,6 +603,10 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       '[role="dialog"]:has-text("Cancel Subscription")',
     )
     await expect(confirm).toBeVisible({ timeout: 15_000 })
+    await expect(
+      confirm.locator(".MuiDialogTitle-root"),
+      "the dialog names the destructive action, not just the page",
+    ).toHaveText("Cancel Subscription")
     await expect(confirm.getByText("Data Storage Notice:")).toBeVisible()
     await expect(confirm.getByText(/stored for 30 days/)).toBeVisible()
     // The Stripe-backed "Yes, Cancel Subscription" path stays manual
@@ -620,12 +625,19 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await loginKeepWarnings(page)
 
     await page.goto("/account")
-    await expect(page.locator("text=Premium").first()).toBeVisible({
-      timeout: 15_000,
-    })
-    // Cancelled but not yet lapsed: the caption says Expires, not Expired, and
-    // the only action is Manage - there is nothing to upgrade to
-    await expect(page.locator("text=/\\(Expires on/").first()).toBeVisible()
+    // The status field itself, not the word anywhere on the page
+    await expect(page.locator('[data-testid="account-plan-name"]')).toHaveText(
+      "Premium",
+      { timeout: 15_000 },
+    )
+    // Cancelled but not yet lapsed: the caption says Expires, not Expired, names
+    // the stored expiration, and the only action is Manage - there is nothing to
+    // upgrade to
+    const expires = runSql(
+      `SELECT DATE_FORMAT(expiration, '%c/%e/%Y') FROM subscription_users
+         WHERE user_id = ${userId};`,
+    )
+    await expect(page.locator(`text=(Expires on ${expires})`)).toBeVisible()
     await expect(page.locator('button:has-text("Manage")')).toBeVisible()
     await expect(page.locator('button:has-text("Upgrade")')).toBeHidden()
   })
@@ -802,10 +814,23 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
 
     await login(page, email, USER.password, false)
     await page.goto("/account")
-    await page.locator('button:has-text("Delete Account")').click()
+    const deleteAccount = page.locator('button:has-text("Delete Account")')
+    await expect(deleteAccount).toBeEnabled()
+    await expect(
+      deleteAccount,
+      "the deletion option is styled as the destructive one",
+    ).toHaveCSS("background-color", ERROR_RED)
+    await deleteAccount.click()
 
     const confirm = dialog(page)
-    await expect(confirm.getByText("This action cannot be undone")).toBeVisible(
+    // The free-tier warning, exactly: the two subscription lines belong to the
+    // premium copy and must not appear for an account that has no subscription
+    // to lose.
+    await expect(confirm.locator("li")).toHaveText(
+      [
+        "All your data (workspaces, experiments, files) will be permanently deleted",
+        "This action cannot be undone",
+      ],
       { timeout: 15_000 },
     )
     await confirm.locator('input[placeholder="DELETE"]').fill("DELETE")
@@ -958,5 +983,104 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
         `SELECT COUNT(*) FROM free_user_assignments WHERE user_id = ${userId};`,
       ),
     ).toBe("1")
+  })
+
+  // The cleanup job's selection, asked of the real code against the real
+  // database. Picking the wrong user here deletes a live user's data, so the
+  // boundary is the safety-critical part; the deletion it then performs is
+  // covered by test_cleanup_job.py and is deliberately not run against this
+  // account's own files.
+  // `userId` above is a SQL subquery, not a value, so the numeric id has to be
+  // read out separately to compare against what the job returns.
+  function numericUserId(): number {
+    const id = runSql(
+      `SELECT id FROM users WHERE email = '${sqlLiteral(USER.email)}';`,
+    ).trim()
+    expect(id, `no local row for ${USER.email}`).toMatch(/^\d+$/)
+    return Number(id)
+  }
+
+  function eligibleUserIds(): number[] {
+    const out = runInBackend(
+      "poetry run python -",
+      "from studio.app.common.core.background.cleanup_job import DataCleanupJob\n" +
+        "print([u[0] for u in DataCleanupJob._get_users_for_cleanup()])\n",
+    )
+    const list = out.slice(out.lastIndexOf("["))
+    return JSON.parse(list) as number[]
+  }
+
+  function stampLogout(minutesAgo: number, activeWorkflows = 0) {
+    runSql(
+      `UPDATE free_user_assignments
+         SET logged_out_at = UTC_TIMESTAMP() - INTERVAL ${minutesAgo} MINUTE,
+             active_workflow_count = ${activeWorkflows},
+             last_workflow_start = UTC_TIMESTAMP() - INTERVAL 45 MINUTE
+         WHERE user_id = ${userId};`,
+    )
+  }
+
+  test("LC-26 - Cleanup selects a logged-out free user only past the grace period", () => {
+    // Each eligibleUserIds() boots the studio app in the container.
+    test.setTimeout(240_000)
+    setPlan(1, "INTERVAL 1 MONTH")
+    seedFreeAssignment(true)
+
+    // The grace period is 60 minutes, so half an hour out is still protected.
+    stampLogout(30)
+    const inGrace = eligibleUserIds()
+    // The job limits to MAX_USERS_PER_RUN with no ORDER BY, so at the cap an
+    // absence could be truncation rather than the grace period.
+    expect(inGrace.length, "eligible set is at the job's cap").toBeLessThan(50)
+    expect(
+      inGrace,
+      "a user inside the grace period must not be selected",
+    ).not.toContain(numericUserId())
+
+    stampLogout(61)
+    expect(
+      eligibleUserIds(),
+      "a user past the grace period must be selected",
+    ).toContain(numericUserId())
+  })
+
+  test("LC-27 - A workflow still marked active blocks cleanup until it is recovered", () => {
+    // Each eligibleUserIds() boots the studio app in the container.
+    test.setTimeout(240_000)
+    setPlan(1, "INTERVAL 1 MONTH")
+    seedFreeAssignment(true)
+
+    // Past the grace period, but the count says a workflow is running. Deleting
+    // now would pull data out from under it, so the job must pass the user over
+    // however long ago they logged out.
+    stampLogout(61, 1)
+    expect(
+      eligibleUserIds(),
+      "a user with an active workflow must never be selected",
+    ).not.toContain(numericUserId())
+
+    // The count is stale, not real: last_workflow_start is 45 minutes old and
+    // the threshold is 30, which is what a crashed run leaves behind. Recovery
+    // resets it and the user becomes collectable again.
+    const recovered = runInBackend(
+      "poetry run python -",
+      "from studio.app.common.core.workflow.workflow_count_recovery import " +
+        "recover_stale_workflow_counts\n" +
+        "print(recover_stale_workflow_counts()[0])\n",
+    )
+    expect(
+      Number(recovered.trim().split("\n").pop()),
+      "users recovered",
+    ).toBeGreaterThan(0)
+    expect(
+      runSql(
+        `SELECT active_workflow_count FROM free_user_assignments
+           WHERE user_id = ${userId};`,
+      ),
+    ).toBe("0")
+    expect(
+      eligibleUserIds(),
+      "after recovery the user must be selectable again",
+    ).toContain(numericUserId())
   })
 })

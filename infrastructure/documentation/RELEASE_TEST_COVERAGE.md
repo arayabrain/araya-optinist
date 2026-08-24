@@ -7,7 +7,7 @@
 - **Mostly Playwright** - these sheets are the browser-testable release checklist, so nearly every entry is an e2e ID from `frontend/e2e/`; a few premium rows are covered by jest instead
 - **Release sheets only** - the `Araya-Optinist System Test Cases Template` sheets are a separate, much larger scheme mapped in `infrastructure/documentation/SYSTEM_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the System sheet's `6204` concurrency race
-- **Fully manual sheets:** the Stripe-dashboard tail of 08 Subscription; 11 AWS Monitoring's probes are scripted (`make release_health_check`) with its judgement rows printed for review
+- **Fully manual sheets:** the Stripe-dashboard tail of 08 Subscription. 11 AWS Monitoring is automated by the `17-aws-health` e2e lane, which asserts against the live environment (`HEALTH_ENV=development|subscr`) rather than printing rows for review
 
 ---
 
@@ -148,11 +148,11 @@ registration validation cases.
 | BT-308    | Run without input file         | WF-07; WF-08; `RunButtons.test.tsx`                                     |
 | BT-309    | Run button cooldown            | `RunButtons.test.tsx` ("Run request cooldown": repeated clicks send one request, and `RUN_REQUEST_DEBOUNCE_MS` is pinned to 3000); WF-08 covers the snackbar's own dedupe |
 | BT-310    | Tab navigation                 | WF-09                                                                   |
-| BT-311    | File tree display              | FILE-01                                                                 |
+| BT-311    | File tree display              | FILE-01 (the sample file by name, with the shape read off it)            |
 | BT-312    | File filter with wildcards     | FILE-02                                                                 |
 | BT-313    | Check all / uncheck all        | FILE-03                                                                 |
 | BT-314    | Sidebar toggle                 | FILE-04                                                                 |
-| BT-315    | HDF5 file dialog               | UPL-02                                                                  |
+| BT-315    | HDF5 file dialog               | UPL-02 (tree contents) + UPL-08 (a dataset path is selectable)           |
 | BT-316    | CSV parameter dialog           | UPL-01                                                                  |
 
 Note: both validations assign the same variable and the input-file one is
@@ -202,8 +202,8 @@ finished signal (DV-12 reload-polls the grid).
 | BT-504    | Copy multiple records   | REC-08 |
 | BT-505    | Delete single record    | REC-04 |
 | BT-506    | Delete multiple records | REC-09 |
-| BT-507    | Download workflow file  | REC-05 |
-| BT-508    | Download Snakemake file | REC-06 |
+| BT-507    | Download workflow file  | REC-05 (the payload, not just the download event: `nodeDict`, a node type, the `<label>_<suffix>` node keys and the algorithm path each one runs - a download event fires for a zero-byte body just as happily) |
+| BT-508    | Download Snakemake file | REC-06 (the payload: a `rules:` mapping whose entries each name an `input:`, `output:` and `type:`. Note it is a Snakemake *config*, not a Snakefile, so there are no `rule` statements to look for) |
 | BT-509    | Download NWB file       | REC-07 |
 
 Note (BT-509 costs a real run, so it is `@slow`): an NWB file exists only after
@@ -283,15 +283,15 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 
 | Sheet row   | Subject                            | Test                                                                                  |
 | ----------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| BT-801      | Free Plan card display             | SUB-01                                                                                |
-| BT-802      | Free account status display        | SUB-02                                                                                |
+| BT-801      | Free Plan card display             | SUB-01 (every assertion scoped to the plan card it belongs to, and the tax caption asserted on Premium only - a page-wide `$20` used to satisfy this row from either card) |
+| BT-802      | Free account status display        | SUB-02 (the status field read exactly via `account-plan-name`, plus no expiry caption anywhere - `text=Free` matched the word anywhere on the page before) |
 | BT-803      | No invoice for Free user           | SUB-03                                                                                |
 | BT-804      | Premium plan status display        | SUB-04                                                                                |
 | BT-805      | Premium account status display     | SUB-05                                                                                |
 | BT-806      | Expiration date text               | LC-11 (exact caption per state; sheet says "renews on" but the UI text is "Renew on") |
 | BT-807      | Verify Premium in the DB           | `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium` (partial - the row a successful checkout writes, incl. the expiration coming from Stripe; the row as phrased targets the deployed RDS) |
-| BT-810      | Stripe ID registered in the DB     | `test_checkout_session_tax_config.py::TestSeededPlanValuesMatchTheConfig::test_no_seeded_plan_is_missing_a_stripe_id` (partial - every seeded plan carries a product and price id; the docker DB, not the deployed one) |
-| BT-808, BT-809, BT-811 | Stripe dashboard verification | manual                                                                     |
+| BT-810      | Stripe ID registered in the DB     | `test_checkout_session_tax_config.py::TestSeededPlanValuesMatchTheConfig::test_no_seeded_plan_is_missing_a_stripe_id` (partial - every seeded plan carries a product and price id; the docker DB, not the deployed one); AUDIT-01 / AUDIT-07 (the stored ids really resolve to active Stripe objects) |
+| BT-808, BT-809, BT-811 | Stripe dashboard verification | AUDIT-01 / AUDIT-05 (`frontend/e2e/18-stripe-audit.spec.ts`: the catalogue, the live subscription with its price and next billing date, and each stored id resolved to an active Stripe object - all by GET, so the dashboard read is no longer the only way to see it) |
 
 ---
 
@@ -299,7 +299,7 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 
 | Sheet row                                 | Subject                                                              | Test                                                                         |
 | ----------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| BT-901                                    | Upgrade transitions to checkout                                      | SUB-13 (session created, browser leaves for the checkout URL, route-mocked; the real Stripe-hosted page stays manual) |
+| BT-901                                    | Upgrade transitions to checkout                                      | SUB-13 (session created, browser leaves for the checkout URL, route-mocked; the real Stripe-hosted page stays manual); CHECKOUT-01 (**opt-in**, `RUN_CHECKOUT_PROBE=1`: the endpoint really mints a `cs_test_` session on checkout.stripe.com that Stripe serves 200, two clicks mint two sessions, and creating one buys nothing) |
 | BT-906                                    | Prevent direct access to /thanks                                     | SUB-06                                                                       |
 | BT-907                                    | Subscription page updated to Premium                                 | SUB-04 (standing premium account)                                            |
 | BT-908                                    | Account Profile updated to Premium                                   | SUB-05 (standing premium account)                                            |
@@ -310,7 +310,9 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 | BT-920                                    | Reactivation option                                                  | LC-13 (banner + Continue Plan visible; clicking it is Stripe-backed, manual) |
 | BT-922                                    | Expired premium user buttons                                         | LC-06 (Upgrade + Manage both visible)                                        |
 | BT-925                                    | Delete test user account                                             | LC-16 (per-run throwaway account; active=0 + deletion records completed)     |
-| BT-902..905, 909..914, 923, 924           | checkout flow on the Stripe-hosted page, DB/Stripe verification      | manual                                                                       |
+| BT-909..914, BT-923                       | DB / Stripe verification after a purchase                            | AUDIT-01..08 (`frontend/e2e/18-stripe-audit.spec.ts`). The scan's own `RELEASE_MAP` records which system rows evidence each: BT-909 from 2018 + 2009, BT-910 from 2016, BT-911 from 930 + 931, BT-912 from 2013 + 2016, BT-913 from 932, BT-914 from 934 + 923, BT-923 from 920 + 921. Run the scan with `--cases release` to get the report keyed by these BT numbers |
+| BT-902                                    | The hosted checkout page loads its form                              | CHECKOUT-02 (**opt-in**: the real hosted page, asserting the card / expiry / CVC / name / postal fields, the `Sandbox` badge, and our own amounts - $20.00 subtotal, `JCT (10%)` $2.00, $22.00 total) |
+| BT-903..905, 924                          | completing a card payment on the hosted page                         | manual, and **not automatable by this route**: filling the card and clicking Subscribe fires `api.hcaptcha.com/getcaptcha`, so Stripe gates the submit behind a CAPTCHA. Every field validates and the button is enabled; the flow stops at the challenge. Probed 2026-08-21 |
 
 ---
 
@@ -337,6 +339,6 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 
 | Sheet row           | Subject                             | Test                                                |
 | ------------------- | ----------------------------------- | --------------------------------------------------- |
-| BT-1110             | Public Dataview access + auth guard | DV-11 (API half; point BASE_URL/API_URL at the env) |
+| BT-1110             | Public Dataview access + auth guard | DV-11 (API half; point BASE_URL/API_URL at the env); HEALTH-18 (the same contract read through the deployed ALB: open dataview 200, bad token refused, authed routers unmounted) |
 | BT-1109             | premium assign/release CloudWatch lines | e2e `PREM-01` / `PREM-02` (**@prem**; partial - checks 1-2: `Successfully assigned premium user` and `Released premium user` read from the public tier's log group after a real assign and hard release) |
-| BT-1101..1108, 1111 | AWS CLI / console probes            | scripted: `make release_health_check` (`scripts/release_health_check.sh`, read-only; `ENV=development\|subscr`, `APP_URL=<frontend origin>` for the curl rows). Deterministic rows PASS/FAIL; the rows the sheet leaves to judgement (BT-1103's stopped-task history, BT-1107's expected-only errors, BT-1108's metric listing, BT-1111's layout spot-check) print REVIEW with their data and still need eyes. Running the script IS the manual check for a release round |
+| BT-1101..1108, 1111 | AWS CLI / console probes            | e2e `HEALTH-01`..`HEALTH-19` (`frontend/e2e/17-aws-health.spec.ts`, read-only, ~3 min; `HEALTH_ENV=development\|subscr`, `BASE_URL=<frontend origin>`). Asserts rather than reviews, including the four rows the sheet left to judgement: BT-1103 checks stopped tasks for a non-routine `stoppedReason`, BT-1106 tolerates a scale-in trigger by reading its `AlarmActions` instead of its name, BT-1108 asserts both scheduler jobs logged a run and that `PersistentSyncFailure` has no recent datapoint, and BT-1111 compares every bucket the database names against S3. BT-1107 is deliberately narrowed: a shared environment earns ERROR lines legitimately (declined-card webhooks, PUB-04's own error report, cancelled runs), so the lane asserts on fatal markers - lost database, OOM, killed worker - not on the presence of an ERROR. BT-1101's TLS half runs only where `BASE_URL` is https, which on dev it is not. Replaced `scripts/release_health_check.sh` |

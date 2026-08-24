@@ -1,8 +1,12 @@
 import { test, expect, Browser, Locator, Page } from "@playwright/test"
 
 import {
+  CLOUDWATCH_POLL,
+  PUBLIC_LOG_GROUP,
   apiHeaders,
   apiUrl,
+  cloudwatchHas,
+  isLocalBaseUrl,
   ensureCompletedTutorialRun,
   ensurePublishableAccount,
   ensureWorkspaceId,
@@ -101,15 +105,12 @@ test.describe("Public instance", () => {
 test.describe("Frontend error reporting", () => {
   test.use({ storageState: freeStorageState() })
 
-  test("PUB-04 - A thrown error is shipped to /log-report/frontend-errors", async ({
-    page,
-  }) => {
-    skipWithoutCreds()
+  // Throws a uniquely marked error and waits for the batch carrying it. The
+  // reporter flushes every 5s, so the marker is what picks this error's POST
+  // out rather than whichever one happens to land first.
+  async function shipMarkedError(page: Page): Promise<string> {
     await gotoDashboard(page)
-
     const marker = `e2e-pub04 ${Date.now()}`
-    // The reporter flushes its queue every 5s; match this error's batch by
-    // its unique marker rather than taking the first POST
     const shipped = page.waitForResponse(
       (r) =>
         r.request().method() === "POST" &&
@@ -133,6 +134,39 @@ test.describe("Frontend error reporting", () => {
     }
     const entry = batch.errors.find((e) => e.message.includes(marker))
     expect(entry?.level).toBe("error")
+    return marker
+  }
+
+  test("PUB-04 - A thrown error is shipped to /log-report/frontend-errors", async ({
+    page,
+  }) => {
+    skipWithoutCreds()
+    await shipMarkedError(page)
+  })
+
+  // Row 829's other half, as its own row rather than an inline branch: a 200
+  // only means the endpoint accepted the batch. Kept separate so a local run
+  // reports it skipped instead of passing PUB-04 with this half never run.
+  test("PUB-05 - The shipped error reaches the public tier's log group", async ({
+    page,
+  }) => {
+    test.skip(
+      isLocalBaseUrl(),
+      "reads the deployed tier's CloudWatch log group; BASE_URL is local",
+    )
+    skipWithoutCreds()
+    test.setTimeout(360_000)
+
+    const since = Date.now() - 60_000
+    const marker = await shipMarkedError(page)
+    // /log-report/* is an ALB rule onto the public tier, so that is where it
+    // must appear.
+    await expect
+      .poll(() => cloudwatchHas(PUBLIC_LOG_GROUP, marker, since), {
+        ...CLOUDWATCH_POLL,
+        message: `${marker} never reached ${PUBLIC_LOG_GROUP}`,
+      })
+      .toBe(true)
   })
 })
 
