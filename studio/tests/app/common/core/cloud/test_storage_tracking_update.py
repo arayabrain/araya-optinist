@@ -138,7 +138,5 @@ async def test_scan_leaves_the_row_alone_when_no_active_user_owns_it():
     # The row keeps its value: no UPDATE statement was executed, only the
     # advisory lock's GET_LOCK / RELEASE_LOCK
     statements = [str(call.args[0]).lower() for call in db.execute.call_args_list]
-    assert not any(
-        "update" in statement for statement in statements
-    ), statements
+    assert not any("update" in statement for statement in statements), statements
     assert any("release_lock" in statement for statement in statements), statements

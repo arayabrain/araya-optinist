@@ -889,8 +889,7 @@ def main():
                 "PASS" if addr.get("country") else "FAIL",
                 f"customer address: {addr_fields or 'absent'}"
                 + (f", country={addr.get('country')}" if addr.get("country") else ""),
-                cus_lines
-                + [f"  address={ {k: v for k, v in addr.items() if v} }"],
+                cus_lines + [f"  address={ {k: v for k, v in addr.items() if v} }"],
             )
             add(
                 "09",

@@ -88,7 +88,7 @@ function expectAccountIsCountable(): void {
   ).toBe(1)
 }
 
-// Fulfilment is webhook-driven, so a handler that wrongly fulfils on
+// Fulfillment is webhook-driven, so a handler that wrongly fulfils on
 // checkout.session.created or .expired lands after a single read has passed.
 async function expectStillUnbought(before: {
   plans: number

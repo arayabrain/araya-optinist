@@ -106,12 +106,14 @@ def test_a_free_plan_is_free_whatever_its_expiration_says():
 
 
 def test_no_expiration_or_no_plan_reads_as_free():
-    assert derive_subscription_status(
-        None, SubscriptionPlanIds.PREMIUM, None, NOW
-    ) == (SubscriptionStatus.FREE.value, None)
-    assert derive_subscription_status(
-        NOW + timedelta(days=5), None, None, NOW
-    ) == (SubscriptionStatus.FREE.value, None)
+    assert derive_subscription_status(None, SubscriptionPlanIds.PREMIUM, None, NOW) == (
+        SubscriptionStatus.FREE.value,
+        None,
+    )
+    assert derive_subscription_status(NOW + timedelta(days=5), None, None, NOW) == (
+        SubscriptionStatus.FREE.value,
+        None,
+    )
 
 
 def test_an_unrecognised_plan_falls_back_to_its_name():

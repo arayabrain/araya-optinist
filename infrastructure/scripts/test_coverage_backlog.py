@@ -15,7 +15,7 @@ A MANUAL or PARTIAL row whose Notes carry an "Adjudicated"/"Re-graded"/
 
   python3 infrastructure/scripts/test_coverage_backlog.py            # summary
   python3 infrastructure/scripts/test_coverage_backlog.py --rows     # every open row
-  python3 infrastructure/scripts/test_coverage_backlog.py --decided  # what was retired, and why
+  python3 infrastructure/scripts/test_coverage_backlog.py --decided  # retired, and why
 """
 import argparse
 import csv
@@ -54,7 +54,9 @@ def classify(header, row):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", action="store_true", help="list every open row")
-    ap.add_argument("--decided", action="store_true", help="list retired rows and the reason")
+    ap.add_argument(
+        "--decided", action="store_true", help="list retired rows and the reason"
+    )
     args = ap.parse_args()
 
     totals = {"full": 0, "decided": 0, "open": 0}
@@ -72,18 +74,34 @@ def main():
             totals[verdict] += 1
             cell = dict(zip(header, row))
             if verdict == "open" and args.rows:
-                listed.append(f"    {row[0]:8s} {cell.get('Coverage','').strip():8s}"
-                              f" {cell.get('Subject','')[:60]}")
+                listed.append(
+                    f"    {row[0]:8s} {cell.get('Coverage','').strip():8s}"
+                    f" {cell.get('Subject','')[:60]}"
+                )
             if verdict == "decided" and args.decided:
-                reason = next((line for line in cell.get("Notes", "").split("\n")
-                               if DECIDED.search(line)), "")
+                reason = next(
+                    (
+                        line
+                        for line in cell.get("Notes", "").split("\n")
+                        if DECIDED.search(line)
+                    ),
+                    "",
+                )
                 listed.append(f"    {row[0]:8s} {reason[:150]}")
-        print(f"{kind} {name:42s} {counts['full']:5d} {counts['decided']:8d} {counts['open']:5d}")
+        print(
+            f"{kind} {name:42s} {counts['full']:5d} "
+            f"{counts['decided']:8d} {counts['open']:5d}"
+        )
         for line in listed:
             print(line)
-    print(f"\n{'TOTAL':46s} {totals['full']:5d} {totals['decided']:8d} {totals['open']:5d}")
-    print(f"automated (FULL + PARTIAL counted by the sheets' own rule): see "
-          f"SYSTEM_TEST_COVERAGE.md; this script counts what is left to do.")
+    print(
+        f"\n{'TOTAL':46s} {totals['full']:5d} "
+        f"{totals['decided']:8d} {totals['open']:5d}"
+    )
+    print(
+        "automated (FULL + PARTIAL counted by the sheets' own rule): see "
+        "SYSTEM_TEST_COVERAGE.md; this script counts what is left to do."
+    )
 
 
 if __name__ == "__main__":

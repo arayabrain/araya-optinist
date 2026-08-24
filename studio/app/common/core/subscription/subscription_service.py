@@ -82,9 +82,7 @@ def derive_subscription_status(
     if plan_id == SubscriptionPlanIds.PREMIUM:
         if expiration > now:
             return SubscriptionStatus.PREMIUM.value, days_until(expiration)
-        grace_end = expiration + timedelta(
-            days=SubscriptionPeriods.GRACE_PERIOD_DAYS
-        )
+        grace_end = expiration + timedelta(days=SubscriptionPeriods.GRACE_PERIOD_DAYS)
         if now <= grace_end:
             return SubscriptionStatus.LIMIT_GRACE.value, days_until(grace_end)
         return SubscriptionStatus.EXPIRED.value, None
