@@ -43,12 +43,20 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 REGION = "ap-northeast-1"
+# The 5-minute sync job publishes these on every run, so their absence is a
+# real fault.
 EXPECTED_METRICS = [
     "ExperimentsSynced",
     "SyncErrors",
     "SyncErrorRate",
+]
+# The cleanup job returns early when no user is eligible, without publishing, so
+# on a quiet environment these fall outside list-metrics' lookback and their
+# absence means nothing. Reported, never failed on.
+OPTIONAL_METRICS = [
     "DataCleanupCount",
     "CleanupErrors",
+    "CleanupKept",
 ]
 CURRENCY = {1: "usd", 2: "jpy"}
 
@@ -149,7 +157,9 @@ def audit_queries(user_id):
             "(SELECT su.user_id FROM subscription_users su"
             " JOIN users u ON u.id=su.user_id"
             " JOIN subscription_user_accounts sua ON sua.user_id=su.user_id"
-            " WHERE su.plan_id=2 AND u.active=1"
+            # An e2e checkout probe leaves the freshest subscription of all, so
+            # without this the audit retargets onto a throwaway account.
+            " WHERE su.plan_id=2 AND u.active=1 AND u.email NOT LIKE 'e2e%'"
             " ORDER BY su.updated_at DESC LIMIT 1)"
         )
     )
@@ -371,6 +381,12 @@ def main():
     )
     ap.add_argument(
         "-o", "--out", default="manual_test_scan_report.md", help="report path"
+    )
+    ap.add_argument(
+        "--json",
+        metavar="PATH",
+        help="also write {row: {status, evidence}} as JSON, for a caller that"
+        " asserts per row instead of reading the report",
     )
     args = ap.parse_args()
     prod = args.check == "production"
@@ -862,6 +878,29 @@ def main():
                 cus_lines,
             )
 
+            # Rows 914 / 919: the billing address Stripe collected on the
+            # session (billing_address_collection=required, row 910) has to end
+            # up on the customer, or the tax it charged rests on nothing.
+            addr = cus.get("address") or {}
+            addr_fields = [f for f in ("country", "postal_code") if addr.get(f)]
+            add(
+                "09",
+                "914",
+                "PASS" if addr.get("country") else "FAIL",
+                f"customer address: {addr_fields or 'absent'}"
+                + (f", country={addr.get('country')}" if addr.get("country") else ""),
+                cus_lines
+                + [f"  address={ {k: v for k, v in addr.items() if v} }"],
+            )
+            add(
+                "09",
+                "919",
+                "PASS" if addr.get("country") else "FAIL",
+                f"address readable via the API: {bool(addr.get('country'))}"
+                " (its rendering in the dashboard stays manual)",
+                cus_lines,
+            )
+
             subs = stripe_get(
                 key, "/v1/subscriptions", customer=cus_id, status="all", limit=10
             ).get("data", [])
@@ -1155,6 +1194,7 @@ def main():
     )
     names = {m["MetricName"] for m in metrics}
     missing = [m for m in EXPECTED_METRICS if m not in names]
+    absent_optional = [m for m in OPTIONAL_METRICS if m not in names]
     sync_dims = {
         d["Name"]
         for m in metrics
@@ -1295,8 +1335,9 @@ def main():
         "2027",
         "PASS" if not missing else "FAIL",
         f"namespace {namespace}:"
-        f" present={sorted(names & set(EXPECTED_METRICS))},"
+        f" present={sorted(names & set(EXPECTED_METRICS + OPTIONAL_METRICS))},"
         f" missing={missing or 'none'},"
+        f" idle-cleanup-absent={absent_optional or 'none'},"
         f" ExperimentsSynced dims={sorted(sync_dims) or 'none'};"
         f" {'; '.join(dp) or 'no datapoints today'}",
         cw_detail,
@@ -1480,6 +1521,16 @@ def main():
 
     with open(args.out, "w") as f:
         f.write("\n".join(lines))
+    if args.json:
+        with open(args.json, "w") as f:
+            # Keyed by row, but a row emitted twice in one pass would silently
+            # drop the first verdict, and the caller asserts per row.
+            out = {}
+            for sheet, row, status, evidence, _ in results:
+                if row in out:
+                    raise SystemExit(f"row {row} reported twice; JSON would drop one")
+                out[row] = {"sheet": sheet, "status": status, "evidence": evidence}
+            json.dump(out, f, indent=2)
     fails = sum(1 for r in results if r[2] == "FAIL")
     print(f"\nreport written to {args.out}: {len(results)} rows, {fails} FAIL")
     return 1 if fails else 0

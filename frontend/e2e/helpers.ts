@@ -27,7 +27,7 @@ const DOCKER_EXEC_TIMEOUT_MS = 30_000
 // replaces its ASG instances, so any hardcoded id rots within a day.
 const SSM_INSTANCE_NAME =
   process.env.RDS_SSM_INSTANCE_NAME || "development-optinist-background"
-const RDS_PROXY_HOST =
+export const RDS_PROXY_HOST =
   process.env.RDS_PROXY_HOST ||
   "development-optinist-rds-proxy.proxy-cdmeogcuo1v2.ap-northeast-1.rds.amazonaws.com"
 const RDS_SECRET_ID =
@@ -176,6 +176,10 @@ export const PREMIUM_LOG_GROUP =
   "/ecs/development-premium-optinist-cloud-taskdef"
 export const PUBLIC_LOG_GROUP = "/ecs/development-public-optinist-cloud-taskdef"
 
+// MUI's default error.main, which the theme does not override: the colour the
+// destructive buttons must actually be.
+export const ERROR_RED = "rgb(211, 47, 47)"
+
 export const CLOUDWATCH_POLL = { timeout: 240_000, intervals: [15_000] }
 
 // Small clock-skew slack for --start-time windows. Deliberately tight: a
@@ -195,8 +199,12 @@ export function cloudwatchHas(
   pattern: string,
   sinceMs: number,
 ): boolean {
-  if (pattern.includes('"')) {
-    throw new Error(`cloudwatchHas pattern must not contain '"': ${pattern}`)
+  // The pattern is interpolated into a single-quoted shell argument wrapped in
+  // double quotes, so either quote character breaks out of it.
+  if (/["']/.test(pattern)) {
+    throw new Error(
+      `cloudwatchHas pattern must not contain a quote: ${pattern}`,
+    )
   }
   const out = execSync(
     `aws logs filter-log-events --log-group-name ${logGroup} ` +
@@ -208,6 +216,16 @@ export function cloudwatchHas(
     .toString()
     .trim()
   return out !== "" && out !== "None"
+}
+
+// One read-only AWS CLI call, parsed. Callers pass their own --query.
+export function awsJson<T>(args: string): T {
+  return JSON.parse(
+    execSync(`aws ${args} --output json --region ${AWS_REGION}`, {
+      timeout: 60_000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).toString(),
+  )
 }
 
 // Throws on CLI failure instead of returning a vacuous empty result, so
@@ -251,13 +269,33 @@ export async function routedApiHeaders(
   return headers
 }
 
-export function runInBackend(cmd: string, input?: string) {
-  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+// Compose subcommands the backend-restart spec needs (restart, logs). Kept
+// here so the compose file and the exec timeout have one definition.
+export function runCompose(
+  args: string,
+  timeoutMs = DOCKER_EXEC_TIMEOUT_MS,
+): string {
+  return execSync(`${COMPOSE} ${args}`, {
+    cwd: REPO_ROOT,
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: timeoutMs,
+    // A few thousand log lines with tracebacks blow the 1MB default, which
+    // surfaces as an opaque compose failure rather than "the log is too big".
+    maxBuffer: 64 * 1024 * 1024,
+  })
+    .toString()
+    .trim()
+}
+
+export function runInBackend(cmd: string, input?: string): string {
+  return execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
     cwd: REPO_ROOT,
     stdio: ["pipe", "pipe", "pipe"],
     input,
     timeout: DOCKER_EXEC_TIMEOUT_MS,
   })
+    .toString()
+    .trim()
 }
 
 // Registration leaves the address unverified, and an unverified account cannot
@@ -373,6 +411,180 @@ export function isLocalBaseUrl(): boolean {
   return /localhost|127\.0\.0\.1/.test(
     process.env.BASE_URL || "http://localhost:3000",
   )
+}
+
+// ---------------------------------------------------------------------------
+// Stripe reads. Same key source as infrastructure/scripts/manual_test_scan.py:
+// the environment's own secret, GET only, and never a live key. Specs that need
+// to compare our stored state against Stripe's use this rather than trusting
+// the app's own view of it.
+// ---------------------------------------------------------------------------
+
+// An account whose subscription is really backed by Stripe. This is NOT
+// TEST_PREMIUM_*: the deployed lane's premium accounts are premium in our
+// database only and own no Stripe customer at all, so every Stripe-side
+// assertion about them is vacuous. Configure it to enable the invoice and
+// cancel-round-trip rows; they skip with a reason while it is unset.
+export const STRIPE_USER = {
+  email: process.env.TEST_STRIPE_EMAIL || "",
+  password: process.env.TEST_STRIPE_PASSWORD || "",
+}
+
+export function stripeAccountSkipReason(): string {
+  if (!STRIPE_USER.email || !STRIPE_USER.password) {
+    return (
+      "needs TEST_STRIPE_EMAIL/TEST_STRIPE_PASSWORD - an account with a real " +
+      "Stripe-backed subscription. TEST_PREMIUM_* and TEST_PREMIUM2_* cannot " +
+      "serve as-is: they are premium in the database only and own no Stripe " +
+      "customer"
+    )
+  }
+  // Being configured is not the same as being usable. Checking here turns
+  // "pointed at an account with no Stripe data" into a skip that says so,
+  // rather than a failure deep inside a helper looking for the subscription.
+  const customers = stripeGet("/v1/customers", {
+    email: STRIPE_USER.email,
+    limit: 3,
+  }).data as Record<string, unknown>[]
+  if (!customers.length) {
+    return (
+      `${STRIPE_USER.email} owns no Stripe customer, so there is no ` +
+      "subscription or invoice to read. Either point TEST_STRIPE_* at an " +
+      "account that has one, or give this account a real subscription in the " +
+      "environment's Stripe test account"
+    )
+  }
+  return ""
+}
+
+let stripeKeyCache = ""
+
+export function stripeKey(): string {
+  if (stripeKeyCache) return stripeKeyCache
+  // Same secret the app and manual_test_scan.py read: <env>-optinist/stripe/config
+  // HEALTH_ENV is the deployed lanes' environment selector, so it decides this
+  // too: a dev default here would audit dev's Stripe during a prod release run.
+  const env =
+    process.env.STRIPE_SECRET_ENV ||
+    `${process.env.HEALTH_ENV || "development"}-optinist`
+  const secret = JSON.parse(
+    aws(
+      `secretsmanager get-secret-value --region ${AWS_REGION} ` +
+        `--secret-id ${env}/stripe/config --query SecretString --output text`,
+    ),
+  )
+  const key = secret.secret_key
+  if (!key) throw new Error(`${env}/stripe/config has no secret_key`)
+  // A live key would make these reads production reads; the scan refuses one
+  // without --allow-live and so does this.
+  if (key.startsWith("sk_live")) {
+    throw new Error("refusing to read Stripe with a live key")
+  }
+  stripeKeyCache = key
+  return key
+}
+
+export function stripeGet(
+  apiPath: string,
+  params: Record<string, string | number> = {},
+): Record<string, unknown> {
+  const query = Object.entries(params)
+    .map(
+      ([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`,
+    )
+    .join("&")
+  const url = `https://api.stripe.com${apiPath}${query ? "?" + query : ""}`
+  const out = execSync(
+    `curl -sS -H "Authorization: Bearer $STRIPE_KEY" ${JSON.stringify(url)}`,
+    {
+      env: { ...process.env, STRIPE_KEY: stripeKey() },
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 30_000,
+    },
+  ).toString()
+  const body = JSON.parse(out)
+  if (body.error) {
+    throw new Error(`Stripe GET ${apiPath}: ${JSON.stringify(body.error)}`)
+  }
+  return body
+}
+
+// The one Stripe subscription belonging to an account, by email.
+export function stripeSubscriptionFor(email: string): Record<string, any> {
+  const customers = stripeGet("/v1/customers", { email, limit: 10 })
+    .data as Record<string, any>[]
+  expect(
+    customers.length,
+    `Stripe customers for ${email} (exactly one expected)`,
+  ).toBe(1)
+  const subs = stripeGet("/v1/subscriptions", {
+    customer: customers[0].id,
+    status: "all",
+    limit: 10,
+  }).data as Record<string, any>[]
+  const active = subs.filter((s) => ["active", "trialing"].includes(s.status))
+  expect(active.length, `active Stripe subscriptions for ${email}`).toBe(1)
+  return active[0]
+}
+
+// A @disruptive test degrades the shared environment while it runs - an outage,
+// a stopped task, a filled disk - so it may only run when nobody else is on it.
+// This asks the environment itself rather than trusting a coordination message:
+// any recently-active session belonging to an account that is not one of ours is
+// somebody's work in progress.
+const IDLE_WINDOW_MINUTES = 30
+
+export function otherActiveUsers(): string[] {
+  const ours = [
+    process.env.TEST_USER_EMAIL,
+    process.env.TEST_PREMIUM_EMAIL,
+    process.env.TEST_PREMIUM2_EMAIL,
+    process.env.TEST_ADMIN_EMAIL,
+    process.env.TEST_LIFECYCLE_EMAIL,
+    process.env.TEST_STRIPE_EMAIL,
+  ]
+    .filter(Boolean)
+    .map((email) => `'${sqlLiteral(email as string)}'`)
+  const exclude = ours.length ? `AND u.email NOT IN (${ours.join(", ")})` : ""
+  const rows = runSql(
+    `SELECT u.email FROM free_user_assignments f JOIN users u ON u.id = f.user_id
+       WHERE f.logged_out_at IS NULL
+         AND f.last_activity > UTC_TIMESTAMP() - INTERVAL ${IDLE_WINDOW_MINUTES} MINUTE
+         ${exclude}
+     UNION
+     SELECT u.email FROM premium_user_assignments p JOIN users u ON u.id = p.user_id
+       WHERE p.last_activity > UTC_TIMESTAMP() - INTERVAL ${IDLE_WINDOW_MINUTES} MINUTE
+         ${exclude};`,
+  )
+  return rows
+    ? rows
+        .split("\n")
+        .map((r) => r.trim())
+        .filter(Boolean)
+    : []
+}
+
+// Returns the reason a @disruptive spec must not run right now, or "" if the
+// environment is idle enough to disturb.
+export function disruptiveSkipReason(): string {
+  // A local or unset BASE_URL must skip, not sail past the in-use check below.
+  if (isLocalBaseUrl()) {
+    return "scales the deployed development tiers; BASE_URL is local or unset"
+  }
+  if (!process.env.RUN_DISRUPTIVE) {
+    return "degrades the shared environment; opt in with RUN_DISRUPTIVE=1"
+  }
+  const sql = sqlSkipReason()
+  if (sql) {
+    // Refusing to disrupt is the safe answer when we cannot tell who is on.
+    return `cannot check whether the environment is in use: ${sql}`
+  }
+  const others = otherActiveUsers()
+  return others.length
+    ? `the environment is in use by ${others.join(", ")} ` +
+        `(active within ${IDLE_WINDOW_MINUTES} minutes) - disrupting it now would ` +
+        `break their session`
+    : ""
 }
 
 // Returns the reason a docker-driven spec cannot run here, or "" if it can.
@@ -571,7 +783,7 @@ export async function apiLogin(
     const body = await res.text()
     await api.dispose()
     throw new Error(
-      `TEST_USER_EMAIL/TEST_USER_PASSWORD rejected by ${apiUrl()}/auth/login ` +
+      `${email} rejected by ${apiUrl()}/auth/login ` +
         `(${res.status()}): ${body}`,
     )
   }

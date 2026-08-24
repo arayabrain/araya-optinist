@@ -38,6 +38,60 @@ EOF
 yarn test:e2e
 ```
 
+## Tests that disturb the environment
+
+Some invariants can only be observed by disturbing the thing under test: a
+restart, a scale-to-zero, a stopped task, a full disk. Those tests cannot share
+a run with anything else, because what they disturb is exactly what every other
+spec depends on - and on the shared dev environment, what a colleague depends on
+too.
+
+Two mechanisms, and they compose:
+
+**The `@disruptive` tag**, for anything that degrades the environment while it
+runs. Filtered out of every run unless `RUN_DISRUPTIVE=1`, the same way `@slow`
+is filtered on cost. Tag the test where it naturally lives rather than moving it
+into a file of its own - the outage rows belong beside the public specs, the
+stop-task rows beside the premium lane - and one variable governs the whole
+family wherever it sits.
+
+A tag alone only asks nicely, so `disruptiveSkipReason()` also asks the
+environment: it reads `free_user_assignments` and `premium_user_assignments` for
+any session active in the last 30 minutes belonging to an account that is not
+one of ours, and skips naming those addresses if it finds one. Refusing to
+disrupt is also the answer when the database cannot be reached at all, since not
+knowing who is on is not the same as nobody being on.
+
+**A file of its own**, for the narrower case where the disturbance breaks the
+test runner's own fixtures rather than the environment's users - `20-boot`
+restarts the backend container, which every other local spec is mid-conversation
+with. Those keep their own variable (`RUN_RESTART=1`).
+
+The three lanes that predate the tag keep their own variables, because the sheets
+cite them by marker in dozens of rows and re-citing those buys nothing:
+`15-premium-aws` (`RUN_PREMIUM_AWS=1`, the `@prem` marker), `16-storage-aws`
+(`RUN_S3_AWS=1`, the `S3-xx` markers) and `19-checkout-probe`
+(`RUN_CHECKOUT_PROBE=1`). New disruptive work should use the tag.
+
+Whichever mechanism, three rules hold:
+
+1. **Restore what you disturbed, or disturb only your own data.** A restart
+   comes back; a per-user S3 object is the test account's own. Assert the
+   restore rather than doing it best-effort - a spec that leaves the free tier
+   scaled to zero has done more damage than a red test ever would.
+2. **`--retries 0`.** A pass-on-retry hides real flakiness in something that
+   mutated state; the second attempt no longer starts from the same place.
+3. **Never in a default or scheduled lane.** `yarn test:e2e` must not restart a
+   container or scale a service, however long anyone is prepared to wait.
+
+Sheet rows whose Action asks for a disruption that nothing covers yet stay
+`MANUAL` with the reason in Notes rather than being quietly dropped. The
+outstanding families are the free-tier outage rows (system sheet 08: scale the
+free service to 0 and assert the public shell survives), the premium disruption
+rows (sheet 06-2: `ecs stop-task` on a user's own premium task, the
+`reconcile_instance` invoke, stop / terminate of a premium instance), the ENOSPC
+row (2030) and the public EC2 termination row (827).
+
 ## Test environment
 
 Tests run against any deployment of the app; pick one:
@@ -101,6 +155,10 @@ simple `KEY=VALUE` lines). Nothing is ever committed.
 | `RUN_SLOW`                                         | optional                          | include the `@slow` workflow-run tests                                                                                                                                                                                             |
 | `RUN_PREMIUM_AWS`                                  | optional, deployed env only       | opt into the `15-premium-aws` lane (PREM-01..09): real premium assignments, real AWS asserts; run with `--retries 0`                                                                                                               |
 | `RUN_S3_AWS`                                       | optional, deployed env only       | opt into the `16-storage-aws` lane (S3-01..03): real-S3 asserts on the per-user buckets, no premium capacity; run with `--retries 0`                                                                                                |
+| `RUN_RESTART`                                      | optional, local stack only        | opt into the `20-boot` lane (BOOT-01): restarts the backend container to observe a real boot; nothing else may share the stack while it runs                                                                                        |
+| `RUN_DISRUPTIVE`                                   | optional                          | include tests tagged `@disruptive`, which degrade the shared environment while they run. They additionally refuse to start if the database shows another user active in the last 30 minutes                                          |
+| `RUN_STRIPE_WRITE`                                 | optional, deployed env only       | opt into `21-stripe-roundtrip` (STRIPE-01): cancels a real Stripe subscription at period end and reactivates it; run with `--retries 0` and nothing else reading that account                                                        |
+| `TEST_STRIPE_EMAIL` / `TEST_STRIPE_PASSWORD`       | optional, deployed env only       | an account whose subscription is really backed by Stripe, i.e. one that owns a Stripe customer with a live subscription. **Not** `TEST_PREMIUM_*` or `TEST_PREMIUM2_*`: those are premium in the database only and own no Stripe customer at all, so every Stripe-side assertion about them would pass against nothing. Enables AUDIT-09 and STRIPE-01, which otherwise skip - and the skip reason distinguishes "unset" from "set, but that account has no Stripe customer". This account does **not** need to be premium-routable: expect `/users/me/premium/status` to report `is_premium: false` for it, because a premium subscription expiring within 24 hours reads as "Limit Grace" (integer-day truncation in `crud_users.py`) and dev bills Premium daily. That is a known app bug, not a broken account - don't "fix" this slot by pointing it at an e2e account with no Stripe data |
 | `TEST_PREMIUM2_EMAIL` / `TEST_PREMIUM2_PASSWORD`   | optional                          | second premium account, needed only by PREM-06 (two-user scale-down)                                                                                                                                                               |
 
 The account must exist in **both** Firebase (email/password sign-in,
@@ -205,6 +263,24 @@ npx playwright test -g "WS-06"   # one test case
 yarn test:e2e:headed             # watch the browser
 yarn test:e2e:report             # open the last HTML report
 yarn test:e2e:cleanup            # delete the run's e2e-* data, on demand
+
+# read-only AWS + RDS health lane; needs a deployed BASE_URL and AWS creds
+npx playwright test e2e/17-aws-health.spec.ts --retries 0
+# same lane against production. The RDS and Stripe selectors are mandatory off
+# development - their defaults point at development, and the lane refuses to run
+# rather than report development's data as production's.
+HEALTH_ENV=subscr BASE_URL=https://www.araya-optinist.com \
+  RDS_PROXY_HOST=... RDS_SECRET_ID=... RDS_SSM_INSTANCE_NAME=... \
+  STRIPE_SECRET_ENV=subscr-optinist \
+  npx playwright test e2e/17-aws-health.spec.ts --retries 0
+# read-only Stripe + DB audit lane (runs manual_test_scan.py and asserts it)
+npx playwright test e2e/18-stripe-audit.spec.ts --retries 0
+# real Stripe checkout hand-off, no card entered (writes to Stripe: opt-in)
+RUN_CHECKOUT_PROBE=1 npx playwright test e2e/19-checkout-probe.spec.ts --retries 0
+# restarts the local backend to watch it boot; nothing else may share the stack
+RUN_RESTART=1 npx playwright test e2e/20-boot.spec.ts --retries 0
+# type-check the e2e specs (the app tsconfig only covers src/)
+yarn typecheck:e2e
 ```
 
 - Tests run sequentially in one worker (they share account state).
@@ -283,22 +359,28 @@ Understanding these makes failures much easier to read:
 
 | Spec file          | IDs         | Covers                                                                                                      |
 | ------------------ | ----------- | ----------------------------------------------------------------------------------------------------------- |
-| `01-auth`          | AUTH-01..17 | login, logout, session persistence, unverified email and resend, header nav, registration validation, the logged-out guard on protected routes |
+| `01-auth`          | AUTH-01..19 | login, logout, session persistence, unverified email and resend, header nav, registration validation, the logged-out guard on protected routes |
 | `02-workspace`     | WS-01..07   | workspace create, list, navigate, storage reload, one refresh per session, delete                           |
 | `03-workflow`      | WF-01..09   | sample data import, reproduce, tutorial runs (`@slow`), run validation, tabs                                |
-| `04-record`        | REC-01..09  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                                     |
+| `04-record`        | REC-01..10  | record list, parameters, copy, delete, workflow/Snakemake/NWB downloads                                     |
 | `05-file-handling` | FILE-01..06 | file tree dialog, wildcard filter, check-all, sidebar toggle, sync progress indicators (file tree and CSV settings) |
 | `06-dataview`      | DV-01..20   | table, filters (incl. workspace, private and public), sort order, pagination, dialogs, public access, thumbnails, publish, concurrent public reads, rapid-toggle last-action-wins and concurrent-publish version integrity. DV-01..08 and DV-12..20 are `@slow` (DV-20 additionally needs the local docker DB and skips elsewhere); DV-09/10/11/18 need no records and run by default |
-| `07-subscription`  | SUB-01..19  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs, browser-Back out of checkout, the upgrade click-storm guard, two-tab premium consistency |
+| `07-subscription`  | SUB-01..20  | free and premium plan UI, per-card feature lists, responsive widths, `/thanks` guard, invoice page, cancel / reactivate, checkout and portal hand-offs, browser-Back out of checkout, the upgrade click-storm guard, two-tab premium consistency |
 | `08-storage`       | STO-01..09  | under-quota login, the over-quota modal, dedicated / shared / still-scaling premium assignment snackbars, storage-bar colours by threshold, warning-dismissal persistence and its logout reset, the reload button's in-flight state |
 | `09-visualize`     | VIS-01..05  | sidebar info, Cell-ROI plot, frame playback, second plot type, ROI editor                                   |
-| `10-uploads`       | UPL-01..07  | CSV, HDF5 and MAT node dialogs, image / HDF5 / MAT upload                                                   |
-| `11-lifecycle`     | LC-01..25   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle, plus free-logout DB bookkeeping and its re-login reset. Local stack only |
+| `10-uploads`       | UPL-01..08  | CSV, HDF5 and MAT node dialogs (each structure tree asserted by the datasets, types, shapes and sizes the sample files actually carry, and a data path selected in both, which requires moving the selection off the one the tutorial arrived with), image / HDF5 / MAT upload                                                   |
+| `11-lifecycle`     | LC-01..27   | plan, quota, expiry, cancellation / renewal and inactivity lifecycle, plus free-logout DB bookkeeping and its re-login reset, and the cleanup job's own selection asked of the real MySQL: the 60-minute grace boundary (LC-26) and a stale `active_workflow_count` blocking collection until `recover_stale_workflow_counts()` clears it (LC-27). The deletion the job then performs is left to `test_cleanup_job.py` - running it would delete the test account's own files. Local stack only |
 | `12-admin`         | ADMIN-01..22 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, the create / edit / role-change / demotion happy paths and their validation, the subscription and storage columns against the DB, one real deletion of a throwaway account, and re-registration of the deleted address. All mutations land on disposable per-run accounts. Local stack only |
 | `13-account`       | ACC-01..06  | Account Profile self-service: change-password modal (validation, wrong current password, a real change verified at login) and the inline name edit, on a disposable per-run account. Local stack only |
 | `14-public`        | PUB-01..06  | public-instance behaviour: deep-link SPA shell and client routing, `/health`, chunk-load auto-reload, frontend error reporting, and anonymous public-page loads of published HDF5 / MAT / CSV / TIFF input data. PUB-05/06 are `@slow` (they mint and publish real records) |
 | `15-premium-aws`   | PREM-01..09 | real premium assignment against the deployed dev environment: a real login assigns a real tier (ECS scale-up asserted on the live cluster), the assign / hard-release / reassign round-trip with the per-user ALB target group's lifecycle asserted, reload adoption without a re-assign, the browser-close beacon's soft release and in-grace restore, free-tier routing-header omission on the wire, the monitoring sweep's idle scale-down with its last-warm floor, and a full tutorial run on the real dedicated instance with per-user S3 outputs, plus three concurrent runs on one dedicated instance and the premium `subscription_users` row read from the real RDS over SSM. The lane also reads CloudWatch: the assign / release / beacon / activity / limit-warning / workflow log lines are asserted with `aws logs filter-log-events`. All `@slow` and additionally skipped unless `RUN_PREMIUM_AWS=1` - the lane costs money, mutates shared dev infra, and must run with `--retries 0`. The test sheets cite these with the `@prem` marker: not in the weekly schedule at this stage, running the lane is a manual call |
 | `16-storage-aws`   | S3-01..03   | real-S3 truth for the storage rows on the deployed env, no premium capacity: the per-user bucket answers `head-bucket` and a 200 upload's object answers `head-object` (the API swallows S3 failures, so only the S3-side read proves it), the merged listing labels the upload `synced` and the sync endpoint round-trips it, sample import lands input objects and the workspace delete really empties the prefixes, and an anonymous public read reproduces a freshly published run whose outputs are first asserted directly in the bucket (404 before publish, 200 after, 202 tolerated while the publish sync completes). All `@slow` and additionally skipped unless `RUN_S3_AWS=1`; run with `--retries 0` |
+| `17-aws-health`    | HEALTH-01..26 | read-only truth for the AWS Monitoring sheets and the System 20 integrity rows, against the deployed env: every tier's ECS service ACTIVE and fully placed, its tasks healthy and none stopped on an error, the free and public target groups all-healthy, the ALB's per-tier routing rules (Bearer to the free tier, `/auth/*` and the static assets to the public one, and each of them evaluated before the Bearer catch-all), both ASGs in service, RDS available with its own alarms evaluating `OK`, a TLS-encrypted DB connection, the published-data EFS available and encrypted, every bucket the database names really present in S3, every declared alarm still existing and none of the health ones firing, the free and public tiers logging live and error-free, the background scheduler running both its jobs, the whole metric namespace published and current, log-group retention set on all four tiers, the nightly cleanup rule enabled, and the public HTTP contract (shell and open API 200, bad token refused, authed routes unmounted). HEALTH-20..24 read the real RDS over SSM for referential integrity, timestamp sanity, the plans' Stripe ids and the test account's own plan and instance rows. Nothing here writes, scales or costs anything, so it needs no opt-in flag: it skips on a local `BASE_URL` (which is all CI runs) and takes about 3 minutes. `HEALTH_ENV` selects the environment (`development` by default, `subscr` for production), which is how a release round health-checks prod: the lane replaced `scripts/release_health_check.sh` and asserts where that script printed REVIEW. HEALTH-19 reads the TLS certificate and runs only where `BASE_URL` is https, so it skips on dev's plain-http ALB |
+| `18-stripe-audit`  | AUDIT-01..10 | read-only truth for the Stripe rows of system sheet 09 and the Stripe-side half of sheet 20: the product and price catalogue really resolving to active Stripe objects, JP tax registration and the tax actually charged on every invoice, the webhook endpoint enabled and subscribed, exactly one customer and one active subscription for the premium account, the live subscription's price and billing dates, the invoice / payment-intent / event timeline, and the stored Stripe ids and period dates matching Stripe's own. The checks themselves are `infrastructure/scripts/manual_test_scan.py`, which already implements all forty and fetches the environment's key from Secrets Manager (GET only, and it refuses a live key without `--allow-live`); the lane runs it once and asserts its per-row verdicts, so a regression fails a test instead of waiting to be noticed in a report. Read-only, no opt-in flag, ~30s; skips on a local `BASE_URL`. `HEALTH_ENV` picks the environment exactly as it does for 17-aws-health (`development` by default, `subscr` for production), so a release round points both lanes at the same place. AUDIT-09 additionally compares the app's own invoice list against Stripe's objects field by field and resolves every link it hands out (needs `TEST_STRIPE_*`), and AUDIT-10 asserts the mirror image of AUDIT-04: the free account owns nothing live in Stripe |
+| `19-checkout-probe` | CHECKOUT-01..04 | the real Stripe-hosted checkout hand-off, with no card ever entered: the upgrade endpoint mints a live `cs_test_` session that Stripe serves 200 and that two clicks never share, the hosted page really renders its card and billing fields along with our own amounts (`$20.00` subtotal, `JCT (10%)` `$2.00`, `$22.00` total) and the `Sandbox` badge, and abandoning a live session by browser Back or by closing the tab leaves the account free - read back from the deployed database, not from the API. Every other subscription spec mocks this endpoint and stubs checkout.stripe.com, which proves our gesture but not Stripe's session. Opt-in via `RUN_CHECKOUT_PROBE=1` because it writes to the environment's Stripe account (a session per run, expiring in 24h; the first run for a user also creates that user's Stripe customer), test mode only, and guarded to `development-optinist`. **Completing a payment is not automatable**: clicking Subscribe fires `api.hcaptcha.com/getcaptcha`, so the submit is CAPTCHA-gated |
+| `20-boot`          | BOOT-01     | the background scheduler's first run after a real boot, for system row 127: the spec restarts the local backend container and reads the boot it caused, asserting from APScheduler's own scheduling fields that the cleanup job's first fire is `INITIAL_RUN_DELAY_SECONDS` after the scheduler started and the fire after it a whole 60-minute interval later, and that the first run logs the orphan-sweep warm-up skip exactly once. Local `BASE_URL` only and opt-in via `RUN_RESTART=1`, because the restart breaks every other spec sharing the stack - see [Lanes that own a resource](#lanes-that-own-a-resource) |
+| `21-stripe-roundtrip` | STRIPE-01 | the reversible half of the subscription lifecycle against real Stripe: cancel at period end through our own API, then read Stripe directly for `cancel_at_period_end` with `cancel_at` equal to `current_period_end` and the status still active, the database recording `scheduled_downgrade` without downgrading `plan_id`, the `customer.subscription.updated` event appearing, and reactivation clearing all of it again. The undo is in a `finally` and its success is asserted, because leaving the shared account cancelled is worse than a red test. Opt-in via `RUN_STRIPE_WRITE=1`, and needs `TEST_STRIPE_*` - it skips otherwise, since the `TEST_PREMIUM_*` accounts own no Stripe customer to cancel |
+| `22-disruptive`    | OUT-01..02  | the rows that can only be observed by breaking something, against the deployed development environment: with the free ECS service scaled to zero the public tier still serves the shell and `/auth/login` off its own target group, a rolling public-tier deployment keeps serving throughout, . Row 824 (alarm notification wiring) is deliberately absent: no `development-` alarm carries an SNS action, so there is no notification path to exercise, and the only actioned alarms are ASG scaling policies that `set-alarm-state` would really fire. Doubly gated: every test is tagged `@disruptive` and filtered out unless `RUN_DISRUPTIVE=1`, and `disruptiveSkipReason()` additionally refuses to start on a local or unset `BASE_URL`, when the database cannot be read, or when anyone else has been active in the last 30 minutes; the lane also asserts `BASE_URL` names `development-optinist`, and `RUN_DISRUPTIVE` forces `retries: 0` so a retry cannot take the tier down twice. Each test restores what it disturbed from a `finally` block and asserts the restore, because leaving the free tier at zero is worse than a red test. Run it with `--retries 0` |
 | `99-cleanup`       | CLEAN-01    | deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`; runs last so the groups above keep their fixtures |
 
 ## Coverage maps

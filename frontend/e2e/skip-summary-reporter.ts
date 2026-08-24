@@ -129,6 +129,9 @@ export default class SkipSummaryReporter implements Reporter {
       result.status = "failed"
       return { status: "failed" as const }
     }
+    // Playwright reads a missing status as "no override", which is the
+    // non-failing outcome.
+    return undefined
   }
 }
 
