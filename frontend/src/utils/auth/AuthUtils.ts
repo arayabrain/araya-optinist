@@ -1,5 +1,9 @@
 import { routingService } from "utils/routing/RoutingService"
 
+// Long enough for the free-tier instance release to land, short enough that a
+// hung backend cannot strand the session.
+const LOGOUT_API_TIMEOUT_MS = 3000
+
 // Import setLoggingOut from axios - using dynamic import to avoid circular dependency
 let setLoggingOutFn: ((value: boolean) => void) | null = null
 
@@ -38,7 +42,7 @@ export const logout = async ({
   const setLoggingOut = await getSetLoggingOut()
   setLoggingOut(true)
 
-  // Call backend logout endpoint for free tier users (fire and forget).
+  // Call backend logout endpoint for free tier users (awaited, but bounded).
   // Skip for premium users - they have their own release mechanism.
   // skipBackendLogout is set by the premium-expiry auto-logout path, which
   // already releases the instance via sendBeacon; by then routingInfo reports
@@ -46,7 +50,13 @@ export const logout = async ({
   if (!skipBackendLogout && !routingService.requiresPremiumRouting()) {
     try {
       const { logoutFreeUserApi } = await import("api/users/UsersMe")
-      await logoutFreeUserApi()
+      // Bounded: the call is awaited so the instance is released before the
+      // navigation below cancels it, but the axios default timeout is 10
+      // minutes and the token removal that follows must not wait that long.
+      await Promise.race([
+        logoutFreeUserApi(),
+        new Promise((resolve) => setTimeout(resolve, LOGOUT_API_TIMEOUT_MS)),
+      ])
     } catch (e) {
       // Ignore errors - logout should proceed even if API call fails
     }
