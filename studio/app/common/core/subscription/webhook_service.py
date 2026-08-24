@@ -1385,7 +1385,49 @@ class WebhookService:
                         "payment_attempted": True,
                     }
 
+                except stripe.error.CardError as pay_error:
+                    # The customer's card was refused: their outcome to resolve,
+                    # not a fault in this integration.
+                    logger.warning(
+                        f"Webhook: Card declined paying invoice {invoice_id}: "
+                        f"{str(pay_error)}"
+                    )
+                    return {
+                        "success": False,
+                        "invoice_id": invoice_id,
+                        "status": invoice_status,
+                        "message": f"Payment failed: {str(pay_error)}",
+                        "webhook_processed": True,
+                        "payment_attempted": True,
+                        "payment_failed": True,
+                        "card_declined": True,
+                    }
+
                 except stripe.error.StripeError as pay_error:
+                    # Stripe's own auto-collection races this handler, so read
+                    # the invoice back before calling a refused pay a failure.
+                    settled = None
+                    try:
+                        settled = stripe.Invoice.retrieve(invoice_id).get("status")
+                    except stripe.error.StripeError:
+                        # A failed read-back must not escalate into a 500.
+                        pass
+
+                    if settled == InvoiceStatus.PAID:
+                        logger.debug(
+                            f"Webhook: Invoice {invoice_id} was already paid before "
+                            f"this attempt: {str(pay_error)}"
+                        )
+                        return {
+                            "success": True,
+                            "invoice_id": invoice_id,
+                            "previous_status": InvoiceStatus.OPEN,
+                            "new_status": InvoiceStatus.PAID,
+                            "message": "Invoice was already paid",
+                            "webhook_processed": True,
+                            "payment_attempted": True,
+                        }
+
                     logger.error(
                         f"Webhook: Failed to pay invoice {invoice_id}: {str(pay_error)}"
                     )

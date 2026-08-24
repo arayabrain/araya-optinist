@@ -1585,3 +1585,83 @@ class TestWebhookRouteErrorStatusPassthrough:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestInvoiceFinalizedPaymentOutcomes:
+    """invoice.finalized separates outcomes that are not our failure.
+
+    One `except stripe.error.StripeError` used to log all three at ERROR, which
+    made an already-settled invoice and a customer's declined card look like a
+    broken integration and left ERROR-based alerting unusable.
+    """
+
+    INVOICE = {
+        "id": "in_test_finalized",
+        "status": "open",
+        "default_payment_method": "pm_card_visa",
+        "amount_due": 2000,
+    }
+
+    def test_already_paid_invoice_is_success_not_failure(self):
+        """Stripe's auto-collection can win the race; the end state is what counts."""
+        import stripe
+
+        error = stripe.error.InvalidRequestError("Invoice is already paid", None)
+        with patch(
+            "studio.app.common.core.subscription.subscription_service."
+            "SubscriptionService._ensure_stripe_initialized"
+        ), patch("stripe.Invoice.pay", side_effect=error), patch(
+            "stripe.Invoice.retrieve", return_value={"status": "paid"}
+        ):
+            result = WebhookService.handle_invoice_finalized(dict(self.INVOICE))
+
+        assert result["success"] is True
+        assert result["new_status"] == "paid"
+        assert "payment_failed" not in result
+
+    def test_declined_card_is_reported_without_claiming_our_fault(self):
+        import stripe
+
+        error = stripe.error.CardError("Your card was declined.", None, "card_declined")
+        with patch(
+            "studio.app.common.core.subscription.subscription_service."
+            "SubscriptionService._ensure_stripe_initialized"
+        ), patch("stripe.Invoice.pay", side_effect=error):
+            result = WebhookService.handle_invoice_finalized(dict(self.INVOICE))
+
+        assert result["success"] is False
+        assert result["payment_failed"] is True
+        assert result["card_declined"] is True
+
+    def test_a_genuine_stripe_failure_still_fails(self):
+        """The read-back must not turn every refused pay into a success."""
+        import stripe
+
+        error = stripe.error.APIConnectionError("connection reset")
+        with patch(
+            "studio.app.common.core.subscription.subscription_service."
+            "SubscriptionService._ensure_stripe_initialized"
+        ), patch("stripe.Invoice.pay", side_effect=error), patch(
+            "stripe.Invoice.retrieve", return_value={"status": "open"}
+        ):
+            result = WebhookService.handle_invoice_finalized(dict(self.INVOICE))
+
+        assert result["success"] is False
+        assert result["payment_failed"] is True
+
+    def test_a_failed_read_back_does_not_escalate_to_a_500(self):
+        """A read-back that itself fails must leave the outcome a plain failure."""
+        import stripe
+
+        error = stripe.error.InvalidRequestError("Invoice is already paid", None)
+        with patch(
+            "studio.app.common.core.subscription.subscription_service."
+            "SubscriptionService._ensure_stripe_initialized"
+        ), patch("stripe.Invoice.pay", side_effect=error), patch(
+            "stripe.Invoice.retrieve",
+            side_effect=stripe.error.RateLimitError("slow down"),
+        ):
+            result = WebhookService.handle_invoice_finalized(dict(self.INVOICE))
+
+        assert result["success"] is False
+        assert result["payment_failed"] is True
