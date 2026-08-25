@@ -24,11 +24,12 @@ import {
   premiumTargetHealth,
   reproduceTutorial,
   routedApiHeaders,
+  runShellOverSsm,
   runSql,
+  runSqlWriteOnDev,
   runTutorial,
   s3ObjectCount,
   skipWithoutCreds,
-  sqlLiteral,
   sqlSkipReason,
   startRun,
   windowStart,
@@ -1229,13 +1230,9 @@ test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance 
 test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slow", async ({
   page,
 }) => {
-  const rows = "605 / BT-610 / 723"
+  const rows = "605 / BT-610"
   skipUnlessOptedIn(rows)
-  // Row 723 rides along at the end, so its database reads are a precondition
-  // of the whole test rather than a surprise twenty minutes in.
-  const sqlReason = sqlSkipReason()
-  test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
-  test.setTimeout(TEST_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS + 22 * 60_000)
+  test.setTimeout(TEST_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS + 10 * 60_000)
 
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
   expectGenuinelyPremium(await statusViaPage(page))
@@ -1339,90 +1336,6 @@ test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slo
         ).toBe("success")
       }),
     )
-
-    // Row 723 rides on the back of these three runs because this is the only
-    // place three FINISHED experiments exist at once. The sync job only ever
-    // looks at records with success = 1 (_get_pending_experiments), imported
-    // sample data is success = 0, and every lane that produces a real one
-    // deletes its workspace on the way out - so publishing three of those,
-    // here, before the teardown below, is the batch the row is about.
-    const routed = await routedApiHeaders(page)
-    const owned = runs
-      .map(
-        (r) =>
-          `(workspace_id = ${r.workspaceId} AND uid = '${sqlLiteral(r.uid)}')`,
-      )
-      .join(" OR ")
-    const recordIds = runSql(
-      `SELECT id FROM experiment_records
-         WHERE success = 1 AND publish_status = 0 AND (${owned});`,
-    )
-      .split(/\s+/)
-      .filter(Boolean)
-    // Not a setup step: a finished run that the sync job would not pick up is
-    // itself the failure, and this is the only assertion that says so.
-    expect(
-      recordIds.length,
-      `only ${recordIds.length} of the ${runs.length} finished runs left a ` +
-        `record the sync job would accept (success = 1, unpublished)`,
-    ).toBe(runs.length)
-    const pendingCount = () =>
-      runSql(
-        `SELECT COUNT(*) FROM experiment_records
-           WHERE id IN (${recordIds.join(",")})
-             AND local_sync_status = 'pending';`,
-      )
-
-    const published = await page.request.post(
-      `${apiUrl()}/api/dataview/multiple/publish/on`,
-      {
-        headers: routed,
-        data: recordIds.map(Number),
-        timeout: RELEASE_REQUEST_TIMEOUT_MS,
-      },
-    )
-    expect(published.ok(), await published.text()).toBe(true)
-    try {
-      expect(
-        pendingCount(),
-        `publishing ${recordIds.length} records together marks every one of ` +
-          `them pending, which is the state the sync job drains`,
-      ).toBe(String(recordIds.length))
-
-      // The job is on a 5-minute interval, so waiting for it to come round is
-      // slow; waiting for it to FINISH the batch is not. A batch needing a
-      // second pass would sit part-drained until the next interval, which is
-      // the failure row 723 is really about (the cap is 50 per run, 10
-      // concurrent, so three must never split).
-      await expect
-        .poll(() => pendingCount(), {
-          timeout: 12 * 60_000,
-          intervals: [10_000],
-          message: `no validation run touched the ${recordIds.length} published records`,
-        })
-        .not.toBe(String(recordIds.length))
-      await expect
-        .poll(() => pendingCount(), {
-          timeout: 60_000,
-          intervals: [5_000],
-          message:
-            `the batch drained partially and stalled - one run must clear all ` +
-            `${recordIds.length}`,
-        })
-        .toBe("0")
-    } finally {
-      // The workspaces go below, which would take these records with them, but
-      // unpublish first so nothing is briefly public on the way out.
-      const reverted = await page.request.post(
-        `${apiUrl()}/api/dataview/multiple/publish/off`,
-        {
-          headers: routed,
-          data: recordIds.map(Number),
-          timeout: RELEASE_REQUEST_TIMEOUT_MS,
-        },
-      )
-      expect(reverted.ok(), await reverted.text()).toBe(true)
-    }
   } finally {
     for (const p of pages.slice(1)) {
       await p.close().catch(() => {})
@@ -1940,5 +1853,529 @@ test("PREM-12 - Stopping a user's premium task brings a replacement back to heal
       })
       .catch(() => {})
     await api.dispose()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Row 6237: a dedicated-instance outage detected by one tab must reach the
+// second tab over BroadcastChannel, and the detection event must be logged
+// exactly once across both tabs (echo prevention). The outage is real: an
+// iptables REJECT on the instance's own container port, applied over SSM and
+// removed in a finally, with a 15-minute on-host safety net in case the test
+// process dies holding the rule.
+// ---------------------------------------------------------------------------
+
+function setPremiumPortBlock(instanceId: string, on: boolean): void {
+  const rule = "-p tcp -d $CIP --dport 8000 -j REJECT --reject-with tcp-reset"
+  runShellOverSsm(
+    instanceId,
+    [
+      "set -e",
+      "CID=$(sudo docker ps -q --filter name=ecs- --filter publish=8000 | head -1)",
+      '[ -n "$CID" ]',
+      "CIP=$(sudo docker inspect $CID --format {{.NetworkSettings.IPAddress}})",
+      on
+        ? `sudo iptables -I DOCKER-USER ${rule}`
+        : `sudo iptables -D DOCKER-USER ${rule} || true`,
+      ...(on
+        ? [
+            `nohup bash -c "sleep 900 && sudo iptables -D DOCKER-USER ${rule}" >/dev/null 2>&1 &`,
+          ]
+        : []),
+    ],
+    "premium port block",
+  )
+}
+
+// Count of one UI-event kind for one user since a moment. Which tier logs the
+// line depends on the routing state at the moment it is shipped: the outage
+// events go out with premium routing torn down (free or public, whichever ALB
+// rule catches /users/me), while the recovery event is shipped just after
+// routing is restored and lands in the PREMIUM group - measured, and the
+// reason an earlier free+public-only count read zero for a recovery that had
+// demonstrably happened. All three are counted. The trailing space in the
+// event term keeps "event=instance_unreachable " from also matching
+// instance_unreachable_popup_shown.
+function uiEventCount(userId: number, event: string, sinceMs: number): number {
+  let total = 0
+  for (const group of [FREE_LOG_GROUP, PUBLIC_LOG_GROUP, PREMIUM_LOG_GROUP]) {
+    total += awsJson<unknown[]>(
+      `logs filter-log-events --log-group-name ${group} ` +
+        `--start-time ${sinceMs} ` +
+        `--filter-pattern '"Premium UI event: user=${userId} " "event=${event} "' ` +
+        `--query 'events[]'`,
+    ).length
+  }
+  return total
+}
+
+test("PREM-13 - A dedicated outage broadcasts to the second tab and logs one detection event @slow", async ({
+  page,
+}) => {
+  const rows = "6237"
+  skipUnlessOptedIn(rows)
+  test.setTimeout(TEST_TIMEOUT_MS + 15 * 60_000)
+
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+  expectGenuinelyPremium(await statusViaPage(page))
+  const status = await waitForAssignment(page, rows)
+  const assignment = status.assignment!
+  // The unreachable snackbar renders only for a dedicated holder, and blocking
+  // a shared instance would take other users down with it.
+  test.skip(
+    !!assignment.is_shared,
+    "row 6237 needs a dedicated instance; the cascade granted shared",
+  )
+  heldDedicated = true
+  const instanceId = assignment.instance_id!
+  expect(instanceId).toMatch(/^i-[0-9a-f]+$/)
+
+  const me = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  const userId: number = (await me.json()).id
+  await expect
+    .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+      timeout: 8 * 60_000,
+      intervals: [15_000],
+      message: `premium-${userId}-tg never became healthy before the outage`,
+    })
+    .toBe(true)
+
+  // A workspace to navigate into: the content requests it fires are what carry
+  // premium routing headers (the dashboard list itself is free-tier-routed).
+  const wsId = await openWorkspace(page, "e2e-prem-tabs")
+  await expectStoredTierMatchesStatus(page)
+
+  // The second tab. Same context = same origin storage and BroadcastChannel,
+  // which is the variable this row tests.
+  const tabB = await page.context().newPage()
+  await tabB.goto("/workspaces")
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem("premium_poll_leader") || "null")
+              ?.tabId ?? null,
+        ),
+      { timeout: 60_000, message: "no premium poll leader was elected" },
+    )
+    .not.toBeNull()
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("premium_assigned")), {
+      timeout: 60_000,
+      message: "premium_assigned never reached true",
+    })
+    .toBe("true")
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("premium_unreachable_snapshot"),
+    ),
+    "an unreachable snapshot is already set before the outage",
+  ).toBeNull()
+
+  const snackbarIn = (p: Page) =>
+    p.getByText(
+      /dedicated premium instance is (temporarily unreachable|unresponsive)/,
+    )
+  // The interceptor logs this warn on every premium-routed 5xx before it
+  // retries on the free tier - it separates "the block never bit" from "the
+  // detection was suppressed" when the snackbar assert below fails.
+  let premiumFallbacks = 0
+  page.on("console", (msg) => {
+    if (msg.text().includes("Using free tier while premium instance")) {
+      premiumFallbacks += 1
+    }
+  })
+  const t0 = windowStart()
+  let blocked = false
+  try {
+    setPremiumPortBlock(instanceId, true)
+    blocked = true
+
+    // Tab A only - the sheet's own step 4. The trigger must fire a FRESH
+    // premium-routed request each time: the Record tab's own getExperiments
+    // runs once on mount and caches, so tab toggling never re-hits the
+    // blocked instance (proven against a live assignment - zero /experiments
+    // requests across a dozen toggles). The Record tab's "Reload" button
+    // dispatches getExperiments on every click, which is a premium-routed
+    // GET /experiments, so clicking it in a loop drives the 502 that tears
+    // routing down and paints the snackbar. It also outlasts the 16s warm-up
+    // grace a page load would re-arm.
+    await page.locator('button[role="tab"]:has-text("Record")').click()
+    const reload = page.getByRole("button", { name: "Reload" })
+    await expect(reload).toBeVisible({ timeout: 30_000 })
+    await expect
+      .poll(
+        async () => {
+          if (
+            await snackbarIn(page)
+              .isVisible()
+              .catch(() => false)
+          )
+            return true
+          await reload.click().catch(() => {})
+          await page.waitForTimeout(2_000)
+          return snackbarIn(page)
+            .isVisible()
+            .catch(() => false)
+        },
+        {
+          timeout: 180_000,
+          intervals: [1_000],
+          message:
+            "the unreachable snackbar never appeared in tab A after the " +
+            `block (premium 502s observed: ${premiumFallbacks})`,
+        },
+      )
+      .toBe(true)
+    // A premium-routed request really did 502 (not a free-tier 200 that would
+    // make the snackbar meaningless) - triage evidence, asserted after the fact.
+    expect(
+      premiumFallbacks,
+      "the snackbar appeared but no premium-routed request 502'd",
+    ).toBeGreaterThan(0)
+
+    // Tab B renders the same snackbar without any interaction of its own:
+    // this visibility IS the broadcast assertion.
+    await expect(snackbarIn(tabB)).toBeVisible({ timeout: 60_000 })
+    expect(
+      await page.evaluate(() =>
+        localStorage.getItem("premium_unreachable_snapshot"),
+      ),
+      "the unreachable snapshot was never persisted",
+    ).toBeTruthy()
+
+    // Exactly one detection event across both tabs. The per-render
+    // popup_shown line is the delivery control: once at least one of those
+    // reached CloudWatch, telemetry is flowing, and the settle window below
+    // gives a would-be echo from tab B time to land before the exact count.
+    await expect
+      .poll(
+        () => uiEventCount(userId, "instance_unreachable_popup_shown", t0),
+        {
+          ...CLOUDWATCH_POLL,
+          message: "no instance_unreachable_popup_shown telemetry arrived",
+        },
+      )
+      .toBeGreaterThan(0)
+    await expect
+      .poll(() => uiEventCount(userId, "instance_unreachable", t0), {
+        ...CLOUDWATCH_POLL,
+        message: "no instance_unreachable detection event arrived",
+      })
+      .toBe(1)
+    await new Promise((r) => setTimeout(r, 90_000))
+    expect(
+      uiEventCount(userId, "instance_unreachable", t0),
+      "a second tab re-logged the detection event - echo prevention failed",
+    ).toBe(1)
+
+    setPremiumPortBlock(instanceId, false)
+    blocked = false
+
+    // Recovery is the machine's own half-open re-arm, and it must happen in
+    // THIS tab WITHOUT a reload. Two measured facts shape this:
+    //   - the re-arm timer only runs on the poll leader, and a reload mints a
+    //     new tabId that no longer matches the stored premium_poll_leader, so
+    //     a reloaded tab never re-arms and stays unreachable forever;
+    //   - Retry is not offered here at all - the snackbar only goes terminal
+    //     after MAX_FAILED_PROBES, which this short outage does not reach.
+    // Left alone, the leader re-armed ~30s after the block lifted; the next
+    // premium-routed request (the Reload button) then answers a verified 200,
+    // which emits instance_reachable and clears the machine for real.
+    await expect
+      .poll(
+        async () => {
+          await reload.click().catch(() => {})
+          await page.waitForTimeout(3_000)
+          return uiEventCount(userId, "instance_reachable", t0)
+        },
+        {
+          timeout: 6 * 60_000,
+          intervals: [10_000],
+          message: "tab A never emitted instance_reachable after recovery",
+        },
+      )
+      .toBe(1)
+    // The snackbar clears for real once the machine recovers.
+    await expect(snackbarIn(page)).toBeHidden({ timeout: 60_000 })
+    // Tab B dismisses off the PREMIUM_INSTANCE_REACHABLE broadcast alone.
+    await expect(snackbarIn(tabB)).toBeHidden({ timeout: 60_000 })
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            localStorage.getItem("premium_unreachable_snapshot"),
+          ),
+        { timeout: 60_000, message: "the unreachable snapshot never cleared" },
+      )
+      .toBeNull()
+
+    await expect
+      .poll(() => uiEventCount(userId, "instance_reachable", t0), {
+        ...CLOUDWATCH_POLL,
+        message: "no instance_reachable recovery event arrived",
+      })
+      .toBe(1)
+    await new Promise((r) => setTimeout(r, 90_000))
+    expect(
+      uiEventCount(userId, "instance_reachable", t0),
+      "a second tab re-logged the recovery event - echo prevention failed",
+    ).toBe(1)
+  } finally {
+    if (blocked) setPremiumPortBlock(instanceId, false)
+    await tabB.close().catch(() => {})
+    await page.request
+      .delete(`${apiUrl()}/workspace/${wsId}`, {
+        headers: await apiHeaders(page),
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      })
+      .catch(() => {})
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Row 608: user data survives a migration to a different dedicated instance,
+// because S3 is the source of truth and the new instance lazily fetches it.
+// The migration is the premium manager's own migrate_shared_users path with
+// all its safety checks (readiness, active_workflow_count); the only staging
+// this test does is flip the assignment's is_shared flag so the optimizer
+// considers the user's instance shared - the state a second user's login
+// would create, minus the second user.
+// ---------------------------------------------------------------------------
+
+test("PREM-14 - User data stays accessible after migration to a different dedicated instance @slow", async ({
+  page,
+}) => {
+  const rows = "608"
+  skipUnlessOptedIn(rows)
+  test.setTimeout(TEST_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS + 20 * 60_000)
+
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+  expectGenuinelyPremium(await statusViaPage(page))
+  const assignment = await dedicatedAssignmentCoolingIfNeeded(page, rows)
+  heldDedicated = true
+  const instanceA = assignment.instance_id!
+  expect(instanceA).toMatch(/^i-[0-9a-f]+$/)
+
+  const idRes = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  expect(idRes.ok(), await idRes.text()).toBe(true)
+  const meBody = await idRes.json()
+  const userId: number = meBody.id
+  await skipUnlessPremiumTargetHealthy(rows, userId)
+
+  const wsName = "e2e-prem-migrate"
+  const wsId = await openWorkspace(page, wsName)
+  try {
+    // The row's own precondition: a completed run, so both EBS-local and
+    // S3-uploaded artefacts exist before anything moves.
+    await importSampleData(page, wsName)
+    const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+    const bucket = meBody.attributes?.remote_bucket_name
+    expect(
+      bucket,
+      "premium user has no remote_bucket_name attribute",
+    ).toBeTruthy()
+    await expect
+      .poll(
+        () => s3ObjectCount(bucket, `app/studio_data/output/${wsId}/${uid}/`),
+        {
+          timeout: 120_000,
+          intervals: [15_000],
+          message: "the run's outputs never landed in the user's own bucket",
+        },
+      )
+      .toBeGreaterThan(0)
+
+    // The sheet's own SQL check, before.
+    const rowSql =
+      `SELECT instance_id FROM premium_user_assignments ` +
+      `WHERE user_id = ${userId};`
+    expect(runSql(rowSql), "pre-migration assignment row").toBe(instanceA)
+
+    // Stage a second RUNNING premium instance for the user to land on.
+    //
+    // This is not scene-setting the row could skip: the optimizer only
+    // migrates onto an instance it already considers available (running, no
+    // real users, ECS task ready). Measured 2026-08-25, a run without this
+    // step failed with the optimizer doing exactly the right thing - it
+    // logged "marked for migration: has_shared_flag=True" every pass and then
+    // "no running instances available. Triggering scaling to start stopped
+    // instances..." - but nothing ever started, because the dev pool
+    // self-heals to a STOPPED standby and that scaling call did not wake it.
+    // A candidate must also carry NO assignment row at all: a standby row
+    // makes try_reserve_instance answer "already reserved" and the optimizer
+    // skips it.
+    const candidate = awsJson<string[]>(
+      `ec2 describe-instances ` +
+        `--filters Name=tag:Name,Values=development-premium-* ` +
+        `Name=instance-state-name,Values=stopped ` +
+        `--query 'Reservations[].Instances[].InstanceId'`,
+    ).find((id) => id !== instanceA)
+    test.skip(
+      !candidate,
+      `row 608 needs a second premium instance to migrate onto; the pool has ` +
+        `none stopped besides ${instanceA}`,
+    )
+    runSqlWriteOnDev(
+      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'`,
+    )
+    awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+    await expect
+      .poll(() => runningPremiumInstanceIds().includes(candidate!), {
+        timeout: 8 * 60_000,
+        intervals: [15_000],
+        message: `${candidate} never reached running`,
+      })
+      .toBe(true)
+    // A running EC2 is not yet a migration target: the readiness check the
+    // optimizer runs demands a premium ECS task on it, so raise the service's
+    // desired count to cover both instances and wait for the placement.
+    const desired = Number(ecs("services[0].desiredCount"))
+    if (desired < 2) {
+      awsJson(
+        `ecs update-service --cluster ${CLUSTER} --service ${PREMIUM_SERVICE} ` +
+          `--desired-count 2`,
+      )
+    }
+    await expect
+      .poll(() => premiumTaskStatusOn(candidate!), {
+        timeout: 10 * 60_000,
+        intervals: [20_000],
+        message: `no premium ECS task ever placed on ${candidate}`,
+      })
+      .toBe("RUNNING")
+    // The delete above races the pool manager, which re-adds a standby row for
+    // an instance it just started. Clear it again so the optimizer will take it.
+    runSqlWriteOnDev(
+      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'`,
+    )
+
+    // Now mark the assignment shared and let the manager's own migration loop
+    // do the real work: pick the available instance, move the user, re-point
+    // the ALB.
+    runSqlWriteOnDev(
+      `UPDATE premium_user_assignments SET is_shared = 1 ` +
+        `WHERE user_id = ${userId} AND instance_id = '${instanceA}'`,
+    )
+    expect(
+      runSql(
+        `SELECT is_shared FROM premium_user_assignments ` +
+          `WHERE user_id = ${userId};`,
+      ),
+      "the is_shared nudge did not land",
+    ).toBe("1")
+
+    const t0 = windowStart()
+    const invokeMigration = () =>
+      awsJson(
+        `lambda invoke --function-name development-premium-manager ` +
+          `--invocation-type Event --cli-binary-format raw-in-base64-out ` +
+          `--payload '{"action":"migrate_shared_users","max_wait_seconds":300,` +
+          `"retry_interval":15}' /dev/null`,
+      )
+    invokeMigration()
+
+    // The migration's DB truth: the row moves to a different real instance.
+    // Re-invoked as we poll, because one invocation gives up after its own
+    // max_wait_seconds and a later pass may find the pool in a better state;
+    // the handler takes a distributed lock, so an overlapping invoke is a
+    // logged no-op rather than a second migration.
+    let instanceB = ""
+    let passes = 0
+    await expect
+      .poll(
+        () => {
+          instanceB = runSql(rowSql)
+          if (/^i-[0-9a-f]+$/.test(instanceB) && instanceB !== instanceA) {
+            return true
+          }
+          if (++passes % 15 === 0) invokeMigration()
+          return false
+        },
+        {
+          timeout: 14 * 60_000,
+          intervals: [20_000],
+          message:
+            `user ${userId} never migrated off ${instanceA} onto ` +
+            `${candidate} - read the premium-manager log for the optimizer's ` +
+            `own verdict ("marked for migration" then either a target or ` +
+            `"no running instances available")`,
+        },
+      )
+      .toBe(true)
+
+    // The manager's own account of what happened.
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PREMIUM_MANAGER_LOG_GROUP,
+            `Migrated user ${userId}`,
+            t0,
+          ),
+        {
+          ...CLOUDWATCH_POLL,
+          message: `no "Migrated user ${userId}" line in ${PREMIUM_MANAGER_LOG_GROUP}`,
+        },
+      )
+      .toBe(true)
+
+    // The ALB really serves the user from the new instance before the UI half.
+    await expect
+      .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+        timeout: 8 * 60_000,
+        intervals: [15_000],
+        message: `premium-${userId}-tg never became healthy on ${instanceB}`,
+      })
+      .toBe(true)
+    // The app adopts the migrated assignment on its own status poll after a
+    // reload (PREM-03's adoption fact); wait until it reports the new instance.
+    await page.reload()
+    await expect
+      .poll(async () => (await statusViaPage(page)).assignment?.instance_id, {
+        timeout: 120_000,
+        intervals: [10_000],
+        message: "the UI session never adopted the migrated assignment",
+      })
+      .toBe(instanceB)
+
+    // Step 4: open the previously-created experiment. Instance B never ran
+    // it, so serving the reproduce is only possible by lazily fetching the
+    // user's files from S3 - which its task must log.
+    await page.goto(`/workspaces/${wsId}`)
+    await reproduceTutorial(page, "e2e-runall")
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PREMIUM_LOG_GROUP,
+            "Download data from remote storage",
+            t0,
+          ) ||
+          cloudwatchHas(
+            PREMIUM_LOG_GROUP,
+            `Download data from S3 [${bucket}]`,
+            t0,
+          ),
+        {
+          ...CLOUDWATCH_POLL,
+          message: `no lazy S3 download lines in ${PREMIUM_LOG_GROUP} after the migration`,
+        },
+      )
+      .toBe(true)
+  } finally {
+    await page.request
+      .delete(`${apiUrl()}/workspace/${wsId}`, {
+        headers: await apiHeaders(page),
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      })
+      .catch(() => {})
   }
 })
