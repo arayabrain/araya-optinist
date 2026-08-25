@@ -14,6 +14,7 @@ import {
   apiHeaders,
   apiLogin,
   apiUrl,
+  awaitRunFinished,
   awsJson,
   cloudwatchHas,
   importSampleData,
@@ -1093,7 +1094,14 @@ test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance 
     timeout: STATUS_REQUEST_TIMEOUT_MS,
   })
   expect(idRes.ok(), await idRes.text()).toBe(true)
-  await skipUnlessPremiumTargetHealthy(rows, (await idRes.json()).id)
+  const premiumUserId = (await idRes.json()).id
+  await skipUnlessPremiumTargetHealthy(rows, premiumUserId)
+
+  // Row 540: the fresh assignment's own baseline in the PREMIUM table
+  const countSql =
+    `SELECT active_workflow_count FROM premium_user_assignments ` +
+    `WHERE user_id = ${premiumUserId};`
+  expect(runSql(countSql), "row 540: fresh-assignment baseline").toBe("0")
 
   const wsId = await openWorkspace(page, "e2e-prem")
   try {
@@ -1103,7 +1111,26 @@ test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance 
     // no-op, so only a fresh uid proves the dedicated instance really
     // computed and wrote the outputs this test asserts on
     const t0 = windowStart()
-    const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+    await reproduceTutorial(page, "Tutorial1")
+    const { workspaceId: runWs, uid } = await startRun(page, "RUN ALL")
+
+    // Rows 542/543's live half: the run really holds a slot in the premium
+    // table while it executes, and releases it when it completes
+    await expect
+      .poll(() => runSql(countSql), {
+        timeout: 180_000,
+        intervals: [10_000],
+        message: "active_workflow_count never reached 1 during the run",
+      })
+      .toBe("1")
+    await awaitRunFinished(page, "Tutorial1", runWs, uid)
+    await expect
+      .poll(() => runSql(countSql), {
+        timeout: 120_000,
+        intervals: [10_000],
+        message: "active_workflow_count did not return to 0 after the run",
+      })
+      .toBe("0")
 
     const runPosts = apiRequests.filter(
       (r) => r.method === "POST" && r.url.includes(`/run/${wsId}`),

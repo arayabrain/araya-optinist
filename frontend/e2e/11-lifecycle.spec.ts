@@ -4,6 +4,7 @@ import * as path from "path"
 import { test, expect, Page, request } from "@playwright/test"
 
 import {
+  apiHeaders,
   apiUrl,
   authHeaders,
   confirmDialog,
@@ -694,6 +695,15 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       ),
     ).toBe("2")
 
+    // Rows 290 / 291: Expired must also mean refused capability, not just a
+    // caption - the assign route's tier guard runs before any AWS call
+    const refused = await page.request.post(
+      `${apiUrl()}/users/me/premium/assign`,
+      { headers: await apiHeaders(page), failOnStatusCode: false },
+    )
+    expect(refused.status(), await refused.text()).toBe(403)
+    expect(await refused.text()).toContain("Premium subscription required")
+
     // The expiry modal carries its own Upgrade button and re-renders on this
     // route, so dismiss the one on the page under test, not the dashboard's
     await page.goto("/account")
@@ -1082,5 +1092,117 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       eligibleUserIds(),
       "after recovery the user must be selectable again",
     ).toContain(numericUserId())
+  })
+
+  // Rows 427 / 433: the log panel opens, and what it shows is this user's own
+  // trail - /logs filters by the caller's uid server-side, and the login that
+  // just happened leaves calculate_limit_warning lines for exactly this user.
+  test("LC-28 - The log panel opens and carries this user's own limit-check lines", async ({
+    page,
+  }) => {
+    setPlan(2, "INTERVAL 1 MONTH")
+    await loginKeepWarnings(page)
+
+    await page.getByRole("button", { name: "show logs" }).click()
+    await expect(page.getByText(/Service: /)).toBeVisible({ timeout: 15_000 })
+
+    const res = await page.request.get(
+      `${apiUrl()}/logs?search=calculate_limit_warning&offset=-1&limit=50`,
+      { headers: await apiHeaders(page) },
+    )
+    expect(res.ok(), await res.text()).toBe(true)
+    const { data } = (await res.json()) as { data: string[] }
+    expect(
+      data.some((line) => line.includes("calculate_limit_warning")),
+      `no calculate_limit_warning line for this user in ${data.length} lines`,
+    ).toBe(true)
+  })
+
+  // Row 6211's cross-tab half: a UI logout in one tab logs every tab out via
+  // the localStorage broadcast, and only the tab that logged out fires the
+  // release beacon. The AWS half - the soft release landing and the monitor
+  // finalizing the row - is PREM-02 / PREM-04 against real infrastructure.
+  test("LC-29 - Logout in one tab logs the others out, releasing exactly once", async ({
+    page,
+  }) => {
+    setPlan(2, "INTERVAL 1 MONTH")
+    setStorage(0, PREMIUM_QUOTA)
+
+    let releases = 0
+    const armTab = async (tab: Page) => {
+      await mockPremiumAssignment(tab)
+      await tab.route("**/users/me/premium/release-beacon", (route) => {
+        releases += 1
+        return route.fulfill({ json: { released: true } })
+      })
+    }
+    await armTab(page)
+    await loginKeepWarnings(page)
+
+    const others: Page[] = []
+    try {
+      for (let i = 0; i < 2; i++) {
+        const tab = await page.context().newPage()
+        await armTab(tab)
+        await tab.goto("/dashboard")
+        await expect(tab).toHaveURL(/\/dashboard/, { timeout: 30_000 })
+        others.push(tab)
+      }
+
+      await logout(page)
+      await expect(page).toHaveURL(/\/login/, { timeout: 15_000 })
+
+      // The other tabs observe the broadcast and log out on their own,
+      // without being interacted with
+      for (const tab of others) {
+        await expect(tab).toHaveURL(/\/login/, { timeout: 10_000 })
+      }
+      // ...and the logging-out tab was the only one to release
+      expect(releases, "release beacons fired across the three tabs").toBe(1)
+    } finally {
+      for (const tab of others) await tab.close().catch(() => {})
+    }
+  })
+
+  // Row 6228's cross-tab half: Stay Active in one tab writes the shared
+  // activity timestamp, and the other tab's warning clears off the broadcast
+  // alone - it is never touched. The real heartbeat write behind Stay Active
+  // is PREM-04 on real infrastructure.
+  test("LC-30 - Stay Active in one tab clears the other tab's warning", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 1 MONTH")
+
+    await mockPremiumAssignment(page)
+    await loginWithArmedInactivityMonitor(page)
+
+    const tabB = await page.context().newPage()
+    await mockPremiumAssignment(tabB)
+    await tabB.clock.install()
+    const statusSeen = tabB.waitForResponse((r) =>
+      r.url().includes("/users/me/premium/status"),
+    )
+    await tabB.goto("/dashboard")
+    await statusSeen
+    await tabB.waitForTimeout(1_000)
+
+    try {
+      await page.clock.fastForward(65 * 60 * 1000)
+      await tabB.clock.fastForward(65 * 60 * 1000)
+      const warningA = page.locator("text=Premium Instance Inactivity Warning")
+      const warningB = tabB.locator("text=Premium Instance Inactivity Warning")
+      await expect(warningA).toBeVisible({ timeout: 15_000 })
+      await expect(warningB).toBeVisible({ timeout: 15_000 })
+
+      await page.getByRole("button", { name: "Stay Active" }).click()
+      await expect(warningA).toBeHidden({ timeout: 15_000 })
+      // Tab B is not interacted with; a beat of its own clock re-evaluates
+      // the shared timestamp the broadcast delivered
+      await tabB.clock.fastForward(60 * 1000)
+      await expect(warningB).toBeHidden({ timeout: 15_000 })
+    } finally {
+      await tabB.close().catch(() => {})
+    }
   })
 })

@@ -1,8 +1,9 @@
 import { execSync } from "child_process"
 import * as fs from "fs"
+import * as os from "os"
 import * as path from "path"
 
-import { test, expect, APIRequestContext } from "@playwright/test"
+import { test, expect, APIRequestContext, Browser } from "@playwright/test"
 
 import {
   AWS_REGION,
@@ -12,15 +13,20 @@ import {
   apiHeaders,
   apiLogin,
   apiUrl,
+  awaitRunFinished,
   cloudwatchHas,
+  filterWorkspace,
   freeStorageState,
   gotoDashboard,
   importSampleData,
   isLocalBaseUrl,
   openWorkspace,
+  reproduceTutorial,
+  runSql,
   runTutorial,
   s3ObjectCount,
   skipWithoutCreds,
+  startRun,
   windowStart,
 } from "./helpers"
 
@@ -41,6 +47,15 @@ const IMAGE_FIXTURE = path.join(
   "..",
   "sample_data",
   "dev_mouse2p_short_image.tiff",
+)
+const HDF5_FIXTURE = path.join(
+  __dirname,
+  "..",
+  "..",
+  "sample_data",
+  "tutorial",
+  "input",
+  "sample_hdf5.h5",
 )
 
 const REQUEST_TIMEOUT_MS = 30_000
@@ -211,6 +226,28 @@ test("S3-01 - The per-user bucket is real and an upload really lands its object 
       })
       expect(synced.ok(), await synced.text()).toBe(true)
       expect((await synced.json()).file_path).toBe(uniqueName)
+
+      // BT-1006's S3 half: an HDF5 upload lands its object the same way
+      const h5Name = `e2e_upload_${Date.now()}.h5`
+      const h5 = await api.post(`/files/${wsId}/upload/${h5Name}`, {
+        headers,
+        multipart: {
+          file: {
+            name: h5Name,
+            mimeType: "application/x-hdf",
+            buffer: fs.readFileSync(HDF5_FIXTURE),
+          },
+        },
+        timeout: UPLOAD_TIMEOUT_MS,
+      })
+      expect(h5.ok(), await h5.text()).toBe(true)
+      const h5Key = `app/studio_data/input/${wsId}/${h5Name}`
+      await expect
+        .poll(() => objectExists(bucket!, h5Key), {
+          timeout: 30_000,
+          message: `s3://${bucket}/${h5Key} missing after a 200 upload`,
+        })
+        .toBe(true)
     } finally {
       const res = await api.delete(`/workspace/${wsId}`, {
         headers,
@@ -304,19 +341,45 @@ test.describe("Published experiment via the public instance", () => {
     let recordId = 0
     try {
       await importSampleData(page, wsName)
-      const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
 
-      // Rows 407 / BT-1004: the free run's outputs really landed in the
-      // user's own bucket - the direct S3 read, before any publish
       const me = await page.request.get(`${apiUrl()}/users/me`, {
         headers,
         timeout: REQUEST_TIMEOUT_MS,
       })
-      const bucketName = (await me.json()).attributes?.remote_bucket_name
+      const meBody = await me.json()
+      const bucketName = meBody.attributes?.remote_bucket_name
       expect(
         bucketName,
         "free user has no remote_bucket_name attribute",
       ).toBeTruthy()
+
+      // Row 538's live half: the run really holds a slot in the FREE table
+      // while it executes and releases it on completion; the failure-path
+      // decrement stays with the unit suite
+      const countSql =
+        `SELECT active_workflow_count FROM free_user_assignments ` +
+        `WHERE user_id = ${meBody.id};`
+      expect(runSql(countSql), "row 538: pre-run baseline").toBe("0")
+      await reproduceTutorial(page, "Tutorial1")
+      const { workspaceId: runWs, uid } = await startRun(page, "RUN ALL")
+      await expect
+        .poll(() => runSql(countSql), {
+          timeout: 180_000,
+          intervals: [10_000],
+          message: "active_workflow_count never reached 1 during the run",
+        })
+        .toBe("1")
+      await awaitRunFinished(page, "Tutorial1", runWs, uid)
+      await expect
+        .poll(() => runSql(countSql), {
+          timeout: 120_000,
+          intervals: [10_000],
+          message: "active_workflow_count did not return to 0 after the run",
+        })
+        .toBe("0")
+
+      // Rows 407 / BT-1004: the free run's outputs really landed in the
+      // user's own bucket - the direct S3 read, before any publish
       await expect
         .poll(
           () =>
@@ -328,6 +391,26 @@ test.describe("Published experiment via the public instance", () => {
           },
         )
         .toBeGreaterThan(0)
+
+      // Row 1217: not merely "some objects" - the run's own NWB output is
+      // there, and nothing landed as a zero-byte stub
+      const outputs = JSON.parse(
+        execSync(
+          `aws s3api list-objects-v2 --bucket ${bucketName} ` +
+            `--prefix app/studio_data/output/${wsId}/${uid}/ ` +
+            "--query 'Contents[].{k:Key,s:Size}' " +
+            `--region ${AWS_REGION} --output json`,
+          { timeout: 30_000 },
+        ).toString() || "[]",
+      ) as { k: string; s: number }[]
+      expect(
+        outputs.some((o) => o.k.endsWith(".nwb")),
+        `no NWB among the run's S3 outputs: ${outputs.map((o) => o.k).join(", ")}`,
+      ).toBe(true)
+      // error.log is legitimately empty on a clean run
+      for (const o of outputs.filter((out) => !out.k.endsWith(".log"))) {
+        expect(o.s, `${o.k} landed as a zero-byte object`).toBeGreaterThan(0)
+      }
 
       // Find the record BEFORE the negative, so the 404 below can only mean
       // the published_only gate, never a record that does not exist yet.
@@ -451,6 +534,206 @@ test.describe("Published experiment via the public instance", () => {
           timeout: UPLOAD_TIMEOUT_MS,
         })
         .catch(() => {})
+    }
+  })
+})
+
+test.describe("Published sync error and recovery on real S3", () => {
+  test.use({ storageState: freeStorageState() })
+
+  // Rows 717 / 718 / BT-719 / 2031's live half. The public cache warms lazily
+  // on the first reproduce (S3-03), so removing experiment.yaml from the
+  // owner's bucket between publish and first view is a REAL missing-data
+  // state: the visitor's first open must surface the error state with Retry,
+  // and Retry must recover once the file is back. Only the test account's own
+  // object is touched, and it is put back in a finally.
+  test("S3-04 - A missing S3 config surfaces the public error state; Retry recovers it @slow", async ({
+    page,
+    browser,
+  }) => {
+    skipUnlessOptedIn("717 / 718 / BT-719 / 2031")
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 20 * 60_000)
+
+    await gotoDashboard(page)
+    const wsName = "e2e-s3err"
+    const wsId = await openWorkspace(page, wsName)
+    const headers = await apiHeaders(page)
+    const aside = path.join(os.tmpdir(), `e2e-s3err-${Date.now()}.yaml`)
+    let recordId = 0
+    let yamlMovedAside = false
+    let bucket = ""
+    let key = ""
+    const restoreYaml = () => {
+      execSync(
+        `aws s3 cp ${aside} s3://${bucket}/${key} --region ${AWS_REGION}`,
+        { timeout: 60_000, stdio: ["pipe", "pipe", "pipe"] },
+      )
+      yamlMovedAside = false
+    }
+    try {
+      await importSampleData(page, wsName)
+      const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+      const me = await page.request.get(`${apiUrl()}/users/me`, {
+        headers,
+        timeout: REQUEST_TIMEOUT_MS,
+      })
+      bucket = (await me.json()).attributes?.remote_bucket_name
+      expect(
+        bucket,
+        "free user has no remote_bucket_name attribute",
+      ).toBeTruthy()
+      key = `app/studio_data/output/${wsId}/${uid}/experiment.yaml`
+
+      await expect
+        .poll(
+          async () => {
+            const listRes = await page.request.get(
+              `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${wsId}`,
+              { headers, timeout: REQUEST_TIMEOUT_MS },
+            )
+            if (!listRes.ok()) return `HTTP ${listRes.status()}`
+            const { items } = await listRes.json()
+            const record = (items as { id: number; uid?: string }[]).find(
+              (r) => r.uid === uid,
+            )
+            if (!record) return "absent"
+            recordId = record.id
+            return "found"
+          },
+          {
+            timeout: 120_000,
+            intervals: [10_000],
+            message: `no dataview record for run ${uid}`,
+          },
+        )
+        .toBe("found")
+
+      const published = await page.request.post(
+        `${apiUrl()}/api/dataview/publish/${recordId}/on`,
+        { headers, timeout: UPLOAD_TIMEOUT_MS },
+      )
+      expect(published.ok(), await published.text()).toBe(true)
+
+      // Take the config away before anything warms the public cache
+      execSync(
+        `aws s3 cp s3://${bucket}/${key} ${aside} --region ${AWS_REGION}`,
+        { timeout: 60_000, stdio: ["pipe", "pipe", "pipe"] },
+      )
+      execSync(`aws s3 rm s3://${bucket}/${key} --region ${AWS_REGION}`, {
+        timeout: 60_000,
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+      yamlMovedAside = true
+
+      // Really anonymous, like the visitor rows 717/718 describe
+      const ctx = await browser.newContext({
+        baseURL: process.env.BASE_URL,
+        storageState: undefined,
+      })
+      const viewer = await ctx.newPage()
+      try {
+        // The anonymous listing is eventually consistent with the publish;
+        // open the UI only once the record is really listed (same poll as
+        // S3-03, and the listing reads the DB, not the deleted yaml)
+        await expect
+          .poll(
+            async () => {
+              const res = await viewer.request.get(
+                `${apiUrl()}/api/public/dataview?limit=100&offset=0`,
+                { timeout: REQUEST_TIMEOUT_MS },
+              )
+              if (!res.ok()) return `HTTP ${res.status()}`
+              const body = await res.json()
+              const records = (
+                Array.isArray(body) ? body : (body.items ?? [])
+              ) as { uid?: string }[]
+              return records.some((r) => r.uid === uid) ? "listed" : "absent"
+            },
+            {
+              timeout: 120_000,
+              intervals: [10_000],
+              message: `published run ${uid} never appeared in /api/public/dataview`,
+            },
+          )
+          .toBe("listed")
+        await viewer.goto("/public")
+        await filterWorkspace(viewer, wsName)
+        // The run's own row, by the uid the grid's ID column renders - the
+        // record's display name belongs to the run helper, not this test
+        const row = viewer
+          .locator(".MuiDataGrid-row")
+          .filter({ has: viewer.getByText(uid.slice(0, 8)) })
+          .first()
+        await expect(row).toBeVisible({ timeout: 30_000 })
+        await row
+          .locator('[data-field="details"] [data-testid="InsightsIcon"]')
+          .click()
+        const dialog = viewer.locator('[role="dialog"]')
+        await expect(dialog).toBeVisible({ timeout: 15_000 })
+
+        // Row 717: the error state - icon, alert, and a Retry button. A 503
+        // renders it at once; a 202 rides the auto-retry ladder out first
+        // (30 x 10s), so the budget covers the ladder's ceiling.
+        await expect(
+          dialog.locator('[data-testid="ErrorOutlineIcon"]').first(),
+        ).toBeVisible({ timeout: 420_000 })
+        await expect(dialog.locator(".MuiAlert-root").first()).toBeVisible()
+        const retry = dialog.getByRole("button", { name: "Retry" })
+        await expect(retry).toBeVisible()
+
+        // Put the file back; row 718 / BT-719: Retry re-syncs and recovers.
+        // The interim pending state is not asserted - a fast re-sync renders
+        // the details before the 202 branch ever paints.
+        restoreYaml()
+        await retry.click()
+
+        // Recovery, by the route's own verdict rather than pixel state
+        await expect
+          .poll(
+            async () =>
+              (
+                await viewer.request.get(
+                  `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
+                  { timeout: UPLOAD_TIMEOUT_MS },
+                )
+              ).status(),
+            {
+              timeout: 10 * 60_000,
+              intervals: [20_000],
+              message: "reproduce never recovered to 200 after the retry",
+            },
+          )
+          .toBe(200)
+        // ...and the dialog left its error state
+        await expect(
+          dialog.locator('[data-testid="ErrorOutlineIcon"]').first(),
+        ).toBeHidden({ timeout: 120_000 })
+      } finally {
+        await ctx.close()
+      }
+    } finally {
+      if (yamlMovedAside) {
+        try {
+          restoreYaml()
+        } catch {
+          // the workspace delete below removes the prefix anyway
+        }
+      }
+      if (recordId) {
+        await page.request
+          .post(`${apiUrl()}/api/dataview/publish/${recordId}/off`, {
+            headers,
+            timeout: UPLOAD_TIMEOUT_MS,
+          })
+          .catch(() => {})
+      }
+      await page.request
+        .delete(`${apiUrl()}/workspace/${wsId}`, {
+          headers,
+          timeout: UPLOAD_TIMEOUT_MS,
+        })
+        .catch(() => {})
+      fs.rmSync(aside, { force: true })
     }
   })
 })

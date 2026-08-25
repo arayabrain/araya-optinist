@@ -601,14 +601,15 @@ test.describe("Storage and database", () => {
     // The backend silently falls back to the shared default bucket when a
     // per-user bucket is gone, so a named-but-absent bucket is data loss that
     // no API response would reveal.
-    const declared = runSql(
-      "SELECT JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.remote_bucket_name')) " +
+    const declaredRows = runSql(
+      "SELECT id, JSON_UNQUOTE(JSON_EXTRACT(attributes, '$.remote_bucket_name')) " +
         "FROM users WHERE active = 1 AND JSON_EXTRACT(attributes, " +
         "'$.remote_bucket_name') IS NOT NULL",
     )
       .split("\n")
-      .map((line) => line.trim())
-      .filter((name) => name !== "" && name !== "NULL")
+      .map((line) => line.trim().split(/\s+/))
+      .filter(([, name]) => name && name !== "NULL")
+    const declared = declaredRows.map(([, name]) => name)
     expect(
       declared.length,
       "no active user names a remote bucket: the query or the schema moved",
@@ -633,10 +634,13 @@ test.describe("Storage and database", () => {
     )
 
     // The seeded admin account points at the shared app-storage bucket, so the
-    // naming contract only binds the buckets that are per-user.
-    for (const name of declared.filter((n) => n.startsWith(BUCKET_PREFIX))) {
-      expect(name, "per-user bucket naming contract").toMatch(
-        new RegExp(`^${BUCKET_PREFIX}\\d+-[0-9a-f]{10}$`),
+    // naming contract only binds the buckets that are per-user - and each of
+    // those must carry its OWN user's id, or two users share a bucket.
+    for (const [id, name] of declaredRows.filter(([, n]) =>
+      n.startsWith(BUCKET_PREFIX),
+    )) {
+      expect(name, `user ${id}'s bucket naming contract`).toMatch(
+        new RegExp(`^${BUCKET_PREFIX}${id}-[0-9a-f]{10}$`),
       )
     }
   })
@@ -1068,6 +1072,65 @@ test.describe("HTTP contract", () => {
       responses.length / elapsed,
       `throughput was ${(responses.length / elapsed).toFixed(1)}/s`,
     ).toBeGreaterThan(10)
+  })
+
+  // Row 801: the hashed bundle URLs are read out of the shell itself, so a
+  // build or routing drift 404s here instead of passing on a hardcoded name.
+  test("HEALTH-28 - every asset the shell references is served", async ({
+    request,
+  }) => {
+    skipUnlessDeployed("801")
+    const base = process.env.BASE_URL!
+
+    const shell = await request.get(`${base}/`)
+    expect(shell.status(), "GET /").toBe(200)
+    const assets = [
+      ...(await shell.text()).matchAll(
+        /(?:src|href)="(\/[^"]+\.(?:js|css|ico|png|json))"/g,
+      ),
+    ].map((m) => m[1])
+    expect(
+      assets.some((a) => a.startsWith("/static/")),
+      `the shell references no /static bundle, only: ${assets.join(", ")}`,
+    ).toBe(true)
+
+    for (const asset of new Set(assets)) {
+      const res = await request.get(`${base}${asset}`)
+      expect(res.status(), `GET ${asset}`).toBe(200)
+      expect((await res.body()).length, `${asset} is empty`).toBeGreaterThan(0)
+    }
+  })
+
+  // Row 2028's negative branch: an experiment that EXISTS but is unpublished
+  // answers an anonymous reproduce with 404 - the published_only gate, not a
+  // missing record.
+  test("HEALTH-29 - an unpublished experiment is invisible to an anonymous reproduce", async ({
+    request,
+  }) => {
+    skipUnlessDeployed("2028")
+    const reason = sqlSkipReason()
+    expect(reason, "row 2028 selects a private uid from the database").toBe("")
+
+    const row = runSql(
+      "SELECT workspace_id, uid FROM experiment_records " +
+        "WHERE publish_status = 0 LIMIT 1",
+    )
+      .trim()
+      .split(/\s+/)
+    test.skip(
+      row.length < 2,
+      "row 2028: the environment holds no unpublished experiment to probe",
+    )
+    const [wsId, uid] = row
+
+    const res = await request.get(
+      `${process.env.BASE_URL}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
+      { failOnStatusCode: false },
+    )
+    expect(
+      res.status(),
+      `anonymous reproduce of private ${wsId}/${uid}: ${await res.text()}`,
+    ).toBe(404)
   })
 })
 

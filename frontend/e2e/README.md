@@ -89,8 +89,10 @@ Sheet rows whose Action asks for a disruption that nothing covers yet stay
 free-tier outage rows (system sheet 08) are now OUT-01..03, and the public EC2
 termination row (827) is ASG-01 awaiting its first run. Still outstanding: the
 premium disruption rows (sheet 06-2: `ecs stop-task` on a user's own premium
-task, the `reconcile_instance` invoke, stop / terminate of a premium instance)
-and the ENOSPC row (2030). Row 824's notification half is not outstanding but
+task, the `reconcile_instance` invoke, stop / terminate of a premium instance).
+The ENOSPC row (2030) was adjudicated instead: real disk-full injection on the
+shared ECS task risks every co-tenant workload, and the whole observable retry
+contract is unit-asserted. Row 824's notification half is not outstanding but
 unassertable here: no `development-` alarm carries an SNS action
 (`critical_alerts_actions` is empty off production), so there is no notification
 path to exercise, and HEALTH-27 asserts the alarm's own evaluation instead.

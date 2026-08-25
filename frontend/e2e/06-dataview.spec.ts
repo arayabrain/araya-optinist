@@ -294,7 +294,9 @@ test.describe("Private Dataview @slow", () => {
     )
   })
 
-  test("DV-06 - Inputs dialog opens", async ({ page }) => {
+  test("DV-06 - Inputs dialog opens with the visualization grid, and closes", async ({
+    page,
+  }) => {
     // The cell's click target is the thumbnail (a spinner while loading)
     // or the fallback icon when no thumbnail exists
     const cellinput = page
@@ -304,9 +306,18 @@ test.describe("Private Dataview @slow", () => {
       .first()
     await expect(cellinput).toBeVisible({ timeout: 30_000 })
     await cellinput.click()
-    await expect(page.locator('[role="dialog"]')).toBeVisible({
-      timeout: 10_000,
+    // Row 707: THE inputs dialog with its content, not just any dialog - the
+    // InputsView title and a really-rendered plot inside it
+    const dialog = page.locator('[role="dialog"]')
+    await expect(dialog).toBeVisible({ timeout: 10_000 })
+    await expect(dialog.getByText("Workflow Inputs")).toBeVisible()
+    await expect(dialog.locator(".js-plotly-plot").first()).toBeVisible({
+      timeout: 60_000,
     })
+
+    // And the row's second half: it closes
+    await page.keyboard.press("Escape")
+    await expect(dialog).toBeHidden({ timeout: 10_000 })
   })
 
   test("DV-07 - Outputs dialog opens", async ({ page }) => {

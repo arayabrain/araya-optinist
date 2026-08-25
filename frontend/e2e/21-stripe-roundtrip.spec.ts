@@ -4,6 +4,7 @@ import {
   STRIPE_USER,
   apiLogin,
   isLocalBaseUrl,
+  login,
   runSql,
   stripeAccountSkipReason,
   sqlLiteral,
@@ -28,8 +29,8 @@ import {
 //
 // Rows: 267 / 268 (cancel_at_period_end and the cancel timestamps), 269 / 274
 // (the customer.subscription.updated events), 273 (the reactivation flips it
-// back), BT-919 / BT-921. BT-920's Continue-Plan button on real state needs a
-// premium UI login, which assigns a premium instance, so it stays with @prem.
+// back), BT-919 / BT-921; STRIPE-02 adds 2021 / BT-915 / BT-916 / BT-920, the
+// UI legs on real Stripe state.
 
 const premiumUserId = `(SELECT id FROM users WHERE email = '${sqlLiteral(
   STRIPE_USER.email || "",
@@ -187,6 +188,144 @@ test.describe("Stripe cancel / reactivate round-trip", () => {
       "reactivating cleared the schedule in Stripe",
     ).toBe(false)
     expect(restored.cancel_at, "cancel_at was cleared").toBeNull()
+    expect(scheduledDowngrade(), "and in the database").toBe("0")
+  })
+
+  // The subscription pages on the REAL account: what the UI renders must be
+  // Stripe's own values, and the cancelled state's Continue Plan button must
+  // really clear the schedule. Rows 2021 (the card last4 leg), BT-915 (the
+  // sections on real data), BT-916 (a real invoice row), BT-920 (the button,
+  // clicked). SUB-08..11 assert the same rendering against mocks; what this
+  // adds is that the mocks tell the truth.
+  test("STRIPE-02 - The manage page shows Stripe's own values and Continue Plan really reactivates", async ({
+    page,
+  }) => {
+    const accountReason = stripeAccountSkipReason()
+    test.skip(!!accountReason, accountReason)
+    const sqlReason = sqlSkipReason()
+    expect(
+      sqlReason,
+      `the deployed database must be readable: ${sqlReason}`,
+    ).toBe("")
+    test.setTimeout(300_000)
+
+    const before = stripeSubscriptionFor(STRIPE_USER.email)
+    expect(
+      before.cancel_at_period_end,
+      "the account must start with no scheduled cancellation",
+    ).toBe(false)
+    expect(
+      scheduledDowngrade(),
+      "the database agrees it is not cancelled",
+    ).toBe("0")
+
+    // Stripe's side of every claim the UI is about to make, fetched first
+    const customer = before.customer as string
+    const detail = stripeGet(`/v1/customers/${customer}`) as Record<string, any>
+    const pms = stripeGet("/v1/payment_methods", {
+      customer,
+      type: "card",
+      limit: 10,
+    }).data as Record<string, any>[]
+    expect(pms.length, "the account has no card on file").toBeGreaterThan(0)
+    const defaultPm = detail.invoice_settings?.default_payment_method as string
+    const card = (pms.find((p) => p.id === defaultPm) ?? pms[0]).card
+    const invoices = stripeGet("/v1/invoices", { customer, limit: 10 })
+      .data as Record<string, any>[]
+    const newest = invoices.filter((i) => i.status === "paid")[0]
+    expect(newest, "no paid invoice to compare the UI against").toBeTruthy()
+
+    await login(page, STRIPE_USER.email, STRIPE_USER.password)
+
+    // BT-915, by its own action: Manage from the account profile
+    await page.goto("/account")
+    await page.locator('button:has-text("Manage")').click()
+    await expect(page).toHaveURL(/\/subscription\/manage$/, { timeout: 15_000 })
+
+    // The sections, on real data: plan, payment method, invoice list
+    await expect(
+      page.getByText("Premium", { exact: true }).first(),
+    ).toBeVisible({ timeout: 30_000 })
+    await expect(
+      page.locator(`text=/${card.brand}.*${card.last4}/i`).first(),
+      `the rendered payment method is Stripe's own ${card.brand} ****${card.last4}`,
+    ).toBeVisible({ timeout: 30_000 })
+
+    // BT-916: the newest paid invoice's own values in the top table row -
+    // its date as the page formats it, its status, and its total's digits
+    const row = page.locator("tbody tr").first()
+    await expect(row).toBeVisible({ timeout: 30_000 })
+    await expect(row).toContainText(
+      new Date(newest.created * 1000).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      }),
+    )
+    await expect(row).toContainText(/paid/i)
+    expect(
+      ((await row.textContent()) ?? "").replace(/\D/g, ""),
+      `the top row carries the newest invoice's total ${newest.total}`,
+    ).toContain(String(newest.total))
+
+    // BT-920: cancel for real, then the banner's own button undoes it
+    const { api, headers } = await apiLogin(
+      STRIPE_USER.email,
+      STRIPE_USER.password,
+    )
+    let reactivated = false
+    try {
+      const me = await api.get("/users/me", { headers })
+      expect(me.ok()).toBeTruthy()
+      const userId = (await me.json()).id
+
+      const cancel = await api.delete("/api/subsc/mgmts/cancel", { headers })
+      expect(cancel.ok(), `DELETE cancel: ${await cancel.text()}`).toBeTruthy()
+      expect(
+        stripeSubscriptionFor(STRIPE_USER.email).cancel_at_period_end,
+        "Stripe has the cancellation scheduled",
+      ).toBe(true)
+
+      try {
+        await page.goto("/subscription")
+        await expect(
+          page.locator("text=Subscription Canceled:").first(),
+        ).toBeVisible({ timeout: 30_000 })
+        const continueButton = page
+          .locator('button:has-text("Continue Plan")')
+          .first()
+        await expect(continueButton).toBeVisible()
+        const undone = page.waitForResponse(
+          (r) =>
+            r.url().includes("/api/subsc/mgmts/reactivate/") &&
+            r.request().method() === "POST",
+          { timeout: 30_000 },
+        )
+        await continueButton.click()
+        expect(
+          (await undone).status(),
+          "the reactivate call Continue Plan fired",
+        ).toBe(200)
+        reactivated = true
+      } finally {
+        // The click is the undo; this is the fallback for a failure before it
+        if (!reactivated) {
+          const undo = await api.post(`/api/subsc/mgmts/reactivate/${userId}`, {
+            headers,
+          })
+          expect(undo.ok(), await undo.text()).toBeTruthy()
+        }
+      }
+    } finally {
+      await api.dispose()
+    }
+
+    // The click really cleared it, on both sides
+    const restored = stripeSubscriptionFor(STRIPE_USER.email)
+    expect(
+      restored.cancel_at_period_end,
+      "Continue Plan cleared the schedule in Stripe",
+    ).toBe(false)
     expect(scheduledDowngrade(), "and in the database").toBe("0")
   })
 })

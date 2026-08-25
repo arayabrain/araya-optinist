@@ -1029,16 +1029,14 @@ const RECORD_TIMEOUT_MS = 300_000
 // The surrounding reproduce/start steps need headroom above the run itself
 export const RUN_TEST_TIMEOUT_MS = RUN_TIMEOUT_MS + RECORD_TIMEOUT_MS + 60_000
 
-export async function runTutorial(
+export async function awaitRunFinished(
   page: Page,
   tutorialName: string,
-  mode: "RUN" | "RUN ALL" = "RUN ALL",
+  workspaceId: string,
+  uid: string,
 ) {
-  await reproduceTutorial(page, tutorialName)
-  const { workspaceId, uid } = await startRun(page, mode)
   const finished = page.locator("text=Workflow finished")
   const aborted = page.locator("text=Workflow aborted")
-  await expect(finished).toBeHidden({ timeout: 30_000 })
   // Race the two terminal snackbars: waiting on success alone burns the whole
   // ceiling on a run that already died, and reports it as a plain timeout
   await expect(finished.or(aborted).first()).toBeVisible({
@@ -1065,6 +1063,19 @@ export async function runTutorial(
   expect(recorded, `${tutorialName} recorded "${recorded}", not success`).toBe(
     "success",
   )
+}
+
+export async function runTutorial(
+  page: Page,
+  tutorialName: string,
+  mode: "RUN" | "RUN ALL" = "RUN ALL",
+) {
+  await reproduceTutorial(page, tutorialName)
+  const { workspaceId, uid } = await startRun(page, mode)
+  await expect(page.locator("text=Workflow finished")).toBeHidden({
+    timeout: 30_000,
+  })
+  await awaitRunFinished(page, tutorialName, workspaceId, uid)
   return { workspaceId, uid }
 }
 

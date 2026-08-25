@@ -205,7 +205,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   // Row 819: a rolling deployment of the public tier must not interrupt what it
   // serves. force-new-deployment is the same action a release performs.
   test("OUT-02 - A rolling public-tier deployment keeps serving throughout", async () => {
-    test.setTimeout(900_000)
+    // Each replaced task can spend the full 600s deregistration delay
+    // draining, and the tier runs two tasks, so the rollout's worst case is
+    // over 20 minutes - observed 2026-08-25 when a drain ran to the cap.
+    test.setTimeout(2_400_000)
     const before = describeService(PUBLIC_SERVICE)
     expect(
       before.desiredCount,
@@ -234,6 +237,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       const priorDeployment = describeService(PUBLIC_SERVICE).deployments.find(
         (d) => d.status === "PRIMARY",
       )?.id
+      const deployStart = Date.now()
       awsJson(
         `ecs update-service --cluster ${CLUSTER} --service ${PUBLIC_SERVICE} ` +
           `--force-new-deployment --region ${AWS_REGION}`,
@@ -241,7 +245,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       // Poll the front door while the deployment rolls; a rolling update keeps
       // the old task in service until the new one is healthy, so every one of
       // these must answer
-      const deadline = Date.now() + 300_000
+      const deadline = Date.now() + 1_800_000
       let settled = false
       while (Date.now() < deadline) {
         const res = await anon.get(`${process.env.BASE_URL}/`, {
@@ -281,6 +285,33 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
         `published ${record!.uid} after the task replacement (202 = re-syncing ` +
           `from S3, so EFS did not preserve it)`,
       ).toBe(200)
+
+      // Row 823: the replacement task really runs the startup sync through
+      // the leader path, warming the published-data cache on the new task.
+      //
+      // Deliberately NOT asserted: the row's "other tasks log 'deferred to
+      // leader'" line. `startup_sync_leader_lock` holds the MySQL lock only
+      // while the sync runs and releases it on exit, and a rolling deployment
+      // replaces tasks one at a time - so the second task boots long after
+      // the lock is free and legitimately logs "scheduled" too. Contention
+      // needs two tasks booting at once, which this action cannot produce
+      // (verified 2026-08-25: a real rolling deployment emitted "scheduled"
+      // and no "deferred" line). The loser branch is
+      // test_main_unit_startup.py::TestStartupSyncLeaderElection.
+      await expect
+        .poll(
+          () =>
+            cloudwatchHas(
+              PUBLIC_LOG_GROUP,
+              "Startup sync task scheduled",
+              deployStart,
+            ),
+          {
+            ...CLOUDWATCH_POLL,
+            message: `no "Startup sync task scheduled" line in ${PUBLIC_LOG_GROUP} after the deployment`,
+          },
+        )
+        .toBe(true)
     } finally {
       await anon.dispose()
     }
