@@ -61,34 +61,23 @@ function ssmInstanceId(): string {
   return ssmInstance
 }
 
-function runSqlOverSsm(sql: string): string {
-  const py =
-    "python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])'"
-  const script = [
-    "set -e",
-    `CFG=$(aws secretsmanager get-secret-value --region ap-northeast-1 --secret-id ${RDS_SECRET_ID} --query SecretString --output text)`,
-    `export MYSQL_PWD=$(printf '%s' "$CFG" | ${py} password)`,
-    `DBU=$(printf '%s' "$CFG" | ${py} username)`,
-    `DBN=$(printf '%s' "$CFG" | ${py} database)`,
-    `mariadb --ssl -h ${RDS_PROXY_HOST} -u "$DBU" --connect-timeout=10 "$DBN" -N`,
-  ]
+// Run shell commands on an in-VPC instance via SSM and return stdout. The
+// deployed lanes use it for anything the API does not expose: SQL through the
+// TLS-only RDS proxy, and reads/writes on an ECS task's local filesystem.
+export function runShellOverSsm(
+  instanceId: string,
+  commands: string[],
+  label = "SSM command",
+): string {
   const paramsFile = path.join(
     fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-ssm-")),
     "params.json",
   )
-  fs.writeFileSync(
-    paramsFile,
-    JSON.stringify({
-      commands: [
-        ...script.slice(0, -1),
-        `${script[script.length - 1]} <<'SQL'\n${sql}\nSQL`,
-      ],
-    }),
-  )
+  fs.writeFileSync(paramsFile, JSON.stringify({ commands }))
   let commandId: string
   try {
     commandId = aws(
-      `ssm send-command --region ap-northeast-1 --instance-ids ${ssmInstanceId()} ` +
+      `ssm send-command --region ap-northeast-1 --instance-ids ${instanceId} ` +
         `--document-name AWS-RunShellScript --parameters file://${paramsFile} ` +
         `--query Command.CommandId --output text`,
     )
@@ -100,19 +89,33 @@ function runSqlOverSsm(sql: string): string {
   for (;;) {
     const raw = aws(
       `ssm get-command-invocation --region ap-northeast-1 --command-id ${commandId} ` +
-        `--instance-id ${ssmInstanceId()} --output json`,
+        `--instance-id ${instanceId} --output json`,
     )
     const inv = JSON.parse(raw)
     if (inv.Status === "Success")
       return (inv.StandardOutputContent || "").trim()
     if (!["Pending", "InProgress", "Delayed"].includes(inv.Status)) {
       throw new Error(
-        `SSM SQL failed (${inv.Status}): ${inv.StandardErrorContent || inv.StatusDetails}`,
+        `${label} failed (${inv.Status}): ${inv.StandardErrorContent || inv.StatusDetails}`,
       )
     }
-    if (Date.now() > deadline) throw new Error(`SSM SQL timed out: ${sql}`)
+    if (Date.now() > deadline) throw new Error(`${label} timed out`)
     execSync("sleep 2")
   }
+}
+
+function runSqlOverSsm(sql: string): string {
+  const py =
+    "python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])'"
+  const script = [
+    "set -e",
+    `CFG=$(aws secretsmanager get-secret-value --region ap-northeast-1 --secret-id ${RDS_SECRET_ID} --query SecretString --output text)`,
+    `export MYSQL_PWD=$(printf '%s' "$CFG" | ${py} password)`,
+    `DBU=$(printf '%s' "$CFG" | ${py} username)`,
+    `DBN=$(printf '%s' "$CFG" | ${py} database)`,
+    `mariadb --ssl -h ${RDS_PROXY_HOST} -u "$DBU" --connect-timeout=10 "$DBN" -N <<'SQL'\n${sql}\nSQL`,
+  ]
+  return runShellOverSsm(ssmInstanceId(), script, "SSM SQL")
 }
 
 // Off the local stack this reaches the shared dev RDS, where the throwaway
@@ -138,6 +141,22 @@ function assertReadOnly(sql: string) {
         `local-stack only; gate them on localStackSkipReason().`,
     )
   }
+}
+
+// The one sanctioned write path to the deployed dev RDS. runSql refuses writes
+// so a spec cannot casually mutate the shared environment; a lane that must
+// stage a state the API cannot reach (the is_shared nudge behind row 608's
+// migration) opts in through this loud name instead. Development only, one
+// statement only.
+export function runSqlWriteOnDev(sql: string): string {
+  expect(
+    process.env.BASE_URL || "",
+    "runSqlWriteOnDev only runs against the development environment",
+  ).toContain("development-optinist")
+  if (/;\s*\S/.test(sql.trim())) {
+    throw new Error(`runSqlWriteOnDev refuses multi-statement SQL: ${sql}`)
+  }
+  return runSqlOverSsm(sql)
 }
 
 export function runSql(sql: string): string {
@@ -216,6 +235,37 @@ export function cloudwatchHas(
     .toString()
     .trim()
   return out !== "" && out !== "None"
+}
+
+// The awslogs driver stamps every background-tier event with the task's start
+// time (its multiline pattern does not match the app's log format), so
+// filter-log-events --start-time finds nothing there however live the task is.
+// Reading the stream's tail and trusting ingestionTime sidesteps that.
+export function logTail(
+  logGroup: string,
+  limit = 300,
+): {
+  lastIngestion: number
+  text: string
+  events: { ingestionTime: number; message: string }[]
+} {
+  const streams = awsJson<{ logStreamName: string }[]>(
+    `logs describe-log-streams --log-group-name ${logGroup} ` +
+      `--order-by LastEventTime --descending --max-items 1 ` +
+      `--query 'logStreams[]'`,
+  )
+  expect(streams.length, `${logGroup} has no log streams`).toBeGreaterThan(0)
+  const events = awsJson<{ ingestionTime: number; message: string }[]>(
+    `logs get-log-events --log-group-name ${logGroup} ` +
+      `--log-stream-name ${streams[0].logStreamName} --limit ${limit} ` +
+      `--query 'events[].{ingestionTime:ingestionTime,message:message}'`,
+  )
+  expect(events.length, `${logGroup} newest stream is empty`).toBeGreaterThan(0)
+  return {
+    lastIngestion: Math.max(...events.map((e) => e.ingestionTime)),
+    text: events.map((e) => e.message).join("\n"),
+    events,
+  }
 }
 
 // One read-only AWS CLI call, parsed. Callers pass their own --query.

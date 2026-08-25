@@ -8,6 +8,7 @@ import {
   cloudwatchHas,
   FREE_USER,
   isLocalBaseUrl,
+  logTail,
   RDS_PROXY_HOST,
   runSql,
   skipWithoutCreds,
@@ -233,32 +234,6 @@ function runningTaskArns(): string[] {
   return awsJson<string[]>(
     `ecs list-tasks --cluster ${CLUSTER} --query 'taskArns[]'`,
   )
-}
-
-// The awslogs driver stamps every background-tier event with the task's start
-// time (its multiline pattern does not match the app's log format), so
-// filter-log-events --start-time finds nothing there however live the task is.
-// Reading the stream's tail and trusting ingestionTime sidesteps that.
-function logTail(
-  logGroup: string,
-  limit = 300,
-): { lastIngestion: number; text: string } {
-  const streams = awsJson<{ logStreamName: string }[]>(
-    `logs describe-log-streams --log-group-name ${logGroup} ` +
-      `--order-by LastEventTime --descending --max-items 1 ` +
-      `--query 'logStreams[]'`,
-  )
-  expect(streams.length, `${logGroup} has no log streams`).toBeGreaterThan(0)
-  const events = awsJson<{ ingestionTime: number; message: string }[]>(
-    `logs get-log-events --log-group-name ${logGroup} ` +
-      `--log-stream-name ${streams[0].logStreamName} --limit ${limit} ` +
-      `--query 'events[].{ingestionTime:ingestionTime,message:message}'`,
-  )
-  expect(events.length, `${logGroup} newest stream is empty`).toBeGreaterThan(0)
-  return {
-    lastIngestion: Math.max(...events.map((e) => e.ingestionTime)),
-    text: events.map((e) => e.message).join("\n"),
-  }
 }
 
 // Returns the sum and how many datapoints produced it: an absent metric sums
