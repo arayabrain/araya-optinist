@@ -264,9 +264,12 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
           primary!.rolloutState,
           "the public deployment failed to roll out",
         ).not.toBe("FAILED")
+        // Not `deployments.length === 1`: a second force-new-deployment landing
+        // mid-run (observed 2026-08-25) keeps a superseded deployment listed and
+        // makes that count unsatisfiable for the rest of the run. COMPLETED on a
+        // PRIMARY newer than the pinned one already means the roll finished.
         if (
           primary!.id !== priorDeployment &&
-          s.deployments.length === 1 &&
           primary!.rolloutState === "COMPLETED" &&
           s.runningCount === before.desiredCount
         ) {
