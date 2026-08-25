@@ -262,6 +262,21 @@ const PREMIUM2_USER = {
   password: process.env.TEST_PREMIUM2_PASSWORD || "",
 }
 
+// Every premium instance the pool currently holds, in any live state. The
+// migration rows need one the user is NOT on, whatever state it is parked in.
+function premiumInstances(): { id: string; state: string }[] {
+  return awsJson<{ id: string; state: string }[]>(
+    `ec2 describe-instances ` +
+      `--filters Name=tag:Name,Values=development-premium-* ` +
+      `Name=instance-state-name,Values=running,stopped,pending,stopping ` +
+      `--query 'Reservations[].Instances[].{id:InstanceId,state:State.Name}'`,
+  )
+}
+
+function instanceState(instanceId: string): string {
+  return premiumInstances().find((i) => i.id === instanceId)?.state ?? "gone"
+}
+
 function runningPremiumInstanceIds(): string[] {
   const out = execSync(
     `aws ec2 describe-instances --region ${REGION} ` +
@@ -2212,21 +2227,50 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     // A candidate must also carry NO assignment row at all: a standby row
     // makes try_reserve_instance answer "already reserved" and the optimizer
     // skips it.
-    const candidate = awsJson<string[]>(
-      `ec2 describe-instances ` +
-        `--filters Name=tag:Name,Values=development-premium-* ` +
-        `Name=instance-state-name,Values=stopped ` +
-        `--query 'Reservations[].Instances[].InstanceId'`,
-    ).find((id) => id !== instanceA)
-    test.skip(
-      !candidate,
-      `row 608 needs a second premium instance to migrate onto; the pool has ` +
-        `none stopped besides ${instanceA}`,
-    )
+    let candidate = premiumInstances().find((i) => i.id !== instanceA)?.id
+    if (!candidate) {
+      // The pool self-heals to exactly ONE standby and the sweep terminates
+      // the extras, so when the user holds the only instance there is nothing
+      // to migrate onto (measured: a run skipped here). Ask the manager for
+      // another. create_standby refuses while get_standby_count() already
+      // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
+      runSqlWriteOnDev(
+        `DELETE FROM premium_user_assignments WHERE is_standby = 1`,
+      )
+      awsJson(
+        `lambda invoke --function-name development-premium-manager ` +
+          `--cli-binary-format raw-in-base64-out ` +
+          `--payload '{"action":"create_standby"}' /dev/null`,
+      )
+      await expect
+        .poll(
+          () => {
+            candidate = premiumInstances().find((i) => i.id !== instanceA)?.id
+            return !!candidate
+          },
+          {
+            timeout: 8 * 60_000,
+            intervals: [20_000],
+            message: "the manager never created a second premium instance",
+          },
+        )
+        .toBe(true)
+      // The Lambda answers with the id and stops the instance ~30s later, so a
+      // start issued in that window is silently undone. Wait it out.
+      await expect
+        .poll(() => instanceState(candidate!), {
+          timeout: 8 * 60_000,
+          intervals: [20_000],
+          message: `${candidate} never settled to stopped after creation`,
+        })
+        .toBe("stopped")
+    }
     runSqlWriteOnDev(
       `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'`,
     )
-    awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+    if (instanceState(candidate!) !== "running") {
+      awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+    }
     await expect
       .poll(() => runningPremiumInstanceIds().includes(candidate!), {
         timeout: 8 * 60_000,
@@ -2327,6 +2371,34 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       )
       .toBe(true)
 
+    // The row's claim is that S3 is the source of truth, so the proof is the
+    // experiment's own file arriving on an instance that did not have it.
+    // Read the filesystem rather than the log: the app's download line is a
+    // listing summary that legitimately prints "workspaces: []", so its
+    // absence does not mean no data moved (observed both ways).
+    const onInstanceB = (cmd: string) =>
+      runShellOverSsm(
+        instanceB,
+        [
+          "set -e",
+          "CID=$(sudo docker ps -q --filter name=ecs- --filter publish=8000 | head -1)",
+          '[ -n "$CID" ]',
+          `sudo docker exec "$CID" sh -c "${cmd}"`,
+        ],
+        "premium instance exec",
+      )
+    const tMigrated = windowStart()
+    const experimentYaml = `/app/studio_data/output/${wsId}/${uid}/experiment.yaml`
+    const yamlOnB = () =>
+      onInstanceB(`test -f ${experimentYaml} && echo present || echo absent`)
+    // Taken before anything re-opens the app, so the assertion below cannot be
+    // satisfied by a file that was already sitting there.
+    expect(
+      yamlOnB(),
+      `${instanceB} already holds ${experimentYaml}, so fetching it later ` +
+        `would prove nothing`,
+    ).toBe("absent")
+
     // The ALB really serves the user from the new instance before the UI half.
     await expect
       .poll(() => premiumTargetHealth(userId).includes("healthy"), {
@@ -2346,30 +2418,39 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       })
       .toBe(instanceB)
 
-    // Step 4: open the previously-created experiment. Instance B never ran
-    // it, so serving the reproduce is only possible by lazily fetching the
-    // user's files from S3 - which its task must log.
+    // Step 4: open the previously-created experiment. Instance B never ran it,
+    // so serving this is only possible by lazily fetching the user's files
+    // from S3, and the fetch is the row's whole point: S3 is the source of
+    // truth, so an instance change costs the user nothing.
     await page.goto(`/workspaces/${wsId}`)
     await reproduceTutorial(page, "e2e-runall")
+
+    // The row's Expected #2, read from the instance rather than from a log
+    // sentence: the experiment's own config, absent from this instance a
+    // moment ago, is now on its disk. S3 is the only place it could have come
+    // from - instance B never ran the workflow.
     await expect
-      .poll(
-        () =>
-          cloudwatchHas(
-            PREMIUM_LOG_GROUP,
-            "Download data from remote storage",
-            t0,
-          ) ||
-          cloudwatchHas(
-            PREMIUM_LOG_GROUP,
-            `Download data from S3 [${bucket}]`,
-            t0,
-          ),
-        {
-          ...CLOUDWATCH_POLL,
-          message: `no lazy S3 download lines in ${PREMIUM_LOG_GROUP} after the migration`,
-        },
-      )
-      .toBe(true)
+      .poll(yamlOnB, {
+        timeout: 6 * 60_000,
+        intervals: [15_000],
+        message:
+          `${instanceB} never fetched ${experimentYaml} after the migration, ` +
+          `so the experiment is not recoverable from S3 on the new instance`,
+      })
+      .toBe("present")
+    // Reported, not asserted: the app's own download line names the bucket it
+    // pulled from, but it summarises a listing and can read "workspaces: []"
+    // even on a run that moved data.
+    console.log(
+      `[15-premium-aws] PREM-14: lazy-fetch log lines naming ${bucket} and ` +
+        `workspace ${wsId}: ` +
+        awsJson<unknown[]>(
+          `logs filter-log-events --log-group-name ${PREMIUM_LOG_GROUP} ` +
+            `--start-time ${tMigrated} --filter-pattern ` +
+            `'"Download all metadata from remote storage" "${bucket}" ` +
+            `"output/${wsId}/"' --query 'events[]'`,
+        ).length,
+    )
   } finally {
     await page.request
       .delete(`${apiUrl()}/workspace/${wsId}`, {
