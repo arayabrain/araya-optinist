@@ -28,6 +28,7 @@ import {
   runTutorial,
   s3ObjectCount,
   skipWithoutCreds,
+  sqlLiteral,
   sqlSkipReason,
   startRun,
   windowStart,
@@ -53,6 +54,7 @@ const AUTOSCALING_POOL = "autoscaling-pool"
 const CLUSTER = "development-optinist-cloud-cluster"
 const PREMIUM_SERVICE = "development-premium-optinist-cloud-service"
 const PREMIUM_MANAGER_LOG_GROUP = "/aws/lambda/development-premium-manager"
+const PREMIUM_CLEANUP_LOG_GROUP = "/aws/lambda/development-premium-cleanup"
 const REGION = "ap-northeast-1"
 
 // A cold assign starts EC2 capacity + an ECS task: minutes, not seconds
@@ -103,18 +105,24 @@ function tgExists(userId: number): boolean {
 // serves traffic, so a workflow driven through the ALB too early answers 502.
 // The premium service's task on a given instance, as the console's Tasks tab
 // shows it. Rows 1203/1204 are written against that view.
-function premiumTaskStatusOn(instanceId: string): string {
+function premiumTaskOn(
+  instanceId: string,
+): { taskArn: string; lastStatus: string } | undefined {
   const arns = awsJson<{ taskArns: string[] }>(
     `ecs list-tasks --cluster ${CLUSTER} --service-name ${PREMIUM_SERVICE}`,
   ).taskArns
-  if (!arns.length) return "none"
+  if (!arns.length) return undefined
   const tasks = awsJson<{
-    tasks: { lastStatus: string; containerInstanceArn?: string }[]
+    tasks: {
+      taskArn: string
+      lastStatus: string
+      containerInstanceArn?: string
+    }[]
   }>(`ecs describe-tasks --cluster ${CLUSTER} --tasks ${arns.join(" ")}`).tasks
   const cis = tasks
     .map((t) => t.containerInstanceArn)
     .filter((a): a is string => !!a)
-  if (!cis.length) return "none"
+  if (!cis.length) return undefined
   const owners = awsJson<{
     containerInstances: {
       containerInstanceArn: string
@@ -125,11 +133,12 @@ function premiumTaskStatusOn(instanceId: string): string {
       `--container-instances ${cis.join(" ")}`,
   ).containerInstances
   const mine = owners.find((c) => c.ec2InstanceId === instanceId)
-  if (!mine) return "none"
-  return (
-    tasks.find((t) => t.containerInstanceArn === mine.containerInstanceArn)
-      ?.lastStatus ?? "none"
-  )
+  if (!mine) return undefined
+  return tasks.find((t) => t.containerInstanceArn === mine.containerInstanceArn)
+}
+
+function premiumTaskStatusOn(instanceId: string): string {
+  return premiumTaskOn(instanceId)?.lastStatus ?? "none"
 }
 
 // Waiting out the task placement is not the row under test: a cluster that
@@ -285,12 +294,12 @@ function ecsContainerEc2Ids(): string[] {
   return out ? out.split(/\s+/) : []
 }
 
-// The latest sweep analysis line since sinceMs, from the Lambda's own log
+// The latest matching line since sinceMs, from the manager Lambda's own log
 // group; empty string until log propagation delivers it.
-function latestSweepAnalysis(sinceMs: number): string {
+function latestManagerLine(pattern: string, sinceMs: number): string {
   const out = execSync(
     `aws logs filter-log-events --log-group-name ${PREMIUM_MANAGER_LOG_GROUP} ` +
-      `--start-time ${sinceMs} --filter-pattern '"Scale-down analysis:"' ` +
+      `--start-time ${sinceMs} --filter-pattern '"${pattern}"' ` +
       `--query 'events[-1].message' --output text --region ${REGION}`,
     { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
   )
@@ -1220,9 +1229,13 @@ test("PREM-07 - Premium workflow runs end-to-end on the real dedicated instance 
 test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slow", async ({
   page,
 }) => {
-  const rows = "605 / BT-610"
+  const rows = "605 / BT-610 / 723"
   skipUnlessOptedIn(rows)
-  test.setTimeout(TEST_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS + 10 * 60_000)
+  // Row 723 rides along at the end, so its database reads are a precondition
+  // of the whole test rather than a surprise twenty minutes in.
+  const sqlReason = sqlSkipReason()
+  test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
+  test.setTimeout(TEST_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS + 22 * 60_000)
 
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
   expectGenuinelyPremium(await statusViaPage(page))
@@ -1326,6 +1339,90 @@ test("PREM-08 - Concurrent workflows all complete on one dedicated instance @slo
         ).toBe("success")
       }),
     )
+
+    // Row 723 rides on the back of these three runs because this is the only
+    // place three FINISHED experiments exist at once. The sync job only ever
+    // looks at records with success = 1 (_get_pending_experiments), imported
+    // sample data is success = 0, and every lane that produces a real one
+    // deletes its workspace on the way out - so publishing three of those,
+    // here, before the teardown below, is the batch the row is about.
+    const routed = await routedApiHeaders(page)
+    const owned = runs
+      .map(
+        (r) =>
+          `(workspace_id = ${r.workspaceId} AND uid = '${sqlLiteral(r.uid)}')`,
+      )
+      .join(" OR ")
+    const recordIds = runSql(
+      `SELECT id FROM experiment_records
+         WHERE success = 1 AND publish_status = 0 AND (${owned});`,
+    )
+      .split(/\s+/)
+      .filter(Boolean)
+    // Not a setup step: a finished run that the sync job would not pick up is
+    // itself the failure, and this is the only assertion that says so.
+    expect(
+      recordIds.length,
+      `only ${recordIds.length} of the ${runs.length} finished runs left a ` +
+        `record the sync job would accept (success = 1, unpublished)`,
+    ).toBe(runs.length)
+    const pendingCount = () =>
+      runSql(
+        `SELECT COUNT(*) FROM experiment_records
+           WHERE id IN (${recordIds.join(",")})
+             AND local_sync_status = 'pending';`,
+      )
+
+    const published = await page.request.post(
+      `${apiUrl()}/api/dataview/multiple/publish/on`,
+      {
+        headers: routed,
+        data: recordIds.map(Number),
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      },
+    )
+    expect(published.ok(), await published.text()).toBe(true)
+    try {
+      expect(
+        pendingCount(),
+        `publishing ${recordIds.length} records together marks every one of ` +
+          `them pending, which is the state the sync job drains`,
+      ).toBe(String(recordIds.length))
+
+      // The job is on a 5-minute interval, so waiting for it to come round is
+      // slow; waiting for it to FINISH the batch is not. A batch needing a
+      // second pass would sit part-drained until the next interval, which is
+      // the failure row 723 is really about (the cap is 50 per run, 10
+      // concurrent, so three must never split).
+      await expect
+        .poll(() => pendingCount(), {
+          timeout: 12 * 60_000,
+          intervals: [10_000],
+          message: `no validation run touched the ${recordIds.length} published records`,
+        })
+        .not.toBe(String(recordIds.length))
+      await expect
+        .poll(() => pendingCount(), {
+          timeout: 60_000,
+          intervals: [5_000],
+          message:
+            `the batch drained partially and stalled - one run must clear all ` +
+            `${recordIds.length}`,
+        })
+        .toBe("0")
+    } finally {
+      // The workspaces go below, which would take these records with them, but
+      // unpublish first so nothing is briefly public on the way out.
+      const reverted = await page.request.post(
+        `${apiUrl()}/api/dataview/multiple/publish/off`,
+        {
+          headers: routed,
+          data: recordIds.map(Number),
+          timeout: RELEASE_REQUEST_TIMEOUT_MS,
+        },
+      )
+      expect(reverted.ok(), await reverted.text()).toBe(true)
+    }
   } finally {
     for (const p of pages.slice(1)) {
       await p.close().catch(() => {})
@@ -1399,27 +1496,36 @@ test("PREM-06 - The sweep stops a released idle instance and keeps the last one 
     if (!a1.is_shared || !a2.is_shared) heldDedicated = true
     const distinctDedicated = distinct()
 
-    await release(s1)
-    await release(s2)
+    // Sampled while the users still hold them. A hard release runs
+    // scale_down_if_possible() inline and then, with no premium user left,
+    // converts every remaining idle instance to standby - so both releases
+    // return with the pool already cold and an after-the-fact sample reads 0.
     const runningBefore = runningPremiumInstanceIds()
 
-    // Run the sweep and assert its analysis line even when the cascade could
-    // not grant two distinct instances: that partial verifies every run.
-    // The invoke's Tail is only the last 4KB and a busy sweep pushes the
-    // analysis line out of it, so the line is read from the full CloudWatch log.
-    const tSweep = Date.now() - 5_000
-    invokeMonitoringSweep()
+    const tRelease = Date.now() - 5_000
+    await release(s1)
+    await release(s2)
+
+    // The release's own scale-down prints its analysis, so this verifies every
+    // run - including one where the cascade could not grant two distinct
+    // instances and the outcome half below has to skip.
     let analysisLine = ""
     await expect
-      .poll(() => (analysisLine = latestSweepAnalysis(tSweep)), {
-        ...CLOUDWATCH_POLL,
-        message: `no Scale-down analysis line in ${PREMIUM_MANAGER_LOG_GROUP} after the sweep`,
-      })
+      .poll(
+        () =>
+          (analysisLine = latestManagerLine("Scale-down analysis:", tRelease)),
+        {
+          ...CLOUDWATCH_POLL,
+          message: `no Scale-down analysis line in ${PREMIUM_MANAGER_LOG_GROUP} after the releases`,
+        },
+      )
       .toContain("Scale-down analysis:")
-    const analysis = analysisLine.match(
-      /Scale-down analysis: \d+ total, (\d+) occupied, (\d+) idle, (\d+) active users/,
-    )
-    expect(analysis, analysisLine).toBeTruthy()
+    expect(
+      analysisLine.match(
+        /Scale-down analysis: \d+ total, (\d+) occupied, (\d+) idle, (\d+) active users/,
+      ),
+      analysisLine,
+    ).toBeTruthy()
 
     test.skip(
       !distinctDedicated,
@@ -1429,42 +1535,56 @@ test("PREM-06 - The sweep stops a released idle instance and keeps the last one 
     )
     expect(runningBefore.length).toBeGreaterThanOrEqual(2)
 
-    // 6221: judge the OUTCOME (an idle instance really left the running
-    // state), not the analysis numbers - each sweep run manufactures a
-    // transient user-NULL reservation row that inflates occupied/active
-    // during its own scale-down read, so a single blocked analysis proves
-    // nothing. Re-invoke while waiting; skip only when no stop ever lands.
-    let runningAfter: string[] = runningPremiumInstanceIds()
-    const stopDeadline = Date.now() + 4 * 60_000
-    while (
-      runningAfter.length >= runningBefore.length &&
-      Date.now() < stopDeadline
-    ) {
-      await new Promise((r) => setTimeout(r, 20_000))
-      runningAfter = runningPremiumInstanceIds()
-      if (runningAfter.length >= runningBefore.length) invokeMonitoringSweep()
-    }
-    test.skip(
-      runningAfter.length >= runningBefore.length,
-      `rows ${rows}: no idle premium instance left the running state; last ` +
-        `analysis: ${latestSweepAnalysis(tSweep)} - the sweep's own transient ` +
-        `reservation row raises the scale-down floor by one (product gap), or ` +
-        `another user holds capacity`,
-    )
-    expect(
-      runningAfter.length,
-      "the sweep stopped the last warm instance",
-    ).toBeGreaterThanOrEqual(1)
-
-    // 6221's ordering guarantee, observed from the end state: whatever was
-    // stopped must also be out of the ECS cluster, not a ghost registration
-    const stopped = runningBefore.filter((id) => !runningAfter.includes(id))
+    // 6221: the decision named real instances, and they were the ones the two
+    // users had been holding - not some unrelated capacity.
+    let stopLine = ""
     await expect
-      .poll(() => ecsContainerEc2Ids().filter((id) => stopped.includes(id)), {
-        timeout: 3 * 60_000,
-        intervals: [15_000],
-        message: `stopped instance(s) ${stopped} still registered in ECS`,
+      .poll(() => (stopLine = latestManagerLine("idle instances:", tRelease)), {
+        ...CLOUDWATCH_POLL,
+        message:
+          `no scale-down stop decision in ${PREMIUM_MANAGER_LOG_GROUP} after ` +
+          `releasing both dedicated instances; analysis was: ${analysisLine}`,
       })
+      .toContain("idle instances:")
+    const stoppedIds = [...stopLine.matchAll(/i-[0-9a-f]+/g)].map((m) => m[0])
+    expect(stoppedIds.length, stopLine).toBeGreaterThan(0)
+    expect(
+      runningBefore,
+      `${stopLine} stopped an instance the released users never held`,
+    ).toEqual(expect.arrayContaining(stoppedIds))
+
+    // 6222: the same decision spared one. The pool still ends cold, because a
+    // hard release with no premium users left additionally converts the
+    // remainder to standby - but that is the logout path, not scale-down
+    // stripping every idle instance in a single decision.
+    expect(
+      stoppedIds.length,
+      `scale-down stopped every idle instance at once: ${stopLine}`,
+    ).toBeLessThan(runningBefore.length)
+
+    // The decision is not the outcome: the named instances really left the
+    // running state, and left the ECS cluster with them rather than lingering
+    // as ghost registrations.
+    await expect
+      .poll(
+        () =>
+          runningPremiumInstanceIds().filter((id) => stoppedIds.includes(id)),
+        {
+          timeout: 5 * 60_000,
+          intervals: [15_000],
+          message: `scale-down named ${stoppedIds} but they are still running`,
+        },
+      )
+      .toHaveLength(0)
+    await expect
+      .poll(
+        () => ecsContainerEc2Ids().filter((id) => stoppedIds.includes(id)),
+        {
+          timeout: 3 * 60_000,
+          intervals: [15_000],
+          message: `stopped instance(s) ${stoppedIds} still registered in ECS`,
+        },
+      )
       .toHaveLength(0)
   } finally {
     await s1.api.dispose()
@@ -1506,6 +1626,319 @@ test("PREM-09 - The premium subscription row is real in the deployed RDS @slow",
       /^2\s+1\s+0$/,
     )
   } finally {
+    await api.dispose()
+  }
+})
+
+// Row 6226: the database's picture of the premium fleet has to follow AWS.
+// TestReconcileInstanceStates drives the reconcile transaction directly, so
+// what stays unproven is everything around it - that terminating a real EC2
+// reaches the Cleanup Lambda through the EventBridge rule at all, and that the
+// row really disappears. The standby is the only premium instance owned by
+// nobody, so it is the only one this may destroy; the sweep at the end buys
+// back the one it consumed.
+test("PREM-10 - Terminating a premium instance reconciles its database row away @slow", async () => {
+  const rows = "6226"
+  skipUnlessOptedIn(rows)
+  const sqlReason = sqlSkipReason()
+  test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
+  test.setTimeout(20 * 60_000)
+
+  const instanceId = runSql(
+    `SELECT instance_id FROM premium_user_assignments
+       WHERE user_id IS NULL AND is_standby = 1 AND status = 'active'
+       ORDER BY id DESC LIMIT 1;`,
+  )
+  test.skip(
+    !/^i-[0-9a-f]+$/.test(instanceId),
+    `rows ${rows}: no unowned standby row to reconcile ("${instanceId}") - ` +
+      `terminating an instance a user holds is not this test's to do`,
+  )
+  const rowsFor = () =>
+    runSql(
+      `SELECT COUNT(*) FROM premium_user_assignments
+         WHERE instance_id = '${instanceId}';`,
+    )
+  expect(
+    rowsFor(),
+    `the database must start out holding a row for standby ${instanceId}, ` +
+      `or its disappearance proves nothing`,
+  ).toBe("1")
+
+  const since = Date.now() - 5_000
+  awsJson(`ec2 terminate-instances --instance-ids ${instanceId}`)
+  try {
+    // The event-driven path, not the hourly walk: this line only comes from
+    // the reconcile_instance action the EventBridge rule delivers.
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PREMIUM_CLEANUP_LOG_GROUP,
+            `Targeted instance reconciliation for ${instanceId}`,
+            since,
+          ),
+        {
+          timeout: 10 * 60_000,
+          intervals: [15_000],
+          message:
+            `no targeted reconciliation for ${instanceId} in ` +
+            `${PREMIUM_CLEANUP_LOG_GROUP} after terminating it`,
+        },
+      )
+      .toBe(true)
+    await expect
+      .poll(() => rowsFor(), {
+        timeout: 5 * 60_000,
+        intervals: [15_000],
+        message: `the row for terminated ${instanceId} was never reconciled away`,
+      })
+      .toBe("0")
+  } finally {
+    invokeMonitoringSweep()
+  }
+})
+
+// Row 6204: two premium users assigning at the same moment must not corrupt the
+// pool. TestConcurrentAssignLock and the GET_LOCK integration lane pin the lock
+// itself; what is unproven is the end state on the real cascade, where every
+// contended assign now falls through to a tier the row's literal "same instance,
+// one shared" outcome never describes (the sheet's own [FLAG: codebase]). So
+// this asserts the invariant instead of the wording: one row per user, and no
+// two users holding the same instance as dedicated.
+test("PREM-11 - Two users assigning at once never double-assign the pool @slow", async () => {
+  const rows = "6204"
+  skipUnlessOptedIn(rows)
+  test.skip(
+    !PREMIUM2_USER.email || !PREMIUM2_USER.password,
+    `rows ${rows}: TEST_PREMIUM2_EMAIL/TEST_PREMIUM2_PASSWORD not set - a race needs two users`,
+  )
+  const sqlReason = sqlSkipReason()
+  test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
+  test.setTimeout(TEST_TIMEOUT_MS)
+
+  const realRows = (where: string) =>
+    runSql(
+      `SELECT COUNT(*) FROM premium_user_assignments
+         WHERE is_standby = 0 AND status IN ('active', 'pending_release')
+           AND ${where};`,
+    )
+  // Someone else's assignment would make every count below ambiguous.
+  expect(
+    realRows("1 = 1"),
+    "the pool must start with no real user assignments - another tester or a " +
+      "lane that did not clean up still holds premium capacity",
+  ).toBe("0")
+
+  const s1 = await apiLogin(PREMIUM_USER.email, PREMIUM_USER.password)
+  const s2 = await apiLogin(PREMIUM2_USER.email, PREMIUM2_USER.password)
+  try {
+    const userId = async (s: typeof s1) => {
+      const me = await s.api.get("/users/me", {
+        headers: s.headers,
+        timeout: STATUS_REQUEST_TIMEOUT_MS,
+      })
+      expect(me.ok(), await me.text()).toBe(true)
+      return (await me.json()).id as number
+    }
+    const [u1, u2] = [await userId(s1), await userId(s2)]
+    expect(u1, "the two premium accounts must be different users").not.toBe(u2)
+
+    const post = (s: typeof s1) => () =>
+      s.api.post("/users/me/premium/assign", {
+        headers: s.headers,
+        timeout: ASSIGN_REQUEST_TIMEOUT_MS,
+      })
+
+    // The race itself: both in flight before either has returned. Anything
+    // sequential here would exercise the uncontended path and prove nothing.
+    const [first, second] = await Promise.all([post(s1)(), post(s2)()])
+    for (const res of [first, second]) {
+      expect(res.status(), await res.text()).toBeLessThan(500)
+    }
+
+    // The row's own step 2: let both invocations settle, then read the
+    // database. Re-assigning to settle would only meet the endpoint's
+    // 20-second per-user throttle ("Assignment request too frequent"), and a
+    // fresh uncontended assign proves nothing about the race anyway.
+    await expect
+      .poll(() => realRows(`user_id IN (${u1}, ${u2})`), {
+        timeout: ASSIGN_TIMEOUT_MS,
+        intervals: [15_000],
+        message: `the two racing users never settled into assignments`,
+      })
+      .toBe("2")
+    if (
+      runSql(
+        `SELECT COUNT(*) FROM premium_user_assignments
+           WHERE user_id IN (${u1}, ${u2}) AND is_standby = 0 AND is_shared = 0
+             AND status IN ('active', 'pending_release')
+             AND instance_id <> '${AUTOSCALING_POOL}';`,
+      ) !== "0"
+    ) {
+      heldDedicated = true
+    }
+
+    // Both users really hold capacity, one row each: a race that dropped one
+    // user, or gave one of them two rows, lands here.
+    expect(realRows(`user_id = ${u1}`), `user ${u1} holds one assignment`).toBe(
+      "1",
+    )
+    expect(realRows(`user_id = ${u2}`), `user ${u2} holds one assignment`).toBe(
+      "1",
+    )
+    expect(
+      realRows(`user_id IS NULL`),
+      "the race left an ownerless real assignment row behind",
+    ).toBe("0")
+
+    // The corruption the lock exists to prevent: two users each told an
+    // instance is theirs alone.
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM (
+           SELECT instance_id FROM premium_user_assignments
+             WHERE is_standby = 0 AND is_shared = 0
+               AND status IN ('active', 'pending_release')
+               AND instance_id <> '${AUTOSCALING_POOL}'
+             GROUP BY instance_id HAVING COUNT(*) > 1
+         ) AS doubled;`,
+      ),
+      `instances held as dedicated by more than one user after the race ` +
+        `(${runSql(
+          `SELECT user_id, instance_id, is_shared FROM premium_user_assignments
+             WHERE user_id IN (${u1}, ${u2}) AND is_standby = 0;`,
+        ).replace(/\s+/g, " ")})`,
+    ).toBe("0")
+  } finally {
+    for (const s of [s1, s2]) {
+      await s.api
+        .delete("/users/me/premium/assign", {
+          headers: s.headers,
+          timeout: RELEASE_REQUEST_TIMEOUT_MS,
+        })
+        .catch(() => {})
+      await s.api.dispose()
+    }
+  }
+})
+
+// Row 6216: the premium tier's own recovery. PremiumRetriggerAssign.test.tsx
+// covers the frontend half against mocks - a 502 flips the routing state to
+// DEGRADED and a later 200 from the same instance heals it without a re-assign.
+// What stayed manual is the ECS half: stopping the task the user is really
+// routed to and waiting for the replacement to serve. It sits in the @prem lane
+// rather than the disruptive one because it only ever touches the premium test
+// user's own dedicated instance, and skips outright if the grant is shared.
+test("PREM-12 - Stopping a user's premium task brings a replacement back to healthy @slow", async () => {
+  const rows = "6216"
+  skipUnlessOptedIn(rows)
+  test.setTimeout(TEST_TIMEOUT_MS)
+
+  const { api, headers } = await apiLogin(
+    PREMIUM_USER.email,
+    PREMIUM_USER.password,
+  )
+  try {
+    const me = await api.get("/users/me", {
+      headers,
+      timeout: STATUS_REQUEST_TIMEOUT_MS,
+    })
+    expect(me.ok(), await me.text()).toBe(true)
+    const userId: number = (await me.json()).id
+
+    const assignment = await assignUntilSettled(
+      () =>
+        api.post("/users/me/premium/assign", {
+          headers,
+          timeout: ASSIGN_REQUEST_TIMEOUT_MS,
+        }),
+      rows,
+    )
+    test.skip(
+      assignment.is_shared || !assignment.instance_id,
+      `rows ${rows}: the cascade granted ${JSON.stringify(assignment)} - ` +
+        `stopping the task on a shared instance would take its other tenants ` +
+        `down with it`,
+    )
+    heldDedicated = true
+    const instanceId = assignment.instance_id!
+    await skipUnlessPremiumTargetHealthy(rows, userId)
+
+    const before = premiumTaskOn(instanceId)
+    expect(
+      before?.taskArn,
+      `no premium task on ${instanceId} to stop`,
+    ).toBeTruthy()
+
+    awsJson(
+      `ecs stop-task --cluster ${CLUSTER} --task ${before!.taskArn} ` +
+        `--reason e2e-row-6216`,
+    )
+
+    // ECS replaces it with no re-assign from the user: recovery is the
+    // scheduler's job, not the client's. The target's health is sampled all
+    // the way through rather than asserted to dip - the per-user group health
+    // checks every 30s and needs three consecutive failures, so a replacement
+    // that lands inside a minute is invisible to the ALB by construction
+    // (measured 2026-08-25: stopped 12:24:37, replacement RUNNING 12:25:09).
+    // Whether a window opens at all is placement latency, so it is reported,
+    // not required; the 502-to-DEGRADED half of the row belongs to
+    // PremiumRetriggerAssign.test.tsx, which owns what the client does if one
+    // does slip through.
+    const health: string[] = []
+    let after: ReturnType<typeof premiumTaskOn>
+    await expect
+      .poll(
+        () => {
+          health.push(premiumTargetHealth(userId).join("+") || "none")
+          after = premiumTaskOn(instanceId)
+          return (
+            !!after &&
+            after.taskArn !== before!.taskArn &&
+            after.lastStatus === "RUNNING"
+          )
+        },
+        {
+          timeout: 15 * 60_000,
+          intervals: [10_000],
+          message:
+            `ECS never placed a running replacement on ${instanceId} after ` +
+            `${before!.taskArn} was stopped (target health seen: ` +
+            `${health.join(", ")})`,
+        },
+      )
+      .toBe(true)
+    console.log(
+      `[15-premium-aws] PREM-12 premium-${userId}-tg across the replacement: ` +
+        health.join(", "),
+    )
+
+    // The replacement is only meaningful if the original really went away by
+    // this test's hand, rather than the poll having watched an unrelated
+    // redeployment roll past.
+    expect(
+      awsJson<{ tasks: { lastStatus: string; stoppedReason?: string }[] }>(
+        `ecs describe-tasks --cluster ${CLUSTER} --tasks ${before!.taskArn}`,
+      ).tasks[0],
+      "the task this test stopped really stopped, carrying its own reason",
+    ).toMatchObject({ lastStatus: "STOPPED", stoppedReason: "e2e-row-6216" })
+
+    // And the user is served again at the end, without having re-assigned.
+    await expect
+      .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+        timeout: 5 * 60_000,
+        intervals: [15_000],
+        message: `premium-${userId}-tg never came back healthy after the replacement`,
+      })
+      .toBe(true)
+  } finally {
+    await api
+      .delete("/users/me/premium/assign", {
+        headers,
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      })
+      .catch(() => {})
     await api.dispose()
   }
 })

@@ -222,14 +222,29 @@ test.describe("Stripe cancel / reactivate round-trip", () => {
     // Stripe's side of every claim the UI is about to make, fetched first
     const customer = before.customer as string
     const detail = stripeGet(`/v1/customers/${customer}`) as Record<string, any>
+    // Every type, not just cards: this account's default is a Stripe Link
+    // method, which owns no brand or last4 at all. Filtering to cards made
+    // `find` miss the default, fall back to an older non-default Visa, and
+    // demand a card the page was right not to be showing.
     const pms = stripeGet("/v1/payment_methods", {
       customer,
-      type: "card",
-      limit: 10,
+      limit: 20,
     }).data as Record<string, any>[]
-    expect(pms.length, "the account has no card on file").toBeGreaterThan(0)
     const defaultPm = detail.invoice_settings?.default_payment_method as string
-    const card = (pms.find((p) => p.id === defaultPm) ?? pms[0]).card
+    const method = pms.find((p) => p.id === defaultPm) ?? pms[0]
+    expect(method, "the account has no payment method on file").toBeTruthy()
+    // What the manage page renders for that method, per its own branch: Link
+    // has no digits to show, a card shows brand plus last4. The last4 is the
+    // identity row 2021 is really about, so it is what gets asserted - the
+    // brand's display name ("amex" renders as "American Express") is the
+    // page's own mapping and asserting it here would only restate the code.
+    const rendered =
+      method.type === "link" ? "Stripe Link" : `••••••${method.card?.last4}`
+    expect(
+      method.type === "link" || method.card?.last4,
+      `Stripe's default payment method ${method.id} is a ${method.type} with ` +
+        `no last4 to render`,
+    ).toBeTruthy()
     const invoices = stripeGet("/v1/invoices", { customer, limit: 10 })
       .data as Record<string, any>[]
     const newest = invoices.filter((i) => i.status === "paid")[0]
@@ -247,26 +262,35 @@ test.describe("Stripe cancel / reactivate round-trip", () => {
       page.getByText("Premium", { exact: true }).first(),
     ).toBeVisible({ timeout: 30_000 })
     await expect(
-      page.locator(`text=/${card.brand}.*${card.last4}/i`).first(),
-      `the rendered payment method is Stripe's own ${card.brand} ****${card.last4}`,
+      page.getByText(rendered).first(),
+      `the rendered payment method is Stripe's own default ${method.id} ` +
+        `(${method.type}), shown as "${rendered}"`,
     ).toBeVisible({ timeout: 30_000 })
 
     // BT-916: the newest paid invoice's own values in the top table row -
     // its date as the page formats it, its status, and its total's digits
     const row = page.locator("tbody tr").first()
     await expect(row).toBeVisible({ timeout: 30_000 })
+    // Formatted in the browser's own timezone, not the host's. The backend
+    // sends a UTC-aware ISO string and the page renders it wherever the
+    // browser lives, which the config pins to UTC - formatting here in the
+    // machine's zone instead expected an "August 25" that only a JST Node
+    // process ever saw, for an invoice stamped 23:32 UTC on the 24th.
     await expect(row).toContainText(
       new Date(newest.created * 1000).toLocaleDateString("en-US", {
         year: "numeric",
         month: "long",
         day: "numeric",
+        timeZone: test.info().project.use.timezoneId ?? "UTC",
       }),
     )
     await expect(row).toContainText(/paid/i)
-    expect(
-      ((await row.textContent()) ?? "").replace(/\D/g, ""),
-      `the top row carries the newest invoice's total ${newest.total}`,
-    ).toContain(String(newest.total))
+    // The amount exactly as the backend formats it (cents to dollars, two
+    // decimals). Stripping the row down to its digits instead would let an
+    // unrelated number in the date satisfy it: the digits of "August 25, 2026
+    // $22.00" run together as ...2026 2200..., which contains "2200" whatever
+    // the amount actually is.
+    await expect(row).toContainText(`$${(newest.total / 100).toFixed(2)}`)
 
     // BT-920: cancel for real, then the banner's own button undoes it
     const { api, headers } = await apiLogin(

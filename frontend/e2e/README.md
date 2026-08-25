@@ -67,6 +67,21 @@ test runner's own fixtures rather than the environment's users - `20-boot`
 restarts the backend container, which every other local spec is mid-conversation
 with. Those keep their own variable (`RUN_RESTART=1`).
 
+**PREM-06 needs the premium pool pre-staged**, and skips with its reason when it
+is not. It wants two premium users holding two *distinct dedicated* instances,
+and the cascade only grants that when both instances are running, carry a
+premium ECS task, and have **no row at all** in `premium_user_assignments` - a
+leftover standby row makes `try_reserve_instance` answer `already
+reserved/assigned`, the second user falls through to the shared tier, and the
+outcome half of rows 6221 / 6222 goes unverified. The dev pool parks itself at
+one stopped standby after every lane, so staging is: delete the standby rows,
+`aws lambda invoke --function-name development-premium-manager --payload
+'{"action":"create_standby"}'`, wait for the new instance to actually reach
+`stopped` (the Lambda returns its id and stops it a moment later, undoing a
+start issued in between), start both instances, delete the standby rows again,
+then `aws ecs update-service --service development-premium-optinist-cloud-service
+--desired-count 2` and wait for a task on each.
+
 The three lanes that predate the tag keep their own variables, because the sheets
 cite them by marker in dozens of rows and re-citing those buys nothing:
 `15-premium-aws` (`RUN_PREMIUM_AWS=1`, the `@prem` marker), `16-storage-aws`
