@@ -14,18 +14,22 @@ import {
   apiLogin,
   apiUrl,
   awaitRunFinished,
+  awsJson,
   cloudwatchHas,
   filterWorkspace,
   freeStorageState,
   gotoDashboard,
   importSampleData,
   isLocalBaseUrl,
+  logTail,
   openWorkspace,
   reproduceTutorial,
+  runShellOverSsm,
   runSql,
   runTutorial,
   s3ObjectCount,
   skipWithoutCreds,
+  sqlLiteral,
   startRun,
   windowStart,
 } from "./helpers"
@@ -734,6 +738,277 @@ test.describe("Published sync error and recovery on real S3", () => {
         })
         .catch(() => {})
       fs.rmSync(aside, { force: true })
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Rows 727 + 723: the publish-time S3 repair of a broken local config, then a
+// five-record batch draining in a single background sync run. One test because
+// both rows need the same expensive setup - a finished run plus four real
+// copies of it - and the batch publish is the natural second act of the repair.
+// ---------------------------------------------------------------------------
+
+const FREE_CLUSTER = "development-optinist-cloud-cluster"
+const FREE_SERVICE = "development-optinist-cloud-service"
+const FREE_CONTAINER_FILTER = "ecs-development-optinist-cloud-taskdef"
+const BACKGROUND_LOG = "/ecs/development-background-optinist-cloud-taskdef"
+const COPY_TIMEOUT_MS = 300_000
+
+// The EC2 host running the free tier's single task (desired=1 on development,
+// asserted below), so a file broken there is broken on the task serving the
+// publish request.
+function freeTierHostId(): string {
+  const arns = awsJson<{ taskArns: string[] }>(
+    `ecs list-tasks --cluster ${FREE_CLUSTER} --service-name ${FREE_SERVICE}`,
+  ).taskArns
+  expect(arns.length, "the free service has no running task").toBe(1)
+  const ci = awsJson<{ tasks: { containerInstanceArn?: string }[] }>(
+    `ecs describe-tasks --cluster ${FREE_CLUSTER} --tasks ${arns[0]}`,
+  ).tasks[0].containerInstanceArn
+  expect(ci, "the free task reports no container instance").toBeTruthy()
+  return awsJson<{ containerInstances: { ec2InstanceId: string }[] }>(
+    `ecs describe-container-instances --cluster ${FREE_CLUSTER} ` +
+      `--container-instances ${ci}`,
+  ).containerInstances[0].ec2InstanceId
+}
+
+let freeHost = ""
+// Run one command inside the free tier's app container over SSM. cmd must not
+// contain double quotes - it is interpolated into a double-quoted sh -c.
+function freeTierExec(cmd: string): string {
+  if (/"/.test(cmd)) throw new Error(`freeTierExec cmd has a quote: ${cmd}`)
+  if (!freeHost) freeHost = freeTierHostId()
+  return runShellOverSsm(
+    freeHost,
+    [
+      "set -e",
+      `CID=$(sudo docker ps -q --filter name=${FREE_CONTAINER_FILTER} | head -1)`,
+      '[ -n "$CID" ]',
+      `sudo docker exec "$CID" sh -c "${cmd}"`,
+    ],
+    "free-tier exec",
+  )
+}
+
+test.describe("Publish repair and batch sync on the real free tier", () => {
+  test.use({ storageState: freeStorageState() })
+
+  test("S3-05 - Publish repairs broken local configs from S3, and five rapid publishes drain in one sync run @slow", async ({
+    page,
+  }) => {
+    skipUnlessOptedIn("723 / 727")
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 35 * 60_000)
+
+    await gotoDashboard(page)
+    const wsName = "e2e-s3batch"
+    const wsId = await openWorkspace(page, wsName)
+    const headers = await apiHeaders(page)
+    const recordIds: number[] = []
+    try {
+      await importSampleData(page, wsName)
+      const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+
+      // The sync job's own precondition (success = 1) is written by an async
+      // record write after the run reports finished; a copy taken before it
+      // lands would clone success = 0 and the job would skip the whole batch.
+      await expect
+        .poll(
+          () =>
+            runSql(
+              `SELECT success FROM experiment_records ` +
+                `WHERE workspace_id = ${wsId} AND uid = '${sqlLiteral(uid)}';`,
+            ),
+          {
+            timeout: 180_000,
+            intervals: [10_000],
+            message: `experiment_records.success never reached 1 for ${wsId}/${uid}`,
+          },
+        )
+        .toBe("1")
+
+      // Four real copies: copy_data re-uploads each new uid to S3 and the
+      // record copy keeps success = 1, so five publishable experiments cost
+      // one pipeline run.
+      for (let i = 0; i < 4; i++) {
+        const copied = await page.request.post(
+          `${apiUrl()}/experiments/copy/${wsId}`,
+          { headers, data: { uidList: [uid] }, timeout: COPY_TIMEOUT_MS },
+        )
+        expect(copied.ok(), await copied.text()).toBe(true)
+      }
+
+      const uids: string[] = []
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${wsId}`,
+              { headers, timeout: REQUEST_TIMEOUT_MS },
+            )
+            if (!res.ok()) return `HTTP ${res.status()}`
+            const { items } = await res.json()
+            recordIds.length = 0
+            uids.length = 0
+            for (const r of items as { id: number; uid: string }[]) {
+              recordIds.push(r.id)
+              uids.push(r.uid)
+            }
+            return uids.length
+          },
+          {
+            timeout: 60_000,
+            intervals: [5_000],
+            message: "the workspace never listed the run plus its four copies",
+          },
+        )
+        .toBe(5)
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM experiment_records ` +
+            `WHERE workspace_id = ${wsId} AND success = 1;`,
+        ),
+        "a copy landed without success = 1 - the sync job would skip it",
+      ).toBe("5")
+
+      const yamlPath = (u: string) =>
+        `/app/studio_data/output/${wsId}/${u}/experiment.yaml`
+
+      // Row 727, single half: an empty {} stub - the state a migrated
+      // instance leaves - on the task that will serve the publish.
+      freeTierExec(`echo {} > ${yamlPath(uid)}`)
+      expect(
+        freeTierExec(`cat ${yamlPath(uid)}`),
+        "the stub write did not land on the serving task",
+      ).toBe("{}")
+      const singlePub = await page.request.post(
+        `${apiUrl()}/api/dataview/publish/${recordIds[uids.indexOf(uid)]}/on`,
+        { headers, timeout: COPY_TIMEOUT_MS },
+      )
+      // The publish succeeding IS the row: without the pre-sync repair,
+      // PublishValidator reads the stub and answers 400 unpublishable.
+      expect(singlePub.ok(), await singlePub.text()).toBe(true)
+      const repaired = freeTierExec(`cat ${yamlPath(uid)}`)
+      expect(
+        repaired,
+        "publish answered 200 but the local config is still the stub",
+      ).not.toBe("{}")
+      expect(repaired).toContain("success: success")
+      expect(repaired).toContain(uid)
+
+      // Row 727, bulk half: one stubbed and one deleted outright (the
+      // "absent" case), repaired by the same bulk publish.
+      const copies = uids.filter((u) => u !== uid)
+      freeTierExec(`echo {} > ${yamlPath(copies[0])}`)
+      freeTierExec(`rm ${yamlPath(copies[1])}`)
+
+      // Row 723 needs the five pending rows to be observable before a sync
+      // tick eats them, so wait for a fresh tick and publish right after it -
+      // the batch then sits pending for most of a 5-minute window.
+      const tickMarker = "Starting published experiment validation job"
+      const alignStart = Date.now()
+      await expect
+        .poll(
+          () =>
+            logTail(BACKGROUND_LOG, 100).events.some(
+              (e) =>
+                e.ingestionTime > alignStart && e.message.includes(tickMarker),
+            ),
+          {
+            timeout: 7 * 60_000,
+            intervals: [15_000],
+            message: `no "${tickMarker}" tick in ${BACKGROUND_LOG} within 7 minutes`,
+          },
+        )
+        .toBe(true)
+
+      // All five in one atomic flip (the already-published original is
+      // re-pended by the same update), which is also what makes "one sync run
+      // drains them" falsifiable: every tick after this sees all five.
+      const bulk = await page.request.post(
+        `${apiUrl()}/api/dataview/multiple/publish/on`,
+        { headers, data: recordIds, timeout: COPY_TIMEOUT_MS },
+      )
+      expect(bulk.ok(), await bulk.text()).toBe(true)
+
+      for (const u of [copies[0], copies[1]]) {
+        const out = freeTierExec(`cat ${yamlPath(u)}`)
+        expect(
+          out,
+          `bulk publish did not repair ${wsId}/${u} from S3`,
+        ).toContain("success: success")
+        expect(out).toContain(u)
+      }
+
+      // Row 723's own query: all five pending, then drained to zero.
+      const pendingSql =
+        `SELECT COUNT(*) FROM experiment_records ` +
+        `WHERE workspace_id = ${wsId} AND local_sync_status = 'pending';`
+      const syncedSql =
+        `SELECT COUNT(*) FROM experiment_records ` +
+        `WHERE workspace_id = ${wsId} AND publish_status = 1 ` +
+        `AND local_sync_status = 'synced';`
+      expect(
+        runSql(pendingSql),
+        "all five rows must be pending right after the bulk publish",
+      ).toBe("5")
+
+      await expect
+        .poll(() => Number(runSql(syncedSql)), {
+          timeout: 8 * 60_000,
+          intervals: [15_000],
+          message: "no row was validated within one sync tick plus margin",
+        })
+        .toBeGreaterThan(0)
+      // Single-run proof by timing: ticks are 5 minutes apart, so stragglers
+      // waiting on a second run would stay pending far longer than this.
+      await expect
+        .poll(() => runSql(syncedSql), {
+          timeout: 150_000,
+          intervals: [10_000],
+          message:
+            "the batch did not drain in a single sync run - the leftovers " +
+            "are waiting on a second 5-minute tick",
+        })
+        .toBe("5")
+      expect(runSql(pendingSql), "pending fell to zero").toBe("0")
+
+      // The job's own account of the batch. The background group's event
+      // timestamps are broken (awslogs multiline pattern mismatch), so this
+      // reads the newest stream's tail rather than a time-filtered query.
+      const { text } = logTail(BACKGROUND_LOG, 500)
+      for (const u of uids) {
+        expect(
+          text,
+          `no "Successfully validated" line for ${wsId}/${u}`,
+        ).toContain(`Successfully validated ${wsId}/${u}`)
+      }
+      const found = [...text.matchAll(/Found (\d+) experiments to validate/g)]
+        .map((m) => Number(m[1]))
+        .filter((n) => Number.isFinite(n))
+      expect(
+        Math.max(0, ...found),
+        `no "Found N experiments to validate" line covering the batch`,
+      ).toBeGreaterThanOrEqual(5)
+      expect(text).toMatch(
+        /Validation job completed: \d+ synced, \d+ errors \(max 10 concurrent\)/,
+      )
+    } finally {
+      if (recordIds.length) {
+        await page.request
+          .post(`${apiUrl()}/api/dataview/multiple/publish/off`, {
+            headers,
+            data: recordIds,
+            timeout: COPY_TIMEOUT_MS,
+          })
+          .catch(() => {})
+      }
+      await page.request
+        .delete(`${apiUrl()}/workspace/${wsId}`, {
+          headers,
+          timeout: COPY_TIMEOUT_MS,
+        })
+        .catch(() => {})
     }
   })
 })
