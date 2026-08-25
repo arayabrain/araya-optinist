@@ -29,7 +29,10 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
-from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    ensure_utc,
+)
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
     SubscriptionPlans,
@@ -1020,6 +1023,31 @@ class WebhookService:
                     f"Webhook: Extending expiration from {current_expiration} "
                     f"to {new_expiration}"
                 )
+
+                # Stripe delivers invoice events out of period order (retries,
+                # late settlements), so a renewal may only ever advance the
+                # stored expiration - never rewind it to an older period's end.
+                # ensure_utc on both sides: the stored value comes back naive
+                # from MySQL while datetime_from_timestamp is UTC-aware, and
+                # comparing the two raises.
+                if current_expiration and new_expiration <= ensure_utc(
+                    current_expiration
+                ):
+                    logger.warning(
+                        f"Webhook: Skipping invoice {invoice_id} - its period end "
+                        f"{new_expiration} does not advance the stored expiration "
+                        f"{current_expiration} (out-of-order or redelivered event)"
+                    )
+                    return {
+                        "success": True,
+                        "message": (
+                            f"Invoice skipped - period end {new_expiration} does "
+                            f"not advance stored expiration {current_expiration}"
+                        ),
+                        "webhook_processed": True,
+                        "skipped": True,
+                        "reason": "stale_period_end",
+                    }
 
             except HTTPException:
                 raise
