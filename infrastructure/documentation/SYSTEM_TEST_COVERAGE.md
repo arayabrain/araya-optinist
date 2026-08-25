@@ -3,11 +3,11 @@
 ## Executive Summary
 
 - **Maps every row** of the `Araya-Optinist System Test Cases Template` sheets to the automated test that covers it, so a release tester only hand-verifies the rows marked manual
-- **Twelve sheets, 404 of 466 rows automated** - the rest need a deployed environment (real S3, Stripe, AWS) or have no test yet
+- **Twelve sheets, 419 of 466 rows automated** (2026-08-25) - every one of the remaining 47 is a decided row, retired with its reason in the sheet's own Notes cell, not an unwritten test
 - **Not one suite** - coverage is spread across Playwright e2e, jest, and pytest; the notation below says which
 - **System sheets only** - the `Araya-OptiNiSt Release Test Cases Template` sheets (`BT-1xx` .. `BT-11xx`) are a separate scheme mapped in `infrastructure/documentation/RELEASE_TEST_COVERAGE.md`
 - **The two schemes do not correspond by trailing digits** - `BT-604` is "Premium profile display", not the `6204` concurrency race
-- **The largest remaining gap is sheet 02 (57 of 105)**, mostly Stripe-hosted checkout UI. Sheet 09 went from 13 of 36 to 32 of 36 once one lane read the live Stripe account and another read the hosted checkout page; its four remaining rows are Stripe's own input validation. Sheet 03, previously the largest gap, is now fully mapped (see that sheet's notes for the two rows that stay `(partial)`)
+- **The largest remaining gap is sheet 02 (68 of 105)**, and all of it is Stripe-hosted checkout UI or a CAPTCHA-gated stimulus. Sheet 09 went from 13 of 36 to 33 of 36 once one lane read the live Stripe account and another read the hosted checkout page; its three remaining rows are Stripe's own input validation. Sheet 03, previously the largest gap, is now fully mapped (see that sheet's notes for the two rows that stay `(partial)`)
 - **Sheets 12 and 20 depend on a deployed run.** Their coverage is the read-only `17-aws-health` lane, which skips on a local `BASE_URL`, so a default CI run checks off neither sheet
 
 ---
@@ -62,46 +62,68 @@ Test levels used in the premium tables:
 
 ## Coverage by sheet
 
+Recomputed from the sheets 2026-08-25. `Automated` is `FULL` + `PARTIAL`, per
+the counting rule below.
+
 | Sheet                            | Rows    | Automated | Manual |
 | -------------------------------- | ------- | --------- | ------ |
-| 01 Authentication & Registration | 28      | 27        | 1      |
-| 02 Subscription & Payment        | 105     | 57        | 48     |
+| 01 Authentication & Registration | 28      | 28        | 0      |
+| 02 Subscription & Payment        | 105     | 68        | 37     |
 | 03 Account Profile & Management  | 41      | 41        | 0      |
-| 04 Storage & Limits              | 48      | 41        | 7      |
+| 04 Storage & Limits              | 48      | 48        | 0      |
 | 05 Workflow & Execution          | 46      | 44        | 2      |
-| 06 Premium Features              | 8       | 5         | 3      |
+| 06 Premium Features              | 8       | 8         | 0      |
 | 06-2 Premium Assignment          | 39      | 39        | 0      |
 | 07 Dataview                      | 27      | 27        | 0      |
 | 08 Public Instance               | 33      | 33        | 0      |
-| 09 Stripe Prdct Data Sync & Tax  | 36      | 32        | 4      |
+| 09 Stripe Prdct Data Sync & Tax  | 36      | 33        | 3      |
 | 12 AWS Monitoring                | 22      | 20        | 2      |
-| 20 System & Security             | 33      | 31        | 2      |
-| **Total**                        | **466** | **397**   | **69** |
+| 20 System & Security             | 33      | 30        | 3      |
+| **Total**                        | **466** | **419**   | **47** |
+
+Every `Manual` row here is a **decided** row: read, attempted and retired with a
+reason in its Notes cell. See *What is left, and what blocks it* below.
 
 ## What is left, and what blocks it
 
-Re-derive the list at any time - the sheets are the source of truth, so the
-backlog is generated rather than maintained by hand (an earlier hand-kept queue
-lived in a session scratchpad and was lost twice):
+The backlog is generated, never hand-maintained - an earlier hand-kept queue
+lived in a session scratchpad and was lost twice. **Re-derive it before quoting
+any figure:**
 
 ```bash
-python3 infrastructure/scripts/test_coverage_backlog.py --rows
-python3 infrastructure/scripts/test_coverage_backlog.py --decided
+python3 infrastructure/scripts/test_coverage_backlog.py            # summary
+python3 infrastructure/scripts/test_coverage_backlog.py --rows     # every open row
+python3 infrastructure/scripts/test_coverage_backlog.py --decided  # what was retired, and why
 ```
 
-A row counts as decided rather than open once its Notes record why it is retired
-(`Adjudicated`, `Re-graded` or `CONFIRMED-IMPOSSIBLE`). The families still open,
-with the reason each is not simply written:
+The script reads the 22 CSV sheets. A row is **open** while its Coverage is
+`MANUAL` or `PARTIAL`, and **decided** once its Notes carry an `Adjudicated`,
+`Re-graded` or `CONFIRMED-IMPOSSIBLE` line. As of 2026-08-25: **521 full, 78
+decided, 1 open**.
 
-| Family | Rows | Blocker |
-| ------ | ---- | ------- |
-| Stripe reads (invoice PDF, cancel round-trip, events) | 292, 305, 2021, BT-915/916/920 | **unblocked 2026-08-24.** `TEST_PREMIUM_*` are premium in the database only and own no Stripe customer, so Stripe-side assertions about them assert nothing; `TEST_STRIPE_*` now points at an account with a real subscription, which closed 246, 250, 267-269, 273, 274, BT-919 and BT-921 via `AUDIT-09` and `STRIPE-01`, and moved 244, 245, 247, 249 to a named remainder. The checkout-downstream verification family (238..242, 905, 2005, 2019, 2020, 2022, BT-909..914/923/924) was adjudicated 2026-08-24: the AUDIT lane asserts each invariant continuously, and the fresh-checkout stimulus is CAPTCHA-gated (231). What is left here needs either a deployed page render or a state we cannot produce |
-| Real-S3 error injection | 717 / 718 / 2031 / BT-719 are S3-04 (2026-08-24: publish, delete the owner's own `experiment.yaml` before the lazy public warm, assert the anonymous error state and the Retry recovery); 719 / 421 / 528 / BT-1005 / BT-1006 / BT-1008 closed the same day; 723 (a five-record batch) and BT-718 (the pending paint has no deterministic window - a fast re-sync renders details before the 202 branch paints) remain | the `16-storage-aws` lane; the injection deletes and restores the test account's *own* objects |
-| `@prem` | BT-603, 6204/6205/6210/6212/6221/6222, 540, 543, 608, 727, BT-1009, 6226 | real premium assignment: costs money, mutates shared infra, needs a supervised run. BT-611/612/613/615, 244, 245, 1203/1204/1206/1207 closed via the PREM lane's 2026-08-20 green runs; BT-603, 6221/6222 (PREM-06), 6226 (PREM-10) and 6204 (PREM-11) via 2026-08-25's |
-| Disruptive | 824, 827 (both closed by ASG-01's 2026-08-25 green run), 2030, 6216, 6214/6215 | tagged `@disruptive`: they degrade the shared environment, so they run only when nobody else is on it (`RUN_DISRUPTIVE=1`, and the lane checks the DB for other active sessions before touching anything). 6226 moved to `@prem`: PREM-10 destroys only the unowned standby instance, which no user holds |
-| Local, not yet written | 6237 (the unreachable machine's warmup and handoff gates need a dedicated session) | nothing - ordinary work on the local docker stack; 448 / 707 / 719 / 290 / 291 / 312 / BT-402 / 512 / 6211 / 6228 closed 2026-08-24, and BT-407 (VIS-06) / 538 (S3-03) / 6210 (PREM-04) closed 2026-08-25 |
-| Costly | 545, 546, 2029 | real runs measured in tens of minutes; a weekly slot at most |
-| Third-party surface | the Stripe-hosted form, Stripe Link's SMS, real inboxes, wall-clock-over-days | decided and retired; see `--decided` |
+### Open
+
+| Row | Needs | Status |
+| --- | ----- | ------ |
+| 608 | a live migration between two dedicated premium instances, then a previously-created experiment opened on the new one (proving S3 is the source of truth) | `PREM-14` written, awaiting a green run. The migration itself is the product's own `migrate_shared_users` path; what it needs staged is a **second running premium instance carrying no assignment row**. The dev pool self-heals to a single *stopped* standby, and the optimizer's own "Triggering scaling to start stopped instances" did not wake one (measured 2026-08-25: it logged `marked for migration: has_shared_flag=True` every pass, then `no running instances available`), so the test now starts a candidate itself and waits for a premium ECS task to place on it |
+
+### Decided, and why
+
+A decided row is not a gap. It is a row somebody read, attempted, and retired
+with the reason written into the sheet. **That reason lives in the row's own
+Notes cell**, which is where a release tester reads it, and is deliberately not
+duplicated here - this table only says how many rows fall to each cause, so the
+shape of what is unautomatable stays visible without going stale. Re-derive with
+`--decided`.
+
+| Cause | Rows | Why no lane can close it |
+| ----- | ---- | ------------------------ |
+| Third-party surface | 33 | The field, its validation and its rendering belong to Stripe's own hosted page or to Stripe Link, so a test would assert Stripe's UI, not ours |
+| CAPTCHA-gated | 22 | Every stimulus is a fresh hosted-checkout submit, which is CAPTCHA-gated (row 231 is the confirmed-impossible anchor). The invariants each row checked are asserted continuously instead by the `18-stripe-audit` lane |
+| Case-specific (see Notes) | 11 | Individually argued in the row's own Notes - no shared cause |
+| Real inbox delivery | 6 | The pass criterion is mail arriving in a real mailbox, which no lane can receive |
+| State the app cannot produce | 3 | No API or setup path reaches the state, or the paint has no deterministic window |
+| Perf / soak judgment | 3 | The verdict is a human judgment over tens of minutes, not an assertion |
 
 **Counting rule.** A row counts as automated if its `Automated by` cell names a
 test, including rows marked `(partial)` - the partial label narrows *what* is
@@ -522,7 +544,7 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 6232 | leader-tab polling for shared -> dedicated promotion | `PremiumNonLeaderTab.test.tsx` (the provider run twice over one scenario, as leader and as follower: the follower issues zero `/status` polls and no subscription refresh); `unreachableMachine.test.ts` ("does not poll when tab is not leader" - the `shouldPoll` gate itself); `PremiumPollingRoutingRestore.test.tsx` | L2; three real tabs and the election handover stay manual |
 | 6234                       | stale-assignment safety net (>3 h `last_activity`)                   | `test_premium_cleanup.py::TestCleanupStaleAssignments`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | L1                           |
 | 6235 / 6236 | dedicated infra-5xx detection; probe ladder + Retry recovery | `PremiumUnreachableIntegration.test.tsx`; `axiosPremiumInterceptor.test.ts`; `unreachableMachine.test.ts` (6236 partial - the ladder's shape is asserted, doubling and the cap and the terminal probe count, but each expected delay is computed from `INITIAL_PROBE_DELAY_MS` itself and nothing pins it to 30 s or the cap to 300 s, so the sheet's wall-clock timings are unchecked) | L2 |
-| 6237 / 6237b | cross-tab propagation: live broadcast / snapshot hydration | `PremiumUnreachableIntegration.test.tsx` (peer broadcast + snapshot hydration + TTL rejection); `crossTabSync.test.ts` | L2 (single-jsdom simulation) |
+| 6237 / 6237b | cross-tab propagation: live broadcast / snapshot hydration | `PremiumUnreachableIntegration.test.tsx` (peer broadcast + snapshot hydration + TTL rejection); `crossTabSync.test.ts` | L2 (single-jsdom simulation); PREM-13 (**RUN_PREMIUM_AWS=1**: two real pages in one context on a dedicated instance, outage forced by an iptables REJECT on the instance's container port; tab B renders the snackbar with no interaction of its own, and event=instance_unreachable / instance_reachable are each counted exactly 1 across the free, public and premium log groups, re-counted after a 90s settle) |
 | contract                   | typed `/premium/*` shapes, header names, identifier omission         | `premiumRoutingContract.test.ts` + `test_premium_contract_fixtures.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                          | contract                     |
 | v1.1.10 invariants         | premiumShared teardown gate, staleness watermark, warm-up grace      | `axiosPremiumInterceptor.test.ts`, `PremiumUnreachableIntegration.test.tsx`, `useInstanceUnreachableMachineLeader.test.tsx`, `PremiumSharedPollingStall.test.tsx`                                                                                                                                                                                                                                                                                                                                                               | L2                           |
 
@@ -530,7 +552,7 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 
 ## Premium routing: what stays manual / deferred
 
-- **Real-AWS L3** (608's cross-instance migration recovery) still needs a hand-driven live deployed env - follow the SQL Check / CloudWatch Logs columns in the System sheet. Two opt-in lanes now automate slices of that surface: `test_premium_lock_integration.py` (the real `distributed_lock` serializes) and the e2e `15-premium-aws.spec.ts` lane (`@prem` in the sheets; `RUN_PREMIUM_AWS=1`, `PREM-01..09`: real assignment with the live ECS scale-up asserted, release/reassign with the per-user ALB target group's creation and hard-release teardown asserted, refresh adoption, beacon soft-release with the in-grace restore, free-tier routing-header omission, the sweep's idle scale-down with its last-warm floor, a full tutorial run on the real dedicated instance with per-user S3 outputs, three concurrent runs on one dedicated instance, the premium `subscription_users` row read from the real RDS over SSM, and CloudWatch log assertions on the assign / release / beacon / activity / limit-warning / workflow lines, all against the deployed dev cluster). The lane is not in the Weekly Regression at this stage: running it is a manual call. Note the premium service's `desiredCount` is standby-pool-manager state, not a release invariant: the monitoring Lambda re-targets it to the running pool instances, so teardown is asserted at the assignment-row and ALB level, never on `desiredCount`. Still manual in that lane: the destructive rows (6214 / 6215 stop or terminate the assigned instance, 6216 kills the real task).
+- **Real-AWS L3** (608's cross-instance migration recovery) still needs a hand-driven live deployed env - follow the SQL Check / CloudWatch Logs columns in the System sheet. Two opt-in lanes now automate slices of that surface: `test_premium_lock_integration.py` (the real `distributed_lock` serializes) and the e2e `15-premium-aws.spec.ts` lane (`@prem` in the sheets; `RUN_PREMIUM_AWS=1`, `PREM-01..09`: real assignment with the live ECS scale-up asserted, release/reassign with the per-user ALB target group's creation and hard-release teardown asserted, refresh adoption, beacon soft-release with the in-grace restore, free-tier routing-header omission, the sweep's idle scale-down with its last-warm floor, a full tutorial run on the real dedicated instance with per-user S3 outputs, three concurrent runs on one dedicated instance, the premium `subscription_users` row read from the real RDS over SSM, and CloudWatch log assertions on the assign / release / beacon / activity / limit-warning / workflow lines, all against the deployed dev cluster). The lane is not in the Weekly Regression at this stage: running it is a manual call. Note the premium service's `desiredCount` is standby-pool-manager state, not a release invariant: the monitoring Lambda re-targets it to the running pool instances, so teardown is asserted at the assignment-row and ALB level, never on `desiredCount`. The lane has since grown past `PREM-09`: `PREM-10` (terminate the unowned standby, assert the EventBridge-driven reconciliation), `PREM-11` (two simultaneous assigns), `PREM-12` (kill the real task and assert the replacement reaches RUNNING on the same instance - row 6216, previously listed here as manual) and `PREM-13` (a real cross-tab outage forced with an iptables REJECT). Still outside the lane: 6214 / 6215, which stop or terminate the assigned instance itself; both sheet rows are FULL on `PremiumRetriggerAssign.test.tsx`.
 - **Full concurrent `assign_premium_user` race against a reconstructed DB schema** (asserting a single surviving target group) is deferred; the layered 6204 coverage above makes it low-value. The one scoping regression none of the three 6204 layers catches - logic hoisted out of `_assign_premium_user_impl` above the lock - is documented in that test and would only be caught by this deferred race.
 - **Numbering:** `600-x <-> 62xx` correspond; `BT-6xx` (release sheet) does NOT map by trailing digits.
 
@@ -557,10 +579,10 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 720       | Basic sync job execution                             | `test_sync_job.py::TestValidateExperiment`                                                           |
 | 721       | Sync job error handling: which statuses are retried  | `test_sync_job_db_state.py::TestPendingSelectionStatuses` (the `IN (pending, error)` binds, and that `synced` is excluded); `test_sync_job.py::TestRetryCount` |
 | 722       | Retry of failed experiments; `ExperimentsSynced`     | `test_sync_job_db_state.py::TestSyncStatusTransitions` (the `error -> synced` write and the metric)   |
-| 723       | Batch sync of multiple experiments                   | `test_sync_job.py::TestValidationLogicMetrics` (partial - counts, not a real batch)                  |
+| 723       | Batch sync of multiple experiments                   | `test_sync_job.py::TestValidationLogicMetrics` (partial - counts, not a real batch); S3-05 (**RUN_S3_AWS=1**: one real run plus four `/experiments/copy` copies, all five bulk-published seconds apart just after a sync tick; all five drained to `synced` in one run - within 150s of the first flip, far inside the 5-minute tick - with the job's own `Found N experiments to validate` (N>=5), per-uid `Successfully validated` and `Validation job completed ... (max 10 concurrent)` lines) |
 | 724       | Rapid publish / unpublish toggles                    | `test_dataview_publish.py::TestPublishDataviewRecords::test_the_update_is_guarded_by_the_version_it_read` (the single-record endpoint's optimistic lock, which is what this row toggles); `test_sync_job_db_state.py::TestPublishToggleIsLastWriteWins` (the bulk endpoint, which carries no version predicate at all); DV-19 (**opt-in**, `@slow`: three rapid UI toggles end with the state of the last request actually sent, in the grid and the public listing) |
 | 725       | Auto-retry for pending (202)                         | `test_dataview_publish.py::test_reproduce_pending_sync_returns_202`                                  |
-| 727       | Publish repairs a missing or stub local config from S3 | `test_dataview_publish.py::TestSyncExperimentConfigForPublish` (four repair cases, the `.bak` preserve, the metadata-only download args, the no-bucket no-op, all over a real filesystem); `::TestSinglePublishPreSync`; `::TestMultiplePublishDataviewRecords` (partial - reaching the stub state on a genuinely migrated instance is manual) |
+| 727       | Publish repairs a missing or stub local config from S3 | `test_dataview_publish.py::TestSyncExperimentConfigForPublish` (four repair cases, the `.bak` preserve, the metadata-only download args, the no-bucket no-op, all over a real filesystem); `::TestSinglePublishPreSync`; `::TestMultiplePublishDataviewRecords` (partial - reaching the stub state on a genuinely migrated instance is manual); S3-05 (**RUN_S3_AWS=1**: the live half - an empty `{}` stub written over, and a second config deleted from, the serving free task's own filesystem via SSM docker exec; single and bulk publish both answered 200 and the files came back valid from the owner's S3 bucket, where an unrepaired config would 400 as unpublishable) |
 | 726       | Error-status auto-correction (self-heal to synced)   | `test_dataview_publish.py::test_reproduce_auto_updates_sync_status_when_data_available` (the 200, the compiled UPDATE's `local_sync_status = 'synced'` and the version guard; the sibling `..._demotes_to_error` pins the other direction) |
 | 714       | Filter by workspace                                  | DV-16 (the all-workspaces view, which renders the same `DataviewRecords` columns the public page does, plus the deliberate carve-out at `/dataview/{id}`) |
 
@@ -584,7 +606,7 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 821                                                   | Cleanup Lambda schedule                                                                                                                                                                                                                                                                                                  | `test_public_instance_config.py::TestPublicCleanupSchedule` (daily cron, ENABLED, wired to the Lambda); HEALTH-17 (the live EventBridge rule is ENABLED on the 19:00 UTC / 04:00 JST cron)              |
 | 825                                                   | Public log group name and retention                                                                                                                                                                                                                                                                                      | `test_public_instance_config.py::TestPublicLogGroup` (name, 30 days, and the container logging into it); HEALTH-16 (all four tiers' live log groups exist with a retention policy set)             |
 | 826                                                   | Public ASG capacity                                                                                                                                                                                                                                                                                                      | `test_public_instance_config.py::TestPublicAsgCapacity` (config assertion); HEALTH-05 (both live ASGs are in service within min/max, closing the real-behaviour half)            |
-| 823                                                   | Leader-elected startup sync warms the cache                                                                                                                                                                                                                                                                              | `test_main_unit_startup.py::TestStartupSyncLeaderElection` (the production `_startup_sync` coroutine, both leader and loser); `::TestLifespanSchedulesTheStartupSync` (the lifespan actually creating the task on the public tier and creating none on free); `test_startup_leader.py` (the `GET_LOCK` primitive) |
+| 823                                                   | Leader-elected startup sync warms the cache                                                                                                                                                                                                                                                                              | `test_main_unit_startup.py::TestStartupSyncLeaderElection` (the production `_startup_sync` coroutine, both leader and loser); `::TestLifespanSchedulesTheStartupSync` (the lifespan actually creating the task on the public tier and creating none on free); `test_startup_leader.py` (the `GET_LOCK` primitive); OUT-02 (**@disruptive**: after the forced public deployment, `Startup sync task scheduled` read from the public log group - the replacement task really ran the startup sync through the leader path. The `deferred to leader` line is not assertable on a rolling deployment: tasks replace one at a time, so the lock is free again before the second task boots) |
 | 828                                                   | Chunk load failure triggers a graceful reload                                                                                                                                                                                                                                                                            | `chunkLoadReload.test.ts`; PUB-03 (the handler is wired in the real bundle: a chunk-load rejection warns and reloads the document once)                                                                                          |
 | 830                                                   | Unpublish removes the experiment from the public page                                                                                                                                                                                                                                                                    | DV-14 (**opt-in**: inside `06-dataview`'s `Private Dataview @slow` describe, so it runs weekly, not per PR)        |
 | 800 / 809                                             | SPA shell from the public tier, including with the free instance stopped                                                                                                                                                                                                                                                 | `test_public_instance_config.py::TestAlbListenerDefaultAction` (the listener's default action forwards to the public target group and never references the free one, which is what makes the shell survive a free outage); `test_spa_shell_and_health.py::TestSpaCatchAllServesTheShell` (partial - the declaration and the handler; the deployed ALB is manual); HEALTH-18 (the shell really served through the live default action) and HEALTH-04 (the default action really points at the public tier); OUT-01 (**@disruptive**: the shell fetched anonymously, 200, with the free service really at zero tasks) |
