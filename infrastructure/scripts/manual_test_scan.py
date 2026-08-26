@@ -958,7 +958,12 @@ def main():
                     + [f"  {sub['id']} period/trial end = {cpe_dt:%Y-%m-%d %H:%M:%S}Z"],
                 )
                 drift = abs((cpe_dt - parse_dt(user["expiration"])).total_seconds())
-                ok_drift = drift <= 90
+                if drift <= 90:
+                    drift_status = "PASS"
+                elif not prod and drift <= 3 * 86400 + 90:
+                    drift_status = "INFO"
+                else:
+                    drift_status = "FAIL"
                 drift_lines = (
                     [
                         f"Stripe {sub['id']} period/trial end ="
@@ -968,17 +973,23 @@ def main():
                     + sqld("user")
                     + [f"-> drift {drift:.0f}s"]
                 )
+                if drift_status == "INFO":
+                    drift_lines.append(
+                        "-> INFO: the nightly stop loses webhook deliveries and"
+                        " Stripe redelivers within 72h, so development lags"
+                        " Stripe by up to 3 days between deliveries"
+                    )
                 add(
                     "09",
                     "932",
-                    "PASS" if ok_drift else "FAIL",
+                    drift_status,
                     f"Stripe period/trial end vs DB expiration drift: {drift:.0f}s",
                     drift_lines,
                 )
                 add(
                     "20",
                     "2017",
-                    "PASS" if ok_drift else "FAIL",
+                    drift_status,
                     f"expiration={user['expiration']}Z vs current_period_end="
                     f"{cpe_dt:%Y-%m-%d %H:%M:%S}Z (drift {drift:.0f}s)",
                     drift_lines,

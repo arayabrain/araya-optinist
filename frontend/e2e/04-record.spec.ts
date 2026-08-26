@@ -177,8 +177,10 @@ test.describe("Record Management", () => {
     expect(body, "no AlgorithmNode in the workflow file").toContain(
       "type: AlgorithmNode",
     )
-    expect(body, "no InputNode in the workflow file").toContain(
-      "type: InputNode",
+    // There is no literal "InputNode" type; input nodes serialize as one of
+    // the NodeType file-node families (workflow.py).
+    expect(body, "no input file node in the workflow file").toMatch(
+      /type: (Image|Csv|Fluo|Behavior|HDF5|Matlab|Microscope)FileNode/,
     )
     // Every node keys itself by "<label>_<suffix>" under nodeDict, and each one
     // carries the algorithm path it will run.

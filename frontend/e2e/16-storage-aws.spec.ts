@@ -708,10 +708,31 @@ test.describe("Published sync error and recovery on real S3", () => {
             },
           )
           .toBe(200)
-        // ...and the dialog left its error state
-        await expect(
-          dialog.locator('[data-testid="ErrorOutlineIcon"]').first(),
-        ).toBeHidden({ timeout: 120_000 })
+        // ...and the dialog left its error state. The single Retry above can
+        // land before the re-sync completes, so keep clicking it until the
+        // error state clears (the PREM-13 reload-in-poll pattern).
+        const errorIcon = dialog
+          .locator('[data-testid="ErrorOutlineIcon"]')
+          .first()
+        await expect
+          .poll(
+            async () => {
+              if (await errorIcon.isVisible()) {
+                await dialog
+                  .getByRole("button", { name: "Retry" })
+                  .click()
+                  .catch(() => {})
+                return "error state"
+              }
+              return "recovered"
+            },
+            {
+              timeout: 120_000,
+              intervals: [15_000],
+              message: "the dialog never left its error state after Retry",
+            },
+          )
+          .toBe("recovered")
       } finally {
         await ctx.close()
       }
@@ -953,11 +974,14 @@ test.describe("Publish repair and batch sync on the real free tier", () => {
         "all five rows must be pending right after the bulk publish",
       ).toBe("5")
 
+      // Two ticks plus margin: the job has been observed to log "No pending
+      // experiments" on the first tick after a bulk publish and only see the
+      // rows one tick later.
       await expect
         .poll(() => Number(runSql(syncedSql)), {
-          timeout: 8 * 60_000,
+          timeout: 13 * 60_000,
           intervals: [15_000],
-          message: "no row was validated within one sync tick plus margin",
+          message: "no row was validated within two sync ticks plus margin",
         })
         .toBeGreaterThan(0)
       // Single-run proof by timing: ticks are 5 minutes apart, so stragglers

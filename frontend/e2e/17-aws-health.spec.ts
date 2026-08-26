@@ -230,6 +230,13 @@ function skipUnlessDeployed(rows: string) {
   }
 }
 
+function premiumDesiredCount(): number {
+  return awsJson<number>(
+    `ecs describe-services --cluster ${CLUSTER} --services ${SERVICES[1]} ` +
+      `--query 'services[0].desiredCount'`,
+  )
+}
+
 function runningTaskArns(): string[] {
   return awsJson<string[]>(
     `ecs list-tasks --cluster ${CLUSTER} --query 'taskArns[]'`,
@@ -633,11 +640,29 @@ test.describe("Alarms, logs and metrics", () => {
 
     // An alarm whose source metric stops publishing sits in INSUFFICIENT_DATA
     // and still "exists", which is the deaf-alarm case existence alone misses.
-    const blind = awsJson<{ name: string; state: string }[]>(
+    let blind = awsJson<{ name: string; state: string }[]>(
       `cloudwatch describe-alarms --alarm-name-prefix ${ENV}- ` +
         `--query 'MetricAlarms[?StateValue==\`INSUFFICIENT_DATA\`].` +
         `{name:AlarmName,state:StateValue}'`,
     ).filter((a) => EXPECTED_ALARMS.includes(a.name))
+    // The premium service publishes no CPU/memory datapoint while its pool is
+    // parked at zero tasks, so its two alarms sitting blind is the pool's
+    // normal idle state, not a broken metric.
+    const premiumIdle = new Set([
+      `${ENV}-premium-cpu-high`,
+      `${ENV}-premium-memory-high`,
+    ])
+    if (
+      blind.some((a) => premiumIdle.has(a.name)) &&
+      premiumDesiredCount() === 0
+    ) {
+      const parked = blind.filter((a) => premiumIdle.has(a.name))
+      console.log(
+        `premium desiredCount is 0: ${parked.map((a) => a.name).join(", ")} ` +
+          `in INSUFFICIENT_DATA is the idle pool, not a dead metric`,
+      )
+      blind = blind.filter((a) => !premiumIdle.has(a.name))
+    }
     expect(
       blind.map((a) => a.name),
       "alarms with no data to evaluate - their metric stopped publishing",

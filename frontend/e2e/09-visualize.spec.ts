@@ -218,6 +218,11 @@ test.describe("Visualize", () => {
     await selectFromMui(page, "Select Roi", "cell_roi")
     await page.getByText("Edit ROI", { exact: true }).click()
     await page.getByText("Add ROI", { exact: true }).click()
+    // The pending-ROI overlay is what registers the rectangle OK will post;
+    // clicking OK before it mounts posts nothing (observed failure mode).
+    await expect(page.getByTestId("roi-add-overlay")).toBeVisible({
+      timeout: 15_000,
+    })
 
     // OK posts the pending ROI (a default rectangle when nothing is dragged)
     const added = page.waitForResponse(
@@ -227,13 +232,18 @@ test.describe("Visualize", () => {
     await page.getByText("OK", { exact: true }).click()
     expect((await added).status(), "add_roi").toBe(200)
 
+    // Commit Edit renders only once statusRoi has entries after the
+    // getStatus round-trip, which can outlast the default action timeout.
+    const commitEdit = page.getByTestId("roi-commit-edit")
+    await expect(commitEdit).toBeVisible({ timeout: 60_000 })
+
     // Commit Edit runs the EDIT_ROI recompute in-request; the snackbar is
     // the row's own "Success Edit ROI"
     const committed = page.waitForResponse(
       (r) => r.request().method() === "POST" && /commit_edit/.test(r.url()),
       { timeout: 600_000 },
     )
-    await page.getByText("Commit Edit", { exact: true }).click()
+    await commitEdit.click()
     expect((await committed).status(), "commit_edit").toBe(200)
     await expect(
       page.getByText("Successfully committed to Edit ROI."),

@@ -2418,12 +2418,42 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       })
       .toBe(instanceB)
 
+    // The interceptor logs this warn on every premium-routed 5xx before it
+    // retries on the free tier; a reproduce that rode that fallback never
+    // touched instance B, so its disk proof below would time out for the
+    // wrong reason (the ALB 502 gap right after a migration).
+    let premiumFallbacks = 0
+    page.on("console", (msg) => {
+      if (msg.text().includes("Using free tier while premium instance")) {
+        premiumFallbacks += 1
+      }
+    })
+
     // Step 4: open the previously-created experiment. Instance B never ran it,
     // so serving this is only possible by lazily fetching the user's files
     // from S3, and the fetch is the row's whole point: S3 is the source of
     // truth, so an instance change costs the user nothing.
-    await page.goto(`/workspaces/${wsId}`)
-    await reproduceTutorial(page, "e2e-runall")
+    const reproduceOnB = async () => {
+      await page.goto(`/workspaces/${wsId}`)
+      await reproduceTutorial(page, "e2e-runall")
+    }
+    await reproduceOnB()
+    if (premiumFallbacks > 0 && (await yamlOnB()) === "absent") {
+      console.log(
+        `[15-premium-aws] PREM-14: ${premiumFallbacks} free-tier fallback ` +
+          `warn(s) during the reproduce - re-adopting ${instanceB} and ` +
+          `reproducing once more`,
+      )
+      await page.reload()
+      await expect
+        .poll(async () => (await statusViaPage(page)).assignment?.instance_id, {
+          timeout: 120_000,
+          intervals: [10_000],
+          message: "the UI session never re-adopted the migrated assignment",
+        })
+        .toBe(instanceB)
+      await reproduceOnB()
+    }
 
     // The row's Expected #2, read from the instance rather than from a log
     // sentence: the experiment's own config, absent from this instance a
