@@ -33,6 +33,7 @@ catalog and fails on any drift.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -149,11 +150,23 @@ def find_ssm_instance(env):
     return online[0]
 
 
-def audit_queries(user_id):
-    uid = (
-        str(user_id)
-        if user_id
-        else (
+def audit_queries(user_id, user_email=None):
+    if user_id:
+        uid = str(user_id)
+    elif user_email:
+        if not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+", user_email):
+            raise SystemExit(f"--user-email is not a plain address: {user_email}")
+        # Pinned regardless of plan or status: an audit that retargets when the
+        # named account's subscription breaks reports on a different account
+        # instead of the failure.
+        uid = (
+            "(SELECT su.user_id FROM subscription_users su"
+            " JOIN users u ON u.id=su.user_id"
+            f" WHERE u.active=1 AND u.email='{user_email}'"
+            " ORDER BY su.updated_at DESC LIMIT 1)"
+        )
+    else:
+        uid = (
             "(SELECT su.user_id FROM subscription_users su"
             " JOIN users u ON u.id=su.user_id"
             " JOIN subscription_user_accounts sua ON sua.user_id=su.user_id"
@@ -162,7 +175,6 @@ def audit_queries(user_id):
             " WHERE su.plan_id=2 AND u.active=1 AND u.email NOT LIKE 'e2e%'"
             " ORDER BY su.updated_at DESC LIMIT 1)"
         )
-    )
     return [
         (
             "plans",
@@ -356,6 +368,12 @@ def main():
         " with a Stripe account)",
     )
     ap.add_argument(
+        "--user-email",
+        help="target user by address, so the audit stays on one account"
+        " instead of following whichever subscription was updated last"
+        " (--user-id wins)",
+    )
+    ap.add_argument(
         "--base-url",
         help="deployed app base URL for the 2028 probe (default: from --check)",
     )
@@ -408,7 +426,7 @@ def main():
 
     print("running SQL audits over SSM ...")
     instance = find_ssm_instance(env)
-    queries = audit_queries(args.user_id)
+    queries = audit_queries(args.user_id, args.user_email)
     qtext = dict(queries)
     db = parse_sections(ssm_sql(env, instance, db_host, build_sql(queries)))
 

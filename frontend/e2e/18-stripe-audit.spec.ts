@@ -52,8 +52,12 @@ test.beforeAll(() => {
   if (isLocalBaseUrl()) return
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-scan-"))
   try {
+    // Pinned to the account this lane is about. Unpinned, the scan targets
+    // whichever premium subscription was updated last, so an unrelated fixture
+    // account being touched swings every row below onto it.
+    const target = STRIPE_USER.email ? ` --user-email ${STRIPE_USER.email}` : ""
     execSync(
-      `python3 ${SCAN} --check ${CHECK} ` +
+      `python3 ${SCAN} --check ${CHECK}${target} ` +
         `-o ${path.join(dir, "report.md")} --json ${path.join(dir, "scan.json")}`,
       {
         cwd: REPO_ROOT,
