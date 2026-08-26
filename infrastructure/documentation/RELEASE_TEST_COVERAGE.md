@@ -13,14 +13,17 @@
 
 ## How to read the tables
 
-| Notation                    | Means                                                                               |
-| --------------------------- | ----------------------------------------------------------------------------------- |
-| `AUTH-01`, `DV-14`, `LC-12` | a Playwright e2e ID from `frontend/e2e/`; run with `yarn test:e2e` from `frontend/` |
-| `*.test.ts` / `*.test.tsx`  | a jest suite under `frontend/src/`, run by `make test_frontend`                     |
-| `@slow`                     | excluded unless `RUN_SLOW=1`; these are real workflow executions (5-10 min each)    |
-| `@prem`                     | the opt-in `15-premium-aws.spec.ts` lane (`PREM-01..09`, `RUN_PREMIUM_AWS=1`): real assignments against the deployed dev env |
-| `S3-01..03`                 | the opt-in `16-storage-aws.spec.ts` lane (`RUN_S3_AWS=1`, deployed env): real-S3 asserts, no premium capacity; same counting rule as `@prem` |
-| manual                      | no automated counterpart; follow the sheet's own Action / Expected columns          |
+| Notation                     | Means                                                                                                                                                            |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH-01`, `DV-14`, `LC-12`  | a Playwright e2e ID from `frontend/e2e/`; run with `yarn test:e2e` (see that README for setup)                                                                   |
+| `*.test.ts` / `*.test.tsx`   | a jest suite under `frontend/src/`, run by `make test_frontend`                                                                                                   |
+| `test_*.py`, `TestSomeClass` | pytest under `studio/tests/`, run by `make test_backend` / `make test_lambda`                                                                                    |
+| `@slow`                      | excluded unless `RUN_SLOW=1`; these are real workflow executions (5-10 min each)                                                                                  |
+| `@prem`                      | the opt-in `15-premium-aws.spec.ts` lane (`RUN_PREMIUM_AWS=1`): real premium assignments against deployed dev                                                     |
+| `S3-xx`                      | the opt-in `16-storage-aws.spec.ts` lane (`RUN_S3_AWS=1`): real-S3 asserts against deployed dev, no premium capacity                                              |
+| `@disruptive`                | the opt-in `22-disruptive.spec.ts` lane (`RUN_DISRUPTIVE=1`): degrades the shared environment on purpose                                                          |
+| (partial)                    | the test covers one side of the row only, with the S3 / Stripe / AWS / DB half still needing a deployed environment                                               |
+| manual                       | no automated counterpart; follow the sheet's own Action / Expected columns                                                                                       |
 
 Setup, credentials, and troubleshooting for the Playwright suite live in
 `frontend/e2e/README.md`.
@@ -30,16 +33,15 @@ are the source of truth for the counts below: `FULL` and `PARTIAL` are automated
 here, `MANUAL` is not. An e2e citation ending in `@slow` is gated behind
 `RUN_SLOW=1`, so a default run does not check that row off, whatever its
 `Coverage` label says. Re-derive from the sheets rather
-than adjusting a total by hand: on 2026-08-06 this table was found 10 rows behind
-them.
+than adjusting a total by hand.
 
-A `@prem` citation is one step stricter than `@slow`: the lane never runs per PR
-and is excluded from the Weekly Regression at this stage - a run performs genuine
-assignments against the deployed dev environment, costs money and mutates shared
-infrastructure, so running it is a deliberate manual call
-(`RUN_SLOW=1 RUN_PREMIUM_AWS=1 npx playwright test e2e/15-premium-aws.spec.ts --retries 0`).
-A `@prem` citation counts as automated coverage only for a round in which the
-lane was actually run; the counts above follow the sheets' `Coverage` columns.
+The opt-in lanes never run per PR. `@slow` runs in the Monday `Weekly
+Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`
+and the S3 lane are excluded even from that, because each performs genuine work
+against the deployed dev environment, costs money and mutates shared
+infrastructure, so running one is a deliberate manual call. A citation from
+those lanes counts as automated coverage only for a round in which the lane was
+actually run.
 
 ---
 
@@ -96,9 +98,9 @@ provisioning, AWS monitoring.
 
 ## Row-by-row map
 
-Maps every row of the "Araya-OptiNiSt Release Test Cases Template"
-(renumbered 2026-07-10) to its automated test. Subjects are included so rows
-stay findable if the sheet is renumbered again.
+Maps every row of the "Araya-OptiNiSt Release Test Cases Template" to its
+automated test. Subjects are included so rows stay findable if the sheet is
+renumbered.
 
 AUTH-09/10/11 (registration empty fields / password mismatch / password
 complexity) have no release-sheet row - they cover the System-sheet
@@ -106,7 +108,7 @@ registration validation cases.
 
 ---
 
-## 01 Login & Auth
+## 01 Login & Auth (BT-101..108)
 
 | Sheet row | Subject                      | Test    |
 | --------- | ---------------------------- | ------- |
@@ -121,7 +123,7 @@ registration validation cases.
 
 ---
 
-## 02 Workspace
+## 02 Workspace (BT-201..206)
 
 | Sheet row | Subject                | Test  |
 | --------- | ---------------------- | ----- |
@@ -134,7 +136,7 @@ registration validation cases.
 
 ---
 
-## 03 Workflow Execution
+## 03 Workflow Execution (BT-301..316)
 
 | Sheet row | Subject                        | Test                                                                    |
 | --------- | ------------------------------ | ----------------------------------------------------------------------- |
@@ -144,9 +146,9 @@ registration validation cases.
 | BT-304    | Run Tutorial 1 workflow        | WF-04 `@slow` (by-uid RUN)                                              |
 | BT-305    | Run Tutorial 2 workflow        | WF-05 `@slow` (RUN ALL, full compute)                                   |
 | BT-306    | Run Tutorial 3 workflow        | WF-06 `@slow` (RUN ALL, full compute)                                   |
-| BT-307    | Run without algorithm nodes    | WF-07 (uploads a fixture into the default image node first, so this branch is reachable, then asserts the message verbatim with the other absent); `RunButtons.test.tsx` ("Pre-run validation messages") |
+| BT-307    | Run without algorithm nodes    | WF-07 (message asserted verbatim); `RunButtons.test.tsx` |
 | BT-308    | Run without input file         | WF-07; WF-08; `RunButtons.test.tsx`                                     |
-| BT-309    | Run button cooldown            | `RunButtons.test.tsx` ("Run request cooldown": repeated clicks send one request, and `RUN_REQUEST_DEBOUNCE_MS` is pinned to 3000); WF-08 covers the snackbar's own dedupe |
+| BT-309    | Run button cooldown            | `RunButtons.test.tsx` (cooldown + debounce pinned); WF-08 (snackbar dedupe) |
 | BT-310    | Tab navigation                 | WF-09                                                                   |
 | BT-311    | File tree display              | FILE-01 (the sample file by name, with the shape read off it)            |
 | BT-312    | File filter with wildcards     | FILE-02                                                                 |
@@ -164,7 +166,7 @@ could both satisfy without the algorithm-nodes copy existing at all.
 
 ---
 
-## 04 Visualize
+## 04 Visualize (BT-401..407)
 
 | Sheet row | Subject                          | Test                                                                           |
 | --------- | -------------------------------- | ------------------------------------------------------------------------------ |
@@ -174,7 +176,7 @@ could both satisfy without the algorithm-nodes copy existing at all.
 | BT-404    | Play visualization image         | VIS-03                                                                         |
 | BT-405    | Add additional plot type         | VIS-04                                                                         |
 | BT-406    | Image thumbnail display          | DV-12                                                                          |
-| BT-407    | Run Edit ROI                     | VIS-05 (editor open + Cancel; the OK commit mutates ROI data and stays manual) |
+| BT-407    | Run Edit ROI                     | VIS-05 (editor open + Cancel); VIS-06 `@slow` (the OK commit) |
 
 Note (the data-backed tests need a real run, so they are `@slow`):
 `sample_data/tutorial` ships the input files plus workflow metadata
@@ -192,7 +194,7 @@ finished signal (DV-12 reload-polls the grid).
 
 ---
 
-## 05 Record Management
+## 05 Record Management (BT-501..509)
 
 | Sheet row | Subject                 | Test   |
 | --------- | ----------------------- | ------ |
@@ -202,36 +204,36 @@ finished signal (DV-12 reload-polls the grid).
 | BT-504    | Copy multiple records   | REC-08 |
 | BT-505    | Delete single record    | REC-04 |
 | BT-506    | Delete multiple records | REC-09 |
-| BT-507    | Download workflow file  | REC-05 (the payload, not just the download event: `nodeDict`, a node type, the `<label>_<suffix>` node keys and the algorithm path each one runs - a download event fires for a zero-byte body just as happily) |
-| BT-508    | Download Snakemake file | REC-06 (the payload: a `rules:` mapping whose entries each name an `input:`, `output:` and `type:`. Note it is a Snakemake *config*, not a Snakefile, so there are no `rule` statements to look for) |
+| BT-507    | Download workflow file  | REC-05 (the payload, not just the download event) |
+| BT-508    | Download Snakemake file | REC-06 (the payload; a Snakemake *config*, not a Snakefile) |
 | BT-509    | Download NWB file       | REC-07 |
 
 Note (BT-509 costs a real run, so it is `@slow`): an NWB file exists only after
 a completed workflow, and global setup deletes the `e2e-*` workspaces at the
 start of every run, so REC-07 calls `ensureCompletedTutorialRun` itself rather
-than skipping on the resulting 404 as it did before 2026-08-06. That is a real
+than skipping on the resulting 404. That is a real
 snakemake execution, so the row's citation is `@slow` and checked off by
 `RUN_SLOW=1` runs only.
 
 ---
 
-## 06 Premium Features
+## 06 Premium Features (BT-601..615)
 
 | Sheet row                                   | Subject                                               | Test                                                                                                                                                                                                                                                           |
 | ------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | BT-604                                      | Premium profile display                               | SUB-05                                                                                                                                                                                                                                                         |
-| BT-605                                      | Premium subscription page                             | SUB-04 (the status line names Premium and only a premium user is offered a Downgrade); LC-12 (the downgrade dialog that page opens)                                                                                                                              |
+| BT-605                                      | Premium subscription page                             | SUB-04 (status + Downgrade offered); LC-12 (the downgrade dialog) |
 | BT-611                                      | Inactivity warning                                    | LC-14 (frontend lifecycle via fake clock; backend heartbeat/CloudWatch stays manual)                                                                                                                                                                           |
-| BT-613                                      | Auto-release after 2h inactivity                      | LC-15 (frontend half) + `TestCheckPremiumUserInactivity` / `TestCleanupStaleAssignments` (L1 teardown); real AWS stays manual                                                                                                                                  |
-| BT-615                                      | Instance release on browser close                     | `PremiumLifecycleIntegration.test.tsx` (beforeunload beacons release) + LC-15 (contributory only: it fires the same beacon endpoint on a 2h inactivity clock with the endpoint mocked, so it is not the tab-close gesture and does not check the row off) + `TestSoftReleaseUserAssignment` (row kept, ALB kept, no scale-down) + `TestFinalizeExpiredPendingReleases` (the 120s finalize deletes the row); real AWS halves: e2e `PREM-04` (**@prem**: a genuine beacon soft-release with the in-grace restore returning the identical row, plus the `[premium-trace] beacon-released` line read from CloudWatch; the TG-survives check runs only on dedicated-tier rounds) and `PREM-02` (**@prem**: a hard release really deletes the target group on dedicated-tier rounds) |
+| BT-613                                      | Auto-release after 2h inactivity                      | LC-15 (frontend half); `TestCheckPremiumUserInactivity`; `TestCleanupStaleAssignments`; real AWS stays manual |
+| BT-615                                      | Instance release on browser close                     | `PremiumLifecycleIntegration.test.tsx`; `TestSoftReleaseUserAssignment`; `TestFinalizeExpiredPendingReleases`; PREM-04 / PREM-02 (**@prem**). LC-15 contributory only |
 | BT-612                                      | Stay Active button                                    | LC-14 (dismiss + timer reset; DB heartbeat verification stays manual)                                                                                                                                                                                          |
-| BT-601/602                                  | assignment snackbars                                  | `PremiumNotificationManager.test.tsx` (BT-601 waiting copy + BT-602 success copy) + STO-02 (success snackbar, mocked assignment) + STO-09 (BT-601: the waiting notice persists through a mocked scaling state without an instance announcement); the real AWS-backed flow: e2e `PREM-01` (**@prem**: a real premium login assigns a real tier, with the `[premium-assign]` and `Successfully assigned premium user` lines read from CloudWatch)                                                                   |
-| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle                  | LC-17 (fake-clock companion to the `PremiumLifecycleIntegration` jest L2 test); real AWS state: e2e `PREM-02` (**@prem**: assign, hard-release, reassign, release against the real backend and cluster)                                                                                                                                                    |
-| BT-614                                      | Instance release on logout                            | `useLogout.test.ts` (logout completes + premium releases via beacon even if the API fails); LC-17; CloudWatch release log: e2e `PREM-02` (**@prem**: `Released premium user {id}` read from CloudWatch after the real hard release - the sheet's "Releasing premium user" wording never appears verbatim, the source logs `Releasing (hard) premium user`)                                                                                                                          |
-| BT-607, 608, 609                            | premium workspace, sample import, run on the dedicated instance | e2e `PREM-07` (**@prem**: the three rows are this test's steps - workspace "e2e-prem", sample data import, Tutorial 1 RUN ALL on the real dedicated instance, with the run's routing headers, premium-group `WORKFLOW START` line and per-user S3 outputs asserted)                                                                                                                                                                                                                                                         |
-| BT-603                                      | two premium users assigned concurrently               | e2e `PREM-06` (**@prem**; partial - both accounts really assigned before the scale-down half, but only on a run where the cascade grants two dedicated instances)                                                                                                                                                                                                                                                         |
-| BT-606                                      | subscription row in the deployed RDS                  | e2e `PREM-09` (**@prem**: the sheet's own query over SSM against the real RDS - `subscription_users` has `plan_id = 2`, a future `expiration`, `scheduled_downgrade = 0`)                                                                                                                                                                                                                                                         |
-| BT-610                                      | concurrent workflows on one dedicated instance         | e2e `PREM-08` (**@prem**: three workspaces run near-simultaneously, all recorded success, `WORKFLOW START` x3 in the premium log group, each page still answering a render probe mid-run)                                                                                                                                                                                                                                                         |
+| BT-601/602                                  | assignment snackbars                                  | `PremiumNotificationManager.test.tsx`; STO-02; STO-09; PREM-01 (**@prem**) |
+| Lifecycle chain (assign, release, reassign) | end-to-end premium routing lifecycle                  | LC-17 (fake-clock companion to `PremiumLifecycleIntegration`); PREM-02 (**@prem**: the real assign / release / reassign chain)                                                                                                                                                    |
+| BT-614                                      | Instance release on logout                            | `useLogout.test.ts`; LC-17; PREM-02 (**@prem**, release line from CloudWatch) |
+| BT-607, 608, 609                            | premium workspace, sample import, run on the dedicated instance | PREM-07 (**@prem**: workspace, sample import, RUN ALL on the dedicated instance) |
+| BT-603                                      | two premium users assigned concurrently               | PREM-06 (**@prem**; partial - needs a round granting two dedicated instances) |
+| BT-606                                      | subscription row in the deployed RDS                  | PREM-09 (**@prem**: the sheet's own query over SSM against the real RDS) |
+| BT-610                                      | concurrent workflows on one dedicated instance         | PREM-08 (**@prem**: three concurrent runs on one dedicated instance) |
 
 Note: the `BT-6xx` rows above are the release
 sheet, a separate scheme from the System test sheet. The System sheet's
@@ -243,7 +245,7 @@ concurrency); `BT-6xx` does NOT line up by trailing digits (`BT-604` is
 
 ---
 
-## 07 Dataview
+## 07 Dataview (BT-701..721)
 
 | Sheet row | Subject                                | Test                                                                                                                                              |
 | --------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -257,15 +259,15 @@ concurrency); `BT-6xx` does NOT line up by trailing digits (`BT-604` is
 | BT-708    | Public Dataview Unauthenticated Access | DV-10                                                                                                                                             |
 | BT-709    | UID Filter                             | DV-03 (column-menu filter)                                                                                                                        |
 | BT-710    | Name Filter                            | DV-13 (column-menu filter)                                                                                                                        |
-| BT-711    | Workspace Filter (Public Only)         | DV-17 (filters `/public` by workspace, asserts every listed row carries it, then empties the table with a workspace that cannot match)              |
+| BT-711    | Workspace Filter (Public Only)         | DV-17 (filters `/public` by workspace, plus the empty case) |
 | BT-712    | Sort by Column Header                  | DV-04                                                                                                                                             |
 | BT-713    | Change Page Size                       | DV-05                                                                                                                                             |
 | BT-714    | Inputs Dialog Display                  | DV-06                                                                                                                                             |
 | BT-715    | Outputs Dialog Display                 | DV-07                                                                                                                                             |
 | BT-716    | Workflow Details Dialog Display        | DV-08                                                                                                                                             |
 | BT-717    | Close Dialog                           | DV-08                                                                                                                                             |
-| BT-718    | Pending Sync Status Display            | `SyncStatusView.test.tsx` (the 202 / 423 / 503 / default / network branches and the retry ceiling; the S3 sync itself stays manual)                |
-| BT-719    | Manual Retry from Sync Error           | `SyncStatusView.test.tsx` (Retry re-fires the fetch); the S3 re-sync itself stays manual. The plot-wrapper suites were cited here until 2026-08-06 in error: their sync overlay cannot render for those states and is covered nowhere |
+| BT-718    | Pending Sync Status Display            | `SyncStatusView.test.tsx` (status branches + retry ceiling; the S3 sync stays manual) |
+| BT-719    | Manual Retry from Sync Error           | `SyncStatusView.test.tsx` (Retry re-fires the fetch); S3-04 `@slow` (RUN_S3_AWS=1, real S3 error state) |
 | BT-720    | Image Thumbnail Display                | DV-12                                                                                                                                             |
 | BT-721    | ROI Thumbnail Display                  | DV-12                                                                                                                                             |
 
@@ -279,27 +281,27 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 
 ---
 
-## 08 Subscription
+## 08 Subscription (BT-801..811)
 
 | Sheet row   | Subject                            | Test                                                                                  |
 | ----------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| BT-801      | Free Plan card display             | SUB-01 (every assertion scoped to the plan card it belongs to, and the tax caption asserted on Premium only - a page-wide `$20` used to satisfy this row from either card) |
-| BT-802      | Free account status display        | SUB-02 (the status field read exactly via `account-plan-name`, plus no expiry caption anywhere - `text=Free` matched the word anywhere on the page before) |
+| BT-801      | Free Plan card display             | SUB-01 (each assertion scoped to its plan card; tax caption on Premium only) |
+| BT-802      | Free account status display        | SUB-02 (status read via `account-plan-name`; no expiry caption) |
 | BT-803      | No invoice for Free user           | SUB-03                                                                                |
 | BT-804      | Premium plan status display        | SUB-04                                                                                |
 | BT-805      | Premium account status display     | SUB-05                                                                                |
 | BT-806      | Expiration date text               | LC-11 (exact caption per state; sheet says "renews on" but the UI text is "Renew on") |
-| BT-807      | Verify Premium in the DB           | `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium` (partial - the row a successful checkout writes, incl. the expiration coming from Stripe; the row as phrased targets the deployed RDS) |
-| BT-810      | Stripe ID registered in the DB     | `test_checkout_session_tax_config.py::TestSeededPlanValuesMatchTheConfig::test_no_seeded_plan_is_missing_a_stripe_id` (partial - every seeded plan carries a product and price id; the docker DB, not the deployed one); AUDIT-01 / AUDIT-07 (the stored ids really resolve to active Stripe objects) |
-| BT-808, BT-809, BT-811 | Stripe dashboard verification | AUDIT-01 / AUDIT-05 (`frontend/e2e/18-stripe-audit.spec.ts`: the catalogue, the live subscription with its price and next billing date, and each stored id resolved to an active Stripe object - all by GET, so the dashboard read is no longer the only way to see it) |
+| BT-807      | Verify Premium in the DB           | `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium` (partial - not the deployed RDS) |
+| BT-810      | Stripe ID registered in the DB     | `test_checkout_session_tax_config.py` (partial - the docker DB); AUDIT-01 / AUDIT-07 |
+| BT-808, BT-809, BT-811 | Stripe dashboard verification | AUDIT-01 / AUDIT-05 |
 
 ---
 
-## 09 Subscription Registration
+## 09 Subscription Registration (BT-901..925)
 
 | Sheet row                                 | Subject                                                              | Test                                                                         |
 | ----------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| BT-901                                    | Upgrade transitions to checkout                                      | SUB-13 (session created, browser leaves for the checkout URL, route-mocked; the real Stripe-hosted page stays manual); CHECKOUT-01 (**opt-in**, `RUN_CHECKOUT_PROBE=1`: the endpoint really mints a `cs_test_` session on checkout.stripe.com that Stripe serves 200, two clicks mint two sessions, and creating one buys nothing) |
+| BT-901                                    | Upgrade transitions to checkout                                      | SUB-13 (route-mocked; the hosted page stays manual); CHECKOUT-01 (**opt-in**, `RUN_CHECKOUT_PROBE=1`) |
 | BT-906                                    | Prevent direct access to /thanks                                     | SUB-06                                                                       |
 | BT-907                                    | Subscription page updated to Premium                                 | SUB-04 (standing premium account)                                            |
 | BT-908                                    | Account Profile updated to Premium                                   | SUB-05 (standing premium account)                                            |
@@ -310,13 +312,13 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 | BT-920                                    | Reactivation option                                                  | LC-13 (banner + Continue Plan visible; clicking it is Stripe-backed, manual) |
 | BT-922                                    | Expired premium user buttons                                         | LC-06 (Upgrade + Manage both visible)                                        |
 | BT-925                                    | Delete test user account                                             | LC-16 (per-run throwaway account; active=0 + deletion records completed)     |
-| BT-909..914, BT-923                       | DB / Stripe verification after a purchase                            | AUDIT-01..08 (`frontend/e2e/18-stripe-audit.spec.ts`). The scan's own `RELEASE_MAP` records which system rows evidence each: BT-909 from 2018 + 2009, BT-910 from 2016, BT-911 from 930 + 931, BT-912 from 2013 + 2016, BT-913 from 932, BT-914 from 934 + 923, BT-923 from 920 + 921. Run the scan with `--cases release` to get the report keyed by these BT numbers |
-| BT-902                                    | The hosted checkout page loads its form                              | CHECKOUT-02 (**opt-in**: the real hosted page, asserting the card / expiry / CVC / name / postal fields, the `Sandbox` badge, and our own amounts - $20.00 subtotal, `JCT (10%)` $2.00, $22.00 total) |
-| BT-903..905, 924                          | completing a card payment on the hosted page                         | manual, and **not automatable by this route**: filling the card and clicking Subscribe fires `api.hcaptcha.com/getcaptcha`, so Stripe gates the submit behind a CAPTCHA. Every field validates and the button is enabled; the flow stops at the challenge. Probed 2026-08-21 |
+| BT-909..914, BT-923                       | DB / Stripe verification after a purchase                            | AUDIT-01..08; run the scan with `--cases release` for the BT-keyed report |
+| BT-902                                    | The hosted checkout page loads its form                              | CHECKOUT-02 (**opt-in**: the real hosted page, its fields and our amounts) |
+| BT-903..905, 924                          | completing a card payment on the hosted page                         | manual - Stripe gates the submit behind a CAPTCHA |
 
 ---
 
-## 10 Storage
+## 10 Storage (BT-1001..1016)
 
 | Sheet row                 | Subject                                 | Test                                                                                       |
 | ------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -331,14 +333,14 @@ suite sets a placeholder `remote_bucket_name` attribute on the test user
 | BT-1014                   | Storage 90-99% warning on RUN           | LC-10 (snackbar + run not blocked)                                                         |
 | BT-1015                   | Manual storage refresh                  | WS-04                                                                                      |
 | BT-1016                   | Storage values update after delete      | LC-05 (delete ballast → Reload clears warning)                                             |
-| BT-1002..1004, 1008, 1009 | S3-side verification                    | opt-in `16-storage-aws.spec.ts` (`RUN_S3_AWS=1`, deployed env): BT-1002 -> `S3-01` (the per-user bucket answers `head-bucket` and an upload's object answers `head-object`); BT-1003 -> `S3-01` + `S3-02` (sample import puts objects under the input prefix); BT-1004 -> `S3-03` (the run's outputs asserted directly in the bucket with list-objects, then the anonymous cross-instance reproduce reads them). BT-1008 / BT-1009 (premium variants) are proven by `PREM-07` (**@prem**: outputs listed in the premium user's own bucket) |
+| BT-1002..1004, 1008, 1009 | S3-side verification                    | S3-01 / S3-02 / S3-03 (**RUN_S3_AWS=1**); PREM-07 (**@prem**) for the premium variants |
 
 ---
 
-## 11 AWS Monitoring
+## 11 AWS Monitoring (BT-1101..1111)
 
 | Sheet row           | Subject                             | Test                                                |
 | ------------------- | ----------------------------------- | --------------------------------------------------- |
-| BT-1110             | Public Dataview access + auth guard | DV-11 (API half; point BASE_URL/API_URL at the env); HEALTH-18 (the same contract read through the deployed ALB: open dataview 200, bad token refused, authed routers unmounted) |
-| BT-1109             | premium assign/release CloudWatch lines | e2e `PREM-01` / `PREM-02` (**@prem**; partial - checks 1-2: `Successfully assigned premium user` and `Released premium user` read from the public tier's log group after a real assign and hard release) |
-| BT-1101..1108, 1111 | AWS CLI / console probes            | e2e `HEALTH-01`..`HEALTH-19` (`frontend/e2e/17-aws-health.spec.ts`, read-only, ~3 min; `HEALTH_ENV=development\|subscr`, `BASE_URL=<frontend origin>`). Asserts rather than reviews, including the four rows the sheet left to judgement: BT-1103 checks stopped tasks for a non-routine `stoppedReason`, BT-1106 tolerates a scale-in trigger by reading its `AlarmActions` instead of its name, BT-1108 asserts both scheduler jobs logged a run and that `PersistentSyncFailure` has no recent datapoint, and BT-1111 compares every bucket the database names against S3. BT-1107 is deliberately narrowed: a shared environment earns ERROR lines legitimately (declined-card webhooks, PUB-04's own error report, cancelled runs), so the lane asserts on fatal markers - lost database, OOM, killed worker - not on the presence of an ERROR. BT-1101's TLS half runs only where `BASE_URL` is https, which on dev it is not. Replaced `scripts/release_health_check.sh` |
+| BT-1110             | Public Dataview access + auth guard | DV-11 (API half); HEALTH-18 (the same contract through the deployed ALB) |
+| BT-1109             | premium assign/release CloudWatch lines | PREM-01 / PREM-02 (**@prem**; partial - checks 1-2 from CloudWatch) |
+| BT-1101..1108, 1111 | AWS CLI / console probes            | `HEALTH-01`..`HEALTH-19` (read-only; `HEALTH_ENV`, `BASE_URL`). BT-1107 asserts fatal markers, not any ERROR; BT-1101's TLS half needs an https `BASE_URL` |
