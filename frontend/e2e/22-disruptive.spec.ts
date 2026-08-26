@@ -93,8 +93,10 @@ async function pollService(
   what: string,
 ): Promise<void> {
   await expect
+    // A replacement task can sit PENDING for minutes before the agent even
+    // starts pulling, on a cluster this close to its CPU reservation.
     .poll(() => want(describeService(service)), {
-      timeout: 300_000,
+      timeout: 600_000,
       intervals: [10_000],
       message: `${service} never reached: ${what}`,
     })
@@ -116,14 +118,43 @@ function guardDisruptive(): void {
   ).toContain("development-optinist")
 }
 
+// The scheduler stops this environment at 13:00 UTC on weekdays and verifies
+// the stop at 13:15, rewriting min and desired to 0. A test that straddles that
+// never sees what it is polling for, and on a Friday nothing recovers until
+// Sunday 23:00 UTC. Every test here polls for longer than it takes to notice.
+function skipIfTooCloseToScheduledStop(minutes: number): void {
+  const now = new Date()
+  const stop = new Date(now)
+  stop.setUTCHours(13, 0, 0, 0)
+  const left = Math.floor((stop.getTime() - now.getTime()) / 60_000)
+  test.skip(
+    left < minutes,
+    `this test can run for ${minutes} minutes and the 13:00 UTC scheduled ` +
+      `stop is ${left} minutes away (${now.toISOString().slice(11, 16)} UTC)`,
+  )
+}
+
 test.describe("Disruptive: the free tier goes away @disruptive", () => {
   test.beforeEach(guardDisruptive)
+
+  // A Playwright timeout aborts the test body without running its finally, so
+  // the in-test restore is not the last line of defence it looks like. Back to
+  // one task: every test here refuses to start below that.
+  test.afterEach(async () => {
+    if (describeService(FREE_SERVICE).desiredCount === 0) {
+      scaleService(FREE_SERVICE, 1)
+      console.log(`restored ${FREE_SERVICE} to 1 task after an aborted outage`)
+    }
+  })
 
   // Rows 809 / 810 / 812: the public tier serves the shell and /auth/login off
   // its own target group, so a free tier at zero tasks must not take the front
   // door down with it. Asserted by actually taking it down.
   test("OUT-01 - With the free service at zero, the public tier still serves", async () => {
-    test.setTimeout(900_000)
+    // Above the sum of the polls below: 600s scale-down, 240s CloudWatch, 600s
+    // restore. A test timeout would abort the restore instead of failing it.
+    test.setTimeout(1_800_000)
+    skipIfTooCloseToScheduledStop(30)
     const before = describeService(FREE_SERVICE)
     expect(
       before.desiredCount,
@@ -207,8 +238,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   test("OUT-02 - A rolling public-tier deployment keeps serving throughout", async () => {
     // Each replaced task can spend the full 600s deregistration delay
     // draining, and the tier runs two tasks, so the rollout's worst case is
-    // over 20 minutes - observed 2026-08-25 when a drain ran to the cap.
-    test.setTimeout(2_400_000)
+    // over 20 minutes - observed 2026-08-25 when a drain ran to the cap. The
+    // 2026-08-26 run needed 29: placement alone took 11 minutes per task.
+    test.setTimeout(3_300_000)
+    skipIfTooCloseToScheduledStop(55)
     const before = describeService(PUBLIC_SERVICE)
     expect(
       before.desiredCount,
@@ -245,7 +278,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       // Poll the front door while the deployment rolls; a rolling update keeps
       // the old task in service until the new one is healthy, so every one of
       // these must answer
-      const deadline = Date.now() + 1_800_000
+      const deadline = Date.now() + 2_700_000
       let settled = false
       while (Date.now() < deadline) {
         const res = await anon.get(`${process.env.BASE_URL}/`, {
@@ -337,7 +370,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   // placement test. The workflow-on-a-premium-instance half is PREM-05's job on
   // a healthy tier; what this adds is that none of it needs the free tier.
   test("OUT-03 - A premium user keeps their instance while the free service is at zero", async () => {
-    test.setTimeout(1_500_000)
+    // Above the sum of the ceilings below: 300s assign, 480s settle, 600s
+    // scale-down, 300s target health, 600s restore, 300s release.
+    test.setTimeout(3_000_000)
+    skipIfTooCloseToScheduledStop(50)
     test.skip(
       !PREMIUM_USER.email || !PREMIUM_USER.password,
       "row 811 needs TEST_PREMIUM_EMAIL / TEST_PREMIUM_PASSWORD",
@@ -599,20 +635,11 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
   // observed datapoints are logged instead, and HEALTH-27 covers 824's "the
   // alarm fires on real datapoints" half read-only.
   test("ASG-01 - Terminating a public instance replaces it without dropping traffic", async () => {
-    // 45 minutes, from this environment's own history: the terminate activity
-    // ran 11m43s on 2026-08-21 (the 600s deregistration delay), and a launch
-    // took ~20 minutes to reach a healthy target on 2026-08-23.
-    test.setTimeout(2_700_000)
-
-    // The scheduler stops this environment at 13:00 UTC and verifies the stop at
-    // 13:15, rewriting min and desired to 0. A 45-minute run that straddles that
-    // never sees its replacement, and nothing recovers until the next morning.
-    const now = new Date()
-    test.skip(
-      now.getUTCHours() >= 12,
-      `row 827 needs 45 minutes before the 13:00 UTC scheduled stop; it is ` +
-        `${now.toISOString().slice(11, 16)} UTC`,
-    )
+    // 60 minutes: the 2400s settle loop plus the two 600s polls after it. The
+    // observed cost is far lower - the terminate activity ran 11m43s on
+    // 2026-08-21 and a launch took ~20 minutes to go healthy on 2026-08-23.
+    test.setTimeout(3_600_000)
+    skipIfTooCloseToScheduledStop(60)
 
     // Every capacity number here is rewritten twice a day by the scheduler, so
     // read them rather than trusting the terraform default.
