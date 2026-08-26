@@ -366,6 +366,7 @@ function skipUnlessOptedIn(
 
 type Assignment = {
   instance_id?: string
+  instance_id_hash?: string
   is_shared?: boolean
   assigned_at?: string
 } | null
@@ -491,6 +492,13 @@ async function assignUntilSettled(
     await new Promise((r) => setTimeout(r, 30_000))
   }
 }
+
+// Teardown here is deliberately partial, so a "leave no trace" instinct does
+// not fight the pool: desiredCount is pool state, which afterAll reports rather
+// than forces back, and is_shared lives on the assignment row that afterEach
+// hard-releases. Writes that touch premium_user_assignments must carry
+// `user_id IS NULL`: the rows this lane may remove are unowned pool
+// bookkeeping, never a real user's assignment.
 
 // The premium service normally idles at desired=0; a non-zero baseline means
 // another user already holds capacity, and the scale-back-to-zero assertion
@@ -2235,7 +2243,8 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       // another. create_standby refuses while get_standby_count() already
       // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
       runSqlWriteOnDev(
-        `DELETE FROM premium_user_assignments WHERE is_standby = 1`,
+        `DELETE FROM premium_user_assignments WHERE is_standby = 1
+           AND user_id IS NULL`,
       )
       awsJson(
         `lambda invoke --function-name development-premium-manager ` +
@@ -2266,7 +2275,8 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
         .toBe("stopped")
     }
     runSqlWriteOnDev(
-      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'`,
+      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
+           AND user_id IS NULL`,
     )
     if (instanceState(candidate!) !== "running") {
       awsJson(`ec2 start-instances --instance-ids ${candidate}`)
@@ -2298,7 +2308,8 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     // The delete above races the pool manager, which re-adds a standby row for
     // an instance it just started. Clear it again so the optimizer will take it.
     runSqlWriteOnDev(
-      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'`,
+      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
+           AND user_id IS NULL`,
     )
 
     // Now mark the assignment shared and let the manager's own migration loop
@@ -2407,53 +2418,51 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
         message: `premium-${userId}-tg never became healthy on ${instanceB}`,
       })
       .toBe(true)
-    // The app adopts the migrated assignment on its own status poll after a
-    // reload (PREM-03's adoption fact); wait until it reports the new instance.
+    // The app adopts the migrated assignment on its own assign-on-mount after
+    // a reload (PREM-03's adoption fact). The hash comes from the same read
+    // that reports the instance, so the two cannot describe different states.
     await page.reload()
+    let adopted: string | undefined
     await expect
-      .poll(async () => (await statusViaPage(page)).assignment?.instance_id, {
-        timeout: 120_000,
-        intervals: [10_000],
-        message: "the UI session never adopted the migrated assignment",
-      })
+      .poll(
+        async () => {
+          const assignment = (await statusViaPage(page)).assignment
+          adopted = assignment?.instance_id_hash
+          return assignment?.instance_id
+        },
+        {
+          timeout: 120_000,
+          intervals: [10_000],
+          message: "the server never reported the migrated assignment",
+        },
+      )
       .toBe(instanceB)
-
-    // The interceptor logs this warn on every premium-routed 5xx before it
-    // retries on the free tier; a reproduce that rode that fallback never
-    // touched instance B, so its disk proof below would time out for the
-    // wrong reason (the ALB 502 gap right after a migration).
-    let premiumFallbacks = 0
-    page.on("console", (msg) => {
-      if (msg.text().includes("Using free tier while premium instance")) {
-        premiumFallbacks += 1
-      }
-    })
+    expect(adopted, "status reported no instance_id_hash to adopt").toBeTruthy()
 
     // Step 4: open the previously-created experiment. Instance B never ran it,
     // so serving this is only possible by lazily fetching the user's files
     // from S3, and the fetch is the row's whole point: S3 is the source of
     // truth, so an instance change costs the user nothing.
-    const reproduceOnB = async () => {
-      await page.goto(`/workspaces/${wsId}`)
-      await reproduceTutorial(page, "e2e-runall")
-    }
-    await reproduceOnB()
-    if (premiumFallbacks > 0 && (await yamlOnB()) === "absent") {
-      console.log(
-        `[15-premium-aws] PREM-14: ${premiumFallbacks} free-tier fallback ` +
-          `warn(s) during the reproduce - re-adopting ${instanceB} and ` +
-          `reproducing once more`,
-      )
-      await page.reload()
-      await expect
-        .poll(async () => (await statusViaPage(page)).assignment?.instance_id, {
-          timeout: 120_000,
-          intervals: [10_000],
-          message: "the UI session never re-adopted the migrated assignment",
-        })
-        .toBe(instanceB)
-      await reproduceOnB()
-    }
+    await page.goto(`/workspaces/${wsId}`)
+    const reproduced = page.waitForResponse(
+      (r) => /\/workflow\/reproduce\//.test(r.url()),
+      { timeout: RELEASE_REQUEST_TIMEOUT_MS },
+    )
+    await reproduceTutorial(page, "e2e-runall")
+
+    // Which instance actually answered, read from the response rather than
+    // from client state: a request whose premium headers are missing - or one
+    // the interceptor retried after a 5xx - goes to the free tier, which
+    // answers 200 without instance B ever seeing it. The middleware hashes the
+    // serving instance into every authenticated response with the same
+    // function that produced `adopted`, so this compares like with like.
+    const servedBy = (await reproduced).headers()["x-served-by-instance"]
+    expect(
+      servedBy,
+      `the reproduce was served by ${servedBy ?? "an unidentified tier"} ` +
+        `rather than the migrated instance ${instanceB}: a routing failure ` +
+        `after migration, not a storage one`,
+    ).toBe(adopted)
 
     // The row's Expected #2, read from the instance rather than from a log
     // sentence: the experiment's own config, absent from this instance a
