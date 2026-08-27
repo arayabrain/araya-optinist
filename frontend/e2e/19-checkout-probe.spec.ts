@@ -204,6 +204,10 @@ test.describe("Real Stripe checkout hand-off", () => {
       page,
     }) => {
       skipUnlessOptedIn("229 / 2001")
+      // runSql is synchronous and goes over SSM Run Command on a deployed run,
+      // so the five count queries below cost 20-40s each against the config's
+      // 60s default. Locally they are milliseconds.
+      test.setTimeout(240_000)
 
       expectAccountIsCountable()
       const before = { plans: planRowCount(), purchases: purchaseCount() }

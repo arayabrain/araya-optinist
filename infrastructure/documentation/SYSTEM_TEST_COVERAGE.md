@@ -23,6 +23,9 @@
 | `@prem`                      | the opt-in `15-premium-aws.spec.ts` lane (`RUN_PREMIUM_AWS=1`): real premium assignments against deployed dev                                                     |
 | `S3-xx`                      | the opt-in `16-storage-aws.spec.ts` lane (`RUN_S3_AWS=1`): real-S3 asserts against deployed dev, no premium capacity                                              |
 | `@disruptive`                | the opt-in `22-disruptive.spec.ts` lane (`RUN_DISRUPTIVE=1`): degrades the shared environment on purpose                                                          |
+| `CHECKOUT-0x`                | the opt-in `19-checkout-probe.spec.ts` lane (`RUN_CHECKOUT_PROBE=1`): mints a real test-mode Stripe Checkout Session against deployed dev; no card is ever entered |
+| `STRIPE-0x`                  | the opt-in `21-stripe-roundtrip.spec.ts` lane (`RUN_STRIPE_WRITE=1`): cancels and reactivates a real test-mode Stripe subscription, restoring it in a `finally`     |
+| `LC-06`, `LC-11..13`, `LC-16`, `LC-21..23` | `23-subscription-lifecycle.spec.ts`, which unlike the rest of the LC family runs against deployed dev as well as locally. No opt-in flag, but it writes plan and expiry to the shared dev RDS - see that spec's note in the e2e README |
 | (partial)                    | the test covers one side of the row only, with the S3 / Stripe / AWS / DB half still needing a deployed environment                                               |
 | manual                       | no automated counterpart; follow the sheet's own Action / Expected columns                                                                                       |
 
@@ -34,10 +37,11 @@ connections, `make workflow_count_it`). Both collect and skip otherwise, and
 both run in the Monday `Weekly Regression`.
 
 The opt-in lanes never run per PR. `@slow` runs in the Monday `Weekly
-Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`
-and the S3 lane are excluded even from that, because each performs genuine work
-against the deployed dev environment, costs money and mutates shared
-infrastructure, so running one is a deliberate manual call. A citation from
+Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`,
+the S3 lane and the two Stripe lanes (`CHECKOUT-0x`, `STRIPE-0x`) are excluded
+even from that, because each performs genuine work against the deployed dev
+environment, costs money and mutates shared infrastructure, so running one is a
+deliberate manual call. A citation from
 those lanes counts as automated coverage only for a round in which the lane was
 actually run.
 
