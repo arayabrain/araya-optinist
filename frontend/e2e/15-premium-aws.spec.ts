@@ -18,12 +18,18 @@ import {
   awsJson,
   cloudwatchHas,
   importSampleData,
+  instanceState,
+  invokeMonitoringSweep,
   isLocalBaseUrl,
   login,
   openWorkspace,
+  premiumInstances,
   premiumTargetHealth,
+  premiumTaskOn,
+  premiumTaskStatusOn,
   reproduceTutorial,
   routedApiHeaders,
+  runningPremiumInstanceIds,
   runShellOverSsm,
   runSql,
   runSqlWriteOnDev,
@@ -31,6 +37,7 @@ import {
   s3ObjectCount,
   skipWithoutCreds,
   sqlSkipReason,
+  stageSecondRunningInstance,
   startRun,
   windowStart,
 } from "./helpers"
@@ -104,44 +111,6 @@ function tgExists(userId: number): boolean {
 // The per-user target group's health states. A dedicated assignment goes live
 // (DB row, ALB rule, target group) before the premium ECS task on that instance
 // serves traffic, so a workflow driven through the ALB too early answers 502.
-// The premium service's task on a given instance, as the console's Tasks tab
-// shows it. Rows 1203/1204 are written against that view.
-function premiumTaskOn(
-  instanceId: string,
-): { taskArn: string; lastStatus: string } | undefined {
-  const arns = awsJson<{ taskArns: string[] }>(
-    `ecs list-tasks --cluster ${CLUSTER} --service-name ${PREMIUM_SERVICE}`,
-  ).taskArns
-  if (!arns.length) return undefined
-  const tasks = awsJson<{
-    tasks: {
-      taskArn: string
-      lastStatus: string
-      containerInstanceArn?: string
-    }[]
-  }>(`ecs describe-tasks --cluster ${CLUSTER} --tasks ${arns.join(" ")}`).tasks
-  const cis = tasks
-    .map((t) => t.containerInstanceArn)
-    .filter((a): a is string => !!a)
-  if (!cis.length) return undefined
-  const owners = awsJson<{
-    containerInstances: {
-      containerInstanceArn: string
-      ec2InstanceId: string
-    }[]
-  }>(
-    `ecs describe-container-instances --cluster ${CLUSTER} ` +
-      `--container-instances ${cis.join(" ")}`,
-  ).containerInstances
-  const mine = owners.find((c) => c.ec2InstanceId === instanceId)
-  if (!mine) return undefined
-  return tasks.find((t) => t.containerInstanceArn === mine.containerInstanceArn)
-}
-
-function premiumTaskStatusOn(instanceId: string): string {
-  return premiumTaskOn(instanceId)?.lastStatus ?? "none"
-}
-
 // Waiting out the task placement is not the row under test: a cluster that
 // never gets a premium target serving leaves the workflow rows unverified,
 // exactly as skipForNoCapacity treats a failed placement.
@@ -262,34 +231,6 @@ const PREMIUM2_USER = {
   password: process.env.TEST_PREMIUM2_PASSWORD || "",
 }
 
-// Every premium instance the pool currently holds, in any live state. The
-// migration rows need one the user is NOT on, whatever state it is parked in.
-function premiumInstances(): { id: string; state: string }[] {
-  return awsJson<{ id: string; state: string }[]>(
-    `ec2 describe-instances ` +
-      `--filters Name=tag:Name,Values=development-premium-* ` +
-      `Name=instance-state-name,Values=running,stopped,pending,stopping ` +
-      `--query 'Reservations[].Instances[].{id:InstanceId,state:State.Name}'`,
-  )
-}
-
-function instanceState(instanceId: string): string {
-  return premiumInstances().find((i) => i.id === instanceId)?.state ?? "gone"
-}
-
-function runningPremiumInstanceIds(): string[] {
-  const out = execSync(
-    `aws ec2 describe-instances --region ${REGION} ` +
-      `--filters "Name=tag:Name,Values=development-premium-*" ` +
-      `"Name=instance-state-name,Values=running" ` +
-      `--query 'Reservations[].Instances[].InstanceId' --output text`,
-    { timeout: 30_000 },
-  )
-    .toString()
-    .trim()
-  return out ? out.split(/\s+/) : []
-}
-
 function ecsContainerEc2Ids(): string[] {
   const arns = execSync(
     `aws ecs list-container-instances --cluster ${CLUSTER} ` +
@@ -322,21 +263,6 @@ function latestManagerLine(pattern: string, sinceMs: number): string {
     .toString()
     .trim()
   return out === "None" ? "" : out
-}
-
-// The idle scale-down lives in the monitoring Lambda's scheduled action, so
-// the test fires the same event cron does instead of waiting on the cron.
-function invokeMonitoringSweep(): string {
-  const out = execSync(
-    `aws lambda invoke --function-name development-premium-manager ` +
-      `--payload '{"source":"aws.events","detail-type":"Scheduled Event"}' ` +
-      `--cli-binary-format raw-in-base64-out --log-type Tail ` +
-      `--query LogResult --output text --region ${REGION} /dev/null`,
-    { timeout: 300_000 },
-  )
-    .toString()
-    .trim()
-  return Buffer.from(out, "base64").toString("utf-8")
 }
 
 function skipUnlessOptedIn(
@@ -1932,6 +1858,28 @@ function uiEventCount(userId: number, event: string, sinceMs: number): number {
   return total
 }
 
+// Sorted CloudWatch timestamps of one UI-event kind for one user since a
+// moment, merged across the three tier groups (which tier logs each event
+// depends on the routing state at the moment it ships - see uiEventCount).
+function uiEventTimestamps(
+  userId: number,
+  event: string,
+  sinceMs: number,
+): number[] {
+  const stamps: number[] = []
+  for (const group of [FREE_LOG_GROUP, PUBLIC_LOG_GROUP, PREMIUM_LOG_GROUP]) {
+    stamps.push(
+      ...awsJson<number[]>(
+        `logs filter-log-events --log-group-name ${group} ` +
+          `--start-time ${sinceMs} ` +
+          `--filter-pattern '"Premium UI event: user=${userId} " "event=${event} "' ` +
+          `--query 'events[].timestamp'`,
+      ),
+    )
+  }
+  return stamps.sort((a, b) => a - b)
+}
+
 test("PREM-13 - A dedicated outage broadcasts to the second tab and logs one detection event @slow", async ({
   page,
 }) => {
@@ -2159,100 +2107,6 @@ test("PREM-13 - A dedicated outage broadcasts to the second tab and logs one det
       .catch(() => {})
   }
 })
-
-// Stage a second RUNNING premium instance for a migration to land on.
-//
-// This is not scene-setting the migration rows could skip: the optimizer only
-// migrates onto an instance it already considers available (running, no
-// real users, ECS task ready). Measured 2026-08-25, a run without this
-// step failed with the optimizer doing exactly the right thing - it
-// logged "marked for migration: has_shared_flag=True" every pass and then
-// "no running instances available. Triggering scaling to start stopped
-// instances..." - but nothing ever started, because the dev pool
-// self-heals to a STOPPED standby and that scaling call did not wake it.
-// A candidate must also carry NO assignment row at all: a standby row
-// makes try_reserve_instance answer "already reserved" and the optimizer
-// skips it. Idempotent: with the candidate already staged, only the row
-// re-delete does anything, so callers may re-run it to heal after a wait.
-async function stageSecondRunningInstance(excludeId: string): Promise<string> {
-  let candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
-  if (!candidate) {
-    // The pool self-heals to exactly ONE standby and the sweep terminates
-    // the extras, so when the user holds the only instance there is nothing
-    // to migrate onto (measured: a run skipped here). Ask the manager for
-    // another. create_standby refuses while get_standby_count() already
-    // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
-    runSqlWriteOnDev(
-      `DELETE FROM premium_user_assignments WHERE is_standby = 1
-         AND user_id IS NULL`,
-    )
-    awsJson(
-      `lambda invoke --function-name development-premium-manager ` +
-        `--cli-binary-format raw-in-base64-out ` +
-        `--payload '{"action":"create_standby"}' /dev/null`,
-    )
-    await expect
-      .poll(
-        () => {
-          candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
-          return !!candidate
-        },
-        {
-          timeout: 8 * 60_000,
-          intervals: [20_000],
-          message: "the manager never created a second premium instance",
-        },
-      )
-      .toBe(true)
-    // The Lambda answers with the id and stops the instance ~30s later, so a
-    // start issued in that window is silently undone. Wait it out.
-    await expect
-      .poll(() => instanceState(candidate!), {
-        timeout: 8 * 60_000,
-        intervals: [20_000],
-        message: `${candidate} never settled to stopped after creation`,
-      })
-      .toBe("stopped")
-  }
-  runSqlWriteOnDev(
-    `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
-         AND user_id IS NULL`,
-  )
-  if (instanceState(candidate!) !== "running") {
-    awsJson(`ec2 start-instances --instance-ids ${candidate}`)
-  }
-  await expect
-    .poll(() => runningPremiumInstanceIds().includes(candidate!), {
-      timeout: 8 * 60_000,
-      intervals: [15_000],
-      message: `${candidate} never reached running`,
-    })
-    .toBe(true)
-  // A running EC2 is not yet a migration target: the readiness check the
-  // optimizer runs demands a premium ECS task on it, so raise the service's
-  // desired count to cover both instances and wait for the placement.
-  const desired = Number(ecs("services[0].desiredCount"))
-  if (desired < 2) {
-    awsJson(
-      `ecs update-service --cluster ${CLUSTER} --service ${PREMIUM_SERVICE} ` +
-        `--desired-count 2`,
-    )
-  }
-  await expect
-    .poll(() => premiumTaskStatusOn(candidate!), {
-      timeout: 10 * 60_000,
-      intervals: [20_000],
-      message: `no premium ECS task ever placed on ${candidate}`,
-    })
-    .toBe("RUNNING")
-  // The delete above races the pool manager, which re-adds a standby row for
-  // an instance it just started. Clear it again so the optimizer will take it.
-  runSqlWriteOnDev(
-    `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
-         AND user_id IS NULL`,
-  )
-  return candidate!
-}
 
 // ---------------------------------------------------------------------------
 // Row 608: user data survives a migration to a different dedicated instance,
@@ -2893,4 +2747,248 @@ test("PREM-23 - Adoption of a pool-stranded assignment migrates inline to a dedi
     })
     .toBe(true)
   await expectStoredTierMatchesStatus(page)
+})
+
+// ---------------------------------------------------------------------------
+// Row 6236: the unreachable machine's probe ladder against a REAL outage.
+// unreachableMachine.test.ts pins the ladder's shape (doubling, the 300s cap,
+// the terminal probe count) but computes every expected delay from
+// INITIAL_PROBE_DELAY_MS itself, so nothing pins the constants to wall-clock
+// seconds. This measures the first doubling for real, off the machine's own
+// telemetry timestamps: ~30s from detection to the first armed probe, ~60s
+// from that probe's failure to the second arm.
+//
+// The ladder needs no help to advance. Arming re-enables premium routing and
+// then logs instance_probe_armed through the shared axios instance, so that
+// telemetry POST is itself the probe: it 502s off the blocked instance,
+// consumes the probe immediately, and still reaches CloudWatch through the
+// interceptor's free-tier retry. So a failure timestamp always sits right
+// after its arm, and the delay between them is not what this measures.
+//
+// Deliberately partial (the sheet cell says so): failures 3..5 to the 300s
+// cap are ~11 more minutes of real waiting inside the 15-minute iptables
+// self-heal ceiling - too tight to be reliable - and a runtime-read override
+// flag was rejected as shipping test hooks in the production bundle. The
+// terminal state's Retry recovery IS covered: terminal is staged through the
+// app's own persisted snapshot (the exact localStorage contract row 6237b's
+// hydration pins), because the Retry button only renders on the terminal
+// variant of the snackbar and reaching terminal organically is the wait this
+// test refuses.
+// ---------------------------------------------------------------------------
+
+test("PREM-24 - The probe ladder's first doubling is real wall-clock; terminal Retry recovers @slow", async ({
+  page,
+}) => {
+  const rows = "6236"
+  skipUnlessOptedIn(rows)
+  test.setTimeout(TEST_TIMEOUT_MS + 15 * 60_000)
+
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+  expectGenuinelyPremium(await statusViaPage(page))
+  const status = await waitForAssignment(page, rows)
+  const assignment = status.assignment!
+  test.skip(
+    !!assignment.is_shared,
+    `rows ${rows}: the ladder only runs for a dedicated holder; the cascade granted shared`,
+  )
+  heldDedicated = true
+  const instanceA = assignment.instance_id!
+  expect(instanceA).toMatch(/^i-[0-9a-f]+$/)
+
+  const me = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  expect(me.ok(), await me.text()).toBe(true)
+  const userId: number = (await me.json()).id
+  await expect
+    .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+      timeout: 8 * 60_000,
+      intervals: [15_000],
+      message: `premium-${userId}-tg never became healthy before the outage`,
+    })
+    .toBe(true)
+
+  // The Record tab's Reload button is the premium-routed request generator
+  // (PREM-13's trigger mechanics: it dispatches getExperiments every click).
+  const wsId = await openWorkspace(page, "e2e-prem-ladder")
+  await page.locator('button[role="tab"]:has-text("Record")').click()
+  const reload = page.getByRole("button", { name: "Reload" })
+  await expect(reload).toBeVisible({ timeout: 30_000 })
+  const snackbar = page.getByText(
+    /dedicated premium instance is (temporarily unreachable|unresponsive)/,
+  )
+
+  const t0 = windowStart()
+  let blocked = false
+  try {
+    setPremiumPortBlock(instanceA, true)
+    blocked = true
+
+    // Detection: drive premium-routed 502s until the machine flips.
+    await expect
+      .poll(
+        async () => {
+          if (await snackbar.isVisible().catch(() => false)) {
+            return true
+          }
+          await reload.click().catch(() => {})
+          await page.waitForTimeout(2_000)
+          return snackbar.isVisible().catch(() => false)
+        },
+        {
+          timeout: 180_000,
+          intervals: [1_000],
+          message: "the unreachable snackbar never appeared after the block",
+        },
+      )
+      .toBe(true)
+
+    // The ladder advances on its own (see the header): each arm's own telemetry
+    // POST is the probe that fails it. Just wait for the second arm.
+    await expect
+      .poll(
+        () => uiEventTimestamps(userId, "instance_probe_armed", t0).length,
+        {
+          timeout: 5 * 60_000,
+          intervals: [10_000],
+          message:
+            "the machine never armed two probes - the first doubling cannot be measured",
+        },
+      )
+      .toBeGreaterThanOrEqual(2)
+
+    const flips = uiEventTimestamps(userId, "instance_unreachable", t0)
+    const armed = uiEventTimestamps(userId, "instance_probe_armed", t0)
+    const failures = uiEventTimestamps(userId, "instance_probe_failure", t0)
+    expect(
+      flips,
+      "exactly one detection event anchors the ladder",
+    ).toHaveLength(1)
+    expect(
+      failures.length,
+      "the first armed probe was never consumed as a failure",
+    ).toBeGreaterThanOrEqual(1)
+    // The sheet's wall-clock claim, with a +/-20% band around each delay:
+    // detection -> arm 1 is INITIAL_PROBE_DELAY_MS...
+    const gap1 = armed[0] - flips[0]
+    console.log(
+      `[15-premium-aws] PREM-24 measured ladder: detection -> arm1 ` +
+        `${gap1}ms (expect ~30000), failure1 -> arm2 ` +
+        `${armed[1] - failures[0]}ms (expect ~60000)`,
+    )
+    expect(
+      gap1,
+      `detection -> first armed probe was ${gap1}ms, outside 30s +/-20%`,
+    ).toBeGreaterThanOrEqual(24_000)
+    expect(
+      gap1,
+      `detection -> first armed probe was ${gap1}ms, outside 30s +/-20%`,
+    ).toBeLessThanOrEqual(36_000)
+    // ...and failure 1 -> arm 2 is its first doubling. Asserting the doubled
+    // band where 30s is expected is this test's named mutation check: red.
+    const gap2 = armed[1] - failures[0]
+    expect(
+      gap2,
+      `first failure -> second armed probe was ${gap2}ms, outside 60s +/-20%`,
+    ).toBeGreaterThanOrEqual(48_000)
+    expect(
+      gap2,
+      `first failure -> second armed probe was ${gap2}ms, outside 60s +/-20%`,
+    ).toBeLessThanOrEqual(72_000)
+
+    // Terminal + Retry, staged through the app's own snapshot contract while
+    // the block still holds, so nothing can heal the machine before the
+    // button is clicked. The write races the machine's own snapshot writes,
+    // which is why the reload follows immediately.
+    await page.evaluate(
+      ([id]) =>
+        localStorage.setItem(
+          "premium_unreachable_snapshot",
+          JSON.stringify({
+            instance_id: id,
+            unreachable_since: Date.now() - 60_000,
+            failed_probes: 5,
+            is_terminal: true,
+            updated_at: Date.now(),
+          }),
+        ),
+      [instanceA],
+    )
+    await page.reload()
+    const terminalBar = page.getByText(/unresponsive after multiple attempts/)
+    await expect(terminalBar).toBeVisible({ timeout: 60_000 })
+    const retryButton = page.getByRole("button", { name: "Retry" })
+    await expect(retryButton).toBeVisible({ timeout: 10_000 })
+
+    // Recovery must not re-assign: the row and the instance are fine.
+    const assignWrites: string[] = []
+    page.on("request", (req) => {
+      if (req.url().includes("/premium/assign") && req.method() !== "GET") {
+        assignWrites.push(`${req.method()} ${req.url()}`)
+      }
+    })
+
+    // Retry is clicked while the port is STILL blocked, which is what makes it
+    // attributable: measured 2026-08-27, lifting the outage first recovers the
+    // machine on its own before any click - onPremiumReachable CLEARs from any
+    // verified 200 and never consults the terminal flag, and the reload's own
+    // mount re-arms premium routing off a still-valid /status. So the button's
+    // effect is asserted here on the one thing only it can do: reset the probe
+    // budget, which returns the snackbar to its non-terminal variant.
+    const tRetry = windowStart()
+    await retryButton.click()
+    await expect
+      .poll(
+        () => uiEventCount(userId, "instance_unreachable_manual_retry", tRetry),
+        {
+          ...CLOUDWATCH_POLL,
+          message: "no manual-retry telemetry arrived after the Retry click",
+        },
+      )
+      .toBe(1)
+    await expect(
+      page.getByText(/dedicated premium instance is temporarily unreachable/),
+      "Retry did not reset the terminal state to a retrying one",
+    ).toBeVisible({ timeout: 90_000 })
+
+    // Now lift the outage. The re-armed ladder finds the instance healthy on
+    // its next probe - no click needed, since each arm's telemetry POST is
+    // itself the probe - and the machine clears for real.
+    setPremiumPortBlock(instanceA, false)
+    blocked = false
+    await expect
+      .poll(() => uiEventCount(userId, "instance_reachable", tRetry), {
+        timeout: 5 * 60_000,
+        intervals: [10_000],
+        message: "no instance_reachable event after the outage was lifted",
+      })
+      .toBe(1)
+    await expect(snackbar).toBeHidden({ timeout: 60_000 })
+    expect(
+      assignWrites,
+      "the recovery re-assigned instead of re-probing",
+    ).toHaveLength(0)
+
+    // The same assignment came through the whole outage: identical row, no
+    // re-assign, and the ALB still serves it.
+    const after = (await statusViaPage(page)).assignment!
+    expect(after.instance_id).toBe(instanceA)
+    expect(after.assigned_at).toBe(assignment.assigned_at)
+    await expect
+      .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+        timeout: 3 * 60_000,
+        intervals: [15_000],
+        message: `premium-${userId}-tg unhealthy after the recovery`,
+      })
+      .toBe(true)
+  } finally {
+    if (blocked) setPremiumPortBlock(instanceA, false)
+    await page.request
+      .delete(`${apiUrl()}/workspace/${wsId}`, {
+        headers: await apiHeaders(page),
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      })
+      .catch(() => {})
+  }
 })

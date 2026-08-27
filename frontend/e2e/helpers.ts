@@ -618,6 +618,197 @@ export function premiumTargetHealth(userId: number): string[] {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Premium pool inspection and staging, shared by the @prem lane and the
+// disruptive lane's premium rows (OUT-04/05).
+// ---------------------------------------------------------------------------
+
+const PREMIUM_CLUSTER = "development-optinist-cloud-cluster"
+const PREMIUM_ECS_SERVICE = "development-premium-optinist-cloud-service"
+
+// Every premium instance the pool currently holds, in any live state. The
+// migration rows need one the user is NOT on, whatever state it is parked in.
+export function premiumInstances(): { id: string; state: string }[] {
+  return awsJson<{ id: string; state: string }[]>(
+    `ec2 describe-instances ` +
+      `--filters Name=tag:Name,Values=development-premium-* ` +
+      `Name=instance-state-name,Values=running,stopped,pending,stopping ` +
+      `--query 'Reservations[].Instances[].{id:InstanceId,state:State.Name}'`,
+  )
+}
+
+export function instanceState(instanceId: string): string {
+  return premiumInstances().find((i) => i.id === instanceId)?.state ?? "gone"
+}
+
+export function runningPremiumInstanceIds(): string[] {
+  const out = execSync(
+    `aws ec2 describe-instances --region ${AWS_REGION} ` +
+      `--filters "Name=tag:Name,Values=development-premium-*" ` +
+      `"Name=instance-state-name,Values=running" ` +
+      `--query 'Reservations[].Instances[].InstanceId' --output text`,
+    { timeout: 30_000 },
+  )
+    .toString()
+    .trim()
+  return out ? out.split(/\s+/) : []
+}
+
+// The premium service's task on a given instance, as the console's Tasks tab
+// shows it. Rows 1203/1204 are written against that view.
+export function premiumTaskOn(
+  instanceId: string,
+): { taskArn: string; lastStatus: string } | undefined {
+  const arns = awsJson<{ taskArns: string[] }>(
+    `ecs list-tasks --cluster ${PREMIUM_CLUSTER} --service-name ${PREMIUM_ECS_SERVICE}`,
+  ).taskArns
+  if (!arns.length) return undefined
+  const tasks = awsJson<{
+    tasks: {
+      taskArn: string
+      lastStatus: string
+      containerInstanceArn?: string
+    }[]
+  }>(
+    `ecs describe-tasks --cluster ${PREMIUM_CLUSTER} --tasks ${arns.join(" ")}`,
+  ).tasks
+  const cis = tasks
+    .map((t) => t.containerInstanceArn)
+    .filter((a): a is string => !!a)
+  if (!cis.length) return undefined
+  const owners = awsJson<{
+    containerInstances: {
+      containerInstanceArn: string
+      ec2InstanceId: string
+    }[]
+  }>(
+    `ecs describe-container-instances --cluster ${PREMIUM_CLUSTER} ` +
+      `--container-instances ${cis.join(" ")}`,
+  ).containerInstances
+  const mine = owners.find((c) => c.ec2InstanceId === instanceId)
+  if (!mine) return undefined
+  return tasks.find((t) => t.containerInstanceArn === mine.containerInstanceArn)
+}
+
+export function premiumTaskStatusOn(instanceId: string): string {
+  return premiumTaskOn(instanceId)?.lastStatus ?? "none"
+}
+
+// The idle scale-down lives in the monitoring Lambda's scheduled action, so
+// tests fire the same event cron does instead of waiting on the cron.
+export function invokeMonitoringSweep(): string {
+  const out = execSync(
+    `aws lambda invoke --function-name development-premium-manager ` +
+      `--payload '{"source":"aws.events","detail-type":"Scheduled Event"}' ` +
+      `--cli-binary-format raw-in-base64-out --log-type Tail ` +
+      `--query LogResult --output text --region ${AWS_REGION} /dev/null`,
+    { timeout: 300_000 },
+  )
+    .toString()
+    .trim()
+  return Buffer.from(out, "base64").toString("utf-8")
+}
+
+// Stage a second RUNNING premium instance for a migration or recovery to land
+// on.
+//
+// This is not scene-setting the rows using it could skip: the optimizer only
+// migrates onto an instance it already considers available (running, no
+// real users, ECS task ready). Measured 2026-08-25, a run without this
+// step failed with the optimizer doing exactly the right thing - it
+// logged "marked for migration: has_shared_flag=True" every pass and then
+// "no running instances available. Triggering scaling to start stopped
+// instances..." - but nothing ever started, because the dev pool
+// self-heals to a STOPPED standby and that scaling call did not wake it.
+// A candidate must also carry NO assignment row at all: a standby row
+// makes try_reserve_instance answer "already reserved" and the optimizer
+// skips it. Idempotent: with the candidate already staged, only the row
+// re-delete does anything, so callers may re-run it to heal after a wait.
+export async function stageSecondRunningInstance(
+  excludeId: string,
+): Promise<string> {
+  let candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+  if (!candidate) {
+    // The pool self-heals to exactly ONE standby and the sweep terminates
+    // the extras, so when the user holds the only instance there is nothing
+    // to migrate onto (measured: a run skipped here). Ask the manager for
+    // another. create_standby refuses while get_standby_count() already
+    // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
+    runSqlWriteOnDev(
+      `DELETE FROM premium_user_assignments WHERE is_standby = 1
+         AND user_id IS NULL`,
+    )
+    awsJson(
+      `lambda invoke --function-name development-premium-manager ` +
+        `--cli-binary-format raw-in-base64-out ` +
+        `--payload '{"action":"create_standby"}' /dev/null`,
+    )
+    await expect
+      .poll(
+        () => {
+          candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+          return !!candidate
+        },
+        {
+          timeout: 8 * 60_000,
+          intervals: [20_000],
+          message: "the manager never created a second premium instance",
+        },
+      )
+      .toBe(true)
+    // The Lambda answers with the id and stops the instance ~30s later, so a
+    // start issued in that window is silently undone. Wait it out.
+    await expect
+      .poll(() => instanceState(candidate!), {
+        timeout: 8 * 60_000,
+        intervals: [20_000],
+        message: `${candidate} never settled to stopped after creation`,
+      })
+      .toBe("stopped")
+  }
+  runSqlWriteOnDev(
+    `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
+         AND user_id IS NULL`,
+  )
+  if (instanceState(candidate!) !== "running") {
+    awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+  }
+  await expect
+    .poll(() => runningPremiumInstanceIds().includes(candidate!), {
+      timeout: 8 * 60_000,
+      intervals: [15_000],
+      message: `${candidate} never reached running`,
+    })
+    .toBe(true)
+  // A running EC2 is not yet a migration target: the readiness check the
+  // optimizer runs demands a premium ECS task on it, so raise the service's
+  // desired count to cover both instances and wait for the placement.
+  const desired = awsJson<{ services: { desiredCount: number }[] }>(
+    `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
+      `--services ${PREMIUM_ECS_SERVICE}`,
+  ).services[0].desiredCount
+  if (desired < 2) {
+    awsJson(
+      `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
+        `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
+    )
+  }
+  await expect
+    .poll(() => premiumTaskStatusOn(candidate!), {
+      timeout: 10 * 60_000,
+      intervals: [20_000],
+      message: `no premium ECS task ever placed on ${candidate}`,
+    })
+    .toBe("RUNNING")
+  // The delete above races the pool manager, which re-adds a standby row for
+  // an instance it just started. Clear it again so the optimizer will take it.
+  runSqlWriteOnDev(
+    `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
+         AND user_id IS NULL`,
+  )
+  return candidate!
+}
+
 // A @disruptive test degrades the shared environment while it runs - an outage,
 // a stopped task, a filled disk - so it may only run when nobody else is on it.
 // This asks the environment itself rather than trusting a coordination message:
