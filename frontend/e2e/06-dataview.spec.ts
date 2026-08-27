@@ -287,8 +287,12 @@ test.describe("Private Dataview @slow", () => {
       (r) => r.url().includes("/api/dataview") && r.url().includes("limit=10"),
     )
     await limitSelect.selectOption("10")
-    await refetch
+    const { items } = (await (await refetch).json()) as { items: unknown[] }
     await expect(limitSelect).toHaveValue("10")
+    // The selector reading 10 only proves the control moved, so the page size
+    // is asserted on the response: the DataGrid virtualizes, and a grid holding
+    // 50 records can render fewer than 10 row elements.
+    expect(items.length).toBeLessThanOrEqual(10)
     await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
       { timeout: 15_000 },
     )
