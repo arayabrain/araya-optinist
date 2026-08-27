@@ -50,10 +50,78 @@ Test levels used in the premium tables:
 
 ---
 
+## Coverage labels
+
+Every row in the CSV sheets carries a `Coverage` label, and that label - not this
+document - is the source of truth. These are its exact meanings.
+
+| Label     | Exact meaning                                                                                                                                                                                                                                                        | Counts as automated |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `FULL`    | Every step of the row's Action and every clause of its Expected Result is asserted by a named automated test. A release tester runs nothing by hand for this row.                                                                                                     | Yes                 |
+| `PARTIAL` | A named test asserts part of the row; the rest needs a surface no lane can reach - a Stripe-hosted page, a real inbox, real S3 / AWS / RDS state. The row's Notes cell says which half is left, and its `Automated by` cell in the map below is tagged `(partial)`.    | Yes                 |
+| `MANUAL`  | No automated test names this row. A tester follows the sheet's own Action / Expected columns by hand.                                                                                                                                                                 | No                  |
+
+`PARTIAL` counting as automated is deliberate: the label narrows *what* is
+covered, it does not withdraw the row, and a `PARTIAL` row still turns a lane red
+if the covered half regresses. So `Automated` below is `FULL` + `PARTIAL`, and
+`Manual` is `MANUAL`.
+
+### The strongest grade is `FULL` with an e2e citation
+
+The sheets cite tests in two columns, `Tests: e2e` and `Tests: unit`, and
+`Coverage` grades what they achieve together rather than either alone. An e2e
+citation proves the row through the surface a release tester would use: the
+control exists, the route is wired, the render is real. A unit citation proves
+the branch and its edges, which an e2e test is usually too blunt to reach. A row
+carrying both is the grade to aim for.
+
+A `FULL` row cited only under `Tests: unit` is still `FULL` - every claim the row
+makes is asserted - but it carries one known blind spot: nothing pins the
+asserted code to the UI, so a helper that is never called, or is called with the
+wrong argument, leaves the row green. Sheet 09's `921` is the worked example, and
+the reason that row is deliberately not counted as covered at all: the tax helper
+it cites has no caller anywhere.
+
+No row is unit-only because nobody got round to the e2e. There are three reasons,
+and each is a property of the row rather than of the suite:
+
+| Why there is no e2e                                 | What that looks like                                                                                                                                | Rows                                          |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| The stimulus is not a user action                   | A Stripe webhook, a sweep job, a scheduled Lambda. No click produces it, so there is nothing for a browser to drive                                  | `265`, `287`; `720`..`722`, `725`, `726`; sheet 06-2's sweep and migration rows |
+| The assertion is below the UI                       | The Expected Result is a DB row, a query predicate, or the request body we hand Stripe, and the browser shows at most a consequence of it            | `906`, `909`, `910`, `914`                    |
+| Provoking the state needs an action no lane may take | Killing the assigned instance, filling the disk, breaking the shared Stripe account. The app's response is asserted with the state injected instead   | `6214`, `6215`, `6237b`                       |
+
+The reverse case, an e2e citation and no unit test, is the norm for rows whose
+whole claim is what the browser shows.
+
+Independently of that label, a row is either **open** or **decided**. This says
+whether anyone has finished arguing the row, not how much of it is automated:
+
+| State       | How it is set                                                                        | Means                                                                                              |
+| ----------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **Open**    | `Coverage` is `MANUAL` or `PARTIAL`, and the Notes cell carries no adjudication line  | Backlog. A test could plausibly be written, and nobody has written it.                             |
+| **Decided** | The Notes cell carries an `Adjudicated`, `Re-graded` or `CONFIRMED-IMPOSSIBLE` line   | Somebody read the row, attempted it and retired it. The argument is in that row's own Notes cell.  |
+
+A `FULL` row is neither: it is done.
+
+Every decided row falls to one of six causes. The vocabulary is fixed here; each
+sheet's own **Notes** section below names which of its rows fall to which cause.
+
+| Cause                        | Why no lane can close it                                                                                                                                                                                                          |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Third-party surface          | The field, its validation and its rendering belong to Stripe's own hosted page, its hosted invoice, or to Stripe Link, so a test would assert Stripe's UI rather than ours                                                         |
+| CAPTCHA-gated                | The stimulus is a fresh hosted-checkout submit, which is CAPTCHA-gated (sheet 02 row 231 is the confirmed-impossible anchor). The invariants each row checked are asserted continuously instead by the `18-stripe-audit` lane      |
+| Real inbox delivery          | The pass criterion is mail arriving in a real mailbox, which no lane can receive                                                                                                                                                  |
+| State the app cannot produce | No API or setup path reaches the state, or the paint has no deterministic window to assert in                                                                                                                                     |
+| Perf / soak judgment         | The verdict is a human judgment over tens of minutes, not an assertion                                                                                                                                                            |
+| Case-specific                | Individually argued in the row's own Notes - no shared cause                                                                                                                                                                      |
+
+---
+
 ## Coverage by sheet
 
-`Automated` is `FULL` + `PARTIAL`, per the counting rule below. Re-derive from
-the sheets rather than adjusting a total by hand.
+Counted by the `Coverage` labels defined above. Re-derive from the sheets rather
+than adjusting a total by hand.
 
 | Sheet                            | Rows    | Automated | Manual |
 | -------------------------------- | ------- | --------- | ------ |
@@ -72,60 +140,42 @@ the sheets rather than adjusting a total by hand.
 | **Total**                        | **466** | **419**   | **47** |
 
 Every `Manual` row here is a **decided** row: read, attempted and retired with a
-reason in its Notes cell. See *What is left, and what blocks it* below.
+reason in its Notes cell. Which rows, and under which cause, is in each sheet's
+own **Notes** section below.
 
 ## What is left, and what blocks it
 
-The backlog is generated, never hand-maintained. **Re-derive it before quoting
-any figure:**
+The backlog is generated, never hand-maintained. Point `TEST_SHEET_DIR` at a
+directory holding every sheet exported as CSV from the [test case sheets
+folder](https://drive.google.com/drive/folders/1zOfe1Clvg3WF3rtiJVACpOagGnPzxKEO) on the internal Drive.
+**Re-derive before quoting any figure:**
 
 ```bash
+export TEST_SHEET_DIR=<the directory holding the exported CSV sheets>
 python3 infrastructure/scripts/test_coverage_backlog.py            # summary
 python3 infrastructure/scripts/test_coverage_backlog.py --rows     # every open row
 python3 infrastructure/scripts/test_coverage_backlog.py --decided  # what was retired, and why
 ```
 
-The script reads the 22 CSV sheets. A row is **open** while its Coverage is
-`MANUAL` or `PARTIAL`, and **decided** once its Notes carry an `Adjudicated`,
-`Re-graded` or `CONFIRMED-IMPOSSIBLE` line. It counts all 22 sheets, system and
-release together, so its totals are larger than the twelve-sheet table above.
+The script applies the `Coverage` and open / decided definitions above verbatim.
+It reads the system and release sheets together, so its totals are larger than
+the twelve-sheet table above.
 
-### Open
+**Open: three rows.** Sheet 02's `251` and `293`, and release sheet 11's
+`BT-1107`, are `PARTIAL` with no adjudication line in their Notes cell, so the
+script still counts them as backlog. Every other row is `FULL` or decided with a
+written reason. Re-derive with `--rows` rather than trusting this sentence.
 
-**Nothing.** Every row in the 22 sheets is either FULL or decided with a written
-reason. Re-derive with `--rows` rather than trusting this sentence.
-
-### Decided, and why
-
-A decided row is not a gap. It is a row somebody read, attempted, and retired
-with the reason written into the sheet. **That reason lives in the row's own
-Notes cell**, which is where a release tester reads it, and is deliberately not
-duplicated here - this table only says how many rows fall to each cause, so the
-shape of what is unautomatable stays visible without going stale. Re-derive with
-`--decided`.
-
-| Cause | Rows | Why no lane can close it |
-| ----- | ---- | ------------------------ |
-| Third-party surface | 33 | The field, its validation and its rendering belong to Stripe's own hosted page or to Stripe Link, so a test would assert Stripe's UI, not ours |
-| CAPTCHA-gated | 22 | Every stimulus is a fresh hosted-checkout submit, which is CAPTCHA-gated (row 231 is the confirmed-impossible anchor). The invariants each row checked are asserted continuously instead by the `18-stripe-audit` lane |
-| Case-specific (see Notes) | 11 | Individually argued in the row's own Notes - no shared cause |
-| Real inbox delivery | 6 | The pass criterion is mail arriving in a real mailbox, which no lane can receive |
-| State the app cannot produce | 3 | No API or setup path reaches the state, or the paint has no deterministic window |
-| Perf / soak judgment | 3 | The verdict is a human judgment over tens of minutes, not an assertion |
-
-**Counting rule.** A row counts as automated if its `Automated by` cell names a
-test, including rows marked `(partial)` - the partial label narrows *what* is
-covered, it does not withdraw the row. Rows whose cell is `manual` count as
-manual. Every
-row number in a sheet's range appears in exactly one of the categories, so the
-columns are derivable from the tables below rather than maintained by hand; if you
-change a row, re-derive rather than adjusting the total by one.
+**Decided rows are listed per sheet.** Each sheet's **Notes** section below names
+its decided rows and the cause each falls to. The argument for any single row
+lives in that row's own Notes cell in the sheet, which is where a release tester
+reads it, and is deliberately not duplicated here. Re-derive with `--decided`.
 
 **The CSV sheets are the source of truth for these counts**, since that is where
-a release tester reads them. The sheets carry `Tests: e2e`, `Tests: unit` and
-`Coverage` columns whose labels map onto this table as: `FULL` and `PARTIAL` are
-automated, `MANUAL` is not. Re-derive from the
-sheets, not from memory: past hand-edits have drifted this table by tens of rows.
+a release tester reads them. Every row number in a sheet's range falls in exactly
+one category, so the columns are derivable rather than maintained by hand; if you
+change a row, re-derive rather than adjusting a total by one. Past hand-edits have
+drifted these tables by tens of rows.
 
 Sheet `06-2` carries **39** rows, not 38: it holds both `6237` and `6237b`.
 
@@ -168,7 +218,11 @@ renumbered.
 | 110, 111, 113                                         | Resend verification from the success screen and from the login alert; Go to Login Page                                                                          | AUTH-04 (extra assertions on the account it already registers; the resend endpoint is route-mocked, so no Firebase send); `test_registrations_resend_verification.py::TestResendVerification` (the route's own branches: unverified sends a link, already-verified sends nothing, unknown is 404, Firebase's rate limit reaches the caller as 429, an unexpected failure as 500, and a malformed address never reaches Firebase) |
 | 118                                                   | Live Stripe starting state                                                                                                                                     | manual                                                                                  |
 
-Note on 124: the automated half is the query - the `logged_out_at < now - 60min`
+### Notes
+
+**Decided rows: none.** All 28 rows of this sheet are `FULL`.
+
+**124.** The automated half is the query - the `logged_out_at < now - 60min`
 comparison and the cutoff it binds, asserted against the compiled statement,
 plus the three sibling safety predicates (`active_workflow_count = 0`,
 `users.active`, `workspaces.deleted`). What stays manual is feeding real rows
@@ -176,7 +230,7 @@ through real MySQL and observing the deletion. The previously cited
 `TestGetUsersForCleanupInstanceFilter` pinned only the instance filter in that
 query, never the interval.
 
-Note on 126: the row's Action imports
+**126.** The row's Action imports
 `studio.app.common.core.workflow.workflow_count_recovery`, which has no callers
 anywhere - the logic moved to the Common User Manager Lambda and the studio copy
 was left behind. Its rule is also not the deployed one: it resets any counter
@@ -234,9 +288,31 @@ What stays manual is steps 1 and 4 against real MySQL on a real instance.
 | 238 / 239 / 242                                                                     | Stripe state for the subscriber: active subscription with next billing date, one customer for the address, succeeded payment intent                                                          | AUDIT-05 (238: active subscription, correct price, next billing date); AUDIT-04 / AUDIT-07 (239: exactly one customer, id matching the DB); AUDIT-06 (242: latest payment intent succeeded with its amount, latest paid invoice and its PDF link, no failure events); the fresh-subscriber variant of all three is CAPTCHA-gated (see 231) |
 | 293                                                                                 | Free to trial premium                                                                                                                                                                       | `test_checkout_session_tax_config.py::TestOnlyAFirstTimeUserGetsATrial` (partial - the trial branch is chosen for a first-time user and refused for a returning one; the hosted trial signup is manual) |
 | 294                                                                                 | Trial to paid conversion                                                                                                                                                                    | `test_subscription_state_transitions.py::TestARenewalStillLandsAfterTheSubscriptionExpired`; `test_webhook.py::test_renewal_writes_the_invoice_period_end_and_leaves_the_plan_alone` (partial - the conversion write; waiting out a real trial is manual) |
-| 201, 206, 207, 215..226, 228..231, 247..250, 252, 253, 267, 268, 269, 273..285, 288, 292, 296, 305 | temp-mail, verification email delivery, the whole Stripe checkout and Link flows, invoice PDFs, real trial expiry in wall-clock time, Stripe-dashboard verification | manual                                                                                   |
+| 229 / 230                                                                           | Browser back button / browser closed during a live hosted checkout                                                                                                                          | SUB-17; `test_subscription_state_transitions.py::TestDeclinedCheckoutWritesNoSubscription` (the route-mocked leg); CHECKOUT-03 / CHECKOUT-04 (**opt-in**: a live hosted session backed out of / closed in a second tab, the plan and purchase rows read from the deployed database afterwards) |
+| 250                                                                                 | Compare invoice with Stripe                                                                                                                                                                 | AUDIT-09 (every invoice the app reports matches Stripe's own records and its links resolve) |
+| 267 / 268 / 269 / 273 / 274                                                         | Stripe's own record of a scheduled cancellation, its events, and the reactivation                                                                                                            | STRIPE-01 (**opt-in**, `RUN_STRIPE_WRITE=1`, `21-stripe-roundtrip.spec.ts`: cancel at period end then undo it against the real Stripe test account - `cancel_at_period_end` and the cancel timestamps (267 / 268), the `customer.subscription.updated` events (269 / 274), and the reactivation clearing it (273). The undo is asserted in a `finally`, so the shared account is never left cancelled) |
+| 201, 206, 207, 215..226, 228, 231, 247, 248, 249, 252, 253, 275..285, 288, 292, 296, 305 | temp-mail, verification email delivery, the whole Stripe checkout and Link flows, invoice PDFs, real trial expiry in wall-clock time, Stripe-dashboard verification | manual                                                                                   |
 | 298                                                                                 | Responsive design check                                                                                                                                                                     | `SUB-16` (partial - /subscription, /account and /subscription/manage at 375/768/1280px, each still rendering its landmark and not scrolling horizontally; "readable, no overlap" stays a human read); SUB-16 (adds the overlap half: the plan cards' bounding boxes are asserted not to intersect at 375 / 768 / 1280px. A scan of every element would be noise, since a child always overlaps its parent) |
-Note on 289: this row previously cited `test_crud_users_context.py`, where **12
+
+### Notes
+
+**Decided rows: 45 of 105.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| Third-party surface | 215..226, 247, 248, 249, 275..284 |
+| CAPTCHA-gated | 228, 231, 238..242 |
+| Real inbox delivery | 201, 206, 207, 252, 253 |
+| Case-specific | 244, 245, 288, 292, 305 |
+| State the app cannot produce | 285, 294, 296 |
+
+**Open: `251`, `293`.** Both are `PARTIAL` with no adjudication line in their
+Notes cell, so the backlog script still counts them as open even though the last
+note below argues 251.
+
+**289.** This row previously cited `test_crud_users_context.py`, where **12
 of 14 cases were `@pytest.mark.skip("Requires integration test with real DB")`**
 and so never ran. The skip reason was false - the tier ladder is derived purely
 from the query's result row - and the boundary the row is about was unasserted
@@ -245,7 +321,7 @@ Widening `GRACE_PERIOD_DAYS` by 5 days passed all 14. The three cases now cited
 pin both edges by fixing `now`, and `test_no_dead_tests.py` rejects new
 unconditional skips.
 
-Notes on the rows added here:
+**On the rows added here:**
 
 - **The mocked-billing rows are route mocks; what they cover is our UI.** 260 and
   266 both sit on `TestCancelTouchesOnlyTheDowngradeFlag`, 270/271 gained a pytest
@@ -310,7 +386,15 @@ Notes on the rows added here:
 | (unnumbered)  | Single-user admin fetch and update over HTTP                | `test_users_admin.py::TestGetOneUser` (role joined in, 404 for absent, soft-deleted and other-organization ids); `TestUpdateUserOverHttp` (the route's own id and organization wiring)              |
 | (unnumbered)  | Admin list search and sort                                 | `test_users_admin.py::TestUserListSearch` (name and email fragments intersect rather than union, and an unmatched fragment is empty rather than everything); `TestUserListSorting` (the default order, and `role` / `role_id` mapped onto their joined tables) |
 
-Notes on this sheet:
+### Notes
+
+**Decided rows: 1 of 41.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| CAPTCHA-gated | 339 |
 
 - **The admin gate is not per route.** Every route takes
   `current_admin: User = Depends(get_admin_user)`, but that parameter is how the
@@ -411,7 +495,11 @@ Notes on this sheet:
 | 406, 407                                                             | Free user's import / run outputs really land in S3                                                                                                  | 406: e2e `S3-02` (opt-in `RUN_S3_AWS=1`: sample import puts objects under the input prefix, and the workspace delete really empties it); 407: e2e `S3-03` (the run's outputs asserted directly in the bucket with list-objects, then the anonymous cross-instance reproduce reads them) |
 | 420, 421, 427, 433                                                   | Premium S3 object inspection, and the `LOG_LEVEL=DEBUG` lines the sheet quotes                                                                      | 420 / 421: manual, though `PREM-07` proves the same import/output mechanics on the premium tier; 427 / 433 stay manual - they quote `storage exceeded: False` alongside over-quota usage, likely stale sheet text, verify the sheet before automating |
 
-Two sheet corrections applied with these rows:
+### Notes
+
+**Decided rows: none.** All 48 rows of this sheet are `FULL`.
+
+**Two sheet corrections applied with these rows:**
 
 - **413 / 423 named a snackbar the product does not have.** Neither "temporarily
   assigned to the shared compute resources" nor "assigned to the main shared
@@ -470,7 +558,18 @@ Two sheet corrections applied with these rows:
 | 529                | File-tree sync progress indicator                                                       | `FileSelectDialog.test.tsx` (partial - the bar's binding to the tree fetch's loading flag; that the fetch sets and clears the flag is untested); FILE-06 (the real dialog shows the bar while a held tree fetch resolves, then lists the files and drops it) |
 | 545, 546           | Simultaneous runs, large-dataset run                                                    | adjudicated: soak/perf judgment calls with no deterministic oracle (545) or an external 20-50 minute dataset (546); the deterministic content is the WF/LC lanes and REC-07 |
 
-Note: row 516's Action and Expected both describe the rapid-click cooldown, so
+### Notes
+
+**Decided rows: 3 of 46.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| Perf / soak judgment | 545, 546 |
+| Case-specific | 528 |
+
+**516.** Its Action and Expected both describe the rapid-click cooldown, so
 its original Subject ("Run Workflow Tutorial 3") was the defect and has been
 corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 `WF-06` does that but has no sheet row claiming it.
@@ -490,7 +589,11 @@ corrected in the sheet. No System row covers a Tutorial 3 run to completion;
 | 607  | Published experiment via public instance (lazy S3)     | e2e `S3-03` (opt-in `RUN_S3_AWS=1`, `16-storage-aws.spec.ts`: fresh run published via the API, run outputs asserted directly in the bucket, anonymous reproduce 404 before publish and 200 after (202 pending_sync tolerated while the publish sync completes), listed on `/api/public/dataview`; the lazy-fetch `Download data from S3` line is reported but not asserted - a pre-warmed cache leaves none, which the sheet calls moot)                                                                                                                                                                 | automated (e2e opt-in)                                                                      |
 | 608  | Data survives migration to another instance            | migration decision logic: `TestMigrationWorkflowGuard`, `TestIdleUserSelectorExcludesActiveWorkflows`, `TestInlineMigrationOnAdoption`; e2e `PREM-14` (**@prem**, `RUN_PREMIUM_AWS=1`: a real completed run on instance A, then the product's own `migrate_shared_users` path moves the user to B - the assignment row's `instance_id` changes, the manager logs `Migrated user`, the per-user target group goes healthy on B and the UI adopts it. The S3-as-source-of-truth claim is read off B's own filesystem: the run's `experiment.yaml` is asserted absent on B right after the migration, then polled until present once the experiment is opened) | L1 + e2e (opt-in)                  |
 
-Note on this sheet's count: 603 and 608 count as automated on the same footing as
+### Notes
+
+**Decided rows: none.** All 8 rows of this sheet are `FULL`.
+
+**Sheet count.** 603 and 608 count as automated on the same footing as
 any `(partial)` row - each names a real test over a genuine half (603's real-AWS
 CloudWatch half is now the `PREM-04` `@prem` assert, countable only for a round
 where that lane ran). 604 and 605 count as automated on the same `@prem` footing
@@ -518,7 +621,7 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 6212                       | refresh preserves a shared assignment and its poll state             | `PremiumSharedPollingStall.test.tsx`; e2e `PREM-03` (**@prem**; partial - only on a run where the cluster assigned the shared tier)                                                                                                                                                                                                                                                                                                                                                                                            | L2                           |
 | 6213                       | refresh preserves an autoscaling-pool assignment                     | `PremiumPollingRoutingRestore.test.tsx` (mount adopts the pool marker, clears the stale instance pin, keeps polling, never re-assigns); `test_premium_api_contract.py::test_contract_premium_status_autoscaling_pool` (response shape); e2e `PREM-03` (**@prem**; partial - only on a run where the cluster assigned the pool tier)                                                                                                                                                                                                                                                                                          | contract + L2                |
 | 6214 / 6215                | recovery when the assigned instance is stopped / terminated          | `PremiumRetriggerAssign.test.tsx` (instance-lost re-trigger + user-gesture recovery)                                                                                                                                                                                                                                                                                                                                                                                                                                            | L2                           |
-| 6216 | ECS task crash auto-recovers on the same instance | `PremiumRetriggerAssign.test.tsx` (partial - the frontend half: the 502 flip to DEGRADED, and a 200 from the same instance hash recovering with no re-assign) | L2; stopping the real task and waiting for the replacement is manual |
+| 6216 | ECS task crash auto-recovers on the same instance | `PremiumRetriggerAssign.test.tsx` (the frontend half: the 502 flip to DEGRADED, and a 200 from the same instance hash recovering with no re-assign); e2e `PREM-12` (**@prem**, `RUN_PREMIUM_AWS=1`: the real task killed, the replacement reaching RUNNING on the same instance) | L2 + e2e (opt-in) |
 | 6218                       | UI cancel schedules a downgrade; user stays premium until period end | e2e `LC-12`; `test_webhook.py::test_subscription_updated_mirrors_scheduled_downgrade`                                                                                                                                                                                                                                                                                                                                                                                                                                           | L1 + e2e                     |
 | 6219 / 6220                | expiry flips tier to free; billing grace (LIMIT_GRACE)               | tier flip: `test_user_subscription_tier.py`, `PremiumSubscriptionExpiry.test.tsx` (auto-logout on expiry and on grace). Row left dangling until the grace elapses: `TestExpiryLeavesTheAssignmentDangling`; then released by the sweep (`TestRun`) or, when the webhook does arrive, by `TestCustomerSubscriptionDeleted`                                                                                                                                                                                                       | L1 + L2                      |
 | 6221 / 6222 | scale-down of idle instances, blocked at the last idle one | `TestScaleDownIfPossible` (6221 includes the ordering: every instance is deregistered from ECS before it is stopped. 6222 partial - `test_no_scale_down_when_only_one_of_three_running_is_idle` is the case where `idle >= 2` is the operative guard rather than the running-count conjunct); e2e `PREM-06` (**@prem**, outcome half asserted: two premium users hold two distinct dedicated instances, and after both hard releases the scale-down's own decision line is read back from CloudWatch - the instances it names must be ones the users held, it must spare one, and they must really leave both the running state and the ECS cluster. PREM-06 needs the pool pre-staged and self-skips otherwise; the recipe is in `frontend/e2e/README.md`) | L1 + e2e (@prem) |
@@ -535,6 +638,16 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 6237 / 6237b | cross-tab propagation: live broadcast / snapshot hydration | `PremiumUnreachableIntegration.test.tsx` (peer broadcast + snapshot hydration + TTL rejection); `crossTabSync.test.ts` | L2 (single-jsdom simulation); PREM-13 (**RUN_PREMIUM_AWS=1**: two real pages in one context on a dedicated instance, outage forced by an iptables REJECT on the instance's container port; tab B renders the snackbar with no interaction of its own, and event=instance_unreachable / instance_reachable are each counted exactly 1 across the free, public and premium log groups, re-counted after a 90s settle) |
 | contract                   | typed `/premium/*` shapes, header names, identifier omission         | `premiumRoutingContract.test.ts` + `test_premium_contract_fixtures.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                          | contract                     |
 | v1.1.10 invariants         | premiumShared teardown gate, staleness watermark, warm-up grace      | `axiosPremiumInterceptor.test.ts`, `PremiumUnreachableIntegration.test.tsx`, `useInstanceUnreachableMachineLeader.test.tsx`, `PremiumSharedPollingStall.test.tsx`                                                                                                                                                                                                                                                                                                                                                               | L2                           |
+
+### Notes
+
+**Decided rows: 1 of 39.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| CAPTCHA-gated | 6201 |
 
 ---
 
@@ -574,6 +687,10 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 726       | Error-status auto-correction (self-heal to synced)   | `test_dataview_publish.py::test_reproduce_auto_updates_sync_status_when_data_available` (the 200, the compiled UPDATE's `local_sync_status = 'synced'` and the version guard; the sibling `..._demotes_to_error` pins the other direction) |
 | 714       | Filter by workspace                                  | DV-16 (the all-workspaces view, which renders the same `DataviewRecords` columns the public page does, plus the deliberate carve-out at `/dataview/{id}`) |
 
+### Notes
+
+**Decided rows: none.** All 27 rows of this sheet are `FULL`.
+
 ---
 
 ## 08 Public Instance (800-832)
@@ -609,6 +726,10 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 814                                                   | Published-experiment detail data on the deployed public tier                                                                                                                                                                                                                                                             | PUB-05 / PUB-06 (**opt-in**, `@slow`: the published record's input panels really render their plots and data grid for an anonymous visitor, which is stronger than a 200 - the visualization endpoints cannot answer wrongly and still produce a plot) |
 | 832                                                   | Concurrent anonymous load on the public read API                                                                                                                                                                                                                                                                         | HEALTH-26 (20 concurrent anonymous reads, all 200, above the sheet's throughput floor - Playwright request contexts in place of the `ab` benchmark) |
 
+### Notes
+
+**Decided rows: none.** All 33 rows of this sheet are `FULL`.
+
 ---
 
 ## 09 Stripe Prdct Data Sync & Tax (901-936)
@@ -629,10 +750,19 @@ via `PREM-07` / `PREM-08`, which run on the real dedicated-instance routing that
 | 901, 902, 904, 907, 908, 923..927, 930, 931, 933..936 | Live Stripe catalogue, customer, subscription, invoice and event state | AUDIT-01..08 (`frontend/e2e/18-stripe-audit.spec.ts`: the live Stripe account read by GET, asserted per row) |
 | 915, 916 | Tax and totals shown on the hosted checkout page | CHECKOUT-02 (**opt-in**: the hosted page really shows `$20.00` subtotal, `JCT (10%)` `$2.00` and the `$22.00` total. Previously written off as unreachable; the page loads fine in a browser, it is only the *submit* that Stripe gates behind a CAPTCHA) |
 | 911, 912, 913 | Hosted form field markup and postal-code validation | manual - and not ours to assert: this is Stripe's own input validation, on Stripe's product |
-| 919 | Customer address stored on the Stripe customer | manual (a Stripe `GET /v1/customers` field the scan does not read yet; one line away from AUDIT-04) |
+| 919 | Customer address stored on the Stripe customer | AUDIT-04 (the billing address checkout collected, read back off the live Stripe customer and asserted per row) |
 | 921                                          | Tax data in the webhook payload                                                                                                                                                 | AUDIT-02 (the live `checkout.session.completed` event's own `total_details.amount_tax`, read straight off the event, which is the observation the row asks for. See the note below for why the *code* that reads this payload still counts for nothing) |
 
-Notes on this sheet:
+### Notes
+
+**Decided rows: 4 of 36.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| Third-party surface | 911, 912, 913 |
+| CAPTCHA-gated | 905 |
 
 - **921 is `manual`, and the sheet now says the same.** It was labelled
   `uncovered` here and in the sheet, which read as "automatable, nobody has done
@@ -702,6 +832,18 @@ production) and it runs in about three minutes. It skips entirely on a local
 | 1221             | Application normal response                      | HEALTH-18 (the shell, `/health`, static assets and the open API answered through the real ALB); HEALTH-19 (the certificate's expiry, where `BASE_URL` is https) |
 | 1222             | Public Dataview access                           | `test_instance_mode_routers.py::TestInstanceModePublic`; DV-09 / DV-10 / DV-11 / DV-18 (`@slow`); HEALTH-18 (the unauthenticated 404 from an unmounted router, read on the deployed public tier) |
 
+### Notes
+
+**Decided rows: 3 of 22.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| State the app cannot produce | 1204 |
+| Real inbox delivery | 1220 |
+| Case-specific | 1205 |
+
 **1205 is narrower than the sheet's wording, on purpose.** "No ERROR lines in the
 last hour" is not an invariant of a shared test environment: over any 24 hours
 the free tier legitimately logs declined-card webhooks from the payment tests, a
@@ -752,7 +894,7 @@ of that lane they are read-only, and they skip on a local `BASE_URL`.
 | 2018             | Complete consistency check                       | LC-11; `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium`; `::TestCancelTouchesOnlyTheDowngradeFlag`; HEALTH-22 (the account under test really is on the free plan, read from the deployed database) |
 | 2019             | Complete Stripe audit                            | AUDIT-04..08 (the API-visible review, per surface: customer details and address, one subscription matching the DB plan, paid invoices, a valid unexpired card on file, and the event timeline); the Dashboard rendering itself stays manual |
 | 2020             | Final Stripe consistency check                   | AUDIT-07 / AUDIT-08 (the DB cross-check: stored customer id and period dates against Stripe's); AUDIT-04..06 (the Stripe review half); dashboard-only surfaces stay manual |
-| 2021             | UI-DB-Stripe triple check                        | LC-02; LC-11; LC-22; `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium`; `test_webhook.py::TestInvoicePaymentSucceeded` (partial - the real card last4 needs a deployed premium session) |
+| 2021             | UI-DB-Stripe triple check                        | LC-02; LC-11; LC-22; `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium`; `test_webhook.py::TestInvoicePaymentSucceeded`; STRIPE-02 (**opt-in**, `RUN_STRIPE_WRITE=1`: the manage page's plan, default payment method and paid-invoice rows each compared against Stripe's own live values, which closes the real-card leg) |
 | 2022             | Database-Stripe consistency                      | `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium`; `::TestReactivationIsMirroredOntoTheRow`; AUDIT-07 / AUDIT-08 (status, customer id and period dates compared live; the payment-method leg has nothing to compare - the subscription models store no such column, and the card's validity is AUDIT-05) |
 | 2023             | Timestamp validation                             | `test_subscription_state_transitions.py::TestCancelTouchesOnlyTheDowngradeFlag`; HEALTH-21 (no live row is stamped in the future and none is updated before it was created; `expiration < created_at` rows are the seeded test accounts the sheet itself exempts, and the scan reports them. See the note below) |
 | 2024             | Plan ID validation                               | `test_registration_db_state.py::TestRegistrationStartsTheUserOnFree`; `test_subscription_state_transitions.py::TestSuccessfulCheckoutWritesPremium`; HEALTH-20 (no live row sits on a plan that does not exist) |
@@ -764,6 +906,19 @@ of that lane they are read-only, and they skip on a local `BASE_URL`.
 | 2030             | Disk full during sync                            | `test_sync_job_db_state.py::TestPendingSelectionStatuses`; `test_sync_job.py::TestValidationLogicMetrics` (partial - provoking real ENOSPC would degrade the shared tier for everyone) |
 | 2031             | Invalid experiment data in S3                    | `test_s3_storage_controller.py::TestValidateExperimentInS3`; `test_sync_job.py::TestValidateExperiment`; S3-04 (**opt-in**: the live error transition and the automatic recovery, against the S3 lane's own record) |
 | 2032             | Restored experiment data in S3                   | `test_sync_job_db_state.py::TestPendingSelectionStatuses`; `test_dataview_publish.py::TestPublicDataviewReproduceWorkflow`                        |
+
+### Notes
+
+**Decided rows: 8 of 33.** Each was read, attempted and retired with
+the reason in its own Notes cell in the sheet. Causes are defined under
+*Coverage labels* above.
+
+| Cause | Rows |
+| ----- | ---- |
+| Third-party surface | 2003, 2019, 2020 |
+| CAPTCHA-gated | 2005, 2011 |
+| Case-specific | 2022, 2030 |
+| Perf / soak judgment | 2029 |
 
 **2023 is asserted narrowly, and the reason is data rather than code.** Three
 seeded expired-premium fixtures carry an `expiration` deliberately backdated
