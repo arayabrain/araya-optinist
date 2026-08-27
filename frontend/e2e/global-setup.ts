@@ -3,7 +3,13 @@ import * as path from "path"
 
 import { chromium, request } from "@playwright/test"
 
-import { apiLogin, authHeaders, deleteE2eWorkspaces } from "./helpers"
+import {
+  apiLogin,
+  authHeaders,
+  deleteE2eWorkspaces,
+  isLocalBaseUrl,
+  sweepE2eFirebaseUsers,
+} from "./helpers"
 
 // 1. Checks the credentials over the API, so a bad password fails here.
 // 2. Deletes workspaces named e2e-* left behind by previous runs (leftover
@@ -11,7 +17,11 @@ import { apiLogin, authHeaders, deleteE2eWorkspaces } from "./helpers"
 // 3. Logs in once via the UI and saves storage state for the authed specs,
 //    keeping Firebase logins per run to a handful (rate limits).
 // 4. Deletes the Firebase accounts AUTH-04 leaves behind, if admin creds exist.
+// The Firebase sweep runs first because AUTH-02/03/04 need no credentials: a
+// run that returns below still registers the throwaways the sweep clears.
 export default async function globalSetup() {
+  sweepStaleFirebaseUsers()
+
   const email = process.env.TEST_USER_EMAIL
   const password = process.env.TEST_USER_PASSWORD
   if (!email || !password) return
@@ -60,6 +70,17 @@ async function saveLoginState(
     await page.context().storageState({ path: statePath })
   } finally {
     await browser.close()
+  }
+}
+
+// Firebase-side truth: catches the throwaways whose DB row is already gone, so
+// an aborted run's accounts do not pile up in the console forever
+function sweepStaleFirebaseUsers() {
+  if (!isLocalBaseUrl()) return
+  try {
+    console.log(`Swept ${sweepE2eFirebaseUsers()} stale Firebase test users`)
+  } catch (e) {
+    console.warn(`Firebase sweep skipped: ${e}`)
   }
 }
 

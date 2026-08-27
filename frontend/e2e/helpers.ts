@@ -38,13 +38,15 @@ export function runSql(sql: string): string {
     .trim()
 }
 
-export function runInBackend(cmd: string, input?: string) {
-  execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+export function runInBackend(cmd: string, input?: string): string {
+  return execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
     cwd: REPO_ROOT,
     stdio: ["pipe", "pipe", "pipe"],
     input,
     timeout: DOCKER_EXEC_TIMEOUT_MS,
   })
+    .toString()
+    .trim()
 }
 
 // Registration leaves the address unverified, and an unverified account cannot
@@ -75,6 +77,17 @@ try:
 except auth.UserNotFoundError:
     pass
 `,
+  )
+}
+
+// A run that dies before its afterAll orphans the Firebase user even though the
+// DB row is gone, which puts it beyond the reach of any DB-driven cleanup.
+// Returns how many accounts the sweep removed.
+export function sweepE2eFirebaseUsers(): number {
+  return Number(
+    runInBackend(
+      "poetry run python .github/scripts/sweep_e2e_firebase_users.py",
+    ),
   )
 }
 
