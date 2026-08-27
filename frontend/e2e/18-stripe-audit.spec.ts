@@ -1,4 +1,4 @@
-import { execSync } from "child_process"
+import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -43,6 +43,12 @@ const SCAN_TIMEOUT_MS = 240_000
 // Same selector 17-aws-health reads: hardcoding development audited dev's Stripe during a prod release round.
 const CHECK = process.env.HEALTH_ENV === "subscr" ? "production" : "development"
 
+// endsWith("stripe.com") alone accepts evilstripe.com, so the bare domain and a
+// real subdomain are the only two shapes allowed.
+function isStripeHost(hostname: string): boolean {
+  return hostname === "stripe.com" || hostname.endsWith(".stripe.com")
+}
+
 type Verdict = { sheet: string; status: string; evidence: string }
 
 let verdicts: Record<string, Verdict> = {}
@@ -55,10 +61,21 @@ test.beforeAll(() => {
     // Pinned to the account this lane is about. Unpinned, the scan targets
     // whichever premium subscription was updated last, so an unrelated fixture
     // account being touched swings every row below onto it.
-    const target = STRIPE_USER.email ? ` --user-email ${STRIPE_USER.email}` : ""
-    execSync(
-      `python3 ${SCAN} --check ${CHECK}${target} ` +
-        `-o ${path.join(dir, "report.md")} --json ${path.join(dir, "scan.json")}`,
+    const target = STRIPE_USER.email ? ["--user-email", STRIPE_USER.email] : []
+    // execFileSync, not execSync: the scan path and the pinned address both come
+    // from the environment, and argv never reaches a shell.
+    execFileSync(
+      "python3",
+      [
+        SCAN,
+        "--check",
+        CHECK,
+        ...target,
+        "-o",
+        path.join(dir, "report.md"),
+        "--json",
+        path.join(dir, "scan.json"),
+      ],
       {
         cwd: REPO_ROOT,
         timeout: SCAN_TIMEOUT_MS,
@@ -282,7 +299,7 @@ test.describe("The app's invoice list against Stripe's", () => {
     try {
       for (const link of links) {
         expect(
-          new URL(link).hostname.endsWith("stripe.com"),
+          isStripeHost(new URL(link).hostname),
           `${link} is a Stripe URL`,
         ).toBe(true)
       }
@@ -305,10 +322,7 @@ test.describe("The app's invoice list against Stripe's", () => {
       expect(
         /^https:\/\/[a-z0-9.-]*stripe[a-z0-9.-]*\.(s3\.[a-z0-9-]+\.)?amazonaws\.com\//.test(
           location,
-        ) ||
-          new URL(location || "https://x.invalid").hostname.endsWith(
-            "stripe.com",
-          ),
+        ) || isStripeHost(new URL(location || "https://x.invalid").hostname),
         `the PDF redirect goes to a Stripe-owned file store, not ${location.split("?")[0]}`,
       ).toBe(true)
     } finally {

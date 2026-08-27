@@ -1,4 +1,4 @@
-import { execSync } from "child_process"
+import { execFileSync, execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
@@ -284,10 +284,24 @@ export function s3ObjectCount(bucket: string, prefix: string): number {
   // length(Contents), not KeyCount: the CLI auto-paginates list-objects-v2 and
   // its merged result drops KeyCount, so that query answers "None" even for a
   // prefix holding objects - which made every caller throw.
-  const out = execSync(
-    `aws s3api list-objects-v2 --bucket ${bucket} --prefix '${prefix}' ` +
-      "--query 'length(Contents || `[]`)' " +
-      `--output text --region ${AWS_REGION}`,
+  // execFileSync, not execSync: argv goes straight to the CLI, so no prefix
+  // can break out of a shell quote.
+  const out = execFileSync(
+    "aws",
+    [
+      "s3api",
+      "list-objects-v2",
+      "--bucket",
+      bucket,
+      "--prefix",
+      prefix,
+      "--query",
+      "length(Contents || `[]`)",
+      "--output",
+      "text",
+      "--region",
+      AWS_REGION,
+    ],
     { timeout: 60_000, stdio: ["pipe", "pipe", "pipe"] },
   )
     .toString()
