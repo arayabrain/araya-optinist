@@ -458,6 +458,11 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
 
         return live_usage
 
+    except StorageOwnerInactive:
+        # The storage row outlives the account, so this is not a failed read
+        logger.info(f"Skipped live storage usage for inactive user {user_id}")
+        storage_info = get_user_storage_usage(user_id)
+        return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
     except Exception as e:
         logger.error(f"Failed to get current storage usage for " f"user {user_id}: {e}")
         storage_info = get_user_storage_usage(user_id)

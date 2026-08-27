@@ -49,10 +49,10 @@ def session_fixture():
     # DATA_DIR follows OPTINIST_DIR, which points at live user data in a
     # deployed container, so prove this is test data before deleting anything.
     data_dir = Path(DIRPATH.DATA_DIR).resolve()
-    if not any("test" in part for part in data_dir.parts):
+    if data_dir.name != "test_data":
         raise RuntimeError(
-            f"refusing to delete {data_dir}/output: OPTINIST_DIR must point at a "
-            "test data directory to run this suite"
+            f"refusing to delete {data_dir}/output: OPTINIST_DIR must end in "
+            "test_data to run this suite"
         )
     shutil.rmtree(data_dir / "output", ignore_errors=True)
 

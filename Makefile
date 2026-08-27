@@ -191,4 +191,3 @@ push_dockerhub:
 	docker tag oistncu/optinist:latest oistncu/optinist:${VERSION}
 	docker push oistncu/optinist:${VERSION}
 	docker push oistncu/optinist:latest
-
