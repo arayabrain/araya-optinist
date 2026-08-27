@@ -277,31 +277,45 @@ that exists only on the branch still runs. Locally the same lanes are
 ```bash
 yarn test:e2e                    # everything except @slow (~14 min, see below)
 RUN_SLOW=1 yarn test:e2e         # everything including workflow runs
-RUN_SLOW=1 npx playwright test --grep @slow   # only the workflow runs
+RUN_SLOW=1 yarn test:e2e --grep @slow   # only the workflow runs
 yarn test:e2e 01-auth            # one group
-npx playwright test -g "WS-06"   # one test case
+yarn test:e2e -g "WS-06"         # one test case
 yarn test:e2e:headed             # watch the browser
 yarn test:e2e:report             # open the last HTML report
 yarn test:e2e:cleanup            # delete the run's e2e-* data, on demand
 
 # read-only AWS + RDS health lane; needs a deployed BASE_URL and AWS creds
-npx playwright test e2e/17-aws-health.spec.ts --retries 0
+yarn test:e2e e2e/17-aws-health.spec.ts --retries 0
 # same lane against production. The RDS and Stripe selectors are mandatory off
 # development - their defaults point at development, and the lane refuses to run
 # rather than report development's data as production's.
 HEALTH_ENV=subscr BASE_URL=https://www.araya-optinist.com \
   RDS_PROXY_HOST=... RDS_SECRET_ID=... RDS_SSM_INSTANCE_NAME=... \
   STRIPE_SECRET_ENV=subscr-optinist \
-  npx playwright test e2e/17-aws-health.spec.ts --retries 0
+  yarn test:e2e e2e/17-aws-health.spec.ts --retries 0
 # read-only Stripe + DB audit lane (runs manual_test_scan.py and asserts it)
-npx playwright test e2e/18-stripe-audit.spec.ts --retries 0
+yarn test:e2e e2e/18-stripe-audit.spec.ts --retries 0
 # real Stripe checkout hand-off, no card entered (writes to Stripe: opt-in)
-RUN_CHECKOUT_PROBE=1 npx playwright test e2e/19-checkout-probe.spec.ts --retries 0
+RUN_CHECKOUT_PROBE=1 yarn test:e2e e2e/19-checkout-probe.spec.ts --retries 0
 # restarts the local backend to watch it boot; nothing else may share the stack
-RUN_RESTART=1 npx playwright test e2e/20-boot.spec.ts --retries 0
+RUN_RESTART=1 yarn test:e2e e2e/20-boot.spec.ts --retries 0
 # type-check the e2e specs (the app tsconfig only covers src/)
 yarn typecheck:e2e
 ```
+
+`yarn test:e2e` vs `npx playwright test`:
+
+- `yarn test:e2e` is just `playwright test` (see `package.json`), and Yarn 1
+  forwards any trailing arguments and flags straight through — so
+  `yarn test:e2e -g "WS-06"` is equivalent to `npx playwright test -g "WS-06"`,
+  and `--grep`, `--retries 0`, a spec path, etc. all work after `yarn test:e2e`.
+- Prefer the `yarn` form: it always runs the project-local Playwright.
+- Reserve `npx playwright …` for Playwright's own subcommands that have no yarn
+  script (e.g. `npx playwright install chromium`); a *global* `npx playwright`
+  can resolve a different version and fail with `Cannot find module` (see
+  [Troubleshooting](#troubleshooting)).
+
+Notes:
 
 - Tests run sequentially in one worker (they share account state).
 - Local runs get 1 automatic retry (CRA dev-server hydration occasionally
@@ -309,7 +323,7 @@ yarn typecheck:e2e
   retry.
 - `@slow` = anything that performs a real workflow execution (5–10 min each;
   slower on an ARM Mac where the backend image is amd64-emulated). Keep the
-  machine awake for these — `caffeinate -i RUN_SLOW=1 npx playwright test
+  machine awake for these — `caffeinate -i RUN_SLOW=1 yarn test:e2e
 --grep @slow` — sleep mid-run is the #1 cause of bogus failures. These groups
   are in this lane:
   - WF-04/05/06, the tutorial runs, which are the thing being tested.
