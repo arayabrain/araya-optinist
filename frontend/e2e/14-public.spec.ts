@@ -147,7 +147,7 @@ test.describe("Frontend error reporting", () => {
   // Row 829's other half, as its own row rather than an inline branch: a 200
   // only means the endpoint accepted the batch. Kept separate so a local run
   // reports it skipped instead of passing PUB-04 with this half never run.
-  test("PUB-05 - The shipped error reaches the public tier's log group", async ({
+  test("PUB-07 - The shipped error reaches the public tier's log group", async ({
     page,
   }) => {
     test.skip(

@@ -193,7 +193,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       // /log-report/frontend-errors is an ALB rule onto the public tier (p307)
       // and requires a token, so a 200 here also proves login worked during the
       // outage. The browser half - queueing errors until sign-in and shipping
-      // them - is PUB-04/PUB-05 on a healthy tier; what this row adds is that
+      // them - is PUB-04/PUB-07 on a healthy tier; what this row adds is that
       // the path survives the free tier being gone.
       const marker = `e2e-out01 ${Date.now()}`
       const { api, headers } = await apiLogin()

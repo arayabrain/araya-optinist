@@ -125,6 +125,38 @@ unassertable here: no `development-` alarm carries an SNS action
 (`critical_alerts_actions` is empty off production), so there is no notification
 path to exercise, and HEALTH-27 asserts the alarm's own evaluation instead.
 
+## Nothing that mutates ever runs against production
+
+Two lanes can be pointed at production, and both are read-only: `17-aws-health`
+and `18-stripe-audit`, under `HEALTH_ENV=subscr`. `runSql` sends every statement
+off the local stack through `assertReadOnly`, which strips comments, refuses
+multi-statement SQL and requires a leading `select` or `show`, and the Stripe
+helper is GET-only and refuses a live key.
+
+Every lane that writes refuses to start anywhere but development:
+
+- **`12-admin` and `13-account`** hold administrative privileges - they promote a
+  role with a direct `UPDATE`, delete an account and proxy-sign-in as another
+  user. `localStackSkipReason()` skips them on any BASE_URL that is not
+  localhost, so they cannot reach a deployed environment at all, production
+  included. The one deletion destroys an account the run registered for the
+  purpose.
+- **`15-premium-aws`, `16-storage-aws` and `19-checkout-probe`** assert their
+  BASE_URL contains `development-optinist` before touching anything, so a
+  mispointed invocation fails on its first line rather than mutating the
+  environment it was pointed at.
+- **`22-disruptive`** additionally refuses when another account has been active
+  in the last 30 minutes, and refuses when it cannot tell.
+- **`runSqlWriteOnDev`** makes the same assertion for the one sanctioned SQL
+  write path.
+
+## Operator-run, not CI-enforced
+
+Every lane above needs AWS credentials and a live environment, so none of them
+runs on a pull request or in the weekly schedule. A row they cover is green as
+of the last time an operator ran it, which is not the same as guarded on every
+merge. What runs per-PR is the always-on local specs and `yarn typecheck:e2e`.
+
 ## Test environment
 
 Tests run against any deployment of the app; pick one:
@@ -423,7 +455,7 @@ gated and how to run it. This table is the map, not the documentation.
 | `11-lifecycle`     | LC-01..05, LC-07..10, LC-14..15, LC-17..20, LC-24..31 | quota and inactivity lifecycle (including the dead-session Stay Active 401, LC-31), plus free-logout DB bookkeeping and its re-login reset, and the cleanup job's own selection asked of the real MySQL: the 60-minute grace boundary (LC-26) and a stale `active_workflow_count` blocking collection until `recover_stale_workflow_counts()` clears it (LC-27). The deletion the job then performs is left to `test_cleanup_job.py` - running it would delete the test account's own files. Local stack only: the storage tests dial a real sparse ballast file inside the backend container and measure what the app recalculates from disk. The subscription-state tests that needed neither now live in `23-subscription-lifecycle` |
 | `12-admin`         | ADMIN-01..22 | admin Account Manager: access gating (drawer entry and dashboard tile), user list columns, sort and rows-per-page, edit / add / delete / proxy-signin / subscription modals and their Cancel paths, the create / edit / role-change / demotion happy paths and their validation, the subscription and storage columns against the DB, one real deletion of a throwaway account, and re-registration of the deleted address. All mutations land on disposable per-run accounts. Local stack only |
 | `13-account`       | ACC-01..06  | Account Profile self-service: change-password modal (validation, wrong current password, a real change verified at login) and the inline name edit, on a disposable per-run account. Local stack only |
-| `14-public`        | PUB-01..06  | public-instance behaviour: deep-link SPA shell and client routing, `/health`, chunk-load auto-reload, frontend error reporting, and anonymous public-page loads of published HDF5 / MAT / CSV / TIFF input data. PUB-05/06 are `@slow` (they mint and publish real records) |
+| `14-public`        | PUB-01..07  | public-instance behaviour: deep-link SPA shell and client routing, `/health`, chunk-load auto-reload, frontend error reporting and the report's arrival in the public tier's log group (PUB-07), and anonymous public-page loads of published HDF5 / MAT / CSV / TIFF input data. PUB-05/06 are `@slow` (they mint and publish real records) |
 | `15-premium-aws`   | PREM-01..09 | real premium assignment against deployed dev: a real login assigns a real tier with the ECS scale-up asserted on the live cluster, the assign / hard-release / reassign round-trip with its per-user ALB target group, reload adoption, the browser-close beacon's soft release, the idle scale-down floor, and a real tutorial run on the dedicated instance with per-user S3 outputs. `@slow` plus `RUN_PREMIUM_AWS=1`; the sheets cite it as `@prem` |
 | `16-storage-aws`   | S3-01..03   | real-S3 truth for the storage rows: the per-user bucket and an uploaded object read back from S3 rather than from the API, which swallows S3 failures; the merged listing and sync round-trip; sample import and workspace delete against the real prefixes; and an anonymous public read of a freshly published run. `@slow` plus `RUN_S3_AWS=1` |
 | `17-aws-health`    | HEALTH-01..27 | read-only truth for the AWS Monitoring sheets and System 20's integrity rows: every tier's ECS service and tasks, the target groups, the ALB's per-tier routing rules, both ASGs, RDS, EFS, the buckets the database names, every declared alarm, the four log groups, the background metric namespace, the public HTTP contract, and the subscription tables read over SSM. HEALTH-27 proves the public unhealthy-hosts alarm last fired on evaluated datapoints rather than a written state. No opt-in flag, ~3 min; `HEALTH_ENV=subscr` points it at production, which is how a release round health-checks prod |

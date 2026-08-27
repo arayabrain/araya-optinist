@@ -18,9 +18,9 @@ A MANUAL or PARTIAL row whose Notes carry an "Adjudicated"/"Re-graded"/
 "CONFIRMED-IMPOSSIBLE" line is reported as decided, not as backlog.
 
   export TEST_SHEET_DIR=<dir of exported sheets>
-  python3 infrastructure/scripts/test_coverage_backlog.py            # summary
-  python3 infrastructure/scripts/test_coverage_backlog.py --rows     # every open row
-  python3 infrastructure/scripts/test_coverage_backlog.py --decided  # retired, and why
+  python3 infrastructure/scripts/coverage_backlog.py            # summary
+  python3 infrastructure/scripts/coverage_backlog.py --rows     # every open row
+  python3 infrastructure/scripts/coverage_backlog.py --decided  # retired, and why
 """
 import argparse
 import csv
