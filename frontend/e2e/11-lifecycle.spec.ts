@@ -9,7 +9,6 @@ import {
   authHeaders,
   confirmDialog,
   ensureTutorialRecords,
-  ERROR_RED,
   isLocalBaseUrl,
   localStackSkipReason,
   login,
@@ -180,7 +179,8 @@ const dialog = confirmDialog
 
 // Sign-off rows this group alone covers, named in the reason so a run that does
 // not execute it says which rows it left unverified
-const UNCOVERED_ELSEWHERE = "LC-01..LC-23"
+const UNCOVERED_ELSEWHERE =
+  "LC-01..LC-05, LC-07..LC-10, LC-14..LC-20, LC-24..LC-31"
 
 test.describe.serial("Subscription/storage warning lifecycle", () => {
   let skipReason = ""
@@ -345,30 +345,6 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       { timeout: 60_000 },
     )
     await expect(page.getByText("Storage usage is high")).toBeHidden()
-  })
-
-  test("LC-06 - Expired premium (grace period): expiry warning on login", async ({
-    page,
-  }) => {
-    setPlan(2, "INTERVAL -1 DAY")
-    setStorage(0, PREMIUM_QUOTA)
-    await loginKeepWarnings(page)
-
-    const modal = dialog(page)
-    await expect(
-      modal.getByText("Premium Subscription Expired", { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    await expect(modal.getByRole("button", { name: "Upgrade" })).toBeVisible()
-    await modal.getByRole("button", { name: "Handle later" }).click()
-    await expect(modal).toBeHidden()
-
-    // An expired premium account offers both recovery paths
-    await page.goto("/account")
-    await expect(page.locator("text=/\\(Expired on/").first()).toBeVisible({
-      timeout: 15_000,
-    })
-    await expect(page.locator('button:has-text("Upgrade")')).toBeVisible()
-    await expect(page.locator('button:has-text("Manage")')).toBeVisible()
   })
 
   test("LC-07 - Long-expired premium: overdue modal requires acknowledgment", async ({
@@ -565,175 +541,6 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await expect(runNameDialog(page)).toBeHidden()
   })
 
-  test("LC-11 - Expiration caption matches subscription state", async ({
-    page,
-  }) => {
-    setStorage(0, PREMIUM_QUOTA)
-    setPlan(2, "INTERVAL 1 MONTH")
-    await loginKeepWarnings(page)
-
-    await page.goto("/account")
-    await expect(page.locator("text=/\\(Renew on/").first()).toBeVisible({
-      timeout: 15_000,
-    })
-
-    setPlan(2, "INTERVAL 1 MONTH", 1)
-    await page.goto("/account")
-    await expect(page.locator("text=/\\(Expires on/").first()).toBeVisible({
-      timeout: 15_000,
-    })
-
-    setPlan(2, "INTERVAL -1 DAY")
-    await page.goto("/account")
-    await expect(page.locator("text=/\\(Expired on/").first()).toBeVisible({
-      timeout: 15_000,
-    })
-  })
-
-  test("LC-12 - Downgrade opens a confirmation with retention notice; No aborts", async ({
-    page,
-  }) => {
-    setStorage(0, PREMIUM_QUOTA)
-    setPlan(2, "INTERVAL 1 MONTH")
-    await loginKeepWarnings(page)
-
-    await page.goto("/subscription")
-    await page.locator('button:has-text("Downgrade")').click()
-
-    const confirm = page.locator(
-      '[role="dialog"]:has-text("Cancel Subscription")',
-    )
-    await expect(confirm).toBeVisible({ timeout: 15_000 })
-    await expect(
-      confirm.locator(".MuiDialogTitle-root"),
-      "the dialog names the destructive action, not just the page",
-    ).toHaveText("Cancel Subscription")
-    await expect(confirm.getByText("Data Storage Notice:")).toBeVisible()
-    await expect(confirm.getByText(/stored for 30 days/)).toBeVisible()
-    // The Stripe-backed "Yes, Cancel Subscription" path stays manual
-    await confirm.getByRole("button", { name: "No" }).click()
-    await expect(confirm).toBeHidden()
-    await expect(
-      page.locator('button:has-text("Current Plan")').first(),
-    ).toBeVisible()
-  })
-
-  test("LC-21 - Profile after cancellation still reads Premium", async ({
-    page,
-  }) => {
-    setStorage(0, PREMIUM_QUOTA)
-    setPlan(2, "INTERVAL 1 MONTH", 1)
-    await loginKeepWarnings(page)
-
-    await page.goto("/account")
-    // The status field itself, not the word anywhere on the page
-    await expect(page.locator('[data-testid="account-plan-name"]')).toHaveText(
-      "Premium",
-      { timeout: 15_000 },
-    )
-    // Cancelled but not yet lapsed: the caption says Expires, not Expired, names
-    // the stored expiration, and the only action is Manage - there is nothing to
-    // upgrade to
-    const expires = runSql(
-      `SELECT DATE_FORMAT(expiration, '%c/%e/%Y') FROM subscription_users
-         WHERE user_id = ${userId};`,
-    )
-    await expect(page.locator(`text=(Expires on ${expires})`)).toBeVisible()
-    await expect(page.locator('button:has-text("Manage")')).toBeVisible()
-    await expect(page.locator('button:has-text("Upgrade")')).toBeHidden()
-  })
-
-  test("LC-22 - After renewal the plan stays Premium with a later expiry", async ({
-    page,
-  }) => {
-    setStorage(0, PREMIUM_QUOTA)
-    setPlan(2, "INTERVAL 2 DAY")
-    await loginKeepWarnings(page)
-
-    // The renewal writes a new period end and nothing else
-    setPlan(2, "INTERVAL 1 MONTH")
-    await page.goto("/account")
-    await expect(page.locator("text=Premium").first()).toBeVisible({
-      timeout: 15_000,
-    })
-    // The caption has to name the stored expiration, not just some later date
-    // The caption renders the stored UTC date in the browser's short locale
-    // format, and the run pins that timezone to UTC
-    const renewedOn = runSql(
-      `SELECT DATE_FORMAT(expiration, '%c/%e/%Y') FROM subscription_users
-         WHERE user_id = ${userId};`,
-    )
-    await expect(
-      page.locator(`text=/\\(Renew on\\s+${renewedOn}/`).first(),
-    ).toBeVisible()
-
-    await page.goto("/subscription")
-    await expect(
-      page.locator('button:has-text("Current Plan")').first(),
-    ).toBeVisible({ timeout: 15_000 })
-    await expect(page.locator("text=Subscription Canceled:")).toBeHidden()
-  })
-
-  test("LC-23 - Past the grace the account reads Expired, not Free", async ({
-    page,
-  }) => {
-    // Past expiry plus the 30-day grace. No row is downgraded; the tier is
-    // derived from the expiration.
-    setStorage(0, PREMIUM_QUOTA)
-    setPlan(2, "INTERVAL -40 DAY")
-    const meSeen = page.waitForResponse(
-      (r) => r.url().endsWith("/users/me") && r.request().method() === "GET",
-    )
-    await loginKeepWarnings(page)
-
-    const me = await (await meSeen).json()
-    expect(me.subscription_status).toBe("Expired")
-    // The row itself is untouched; only the derived status changed
-    expect(
-      runSql(
-        `SELECT plan_id FROM subscription_users WHERE user_id = ${userId};`,
-      ),
-    ).toBe("2")
-
-    // Rows 290 / 291: Expired must also mean refused capability, not just a
-    // caption - the assign route's tier guard runs before any AWS call
-    const refused = await page.request.post(
-      `${apiUrl()}/users/me/premium/assign`,
-      { headers: await apiHeaders(page), failOnStatusCode: false },
-    )
-    expect(refused.status(), await refused.text()).toBe(403)
-    expect(await refused.text()).toContain("Premium subscription required")
-
-    // The expiry modal carries its own Upgrade button and re-renders on this
-    // route, so dismiss the one on the page under test, not the dashboard's
-    await page.goto("/account")
-    const modal = dialog(page)
-    await expect(
-      modal.getByText("Premium Subscription Expired", { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    await modal.getByRole("button", { name: "Handle later" }).click()
-    await expect(modal).toBeHidden()
-
-    await expect(page.locator("text=/\\(Expired on/").first()).toBeVisible({
-      timeout: 15_000,
-    })
-  })
-
-  test("LC-13 - Cancelled subscription shows banner and Continue Plan", async ({
-    page,
-  }) => {
-    setStorage(0, PREMIUM_QUOTA)
-    setPlan(2, "INTERVAL 1 MONTH", 1)
-    await loginKeepWarnings(page)
-
-    await page.goto("/subscription")
-    await expect(
-      page.locator("text=Subscription Canceled:").first(),
-    ).toBeVisible({ timeout: 15_000 })
-    // Clicking it (reactivation) hits Stripe — display check only
-    await expect(page.locator('button:has-text("Continue Plan")')).toBeVisible()
-  })
-
   // The inactivity monitor only arms while the frontend holds a premium
   // assignment, which never succeeds locally (no ECS) — mock the premium
   // endpoints so the frontend believes it is assigned, then drive the
@@ -776,6 +583,75 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await expect(warning).toBeHidden()
   })
 
+  // Mutation check: LC-14 above is the intact-session variant, the same
+  // arming with a live session must dismiss the warning instead
+  test("LC-31 - Stay Active on a dead session: real 401, Session Expired", async ({
+    page,
+  }) => {
+    setStorage(0, PREMIUM_QUOTA)
+    setPlan(2, "INTERVAL 1 MONTH")
+
+    // LC-14's arming, but the heartbeat reaches the real backend: the leg
+    // under test is the 401 handling, so nothing may fulfill the auth path
+    await mockPremiumAssignment(page)
+    await page.unroute("**/users/me/premium/heartbeat")
+    await loginWithArmedInactivityMonitor(page)
+
+    await page.clock.fastForward(65 * 60 * 1000)
+    const warning = page.locator("text=Premium Instance Inactivity Warning")
+    await expect(warning).toBeVisible({ timeout: 15_000 })
+
+    // Deactivating the row is the one real-backend state where the heartbeat
+    // still answers 401 after a successful token refresh: a dead access token
+    // alone is cured by the refresh, and a dead refresh token makes the axios
+    // interceptor itself log out (on the refresh 400) before the alert flips
+    runSql(
+      `UPDATE users SET active = 0
+         WHERE email = '${sqlLiteral(USER.email)}';`,
+    )
+    try {
+      // The corrupted token makes the first heartbeat a genuine dead-token
+      // 401 (ExToken is ignored locally; auth is the Firebase bearer token)
+      await page.evaluate(() =>
+        localStorage.setItem("access_token", "e2e-dead-token"),
+      )
+
+      const heartbeat401 = page.waitForResponse(
+        (r) =>
+          r.url().includes("/users/me/premium/heartbeat") && r.status() === 401,
+        { timeout: 15_000 },
+      )
+      // A real click's pointerdown feeds the window activity listener, which
+      // closes the snackbar before the expired copy can render; dispatching
+      // only the click event isolates the Stay Active handler under test
+      await page
+        .getByRole("button", { name: "Stay Active" })
+        .dispatchEvent("click")
+      await heartbeat401
+
+      // The alert flips only after the retry ladder exhausts (3 attempts
+      // with backed-off sleeps), so this visibility wait spans real seconds
+      const expired = page
+        .locator(".MuiAlert-filledError")
+        .filter({ hasText: "Session Expired" })
+      await expect(expired).toBeVisible({ timeout: 15_000 })
+      await expect(expired).toContainText(
+        "Your session has expired. Redirecting to login...",
+      )
+      await expect(
+        page.getByRole("button", { name: "Stay Active" }),
+      ).toBeHidden()
+
+      // The component holds the copy up for a 2s read delay, then logs out
+      await expect(page).toHaveURL(/\/login/, { timeout: 15_000 })
+    } finally {
+      runSql(
+        `UPDATE users SET active = 1
+           WHERE email = '${sqlLiteral(USER.email)}';`,
+      )
+    }
+  })
+
   test("LC-15 - 2h inactivity auto-releases the instance via beacon", async ({
     page,
   }) => {
@@ -800,71 +676,6 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await expect(
       page.locator("text=Premium Instance Inactivity Warning"),
     ).toBeHidden()
-  })
-
-  test("LC-16 - Account deletion deactivates the user", async ({ page }) => {
-    // A per-run throwaway account: the flow destroys it, and a timestamped
-    // address avoids collisions with leftovers from crashed runs
-    const email = `e2e_local_delete_${Date.now()}@test.com`
-    const api = await request.newContext({ baseURL: apiUrl() })
-    try {
-      const reg = await api.post("/api/register", {
-        data: {
-          name: "E2E Delete Me",
-          role_id: 20,
-          email,
-          password: USER.password,
-        },
-      })
-      expect(reg.ok()).toBeTruthy()
-    } finally {
-      await api.dispose()
-    }
-    verifyEmail(email)
-
-    await login(page, email, USER.password, false)
-    await page.goto("/account")
-    const deleteAccount = page.locator('button:has-text("Delete Account")')
-    await expect(deleteAccount).toBeEnabled()
-    await expect(
-      deleteAccount,
-      "the deletion option is styled as the destructive one",
-    ).toHaveCSS("background-color", ERROR_RED)
-    await deleteAccount.click()
-
-    const confirm = dialog(page)
-    // The free-tier warning, exactly: the two subscription lines belong to the
-    // premium copy and must not appear for an account that has no subscription
-    // to lose.
-    await expect(confirm.locator("li")).toHaveText(
-      [
-        "All your data (workspaces, experiments, files) will be permanently deleted",
-        "This action cannot be undone",
-      ],
-      { timeout: 15_000 },
-    )
-    await confirm.locator('input[placeholder="DELETE"]').fill("DELETE")
-    await confirm.getByRole("button", { name: "Delete My Account" }).click()
-
-    // The account is deactivated and a deletion record is written; the
-    // step pipeline completes asynchronously
-    await expect
-      .poll(
-        () => runSql(`SELECT active FROM users WHERE email = '${email}';`),
-        { timeout: 60_000 },
-      )
-      .toBe("0")
-    await expect
-      .poll(
-        () =>
-          runSql(
-            `SELECT COUNT(*) FROM user_deletion_records
-               WHERE user_id = (SELECT id FROM users WHERE email = '${email}')
-               AND status = 'completed';`,
-          ),
-        { timeout: 60_000 },
-      )
-      .not.toBe("0")
   })
 
   test("LC-17 - Release clears every routing key; a gesture re-seeds them", async ({

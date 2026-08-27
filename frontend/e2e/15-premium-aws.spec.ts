@@ -2160,6 +2160,100 @@ test("PREM-13 - A dedicated outage broadcasts to the second tab and logs one det
   }
 })
 
+// Stage a second RUNNING premium instance for a migration to land on.
+//
+// This is not scene-setting the migration rows could skip: the optimizer only
+// migrates onto an instance it already considers available (running, no
+// real users, ECS task ready). Measured 2026-08-25, a run without this
+// step failed with the optimizer doing exactly the right thing - it
+// logged "marked for migration: has_shared_flag=True" every pass and then
+// "no running instances available. Triggering scaling to start stopped
+// instances..." - but nothing ever started, because the dev pool
+// self-heals to a STOPPED standby and that scaling call did not wake it.
+// A candidate must also carry NO assignment row at all: a standby row
+// makes try_reserve_instance answer "already reserved" and the optimizer
+// skips it. Idempotent: with the candidate already staged, only the row
+// re-delete does anything, so callers may re-run it to heal after a wait.
+async function stageSecondRunningInstance(excludeId: string): Promise<string> {
+  let candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+  if (!candidate) {
+    // The pool self-heals to exactly ONE standby and the sweep terminates
+    // the extras, so when the user holds the only instance there is nothing
+    // to migrate onto (measured: a run skipped here). Ask the manager for
+    // another. create_standby refuses while get_standby_count() already
+    // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
+    runSqlWriteOnDev(
+      `DELETE FROM premium_user_assignments WHERE is_standby = 1
+         AND user_id IS NULL`,
+    )
+    awsJson(
+      `lambda invoke --function-name development-premium-manager ` +
+        `--cli-binary-format raw-in-base64-out ` +
+        `--payload '{"action":"create_standby"}' /dev/null`,
+    )
+    await expect
+      .poll(
+        () => {
+          candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+          return !!candidate
+        },
+        {
+          timeout: 8 * 60_000,
+          intervals: [20_000],
+          message: "the manager never created a second premium instance",
+        },
+      )
+      .toBe(true)
+    // The Lambda answers with the id and stops the instance ~30s later, so a
+    // start issued in that window is silently undone. Wait it out.
+    await expect
+      .poll(() => instanceState(candidate!), {
+        timeout: 8 * 60_000,
+        intervals: [20_000],
+        message: `${candidate} never settled to stopped after creation`,
+      })
+      .toBe("stopped")
+  }
+  runSqlWriteOnDev(
+    `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
+         AND user_id IS NULL`,
+  )
+  if (instanceState(candidate!) !== "running") {
+    awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+  }
+  await expect
+    .poll(() => runningPremiumInstanceIds().includes(candidate!), {
+      timeout: 8 * 60_000,
+      intervals: [15_000],
+      message: `${candidate} never reached running`,
+    })
+    .toBe(true)
+  // A running EC2 is not yet a migration target: the readiness check the
+  // optimizer runs demands a premium ECS task on it, so raise the service's
+  // desired count to cover both instances and wait for the placement.
+  const desired = Number(ecs("services[0].desiredCount"))
+  if (desired < 2) {
+    awsJson(
+      `ecs update-service --cluster ${CLUSTER} --service ${PREMIUM_SERVICE} ` +
+        `--desired-count 2`,
+    )
+  }
+  await expect
+    .poll(() => premiumTaskStatusOn(candidate!), {
+      timeout: 10 * 60_000,
+      intervals: [20_000],
+      message: `no premium ECS task ever placed on ${candidate}`,
+    })
+    .toBe("RUNNING")
+  // The delete above races the pool manager, which re-adds a standby row for
+  // an instance it just started. Clear it again so the optimizer will take it.
+  runSqlWriteOnDev(
+    `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
+         AND user_id IS NULL`,
+  )
+  return candidate!
+}
+
 // ---------------------------------------------------------------------------
 // Row 608: user data survives a migration to a different dedicated instance,
 // because S3 is the source of truth and the new instance lazily fetches it.
@@ -2222,95 +2316,7 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       `WHERE user_id = ${userId};`
     expect(runSql(rowSql), "pre-migration assignment row").toBe(instanceA)
 
-    // Stage a second RUNNING premium instance for the user to land on.
-    //
-    // This is not scene-setting the row could skip: the optimizer only
-    // migrates onto an instance it already considers available (running, no
-    // real users, ECS task ready). Measured 2026-08-25, a run without this
-    // step failed with the optimizer doing exactly the right thing - it
-    // logged "marked for migration: has_shared_flag=True" every pass and then
-    // "no running instances available. Triggering scaling to start stopped
-    // instances..." - but nothing ever started, because the dev pool
-    // self-heals to a STOPPED standby and that scaling call did not wake it.
-    // A candidate must also carry NO assignment row at all: a standby row
-    // makes try_reserve_instance answer "already reserved" and the optimizer
-    // skips it.
-    let candidate = premiumInstances().find((i) => i.id !== instanceA)?.id
-    if (!candidate) {
-      // The pool self-heals to exactly ONE standby and the sweep terminates
-      // the extras, so when the user holds the only instance there is nothing
-      // to migrate onto (measured: a run skipped here). Ask the manager for
-      // another. create_standby refuses while get_standby_count() already
-      // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
-      runSqlWriteOnDev(
-        `DELETE FROM premium_user_assignments WHERE is_standby = 1
-           AND user_id IS NULL`,
-      )
-      awsJson(
-        `lambda invoke --function-name development-premium-manager ` +
-          `--cli-binary-format raw-in-base64-out ` +
-          `--payload '{"action":"create_standby"}' /dev/null`,
-      )
-      await expect
-        .poll(
-          () => {
-            candidate = premiumInstances().find((i) => i.id !== instanceA)?.id
-            return !!candidate
-          },
-          {
-            timeout: 8 * 60_000,
-            intervals: [20_000],
-            message: "the manager never created a second premium instance",
-          },
-        )
-        .toBe(true)
-      // The Lambda answers with the id and stops the instance ~30s later, so a
-      // start issued in that window is silently undone. Wait it out.
-      await expect
-        .poll(() => instanceState(candidate!), {
-          timeout: 8 * 60_000,
-          intervals: [20_000],
-          message: `${candidate} never settled to stopped after creation`,
-        })
-        .toBe("stopped")
-    }
-    runSqlWriteOnDev(
-      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
-           AND user_id IS NULL`,
-    )
-    if (instanceState(candidate!) !== "running") {
-      awsJson(`ec2 start-instances --instance-ids ${candidate}`)
-    }
-    await expect
-      .poll(() => runningPremiumInstanceIds().includes(candidate!), {
-        timeout: 8 * 60_000,
-        intervals: [15_000],
-        message: `${candidate} never reached running`,
-      })
-      .toBe(true)
-    // A running EC2 is not yet a migration target: the readiness check the
-    // optimizer runs demands a premium ECS task on it, so raise the service's
-    // desired count to cover both instances and wait for the placement.
-    const desired = Number(ecs("services[0].desiredCount"))
-    if (desired < 2) {
-      awsJson(
-        `ecs update-service --cluster ${CLUSTER} --service ${PREMIUM_SERVICE} ` +
-          `--desired-count 2`,
-      )
-    }
-    await expect
-      .poll(() => premiumTaskStatusOn(candidate!), {
-        timeout: 10 * 60_000,
-        intervals: [20_000],
-        message: `no premium ECS task ever placed on ${candidate}`,
-      })
-      .toBe("RUNNING")
-    // The delete above races the pool manager, which re-adds a standby row for
-    // an instance it just started. Clear it again so the optimizer will take it.
-    runSqlWriteOnDev(
-      `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
-           AND user_id IS NULL`,
-    )
+    const candidate = await stageSecondRunningInstance(instanceA)
 
     // Now mark the assignment shared and let the manager's own migration loop
     // do the real work: pick the available instance, move the user, re-point
@@ -2439,11 +2445,59 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       .toBe(instanceB)
     expect(adopted, "status reported no instance_id_hash to adopt").toBeTruthy()
 
+    // Wait for the ALB path to really converge on instance B before the app
+    // fires its first premium-routed burst: right after the TG reports
+    // healthy, a request can still ride the old target or 502 into the
+    // interceptor's free-tier fallback, which then serves the whole session
+    // (observed 2026-08-27: the reproduce answered 200 from the free group
+    // and the served-by assert below failed on exactly that). The probe uses
+    // explicit routing headers, so it proves the ALB itself, not client state.
+    await expect
+      .poll(
+        async () => {
+          const probe = await page.request.get(`${apiUrl()}/users/me`, {
+            headers: await routedApiHeaders(page),
+            timeout: STATUS_REQUEST_TIMEOUT_MS,
+          })
+          return probe.headers()["x-served-by-instance"] ?? "unidentified"
+        },
+        {
+          timeout: 5 * 60_000,
+          intervals: [10_000],
+          message:
+            `premium-routed requests never converged onto the migrated ` +
+            `instance ${instanceB} after its TG reported healthy`,
+        },
+      )
+      .toBe(adopted)
+
     // Step 4: open the previously-created experiment. Instance B never ran it,
     // so serving this is only possible by lazily fetching the user's files
     // from S3, and the fetch is the row's whole point: S3 is the source of
     // truth, so an instance change costs the user nothing.
     await page.goto(`/workspaces/${wsId}`)
+    // The app itself must have premium routing armed and pinned to B before
+    // the reproduce goes out: the interceptor tears routing down on any
+    // post-warm-up 200 served by a hash that differs from its pin, and its
+    // recovery re-assign can complete seconds AFTER a reproduce has already
+    // gone out headerless to the free tier (observed 2026-08-27: the failure
+    // screenshot shows the assign-success toast racing the reproduce).
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => ({
+            assigned: localStorage.getItem("premium_assigned"),
+            pin: localStorage.getItem("premium_instance_id"),
+          })),
+        {
+          timeout: 3 * 60_000,
+          intervals: [5_000],
+          message:
+            `the app never re-armed premium routing pinned to ${instanceB} ` +
+            `after the migration`,
+        },
+      )
+      .toEqual({ assigned: "true", pin: adopted })
     const reproduced = page.waitForResponse(
       (r) => /\/workflow\/reproduce\//.test(r.url()),
       { timeout: RELEASE_REQUEST_TIMEOUT_MS },
@@ -2498,4 +2552,345 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
       })
       .catch(() => {})
   }
+})
+
+// ---------------------------------------------------------------------------
+// Row 6217: the migration sweep must not move a user whose workflow is running.
+// TestMigrationWorkflowGuard pins the guard function against mocks; what stayed
+// manual is the guard holding on the real sweep against a real running
+// snakemake workflow - and, the same test's own positive control, the sweep
+// moving the user once that workflow completes. The guard reads
+// active_workflow_count on the assignment row, which only a real run through
+// the real premium routing increments (PREM-07's 0 -> 1 -> 0 fact).
+// ---------------------------------------------------------------------------
+
+test("PREM-22 - The migration sweep refuses a user mid-workflow, then migrates after completion @slow", async ({
+  page,
+}) => {
+  const rows = "6217"
+  skipUnlessOptedIn(rows)
+  const sqlReason = sqlSkipReason()
+  test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
+  test.setTimeout(TEST_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS + 30 * 60_000)
+
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+  expectGenuinelyPremium(await statusViaPage(page))
+  // The guard is tier-agnostic but the staging is not: the sweep only
+  // considers a user whose instance it deems shared, and the is_shared nudge
+  // below pins the row to the instance it was staged on.
+  const assignment = await dedicatedAssignmentCoolingIfNeeded(page, rows)
+  heldDedicated = true
+  const instanceA = assignment.instance_id!
+  expect(instanceA).toMatch(/^i-[0-9a-f]+$/)
+
+  const idRes = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  expect(idRes.ok(), await idRes.text()).toBe(true)
+  const userId: number = (await idRes.json()).id
+  await skipUnlessPremiumTargetHealthy(rows, userId)
+
+  const rowSql =
+    `SELECT instance_id FROM premium_user_assignments ` +
+    `WHERE user_id = ${userId};`
+  const countSql =
+    `SELECT active_workflow_count FROM premium_user_assignments ` +
+    `WHERE user_id = ${userId};`
+  // The is_shared nudge (PREM-14's lever) makes the optimizer consider the
+  // user's instance shared. Re-applied inside the polls below: the 15-min
+  // cron's fix_incorrect_is_shared_flags strips the flag from a user alone on
+  // an instance, so a single nudge can silently vanish mid-window.
+  const nudge = () =>
+    runSqlWriteOnDev(
+      `UPDATE premium_user_assignments SET is_shared = 1 ` +
+        `WHERE user_id = ${userId} AND instance_id = '${instanceA}'`,
+    )
+  const invokeMigration = (maxWaitSeconds: number) =>
+    awsJson(
+      `lambda invoke --function-name development-premium-manager ` +
+        `--invocation-type Event --cli-binary-format raw-in-base64-out ` +
+        `--payload '{"action":"migrate_shared_users",` +
+        `"max_wait_seconds":${maxWaitSeconds},"retry_interval":15}' /dev/null`,
+    )
+
+  const wsName = "e2e-prem-guard"
+  const wsId = await openWorkspace(page, wsName)
+  try {
+    await importSampleData(page, wsName)
+    // The sweep only emits the guard's refusal when it has a candidate to
+    // offer: with no available instance it logs "no running instances
+    // available" and never reaches the per-user guard at all.
+    const candidate = await stageSecondRunningInstance(instanceA)
+
+    // A real workflow, started and NOT awaited: the guard's premise is a run
+    // in flight, proven by the row's own slot count rather than the UI.
+    await reproduceTutorial(page, "Tutorial1")
+    await startRun(page, "RUN ALL")
+    await expect
+      .poll(() => runSql(countSql), {
+        timeout: 180_000,
+        intervals: [10_000],
+        message: "active_workflow_count never reached 1 after the run started",
+      })
+      .toBe("1")
+
+    // Phase 1: the sweep sees a shared-flagged user with a ready candidate,
+    // and must refuse. The guard line is can_migrate_user's own verdict.
+    const t1 = windowStart()
+    nudge()
+    invokeMigration(90)
+    let guardPasses = 0
+    await expect
+      .poll(
+        () => {
+          if (
+            cloudwatchHas(
+              PREMIUM_MANAGER_LOG_GROUP,
+              `Cannot migrate user ${userId}`,
+              t1,
+            )
+          ) {
+            return true
+          }
+          if (++guardPasses % 8 === 0) {
+            nudge()
+            invokeMigration(90)
+          }
+          return false
+        },
+        {
+          timeout: 8 * 60_000,
+          intervals: [15_000],
+          message:
+            `no migration-guard refusal for user ${userId} in ` +
+            `${PREMIUM_MANAGER_LOG_GROUP} - either the sweep never considered ` +
+            `the user (is_shared nudge lost?) or it had no candidate ` +
+            `(${candidate} gone?)`,
+        },
+      )
+      .toBe(true)
+    // The refusal is only the guard's if the run was still holding its slot.
+    expect(
+      runSql(countSql),
+      "the workflow finished before the guard was exercised - phase 1 proves nothing",
+    ).toBe("1")
+    // The row's own Expected: the user did not move.
+    expect(runSql(rowSql), "the sweep migrated a user mid-workflow").toBe(
+      instanceA,
+    )
+    // Same window, same user id: the positive guard line above proves log
+    // delivery caught up, so this absence is meaningful (the PREM-13 rule).
+    expect(
+      cloudwatchHas(PREMIUM_MANAGER_LOG_GROUP, `Migrated user ${userId}`, t1),
+      `a "Migrated user ${userId}" line appeared while the workflow ran`,
+    ).toBe(false)
+    // Opened here, not after the completion wait: with is_shared still
+    // nudged, the 15-min cron may migrate the user the moment the workflow
+    // completes, and that migration must land inside phase 2's window.
+    const t2 = windowStart()
+
+    // Phase 2, the built-in positive control: completion must unblock the
+    // very migration phase 1 refused - if staging were broken this also
+    // fails, so phase 1 cannot pass vacuously. Completion is read off the
+    // slot count the guard itself reads, not the UI snackbar: phase 1 took
+    // minutes, and a "Workflow finished" snackbar can appear and auto-hide
+    // while the CloudWatch polls above are still running.
+    await expect
+      .poll(() => runSql(countSql), {
+        timeout: RUN_TIMEOUT_MS + 120_000,
+        intervals: [15_000],
+        message: "active_workflow_count did not return to 0 after the run",
+      })
+      .toBe("0")
+    // Heal the candidate: the run took minutes, in which the pool manager
+    // re-adds standby rows and the idle sweep may have stopped or even
+    // terminated it - so the healed candidate may be a different instance.
+    const candidate2 = await stageSecondRunningInstance(instanceA)
+
+    nudge()
+    invokeMigration(300)
+    let instanceB = ""
+    let movePasses = 0
+    await expect
+      .poll(
+        () => {
+          instanceB = runSql(rowSql)
+          if (/^i-[0-9a-f]+$/.test(instanceB) && instanceB !== instanceA) {
+            return true
+          }
+          if (++movePasses % 15 === 0) {
+            runSqlWriteOnDev(
+              `DELETE FROM premium_user_assignments ` +
+                `WHERE instance_id = '${candidate2}' AND user_id IS NULL`,
+            )
+            nudge()
+            invokeMigration(300)
+          }
+          return false
+        },
+        {
+          timeout: 14 * 60_000,
+          intervals: [20_000],
+          message:
+            `user ${userId} was never migrated off ${instanceA} after the ` +
+            `workflow completed - the guard refusal in phase 1 is unproven ` +
+            `as the cause of the non-migration`,
+        },
+      )
+      .toBe(true)
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PREMIUM_MANAGER_LOG_GROUP,
+            `Migrated user ${userId}`,
+            t2,
+          ),
+        {
+          ...CLOUDWATCH_POLL,
+          message: `no "Migrated user ${userId}" line in ${PREMIUM_MANAGER_LOG_GROUP} after completion`,
+        },
+      )
+      .toBe(true)
+  } finally {
+    await page.request
+      .delete(`${apiUrl()}/workspace/${wsId}`, {
+        headers: await apiHeaders(page),
+        timeout: RELEASE_REQUEST_TIMEOUT_MS,
+      })
+      .catch(() => {})
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Row 6233: a user stranded on the transient autoscaling-pool tier is migrated
+// to a ready dedicated instance inline, by the client's own adoption flow, in
+// a single assign call. TestInlineMigrationOnAdoption pins the manager half
+// against mocks; this drives it end to end: /premium/status deliberately 404s
+// the pool sentinel, the app's own recovery issues the assign write, and that
+// one call returns the migrated dedicated assignment. The staging repoint
+// writes the same sentinel the backend itself stores when no capacity is free
+// (assignment_source=autoscaling_temp), not a fabricated instance id - so the
+// code path is the adoption branch, not input validation.
+// ---------------------------------------------------------------------------
+
+test("PREM-23 - Adoption of a pool-stranded assignment migrates inline to a dedicated instance @slow", async ({
+  page,
+}) => {
+  const rows = "6233"
+  skipUnlessOptedIn(rows)
+  const sqlReason = sqlSkipReason()
+  test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
+  // The dedicated-or-cool staging can add a stop/start cycle on top of a
+  // cold assign, so this needs more than the plain assign budget.
+  test.setTimeout(TEST_TIMEOUT_MS + 15 * 60_000)
+
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+  expectGenuinelyPremium(await statusViaPage(page))
+  // Dedicated required: the repoint below must leave a running, empty, ready
+  // instance behind as the inline candidate, and the row must carry its
+  // per-user TG and rule so the migration reuses them.
+  const assignment = await dedicatedAssignmentCoolingIfNeeded(page, rows)
+  heldDedicated = true
+  const instanceA = assignment.instance_id!
+  expect(instanceA).toMatch(/^i-[0-9a-f]+$/)
+
+  const me = await page.request.get(`${apiUrl()}/users/me`, {
+    headers: await apiHeaders(page),
+    timeout: STATUS_REQUEST_TIMEOUT_MS,
+  })
+  expect(me.ok(), await me.text()).toBe(true)
+  const userId: number = (await me.json()).id
+  await skipUnlessPremiumTargetHealthy(rows, userId)
+
+  const rowSql =
+    `SELECT instance_id FROM premium_user_assignments ` +
+    `WHERE user_id = ${userId};`
+  expect(runSql(rowSql), "pre-repoint assignment row").toBe(instanceA)
+
+  // Capture the client's own recovery write, armed before the repoint: the
+  // page's 30s status poll can see the stranded state before the reload does,
+  // and its assign is the same adoption flow.
+  const adoptionAssign = page.waitForResponse(
+    (r) =>
+      r.url().includes("/premium/assign") && r.request().method() === "POST",
+    { timeout: 5 * 60_000 },
+  )
+
+  // freshWindow, not windowStart: a cold-start assignment in THIS test's own
+  // staging can pass through the pool tier and be moved off it by the async
+  // sweep, logging the same migration wording minutes before the repoint.
+  const tInline = freshWindow(
+    PREMIUM_MANAGER_LOG_GROUP,
+    `Inline migration successful: user ${userId}`,
+  )
+  const tMigrated = freshWindow(
+    PREMIUM_MANAGER_LOG_GROUP,
+    `Migrated user ${userId} from autoscaling-pool`,
+  )
+  runSqlWriteOnDev(
+    `UPDATE premium_user_assignments SET instance_id = 'autoscaling-pool' ` +
+      `WHERE user_id = ${userId} AND instance_id = '${instanceA}'`,
+  )
+  expect(runSql(rowSql), "the pool repoint did not land").toBe(
+    "autoscaling-pool",
+  )
+
+  // Adoption: the provider's mount reads /status, which answers no assignment
+  // for the sentinel, and the app's own assign flow issues the recovery write.
+  await page.reload()
+  const res = await adoptionAssign
+  expect(res.ok(), await res.text()).toBe(true)
+  const body = await res.json()
+  // The one call did the whole recovery: migrated, dedicated, real instance.
+  expect(body.assignment_source, JSON.stringify(body)).toBe("inline_migration")
+  expect(body.assigned, JSON.stringify(body)).toBe(true)
+  expect(body.is_shared, JSON.stringify(body)).toBe(false)
+  expect(body.instance_id).toMatch(/^i-[0-9a-f]+$/)
+
+  // DB truth: the row left the sentinel for the instance the call named,
+  // and that instance is really running.
+  expect(runSql(rowSql)).toBe(body.instance_id)
+  expect(runningPremiumInstanceIds()).toContain(body.instance_id)
+
+  // The manager's own account of the inline path (not the async sweep's).
+  await expect
+    .poll(
+      () =>
+        cloudwatchHas(
+          PREMIUM_MANAGER_LOG_GROUP,
+          `Inline migration successful: user ${userId}`,
+          tInline,
+        ),
+      {
+        ...CLOUDWATCH_POLL,
+        message: `no inline-migration success line for user ${userId} in ${PREMIUM_MANAGER_LOG_GROUP}`,
+      },
+    )
+    .toBe(true)
+  await expect
+    .poll(
+      () =>
+        cloudwatchHas(
+          PREMIUM_MANAGER_LOG_GROUP,
+          `Migrated user ${userId} from autoscaling-pool`,
+          tMigrated,
+        ),
+      {
+        ...CLOUDWATCH_POLL,
+        message: `no migration line naming autoscaling-pool for user ${userId}`,
+      },
+    )
+    .toBe(true)
+
+  // The user is really served again: per-user TG healthy, UI tier consistent.
+  await expect
+    .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+      timeout: 8 * 60_000,
+      intervals: [15_000],
+      message: `premium-${userId}-tg never became healthy after the inline migration`,
+    })
+    .toBe(true)
+  await expectStoredTierMatchesStatus(page)
 })
