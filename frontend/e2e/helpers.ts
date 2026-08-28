@@ -370,10 +370,14 @@ export function runInBackend(cmd: string, input?: string): string {
 // shell quoting.
 //
 // `instanceId` overrides the INSTANCE_ID the job resolves. Passing a synthetic
-// id is what makes these rows safe to run on shared dev: DataCleanupJob filters
-// on `instance_id == resolve_instance_id()`, so a row seeded against a
-// synthetic id is invisible to every real cleanup worker no matter how far back
-// its logged_out_at is stamped.
+// id is what makes backdating logged_out_at safe on shared dev:
+// `_get_users_for_cleanup` filters on `instance_id == resolve_instance_id()`,
+// so no real cleanup worker will ever select a row carrying it, however far
+// back its stamp is. That covers the deleting half of the job only - the
+// orphan sweep is not instance-filtered and treats an unresolvable id as a
+// terminated instance, so it deletes the seeded row itself (DB row and usage
+// log, never files). Callers must re-check their seed rather than assume it
+// survived.
 export function runInDeployedBackend(
   python: string,
   instanceId?: string,
@@ -384,7 +388,8 @@ export function runInDeployedBackend(
     ssmInstanceId(),
     [
       "set -e",
-      "C=$(docker ps --format '{{.Names}}' | grep -m1 optinist-cloud-container)",
+      "C=$(docker ps --format '{{.Names}}' | " +
+        "grep -m1 -- -background-optinist-cloud-container || true)",
       '[ -n "$C" ] || { echo "no studio container on this host" >&2; exit 1; }',
       `docker exec ${envFlag}-w /app "$C" sh -c '` +
         'export MYSQL_SERVER="$DB_HOST" MYSQL_USER="$DB_USER" ' +

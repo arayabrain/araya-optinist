@@ -76,7 +76,7 @@ const GRACE_OVER = {
 // Dropping its premium row is a genuine downgrade: determine_lifecycle then
 // reports FREE, which is the state LC-08 is about.
 const DOWNGRADE = {
-  email: process.env.TEST_FREE_DOWNGRADE || "",
+  email: process.env.TEST_FREE_DOWNGRADE_EMAIL || "",
   password: process.env.TEST_FREE_DOWNGRADE_PASSWORD || "",
 }
 
@@ -412,6 +412,15 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       { headers: await apiHeaders(page) },
     )
     expect(res.ok(), await res.text()).toBe(true)
+    // The endpoint answers success:true even when every workspace threw (the
+    // loop continues past them) and the user-total update was caught and only
+    // logged, so a stale usage figure would satisfy the >0 check below. The
+    // counts are the only proof the recalculation actually ran.
+    const body = await res.json()
+    expect(body.total_workspaces, "workspaces to refresh").toBeGreaterThan(0)
+    expect(body.refreshed_workspaces, "workspaces refreshed").toBe(
+      body.total_workspaces,
+    )
     const bytes = Number(
       runSql(
         `SELECT storage_usage_bytes FROM user_storage_usage
@@ -458,7 +467,7 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       await ensureDeployedAccount()
       if (!PREMIUM_OVER.email || !GRACE_OVER.email || !DOWNGRADE.email) {
         fixtureReason =
-          `TEST_PREMIUM_OVER_* / TEST_GRACE_OVER_* / TEST_FREE_DOWNGRADE not ` +
+          `TEST_PREMIUM_OVER_* / TEST_GRACE_OVER_* / TEST_FREE_DOWNGRADE_* not ` +
           `set; leaves ${FIXTURE_ROWS} unverified`
       } else {
         const overFree = runSql(
@@ -511,19 +520,15 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   })
 
   test.afterAll(() => {
+    // Every restore first, assertions only after: a failed check must not
+    // abort the restores behind it and leave a fixture permanently staged on
+    // shared dev, where the next run reads the drift as missing S3 data.
     if (originalPremiumQuota) {
       runSqlWriteOnDev(
         `UPDATE user_storage_usage
            SET storage_quota_bytes = ${originalPremiumQuota}
            WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
       )
-      expect(
-        runSql(
-          `SELECT storage_quota_bytes FROM user_storage_usage
-             WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
-        ).trim(),
-        "the over-quota fixture's quota was restored",
-      ).toBe(originalPremiumQuota)
     }
     for (const sql of downgradeRestore) runSqlWriteOnDev(sql)
     if (originalExpiration) {
@@ -532,6 +537,17 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
            WHERE user_id = ${userIdOf(GRACE_OVER.email)}
            AND plan_id = ${PREMIUM_PLAN_ID}`,
       )
+    }
+    if (originalPremiumQuota) {
+      expect(
+        runSql(
+          `SELECT storage_quota_bytes FROM user_storage_usage
+             WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
+        ).trim(),
+        "the over-quota fixture's quota was restored",
+      ).toBe(originalPremiumQuota)
+    }
+    if (originalExpiration) {
       expect(
         runSql(
           `SELECT expiration FROM subscription_users
@@ -548,7 +564,10 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     setPlan(1, "INTERVAL 0 DAY")
     setStorage(0, FREE_QUOTA)
     write(`DELETE FROM free_user_assignments WHERE user_id = ${userId}`)
-    write(`DELETE FROM instance_usage_log WHERE user_id = ${userId}`)
+    write(
+      `DELETE FROM instance_usage_log WHERE user_id = ${userId}
+         AND instance_id = '${E2E_INSTANCE}'`,
+    )
   })
 
   test("LC-01 - Free baseline: no warning, account shows Free", async ({
@@ -1131,7 +1150,8 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     const stamp = loggedOut ? "UTC_TIMESTAMP()" : "NULL"
     for (const sql of [
       `DELETE FROM free_user_assignments WHERE user_id = ${userId}`,
-      `DELETE FROM instance_usage_log WHERE user_id = ${userId}`,
+      `DELETE FROM instance_usage_log WHERE user_id = ${userId}
+         AND instance_id = '${E2E_INSTANCE}'`,
       `INSERT INTO free_user_assignments
          (user_id, instance_id, assigned_at, last_activity, logged_out_at)
          VALUES (${userId}, '${E2E_INSTANCE}', UTC_TIMESTAMP(),
@@ -1247,7 +1267,23 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   // per-instance filter the real workers apply narrows the answer to this
   // account. Locally resolve_instance_id() returns "local" and the job skips
   // the filter, which is why the cap check below exists there.
+  //
+  // The seed is checked first, before the several-minute app boot below. The
+  // synthetic instance id keeps the row away from the selection every real
+  // worker runs, but NOT from the orphan sweep, which is not instance-scoped
+  // and reads an id EC2 cannot resolve as a terminated instance - it deletes
+  // the row outright. A swept seed would otherwise surface as "the job did not
+  // select the user", which is this row's product-bug signal.
   function eligibleUserIds(): number[] {
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM free_user_assignments
+           WHERE user_id = ${userId} AND instance_id = '${E2E_INSTANCE}'`,
+      ).trim(),
+      "the seeded assignment is gone; the orphan sweep collected it mid-test " +
+        "(it treats an unresolvable instance id as terminated), so this is " +
+        "not a verdict on the cleanup selection",
+    ).toBe("1")
     const out = LOCAL
       ? runInBackend("poetry run python -", CLEANUP_SELECT)
       : runInDeployedBackend(CLEANUP_SELECT, E2E_INSTANCE)
@@ -1310,17 +1346,32 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     // the threshold is 30, which is what a crashed run leaves behind. Recovery
     // resets it and the user becomes collectable again.
     // Unlike the selection, the recovery sweep is NOT instance-scoped: it
-    // resets every stale row it finds. Assert this account owns the only one
-    // before firing it, so the blast radius is provably ours.
+    // resets every stale row it finds, in the premium table as well as the
+    // free one. Assert no other row on either table qualifies before firing
+    // it, so the blast radius is provably ours.
+    const STALE_MINUTES = 30
     expect(
       runSql(
         `SELECT COUNT(*) FROM free_user_assignments
            WHERE active_workflow_count > 0
-             AND last_workflow_start < UTC_TIMESTAMP() - INTERVAL 30 MINUTE
+             AND last_workflow_start
+                 < UTC_TIMESTAMP() - INTERVAL ${STALE_MINUTES} MINUTE
              AND user_id <> ${userId}`,
       ).trim(),
-      "another account also has a stale workflow count, and the recovery " +
-        "sweep would reset theirs too",
+      "another account also has a stale free workflow count, and the " +
+        "recovery sweep would reset theirs too",
+    ).toBe("0")
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM premium_user_assignments
+           WHERE active_workflow_count > 0
+             AND last_workflow_start
+                 < UTC_TIMESTAMP() - INTERVAL ${STALE_MINUTES} MINUTE
+             AND is_standby = 0`,
+      ).trim(),
+      "a premium account has a stale workflow count; the sweep resets the " +
+        "premium table too, and zeroing a live count invites a delete under " +
+        "a running workflow",
     ).toBe("0")
     const RECOVER =
       "from studio.app.common.core.workflow.workflow_count_recovery import " +
