@@ -9,8 +9,8 @@ import {
   authHeaders,
   confirmDialog,
   ensureTutorialRecords,
+  ensureWorkspaceId,
   isLocalBaseUrl,
-  localStackSkipReason,
   login,
   logout,
   mockPremiumAssignment,
@@ -18,34 +18,76 @@ import {
   REPO_ROOT,
   reproduceTutorial,
   runInBackend,
+  runInDeployedBackend,
   runSql,
+  runSqlWriteOnDev,
   sqlLiteral,
+  sqlSkipReason,
   verifyEmail,
 } from "./helpers"
 
-// Full subscription/storage warning lifecycle on the LOCAL stack only. The test
-// names are the index; each writes its own DB scenario up front, so the serial
-// group survives retries.
+// The subscription/storage warning lifecycle, on the local docker stack AND on
+// deployed dev.
 //
-// Plan and expiry are driven directly in the docker DB (the same knobs the
-// README documents for manual account bootstrap) because there is no Stripe
-// locally. Storage usage, however, must be REAL: on every login the app
-// recalculates usage from the workspace folders and overwrites the DB value
-// (Layout's per-session refresh), so a faked usage number never survives to
-// the warning check. Instead a sparse ballast file (zero disk cost; folder
-// sizes sum st_size) sits in the user's workspace and each test dials
-// storage_quota_bytes to put the measured real usage at the percentage
-// under test.
+// Plan and expiry are driven directly in the database (the same knobs the
+// README documents for manual account bootstrap) because there is no Stripe in
+// either environment: multi-statement through docker locally, one statement at
+// a time through `runSqlWriteOnDev` on deployed dev.
+//
+// Storage usage, however, must be REAL: on every login the app recalculates
+// usage from the workspace and overwrites the DB value (Layout's per-session
+// refresh), so a faked usage number never survives to the warning check. The
+// two environments reach that from opposite directions:
+//
+//   local     a sparse ballast file (zero disk cost; folder sizes sum st_size)
+//             sits in the user's workspace, and each test dials
+//             storage_quota_bytes to put the measured real usage at the
+//             percentage under test.
+//   deployed  the same recalculation reads S3 object sizes, where nothing is
+//             sparse. Two provisioned fixture accounts already hold the data,
+//             so those rows rent their state instead of creating it:
+//               TEST_PREMIUM_OVER_*  active premium already over its own quota
+//               TEST_GRACE_OVER_*    expired premium holding >5GiB of real S3
+//                                    data, above the hardcoded free limit
+//
+// Rows whose assertions are environment-independent share one body and branch
+// only on setup, so a deployed run and a local run verify the same thing.
+//
 // On a local run every reason this group cannot execute is a broken
 // environment, and it FAILS rather than skipping: several LC rows have no
-// coverage but this spec, and a skipped row reads as a pass on the sheet. It
-// still skips where BASE_URL is not local, because the DB writes it needs are
-// only reachable on the docker stack.
+// coverage but this spec, and a skipped row reads as a pass on the sheet.
+// Rows that genuinely cannot run in the current environment skip individually
+// with a reason naming what they leave unverified.
 
 const USER = {
   email: process.env.TEST_LIFECYCLE_EMAIL || "",
   password: process.env.TEST_LIFECYCLE_PASSWORD || "",
 }
+// Provisioned deployed fixtures; unused on a local run
+const PREMIUM_OVER = {
+  email: process.env.TEST_PREMIUM_OVER_EMAIL || "",
+  password: process.env.TEST_PREMIUM_OVER_PASSWORD || "",
+}
+const GRACE_OVER = {
+  email: process.env.TEST_GRACE_OVER_EMAIL || "",
+  password: process.env.TEST_GRACE_OVER_PASSWORD || "",
+}
+// A real formerly-premium account carrying 6.9GiB of provisioned S3 data.
+// Dropping its premium row is a genuine downgrade: determine_lifecycle then
+// reports FREE, which is the state LC-08 is about.
+const DOWNGRADE = {
+  email: process.env.TEST_FREE_DOWNGRADE || "",
+  password: process.env.TEST_FREE_DOWNGRADE_PASSWORD || "",
+}
+
+const LOCAL = isLocalBaseUrl()
+const PREMIUM_PLAN_ID = 2
+// The instance the cleanup rows seed their assignment against. No real worker
+// ever resolves this id, and DataCleanupJob filters on
+// `instance_id == resolve_instance_id()`, so a row carrying it is invisible to
+// every scheduled sweep - which is what makes backdating logged_out_at safe on
+// shared dev rather than a way to get this account's data deleted mid-test.
+const E2E_INSTANCE = "i-e2e"
 
 const GB = 1073741824
 const FREE_QUOTA = 5 * GB
@@ -68,25 +110,32 @@ let realUsage = 0
 const overQuota = () => Math.floor(realUsage / 1.1) // usage ≈ 110%
 const nearQuota = () => Math.floor(realUsage / 0.95) // usage ≈ 95%
 
-const userId = `(SELECT id FROM users WHERE email = '${sqlLiteral(USER.email)}')`
+const userIdOf = (email: string) =>
+  `(SELECT id FROM users WHERE email = '${sqlLiteral(email)}')`
+const userId = userIdOf(USER.email)
+
+// The docker DB takes a script; the deployed write path takes one statement.
+function write(sql: string): string {
+  return LOCAL ? runSql(sql) : runSqlWriteOnDev(sql)
+}
 
 // Primes the cached value so the warning check agrees with the ballast even
 // before the login-time refresh has run (20-minute freshness window)
 function setStorage(usageBytes: number, quotaBytes: number) {
-  runSql(
+  write(
     `UPDATE user_storage_usage SET storage_usage_bytes = ${usageBytes},
        storage_quota_bytes = ${quotaBytes}, last_updated = UTC_TIMESTAMP()
-       WHERE user_id = ${userId};`,
+       WHERE user_id = ${userId}`,
   )
 }
 
 // expiresIn examples: "INTERVAL 1 MONTH", "INTERVAL -1 DAY"
 function setPlan(planId: number, expiresIn: string, scheduledDowngrade = 0) {
-  runSql(
+  write(
     `UPDATE subscription_users SET plan_id = ${planId},
        expiration = DATE_ADD(UTC_TIMESTAMP(), ${expiresIn}),
        scheduled_downgrade = ${scheduledDowngrade}
-       WHERE user_id = ${userId};`,
+       WHERE user_id = ${userId}`,
   )
 }
 
@@ -168,6 +217,63 @@ async function ensureUserAndWorkspace() {
   }
 }
 
+// Deployed dev has no Admin SDK reachable from here, so the account must
+// already exist and be verified; registering would leave an unverified
+// Firebase user that cannot log in. Fails loudly rather than skipping: a
+// missing account is a broken lane, not an absent capability.
+async function ensureDeployedAccount() {
+  const api = await request.newContext({ baseURL: apiUrl() })
+  try {
+    const res = await api.post("/auth/login", {
+      data: { email: USER.email, password: USER.password },
+    })
+    expect(
+      res.ok(),
+      `${USER.email} cannot log in (${res.status()}); the lifecycle account ` +
+        `must exist and be email-verified on deployed dev`,
+    ).toBeTruthy()
+  } finally {
+    await api.dispose()
+  }
+}
+
+// The cleanup job's selection joins Workspace, so an account with none is
+// never eligible however its assignment row is stamped - a silent vacuous pass.
+// LC-05 deletes the shared workspace mid-run, so the cleanup rows ask for one
+// themselves rather than depending on which siblings ran before them.
+async function ensureDeployedWorkspace() {
+  // The job's own join predicate, not a proxy for it: GET /workspaces answers a
+  // different question (it can list rows this join will not match), and a
+  // mismatch here reads as "the grace period did not select the user" rather
+  // than "the account owns no workspace".
+  const ownedLive = () =>
+    runSql(
+      `SELECT COUNT(*) FROM workspaces
+         WHERE user_id = ${userId} AND deleted = 0`,
+    ).trim()
+  if (ownedLive() !== "0") return
+
+  const api = await request.newContext({ baseURL: apiUrl() })
+  try {
+    const res = await api.post("/auth/login", {
+      data: { email: USER.email, password: USER.password },
+    })
+    expect(res.ok(), `${USER.email} cannot log in`).toBeTruthy()
+    const { access_token, ex_token } = await res.json()
+    const created = await api.post("/workspace", {
+      headers: authHeaders(access_token, ex_token),
+      data: { name: "e2e-lifecycle" },
+    })
+    expect(created.ok(), `POST /workspace ${created.status()}`).toBeTruthy()
+  } finally {
+    await api.dispose()
+  }
+  expect(
+    ownedLive(),
+    "created a workspace the cleanup join still cannot see",
+  ).not.toBe("0")
+}
+
 // login() with dismissWarning=false so the warning modals under test are
 // still open when the assertions run
 async function loginKeepWarnings(page: Page) {
@@ -180,16 +286,147 @@ const dialog = confirmDialog
 // Sign-off rows this group alone covers, named in the reason so a run that does
 // not execute it says which rows it left unverified
 const UNCOVERED_ELSEWHERE =
-  "LC-01..LC-05, LC-07..LC-10, LC-14..LC-20, LC-24..LC-31"
+  "LC-01..LC-05, LC-07..LC-10, LC-14..LC-15, LC-17..LC-20, LC-24..LC-31"
+// Rows whose state is rented from the provisioned deployed fixtures
+const FIXTURE_ROWS = "LC-03, LC-04, LC-08, LC-18..LC-20"
 
 test.describe.serial("Subscription/storage warning lifecycle", () => {
   let skipReason = ""
+  let fixtureReason = ""
+  let originalExpiration = ""
+  let originalPremiumQuota = ""
+  let downgradeRestore: string[] = []
 
   function unrunnable(reason: string) {
-    if (isLocalBaseUrl()) {
+    if (LOCAL) {
       throw new Error(`${reason}; ${UNCOVERED_ELSEWHERE} cannot run`)
     }
     skipReason = `${reason}; leaves ${UNCOVERED_ELSEWHERE} unverified`
+  }
+
+  // Every fixture precondition is read from the database rather than assumed:
+  // an account whose provisioned S3 data was cleared still logs in fine, and
+  // would turn the rows that rent it into vacuous passes.
+  function fixtureDrift(email: string, wantActive: boolean): string {
+    const cell = (sql: string) => runSql(sql).trim()
+    const rows = cell(
+      `SELECT COUNT(*) FROM subscription_users WHERE user_id = ${userIdOf(email)}
+         AND plan_id = ${PREMIUM_PLAN_ID}`,
+    )
+    if (rows !== "1") {
+      return `${email} has ${rows} premium subscription rows, expected exactly 1`
+    }
+    const future = cell(
+      `SELECT expiration > UTC_TIMESTAMP() FROM subscription_users
+         WHERE user_id = ${userIdOf(email)} AND plan_id = ${PREMIUM_PLAN_ID}`,
+    )
+    if (future !== (wantActive ? "1" : "0")) {
+      return `${email} expiration is on the wrong side of now for this fixture`
+    }
+    const over = cell(
+      `SELECT storage_usage_bytes > ${wantActive ? "storage_quota_bytes" : FREE_QUOTA}
+         FROM user_storage_usage WHERE user_id = ${userIdOf(email)}`,
+    )
+    if (over !== "1") {
+      return (
+        `${email} is no longer over its ${wantActive ? "own" : "free-tier"} quota; ` +
+        `the provisioned S3 data has been removed or the quota was raised`
+      )
+    }
+    return ""
+  }
+
+  // GRACE is expiry..expiry+30d, so a statically provisioned expiry rots into
+  // OVERDUE on its own. Re-stamped per run, restored in afterAll.
+  function stampGraceFixture() {
+    originalExpiration = runSql(
+      `SELECT expiration FROM subscription_users
+         WHERE user_id = ${userIdOf(GRACE_OVER.email)}
+         AND plan_id = ${PREMIUM_PLAN_ID}`,
+    ).trim()
+    expect(originalExpiration, "stored expiration to restore").toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    )
+    runSqlWriteOnDev(
+      `UPDATE subscription_users
+         SET expiration = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)
+         WHERE user_id = ${userIdOf(GRACE_OVER.email)}
+         AND plan_id = ${PREMIUM_PLAN_ID}`,
+    )
+  }
+
+  // Puts the provisioned over-quota fixture at an exact usage ratio by moving
+  // its quota, never its data: the S3 bytes are the expensive half.
+  function dialFixtureQuota(ratio: number) {
+    const cell = (col: string) =>
+      runSql(
+        `SELECT ${col} FROM user_storage_usage
+           WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
+      ).trim()
+    if (!originalPremiumQuota) {
+      originalPremiumQuota = cell("storage_quota_bytes")
+      expect(originalPremiumQuota, "fixture quota to restore").toMatch(/^\d+$/)
+    }
+    const usage = Number(cell("storage_usage_bytes"))
+    expect(usage, "fixture usage").toBeGreaterThan(0)
+    runSqlWriteOnDev(
+      `UPDATE user_storage_usage
+         SET storage_quota_bytes = ${Math.floor(usage / ratio)},
+             last_updated = UTC_TIMESTAMP()
+         WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
+    )
+  }
+
+  // A real downgrade: the premium row goes, so determine_lifecycle reports
+  // FREE and the free-tier limit becomes the effective quota. The account's
+  // provisioned data is untouched - only its plan moves.
+  function stageDowngradedFreeUser() {
+    const uid = userIdOf(DOWNGRADE.email)
+    const plan = runSql(
+      `SELECT plan_id FROM subscription_users WHERE user_id = ${uid}`,
+    ).trim()
+    const quota = runSql(
+      `SELECT storage_quota_bytes FROM user_storage_usage WHERE user_id = ${uid}`,
+    ).trim()
+    expect(plan, "downgrade fixture plan to restore").toMatch(/^\d+$/)
+    expect(quota, "downgrade fixture quota to restore").toMatch(/^\d+$/)
+    downgradeRestore = [
+      `UPDATE subscription_users SET plan_id = ${plan} WHERE user_id = ${uid}`,
+      `UPDATE user_storage_usage SET storage_quota_bytes = ${quota} WHERE user_id = ${uid}`,
+    ]
+    runSqlWriteOnDev(
+      `UPDATE subscription_users SET plan_id = 1 WHERE user_id = ${uid}`,
+    )
+    runSqlWriteOnDev(
+      `UPDATE user_storage_usage SET storage_quota_bytes = ${FREE_QUOTA}
+         WHERE user_id = ${uid}`,
+    )
+  }
+
+  // Deployed, the account's own imported sample data plays the ballast's part:
+  // real S3 objects it owns, that globalSetup clears at the start of each run.
+  // Only the quota moves to reach the ratio under test.
+  async function refreshAndMeasure(page: Page): Promise<number> {
+    const res = await page.request.post(
+      `${apiUrl()}/workspaces/refresh-storage`,
+      { headers: await apiHeaders(page) },
+    )
+    expect(res.ok(), await res.text()).toBe(true)
+    const bytes = Number(
+      runSql(
+        `SELECT storage_usage_bytes FROM user_storage_usage
+           WHERE user_id = ${userId}`,
+      ).trim(),
+    )
+    expect(bytes, "measured usage after the sample import").toBeGreaterThan(0)
+    return bytes
+  }
+
+  function setQuota(bytes: number) {
+    write(
+      `UPDATE user_storage_usage SET storage_quota_bytes = ${bytes},
+         last_updated = UTC_TIMESTAMP() WHERE user_id = ${userId}`,
+    )
   }
 
   test.beforeAll(async () => {
@@ -197,34 +434,60 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       unrunnable("TEST_LIFECYCLE_EMAIL/TEST_LIFECYCLE_PASSWORD not set")
       return
     }
-    const localStack = localStackSkipReason()
-    if (localStack) {
-      unrunnable(localStack)
+    const sql = sqlSkipReason()
+    if (sql) {
+      unrunnable(sql)
       return
     }
-    // The local-testing default in studio/config/.env disables every storage
-    // lookup backend-side (deployed envs run with it false), so no warning
-    // under test can ever fire while it's on
-    const backendEnv = path.join(REPO_ROOT, "studio", "config", ".env")
-    if (
-      fs.existsSync(backendEnv) &&
-      /^SKIP_STORAGE_CHECKS=true/m.test(fs.readFileSync(backendEnv, "utf-8"))
-    ) {
-      unrunnable(
-        "SKIP_STORAGE_CHECKS=true in studio/config/.env disables storage warnings",
-      )
-      return
+    if (LOCAL) {
+      // The local-testing default in studio/config/.env disables every storage
+      // lookup backend-side (deployed envs run with it false), so no warning
+      // under test can ever fire while it's on
+      const backendEnv = path.join(REPO_ROOT, "studio", "config", ".env")
+      if (
+        fs.existsSync(backendEnv) &&
+        /^SKIP_STORAGE_CHECKS=true/m.test(fs.readFileSync(backendEnv, "utf-8"))
+      ) {
+        unrunnable(
+          "SKIP_STORAGE_CHECKS=true in studio/config/.env disables storage warnings",
+        )
+        return
+      }
+      await ensureUserAndWorkspace()
+    } else {
+      await ensureDeployedAccount()
+      if (!PREMIUM_OVER.email || !GRACE_OVER.email || !DOWNGRADE.email) {
+        fixtureReason =
+          `TEST_PREMIUM_OVER_* / TEST_GRACE_OVER_* / TEST_FREE_DOWNGRADE not ` +
+          `set; leaves ${FIXTURE_ROWS} unverified`
+      } else {
+        const overFree = runSql(
+          `SELECT storage_usage_bytes > ${FREE_QUOTA} FROM user_storage_usage
+             WHERE user_id = ${userIdOf(DOWNGRADE.email)}`,
+        ).trim()
+        const drift =
+          fixtureDrift(PREMIUM_OVER.email, true) ||
+          fixtureDrift(GRACE_OVER.email, false) ||
+          (overFree === "1"
+            ? ""
+            : `${DOWNGRADE.email} no longer holds more than the free-tier ` +
+              `limit, so a downgrade would not put it over quota`)
+        if (drift) {
+          fixtureReason = `${drift}; leaves ${FIXTURE_ROWS} unverified`
+        } else {
+          stampGraceFixture()
+        }
+      }
     }
-    await ensureUserAndWorkspace()
     // A purchase row is what marks the user as having once paid; without it
     // the backend reports an expired premium as a plain free user and the
     // expired-state UI (Expired-on caption, Manage button) never renders.
     // Any real formerly-premium user has one.
-    runSql(
+    write(
       `INSERT INTO subscription_user_purchases (plan_id, user_id)
          SELECT 2, ${userId} WHERE NOT EXISTS
          (SELECT 1 FROM subscription_user_purchases
-            WHERE user_id = ${userId});`,
+            WHERE user_id = ${userId})`,
     )
   })
 
@@ -232,24 +495,60 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     test.skip(!!skipReason, skipReason)
   })
 
+  // Rows that cannot run in this environment say so individually, so the skip
+  // summary names them rather than reporting the whole group as unverified.
+  // The storage-state rows: ballast-driven locally (guaranteed by beforeAll),
+  // fixture-driven deployed, where the fixtures can be absent or drifted.
+  function needsStorageState() {
+    test.skip(!LOCAL && !!fixtureReason, fixtureReason)
+  }
+
   // A test that grew the ballast must not leave it grown: the percentages every
   // later test dials are derived from a measurement taken at the default size,
   // and an inline restore does not run when the test fails
   test.afterEach(() => {
-    if (!skipReason) ensureBallast()
+    if (!skipReason && LOCAL) ensureBallast()
   })
 
   test.afterAll(() => {
+    if (originalPremiumQuota) {
+      runSqlWriteOnDev(
+        `UPDATE user_storage_usage
+           SET storage_quota_bytes = ${originalPremiumQuota}
+           WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
+      )
+      expect(
+        runSql(
+          `SELECT storage_quota_bytes FROM user_storage_usage
+             WHERE user_id = ${userIdOf(PREMIUM_OVER.email)}`,
+        ).trim(),
+        "the over-quota fixture's quota was restored",
+      ).toBe(originalPremiumQuota)
+    }
+    for (const sql of downgradeRestore) runSqlWriteOnDev(sql)
+    if (originalExpiration) {
+      runSqlWriteOnDev(
+        `UPDATE subscription_users SET expiration = '${originalExpiration}'
+           WHERE user_id = ${userIdOf(GRACE_OVER.email)}
+           AND plan_id = ${PREMIUM_PLAN_ID}`,
+      )
+      expect(
+        runSql(
+          `SELECT expiration FROM subscription_users
+             WHERE user_id = ${userIdOf(GRACE_OVER.email)}
+             AND plan_id = ${PREMIUM_PLAN_ID}`,
+        ).trim(),
+        "the grace fixture's expiration was restored",
+      ).toBe(originalExpiration)
+    }
     if (skipReason) return
     // Leave the user as a clean free account for the next run, without the
     // fake instance rows LC-24/25 seeded
-    removeBallast()
+    if (LOCAL) removeBallast()
     setPlan(1, "INTERVAL 0 DAY")
     setStorage(0, FREE_QUOTA)
-    runSql(
-      `DELETE FROM free_user_assignments WHERE user_id = ${userId};
-       DELETE FROM instance_usage_log WHERE user_id = ${userId};`,
-    )
+    write(`DELETE FROM free_user_assignments WHERE user_id = ${userId}`)
+    write(`DELETE FROM instance_usage_log WHERE user_id = ${userId}`)
   })
 
   test("LC-01 - Free baseline: no warning, account shows Free", async ({
@@ -272,6 +571,10 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   }) => {
     setPlan(2, "INTERVAL 1 MONTH")
     setStorage(realUsage, PREMIUM_QUOTA)
+    // The plan is what this row asserts; the assignment that a premium login
+    // would otherwise trigger is not. Unmocked, a deployed run claims a real
+    // t3.large with its own ALB target group and never releases it.
+    await mockPremiumAssignment(page)
     await loginKeepWarnings(page)
 
     await expect(dialog(page)).toBeHidden()
@@ -282,13 +585,35 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await expect(page.locator('button:has-text("Manage")')).toBeVisible()
   })
 
-  test("LC-03 - Premium at 110% quota: Storage Limit Exceeded modal on login", async ({
+  test("LC-03 - Premium over quota: Storage Limit Exceeded modal on login", async ({
     page,
   }) => {
-    ensureBallast()
-    setPlan(2, "INTERVAL 1 MONTH")
-    setStorage(realUsage, overQuota())
-    await loginKeepWarnings(page)
+    needsStorageState()
+    test.setTimeout(120_000)
+    // Locally the ballast is dialed to 110%; deployed, a provisioned account
+    // is already over its own quota. The assertions below are the same either
+    // way, which is the point of renting the fixture rather than faking it.
+    const user = LOCAL ? USER : PREMIUM_OVER
+    if (LOCAL) {
+      ensureBallast()
+      setPlan(2, "INTERVAL 1 MONTH")
+      setStorage(realUsage, overQuota())
+    }
+    // The fixture really is premium, so an unmocked login would claim a real
+    // instance and an ALB target group for it. The modal under test comes from
+    // the limit-warning payload, which the mock does not touch.
+    await mockPremiumAssignment(page)
+    const warningSeen = page.waitForResponse((r) =>
+      r.url().endsWith("/storage-limit-alerts/limit-warning"),
+    )
+    await login(page, user.email, user.password, false)
+
+    const warning = await (await warningSeen).json()
+    expect(warning.alert_type).toBe("storage")
+    expect(warning.excess_data_gb).toBeGreaterThan(0)
+    // An active premium is held to its own quota, so there is no deletion
+    // timeline; that is what makes the Upgrade button absent below.
+    expect(warning.deletion_date).toBeNull()
 
     const modal = dialog(page)
     await expect(modal.getByText("Storage Limit Exceeded")).toBeVisible({
@@ -313,10 +638,18 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-04 - Premium at 95% quota: no modal, usage-high indicator only", async ({
     page,
   }) => {
-    ensureBallast()
-    setPlan(2, "INTERVAL 1 MONTH")
-    setStorage(realUsage, nearQuota())
-    await loginKeepWarnings(page)
+    needsStorageState()
+    test.setTimeout(120_000)
+    const user = LOCAL ? USER : PREMIUM_OVER
+    if (LOCAL) {
+      ensureBallast()
+      setPlan(2, "INTERVAL 1 MONTH")
+      setStorage(realUsage, nearQuota())
+    } else {
+      dialFixtureQuota(0.95)
+    }
+    await mockPremiumAssignment(page)
+    await login(page, user.email, user.password, false)
 
     await page.goto("/workspaces")
     await expect(page.getByText("Storage usage is high")).toBeVisible({
@@ -328,18 +661,41 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-05 - Storage reload picks up freed space and clears the warning", async ({
     page,
   }) => {
-    ensureBallast()
-    setPlan(2, "INTERVAL 1 MONTH")
-    setStorage(realUsage, nearQuota())
-    await loginKeepWarnings(page)
+    test.setTimeout(300_000)
+    if (LOCAL) {
+      setPlan(2, "INTERVAL 1 MONTH")
+      ensureBallast()
+      setStorage(realUsage, nearQuota())
+      await loginKeepWarnings(page)
+    } else {
+      // The subject is the recalculation, not the plan. Staying on free keeps
+      // this row from claiming a real premium instance, and it uploads real
+      // data so the mocked-assignment routing is the wrong tool here.
+      setPlan(1, "INTERVAL 1 MONTH")
+      setStorage(0, FREE_QUOTA)
+      await loginKeepWarnings(page)
+      // Give the account real data of its own rather than renting a fixture's:
+      // this row deletes what it measures, which no provisioned account can lend
+      await openWorkspace(page, "e2e-lifecycle")
+      await ensureTutorialRecords(page, "e2e-lifecycle")
+      setQuota(Math.floor((await refreshAndMeasure(page)) / 0.95))
+    }
 
     await page.goto("/workspaces")
     await expect(page.getByText("Storage usage is high")).toBeVisible({
       timeout: 30_000,
     })
-    // Free the space for real, then reload — the recalculation should clear
+    // Free the space for real, then reload - the recalculation should clear
     // the warning state
-    removeBallast()
+    if (LOCAL) {
+      removeBallast()
+    } else {
+      const id = await ensureWorkspaceId(page, "e2e-lifecycle")
+      const deleted = await page.request.delete(`${apiUrl()}/workspace/${id}`, {
+        headers: await apiHeaders(page),
+      })
+      expect(deleted.ok(), await deleted.text()).toBe(true)
+    }
     await page.locator('button:has-text("Reload")').click()
     await expect(page.locator("text=/Storage refreshed/i").first()).toBeVisible(
       { timeout: 60_000 },
@@ -373,10 +729,17 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-08 - Downgraded free user over quota: warning offers upgrade", async ({
     page,
   }) => {
-    ensureBallast()
-    setPlan(1, "INTERVAL 0 DAY")
-    setStorage(realUsage, overQuota())
-    await loginKeepWarnings(page)
+    needsStorageState()
+    test.setTimeout(120_000)
+    const user = LOCAL ? USER : DOWNGRADE
+    if (LOCAL) {
+      ensureBallast()
+      setPlan(1, "INTERVAL 0 DAY")
+      setStorage(realUsage, overQuota())
+    } else {
+      stageDowngradedFreeUser()
+    }
+    await login(page, user.email, user.password, false)
 
     const modal = dialog(page)
     await expect(modal.getByText("Storage Limit Exceeded")).toBeVisible({
@@ -400,6 +763,13 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     // A real login, whose retry ladder is up to 45s, on top of the DB writes and
     // a ballast resize: the default 60s budget can expire during setup
     test.setTimeout(120_000)
+    needsStorageState()
+    if (!LOCAL) {
+      // The fixture already holds >5GiB of real S3 data and was stamped back
+      // into the grace window by beforeAll; nothing to stage per test.
+      await login(page, GRACE_OVER.email, GRACE_OVER.password, false)
+      return
+    }
     ensureBallast(OVER_FREE_QUOTA)
     setPlan(2, "INTERVAL -1 DAY")
     setStorage(OVER_FREE_QUOTA, PREMIUM_QUOTA)
@@ -497,14 +867,27 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     page,
   }) => {
     test.setTimeout(300_000)
-    ensureBallast()
-    setPlan(2, "INTERVAL 1 MONTH")
-    setStorage(realUsage, PREMIUM_QUOTA)
+    if (LOCAL) {
+      setPlan(2, "INTERVAL 1 MONTH")
+      ensureBallast()
+      setStorage(realUsage, PREMIUM_QUOTA)
+    } else {
+      // The run gate reads the effective quota, which for a free account is
+      // the quota column - so this row needs no premium plan, and staying off
+      // it means no real instance is claimed. It imports sample data, so the
+      // mocked-assignment routing the other rows use is not an option here.
+      setPlan(1, "INTERVAL 1 MONTH")
+      setStorage(0, FREE_QUOTA)
+    }
     await loginKeepWarnings(page)
     await loadRunnableWorkflow(page)
     await selectRunAllMode(page)
 
-    setStorage(realUsage, overQuota())
+    if (LOCAL) {
+      setStorage(realUsage, overQuota())
+    } else {
+      setQuota(Math.floor((await refreshAndMeasure(page)) / 1.1))
+    }
     await runAllButton(page).click()
     await expect(
       page.locator("text=Cannot run job: Storage quota exceeded").first(),
@@ -516,14 +899,27 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     page,
   }) => {
     test.setTimeout(300_000)
-    ensureBallast()
-    setPlan(2, "INTERVAL 1 MONTH")
-    setStorage(realUsage, PREMIUM_QUOTA)
+    if (LOCAL) {
+      setPlan(2, "INTERVAL 1 MONTH")
+      ensureBallast()
+      setStorage(realUsage, PREMIUM_QUOTA)
+    } else {
+      // The run gate reads the effective quota, which for a free account is
+      // the quota column - so this row needs no premium plan, and staying off
+      // it means no real instance is claimed. It imports sample data, so the
+      // mocked-assignment routing the other rows use is not an option here.
+      setPlan(1, "INTERVAL 1 MONTH")
+      setStorage(0, FREE_QUOTA)
+    }
     await loginKeepWarnings(page)
     await loadRunnableWorkflow(page)
     await selectRunAllMode(page)
 
-    setStorage(realUsage, nearQuota())
+    if (LOCAL) {
+      setStorage(realUsage, nearQuota())
+    } else {
+      setQuota(Math.floor((await refreshAndMeasure(page)) / 0.95))
+    }
     await runAllButton(page).click()
     // "Storage usage is high" on its own is also the storage panel's caption;
     // this is the run-time snackbar, percentage and advice included
@@ -605,9 +1001,9 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     // still answers 401 after a successful token refresh: a dead access token
     // alone is cured by the refresh, and a dead refresh token makes the axios
     // interceptor itself log out (on the refresh 400) before the alert flips
-    runSql(
+    write(
       `UPDATE users SET active = 0
-         WHERE email = '${sqlLiteral(USER.email)}';`,
+         WHERE email = '${sqlLiteral(USER.email)}'`,
     )
     try {
       // The corrupted token makes the first heartbeat a genuine dead-token
@@ -645,9 +1041,9 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
       // The component holds the copy up for a 2s read delay, then logs out
       await expect(page).toHaveURL(/\/login/, { timeout: 15_000 })
     } finally {
-      runSql(
+      write(
         `UPDATE users SET active = 1
-           WHERE email = '${sqlLiteral(USER.email)}';`,
+           WHERE email = '${sqlLiteral(USER.email)}'`,
       )
     }
   })
@@ -733,24 +1129,37 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   // ever UPDATE them.
   function seedFreeAssignment(loggedOut: boolean) {
     const stamp = loggedOut ? "UTC_TIMESTAMP()" : "NULL"
-    runSql(
-      `DELETE FROM free_user_assignments WHERE user_id = ${userId};
-       DELETE FROM instance_usage_log WHERE user_id = ${userId};
-       INSERT INTO free_user_assignments
+    for (const sql of [
+      `DELETE FROM free_user_assignments WHERE user_id = ${userId}`,
+      `DELETE FROM instance_usage_log WHERE user_id = ${userId}`,
+      `INSERT INTO free_user_assignments
          (user_id, instance_id, assigned_at, last_activity, logged_out_at)
-         VALUES (${userId}, 'i-e2e', UTC_TIMESTAMP(), UTC_TIMESTAMP(), ${stamp});
-       INSERT INTO instance_usage_log
+         VALUES (${userId}, '${E2E_INSTANCE}', UTC_TIMESTAMP(),
+                 UTC_TIMESTAMP(), ${stamp})`,
+      `INSERT INTO instance_usage_log
          (user_id, instance_id, tier, started_at, ended_at)
-         VALUES (${userId}, 'i-e2e', 'free', UTC_TIMESTAMP(), ${stamp});`,
-    )
+         VALUES (${userId}, '${E2E_INSTANCE}', 'free', UTC_TIMESTAMP(), ${stamp})`,
+    ]) {
+      write(sql)
+    }
   }
 
   test("LC-24 - Free logout stamps the assignment and closes the usage log", async ({
     page,
   }) => {
     setPlan(1, "INTERVAL 1 MONTH")
-    seedFreeAssignment(false)
+    // The local stack never creates the row itself (the activity middleware
+    // refuses instance_id "local"); a deployed login makes a real one.
+    if (LOCAL) seedFreeAssignment(false)
     await login(page, USER.email, USER.password)
+    if (!LOCAL) {
+      expect(
+        runSql(
+          `SELECT COUNT(*) FROM free_user_assignments WHERE user_id = ${userId}`,
+        ).trim(),
+        "the deployed login did not create a free assignment row",
+      ).toBe("1")
+    }
 
     const freeLogout = page.waitForResponse(
       (r) =>
@@ -787,7 +1196,16 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     page,
   }) => {
     setPlan(1, "INTERVAL 1 MONTH")
-    seedFreeAssignment(true)
+    if (LOCAL) {
+      seedFreeAssignment(true)
+    } else {
+      // A real login then logout leaves exactly the state under test, stamped
+      // by the product rather than seeded, and with no backdating - so the
+      // cleanup job's grace window still protects the account throughout.
+      test.setTimeout(180_000)
+      await login(page, USER.email, USER.password)
+      await logout(page)
+    }
     await login(page, USER.email, USER.password)
 
     // The auth path cleared the stamp, so the cleanup job's
@@ -821,30 +1239,37 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     return Number(id)
   }
 
+  const CLEANUP_SELECT =
+    "from studio.app.common.core.background.cleanup_job import DataCleanupJob\n" +
+    "print([u[0] for u in DataCleanupJob._get_users_for_cleanup()])\n"
+
+  // Deployed, INSTANCE_ID is pinned to the id the seed used, so the same
+  // per-instance filter the real workers apply narrows the answer to this
+  // account. Locally resolve_instance_id() returns "local" and the job skips
+  // the filter, which is why the cap check below exists there.
   function eligibleUserIds(): number[] {
-    const out = runInBackend(
-      "poetry run python -",
-      "from studio.app.common.core.background.cleanup_job import DataCleanupJob\n" +
-        "print([u[0] for u in DataCleanupJob._get_users_for_cleanup()])\n",
-    )
+    const out = LOCAL
+      ? runInBackend("poetry run python -", CLEANUP_SELECT)
+      : runInDeployedBackend(CLEANUP_SELECT, E2E_INSTANCE)
     const list = out.slice(out.lastIndexOf("["))
     return JSON.parse(list) as number[]
   }
 
   function stampLogout(minutesAgo: number, activeWorkflows = 0) {
-    runSql(
+    write(
       `UPDATE free_user_assignments
          SET logged_out_at = UTC_TIMESTAMP() - INTERVAL ${minutesAgo} MINUTE,
              active_workflow_count = ${activeWorkflows},
              last_workflow_start = UTC_TIMESTAMP() - INTERVAL 45 MINUTE
-         WHERE user_id = ${userId};`,
+         WHERE user_id = ${userId}`,
     )
   }
 
-  test("LC-26 - Cleanup selects a logged-out free user only past the grace period", () => {
+  test("LC-26 - Cleanup selects a logged-out free user only past the grace period", async () => {
     // Each eligibleUserIds() boots the studio app in the container.
     test.setTimeout(240_000)
     setPlan(1, "INTERVAL 1 MONTH")
+    if (!LOCAL) await ensureDeployedWorkspace()
     seedFreeAssignment(true)
 
     // The grace period is 60 minutes, so half an hour out is still protected.
@@ -865,10 +1290,11 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     ).toContain(numericUserId())
   })
 
-  test("LC-27 - A workflow still marked active blocks cleanup until it is recovered", () => {
+  test("LC-27 - A workflow still marked active blocks cleanup until it is recovered", async () => {
     // Each eligibleUserIds() boots the studio app in the container.
     test.setTimeout(240_000)
     setPlan(1, "INTERVAL 1 MONTH")
+    if (!LOCAL) await ensureDeployedWorkspace()
     seedFreeAssignment(true)
 
     // Past the grace period, but the count says a workflow is running. Deleting
@@ -883,12 +1309,26 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     // The count is stale, not real: last_workflow_start is 45 minutes old and
     // the threshold is 30, which is what a crashed run leaves behind. Recovery
     // resets it and the user becomes collectable again.
-    const recovered = runInBackend(
-      "poetry run python -",
+    // Unlike the selection, the recovery sweep is NOT instance-scoped: it
+    // resets every stale row it finds. Assert this account owns the only one
+    // before firing it, so the blast radius is provably ours.
+    expect(
+      runSql(
+        `SELECT COUNT(*) FROM free_user_assignments
+           WHERE active_workflow_count > 0
+             AND last_workflow_start < UTC_TIMESTAMP() - INTERVAL 30 MINUTE
+             AND user_id <> ${userId}`,
+      ).trim(),
+      "another account also has a stale workflow count, and the recovery " +
+        "sweep would reset theirs too",
+    ).toBe("0")
+    const RECOVER =
       "from studio.app.common.core.workflow.workflow_count_recovery import " +
-        "recover_stale_workflow_counts\n" +
-        "print(recover_stale_workflow_counts()[0])\n",
-    )
+      "recover_stale_workflow_counts\n" +
+      "print(recover_stale_workflow_counts()[0])\n"
+    const recovered = LOCAL
+      ? runInBackend("poetry run python -", RECOVER)
+      : runInDeployedBackend(RECOVER)
     expect(
       Number(recovered.trim().split("\n").pop()),
       "users recovered",
@@ -911,7 +1351,11 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-28 - The log panel opens and carries this user's own limit-check lines", async ({
     page,
   }) => {
-    setPlan(2, "INTERVAL 1 MONTH")
+    // calculate_limit_warning logs on entry for every tier, and the login path
+    // calls it either way - so the premium plan buys this row nothing, while
+    // costing a real instance (unmocked) or an assignment-success snackbar
+    // that covers the floating log button (mocked).
+    setPlan(LOCAL ? 2 : 1, "INTERVAL 1 MONTH")
     await loginKeepWarnings(page)
 
     await page.getByRole("button", { name: "show logs" }).click()
@@ -999,8 +1443,10 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     await tabB.waitForTimeout(1_000)
 
     try {
+      // Playwright's clock is per BrowserContext, not per page: one
+      // fast-forward moves both tabs. Advancing each would total 130 fake
+      // minutes and trip the 2h auto-release instead of holding the warning.
       await page.clock.fastForward(65 * 60 * 1000)
-      await tabB.clock.fastForward(65 * 60 * 1000)
       const warningA = page.locator("text=Premium Instance Inactivity Warning")
       const warningB = tabB.locator("text=Premium Instance Inactivity Warning")
       await expect(warningA).toBeVisible({ timeout: 15_000 })

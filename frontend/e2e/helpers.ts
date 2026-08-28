@@ -362,6 +362,39 @@ export function runInBackend(cmd: string, input?: string): string {
     .trim()
 }
 
+// Backend Python inside the deployed dev container, for the rows that ask the
+// job's own code rather than re-implementing its query. The task's DB settings
+// arrive as DB_*, which cloud-startup.sh maps into MYSQL_* for the app process
+// only, so an exec has to map them again - inside the container, so no secret
+// crosses the SSM boundary. The source is base64'd to survive two levels of
+// shell quoting.
+//
+// `instanceId` overrides the INSTANCE_ID the job resolves. Passing a synthetic
+// id is what makes these rows safe to run on shared dev: DataCleanupJob filters
+// on `instance_id == resolve_instance_id()`, so a row seeded against a
+// synthetic id is invisible to every real cleanup worker no matter how far back
+// its logged_out_at is stamped.
+export function runInDeployedBackend(
+  python: string,
+  instanceId?: string,
+): string {
+  const envFlag = instanceId ? `-e INSTANCE_ID=${instanceId} ` : ""
+  const b64 = Buffer.from(python, "utf-8").toString("base64")
+  return runShellOverSsm(
+    ssmInstanceId(),
+    [
+      "set -e",
+      "C=$(docker ps --format '{{.Names}}' | grep -m1 optinist-cloud-container)",
+      '[ -n "$C" ] || { echo "no studio container on this host" >&2; exit 1; }',
+      `docker exec ${envFlag}-w /app "$C" sh -c '` +
+        'export MYSQL_SERVER="$DB_HOST" MYSQL_USER="$DB_USER" ' +
+        'MYSQL_PASSWORD="$DB_PASSWORD" MYSQL_DATABASE="$DB_NAME"; ' +
+        `echo ${b64} | base64 -d | python -'`,
+    ],
+    "deployed backend python",
+  )
+}
+
 // Registration leaves the address unverified, and an unverified account cannot
 // log in. Dev Firebase has no inbox to click through.
 export function verifyEmail(email: string) {

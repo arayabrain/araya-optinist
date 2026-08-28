@@ -131,7 +131,7 @@ function forceEmailVerified(email: string) {
 
 const dialog = confirmDialog
 
-const UNCOVERED_ELSEWHERE = "LC-06, LC-11..LC-13, LC-21..LC-23"
+const UNCOVERED_ELSEWHERE = "LC-06, LC-11..LC-13, LC-16, LC-21..LC-23"
 
 test.describe.serial("Subscription state lifecycle", () => {
   let skipReason = ""
