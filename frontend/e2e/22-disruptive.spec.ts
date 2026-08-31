@@ -654,12 +654,12 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
   // which would write the very health verdict the ASG is supposed to reach on
   // its own - the objection that retired the set-alarm-state version.
   //
-  // Row 824's alarm is watched but still NOT asserted here. The 2026-08-28 run
-  // settled which way it goes - the victim's target IS counted `unhealthy`
-  // (UnHealthyHostCount held 1 for ~7 min and the alarm ran ALARM -> OK) rather
-  // than going straight to `draining` - but one run is thin ground for a hard
-  // assertion. The observed datapoints stay logged, and HEALTH-27 covers 824's
-  // "the alarm fires on real datapoints" half read-only.
+  // Row 824's alarm is watched but deliberately NOT asserted here: a
+  // terminating instance's target has been seen counted `unhealthy` (with the
+  // alarm running ALARM -> OK) rather than going straight to `draining`, but
+  // that is not contractual and is thin ground for a hard assertion. The
+  // datapoints stay logged, and HEALTH-27 covers 824's "the alarm fires on
+  // real datapoints" half read-only.
   test("ASG-01 - Terminating a public instance replaces it without dropping traffic", async () => {
     // 60 minutes: the 2400s settle loop plus the two 600s polls after it. The
     // observed cost is far lower - the terminate activity ran 11m43s on
@@ -752,9 +752,9 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
 
     // A hard terminate kills the OS before the ALB can react, and ALB does not
     // retry a failed target connection, so a bounded blip is inherent to the
-    // stimulus - `toEqual([])` over the whole run was unsatisfiable by design
-    // (one 502 in 42 probes, 2026-08-28, with TargetConnectionErrorCount=1 and
-    // HTTPCode_Target_5XX_Count=0: the ALB, not the app). What row 827 actually
+    // stimulus - `toEqual([])` over the whole run was unsatisfiable by design:
+    // the ALB itself can emit a 502 on a dead target connection
+    // (TargetConnectionError, not an application 5xx). What row 827 actually
     // claims is scoped:
     //   inside the detection window  -> 502/504 only, on the victim's own
     //                                   connections
