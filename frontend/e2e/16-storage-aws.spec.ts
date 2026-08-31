@@ -55,8 +55,10 @@ import {
 //
 // A row whose S3 truth is the same for either account is registered once per
 // tier from one body - the sheets ask it of both, and the variants differ
-// only in the Tier they are handed. Each takes its own case ID; the ID blocks
-// below say why.
+// only in the Tier they are handed. Each variant spells out its own case ID,
+// free S3-0x and premium S3-2x: the skip-summary reporter keys on the leading
+// `S3-\d+` of the title, so one shared ID with a `[premium]` suffix would let
+// a run that forgot RUN_PREMIUM_AWS tick the premium row off the free pass.
 //
 // The premium half spends real premium capacity, so it rides RUN_PREMIUM_AWS
 // on top, exactly as `15-premium-aws` does:
@@ -104,22 +106,11 @@ const PREMIUM_RELEASE_TIMEOUT_MS = 120_000
 // frees up rather than settling on a tier status never reports.
 const AUTOSCALING_POOL = "autoscaling-pool"
 
-// Case-ID blocks, one per tier: a row's variants share a last digit and differ
-// by a block (S3-0x free, S3-2x premium). Separate IDs rather than one shared
-// ID with a `[premium]` suffix, because the skip-summary reporter keys on the
-// leading `S3-\d+` of the title - a suffix collapses the variants onto one
-// row, and a run that omitted RUN_PREMIUM_AWS would then tick the premium row
-// off the free variant's pass.
-const FREE_ID_BLOCK = 0
-const PREMIUM_ID_BLOCK = 20
-
 // Everything the storage rows need to know about which account they run as.
 // The bodies below read only these fields, which is what keeps one test
 // serving both sheets' variants of the same row.
 type Tier = {
   key: "free" | "premium"
-  // Which case-ID block this tier's rows take, per the blocks above
-  idBase: number
   user: { email: string; password: string }
   credsName: string
   // Both halves of the opt-in, as the skip message should spell them
@@ -140,7 +131,6 @@ type Tier = {
 
 const FREE_TIER: Tier = {
   key: "free",
-  idBase: FREE_ID_BLOCK,
   user: FREE_USER,
   credsName: "TEST_USER_EMAIL/TEST_USER_PASSWORD",
   optedIn: RUN_S3_AWS,
@@ -157,7 +147,6 @@ const FREE_TIER: Tier = {
 
 const PREMIUM_TIER: Tier = {
   key: "premium",
-  idBase: PREMIUM_ID_BLOCK,
   user: PREMIUM_USER,
   credsName: "TEST_PREMIUM_EMAIL/TEST_PREMIUM_PASSWORD",
   optedIn: RUN_S3_AWS && RUN_PREMIUM_AWS,
@@ -174,12 +163,6 @@ const PREMIUM_TIER: Tier = {
 // Free before premium, so each row's free variant runs first and a premium
 // capacity skip can never stand in for an unrun free regression.
 const TIERS: Tier[] = [FREE_TIER, PREMIUM_TIER]
-
-// The marker the sheets are signed off against, and exactly what the
-// skip-summary reporter reads back out of the title.
-function caseId(tier: Tier, row: number): string {
-  return `S3-${String(tier.idBase + row).padStart(2, "0")}`
-}
 
 // Set the moment the lane really holds premium capacity, so the release in
 // afterEach spends a Firebase login (rate-limited) only when there is
@@ -424,7 +407,7 @@ function findNode(nodes: TreeNode[], name: string): TreeNode | undefined {
 // The bucket, the upload and the sync round-trip are the account's own, so
 // this row needs no premium assignment - only the premium account.
 for (const tier of TIERS) {
-  const id = caseId(tier, 1)
+  const id = { free: "S3-01", premium: "S3-21" }[tier.key]
   test(`${id} - The per-user bucket is real and an upload really lands its object @slow`, async () => {
     const rows = "403 / 528 / BT-1002 / BT-1003 / BT-1111"
     skipUnlessOptedIn(rows, tier)
@@ -542,7 +525,7 @@ for (const tier of TIERS) {
 }
 
 for (const tier of TIERS) {
-  const id = caseId(tier, 2)
+  const id = { free: "S3-02", premium: "S3-22" }[tier.key]
   test.describe(`Import and delete round-trip the real bucket (${tier.key})`, () => {
     test.use({ storageState: tier.storageState() })
 
@@ -601,7 +584,7 @@ for (const tier of TIERS) {
 }
 
 for (const tier of TIERS) {
-  const id = caseId(tier, 3)
+  const id = { free: "S3-03", premium: "S3-23" }[tier.key]
   test.describe(`Published experiment via the public instance (${tier.key})`, () => {
     test.use({ storageState: tier.storageState() })
 
