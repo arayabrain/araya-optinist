@@ -133,13 +133,31 @@ function guardDisruptive(): void {
 // Sunday 23:00 UTC. Every test here polls for longer than it takes to notice.
 function skipIfTooCloseToScheduledStop(minutes: number): void {
   const now = new Date()
+  const at = now.toISOString().slice(11, 16)
+  // Up = start cron(0 23 ? * SUN-THU) .. stop cron(0 13 ? * MON-FRI), so
+  // 23:00 -> 13:00 UTC on weekdays. Asked separately from the deadline below:
+  // outside the window there is no stop to be too close to, and a lane run
+  // against a scaled-to-zero environment reports ALB 503s as locator timeouts.
+  const day = now.getUTCDay()
+  const hour = now.getUTCHours()
+  test.skip(
+    !((hour >= 23 && day <= 4) || (hour < 13 && day >= 1 && day <= 5)),
+    `the dev environment is stopped at ${at} UTC; it runs 23:00 -> 13:00 UTC ` +
+      `on weekdays`,
+  )
+  // The next 13:00 UTC, not today's: the environment starts at 23:00 UTC, so
+  // for most of a session today's stop is already behind us. Saturday and
+  // Sunday carry no stop at all -- the rule only fires Mon-Fri.
   const stop = new Date(now)
   stop.setUTCHours(13, 0, 0, 0)
+  while (stop <= now || stop.getUTCDay() === 0 || stop.getUTCDay() === 6) {
+    stop.setUTCDate(stop.getUTCDate() + 1)
+  }
   const left = Math.floor((stop.getTime() - now.getTime()) / 60_000)
   test.skip(
     left < minutes,
     `this test can run for ${minutes} minutes and the 13:00 UTC scheduled ` +
-      `stop is ${left} minutes away (${now.toISOString().slice(11, 16)} UTC)`,
+      `stop is ${left} minutes away (${at} UTC)`,
   )
 }
 
