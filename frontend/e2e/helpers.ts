@@ -784,8 +784,11 @@ export function invokeMonitoringSweep(): string {
 // hosts another user is a decoy that can never be migrated onto.
 // occupiedPremiumInstanceIds() screens those out; when every other running
 // instance is occupied the create-standby branch below mints a genuinely empty
-// one. Idempotent: with the candidate already staged, only the row re-delete
-// does anything, so callers may re-run it after a wait.
+// one. The standby rows have to go as well - one makes try_reserve_instance
+// answer "already reserved" and the optimizer skips the instance, which is what
+// the DELETE ... user_id IS NULL statements below are for.
+// Idempotent: with the candidate already staged, only the row re-delete does
+// anything, so callers may re-run it after a wait.
 export async function stageSecondRunningInstance(
   excludeId: string,
 ): Promise<string> {
@@ -875,6 +878,14 @@ export async function stageSecondRunningInstance(
     `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
          AND user_id IS NULL`,
   )
+  // pickFree() read occupancy once, up to ~18 minutes of polling ago. If another
+  // lane has claimed the candidate since, returning it hands the caller the exact
+  // decoy this screening exists to remove, and the caller hangs to its own
+  // timeout with the same symptom.
+  expect(
+    occupiedPremiumInstanceIds().has(candidate!),
+    `${candidate} was claimed by a real user while it was being staged`,
+  ).toBe(false)
   return candidate!
 }
 
