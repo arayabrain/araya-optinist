@@ -790,6 +790,11 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // EVERY in-window probe to be 502 - a two-minute outage under a row named
     // "without dropping traffic". What the stimulus explains is the requests
     // already in flight to the dead target, not a run of them.
+    // All five probe checks are soft: they gate a 20-40 minute user-fired test,
+    // and a hard failure here skips the target-group poll, the ECS-placement
+    // poll, the row-824 evidence line and the final ASG settle check - the
+    // verification the run exists to produce. The test still fails; it fails
+    // with its evidence.
     const MAX_BLIP_PROBES = 2
     const detectionMs = publicTgDetectionMs()
     const failures = probes.filter((p) => p.status !== 200)
@@ -798,37 +803,49 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
         afterS: Math.round((p.at - killedAt) / 1000),
         status: p.status,
       }))
-    expect(
-      probes.length,
-      "too few probes to claim the tier kept serving throughout",
-    ).toBeGreaterThan(5)
-    expect(
-      withOffset(failures.filter((p) => p.status !== 502 && p.status !== 504)),
-      `non-200s the termination cannot explain: only 502/504 on the victim's ` +
-        `own connections are inherent to a hard terminate. 503 would mean no ` +
-        `healthy target at all, and 0 that the request never completed ` +
-        `(${probes.length} probes)`,
-    ).toEqual([])
-    expect(
-      failures.length,
-      `too many non-200s to be the inherent connection blip: ` +
-        `${JSON.stringify(withOffset(failures))} of ${probes.length} probes. ` +
-        `A hard terminate costs the requests in flight to the dead target, so ` +
-        `a run of them is the tier failing to carry the load on one instance`,
-    ).toBeLessThanOrEqual(MAX_BLIP_PROBES)
+    expect
+      .soft(
+        probes.length,
+        "too few probes to claim the tier kept serving throughout",
+      )
+      .toBeGreaterThan(5)
+    expect
+      .soft(
+        withOffset(
+          failures.filter((p) => p.status !== 502 && p.status !== 504),
+        ),
+        `non-200s the termination cannot explain: only 502/504 on the victim's ` +
+          `own connections are inherent to a hard terminate. 503 would mean no ` +
+          `healthy target at all, and 0 that the request never completed ` +
+          `(${probes.length} probes)`,
+      )
+      .toEqual([])
+    expect
+      .soft(
+        failures.length,
+        `too many non-200s to be the inherent connection blip: ` +
+          `${JSON.stringify(withOffset(failures))} of ${probes.length} probes. ` +
+          `A hard terminate costs the requests in flight to the dead target, so ` +
+          `a run of them is the tier failing to carry the load on one instance`,
+      )
+      .toBeLessThanOrEqual(MAX_BLIP_PROBES)
     const late = failures.filter((p) => p.at - killedAt > detectionMs)
-    expect(
-      withOffset(late),
-      `non-200 responses more than ${detectionMs / 1000}s after the ` +
-        `termination, long after the ALB had time to drop the dead target ` +
-        `(${probes.length} probes)`,
-    ).toEqual([])
+    expect
+      .soft(
+        withOffset(late),
+        `non-200 responses more than ${detectionMs / 1000}s after the ` +
+          `termination, long after the ALB had time to drop the dead target ` +
+          `(${probes.length} probes)`,
+      )
+      .toEqual([])
     // Without this the check above passes vacuously on a run whose probes all
     // landed inside the window.
-    expect(
-      probes.filter((p) => p.at - killedAt > detectionMs).length,
-      "too few probes after the detection window to claim the tier recovered",
-    ).toBeGreaterThan(5)
+    expect
+      .soft(
+        probes.filter((p) => p.at - killedAt > detectionMs).length,
+        "too few probes after the detection window to claim the tier recovered",
+      )
+      .toBeGreaterThan(5)
 
     // In the target group, not merely in the ASG
     await expect
