@@ -774,12 +774,11 @@ export function invokeMonitoringSweep(): string {
 //
 // This is not scene-setting the rows using it could skip: the optimizer only
 // migrates onto an instance it already considers available (running, no
-// real users, ECS task ready). Measured 2026-08-25, a run without this
-// step failed with the optimizer doing exactly the right thing - it
-// logged "marked for migration: has_shared_flag=True" every pass and then
-// "no running instances available. Triggering scaling to start stopped
-// instances..." - but nothing ever started, because the dev pool
-// self-heals to a STOPPED standby and that scaling call did not wake it.
+// real users, ECS task ready). Without this step the optimizer does exactly
+// the right thing - it logs "marked for migration: has_shared_flag=True"
+// every pass and then "no running instances available. Triggering scaling to
+// start stopped instances..." - but nothing ever starts, because the dev pool
+// self-heals to a STOPPED standby and that scaling call does not wake it.
 // A candidate must also host NO real user: the optimizer only accepts an
 // instance with zero real users as a migration target, so one that already
 // hosts another user is a decoy that can never be migrated onto.

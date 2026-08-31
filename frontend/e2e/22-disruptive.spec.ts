@@ -245,9 +245,8 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   // serves. force-new-deployment is the same action a release performs.
   test("OUT-02 - A rolling public-tier deployment keeps serving throughout", async () => {
     // Each replaced task can spend the full 600s deregistration delay
-    // draining, and the tier runs two tasks, so the rollout's worst case is
-    // over 20 minutes - observed 2026-08-25 when a drain ran to the cap. The
-    // 2026-08-26 run needed 29: placement alone took 11 minutes per task.
+    // draining, and the tier runs two tasks, so the rollout's worst case runs
+    // to roughly half an hour once per-task placement time is included.
     test.setTimeout(3_300_000)
     skipIfTooCloseToScheduledStop(55)
     const before = describeService(PUBLIC_SERVICE)
@@ -306,9 +305,9 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
           "the public deployment failed to roll out",
         ).not.toBe("FAILED")
         // Not `deployments.length === 1`: a second force-new-deployment landing
-        // mid-run (observed 2026-08-25) keeps a superseded deployment listed and
-        // makes that count unsatisfiable for the rest of the run. COMPLETED on a
-        // PRIMARY newer than the pinned one already means the roll finished.
+        // mid-run keeps a superseded deployment listed and makes that count
+        // unsatisfiable for the rest of the run. COMPLETED on a PRIMARY newer
+        // than the pinned one already means the roll finished.
         if (
           primary!.id !== priorDeployment &&
           primary!.rolloutState === "COMPLETED" &&
@@ -338,9 +337,9 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       // while the sync runs and releases it on exit, and a rolling deployment
       // replaces tasks one at a time - so the second task boots long after
       // the lock is free and legitimately logs "scheduled" too. Contention
-      // needs two tasks booting at once, which this action cannot produce
-      // (verified 2026-08-25: a real rolling deployment emitted "scheduled"
-      // and no "deferred" line). The loser branch is
+      // needs two tasks booting at once, which this action cannot produce -
+      // a rolling deployment emits "scheduled" with no "deferred" line. The
+      // loser branch is
       // test_main_unit_startup.py::TestStartupSyncLeaderElection.
       await expect
         .poll(
@@ -662,8 +661,8 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
   // real datapoints" half read-only.
   test("ASG-01 - Terminating a public instance replaces it without dropping traffic", async () => {
     // 60 minutes: the 2400s settle loop plus the two 600s polls after it. The
-    // observed cost is far lower - the terminate activity ran 11m43s on
-    // 2026-08-21 and a launch took ~20 minutes to go healthy on 2026-08-23.
+    // real cost is far lower - the terminate activity and the replacement
+    // launch each take on the order of 10-20 minutes.
     test.setTimeout(3_600_000)
     skipIfTooCloseToScheduledStop(60)
 

@@ -70,8 +70,8 @@ const ASSIGN_TIMEOUT_MS = 15 * 60_000
 const TEST_TIMEOUT_MS = ASSIGN_TIMEOUT_MS + 10 * 60_000
 // The premium endpoints do real AWS work in-request (ALB rules, scale-up,
 // teardown), so the config's 15s actionTimeout aborts them mid-flight -
-// observed 2026-08-19: every assign/release timed out client-side while
-// completing server-side. Each call names its own budget instead.
+// every assign/release times out client-side while completing server-side.
+// Each call names its own budget instead.
 const ASSIGN_REQUEST_TIMEOUT_MS = 300_000
 // The assign call blocks for the whole cold standby start, and the assignment
 // row becomes visible to /premium/status DURING it - so the row can be asserted
@@ -336,9 +336,9 @@ async function expectStoredTierMatchesStatus(page: Page) {
 }
 
 // The sheet's standby/autoscaling rows call a cluster with no free capacity a
-// legitimate outcome (observed 2026-08-19: "insufficient CPU units
-// available"). It leaves the rows unverified, not failed - skip with a reason
-// the skip-summary reporter can put on the sign-off sheet.
+// legitimate outcome ("insufficient CPU units available"). It leaves the rows
+// unverified, not failed - skip with a reason the skip-summary reporter can
+// put on the sign-off sheet.
 function skipForNoCapacity(rows: string, detail: unknown): never {
   test.skip(
     true,
@@ -465,9 +465,9 @@ test.afterEach(async () => {
 // Asserted, not assumed: after the lane nothing may still be held BY US - no
 // assignment row and no per-user ALB resources. The ECS desiredCount is NOT
 // part of that invariant: the monitoring Lambda re-targets it to match the
-// running standby-pool instances our assigns warmed up (observed 2026-08-19,
-// desired=2 minutes after every release), and idle-pool scale-down is that
-// Lambda's own 6221/6222 logic on its own schedule.
+// running standby-pool instances our assigns warmed up (desired returns to 2
+// shortly after every release), and idle-pool scale-down is that Lambda's own
+// 6221/6222 logic on its own schedule.
 test.afterAll(async () => {
   if (!RUN_PREMIUM_AWS || !PREMIUM_USER.email || isLocalBaseUrl()) return
   test.setTimeout(5 * 60_000)
@@ -558,8 +558,7 @@ test("PREM-01 - Premium login assigns a real tier and dedicated capacity really 
   // that returns assigned=True logs in the public group, but when the manager
   // Lambda's sweep migrates the user off the warming pool before any client
   // call completes, no service-side line is ever emitted and the only
-  // CloudWatch evidence is the Lambda's own migration line (observed both
-  // ways on 2026-08-20).
+  // CloudWatch evidence is the Lambda's own migration line (seen both ways).
   const sweepMigrated = () =>
     cloudwatchHas(
       PREMIUM_MANAGER_LOG_GROUP,
@@ -1743,7 +1742,7 @@ test("PREM-12 - Stopping a user's premium task brings a replacement back to heal
     // the way through rather than asserted to dip - the per-user group health
     // checks every 30s and needs three consecutive failures, so a replacement
     // that lands inside a minute is invisible to the ALB by construction
-    // (measured 2026-08-25: stopped 12:24:37, replacement RUNNING 12:25:09).
+    // (a replacement has been seen RUNNING within ~30s of the stop).
     // Whether a window opens at all is placement latency, so it is reported,
     // not required; the 502-to-DEGRADED half of the row belongs to
     // PremiumRetriggerAssign.test.tsx, which owns what the client does if one
@@ -2303,8 +2302,8 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     // fires its first premium-routed burst: right after the TG reports
     // healthy, a request can still ride the old target or 502 into the
     // interceptor's free-tier fallback, which then serves the whole session
-    // (observed 2026-08-27: the reproduce answered 200 from the free group
-    // and the served-by assert below failed on exactly that). The probe uses
+    // (the reproduce can answer 200 from the free group and the served-by
+    // assert below then fails on exactly that). The probe uses
     // explicit routing headers, so it proves the ALB itself, not client state.
     await expect
       .poll(
@@ -2334,8 +2333,8 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     // the reproduce goes out: the interceptor tears routing down on any
     // post-warm-up 200 served by a hash that differs from its pin, and its
     // recovery re-assign can complete seconds AFTER a reproduce has already
-    // gone out headerless to the free tier (observed 2026-08-27: the failure
-    // screenshot shows the assign-success toast racing the reproduce).
+    // gone out headerless to the free tier (the failure shows up as the
+    // assign-success toast racing the reproduce).
     await expect
       .poll(
         () =>
@@ -2930,8 +2929,8 @@ test("PREM-24 - The probe ladder's first doubling is real wall-clock; terminal R
     })
 
     // Retry is clicked while the port is STILL blocked, which is what makes it
-    // attributable: measured 2026-08-27, lifting the outage first recovers the
-    // machine on its own before any click - onPremiumReachable CLEARs from any
+    // attributable: lifting the outage first would recover the machine on its
+    // own before any click - onPremiumReachable CLEARs from any
     // verified 200 and never consults the terminal flag, and the reload's own
     // mount re-arms premium routing off a still-valid /status. So the button's
     // effect is asserted here on the one thing only it can do: reset the probe

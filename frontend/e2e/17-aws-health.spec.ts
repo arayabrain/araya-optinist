@@ -182,8 +182,8 @@ function stillBreaching(alarm: AlarmDetail): boolean {
 // the public tier's health-check grace period is 900s, so for the first half
 // hour the tasks, targets, logs and alarms this lane reads are all mid-boot -
 // the public target group really does hold two unhealthy targets and its alarm
-// really is in ALARM. Grading that is grading the clock: measured 2026-08-19 to
-// 2026-08-23, the alarm sits in ALARM from 23:08 to 23:23 every weekday start.
+// really is in ALARM. Grading that is grading the clock: the alarm sits in
+// ALARM for the ~15-minute daily start-up window every weekday.
 // A skip says so; a failure sends someone hunting an outage that ends itself.
 function startUpWindowReason(): string {
   if (ENV !== "development") return ""
