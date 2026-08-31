@@ -573,14 +573,20 @@ function publicTgHealth(): { id: string; port: number; state: string }[] {
 //   +1 -> the terminate call and the OS shutdown, before checks start failing
 // Read from the TG so a terraform change moves it.
 function publicTgDetectionMs(): number {
-  const tg = awsJson<{
+  const tgs = awsJson<{
     TargetGroups: {
       HealthCheckIntervalSeconds: number
       UnhealthyThresholdCount: number
     }[]
-  }>(`elbv2 describe-target-groups --names ${PUBLIC_TG} --region ${AWS_REGION}`)
-    .TargetGroups[0]
-  return (tg.UnhealthyThresholdCount + 2) * tg.HealthCheckIntervalSeconds * 1000
+  }>(
+    `elbv2 describe-target-groups --names ${PUBLIC_TG} --region ${AWS_REGION}`,
+  ).TargetGroups
+  expect(tgs.length, `elbv2 knows ${PUBLIC_TG}`).toBe(1)
+  return (
+    (tgs[0].UnhealthyThresholdCount + 2) *
+    tgs[0].HealthCheckIntervalSeconds *
+    1000
+  )
 }
 
 // The EC2 instances currently running a task of the public service. Row 827's
@@ -669,11 +675,12 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
   // datapoints stay logged, and HEALTH-27 covers 824's "the alarm fires on
   // real datapoints" half read-only.
   test("ASG-01 - Terminating a public instance replaces it without dropping traffic", async () => {
-    // 60 minutes: the 2400s settle loop plus the two 600s polls after it. The
-    // real cost is far lower - the terminate activity and the replacement
-    // launch each take on the order of 10-20 minutes.
-    test.setTimeout(3_600_000)
-    skipIfTooCloseToScheduledStop(60)
+    // 65 minutes: the 2400s settle loop plus the two 600s polls after it sum to
+    // exactly 3600s, leaving nothing for the AWS calls between them. The real
+    // cost is far lower - the terminate activity and the replacement launch
+    // each take on the order of 10-20 minutes.
+    test.setTimeout(3_900_000)
+    skipIfTooCloseToScheduledStop(65)
 
     // Every capacity number here is rewritten twice a day by the scheduler, so
     // read them rather than trusting the terraform default.
@@ -705,6 +712,9 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
       "UnHealthyHostCount was already above zero before this test started",
     ).toBe(0)
     expect(alarmState(), `${UNHEALTHY_ALARM} must start in OK`).toEqual(["OK"])
+    // Read before the kill: fixed config, and one fewer AWS call on the
+    // post-disruption path, where a throw costs the whole run's evidence.
+    const detectionMs = publicTgDetectionMs()
 
     const start = Date.now()
     const [victim, survivor] = healthyBefore
@@ -803,7 +813,6 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // verification the run exists to produce. The test still fails; it fails
     // with its evidence.
     const MAX_BLIP_PROBES = 2
-    const detectionMs = publicTgDetectionMs()
     const failures = probes.filter((p) => p.status !== 200)
     const withOffset = (ps: typeof probes) =>
       ps.map((p) => ({
