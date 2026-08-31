@@ -504,6 +504,9 @@ const PUBLIC_ASG = "development-optinist-public-asg"
 const PUBLIC_TG = "development-optinist-public-tg"
 const PUBLIC_LB = "development-optinist-lb"
 const UNHEALTHY_ALARM = "development-optinist-public-tg-unhealthy-hosts"
+// Explicit rather than Playwright's implicit default: the probe cadence and the
+// detection-window arithmetic both depend on a request that cannot hang.
+const PROBE_TIMEOUT_MS = 30_000
 
 type AsgInstance = { id: string; health: string; state: string }
 
@@ -718,10 +721,20 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
       const deadline = Date.now() + 2_400_000
       for (;;) {
         const at = Date.now()
-        const res = await anon.get(`${process.env.BASE_URL}/`, {
-          failOnStatusCode: false,
-        })
-        probes.push({ at, status: res.status() })
+        // A hard terminate mid-connection is the stimulus most likely to reset
+        // one, and an uncaught throw here ends the run with no probe evidence
+        // at all. status 0 = the request never completed.
+        let status = 0
+        try {
+          const res = await anon.get(`${process.env.BASE_URL}/`, {
+            failOnStatusCode: false,
+            timeout: PROBE_TIMEOUT_MS,
+          })
+          status = res.status()
+        } catch {
+          // A reset or a timeout leaves status 0; the loop keeps probing.
+        }
+        probes.push({ at, status })
 
         const churn = launchesSince(start)
         expect(
@@ -769,7 +782,9 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     //                                   the tier
     //   either side                  -> at most MAX_BLIP_PROBES non-200s
     // 503 is never tolerated at either point: it means no healthy target at all,
-    // which is traffic dropped rather than one connection lost.
+    // which is traffic dropped rather than one connection lost. Neither is 0:
+    // the ALB answers 502 on a dead target connection, so a request that never
+    // completed at all is not this stimulus.
     //
     // The volume bound is load-bearing: class and time alone leave it open for
     // EVERY in-window probe to be 502 - a two-minute outage under a row named
@@ -790,8 +805,9 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     expect(
       withOffset(failures.filter((p) => p.status !== 502 && p.status !== 504)),
       `non-200s the termination cannot explain: only 502/504 on the victim's ` +
-        `own connections are inherent to a hard terminate, and 503 would mean ` +
-        `no healthy target at all (${probes.length} probes)`,
+        `own connections are inherent to a hard terminate. 503 would mean no ` +
+        `healthy target at all, and 0 that the request never completed ` +
+        `(${probes.length} probes)`,
     ).toEqual([])
     expect(
       failures.length,
