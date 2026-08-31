@@ -789,29 +789,21 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
 
     // A hard terminate kills the OS before the ALB can react, and ALB does not
     // retry a failed target connection, so a bounded blip is inherent to the
-    // stimulus - `toEqual([])` over the whole run was unsatisfiable by design:
-    // the ALB itself can emit a 502 on a dead target connection
-    // (TargetConnectionError, not an application 5xx). What row 827 actually
-    // claims is scoped:
-    //   inside the detection window  -> 502/504 only, on the victim's own
-    //                                   connections
-    //   outside the detection window -> every probe 200; the survivor carries
-    //                                   the tier
-    //   either side                  -> at most MAX_BLIP_PROBES non-200s
-    // 503 is never tolerated at either point: it means no healthy target at all,
-    // which is traffic dropped rather than one connection lost. Neither is 0:
-    // the ALB answers 502 on a dead target connection, so a request that never
-    // completed at all is not this stimulus.
+    // stimulus: the ALB emits the 502 itself (TargetConnectionError, not an
+    // application 5xx). What row 827 claims, scoped:
+    //   inside the detection window -> 502/504 only
+    //   outside it                  -> every probe 200; the survivor carries
+    //                                  the tier
+    //   either side                 -> at most MAX_BLIP_PROBES non-200s
+    // Never tolerated: 503 (no healthy target at all - traffic dropped, not one
+    // connection lost) and 0 (the request never completed, which a dead target
+    // connection does not cause). The volume bound is load-bearing: class and
+    // time alone let EVERY in-window probe be 502, a two-minute outage under a
+    // row named "without dropping traffic".
     //
-    // The volume bound is load-bearing: class and time alone leave it open for
-    // EVERY in-window probe to be 502 - a two-minute outage under a row named
-    // "without dropping traffic". What the stimulus explains is the requests
-    // already in flight to the dead target, not a run of them.
-    // All five probe checks are soft: they gate a 20-40 minute user-fired test,
-    // and a hard failure here skips the target-group poll, the ECS-placement
-    // poll, the row-824 evidence line and the final ASG settle check - the
-    // verification the run exists to produce. The test still fails; it fails
-    // with its evidence.
+    // Soft, all five: a hard failure here skips the target-group poll, the
+    // ECS-placement poll, the row-824 evidence line and the final settle check -
+    // the verification this run exists to produce.
     const MAX_BLIP_PROBES = 2
     const failures = probes.filter((p) => p.status !== 200)
     const withOffset = (ps: typeof probes) =>
