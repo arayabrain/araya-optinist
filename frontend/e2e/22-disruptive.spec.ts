@@ -15,6 +15,7 @@ import {
   login,
   openWorkspace,
   premiumTargetHealth,
+  progressLog,
   runSql,
   sqlSkipReason,
   stageSecondRunningInstance,
@@ -249,6 +250,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
     // to roughly half an hour once per-task placement time is included.
     test.setTimeout(3_300_000)
     skipIfTooCloseToScheduledStop(55)
+    const p = progressLog("22-disruptive", "OUT-02")
     const before = describeService(PUBLIC_SERVICE)
     expect(
       before.desiredCount,
@@ -267,6 +269,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       await reproduceStatus(record!),
       `published ${record!.uid} did not load before the deployment`,
     ).toBe(200)
+    p.step(`published ${record!.uid} readable before the deployment`)
 
     const anon = await request.newContext()
     const statuses: number[] = []
@@ -281,6 +284,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       awsJson(
         `ecs update-service --cluster ${CLUSTER} --service ${PUBLIC_SERVICE} ` +
           `--force-new-deployment --region ${AWS_REGION}`,
+      )
+      p.step(
+        `forced a new deployment over ${priorDeployment}; each replaced task ` +
+          `can drain for the full 600s deregistration delay`,
       )
       // Poll the front door while the deployment rolls; a rolling update keeps
       // the old task in service until the new one is healthy, so every one of
@@ -304,6 +311,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
           primary!.rolloutState,
           "the public deployment failed to roll out",
         ).not.toBe("FAILED")
+        p.tick(
+          `rollout ${primary!.rolloutState}, running ${s.runningCount}/` +
+            `${before.desiredCount}, ${statuses.length} probes`,
+        )
         // Not `deployments.length === 1`: a second force-new-deployment landing
         // mid-run keeps a superseded deployment listed and makes that count
         // unsatisfiable for the rest of the run. COMPLETED on a PRIMARY newer
@@ -319,6 +330,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
         await new Promise((r) => setTimeout(r, 10_000))
       }
       expect(settled, "the public deployment never settled").toBe(true)
+      p.step(`rollout settled after ${statuses.length} probes`)
 
       // The new task mounted the same EFS filesystem, so the record is still
       // there: 202 here would mean the replacement lost the cache and the
@@ -328,6 +340,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
         `published ${record!.uid} after the task replacement (202 = re-syncing ` +
           `from S3, so EFS did not preserve it)`,
       ).toBe(200)
+      p.step("EFS preserved the published cache across the replacement")
 
       // Row 823: the replacement task really runs the startup sync through
       // the leader path, warming the published-data cache on the new task.
@@ -343,12 +356,14 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       // test_main_unit_startup.py::TestStartupSyncLeaderElection.
       await expect
         .poll(
-          () =>
-            cloudwatchHas(
+          () => {
+            p.tick("waiting for the replacement task's startup-sync log line")
+            return cloudwatchHas(
               PUBLIC_LOG_GROUP,
               "Startup sync task scheduled",
               deployStart,
-            ),
+            )
+          },
           {
             ...CLOUDWATCH_POLL,
             message: `no "Startup sync task scheduled" line in ${PUBLIC_LOG_GROUP} after the deployment`,
