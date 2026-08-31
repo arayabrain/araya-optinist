@@ -628,12 +628,16 @@ function alarmState(): string[] {
   )
 }
 
-function unhealthyHostMaxima(sinceMs: number): number[] {
+// [Timestamp, Maximum] pairs, time-sorted. Maxima alone cannot carry the claim
+// they are logged for: get-metric-statistics returns Datapoints unordered, and
+// CloudWatch omits periods with no samples - so [0,1,1,1,0] is indistinguishable
+// from three non-adjacent 1s. The timestamps are what show contiguity.
+function unhealthyHostSeries(sinceMs: number): [string, number][] {
   const tg = publicTgArn()
   const lb = awsJson<{ LoadBalancers: { LoadBalancerArn: string }[] }>(
     `elbv2 describe-load-balancers --names ${PUBLIC_LB} --region ${AWS_REGION}`,
   ).LoadBalancers[0].LoadBalancerArn
-  return awsJson<number[]>(
+  return awsJson<[string, number][]>(
     `cloudwatch get-metric-statistics --namespace AWS/ApplicationELB ` +
       `--metric-name UnHealthyHostCount ` +
       `--dimensions Name=TargetGroup,Value=${tg.slice(
@@ -646,7 +650,7 @@ function unhealthyHostMaxima(sinceMs: number): number[] {
       // so the unsorted list reads as flapping (`[0,1,0,1,0]`) where the metric
       // actually held one contiguous block. Math.max below does not care; the
       // row-824 log line does.
-      `--query 'sort_by(Datapoints,&Timestamp)[].Maximum'`,
+      `--query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]'`,
   )
 }
 
@@ -694,7 +698,10 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // A run that starts with the metric already breaching cannot attribute
     // anything below to what it did.
     expect(
-      Math.max(0, ...unhealthyHostMaxima(Date.now() - 300_000)),
+      Math.max(
+        0,
+        ...unhealthyHostSeries(Date.now() - 300_000).map(([, m]) => m),
+      ),
       "UnHealthyHostCount was already above zero before this test started",
     ).toBe(0)
     expect(alarmState(), `${UNHEALTHY_ALARM} must start in OK`).toEqual(["OK"])
@@ -876,8 +883,10 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // terminating instance's target is ever counted unhealthy is what this
     // records, and the first runs are what settle it.
     console.log(
-      `ASG-01: UnHealthyHostCount maxima during the replacement: ` +
-        `${JSON.stringify(unhealthyHostMaxima(start))}; ` +
+      `ASG-01: UnHealthyHostCount during the replacement: ` +
+        `${unhealthyHostSeries(start)
+          .map(([t, m]) => `${t.slice(11, 16)}=${m}`)
+          .join(" ")}; ` +
         `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}; ` +
         `non-200 probes: ${JSON.stringify(withOffset(failures))}`,
     )
