@@ -638,7 +638,11 @@ function unhealthyHostMaxima(sinceMs: number): number[] {
       `--start-time ${new Date(sinceMs).toISOString()} ` +
       `--end-time ${new Date().toISOString()} ` +
       `--period 60 --statistics Maximum --region ${AWS_REGION} ` +
-      `--query 'Datapoints[].Maximum'`,
+      // sort_by: get-metric-statistics returns Datapoints in no defined order,
+      // so the unsorted list reads as flapping (`[0,1,0,1,0]`) where the metric
+      // actually held one contiguous block. Math.max below does not care; the
+      // row-824 log line does.
+      `--query 'sort_by(Datapoints,&Timestamp)[].Maximum'`,
   )
 }
 
