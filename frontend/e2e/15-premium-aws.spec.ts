@@ -23,6 +23,7 @@ import {
   isLocalBaseUrl,
   login,
   openWorkspace,
+  progressLog,
   premiumInstances,
   premiumTargetHealth,
   premiumTaskOn,
@@ -2126,10 +2127,12 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
 
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
   expectGenuinelyPremium(await statusViaPage(page))
+  const p = progressLog("15-premium-aws", "PREM-14")
   const assignment = await dedicatedAssignmentCoolingIfNeeded(page, rows)
   heldDedicated = true
   const instanceA = assignment.instance_id!
   expect(instanceA).toMatch(/^i-[0-9a-f]+$/)
+  p.step(`dedicated assignment held on ${instanceA}`)
 
   const idRes = await page.request.get(`${apiUrl()}/users/me`, {
     headers: await apiHeaders(page),
@@ -2147,6 +2150,7 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     // S3-uploaded artefacts exist before anything moves.
     await importSampleData(page, wsName)
     const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+    p.step(`precondition run ${uid} complete`)
     const bucket = meBody.attributes?.remote_bucket_name
     expect(
       bucket,
@@ -2154,7 +2158,10 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     ).toBeTruthy()
     await expect
       .poll(
-        () => s3ObjectCount(bucket, `app/studio_data/output/${wsId}/${uid}/`),
+        () => {
+          p.tick("waiting for the run's outputs to land in S3")
+          return s3ObjectCount(bucket, `app/studio_data/output/${wsId}/${uid}/`)
+        },
         {
           timeout: 120_000,
           intervals: [15_000],
@@ -2170,6 +2177,7 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     expect(runSql(rowSql), "pre-migration assignment row").toBe(instanceA)
 
     const candidate = await stageSecondRunningInstance(instanceA)
+    p.step(`migration target staged: ${candidate}`)
 
     // Now mark the assignment shared and let the manager's own migration loop
     // do the real work: pick the available instance, move the user, re-point
@@ -2195,6 +2203,9 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
           `"retry_interval":15}' /dev/null`,
       )
     invokeMigration()
+    p.step(
+      `invoked migrate_shared_users; waiting for the row to leave ${instanceA}`,
+    )
 
     // The migration's DB truth: the row moves to a different real instance.
     // Re-invoked as we poll, because one invocation gives up after its own
@@ -2211,6 +2222,7 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
             return true
           }
           if (++passes % 15 === 0) invokeMigration()
+          p.tick(`assignment still on ${instanceB} after ${passes} passes`)
           return false
         },
         {
@@ -2224,6 +2236,8 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
         },
       )
       .toBe(true)
+
+    p.step(`migrated onto ${instanceB}`)
 
     // The manager's own account of what happened.
     await expect
@@ -2271,12 +2285,21 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
 
     // The ALB really serves the user from the new instance before the UI half.
     await expect
-      .poll(() => premiumTargetHealth(userId).includes("healthy"), {
-        timeout: 8 * 60_000,
-        intervals: [15_000],
-        message: `premium-${userId}-tg never became healthy on ${instanceB}`,
-      })
+      .poll(
+        () => {
+          p.tick(
+            `waiting for premium-${userId}-tg to go healthy on ${instanceB}`,
+          )
+          return premiumTargetHealth(userId).includes("healthy")
+        },
+        {
+          timeout: 8 * 60_000,
+          intervals: [15_000],
+          message: `premium-${userId}-tg never became healthy on ${instanceB}`,
+        },
+      )
       .toBe(true)
+    p.step(`premium-${userId}-tg healthy on ${instanceB}`)
     // The app adopts the migrated assignment on its own assign-on-mount after
     // a reload (PREM-03's adoption fact). The hash comes from the same read
     // that reports the instance, so the two cannot describe different states.
@@ -2308,6 +2331,7 @@ test("PREM-14 - User data stays accessible after migration to a different dedica
     await expect
       .poll(
         async () => {
+          p.tick(`waiting for routed requests to converge on ${instanceB}`)
           const probe = await page.request.get(`${apiUrl()}/users/me`, {
             headers: await routedApiHeaders(page),
             timeout: STATUS_REQUEST_TIMEOUT_MS,
