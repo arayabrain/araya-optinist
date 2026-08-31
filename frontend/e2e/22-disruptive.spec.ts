@@ -767,26 +767,42 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     //                                   connections
     //   outside the detection window -> every probe 200; the survivor carries
     //                                   the tier
+    //   either side                  -> at most MAX_BLIP_PROBES non-200s
     // 503 is never tolerated at either point: it means no healthy target at all,
     // which is traffic dropped rather than one connection lost.
+    //
+    // The volume bound is load-bearing: class and time alone leave it open for
+    // EVERY in-window probe to be 502 - a two-minute outage under a row named
+    // "without dropping traffic". What the stimulus explains is the requests
+    // already in flight to the dead target, not a run of them.
+    const MAX_BLIP_PROBES = 2
     const detectionMs = publicTgDetectionMs()
     const failures = probes.filter((p) => p.status !== 200)
+    const withOffset = (ps: typeof probes) =>
+      ps.map((p) => ({
+        afterS: Math.round((p.at - killedAt) / 1000),
+        status: p.status,
+      }))
     expect(
       probes.length,
       "too few probes to claim the tier kept serving throughout",
     ).toBeGreaterThan(5)
     expect(
-      failures.filter((p) => p.status !== 502 && p.status !== 504),
+      withOffset(failures.filter((p) => p.status !== 502 && p.status !== 504)),
       `non-200s the termination cannot explain: only 502/504 on the victim's ` +
         `own connections are inherent to a hard terminate, and 503 would mean ` +
         `no healthy target at all (${probes.length} probes)`,
     ).toEqual([])
+    expect(
+      failures.length,
+      `too many non-200s to be the inherent connection blip: ` +
+        `${JSON.stringify(withOffset(failures))} of ${probes.length} probes. ` +
+        `A hard terminate costs the requests in flight to the dead target, so ` +
+        `a run of them is the tier failing to carry the load on one instance`,
+    ).toBeLessThanOrEqual(MAX_BLIP_PROBES)
     const late = failures.filter((p) => p.at - killedAt > detectionMs)
     expect(
-      late.map((p) => ({
-        afterS: Math.round((p.at - killedAt) / 1000),
-        status: p.status,
-      })),
+      withOffset(late),
       `non-200 responses more than ${detectionMs / 1000}s after the ` +
         `termination, long after the ALB had time to drop the dead target ` +
         `(${probes.length} probes)`,
@@ -830,12 +846,7 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
       `ASG-01: UnHealthyHostCount maxima during the replacement: ` +
         `${JSON.stringify(unhealthyHostMaxima(start))}; ` +
         `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}; ` +
-        `non-200 probes: ${JSON.stringify(
-          failures.map((p) => ({
-            afterS: Math.round((p.at - killedAt) / 1000),
-            status: p.status,
-          })),
-        )}`,
+        `non-200 probes: ${JSON.stringify(withOffset(failures))}`,
     )
 
     // No restore step: nothing here changed a capacity number, and MinSize kept
