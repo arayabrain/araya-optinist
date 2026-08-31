@@ -565,6 +565,20 @@ function publicTgHealth(): { id: string; port: number; state: string }[] {
   }))
 }
 
+// How long the ALB can still route to a target whose OS is already gone:
+// (unhealthy_threshold + 1) x interval - the +1 for a termination landing just
+// after a passing check. Read from the TG so a terraform change moves it.
+function publicTgDetectionMs(): number {
+  const tg = awsJson<{
+    TargetGroups: {
+      HealthCheckIntervalSeconds: number
+      UnhealthyThresholdCount: number
+    }[]
+  }>(`elbv2 describe-target-groups --names ${PUBLIC_TG} --region ${AWS_REGION}`)
+    .TargetGroups[0]
+  return (tg.UnhealthyThresholdCount + 1) * tg.HealthCheckIntervalSeconds * 1000
+}
+
 // The EC2 instances currently running a task of the public service. Row 827's
 // third expectation is about the task, not just the instance.
 function publicTaskInstances(): string[] {
@@ -636,12 +650,12 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
   // which would write the very health verdict the ASG is supposed to reach on
   // its own - the objection that retired the set-alarm-state version.
   //
-  // Row 824's alarm is watched but deliberately NOT asserted here. Whether a
-  // terminating instance's target is ever counted `unhealthy`, or goes straight
-  // to `draining` (counted in neither host-count metric) as the ASG deregisters
-  // it, is not documented; an assertion either way would be a guess. The
-  // observed datapoints are logged instead, and HEALTH-27 covers 824's "the
-  // alarm fires on real datapoints" half read-only.
+  // Row 824's alarm is watched but still NOT asserted here. The 2026-08-28 run
+  // settled which way it goes - the victim's target IS counted `unhealthy`
+  // (UnHealthyHostCount held 1 for ~7 min and the alarm ran ALARM -> OK) rather
+  // than going straight to `draining` - but one run is thin ground for a hard
+  // assertion. The observed datapoints stay logged, and HEALTH-27 covers 824's
+  // "the alarm fires on real datapoints" half read-only.
   test("ASG-01 - Terminating a public instance replaces it without dropping traffic", async () => {
     // 60 minutes: the 2400s settle loop plus the two 600s polls after it. The
     // observed cost is far lower - the terminate activity ran 11m43s on
@@ -680,7 +694,7 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     const start = Date.now()
     const [victim, survivor] = healthyBefore
     const anon = await request.newContext()
-    const statuses: number[] = []
+    const probes: { at: number; status: number }[] = []
     let replacement = ""
     try {
       awsJson(
@@ -696,7 +710,7 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
         const res = await anon.get(`${process.env.BASE_URL}/`, {
           failOnStatusCode: false,
         })
-        statuses.push(res.status())
+        probes.push({ at: Date.now(), status: res.status() })
 
         const churn = launchesSince(start)
         expect(
@@ -732,14 +746,43 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
       await anon.dispose()
     }
 
+    // A hard terminate kills the OS before the ALB can react, and ALB does not
+    // retry a failed target connection, so a bounded blip is inherent to the
+    // stimulus - `toEqual([])` over the whole run was unsatisfiable by design
+    // (one 502 in 42 probes, 2026-08-28, with TargetConnectionErrorCount=1 and
+    // HTTPCode_Target_5XX_Count=0: the ALB, not the app). What row 827 actually
+    // claims is scoped:
+    //   inside the detection window  -> 502/504 only, on the victim's own
+    //                                   connections
+    //   outside the detection window -> every probe 200; the survivor carries
+    //                                   the tier
+    // 503 is never tolerated at either point: it means no healthy target at all,
+    // which is traffic dropped rather than one connection lost.
+    const detectionMs = publicTgDetectionMs()
+    const failures = probes.filter((p) => p.status !== 200)
     expect(
-      statuses.length,
+      probes.length,
       "too few probes to claim the tier kept serving throughout",
     ).toBeGreaterThan(5)
     expect(
-      statuses.filter((s) => s !== 200),
-      `non-200 responses during the replacement (${statuses.length} probes)`,
+      failures.filter((p) => p.status !== 502 && p.status !== 504),
+      `non-200s the termination cannot explain: only 502/504 on the victim's ` +
+        `own connections are inherent to a hard terminate, and 503 would mean ` +
+        `no healthy target at all (${probes.length} probes)`,
     ).toEqual([])
+    const late = failures.filter((p) => p.at - start > detectionMs)
+    expect(
+      late.map((p) => ({ afterS: Math.round((p.at - start) / 1000), ...p })),
+      `non-200 responses more than ${detectionMs / 1000}s after the ` +
+        `termination, long after the ALB had time to drop the dead target ` +
+        `(${probes.length} probes)`,
+    ).toEqual([])
+    // Without this the check above passes vacuously on a run whose probes all
+    // landed inside the window.
+    expect(
+      probes.filter((p) => p.at - start > detectionMs).length,
+      "too few probes after the detection window to claim the tier recovered",
+    ).toBeGreaterThan(5)
 
     // In the target group, not merely in the ASG
     await expect
@@ -772,7 +815,13 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     console.log(
       `ASG-01: UnHealthyHostCount maxima during the replacement: ` +
         `${JSON.stringify(unhealthyHostMaxima(start))}; ` +
-        `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}`,
+        `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}; ` +
+        `non-200 probes: ${JSON.stringify(
+          failures.map((p) => ({
+            afterS: Math.round((p.at - start) / 1000),
+            status: p.status,
+          })),
+        )}`,
     )
 
     // No restore step: nothing here changed a capacity number, and MinSize kept
