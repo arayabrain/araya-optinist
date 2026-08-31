@@ -437,7 +437,7 @@ labels* above.
 | BT-1014                   | Storage 90-99% warning on RUN           | LC-10 (snackbar + run not blocked)                                                         |
 | BT-1015                   | Manual storage refresh                  | WS-04                                                                                      |
 | BT-1016                   | Storage values update after delete      | LC-05 (delete ballast -> Reload clears warning)                                             |
-| BT-1002..1004, 1008, 1009 | S3-side verification                    | S3-01 / S3-02 / S3-03 (**RUN_S3_AWS=1**); PREM-07 (**@prem**) for the premium variants |
+| BT-1002..1004, 1008, 1009 | S3-side verification                    | S3-01 / S3-02 / S3-03 (**RUN_S3_AWS=1**) for the free account, and their premium twins S3-21 / S3-22 / S3-23, the same bodies behind `RUN_PREMIUM_AWS=1` holding a real assignment; PREM-07 (**@prem**) covers the premium run's outputs from the premium lane's own side |
 
 ### Notes
 
