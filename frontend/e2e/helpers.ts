@@ -268,6 +268,37 @@ export function logTail(
   }
 }
 
+// Elapsed-time progress for the rows that run for tens of minutes against real
+// AWS. Without it a stalled run reads exactly like a slow one, and the only
+// signal is the test timeout half an hour later.
+//   step() -> always prints
+//   tick() -> prints at most once per PROGRESS_TICK_MS, for a poll callback
+const PROGRESS_TICK_MS = 60_000
+
+export function progressLog(
+  file: string,
+  label: string,
+): {
+  step: (message: string) => void
+  tick: (message: string) => void
+} {
+  const started = Date.now()
+  let last = 0
+  const line = (message: string) =>
+    console.log(
+      `[${file}] ${label}: ` +
+        `+${((Date.now() - started) / 60_000).toFixed(1)}m ${message}`,
+    )
+  return {
+    step: line,
+    tick: (message: string) => {
+      if (Date.now() - last < PROGRESS_TICK_MS) return
+      last = Date.now()
+      line(message)
+    },
+  }
+}
+
 // One read-only AWS CLI call, parsed. Callers pass their own --query.
 export function awsJson<T>(args: string): T {
   return JSON.parse(
@@ -792,6 +823,7 @@ export function invokeMonitoringSweep(): string {
 export async function stageSecondRunningInstance(
   excludeId: string,
 ): Promise<string> {
+  const p = progressLog("helpers", "stage-premium-target")
   const pickFree = () => {
     const occupied = occupiedPremiumInstanceIds()
     return premiumInstances().find(
@@ -799,6 +831,11 @@ export async function stageSecondRunningInstance(
     )?.id
   }
   let candidate = pickFree()
+  p.step(
+    candidate
+      ? `found free instance ${candidate}`
+      : `no free instance beside ${excludeId}; asking the manager for one`,
+  )
   if (!candidate) {
     // No free instance to migrate onto - either the user holds the only one,
     // or every other running instance already hosts a real user. The pool
@@ -819,6 +856,7 @@ export async function stageSecondRunningInstance(
       .poll(
         () => {
           candidate = pickFree()
+          p.tick("waiting for create_standby to mint an instance")
           return !!candidate
         },
         {
@@ -828,14 +866,21 @@ export async function stageSecondRunningInstance(
         },
       )
       .toBe(true)
+    p.step(`manager created ${candidate}`)
     // The Lambda answers with the id and stops the instance ~30s later, so a
     // start issued in that window is silently undone. Wait it out.
     await expect
-      .poll(() => instanceState(candidate!), {
-        timeout: 8 * 60_000,
-        intervals: [20_000],
-        message: `${candidate} never settled to stopped after creation`,
-      })
+      .poll(
+        () => {
+          p.tick(`waiting for ${candidate} to settle to stopped`)
+          return instanceState(candidate!)
+        },
+        {
+          timeout: 8 * 60_000,
+          intervals: [20_000],
+          message: `${candidate} never settled to stopped after creation`,
+        },
+      )
       .toBe("stopped")
   }
   runSqlWriteOnDev(
@@ -845,12 +890,19 @@ export async function stageSecondRunningInstance(
   if (instanceState(candidate!) !== "running") {
     awsJson(`ec2 start-instances --instance-ids ${candidate}`)
   }
+  p.step(`starting ${candidate}`)
   await expect
-    .poll(() => runningPremiumInstanceIds().includes(candidate!), {
-      timeout: 8 * 60_000,
-      intervals: [15_000],
-      message: `${candidate} never reached running`,
-    })
+    .poll(
+      () => {
+        p.tick(`waiting for ${candidate} to reach running`)
+        return runningPremiumInstanceIds().includes(candidate!)
+      },
+      {
+        timeout: 8 * 60_000,
+        intervals: [15_000],
+        message: `${candidate} never reached running`,
+      },
+    )
     .toBe(true)
   // A running EC2 is not yet a migration target: the readiness check the
   // optimizer runs demands a premium ECS task on it, so raise the service's
@@ -866,11 +918,17 @@ export async function stageSecondRunningInstance(
     )
   }
   await expect
-    .poll(() => premiumTaskStatusOn(candidate!), {
-      timeout: 10 * 60_000,
-      intervals: [20_000],
-      message: `no premium ECS task ever placed on ${candidate}`,
-    })
+    .poll(
+      () => {
+        p.tick(`waiting for a premium ECS task on ${candidate}`)
+        return premiumTaskStatusOn(candidate!)
+      },
+      {
+        timeout: 10 * 60_000,
+        intervals: [20_000],
+        message: `no premium ECS task ever placed on ${candidate}`,
+      },
+    )
     .toBe("RUNNING")
   // The delete above races the pool manager, which re-adds a standby row for
   // an instance it just started. Clear it again so the optimizer will take it.
@@ -886,6 +944,7 @@ export async function stageSecondRunningInstance(
     occupiedPremiumInstanceIds().has(candidate!),
     `${candidate} was claimed by a real user while it was being staged`,
   ).toBe(false)
+  p.step(`staged ${candidate}`)
   return candidate!
 }
 
