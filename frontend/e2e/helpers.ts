@@ -692,6 +692,28 @@ export function runningPremiumInstanceIds(): string[] {
   return out ? out.split(/\s+/) : []
 }
 
+// Instance ids that currently hold a real (non-standby) premium user, by the
+// same definition process_shared_instance_optimization uses to reject an
+// instance as a migration target: status IN ('active','terminating') AND
+// is_standby = 0. An instance carrying one of these can never satisfy the
+// optimizer's `not real_users` gate, so a migration-target staging must route
+// around it - see stageSecondRunningInstance.
+export function occupiedPremiumInstanceIds(): Set<string> {
+  const out = runSql(
+    `SELECT DISTINCT instance_id FROM premium_user_assignments ` +
+      `WHERE status IN ('active','terminating') AND is_standby = 0 ` +
+      `AND user_id IS NOT NULL AND instance_id LIKE 'i-%';`,
+  )
+  return new Set(
+    out
+      ? out
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [],
+  )
+}
+
 // The premium service's task on a given instance, as the console's Tasks tab
 // shows it. Rows 1203/1204 are written against that view.
 export function premiumTaskOn(
@@ -758,20 +780,30 @@ export function invokeMonitoringSweep(): string {
 // "no running instances available. Triggering scaling to start stopped
 // instances..." - but nothing ever started, because the dev pool
 // self-heals to a STOPPED standby and that scaling call did not wake it.
-// A candidate must also carry NO assignment row at all: a standby row
-// makes try_reserve_instance answer "already reserved" and the optimizer
-// skips it. Idempotent: with the candidate already staged, only the row
-// re-delete does anything, so callers may re-run it to heal after a wait.
+// A candidate must also host NO real user: the optimizer only accepts an
+// instance with zero real users as a migration target, so one that already
+// hosts another user is a decoy that can never be migrated onto.
+// occupiedPremiumInstanceIds() screens those out; when every other running
+// instance is occupied the create-standby branch below mints a genuinely empty
+// one. Idempotent: with the candidate already staged, only the row re-delete
+// does anything, so callers may re-run it after a wait.
 export async function stageSecondRunningInstance(
   excludeId: string,
 ): Promise<string> {
-  let candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+  const pickFree = () => {
+    const occupied = occupiedPremiumInstanceIds()
+    return premiumInstances().find(
+      (i) => i.id !== excludeId && !occupied.has(i.id),
+    )?.id
+  }
+  let candidate = pickFree()
   if (!candidate) {
-    // The pool self-heals to exactly ONE standby and the sweep terminates
-    // the extras, so when the user holds the only instance there is nothing
-    // to migrate onto (measured: a run skipped here). Ask the manager for
-    // another. create_standby refuses while get_standby_count() already
-    // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
+    // No free instance to migrate onto - either the user holds the only one,
+    // or every other running instance already hosts a real user. The pool
+    // self-heals to exactly ONE standby and the sweep terminates the extras,
+    // so ask the manager for another. create_standby refuses while
+    // get_standby_count() already meets PREMIUM_STANDBY_POOL_SIZE, so the
+    // standby rows come out first.
     runSqlWriteOnDev(
       `DELETE FROM premium_user_assignments WHERE is_standby = 1
          AND user_id IS NULL`,
@@ -784,7 +816,7 @@ export async function stageSecondRunningInstance(
     await expect
       .poll(
         () => {
-          candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+          candidate = pickFree()
           return !!candidate
         },
         {
