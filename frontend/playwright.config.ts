@@ -14,6 +14,13 @@ if (fs.existsSync(envFile)) {
   }
 }
 
+// One regex from the tags that are switched off, or undefined when none are:
+// grepInvert matches every test when handed an empty pattern.
+function excluded(tags: [string, boolean][]): RegExp | undefined {
+  const off = tags.filter(([, on]) => !on).map(([tag]) => tag)
+  return off.length ? new RegExp(off.join("|")) : undefined
+}
+
 export default defineConfig({
   testDir: "./e2e",
   globalSetup: "./e2e/global-setup.ts",
@@ -27,7 +34,9 @@ export default defineConfig({
   workers: 1,
   // CRA dev-server hydration makes early clicks occasionally no-op; one
   // retry absorbs it without hiding persistent failures
-  retries: process.env.CI ? 2 : 1,
+  // A @disruptive test mutates the environment, so a retry would take the
+  // tier down a second time rather than re-observe it.
+  retries: process.env.RUN_DISRUPTIVE ? 0 : process.env.CI ? 2 : 1,
   reporter: [
     ["html", { open: "never" }],
     ["list"],
@@ -35,8 +44,14 @@ export default defineConfig({
     // off against; this names the rows that did not run.
     ["./e2e/skip-summary-reporter.ts"],
   ],
-  // Workflow runs take 5-10 minutes; opt in with: yarn test:e2e --grep @slow
-  grepInvert: process.env.RUN_SLOW ? undefined : /@slow/,
+  // Two opt-in tags, each filtered out unless its variable is set:
+  //   @slow        real workflow runs, 5-10 minutes each   RUN_SLOW=1
+  //   @disruptive  degrades the shared environment while it runs, so it may
+  //                only run when nobody else is using it    RUN_DISRUPTIVE=1
+  grepInvert: excluded([
+    ["@slow", !!process.env.RUN_SLOW],
+    ["@disruptive", !!process.env.RUN_DISRUPTIVE],
+  ]),
   // End the run ourselves rather than letting the CI job's timeout kill it: a
   // runner-level kill skips onEnd, so the skip summary and artifacts are lost
   // precisely on the runs where they matter most. Kept 15 minutes under the

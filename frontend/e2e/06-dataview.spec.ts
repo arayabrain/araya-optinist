@@ -3,7 +3,7 @@ import { test, expect, Page } from "@playwright/test"
 import {
   apiHeaders,
   login,
-  localStackSkipReason,
+  sqlSkipReason,
   runSql,
   skipWithoutCreds,
   freeStorageState,
@@ -233,11 +233,18 @@ test.describe("Private Dataview @slow", () => {
         timeout: 15_000,
       },
     )
-    // Every surviving row belongs to the workspace that was filtered for
-    const cells = page.locator('.MuiDataGrid-cell[data-field="workspace_name"]')
-    for (const text of await cells.allTextContents()) {
-      expect(text).toContain(DATA_WS)
-    }
+    // Every surviving row belongs to the workspace that was filtered for.
+    // Re-read until the grid has re-fetched: a single read can still sample
+    // the pre-filter rows.
+    await expect(async () => {
+      const texts = await page
+        .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+        .allTextContents()
+      expect(texts.length).toBeGreaterThan(0)
+      for (const text of texts) {
+        expect(text).toContain(DATA_WS)
+      }
+    }).toPass({ timeout: 15_000 })
 
     // A workspace that cannot match empties the table, which is what makes the
     // pass above a narrowing rather than a no-op
@@ -280,14 +287,20 @@ test.describe("Private Dataview @slow", () => {
       (r) => r.url().includes("/api/dataview") && r.url().includes("limit=10"),
     )
     await limitSelect.selectOption("10")
-    await refetch
+    const { items } = (await (await refetch).json()) as { items: unknown[] }
     await expect(limitSelect).toHaveValue("10")
+    // The selector reading 10 only proves the control moved, so the page size
+    // is asserted on the response: the DataGrid virtualizes, and a grid holding
+    // 50 records can render fewer than 10 row elements.
+    expect(items.length).toBeLessThanOrEqual(10)
     await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
       { timeout: 15_000 },
     )
   })
 
-  test("DV-06 - Inputs dialog opens", async ({ page }) => {
+  test("DV-06 - Inputs dialog opens with the visualization grid, and closes", async ({
+    page,
+  }) => {
     // The cell's click target is the thumbnail (a spinner while loading)
     // or the fallback icon when no thumbnail exists
     const cellinput = page
@@ -297,9 +310,18 @@ test.describe("Private Dataview @slow", () => {
       .first()
     await expect(cellinput).toBeVisible({ timeout: 30_000 })
     await cellinput.click()
-    await expect(page.locator('[role="dialog"]')).toBeVisible({
-      timeout: 10_000,
+    // Row 707: THE inputs dialog with its content, not just any dialog - the
+    // InputsView title and a really-rendered plot inside it
+    const dialog = page.locator('[role="dialog"]')
+    await expect(dialog).toBeVisible({ timeout: 10_000 })
+    await expect(dialog.getByText("Workflow Inputs")).toBeVisible()
+    await expect(dialog.locator(".js-plotly-plot").first()).toBeVisible({
+      timeout: 60_000,
     })
+
+    // And the row's second half: it closes
+    await page.keyboard.press("Escape")
+    await expect(dialog).toBeHidden({ timeout: 10_000 })
   })
 
   test("DV-07 - Outputs dialog opens", async ({ page }) => {
@@ -418,14 +440,18 @@ test.describe("Private Dataview @slow", () => {
     await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
       timeout: 15_000,
     })
+    // Re-read until the grid has re-fetched: the filter is applied
+    // asynchronously, so a single read can still sample the pre-filter rows.
     // Iterating an empty list asserts nothing, so the rows are counted first
-    const cells = await page
-      .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
-      .allTextContents()
-    expect(cells.length).toBeGreaterThan(0)
-    for (const text of cells) {
-      expect(text).toContain(DATA_WS)
-    }
+    await expect(async () => {
+      const cells = await page
+        .locator('.MuiDataGrid-cell[data-field="workspace_name"]')
+        .allTextContents()
+      expect(cells.length).toBeGreaterThan(0)
+      for (const text of cells) {
+        expect(text).toContain(DATA_WS)
+      }
+    }).toPass({ timeout: 15_000 })
 
     // A workspace that cannot match empties the table, which is what makes the
     // pass above a narrowing rather than a no-op
@@ -544,10 +570,12 @@ test.describe("Private Dataview @slow", () => {
   test("DV-20 - Concurrent publishes move the version exactly once", async ({
     page,
   }) => {
-    // The version column is the optimistic lock the row is about, and only
-    // the docker DB exposes it
-    const local = localStackSkipReason()
-    test.skip(!!local, `row 719 reads experiment_records.version: ${local}`)
+    // The version column is the optimistic lock the row is about; reachable on
+    // the docker DB and on the deployed RDS over SSM. Each SSM SQL round trip
+    // costs tens of seconds, so the 60s default test budget cannot hold.
+    test.setTimeout(10 * 60_000)
+    const noSql = sqlSkipReason()
+    test.skip(!!noSql, `row 719 reads experiment_records.version: ${noSql}`)
 
     await ensurePublish(page, "Tutorial1", false)
     const headers = await apiHeaders(page)
@@ -574,12 +602,16 @@ test.describe("Private Dataview @slow", () => {
     // request must land in "already published, no change" rather than write
     // again. The read-overlap retry ladder itself stays with
     // test_dataview_publish.py::test_publish_concurrent_modification_retry.
+    // Publish syncs and validates against S3 in-request on a deployed env,
+    // so the config's 15s actionTimeout would abort it mid-flight
     const [first, second] = await Promise.all([
       page.request.post(`${apiUrl()}/api/dataview/publish/${record!.id}/on`, {
         headers,
+        timeout: 120_000,
       }),
       page.request.post(`${apiUrl()}/api/dataview/publish/${record!.id}/on`, {
         headers,
+        timeout: 120_000,
       }),
     ])
     expect(first.status()).toBe(200)
@@ -597,7 +629,7 @@ test.describe("Private Dataview @slow", () => {
     // helper would no-op; unpublish through the same endpoint instead
     const unpublished = await page.request.post(
       `${apiUrl()}/api/dataview/publish/${record!.id}/off`,
-      { headers },
+      { headers, timeout: 120_000 },
     )
     expect(unpublished.ok()).toBe(true)
   })
@@ -629,12 +661,51 @@ test.describe("Public Dataview", () => {
   test("DV-10 - Public dataview loads without authentication", async ({
     page,
   }) => {
+    // Row 813: the grid's thumbnails are served by /api/visualizations/*, which
+    // only reaches the public tier through an ALB rule keyed on the
+    // DATAVIEW_PUBLIC_REQUEST header the app sends. A broken rule leaves the
+    // page loading fine with every image missing, so the statuses are the row.
+    const thumbnails: number[] = []
+    page.on("response", (r) => {
+      if (r.url().includes("/api/visualizations/thumbnail/")) {
+        thumbnails.push(r.status())
+      }
+    })
+
     const response = await page.goto("/public")
     expect(response?.status()).toBe(200)
     await expect(
       page.locator("text=OptiNiSt Public Repository").first(),
     ).toBeVisible({ timeout: 15_000 })
     await expect(page).not.toHaveURL(/\/login/)
+
+    await expect
+      .poll(() => thumbnails.length, {
+        timeout: 30_000,
+        message:
+          "the public grid requested no thumbnails - if the grid is empty this " +
+          "environment has no published records, which is a missing fixture " +
+          "rather than a broken ALB rule (publish one, or run DV-20 first)",
+      })
+      .toBeGreaterThan(0)
+    // The poll returns on the FIRST response, so filtering here judged one or
+    // two thumbnails and let a partial regression through. Wait for the grid to
+    // stop requesting before reading the whole set.
+    let settled = 0
+    await expect
+      .poll(
+        () => {
+          const stable = thumbnails.length === settled
+          settled = thumbnails.length
+          return stable
+        },
+        { timeout: 30_000, intervals: [2_000] },
+      )
+      .toBe(true)
+    expect(
+      thumbnails.filter((status) => status !== 200),
+      `thumbnail responses that were not 200 (of ${thumbnails.length})`,
+    ).toEqual([])
   })
 
   test("DV-11 - Public API is open, private API rejects a bad token", async ({
