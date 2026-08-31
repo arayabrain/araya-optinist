@@ -826,14 +826,20 @@ export async function stageSecondRunningInstance(
   const p = progressLog("helpers", "stage-premium-target")
   const pickFree = () => {
     const occupied = occupiedPremiumInstanceIds()
-    return premiumInstances().find(
+    const free = premiumInstances().filter(
       (i) => i.id !== excludeId && !occupied.has(i.id),
+    )
+    // Settled first: a `pending`/`stopping` candidate costs the settle wait
+    // below, and is one the manager is still cycling.
+    return (
+      free.find((i) => i.state === "running" || i.state === "stopped") ??
+      free[0]
     )?.id
   }
   let candidate = pickFree()
   p.step(
     candidate
-      ? `found free instance ${candidate}`
+      ? `found free instance ${candidate} (${instanceState(candidate)})`
       : `no free instance beside ${excludeId}; asking the manager for one`,
   )
   if (!candidate) {
@@ -887,6 +893,30 @@ export async function stageSecondRunningInstance(
     `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
          AND user_id IS NULL`,
   )
+  // The standby row is gone above, so the manager stops cycling the instance -
+  // but it can still be mid-cycle right now, and start-instances rejects a
+  // transitional one (IncorrectInstanceState). A standby is stopped ~30s after
+  // it appears, so one the pool's own self-heal has just minted reads `pending`
+  // or `stopping` for about a minute. The create-standby branch waits this out
+  // for the instance IT asked for; every candidate needs the same.
+  await expect
+    .poll(
+      () => {
+        const state = instanceState(candidate!)
+        expect(
+          state,
+          `${candidate} was terminated while it was being staged`,
+        ).not.toBe("gone")
+        p.tick(`waiting for ${candidate} to settle (${state})`)
+        return state === "running" || state === "stopped"
+      },
+      {
+        timeout: 8 * 60_000,
+        intervals: [20_000],
+        message: `${candidate} never left pending/stopping`,
+      },
+    )
+    .toBe(true)
   if (instanceState(candidate!) !== "running") {
     awsJson(`ec2 start-instances --instance-ids ${candidate}`)
   }
