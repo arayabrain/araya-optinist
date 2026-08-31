@@ -565,8 +565,10 @@ function publicTgHealth(): { id: string; port: number; state: string }[] {
 }
 
 // How long the ALB can still route to a target whose OS is already gone:
-// (unhealthy_threshold + 1) x interval - the +1 for a termination landing just
-// after a passing check. Read from the TG so a terraform change moves it.
+// (unhealthy_threshold + 2) x interval. Two intervals of slack, not one:
+//   +1 -> the kill landing just after a passing check
+//   +1 -> the terminate call and the OS shutdown, before checks start failing
+// Read from the TG so a terraform change moves it.
 function publicTgDetectionMs(): number {
   const tg = awsJson<{
     TargetGroups: {
@@ -575,7 +577,7 @@ function publicTgDetectionMs(): number {
     }[]
   }>(`elbv2 describe-target-groups --names ${PUBLIC_TG} --region ${AWS_REGION}`)
     .TargetGroups[0]
-  return (tg.UnhealthyThresholdCount + 1) * tg.HealthCheckIntervalSeconds * 1000
+  return (tg.UnhealthyThresholdCount + 2) * tg.HealthCheckIntervalSeconds * 1000
 }
 
 // The EC2 instances currently running a task of the public service. Row 827's
@@ -699,21 +701,27 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     const anon = await request.newContext()
     const probes: { at: number; status: number }[] = []
     let replacement = ""
+    // start is taken before the terminate call, which is what launchesSince and
+    // the UnHealthyHostCount read need. The detection window cannot use it: the
+    // CLI round trip runs inside it. killedAt is the window's zero point.
+    let killedAt = 0
     try {
       awsJson(
         `ec2 terminate-instances --instance-ids ${victim} ` +
           `--region ${AWS_REGION}`,
       )
+      killedAt = Date.now()
 
       // Probe the front door for the whole replacement, the same way OUT-02
       // proves a rolling deployment keeps serving. The surviving instance is
       // what has to carry it.
       const deadline = Date.now() + 2_400_000
       for (;;) {
+        const at = Date.now()
         const res = await anon.get(`${process.env.BASE_URL}/`, {
           failOnStatusCode: false,
         })
-        probes.push({ at: Date.now(), status: res.status() })
+        probes.push({ at, status: res.status() })
 
         const churn = launchesSince(start)
         expect(
@@ -773,9 +781,12 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
         `own connections are inherent to a hard terminate, and 503 would mean ` +
         `no healthy target at all (${probes.length} probes)`,
     ).toEqual([])
-    const late = failures.filter((p) => p.at - start > detectionMs)
+    const late = failures.filter((p) => p.at - killedAt > detectionMs)
     expect(
-      late.map((p) => ({ afterS: Math.round((p.at - start) / 1000), ...p })),
+      late.map((p) => ({
+        afterS: Math.round((p.at - killedAt) / 1000),
+        status: p.status,
+      })),
       `non-200 responses more than ${detectionMs / 1000}s after the ` +
         `termination, long after the ALB had time to drop the dead target ` +
         `(${probes.length} probes)`,
@@ -783,7 +794,7 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // Without this the check above passes vacuously on a run whose probes all
     // landed inside the window.
     expect(
-      probes.filter((p) => p.at - start > detectionMs).length,
+      probes.filter((p) => p.at - killedAt > detectionMs).length,
       "too few probes after the detection window to claim the tier recovered",
     ).toBeGreaterThan(5)
 
@@ -821,7 +832,7 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
         `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}; ` +
         `non-200 probes: ${JSON.stringify(
           failures.map((p) => ({
-            afterS: Math.round((p.at - start) / 1000),
+            afterS: Math.round((p.at - killedAt) / 1000),
             status: p.status,
           })),
         )}`,
