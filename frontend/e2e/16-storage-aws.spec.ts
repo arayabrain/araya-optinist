@@ -33,7 +33,6 @@ import {
   openWorkspace,
   premiumTargetHealth,
   reproduceTutorial,
-  routedApiHeaders,
   runShellOverSsm,
   runSql,
   runTutorial,
@@ -97,9 +96,9 @@ const UPLOAD_TIMEOUT_MS = 120_000
 
 // A cold premium assign starts EC2 capacity and an ECS task: minutes, not
 // seconds. The assignment row then becomes visible before the instance serves
-// traffic, so the routing probe gets its own budget on top.
+// traffic, so waiting for it to serve gets its own budget on top.
 const PREMIUM_ASSIGN_TIMEOUT_MS = 15 * 60_000
-const PREMIUM_ROUTE_TIMEOUT_MS = 5 * 60_000
+const PREMIUM_SERVING_TIMEOUT_MS = 5 * 60_000
 const PREMIUM_RELEASE_TIMEOUT_MS = 120_000
 // Reported by /premium/assign while capacity warms, and deliberately absent
 // from /premium/status - so the caller keeps assigning until a real instance
@@ -121,9 +120,6 @@ type Tier = {
   storageState: () => string | undefined
   // active_workflow_count lives in a different table per tier
   assignmentTable: string
-  // Playwright's request context bypasses the app's axios interceptor, so a
-  // premium user's helper calls need the routing headers added back by hand.
-  headers: (page: Page) => Promise<Record<string, string>>
   signIn: (page: Page, rows: string) => Promise<void>
   // What signIn may spend before the test's own work starts
   setupBudgetMs: number
@@ -138,7 +134,6 @@ const FREE_TIER: Tier = {
     "set RUN_S3_AWS=1 - reads and writes real S3 through the deployed env",
   storageState: freeStorageState,
   assignmentTable: "free_user_assignments",
-  headers: apiHeaders,
   signIn: async (page) => {
     await gotoDashboard(page)
   },
@@ -155,9 +150,8 @@ const PREMIUM_TIER: Tier = {
     "assignment on the shared dev pool",
   storageState: () => undefined,
   assignmentTable: "premium_user_assignments",
-  headers: routedApiHeaders,
   signIn: signInPremium,
-  setupBudgetMs: PREMIUM_ASSIGN_TIMEOUT_MS + PREMIUM_ROUTE_TIMEOUT_MS,
+  setupBudgetMs: PREMIUM_ASSIGN_TIMEOUT_MS + PREMIUM_SERVING_TIMEOUT_MS,
 }
 
 // Free before premium, so each row's free variant runs first and a premium
@@ -171,10 +165,7 @@ let premiumHeld = false
 
 type PremiumStatus = {
   is_premium: boolean
-  // Only its presence is read here: the row exists once the account owns
-  // capacity, and which tier the cascade granted is 15-premium-aws's subject,
-  // not this lane's - the routing probe below covers dedicated and shared alike.
-  assignment: object | null
+  assignment: { instance_id?: string; is_shared?: boolean } | null
 }
 
 async function premiumStatus(page: Page): Promise<PremiumStatus> {
@@ -197,10 +188,8 @@ async function userIdOf(page: Page): Promise<number> {
 }
 
 // A real premium login, held until the account genuinely owns capacity that
-// really serves. Both halves matter to the rows below: the assignment row is
-// where active_workflow_count lives, and until the ALB routes to the instance
-// every routed call answers 502. A pool with no capacity leaves the rows
-// unverified rather than failed - the same verdict `15-premium-aws` gives it.
+// really serves: the assignment row is where active_workflow_count lives, and
+// the app drives its workflow run through the ALB.
 async function signInPremium(page: Page, rows: string) {
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
 
@@ -212,13 +201,12 @@ async function signInPremium(page: Page, rows: string) {
     `${PREMIUM_USER.email} is not premium on /premium/status - verify the ` +
       `TEST_PREMIUM_* account against /premium/status, not /users/me`,
   ).toBe(true)
-  // Owed from here, not from the moment an assignment is observed: the app's
-  // provider assigns on mount, and the probe below assigns too, so capacity
-  // can be held by a login whose /premium/status never reported a row.
+  // Owed from the login on: the app's provider assigns on mount and the probe
+  // below assigns too, so capacity can be held before /premium/status ever
+  // reports a row.
   premiumHeld = true
 
-  // The app's own provider assigns on mount; poll its result rather than
-  // racing it with a second assign.
+  // Poll the provider's own result rather than racing it with a second assign.
   let assignment = status.assignment
   const assignDeadline = Date.now() + PREMIUM_ASSIGN_TIMEOUT_MS
   while (!assignment) {
@@ -244,28 +232,33 @@ async function signInPremium(page: Page, rows: string) {
     await new Promise((r) => setTimeout(r, 15_000))
     assignment = (await premiumStatus(page)).assignment
   }
-  // The row can exist minutes before the instance serves. Probe with the same
-  // routing headers the app sends rather than trusting the row - it is the
-  // one check that covers a dedicated and a shared grant alike.
+  // The granted tier decides whether the gate below can read anything, and is
+  // the first thing to know when a premium row fails on a 502.
+  console.log(
+    `[16-storage-aws] premium assignment: instance=` +
+      `${assignment.instance_id ?? "none"}, shared=${assignment.is_shared}`,
+  )
+  // A dedicated assignment goes live - row, ALB rule, target group - before its
+  // ECS task serves, so work driven through the ALB too early answers 502;
+  // every ALB-driving row in `15-premium-aws` waits this out too. A cluster
+  // that never gets a target serving leaves the row unverified, not failed. A
+  // shared grant has no per-user target group and is already serving, so it
+  // passes unchecked.
+  if (assignment.is_shared || !assignment.instance_id?.startsWith("i-")) return
   const userId = await userIdOf(page)
-  let last = 0
-  const routeDeadline = Date.now() + PREMIUM_ROUTE_TIMEOUT_MS
+  let states: string[] = []
+  const servingDeadline = Date.now() + PREMIUM_SERVING_TIMEOUT_MS
   for (;;) {
-    const res = await page.request.get(`${apiUrl()}/users/me`, {
-      headers: await routedApiHeaders(page),
-      timeout: REQUEST_TIMEOUT_MS,
-    })
-    last = res.status()
-    if (res.ok()) return
-    if (Date.now() > routeDeadline) break
+    states = premiumTargetHealth(userId)
+    if (states.includes("healthy")) return
+    if (Date.now() > servingDeadline) break
     await new Promise((r) => setTimeout(r, 15_000))
   }
   test.skip(
     true,
-    `rows ${rows} [premium]: premium routing never served a request (last ` +
-      `${last}, premium-${userId}-tg targets: ` +
-      `${premiumTargetHealth(userId).join(",") || "none"}) - the dev cluster ` +
-      `could not keep a premium task serving; rerun when it has free CPU`,
+    `rows ${rows} [premium]: premium-${userId}-tg never reported a healthy ` +
+      `target (states: ${states.join(",") || "none"}) - the dev cluster could ` +
+      `not keep a premium task serving; rerun when it has free CPU`,
   )
 }
 
@@ -304,7 +297,12 @@ async function enterAs(
   headers: Record<string, string>
 }> {
   await tier.signIn(page, rows)
-  const headers = await tier.headers(page)
+  // Unrouted on both tiers, deliberately, as PREM-07's own workspace delete is:
+  // nothing this lane asks of the API needs the premium instance (the DB, an S3
+  // repair, a DB-plus-S3 delete), while routing it there would expose every
+  // call to the 502 a premium task answers whenever it is not serving. Only the
+  // workflow run has to land on the instance, and the app routes that itself.
+  const headers = await apiHeaders(page)
   const res = await page.request.get(`${apiUrl()}/users/me`, {
     headers,
     timeout: REQUEST_TIMEOUT_MS,
