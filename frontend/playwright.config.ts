@@ -39,6 +39,10 @@ export default defineConfig({
   retries: process.env.RUN_DISRUPTIVE ? 0 : process.env.CI ? 2 : 1,
   reporter: [
     ["html", { open: "never" }],
+    // Before "list", not after: the list reporter writes its status line with a
+    // LEADING newline and none at the end, so a reporter printing after it on
+    // the same event lands on the same line.
+    ["./e2e/timestamp-reporter.ts"],
     ["list"],
     // A skipped test reads as a pass in the summary line the sheets are signed
     // off against; this names the rows that did not run.
