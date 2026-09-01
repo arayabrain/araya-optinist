@@ -7,8 +7,11 @@ import {
   test,
   expect,
   APIRequestContext,
+  APIResponse,
   Browser,
+  Locator,
   Page,
+  request,
 } from "@playwright/test"
 
 import {
@@ -797,6 +800,52 @@ for (const tier of TIERS) {
   })
 }
 
+// The visitor's route to one published record's details, shared by S3-04 and
+// S3-08. The anonymous listing is eventually consistent with the publish and
+// reads the DB rather than the files, so it is polled before the UI is opened;
+// the row is found by the uid the grid's ID column renders, because the
+// record's display name belongs to the run helper rather than to either test.
+async function openPublicDetails(
+  viewer: Page,
+  wsName: string,
+  uid: string,
+): Promise<Locator> {
+  await expect
+    .poll(
+      async () => {
+        const res = await viewer.request.get(
+          `${apiUrl()}/api/public/dataview?limit=100&offset=0`,
+          { timeout: REQUEST_TIMEOUT_MS },
+        )
+        if (!res.ok()) return `HTTP ${res.status()}`
+        const body = await res.json()
+        const records = (Array.isArray(body) ? body : (body.items ?? [])) as {
+          uid?: string
+        }[]
+        return records.some((r) => r.uid === uid) ? "listed" : "absent"
+      },
+      {
+        timeout: 120_000,
+        intervals: [10_000],
+        message: `published run ${uid} never appeared in /api/public/dataview`,
+      },
+    )
+    .toBe("listed")
+  await viewer.goto("/public")
+  await filterWorkspace(viewer, wsName)
+  const row = viewer
+    .locator(".MuiDataGrid-row")
+    .filter({ has: viewer.getByText(uid.slice(0, 8)) })
+    .first()
+  await expect(row).toBeVisible({ timeout: 30_000 })
+  await row
+    .locator('[data-field="details"] [data-testid="InsightsIcon"]')
+    .click()
+  const dialog = viewer.locator('[role="dialog"]')
+  await expect(dialog).toBeVisible({ timeout: 15_000 })
+  return dialog
+}
+
 test.describe("Published sync error and recovery on real S3", () => {
   test.use({ storageState: freeStorageState() })
 
@@ -896,44 +945,7 @@ test.describe("Published sync error and recovery on real S3", () => {
       })
       const viewer = await ctx.newPage()
       try {
-        // The anonymous listing is eventually consistent with the publish;
-        // open the UI only once the record is really listed (same poll as
-        // S3-03, and the listing reads the DB, not the deleted yaml)
-        await expect
-          .poll(
-            async () => {
-              const res = await viewer.request.get(
-                `${apiUrl()}/api/public/dataview?limit=100&offset=0`,
-                { timeout: REQUEST_TIMEOUT_MS },
-              )
-              if (!res.ok()) return `HTTP ${res.status()}`
-              const body = await res.json()
-              const records = (
-                Array.isArray(body) ? body : (body.items ?? [])
-              ) as { uid?: string }[]
-              return records.some((r) => r.uid === uid) ? "listed" : "absent"
-            },
-            {
-              timeout: 120_000,
-              intervals: [10_000],
-              message: `published run ${uid} never appeared in /api/public/dataview`,
-            },
-          )
-          .toBe("listed")
-        await viewer.goto("/public")
-        await filterWorkspace(viewer, wsName)
-        // The run's own row, by the uid the grid's ID column renders - the
-        // record's display name belongs to the run helper, not this test
-        const row = viewer
-          .locator(".MuiDataGrid-row")
-          .filter({ has: viewer.getByText(uid.slice(0, 8)) })
-          .first()
-        await expect(row).toBeVisible({ timeout: 30_000 })
-        await row
-          .locator('[data-field="details"] [data-testid="InsightsIcon"]')
-          .click()
-        const dialog = viewer.locator('[role="dialog"]')
-        await expect(dialog).toBeVisible({ timeout: 15_000 })
+        const dialog = await openPublicDetails(viewer, wsName, uid)
 
         // Row 717: the error state - icon, alert, and a Retry button. A 503
         // renders it at once; a 202 rides the auto-retry ladder out first
@@ -1374,15 +1386,29 @@ async function awaitMetric(name: string, sinceMs: number, why: string) {
     .toBeGreaterThanOrEqual(1)
 }
 
-const syncStatusOf = (recordId: number) =>
-  runSql(
+// Both refuse an empty read rather than dressing it as data: `Number("")` is
+// 0, which reads like a plausible version, and an empty status string would
+// poll to timeout with no hint that the query, not the job, is what failed.
+const syncStatusOf = (recordId: number) => {
+  const out = runSql(
     `SELECT local_sync_status FROM experiment_records WHERE id = ${recordId};`,
-  )
+  ).trim()
+  if (!out) throw new Error(`no experiment_records row for id ${recordId}`)
+  return out
+}
 
-const versionOf = (recordId: number) =>
-  Number(
-    runSql(`SELECT version FROM experiment_records WHERE id = ${recordId};`),
-  )
+const versionOf = (recordId: number) => {
+  const out = runSql(
+    `SELECT version FROM experiment_records WHERE id = ${recordId};`,
+  ).trim()
+  const version = Number(out)
+  if (!out || !Number.isFinite(version)) {
+    throw new Error(
+      `unreadable version for record ${recordId}: ${out || "empty"}`,
+    )
+  }
+  return version
+}
 
 function s3Aside(bucket: string, key: string, local: string) {
   execSync(`aws s3 cp s3://${bucket}/${key} ${local} --region ${AWS_REGION}`, {
@@ -1400,6 +1426,15 @@ function s3Restore(bucket: string, key: string, local: string) {
     timeout: 60_000,
     stdio: ["pipe", "pipe", "pipe"],
   })
+}
+
+// A genuinely unauthenticated caller (`anon`, never `viewer` - that name
+// belongs to the browser page the UI halves drive). The `request` fixture inherits the
+// describe's storage state, so it is not the anonymous visitor rows 725/726
+// and the public-tier comments describe; `18-stripe-audit` and `22-disruptive`
+// take a fresh context for the same reason. The caller disposes it.
+function anonymousApi(): Promise<APIRequestContext> {
+  return request.newContext()
 }
 
 // The setup the three rows below share: a real finished run in a fresh
@@ -1486,26 +1521,56 @@ async function stageFinishedRun(
 // PersistentSyncFailure, which HEALTH-14 asserts is empty. Unpublishing takes
 // the row out of the job's query and deleting the workspace takes it out for
 // good (the query joins on `workspaces.deleted = 0`).
+//
+// Both calls report what they actually answered. `.catch()` alone swallows
+// only transport failures - a 401 from a token that expired during a long row,
+// or a 404, RESOLVES - so a status-blind teardown can believe it cleaned up
+// while leaving exactly the row this comment says must never exist. The
+// headers are re-read here rather than reused: the ones captured at setup can
+// be an hour old by the time a long S3-07 reaches its `finally`, and the
+// Firebase access token does not outlive that. Reported, never `expect`ed: a
+// throw in a `finally` would mask whatever sent us into it.
 async function unstageRun(
   page: Page,
   headers: Record<string, string>,
   recordId: number,
   wsId: number,
 ) {
-  if (recordId) {
-    await page.request
-      .post(`${apiUrl()}/api/dataview/publish/${recordId}/off`, {
-        headers,
-        timeout: UPLOAD_TIMEOUT_MS,
-      })
-      .catch(() => {})
+  let live = headers
+  try {
+    live = await apiHeaders(page)
+  } catch {
+    // The page is gone - a test timeout closes it - so the captured headers
+    // are the only ones left to try.
   }
-  await page.request
-    .delete(`${apiUrl()}/workspace/${wsId}`, {
-      headers,
+  const settle = async (what: string, call: () => Promise<APIResponse>) => {
+    try {
+      const res = await call()
+      if (!res.ok()) {
+        console.warn(
+          `[16-storage-aws] teardown: ${what} answered ${res.status()} - ` +
+            `${await res.text()}. A published row the sync job cannot ` +
+            `validate may have been left behind; check it by hand.`,
+        )
+      }
+    } catch (e) {
+      console.warn(`[16-storage-aws] teardown: ${what} did not complete - ${e}`)
+    }
+  }
+  if (recordId) {
+    await settle(`unpublish record ${recordId}`, () =>
+      page.request.post(`${apiUrl()}/api/dataview/publish/${recordId}/off`, {
+        headers: live,
+        timeout: UPLOAD_TIMEOUT_MS,
+      }),
+    )
+  }
+  await settle(`delete workspace ${wsId}`, () =>
+    page.request.delete(`${apiUrl()}/workspace/${wsId}`, {
+      headers: live,
       timeout: UPLOAD_TIMEOUT_MS,
-    })
-    .catch(() => {})
+    }),
+  )
 }
 
 test.describe("Publish sync status transitions on the real tiers", () => {
@@ -1519,15 +1584,16 @@ test.describe("Publish sync status transitions on the real tiers", () => {
   // `version` where the job's `_mark_sync_complete` leaves it alone.
   test("S3-06 - A published record stuck at error self-heals to synced on the first public read @slow", async ({
     page,
-    request,
   }) => {
     skipUnlessOptedIn("726")
-    test.setTimeout(RUN_TEST_TIMEOUT_MS + 20 * 60_000)
+    // The public read's own poll, plus the tick alignment before the injection.
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 28 * 60_000)
 
     const wsName = "e2e-s3heal"
     let recordId = 0
     let wsId = 0
     let headers: Record<string, string> = {}
+    const anon = await anonymousApi()
     try {
       const staged = await stageFinishedRun(page, wsName)
       ;({ wsId, recordId, headers } = staged)
@@ -1546,7 +1612,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         .poll(
           async () =>
             (
-              await request.get(
+              await anon.get(
                 `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
                 { timeout: UPLOAD_TIMEOUT_MS },
               )
@@ -1563,6 +1629,13 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         "a publicly readable record should be synced before the row's own edit",
       ).toBe("synced")
 
+      // The whole verdict rests on the job not touching the row between the
+      // forced `error` and the public read - `_mark_sync_complete` would set
+      // `synced` with no version bump, and the assertion below would then read
+      // as a product regression when it is really a lost race. The critical
+      // section is a few SSM round trips wide; taking a fresh tick first buys
+      // it most of a 5-minute cycle.
+      await awaitFreshSyncTick()
       const versionBefore = versionOf(recordId)
       runSqlWriteOnDev(
         `UPDATE experiment_records SET local_sync_status = 'error' ` +
@@ -1573,7 +1646,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
       )
 
       const t0 = windowStart()
-      const healed = await request.get(
+      const healed = await anon.get(
         `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
         { timeout: UPLOAD_TIMEOUT_MS },
       )
@@ -1606,6 +1679,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         })
         .toBe(true)
     } finally {
+      await anon.dispose()
       await unstageRun(page, headers, recordId, wsId)
     }
   })
@@ -1625,7 +1699,6 @@ test.describe("Publish sync status transitions on the real tiers", () => {
   // the compiled query in under a second.
   test("S3-07 - The sync job carries a publish to synced, fails it to error when S3 loses the config, and retries it back into a public 200 @slow", async ({
     page,
-    request,
   }) => {
     skipUnlessOptedIn("720 / 721 / 722 / 2032")
     // Three settle windows, their CloudWatch polls, and the public read the
@@ -1642,8 +1715,13 @@ test.describe("Publish sync status transitions on the real tiers", () => {
     // cannot hinge on which one the validator happens to look for first.
     let asideKeys: { key: string; local: string }[] = []
     let filesAside = false
+    const anon = await anonymousApi()
     const restoreAll = () => {
-      for (const { key, local } of asideKeys) s3Restore(bucket, key, local)
+      // Skips what was never copied aside: with the flag armed before the
+      // loop, a failure part-way through leaves some locals absent.
+      for (const { key, local } of asideKeys) {
+        if (fs.existsSync(local)) s3Restore(bucket, key, local)
+      }
       filesAside = false
     }
 
@@ -1657,7 +1735,11 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         local: path.join(asideDir, name),
       }))
 
-      // --- Row 720: publish parks the row, the job validates it and flips it
+      // --- Row 720: publish parks the row, the job validates it and flips it.
+      // Aligned first: the `pending` read below is a claim about the state the
+      // publish leaves, and a tick landing between the two would answer
+      // `synced` and fail it for the wrong reason.
+      await awaitFreshSyncTick()
       const t0 = windowStart()
       const published = await page.request.post(
         `${apiUrl()}/api/dataview/publish/${recordId}/on`,
@@ -1693,8 +1775,11 @@ test.describe("Publish sync status transitions on the real tiers", () => {
       // --- Row 721: a pending row whose S3 config is gone fails to error.
       // The files go first and the status second, so the job can never see a
       // pending row while the prefix is still intact.
-      for (const { key, local } of asideKeys) s3Aside(bucket, key, local)
+      // Armed BEFORE the loop: `s3Aside` deletes as it goes, so a throw on the
+      // second key would otherwise leave the first one deleted with the
+      // `finally` believing nothing was moved.
       filesAside = true
+      for (const { key, local } of asideKeys) s3Aside(bucket, key, local)
       runSqlWriteOnDev(
         `UPDATE experiment_records SET local_sync_status = 'pending' ` +
           `WHERE id = ${recordId}`,
@@ -1719,7 +1804,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
 
       // --- Row 722: `error` stays in the job's query, so putting the files
       // back is the whole retry - nothing re-queues the row by hand.
-      const tFix = Date.now()
+      const tFix = windowStart()
       restoreAll()
       await expect
         .poll(() => syncStatusOf(recordId), {
@@ -1745,7 +1830,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         .poll(
           async () =>
             (
-              await request.get(
+              await anon.get(
                 `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
                 { timeout: UPLOAD_TIMEOUT_MS },
               )
@@ -1765,6 +1850,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
           // the workspace delete below drops the prefix anyway
         }
       }
+      await anon.dispose()
       await unstageRun(page, headers, recordId, wsId)
       fs.rmSync(asideDir, { recursive: true, force: true })
     }
@@ -1783,7 +1869,6 @@ test.describe("Publish sync status transitions on the real tiers", () => {
   // file would otherwise have the job demote it to `error` and answer 503.
   test("S3-08 - A published-but-unsynced experiment answers 202 pending_sync to the public, and 200 once its config is back @slow", async ({
     page,
-    request,
     browser,
   }) => {
     skipUnlessOptedIn("725")
@@ -1798,6 +1883,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
     let key = ""
     const local = path.join(asideDir, "experiment.yaml")
     let fileAside = false
+    const anon = await anonymousApi()
 
     try {
       const staged = await stageFinishedRun(page, wsName)
@@ -1821,7 +1907,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         "the row must still be pending - a tick beat the staging",
       ).toBe("pending")
 
-      const pending = await request.get(reproduceUrl, {
+      const pending = await anon.get(reproduceUrl, {
         timeout: UPLOAD_TIMEOUT_MS,
       })
       expect(
@@ -1835,7 +1921,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
       // Not a one-off race: a second read answers the same, which is what
       // makes the auto-retry the row describes a stable state to retry into
       // rather than a window the first request closes behind itself.
-      const again = await request.get(reproduceUrl, {
+      const again = await anon.get(reproduceUrl, {
         timeout: UPLOAD_TIMEOUT_MS,
       })
       expect(again.status(), await again.text()).toBe(202)
@@ -1861,39 +1947,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         }
       })
       try {
-        await expect
-          .poll(
-            async () => {
-              const res = await viewer.request.get(
-                `${apiUrl()}/api/public/dataview?limit=100&offset=0`,
-                { timeout: REQUEST_TIMEOUT_MS },
-              )
-              if (!res.ok()) return `HTTP ${res.status()}`
-              const listed = await res.json()
-              const records = (
-                Array.isArray(listed) ? listed : (listed.items ?? [])
-              ) as { uid?: string }[]
-              return records.some((r) => r.uid === uid) ? "listed" : "absent"
-            },
-            {
-              timeout: 120_000,
-              intervals: [10_000],
-              message: `published run ${uid} never appeared in /api/public/dataview`,
-            },
-          )
-          .toBe("listed")
-        await viewer.goto("/public")
-        await filterWorkspace(viewer, wsName)
-        const row = viewer
-          .locator(".MuiDataGrid-row")
-          .filter({ has: viewer.getByText(uid.slice(0, 8)) })
-          .first()
-        await expect(row).toBeVisible({ timeout: 30_000 })
-        await row
-          .locator('[data-field="details"] [data-testid="InsightsIcon"]')
-          .click()
-        const dialog = viewer.locator('[role="dialog"]')
-        await expect(dialog).toBeVisible({ timeout: 15_000 })
+        const dialog = await openPublicDetails(viewer, wsName, uid)
         // Reported alongside the icons: opening the UI costs enough that the
         // 5-minute tick can demote the row to `error` first, and a dialog
         // describing an errored record says nothing about the pending state.
@@ -1936,7 +1990,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         .poll(
           async () =>
             (
-              await request.get(reproduceUrl, { timeout: UPLOAD_TIMEOUT_MS })
+              await anon.get(reproduceUrl, { timeout: UPLOAD_TIMEOUT_MS })
             ).status(),
           {
             timeout: 10 * 60_000,
@@ -1953,6 +2007,7 @@ test.describe("Publish sync status transitions on the real tiers", () => {
           // the workspace delete below drops the prefix anyway
         }
       }
+      await anon.dispose()
       await unstageRun(page, headers, recordId, wsId)
       fs.rmSync(asideDir, { recursive: true, force: true })
     }
