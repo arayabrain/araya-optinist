@@ -1311,8 +1311,9 @@ test.describe("Publish repair and batch sync on the real free tier", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Rows 720 / 721 / 722 / 725 / 726: the publish sync's own state machine, run
-// against the real background tier and the real public tier. What kept these
+// Rows 720 / 721 / 722 / 725 / 726 - and sheet 20's 2032, which restates 722
+// plus the public read that follows it: the publish sync's own state machine,
+// run against the real background tier and the real public tier. What kept these
 // rows manual is that their verdict is a DB transition plus the tier's own log
 // line - neither of which a browser can see - so each one below pairs an
 // `expect.poll` on `experiment_records.local_sync_status` with the log line
@@ -1622,11 +1623,14 @@ test.describe("Publish sync status transitions on the real tiers", () => {
   // in place as a change-detector, and `test_sync_job_db_state.py::
   // TestPendingSelectionStatuses` already settles the same question against
   // the compiled query in under a second.
-  test("S3-07 - The sync job carries a publish to synced, fails it to error when S3 loses the config, and retries it back @slow", async ({
+  test("S3-07 - The sync job carries a publish to synced, fails it to error when S3 loses the config, and retries it back into a public 200 @slow", async ({
     page,
+    request,
   }) => {
-    skipUnlessOptedIn("720 / 721 / 722")
-    test.setTimeout(RUN_TEST_TIMEOUT_MS + 50 * 60_000)
+    skipUnlessOptedIn("720 / 721 / 722 / 2032")
+    // Three settle windows, their CloudWatch polls, and the public read the
+    // last act now waits out.
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 62 * 60_000)
 
     const wsName = "e2e-s3sync"
     const asideDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-s3sync-"))
@@ -1732,6 +1736,27 @@ test.describe("Publish sync status transitions on the real tiers", () => {
         tFix,
         "the retry flipped the row without publishing ExperimentsSynced",
       )
+      // Row 2032's second half: the retry is only a recovery if the visitor
+      // gets the experiment back, not merely if the DB says `synced`. Polled
+      // rather than read once - the public tier refills its local copy from
+      // S3 on demand, so the first read after the restore can still be
+      // downloading what the row above already validated.
+      await expect
+        .poll(
+          async () =>
+            (
+              await request.get(
+                `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
+                { timeout: UPLOAD_TIMEOUT_MS },
+              )
+            ).status(),
+          {
+            timeout: 10 * 60_000,
+            intervals: [20_000],
+            message: "reproduce never reached 200 after the row was retried",
+          },
+        )
+        .toBe(200)
     } finally {
       if (filesAside) {
         try {
