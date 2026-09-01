@@ -268,6 +268,37 @@ export function logTail(
   }
 }
 
+// Elapsed-time progress for the rows that run for tens of minutes against real
+// AWS. Without it a stalled run reads exactly like a slow one, and the only
+// signal is the test timeout half an hour later.
+//   step() -> always prints
+//   tick() -> prints at most once per PROGRESS_TICK_MS, for a poll callback
+const PROGRESS_TICK_MS = 60_000
+
+export function progressLog(
+  file: string,
+  label: string,
+): {
+  step: (message: string) => void
+  tick: (message: string) => void
+} {
+  const started = Date.now()
+  let last = 0
+  const line = (message: string) =>
+    console.log(
+      `[${file}] ${label}: ` +
+        `+${((Date.now() - started) / 60_000).toFixed(1)}m ${message}`,
+    )
+  return {
+    step: line,
+    tick: (message: string) => {
+      if (Date.now() - last < PROGRESS_TICK_MS) return
+      last = Date.now()
+      line(message)
+    },
+  }
+}
+
 // One read-only AWS CLI call, parsed. Callers pass their own --query.
 export function awsJson<T>(args: string): T {
   return JSON.parse(
@@ -692,6 +723,28 @@ export function runningPremiumInstanceIds(): string[] {
   return out ? out.split(/\s+/) : []
 }
 
+// Instance ids that currently hold a real (non-standby) premium user, by the
+// same definition process_shared_instance_optimization uses to reject an
+// instance as a migration target: status IN ('active','terminating') AND
+// is_standby = 0. An instance carrying one of these can never satisfy the
+// optimizer's `not real_users` gate, so a migration-target staging must route
+// around it - see stageSecondRunningInstance.
+export function occupiedPremiumInstanceIds(): Set<string> {
+  const out = runSql(
+    `SELECT DISTINCT instance_id FROM premium_user_assignments ` +
+      `WHERE status IN ('active','terminating') AND is_standby = 0 ` +
+      `AND user_id IS NOT NULL AND instance_id LIKE 'i-%';`,
+  )
+  return new Set(
+    out
+      ? out
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [],
+  )
+}
+
 // The premium service's task on a given instance, as the console's Tasks tab
 // shows it. Rows 1203/1204 are written against that view.
 export function premiumTaskOn(
@@ -752,26 +805,50 @@ export function invokeMonitoringSweep(): string {
 //
 // This is not scene-setting the rows using it could skip: the optimizer only
 // migrates onto an instance it already considers available (running, no
-// real users, ECS task ready). Measured 2026-08-25, a run without this
-// step failed with the optimizer doing exactly the right thing - it
-// logged "marked for migration: has_shared_flag=True" every pass and then
-// "no running instances available. Triggering scaling to start stopped
-// instances..." - but nothing ever started, because the dev pool
-// self-heals to a STOPPED standby and that scaling call did not wake it.
-// A candidate must also carry NO assignment row at all: a standby row
-// makes try_reserve_instance answer "already reserved" and the optimizer
-// skips it. Idempotent: with the candidate already staged, only the row
-// re-delete does anything, so callers may re-run it to heal after a wait.
+// real users, ECS task ready). Without this step the optimizer does exactly
+// the right thing - it logs "marked for migration: has_shared_flag=True"
+// every pass and then "no running instances available. Triggering scaling to
+// start stopped instances..." - but nothing ever starts, because the dev pool
+// self-heals to a STOPPED standby and that scaling call does not wake it.
+// A candidate must also host NO real user: the optimizer only accepts an
+// instance with zero real users as a migration target, so one that already
+// hosts another user is a decoy that can never be migrated onto.
+// occupiedPremiumInstanceIds() screens those out; when every other running
+// instance is occupied the create-standby branch below mints a genuinely empty
+// one. The standby rows have to go as well - one makes try_reserve_instance
+// answer "already reserved" and the optimizer skips the instance, which is what
+// the DELETE ... user_id IS NULL statements below are for.
+// Idempotent: with the candidate already staged, only the row re-delete does
+// anything, so callers may re-run it after a wait.
 export async function stageSecondRunningInstance(
   excludeId: string,
 ): Promise<string> {
-  let candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+  const p = progressLog("helpers", "stage-premium-target")
+  const pickFree = () => {
+    const occupied = occupiedPremiumInstanceIds()
+    const free = premiumInstances().filter(
+      (i) => i.id !== excludeId && !occupied.has(i.id),
+    )
+    // Settled first: a `pending`/`stopping` candidate costs the settle wait
+    // below, and is one the manager is still cycling.
+    return (
+      free.find((i) => i.state === "running" || i.state === "stopped") ??
+      free[0]
+    )?.id
+  }
+  let candidate = pickFree()
+  p.step(
+    candidate
+      ? `found free instance ${candidate} (${instanceState(candidate)})`
+      : `no free instance beside ${excludeId}; asking the manager for one`,
+  )
   if (!candidate) {
-    // The pool self-heals to exactly ONE standby and the sweep terminates
-    // the extras, so when the user holds the only instance there is nothing
-    // to migrate onto (measured: a run skipped here). Ask the manager for
-    // another. create_standby refuses while get_standby_count() already
-    // meets PREMIUM_STANDBY_POOL_SIZE, so the standby rows come out first.
+    // No free instance to migrate onto - either the user holds the only one,
+    // or every other running instance already hosts a real user. The pool
+    // self-heals to exactly ONE standby and the sweep terminates the extras,
+    // so ask the manager for another. create_standby refuses while
+    // get_standby_count() already meets PREMIUM_STANDBY_POOL_SIZE, so the
+    // standby rows come out first.
     runSqlWriteOnDev(
       `DELETE FROM premium_user_assignments WHERE is_standby = 1
          AND user_id IS NULL`,
@@ -784,7 +861,8 @@ export async function stageSecondRunningInstance(
     await expect
       .poll(
         () => {
-          candidate = premiumInstances().find((i) => i.id !== excludeId)?.id
+          candidate = pickFree()
+          p.tick("waiting for create_standby to mint an instance")
           return !!candidate
         },
         {
@@ -794,29 +872,67 @@ export async function stageSecondRunningInstance(
         },
       )
       .toBe(true)
+    p.step(`manager created ${candidate}`)
     // The Lambda answers with the id and stops the instance ~30s later, so a
     // start issued in that window is silently undone. Wait it out.
     await expect
-      .poll(() => instanceState(candidate!), {
-        timeout: 8 * 60_000,
-        intervals: [20_000],
-        message: `${candidate} never settled to stopped after creation`,
-      })
+      .poll(
+        () => {
+          p.tick(`waiting for ${candidate} to settle to stopped`)
+          return instanceState(candidate!)
+        },
+        {
+          timeout: 8 * 60_000,
+          intervals: [20_000],
+          message: `${candidate} never settled to stopped after creation`,
+        },
+      )
       .toBe("stopped")
   }
   runSqlWriteOnDev(
     `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
          AND user_id IS NULL`,
   )
+  // The standby row is gone above, so the manager stops cycling the instance -
+  // but it can still be mid-cycle right now, and start-instances rejects a
+  // transitional one (IncorrectInstanceState). A standby is stopped ~30s after
+  // it appears, so one the pool's own self-heal has just minted reads `pending`
+  // or `stopping` for about a minute. The create-standby branch waits this out
+  // for the instance IT asked for; every candidate needs the same.
+  await expect
+    .poll(
+      () => {
+        const state = instanceState(candidate!)
+        expect(
+          state,
+          `${candidate} was terminated while it was being staged`,
+        ).not.toBe("gone")
+        p.tick(`waiting for ${candidate} to settle (${state})`)
+        return state === "running" || state === "stopped"
+      },
+      {
+        timeout: 8 * 60_000,
+        intervals: [20_000],
+        message: `${candidate} never left pending/stopping`,
+      },
+    )
+    .toBe(true)
   if (instanceState(candidate!) !== "running") {
     awsJson(`ec2 start-instances --instance-ids ${candidate}`)
   }
+  p.step(`starting ${candidate}`)
   await expect
-    .poll(() => runningPremiumInstanceIds().includes(candidate!), {
-      timeout: 8 * 60_000,
-      intervals: [15_000],
-      message: `${candidate} never reached running`,
-    })
+    .poll(
+      () => {
+        p.tick(`waiting for ${candidate} to reach running`)
+        return runningPremiumInstanceIds().includes(candidate!)
+      },
+      {
+        timeout: 8 * 60_000,
+        intervals: [15_000],
+        message: `${candidate} never reached running`,
+      },
+    )
     .toBe(true)
   // A running EC2 is not yet a migration target: the readiness check the
   // optimizer runs demands a premium ECS task on it, so raise the service's
@@ -832,11 +948,17 @@ export async function stageSecondRunningInstance(
     )
   }
   await expect
-    .poll(() => premiumTaskStatusOn(candidate!), {
-      timeout: 10 * 60_000,
-      intervals: [20_000],
-      message: `no premium ECS task ever placed on ${candidate}`,
-    })
+    .poll(
+      () => {
+        p.tick(`waiting for a premium ECS task on ${candidate}`)
+        return premiumTaskStatusOn(candidate!)
+      },
+      {
+        timeout: 10 * 60_000,
+        intervals: [20_000],
+        message: `no premium ECS task ever placed on ${candidate}`,
+      },
+    )
     .toBe("RUNNING")
   // The delete above races the pool manager, which re-adds a standby row for
   // an instance it just started. Clear it again so the optimizer will take it.
@@ -844,6 +966,15 @@ export async function stageSecondRunningInstance(
     `DELETE FROM premium_user_assignments WHERE instance_id = '${candidate}'
          AND user_id IS NULL`,
   )
+  // pickFree() read occupancy once, up to ~18 minutes of polling ago. If another
+  // lane has claimed the candidate since, returning it hands the caller the exact
+  // decoy this screening exists to remove, and the caller hangs to its own
+  // timeout with the same symptom.
+  expect(
+    occupiedPremiumInstanceIds().has(candidate!),
+    `${candidate} was claimed by a real user while it was being staged`,
+  ).toBe(false)
+  p.step(`staged ${candidate}`)
   return candidate!
 }
 

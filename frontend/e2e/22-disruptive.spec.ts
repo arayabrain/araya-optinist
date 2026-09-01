@@ -15,6 +15,7 @@ import {
   login,
   openWorkspace,
   premiumTargetHealth,
+  progressLog,
   runSql,
   sqlSkipReason,
   stageSecondRunningInstance,
@@ -132,13 +133,31 @@ function guardDisruptive(): void {
 // Sunday 23:00 UTC. Every test here polls for longer than it takes to notice.
 function skipIfTooCloseToScheduledStop(minutes: number): void {
   const now = new Date()
+  const at = now.toISOString().slice(11, 16)
+  // Up = start cron(0 23 ? * SUN-THU) .. stop cron(0 13 ? * MON-FRI), so
+  // 23:00 -> 13:00 UTC on weekdays. Asked separately from the deadline below:
+  // outside the window there is no stop to be too close to, and a lane run
+  // against a scaled-to-zero environment reports ALB 503s as locator timeouts.
+  const day = now.getUTCDay()
+  const hour = now.getUTCHours()
+  test.skip(
+    !((hour >= 23 && day <= 4) || (hour < 13 && day >= 1 && day <= 5)),
+    `the dev environment is stopped at ${at} UTC; it runs 23:00 -> 13:00 UTC ` +
+      `on weekdays`,
+  )
+  // The next 13:00 UTC, not today's: the environment starts at 23:00 UTC, so
+  // for most of a session today's stop is already behind us. Saturday and
+  // Sunday carry no stop at all -- the rule only fires Mon-Fri.
   const stop = new Date(now)
   stop.setUTCHours(13, 0, 0, 0)
+  while (stop <= now || stop.getUTCDay() === 0 || stop.getUTCDay() === 6) {
+    stop.setUTCDate(stop.getUTCDate() + 1)
+  }
   const left = Math.floor((stop.getTime() - now.getTime()) / 60_000)
   test.skip(
     left < minutes,
     `this test can run for ${minutes} minutes and the 13:00 UTC scheduled ` +
-      `stop is ${left} minutes away (${now.toISOString().slice(11, 16)} UTC)`,
+      `stop is ${left} minutes away (${at} UTC)`,
   )
 }
 
@@ -245,11 +264,11 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   // serves. force-new-deployment is the same action a release performs.
   test("OUT-02 - A rolling public-tier deployment keeps serving throughout", async () => {
     // Each replaced task can spend the full 600s deregistration delay
-    // draining, and the tier runs two tasks, so the rollout's worst case is
-    // over 20 minutes - observed 2026-08-25 when a drain ran to the cap. The
-    // 2026-08-26 run needed 29: placement alone took 11 minutes per task.
+    // draining, and the tier runs two tasks, so the rollout's worst case runs
+    // to roughly half an hour once per-task placement time is included.
     test.setTimeout(3_300_000)
     skipIfTooCloseToScheduledStop(55)
+    const p = progressLog("22-disruptive", "OUT-02")
     const before = describeService(PUBLIC_SERVICE)
     expect(
       before.desiredCount,
@@ -268,6 +287,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       await reproduceStatus(record!),
       `published ${record!.uid} did not load before the deployment`,
     ).toBe(200)
+    p.step(`published ${record!.uid} readable before the deployment`)
 
     const anon = await request.newContext()
     const statuses: number[] = []
@@ -282,6 +302,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       awsJson(
         `ecs update-service --cluster ${CLUSTER} --service ${PUBLIC_SERVICE} ` +
           `--force-new-deployment --region ${AWS_REGION}`,
+      )
+      p.step(
+        `forced a new deployment over ${priorDeployment}; each replaced task ` +
+          `can drain for the full 600s deregistration delay`,
       )
       // Poll the front door while the deployment rolls; a rolling update keeps
       // the old task in service until the new one is healthy, so every one of
@@ -305,10 +329,14 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
           primary!.rolloutState,
           "the public deployment failed to roll out",
         ).not.toBe("FAILED")
+        p.tick(
+          `rollout ${primary!.rolloutState}, running ${s.runningCount}/` +
+            `${before.desiredCount}, ${statuses.length} probes`,
+        )
         // Not `deployments.length === 1`: a second force-new-deployment landing
-        // mid-run (observed 2026-08-25) keeps a superseded deployment listed and
-        // makes that count unsatisfiable for the rest of the run. COMPLETED on a
-        // PRIMARY newer than the pinned one already means the roll finished.
+        // mid-run keeps a superseded deployment listed and makes that count
+        // unsatisfiable for the rest of the run. COMPLETED on a PRIMARY newer
+        // than the pinned one already means the roll finished.
         if (
           primary!.id !== priorDeployment &&
           primary!.rolloutState === "COMPLETED" &&
@@ -320,6 +348,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
         await new Promise((r) => setTimeout(r, 10_000))
       }
       expect(settled, "the public deployment never settled").toBe(true)
+      p.step(`rollout settled after ${statuses.length} probes`)
 
       // The new task mounted the same EFS filesystem, so the record is still
       // there: 202 here would mean the replacement lost the cache and the
@@ -329,6 +358,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
         `published ${record!.uid} after the task replacement (202 = re-syncing ` +
           `from S3, so EFS did not preserve it)`,
       ).toBe(200)
+      p.step("EFS preserved the published cache across the replacement")
 
       // Row 823: the replacement task really runs the startup sync through
       // the leader path, warming the published-data cache on the new task.
@@ -338,18 +368,20 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       // while the sync runs and releases it on exit, and a rolling deployment
       // replaces tasks one at a time - so the second task boots long after
       // the lock is free and legitimately logs "scheduled" too. Contention
-      // needs two tasks booting at once, which this action cannot produce
-      // (verified 2026-08-25: a real rolling deployment emitted "scheduled"
-      // and no "deferred" line). The loser branch is
+      // needs two tasks booting at once, which this action cannot produce -
+      // a rolling deployment emits "scheduled" with no "deferred" line. The
+      // loser branch is
       // test_main_unit_startup.py::TestStartupSyncLeaderElection.
       await expect
         .poll(
-          () =>
-            cloudwatchHas(
+          () => {
+            p.tick("waiting for the replacement task's startup-sync log line")
+            return cloudwatchHas(
               PUBLIC_LOG_GROUP,
               "Startup sync task scheduled",
               deployStart,
-            ),
+            )
+          },
           {
             ...CLOUDWATCH_POLL,
             message: `no "Startup sync task scheduled" line in ${PUBLIC_LOG_GROUP} after the deployment`,
@@ -505,6 +537,9 @@ const PUBLIC_ASG = "development-optinist-public-asg"
 const PUBLIC_TG = "development-optinist-public-tg"
 const PUBLIC_LB = "development-optinist-lb"
 const UNHEALTHY_ALARM = "development-optinist-public-tg-unhealthy-hosts"
+// Explicit rather than Playwright's implicit default: the probe cadence and the
+// detection-window arithmetic both depend on a request that cannot hang.
+const PROBE_TIMEOUT_MS = 30_000
 
 type AsgInstance = { id: string; health: string; state: string }
 
@@ -565,6 +600,28 @@ function publicTgHealth(): { id: string; port: number; state: string }[] {
   }))
 }
 
+// How long the ALB can still route to a target whose OS is already gone:
+// (unhealthy_threshold + 2) x interval. Two intervals of slack, not one:
+//   +1 -> the kill landing just after a passing check
+//   +1 -> the terminate call and the OS shutdown, before checks start failing
+// Read from the TG so a terraform change moves it.
+function publicTgDetectionMs(): number {
+  const tgs = awsJson<{
+    TargetGroups: {
+      HealthCheckIntervalSeconds: number
+      UnhealthyThresholdCount: number
+    }[]
+  }>(
+    `elbv2 describe-target-groups --names ${PUBLIC_TG} --region ${AWS_REGION}`,
+  ).TargetGroups
+  expect(tgs.length, `elbv2 knows ${PUBLIC_TG}`).toBe(1)
+  return (
+    (tgs[0].UnhealthyThresholdCount + 2) *
+    tgs[0].HealthCheckIntervalSeconds *
+    1000
+  )
+}
+
 // The EC2 instances currently running a task of the public service. Row 827's
 // third expectation is about the task, not just the instance.
 function publicTaskInstances(): string[] {
@@ -610,12 +667,16 @@ function alarmState(): string[] {
   )
 }
 
-function unhealthyHostMaxima(sinceMs: number): number[] {
+// [Timestamp, Maximum] pairs, time-sorted. Maxima alone cannot carry the claim
+// they are logged for: get-metric-statistics returns Datapoints unordered, and
+// CloudWatch omits periods with no samples - so [0,1,1,1,0] is indistinguishable
+// from three non-adjacent 1s. The timestamps are what show contiguity.
+function unhealthyHostSeries(sinceMs: number): [string, number][] {
   const tg = publicTgArn()
   const lb = awsJson<{ LoadBalancers: { LoadBalancerArn: string }[] }>(
     `elbv2 describe-load-balancers --names ${PUBLIC_LB} --region ${AWS_REGION}`,
   ).LoadBalancers[0].LoadBalancerArn
-  return awsJson<number[]>(
+  return awsJson<[string, number][]>(
     `cloudwatch get-metric-statistics --namespace AWS/ApplicationELB ` +
       `--metric-name UnHealthyHostCount ` +
       `--dimensions Name=TargetGroup,Value=${tg.slice(
@@ -624,7 +685,11 @@ function unhealthyHostMaxima(sinceMs: number): number[] {
       `--start-time ${new Date(sinceMs).toISOString()} ` +
       `--end-time ${new Date().toISOString()} ` +
       `--period 60 --statistics Maximum --region ${AWS_REGION} ` +
-      `--query 'Datapoints[].Maximum'`,
+      // sort_by: get-metric-statistics returns Datapoints in no defined order,
+      // so the unsorted list reads as flapping (`[0,1,0,1,0]`) where the metric
+      // actually held one contiguous block. Math.max below does not care; the
+      // row-824 log line does.
+      `--query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]'`,
   )
 }
 
@@ -636,18 +701,19 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
   // which would write the very health verdict the ASG is supposed to reach on
   // its own - the objection that retired the set-alarm-state version.
   //
-  // Row 824's alarm is watched but deliberately NOT asserted here. Whether a
-  // terminating instance's target is ever counted `unhealthy`, or goes straight
-  // to `draining` (counted in neither host-count metric) as the ASG deregisters
-  // it, is not documented; an assertion either way would be a guess. The
-  // observed datapoints are logged instead, and HEALTH-27 covers 824's "the
-  // alarm fires on real datapoints" half read-only.
+  // Row 824's alarm is watched but deliberately NOT asserted here: a
+  // terminating instance's target has been seen counted `unhealthy` (with the
+  // alarm running ALARM -> OK) rather than going straight to `draining`, but
+  // that is not contractual and is thin ground for a hard assertion. The
+  // datapoints stay logged, and HEALTH-27 covers 824's "the alarm fires on
+  // real datapoints" half read-only.
   test("ASG-01 - Terminating a public instance replaces it without dropping traffic", async () => {
-    // 60 minutes: the 2400s settle loop plus the two 600s polls after it. The
-    // observed cost is far lower - the terminate activity ran 11m43s on
-    // 2026-08-21 and a launch took ~20 minutes to go healthy on 2026-08-23.
-    test.setTimeout(3_600_000)
-    skipIfTooCloseToScheduledStop(60)
+    // 65 minutes: the 2400s settle loop plus the two 600s polls after it sum to
+    // exactly 3600s, leaving nothing for the AWS calls between them. The real
+    // cost is far lower - the terminate activity and the replacement launch
+    // each take on the order of 10-20 minutes.
+    test.setTimeout(3_900_000)
+    skipIfTooCloseToScheduledStop(65)
 
     // Every capacity number here is rewritten twice a day by the scheduler, so
     // read them rather than trusting the terraform default.
@@ -672,31 +738,53 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // A run that starts with the metric already breaching cannot attribute
     // anything below to what it did.
     expect(
-      Math.max(0, ...unhealthyHostMaxima(Date.now() - 300_000)),
+      Math.max(
+        0,
+        ...unhealthyHostSeries(Date.now() - 300_000).map(([, m]) => m),
+      ),
       "UnHealthyHostCount was already above zero before this test started",
     ).toBe(0)
     expect(alarmState(), `${UNHEALTHY_ALARM} must start in OK`).toEqual(["OK"])
+    // Read before the kill: fixed config, and one fewer AWS call on the
+    // post-disruption path, where a throw costs the whole run's evidence.
+    const detectionMs = publicTgDetectionMs()
 
     const start = Date.now()
     const [victim, survivor] = healthyBefore
     const anon = await request.newContext()
-    const statuses: number[] = []
+    const probes: { at: number; status: number }[] = []
     let replacement = ""
+    // start is taken before the terminate call, which is what launchesSince and
+    // the UnHealthyHostCount read need. The detection window cannot use it: the
+    // CLI round trip runs inside it. killedAt is the window's zero point.
+    let killedAt = 0
     try {
       awsJson(
         `ec2 terminate-instances --instance-ids ${victim} ` +
           `--region ${AWS_REGION}`,
       )
+      killedAt = Date.now()
 
       // Probe the front door for the whole replacement, the same way OUT-02
       // proves a rolling deployment keeps serving. The surviving instance is
       // what has to carry it.
       const deadline = Date.now() + 2_400_000
       for (;;) {
-        const res = await anon.get(`${process.env.BASE_URL}/`, {
-          failOnStatusCode: false,
-        })
-        statuses.push(res.status())
+        const at = Date.now()
+        // A hard terminate mid-connection is the stimulus most likely to reset
+        // one, and an uncaught throw here ends the run with no probe evidence
+        // at all. status 0 = the request never completed.
+        let status = 0
+        try {
+          const res = await anon.get(`${process.env.BASE_URL}/`, {
+            failOnStatusCode: false,
+            timeout: PROBE_TIMEOUT_MS,
+          })
+          status = res.status()
+        } catch {
+          // A reset or a timeout leaves status 0; the loop keeps probing.
+        }
+        probes.push({ at, status })
 
         const churn = launchesSince(start)
         expect(
@@ -732,14 +820,73 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
       await anon.dispose()
     }
 
-    expect(
-      statuses.length,
-      "too few probes to claim the tier kept serving throughout",
-    ).toBeGreaterThan(5)
-    expect(
-      statuses.filter((s) => s !== 200),
-      `non-200 responses during the replacement (${statuses.length} probes)`,
-    ).toEqual([])
+    // A hard terminate kills the OS before the ALB can react, and ALB does not
+    // retry a failed target connection, so a bounded blip is inherent to the
+    // stimulus: the ALB emits the 502 itself (TargetConnectionError, not an
+    // application 5xx). What row 827 claims, scoped:
+    //   inside the detection window -> 502/504 only
+    //   outside it                  -> every probe 200; the survivor carries
+    //                                  the tier
+    //   either side                 -> at most MAX_BLIP_PROBES non-200s
+    // Never tolerated: 503 (no healthy target at all - traffic dropped, not one
+    // connection lost) and 0 (the request never completed, which a dead target
+    // connection does not cause). The volume bound is load-bearing: class and
+    // time alone let EVERY in-window probe be 502, a two-minute outage under a
+    // row named "without dropping traffic".
+    //
+    // Soft, all five: a hard failure here skips the target-group poll, the
+    // ECS-placement poll, the row-824 evidence line and the final settle check -
+    // the verification this run exists to produce.
+    const MAX_BLIP_PROBES = 2
+    const failures = probes.filter((p) => p.status !== 200)
+    const withOffset = (ps: typeof probes) =>
+      ps.map((p) => ({
+        afterS: Math.round((p.at - killedAt) / 1000),
+        status: p.status,
+      }))
+    expect
+      .soft(
+        probes.length,
+        "too few probes to claim the tier kept serving throughout",
+      )
+      .toBeGreaterThan(5)
+    expect
+      .soft(
+        withOffset(
+          failures.filter((p) => p.status !== 502 && p.status !== 504),
+        ),
+        `non-200s the termination cannot explain: only 502/504 on the victim's ` +
+          `own connections are inherent to a hard terminate. 503 would mean no ` +
+          `healthy target at all, and 0 that the request never completed ` +
+          `(${probes.length} probes)`,
+      )
+      .toEqual([])
+    expect
+      .soft(
+        failures.length,
+        `too many non-200s to be the inherent connection blip: ` +
+          `${JSON.stringify(withOffset(failures))} of ${probes.length} probes. ` +
+          `A hard terminate costs the requests in flight to the dead target, so ` +
+          `a run of them is the tier failing to carry the load on one instance`,
+      )
+      .toBeLessThanOrEqual(MAX_BLIP_PROBES)
+    const late = failures.filter((p) => p.at - killedAt > detectionMs)
+    expect
+      .soft(
+        withOffset(late),
+        `non-200 responses more than ${detectionMs / 1000}s after the ` +
+          `termination, long after the ALB had time to drop the dead target ` +
+          `(${probes.length} probes)`,
+      )
+      .toEqual([])
+    // Without this the check above passes vacuously on a run whose probes all
+    // landed inside the window.
+    expect
+      .soft(
+        probes.filter((p) => p.at - killedAt > detectionMs).length,
+        "too few probes after the detection window to claim the tier recovered",
+      )
+      .toBeGreaterThan(5)
 
     // In the target group, not merely in the ASG
     await expect
@@ -770,9 +917,12 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
     // terminating instance's target is ever counted unhealthy is what this
     // records, and the first runs are what settle it.
     console.log(
-      `ASG-01: UnHealthyHostCount maxima during the replacement: ` +
-        `${JSON.stringify(unhealthyHostMaxima(start))}; ` +
-        `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}`,
+      `ASG-01: UnHealthyHostCount during the replacement: ` +
+        `${unhealthyHostSeries(start)
+          .map(([t, m]) => `${t.slice(11, 16)}=${m}`)
+          .join(" ")}; ` +
+        `${UNHEALTHY_ALARM} is now ${alarmState().join(",")}; ` +
+        `non-200 probes: ${JSON.stringify(withOffset(failures))}`,
     )
 
     // No restore step: nothing here changed a capacity number, and MinSize kept
