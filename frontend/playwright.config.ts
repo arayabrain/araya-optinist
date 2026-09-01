@@ -40,6 +40,11 @@ export default defineConfig({
   reporter: [
     ["html", { open: "never" }],
     ["list"],
+    // After "list", not before: the list reporter writes its status line with a
+    // leading newline and none at the end, so this one's clock lands ON that
+    // line rather than adding a second. Before it, the clock would be printed
+    // and then erased by list's own repaint.
+    ["./e2e/timestamp-reporter.ts"],
     // A skipped test reads as a pass in the summary line the sheets are signed
     // off against; this names the rows that did not run.
     ["./e2e/skip-summary-reporter.ts"],
