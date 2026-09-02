@@ -26,6 +26,7 @@ import {
   awaitRunFinished,
   awsJson,
   cloudwatchHas,
+  expectPremiumTargetGroupGone,
   filterWorkspace,
   freeStorageState,
   gotoDashboard,
@@ -38,7 +39,6 @@ import {
   runShellOverSsm,
   runSql,
   runTutorial,
-  expectPremiumTargetGroupGone,
   s3ObjectCount,
   skipUnlessPremiumTargetHealthy,
   skipWithoutCreds,
@@ -285,10 +285,18 @@ async function signInPremium(page: Page, rows: string) {
       // tier, or every probe was rate-limited - which can only happen while
       // something is successfully assigning, so it is the same verdict. Only a
       // real answer that is none of those is a failure.
+      // 503 is what this endpoint answers for the rate limit AND for a
+      // placement it refuses, and `isAssignRateLimited` tells them apart on a
+      // message string that lives in another tree with nothing pinning it. So
+      // any 503 is inconclusive here: neither is a broken assign flow, and a
+      // rewording must degrade to a skip rather than to a red row fifteen
+      // minutes into the cold path. A 500 still fails - that is the route's
+      // own internal error, not an answer about capacity.
       test.skip(
         !!lastBody.scaling_in_progress ||
           lastBody.instance_id === AUTOSCALING_POOL ||
-          lastStatus === 0,
+          lastStatus === 0 ||
+          lastStatus === 503,
         `rows ${rows} [premium]: the dev pool could not place premium ` +
           `capacity within ${PREMIUM_ASSIGN_TIMEOUT_MS / 60_000} min ` +
           `(last probe: ${lastStatus || "rate-limited throughout"} ` +

@@ -694,6 +694,26 @@ export function premiumTargetHealth(userId: number): string[] {
 // rows unverified rather than failed. Shared by every lane that drives real
 // work at a premium instance - `16-storage-aws` failed its first premium run
 // for want of this gate, which is why it lives here rather than in one spec.
+export async function skipUnlessPremiumTargetHealthy(
+  rows: string,
+  userId: number,
+) {
+  const deadline = Date.now() + 5 * 60_000
+  let states: string[] = []
+  for (;;) {
+    states = premiumTargetHealth(userId)
+    if (states.includes("healthy")) return
+    if (Date.now() > deadline) break
+    await new Promise((r) => setTimeout(r, 15_000))
+  }
+  test.skip(
+    true,
+    `rows ${rows}: premium-${userId}-tg never reported a healthy target ` +
+      `(states: ${states.join(",") || "none"}) - the dev cluster could not ` +
+      `keep a premium task serving; rerun when it has free CPU`,
+  )
+}
+
 // The ALB half of "nothing is still held by us". A hard release can delete the
 // assignment row and the listener rule but fail the target-group deletion,
 // stranding a rule-less TG no sweep can find (issue #814) - so /premium/status
@@ -714,26 +734,6 @@ export function expectPremiumTargetGroupGone(userId: number, stage: string) {
     throw e
   }
   throw new Error(`${stage}: premium-${userId}-tg still exists after release`)
-}
-
-export async function skipUnlessPremiumTargetHealthy(
-  rows: string,
-  userId: number,
-) {
-  const deadline = Date.now() + 5 * 60_000
-  let states: string[] = []
-  for (;;) {
-    states = premiumTargetHealth(userId)
-    if (states.includes("healthy")) return
-    if (Date.now() > deadline) break
-    await new Promise((r) => setTimeout(r, 15_000))
-  }
-  test.skip(
-    true,
-    `rows ${rows}: premium-${userId}-tg never reported a healthy target ` +
-      `(states: ${states.join(",") || "none"}) - the dev cluster could not ` +
-      `keep a premium task serving; rerun when it has free CPU`,
-  )
 }
 
 // ---------------------------------------------------------------------------
