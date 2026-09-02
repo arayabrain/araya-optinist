@@ -114,6 +114,19 @@ Milestone #（N件）の主な内訳:
   - [ ] リリース素材の準備完了
     - [ ] version file更新済 -> [DEPLOYMENT_PROCEDURE.md#release-preparation](https://github.com/arayabrain/araya-optinist/blob/develop-main/infrastructure/documentation/DEPLOYMENT_PROCEDURE.md#release-preparation)
   - [ ] pre-release: release notes / 対象 commit SHA を確認
+  - [ ] Weekly Regression を対象コミット（pre-release tag）で実行（`@slow` e2e を含む。最大3時間、前日までに開始）
+
+    ```bash
+    # CI: unit / premium_lock / workflow_count / slow e2e をまとめて実行
+    gh workflow run e2e.yml --ref vX.Y.Z
+    gh run list --workflow e2e.yml -L 3
+
+    # ローカルで @slow のみ流す場合
+    cd frontend && RUN_SLOW=1 yarn test:e2e --grep @slow
+    ```
+
+    > `--ref` は branch か tag のみ。SHA は指定できないため pre-release tag 作成後に実行する。
+    > 詳細は frontend/e2e/README.md の「The weekly regression, and running it on a branch」を参照。
   - [ ] test結果: dev テスト結果リンク（または省略根拠）を整理
 - [ ] **3. リリース手順の再確認**
   * 担当: 支援者
@@ -258,7 +271,7 @@ Milestone #（N件）の主な内訳:
 
 - [ ] dev環境テスト結果: リスクレベルに応じた **System test cases (development)** が実施され、結果が記録されている
 - [ ] テスト対象のコミットSHAがリリース対象と一致している
-- [ ] 対象コミットで CI（backend / lambda / frontend）が green である
+- [ ] 対象コミットで Weekly Regression が green である（unit / premium_lock / workflow_count / `@slow` e2e。実行できない場合は `make test_run_all`）
 - [ ] System test cases を省略している場合、領域と省略根拠が手順シートに記載され妥当である
 - [ ] Buffer（不具合対応・再テスト）が完了している
 - [ ] 本番 Release test cases sheet の実施担当者・想定タイミングが手順シートに記載されている
