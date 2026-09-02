@@ -136,8 +136,10 @@ Milestone #（N件）の主な内訳:
   * 担当: 支援者
   * 予定: ※時刻記入
   - [ ] 実績（完了時刻）:
-  - [ ] terraform apply
-  - [ ] ECS タスク定義更新・サービスデプロイ
+  - [ ] terraform apply（インフラ / Lambda に変更がある場合。build script が terraform output を読むため必ず先に実施）
+  - [ ] `infrastructure/scripts/ecr_build_push.sh` で image を build・push（frontend / studio に変更がある場合）
+  - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle
+  - [ ] 全サービスが 1 deployment に収束したことを確認
   <!-- - [ ] （DBマイグレーションがある場合）マイグレーション実行 -->
   - [ ] check_ecs_image_drift.py を使用して、デプロイしたインスタンスが最新かの確認
 - [ ] **3. リリース後動作確認（主要EP / 認証 / 課金 / premium routing）**
@@ -167,7 +169,9 @@ Milestone #（N件）の主な内訳:
   * 担当: @
 - [ ] **2. pre-release を正式 release へ昇格・公開**
   * 担当: @
-- [ ] **3. 本 issue（承認/手順）を close**
+- [ ] **3. develop-main を main へマージ**
+  * 担当: @
+- [ ] **4. 本 issue（承認/手順）を close**
   * 担当: @
 
 ---
@@ -197,10 +201,14 @@ Milestone #（N件）の主な内訳:
 
 - [ ] **3. 切り戻し実施**
   * 担当: 支援者
-  - [ ] ECS タスク定義を旧リビジョンへ戻す
+  > タスク定義は image を `:latest` で参照しているため、旧リビジョンへ戻しても image は戻らない。
+  > 手順は INFRA_DEPLOYMENT_PROCEDURE.md の「Rollback to a Previous Image」に従う。
+  - [ ] 切り戻し先の image tag を ECR で特定（`aws ecr list-images`）
+  - [ ] 旧 image を `:latest` へ retag（`aws ecr put-image`）
   - [ ] terraform を旧構成へ apply（IAM / alarms / scheduler 含む）
   - [ ] （DBマイグレーションがある場合）ロールバック手順を実施
-  - [ ] サービス再デプロイ・ヘルスチェック確認
+  - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle
+  - [ ] 全サービスが 1 deployment に収束したことを確認・ヘルスチェック
 - [ ] **4. 動作確認**
   * 担当: @
   - [ ] 主要EP / 認証 / 課金 / premium routing のスモークテスト
@@ -238,8 +246,10 @@ Milestone #（N件）の主な内訳:
 
 ### 対象ブランチ/コミットSHA/version tag
 
-- [ ] version fileが更新されている
-  - [pyproject.toml](https://github.com/arayabrain/araya-optinist/blob/develop-main/pyproject.toml) (`version = "x.x.x"`)
+- [ ] version fileが更新されている（3ファイルすべて）
+  - [pyproject.toml](https://github.com/arayabrain/araya-optinist/blob/develop-main/pyproject.toml) (`[tool.poetry] version`)
+  - [frontend/package.json](https://github.com/arayabrain/araya-optinist/blob/develop-main/frontend/package.json) (`version`)
+  - [docs/conf.py](https://github.com/arayabrain/araya-optinist/blob/develop-main/docs/conf.py) (`release`)
 - [ ] 対象コミットSHAが明示されている
 - [ ] pre-releaseのコミットSHAと一致している
 - [ ] version tag名がバージョニングルールに従っている
@@ -248,6 +258,7 @@ Milestone #（N件）の主な内訳:
 
 - [ ] dev環境テスト結果: リスクレベルに応じた **System test cases (development)** が実施され、結果が記録されている
 - [ ] テスト対象のコミットSHAがリリース対象と一致している
+- [ ] 対象コミットで CI（backend / lambda / frontend）が green である
 - [ ] System test cases を省略している場合、領域と省略根拠が手順シートに記載され妥当である
 - [ ] Buffer（不具合対応・再テスト）が完了している
 - [ ] 本番 Release test cases sheet の実施担当者・想定タイミングが手順シートに記載されている
