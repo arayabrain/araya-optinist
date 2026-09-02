@@ -38,6 +38,7 @@ import {
   runShellOverSsm,
   runSql,
   runTutorial,
+  expectPremiumTargetGroupGone,
   s3ObjectCount,
   skipUnlessPremiumTargetHealthy,
   skipWithoutCreds,
@@ -106,12 +107,19 @@ const UPLOAD_TIMEOUT_MS = 120_000
 // traffic, so waiting for it to serve gets its own budget on top. All three
 // are spent in sequence in the worst case, and setupBudgetMs below must cover
 // their sum - a setup that outruns the test's own timeout turns the capacity
-// skip these budgets exist for into a red row.
+// skip these budgets exist for into a red row. login()'s own three retries
+// (~2.5 min worst case) are deliberately left out: they can eat into the
+// body's margin but cannot turn a skip into a failure.
 const PREMIUM_ASSIGN_TIMEOUT_MS = 15 * 60_000
 // /premium/assign does real AWS work in-request (ALB rules, scale-up), so it
 // needs far more than REQUEST_TIMEOUT_MS - the same budget `15-premium-aws`
 // gives its own assign calls.
 const PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS = 5 * 60_000
+// How often the assign is driven while waiting. Far above the endpoint's own
+// 30s per-user rate limit, and above the app's re-trigger cadence (every third
+// null-status poll, five times), so a probe lands when the browser has gone
+// quiet rather than fighting it for the same window.
+const PREMIUM_ASSIGN_PROBE_INTERVAL_MS = 2 * 60_000
 // What skipUnlessPremiumTargetHealthy spends; mirrored here for the budget sum
 const PREMIUM_SERVING_TIMEOUT_MS = 5 * 60_000
 const PREMIUM_RELEASE_TIMEOUT_MS = 120_000
@@ -198,6 +206,16 @@ async function premiumStatus(page: Page): Promise<PremiumStatus> {
   return { is_premium: !!body.is_premium, assignment: body.assignment ?? null }
 }
 
+// /premium/assign turns away an attempt inside its 30s per-user window with a
+// 503 whose detail names the limit - the same status a real placement failure
+// takes, which is why the message is what tells them apart.
+function isAssignRateLimited(
+  status: number,
+  body: { detail?: string },
+): boolean {
+  return status === 503 && /too frequent/i.test(body.detail ?? "")
+}
+
 async function userIdOf(page: Page): Promise<number> {
   const res = await page.request.get(`${apiUrl()}/users/me`, {
     headers: await apiHeaders(page),
@@ -227,42 +245,61 @@ async function signInPremium(page: Page, rows: string) {
       `TEST_PREMIUM_* account against /premium/status, not /users/me`,
   ).toBe(true)
 
-  // Drive the assign rather than waiting on the provider's: /premium/assign
-  // answers scaling_in_progress while capacity starts and expects the caller
-  // to retry, and polling /premium/status alone would leave the row hostage
-  // to one assign-on-mount succeeding. The endpoint returns the existing
-  // assignment when there is one, so this cannot double-assign.
+  // Poll the provider's own result, and drive the assign alongside it so one
+  // failed assign-on-mount cannot cost the whole budget. Nothing here asserts
+  // the probe's status: /premium/assign is rate-limited to one per user per
+  // 30s and answers a turned-away attempt with 503, while the app's provider
+  // keeps re-opening that window from the browser - so a 503 is routinely the
+  // rate limiter, not a verdict about the pool. The probe's last real answer
+  // is kept for the deadline below to decide on instead.
   let assignment = status.assignment
-  let lastBody: { scaling_in_progress?: boolean; instance_id?: string } = {}
+  let lastStatus = 0
+  let lastBody: {
+    scaling_in_progress?: boolean
+    instance_id?: string
+    detail?: string
+  } = {}
   const assignDeadline = Date.now() + PREMIUM_ASSIGN_TIMEOUT_MS
+  let nextProbeAt = Date.now() + PREMIUM_ASSIGN_PROBE_INTERVAL_MS
   while (!assignment) {
-    const probe = await page.request.post(
-      `${apiUrl()}/users/me/premium/assign`,
-      {
-        headers: await apiHeaders(page),
-        timeout: PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS,
-      },
-    )
-    expect(probe.status(), await probe.text()).toBeLessThan(500)
-    lastBody = await probe.json().catch(() => ({}))
+    if (Date.now() >= nextProbeAt) {
+      nextProbeAt = Date.now() + PREMIUM_ASSIGN_PROBE_INTERVAL_MS
+      const probe = await page.request.post(
+        `${apiUrl()}/users/me/premium/assign`,
+        {
+          headers: await apiHeaders(page),
+          timeout: PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS,
+        },
+      )
+      const body = await probe.json().catch(() => ({}))
+      if (!isAssignRateLimited(probe.status(), body)) {
+        lastStatus = probe.status()
+        lastBody = body
+      }
+    }
     assignment = (await premiumStatus(page)).assignment
     if (assignment) break
     if (Date.now() > assignDeadline) {
-      // The last answer tells "still scaling with no capacity" (skip) apart
-      // from a dead assign flow (fail).
+      // Three ways this budget runs out without a broken assign flow: the pool
+      // is still starting capacity, the cascade parked us on the warming pool
+      // tier, or every probe was rate-limited - which can only happen while
+      // something is successfully assigning, so it is the same verdict. Only a
+      // real answer that is none of those is a failure.
       test.skip(
         !!lastBody.scaling_in_progress ||
-          lastBody.instance_id === AUTOSCALING_POOL,
+          lastBody.instance_id === AUTOSCALING_POOL ||
+          lastStatus === 0,
         `rows ${rows} [premium]: the dev pool could not place premium ` +
           `capacity within ${PREMIUM_ASSIGN_TIMEOUT_MS / 60_000} min ` +
-          `(${JSON.stringify(lastBody)}) - rerun when the cluster has free CPU`,
+          `(last probe: ${lastStatus || "rate-limited throughout"} ` +
+          `${JSON.stringify(lastBody)}) - rerun when the cluster has free CPU`,
       )
       throw new Error(
         `no premium assignment appeared and the backend is not scaling: ` +
-          `${JSON.stringify(lastBody)}`,
+          `${lastStatus} ${JSON.stringify(lastBody)}`,
       )
     }
-    await new Promise((r) => setTimeout(r, 30_000))
+    await new Promise((r) => setTimeout(r, 15_000))
   }
   // The granted tier decides whether the gate below can read anything, and is
   // the first thing to know when a premium row fails on a 502.
@@ -288,7 +325,7 @@ async function signInPremium(page: Page, rows: string) {
 // {"released": true}, and release_premium_user fails open on timeout, leaving
 // the expiration sweep as the backstop. So read the assignment back, exactly
 // as this lane reads S3 back after a 200.
-async function releaseAndConfirm(stage: string) {
+async function releaseAndConfirm(stage: string, checkTargetGroup = false) {
   const { api, headers } = await apiLogin(
     PREMIUM_USER.email,
     PREMIUM_USER.password,
@@ -318,6 +355,20 @@ async function releaseAndConfirm(stage: string) {
         },
       )
       .toBe("released")
+    // The other half of the invariant, asserted once at the end of the lane
+    // rather than after every row: this lane creates a per-user target group
+    // on every dedicated premium row, and a release can take the row and the
+    // rule while leaving the group behind. `15-premium-aws` places it in the
+    // same hook, and a still-propagating deletion must not fail a good row's
+    // teardown.
+    if (checkTargetGroup) {
+      const me = await api.get("/users/me", {
+        headers,
+        timeout: REQUEST_TIMEOUT_MS,
+      })
+      expect(me.ok(), await me.text()).toBe(true)
+      expectPremiumTargetGroupGone((await me.json()).id, stage)
+    }
   } finally {
     await api.dispose()
   }
@@ -336,7 +387,7 @@ test.afterEach(async () => {
 test.afterAll(async () => {
   if (!premiumLaneRan) return
   test.setTimeout(5 * 60_000)
-  await releaseAndConfirm("afterAll")
+  await releaseAndConfirm("afterAll", true)
 })
 
 // Sign in as the tier's account and read back the two facts every row below

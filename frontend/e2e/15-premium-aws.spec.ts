@@ -35,6 +35,7 @@ import {
   runSql,
   runSqlWriteOnDev,
   runTutorial,
+  expectPremiumTargetGroupGone,
   skipUnlessPremiumTargetHealthy,
   s3ObjectCount,
   skipWithoutCreds,
@@ -471,20 +472,7 @@ test.afterAll(async () => {
         timeout: STATUS_REQUEST_TIMEOUT_MS,
       })
       const userId: number = (await me.json()).id
-      try {
-        execSync(
-          `aws elbv2 describe-target-groups --names premium-${userId}-tg ` +
-            `--region ${REGION}`,
-          { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
-        )
-        throw new Error(
-          `the lane finished with premium-${userId}-tg still existing`,
-        )
-      } catch (e) {
-        const msg =
-          (e as Error).message + String((e as { stderr?: Buffer }).stderr || "")
-        if (!msg.includes("TargetGroupNotFound")) throw e
-      }
+      expectPremiumTargetGroupGone(userId, "the lane finished with")
     } finally {
       await api.dispose()
     }
