@@ -35,6 +35,7 @@ import {
   runSql,
   runSqlWriteOnDev,
   runTutorial,
+  skipUnlessPremiumTargetHealthy,
   s3ObjectCount,
   skipWithoutCreds,
   sqlSkipReason,
@@ -107,29 +108,6 @@ function tgExists(userId: number): boolean {
   } catch {
     return false
   }
-}
-
-// The per-user target group's health states. A dedicated assignment goes live
-// (DB row, ALB rule, target group) before the premium ECS task on that instance
-// serves traffic, so a workflow driven through the ALB too early answers 502.
-// Waiting out the task placement is not the row under test: a cluster that
-// never gets a premium target serving leaves the workflow rows unverified,
-// exactly as skipForNoCapacity treats a failed placement.
-async function skipUnlessPremiumTargetHealthy(rows: string, userId: number) {
-  const deadline = Date.now() + 5 * 60_000
-  let states: string[] = []
-  for (;;) {
-    states = premiumTargetHealth(userId)
-    if (states.includes("healthy")) return
-    if (Date.now() > deadline) break
-    await new Promise((r) => setTimeout(r, 15_000))
-  }
-  test.skip(
-    true,
-    `rows ${rows}: premium-${userId}-tg never reported a healthy target ` +
-      `(states: ${states.join(",") || "none"}) - the dev cluster could not ` +
-      `keep a premium task serving; rerun when it has free CPU`,
-  )
 }
 
 // Premium instances not yet at rest: an assign racing a still-stopping
