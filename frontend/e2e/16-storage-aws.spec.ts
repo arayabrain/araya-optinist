@@ -429,14 +429,21 @@ async function expectNothingHeld() {
     PREMIUM_USER.password,
   )
   try {
-    const held = await assignmentState(api, headers)
+    // assignmentState never throws, so a blip comes back as a string. A real
+    // assignment object is reported at once; only an error string is worth a
+    // second look, or a momentary 5xx would end a 35-minute lane accusing it
+    // of a leak that never happened.
+    let held = await assignmentState(api, headers)
+    if (typeof held === "string" && held !== "released") {
+      await new Promise((r) => setTimeout(r, 10_000))
+      held = await assignmentState(api, headers)
+    }
     if (held !== "released") {
-      await api
-        .delete("/users/me/premium/assign", {
-          headers,
-          timeout: PREMIUM_RELEASE_TIMEOUT_MS,
-        })
-        .catch(() => {})
+      // Confirmed, not fire-and-forget: DELETE answers 200 on a release that
+      // failed, which is the whole reason this hook reads the state back.
+      // Swallowed because reporting the leak is this hook's job - a throw
+      // here would replace that report with the repair's own failure.
+      await releaseAndConfirm("afterAll repair").catch(() => {})
     }
     expect(
       held,
@@ -459,10 +466,6 @@ test.afterEach(async () => {
   await releaseAndConfirm("afterEach")
 })
 
-// The last net. An afterEach can be cut short when the test it follows has
-// already burned its timeout, and these rows carry long ones - so assert once
-// at the end of the lane that nothing is still held BY US, the invariant
-// `15-premium-aws` closes its own lane on.
 test.afterAll(async () => {
   if (!premiumLaneRan) return
   test.setTimeout(5 * 60_000)
@@ -731,6 +734,7 @@ for (const tier of TIERS) {
       // while the premium task was refusing traffic, and every S3 claim below
       // still passed.
       const importRequests: Record<string, string>[] = []
+      const importWindow = windowStart()
       if (tier.key === "premium") {
         page.on("request", (req) => {
           if (
@@ -754,7 +758,26 @@ for (const tier of TIERS) {
       try {
         await importSampleData(page, "e2e-s3import")
         if (tier.key === "premium") {
+          // Both halves, as S3-23 has for the run: the headers prove the app
+          // asked for the premium instance, the log line proves the premium
+          // instance answered. A routing id the ALB no longer matches leaves
+          // the first true and the second false, with no 502 to notice.
           expectPremiumRouted(importRequests, "sample-import")
+          await expect
+            .poll(
+              polled(() =>
+                cloudwatchHas(
+                  PREMIUM_LOG_GROUP,
+                  `Starting sample data import: workspace: ${wsId},`,
+                  importWindow,
+                ),
+              ),
+              {
+                ...CLOUDWATCH_POLL,
+                message: `no sample-data import for workspace ${wsId} in ${PREMIUM_LOG_GROUP} - the import did not run on the premium instance`,
+              },
+            )
+            .toBe(true)
         }
         await expect
           .poll(() => s3ObjectCount(bucket, inputPrefix), {
