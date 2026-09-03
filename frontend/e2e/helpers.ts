@@ -190,10 +190,13 @@ export const AWS_REGION = "ap-northeast-1"
 // (premium routing headers only exist after assignment and only the app sends
 // them), workflow compute logs on the tier that ran it, and login-time lines
 // land on the default (free) tier.
-export const FREE_LOG_GROUP = "/ecs/development-optinist-cloud-taskdef"
-export const PREMIUM_LOG_GROUP =
-  "/ecs/development-premium-optinist-cloud-taskdef"
-export const PUBLIC_LOG_GROUP = "/ecs/development-public-optinist-cloud-taskdef"
+// Named for the environment under test, as 17-aws-health names its resources:
+// hardcoding development had a production run watch development's group and
+// time out on a line that had landed correctly somewhere else.
+const LOG_ENV = process.env.HEALTH_ENV || "development"
+export const FREE_LOG_GROUP = `/ecs/${LOG_ENV}-optinist-cloud-taskdef`
+export const PREMIUM_LOG_GROUP = `/ecs/${LOG_ENV}-premium-optinist-cloud-taskdef`
+export const PUBLIC_LOG_GROUP = `/ecs/${LOG_ENV}-public-optinist-cloud-taskdef`
 
 // MUI's default error.main, which the theme does not override: the colour the
 // destructive buttons must actually be.
@@ -597,6 +600,20 @@ export function stripeAccountSkipReason(): string {
 }
 
 let stripeKeyCache = ""
+
+// The rows that read Stripe in-process cannot run where the key is live, but the
+// rest of their lane can: manual_test_scan.py reads the same account GET-only
+// under --check production. So this names the reason and they skip on it, and
+// the throw below stays as the backstop for a call that did not ask first.
+export function liveStripeSkipReason(): string {
+  try {
+    stripeKey()
+    return ""
+  } catch (e) {
+    const message = (e as Error).message
+    return message.includes("live key") ? message : ""
+  }
+}
 
 export function stripeKey(): string {
   if (stripeKeyCache) return stripeKeyCache

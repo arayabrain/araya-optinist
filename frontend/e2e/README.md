@@ -161,6 +161,48 @@ Every lane that writes refuses to start anywhere but development:
 - **`runSqlWriteOnDev`** makes the same assertion for the one sanctioned SQL
   write path.
 
+## Running a production release round
+
+`E2E_TARGET=<name>` reads `e2e/.env.<name>` in place of `e2e/.env`, so a target is
+chosen whole: origin, API, RDS selectors, Stripe selector and accounts together.
+Half a swap points the browser at one environment and the API or the account at
+another, which reads as a login failure rather than as a mistake. Both files are
+gitignored, and a target naming a missing file fails the run rather than falling
+back to development.
+
+```bash
+cd frontend
+E2E_TARGET=prod npx playwright test e2e/17-aws-health.spec.ts
+E2E_TARGET=prod RUN_CLEANUP=1 npx playwright test e2e/99-cleanup.spec.ts
+```
+
+```bash
+python3 infrastructure/scripts/manual_test_scan.py --check production --cases release \
+  --user-email <the release premium account> -o scan-report.md
+```
+
+The scan requires a pinned target on production, either `--user-email` or
+`--user-id`: unpinned it selects the newest premium account, which on production
+is a paying customer, and reports their billing history as release results.
+
+**What runs there.** The lanes that mutate infrastructure, Stripe or the database
+refuse to start off development, and `12-admin` / `13-account` refuse anything but
+localhost, so the guards make the choice. What is left is the browser specs, which
+carry no environment gate: release sheets 01-05, 07, 08 and part of 10. They write
+as the test account, and `globalSetup` skips its cleanup off development, hence the
+sweep above; AUTH-04's registrations are outside it and need an admin.
+`18-stripe-audit` runs too, minus AUDIT-09 and AUDIT-10, which skip on a live key
+while the scan covers the same rows GET-only.
+
+**Accounts.** Production's Firebase project is not development's, so no
+development account or password carries over; the addresses exist already and the
+passwords live in the shared credential store. `TEST_PREMIUM_*` is a database
+state an admin stages with `PUT /admin/users/{id}/subscription`, no payment
+needed. `TEST_STRIPE_*` cannot be staged that way: its rows read Stripe's API, so
+the account must own a real customer with a live subscription, and borrowing an
+existing customer id fails the scan's own identity checks besides pointing the
+cancel/reactivate rows at a real payer.
+
 ## Operator-run, not CI-enforced
 
 Every lane above needs AWS credentials and a live environment, so none of them
@@ -218,7 +260,10 @@ care about.
 ## Credentials and test accounts
 
 All credentials come from env vars, or `frontend/e2e/.env` (gitignored,
-simple `KEY=VALUE` lines). Nothing is ever committed.
+simple `KEY=VALUE` lines). Nothing is ever committed. `E2E_TARGET=<name>` reads
+`e2e/.env.<name>` instead, which is how a production round selects its whole
+environment at once; see [Running a production release
+round](#running-a-production-release-round).
 
 | Variable                                           | Required                          | Purpose                                                                                                                                                                                                                            |
 | -------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

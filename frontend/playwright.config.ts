@@ -3,12 +3,21 @@ import * as path from "path"
 
 import { defineConfig } from "@playwright/test"
 
-// Load e2e/.env (KEY=VALUE lines) so credentials never live in the repo
-const envFile = path.join(__dirname, "e2e", ".env")
+// Load e2e/.env (KEY=VALUE lines) so credentials never live in the repo.
+// E2E_TARGET=prod reads e2e/.env.prod instead, and its values win over anything
+// already in the environment: an environment is every variable at once, and a
+// leftover BASE_URL or account in the shell is precisely the half-swap that
+// points the browser at one environment and the API or the account at another.
+// Without a target the file stays the fallback it has always been.
+const target = process.env.E2E_TARGET
+const envFile = path.join(__dirname, "e2e", target ? `.env.${target}` : ".env")
+if (target && !fs.existsSync(envFile)) {
+  throw new Error(`E2E_TARGET=${target} but ${envFile} does not exist`)
+}
 if (fs.existsSync(envFile)) {
   for (const line of fs.readFileSync(envFile, "utf-8").split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
-    if (match && !(match[1] in process.env)) {
+    if (match && (target || !(match[1] in process.env))) {
       process.env[match[1]] = match[2]
     }
   }

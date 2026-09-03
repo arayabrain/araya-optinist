@@ -12,6 +12,7 @@ import {
   apiLogin,
   isLocalBaseUrl,
   skipWithoutCreds,
+  liveStripeSkipReason,
   stripeAccountSkipReason,
   stripeGet,
   stripeSubscriptionFor,
@@ -204,6 +205,8 @@ test.describe("The app's invoice list against Stripe's", () => {
       isLocalBaseUrl(),
       "rows 244-250: reads the deployed app and its Stripe account; BASE_URL is local",
     )
+    const liveKey = liveStripeSkipReason()
+    test.skip(!!liveKey, `rows 244-250: ${liveKey}`)
     const reason = stripeAccountSkipReason()
     test.skip(!!reason, `rows 244-250: ${reason}`)
     test.setTimeout(180_000)
@@ -343,6 +346,8 @@ test.describe("A free account has nothing live in Stripe", () => {
       "rows 118 / 228: reads the deployed environment's Stripe account; BASE_URL is local",
     )
     skipWithoutCreds()
+    const liveKey = liveStripeSkipReason()
+    test.skip(!!liveKey, `rows 118 / 228: ${liveKey}`)
 
     const customers = stripeGet("/v1/customers", {
       email: FREE_USER.email,

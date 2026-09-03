@@ -411,6 +411,13 @@ def main():
     env = args.env or ("subscr-optinist" if prod else "development-optinist")
     allow_test_interval = args.allow_test_interval or not prod
     allow_live = args.allow_live or prod
+    # Production's newest premium account is a paying customer, and auditing one
+    # reports their billing history as release results.
+    if prod and not (args.user_id or args.user_email):
+        raise SystemExit(
+            "--check production needs --user-email or --user-id: name the"
+            " release test account rather than auditing a real customer"
+        )
 
     results = []
 

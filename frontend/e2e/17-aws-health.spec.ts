@@ -58,6 +58,7 @@ const PUBLIC_LOG = `/ecs/${ENV}-public-optinist-cloud-taskdef`
 const BACKGROUND_LOG = `/ecs/${ENV}-background-optinist-cloud-taskdef`
 const METRIC_NAMESPACE = `OptiNiSt/BackgroundJobs/${ENV}`
 const BUCKET_PREFIX = `${ENV}-optinist-user-`
+const LISTENER_PORT = ENV === "development" ? 8080 : 443
 
 // Terraform declares these for every environment. Per-user premium target-group
 // alarms are deliberately absent: they come and go with the assignment pool.
@@ -390,7 +391,7 @@ test.describe("Compute and routing", () => {
         `$(aws elbv2 describe-load-balancers --region ${AWS_REGION} ` +
         `--query 'LoadBalancers[?LoadBalancerName==\`${ENV}-optinist-lb\`]` +
         `.LoadBalancerArn' --output text) ` +
-        `--query 'Listeners[?Port==\`8080\`].ListenerArn | [0]'`,
+        `--query 'Listeners[?Port==\`${LISTENER_PORT}\`].ListenerArn | [0]'`,
     )
     type Rule = {
       Priority: string
