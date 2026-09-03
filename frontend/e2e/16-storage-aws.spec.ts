@@ -18,6 +18,7 @@ import {
   AWS_REGION,
   CLOUDWATCH_POLL,
   FREE_USER,
+  PREMIUM_LOG_GROUP,
   PREMIUM_USER,
   PUBLIC_LOG_GROUP,
   RUN_TEST_TIMEOUT_MS,
@@ -27,6 +28,7 @@ import {
   awaitRunFinished,
   awsJson,
   cloudwatchHas,
+  expectPremiumTargetGroupGone,
   filterWorkspace,
   freeStorageState,
   gotoDashboard,
@@ -35,13 +37,13 @@ import {
   logTail,
   login,
   openWorkspace,
-  premiumTargetHealth,
   reproduceTutorial,
   runShellOverSsm,
   runSql,
   runSqlWriteOnDev,
   runTutorial,
   s3ObjectCount,
+  skipUnlessPremiumTargetHealthy,
   skipWithoutCreds,
   sqlLiteral,
   startRun,
@@ -73,6 +75,10 @@ import {
 // A sign-off run should add E2E_FAIL_ON_SKIP=1, so an unrun premium variant
 // fails the run rather than leaving a silent gap.
 //
+// The premium variants require the runner to stay serial (`workers: 1` in
+// playwright.config.ts): they share one account, so two of them cannot hold an
+// assignment at once, and the release bookkeeping below is module state.
+//
 // Rows whose subject is free-tier-specific stay free-only; each says why
 // where it is defined.
 
@@ -101,8 +107,21 @@ const UPLOAD_TIMEOUT_MS = 120_000
 
 // A cold premium assign starts EC2 capacity and an ECS task: minutes, not
 // seconds. The assignment row then becomes visible before the instance serves
-// traffic, so waiting for it to serve gets its own budget on top.
+// traffic, so waiting for it to serve gets its own budget on top. All three
+// are spent in sequence in the worst case, and setupBudgetMs below must cover
+// their sum - a setup that outruns the test's own timeout turns the capacity
+// skip these budgets exist for into a red row. login()'s own three retries
+// (~2.5 min worst case) are deliberately left out: they can eat into the
+// body's margin but cannot turn a skip into a failure.
 const PREMIUM_ASSIGN_TIMEOUT_MS = 15 * 60_000
+// /premium/assign does real AWS work in-request (ALB rules, scale-up), so it
+// needs far more than REQUEST_TIMEOUT_MS - the same budget `15-premium-aws`
+// gives its own assign calls.
+const PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS = 5 * 60_000
+// How often the assign is driven while waiting - far above the endpoint's own
+// 30s per-user rate limit.
+const PREMIUM_ASSIGN_PROBE_INTERVAL_MS = 2 * 60_000
+// What skipUnlessPremiumTargetHealthy spends; mirrored here for the budget sum
 const PREMIUM_SERVING_TIMEOUT_MS = 5 * 60_000
 const PREMIUM_RELEASE_TIMEOUT_MS = 120_000
 // Reported by /premium/assign while capacity warms, and deliberately absent
@@ -156,7 +175,10 @@ const PREMIUM_TIER: Tier = {
   storageState: () => undefined,
   assignmentTable: "premium_user_assignments",
   signIn: signInPremium,
-  setupBudgetMs: PREMIUM_ASSIGN_TIMEOUT_MS + PREMIUM_SERVING_TIMEOUT_MS,
+  setupBudgetMs:
+    PREMIUM_ASSIGN_TIMEOUT_MS +
+    PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS +
+    PREMIUM_SERVING_TIMEOUT_MS,
 }
 
 // Free before premium, so each row's free variant runs first and a premium
@@ -165,8 +187,10 @@ const TIERS: Tier[] = [FREE_TIER, PREMIUM_TIER]
 
 // Set the moment the lane really holds premium capacity, so the release in
 // afterEach spends a Firebase login (rate-limited) only when there is
-// something to give back.
+// something to give back. premiumLaneRan is never cleared: it is what tells
+// the afterAll net whether this run touched premium capacity at all.
 let premiumHeld = false
+let premiumLaneRan = false
 
 type PremiumStatus = {
   is_premium: boolean
@@ -183,6 +207,42 @@ async function premiumStatus(page: Page): Promise<PremiumStatus> {
   return { is_premium: !!body.is_premium, assignment: body.assignment ?? null }
 }
 
+// The one thing a premium row asserts that its free twin cannot. Everything
+// else in these rows reads a bucket named on the user record, so it holds
+// whichever task served the request - and the app strips its routing headers
+// and retries on the shared tier after a 502, so "it was premium" has to be
+// read off the wire.
+function expectPremiumRouted(captured: Record<string, string>[], what: string) {
+  expect(captured.length, `no ${what} request was captured`).toBeGreaterThan(0)
+  for (const h of captured) {
+    expect(
+      h["x-user-tier"],
+      `a ${what} request did not carry x-user-tier: premium - the app fell ` +
+        `back to the shared tier, so this row proves nothing its free twin ` +
+        `does not`,
+    ).toBe("premium")
+    expect(
+      h["x-routing-id"],
+      `a ${what} request carried no x-routing-id`,
+    ).toBeTruthy()
+  }
+}
+
+// expect.poll does not retry a throwing callback - it invokes it once and
+// propagates. A single CloudWatch throttle or SSM hiccup would therefore end
+// an eight-minute row red. Hand the error back as the polled value instead: a
+// transient one is retried away, a persistent one times out carrying its own
+// message.
+function polled<T>(read: () => T): () => T | string {
+  return () => {
+    try {
+      return read()
+    } catch (e) {
+      return `read failed: ${(e as Error).message.split("\n")[0]}`
+    }
+  }
+}
+
 async function userIdOf(page: Page): Promise<number> {
   const res = await page.request.get(`${apiUrl()}/users/me`, {
     headers: await apiHeaders(page),
@@ -196,6 +256,13 @@ async function userIdOf(page: Page): Promise<number> {
 // really serves: the assignment row is where active_workflow_count lives, and
 // the app drives its workflow run through the ALB.
 async function signInPremium(page: Page, rows: string) {
+  // Before login(), not after: it authenticates, then retries on its own
+  // /dashboard timeout - and the second attempt's goto("/login") on a session
+  // that is already authenticated redirects away, so the button-submit
+  // assertion throws from OUTSIDE its inner catch. Capacity is held by then,
+  // and a flag set after the call would never be reached.
+  premiumHeld = true
+  premiumLaneRan = true
   await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
 
   // The account trap this suite has been bitten by before: an account can say
@@ -206,36 +273,76 @@ async function signInPremium(page: Page, rows: string) {
     `${PREMIUM_USER.email} is not premium on /premium/status - verify the ` +
       `TEST_PREMIUM_* account against /premium/status, not /users/me`,
   ).toBe(true)
-  // Owed from the login on: the app's provider assigns on mount and the probe
-  // below assigns too, so capacity can be held before /premium/status ever
-  // reports a row.
-  premiumHeld = true
 
-  // Poll the provider's own result rather than racing it with a second assign.
+  // Poll the provider's own result, and drive the assign alongside it so one
+  // failed assign-on-mount cannot cost the whole budget. Nothing in here may
+  // throw or assert: every read is a symptom of the environment this loop
+  // exists to wait out, so a 5xx, a timed-out probe or an unreachable status
+  // endpoint must reach the deadline as evidence rather than end the row.
+  // A 503 never becomes the last answer - the endpoint's rate limit answers
+  // with one, and it would displace a real reply.
   let assignment = status.assignment
+  let lastStatus = 0
+  let lastBody: { scaling_in_progress?: boolean; instance_id?: string } = {}
+  let lastError = ""
   const assignDeadline = Date.now() + PREMIUM_ASSIGN_TIMEOUT_MS
+  let nextProbeAt = Date.now() + PREMIUM_ASSIGN_PROBE_INTERVAL_MS
   while (!assignment) {
+    if (Date.now() >= nextProbeAt) {
+      nextProbeAt = Date.now() + PREMIUM_ASSIGN_PROBE_INTERVAL_MS
+      try {
+        const probe = await page.request.post(
+          `${apiUrl()}/users/me/premium/assign`,
+          {
+            headers: await apiHeaders(page),
+            timeout: PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS,
+          },
+        )
+        if (probe.status() !== 503) {
+          lastStatus = probe.status()
+          lastBody = await probe.json().catch(() => ({}))
+        }
+      } catch (e) {
+        lastError = `assign probe: ${(e as Error).message.split("\n")[0]}`
+      }
+    }
+    try {
+      assignment = (await premiumStatus(page)).assignment
+    } catch (e) {
+      lastError = `premium status: ${(e as Error).message.split("\n")[0]}`
+    }
+    if (assignment) break
     if (Date.now() > assignDeadline) {
-      // One direct probe tells "still scaling with no capacity" (skip) apart
-      // from a dead assign flow (fail).
-      const probe = await page.request.post(
-        `${apiUrl()}/users/me/premium/assign`,
-        { headers: await apiHeaders(page), timeout: PREMIUM_ASSIGN_TIMEOUT_MS },
-      )
-      const body = await probe.json().catch(() => ({}))
+      // What each clause below means the environment did:
+      //   scaling_in_progress  the pool is still starting capacity
+      //   AUTOSCALING_POOL     the cascade parked us on the warming tier
+      //   lastStatus 0         no probe ever got a non-503 answer, which
+      //                        needs something else to be assigning
+      // A 503 is never recorded, so reaching the deadline with lastStatus 0
+      // covers the rate limit, a placement the Lambda refused, AND the
+      // service's own exception talking to it - a genuinely broken assign flow
+      // among them. Separating those needs an unpinned message string from
+      // another tree, so the sign-off protocol carries it instead:
+      // E2E_FAIL_ON_SKIP=1 reddens all of these, with lastBody and lastError
+      // in the reason, so the cause is printed rather than lost. Any other
+      // real status still fails.
       test.skip(
-        !!body?.scaling_in_progress || body?.instance_id === AUTOSCALING_POOL,
-        `rows ${rows} [premium]: the dev pool could not place premium ` +
-          `capacity within ${PREMIUM_ASSIGN_TIMEOUT_MS / 60_000} min ` +
-          `(${JSON.stringify(body)}) - rerun when the cluster has free CPU`,
+        !!lastBody.scaling_in_progress ||
+          lastBody.instance_id === AUTOSCALING_POOL ||
+          lastStatus === 0,
+        `rows ${rows} [premium]: no premium assignment within ` +
+          `${PREMIUM_ASSIGN_TIMEOUT_MS / 60_000} min (last probe: ` +
+          `${lastStatus || "503 or unanswered throughout"} ` +
+          `${JSON.stringify(lastBody)}${lastError ? `; ${lastError}` : ""}) - ` +
+          `a cold pool or the assign flow itself; the payload says which, and ` +
+          `a sign-off run's E2E_FAIL_ON_SKIP=1 turns this red either way`,
       )
       throw new Error(
         `no premium assignment appeared and the backend is not scaling: ` +
-          `${probe.status()} ${JSON.stringify(body)}`,
+          `${lastStatus} ${JSON.stringify(lastBody)}${lastError ? `; ${lastError}` : ""}`,
       )
     }
     await new Promise((r) => setTimeout(r, 15_000))
-    assignment = (await premiumStatus(page)).assignment
   }
   // The granted tier decides whether the gate below can read anything, and is
   // the first thing to know when a premium row fails on a 502.
@@ -243,36 +350,46 @@ async function signInPremium(page: Page, rows: string) {
     `[16-storage-aws] premium assignment: instance=` +
       `${assignment.instance_id ?? "none"}, shared=${assignment.is_shared}`,
   )
-  // A dedicated assignment goes live - row, ALB rule, target group - before its
-  // ECS task serves, so work driven through the ALB too early answers 502;
-  // every ALB-driving row in `15-premium-aws` waits this out too. A cluster
-  // that never gets a target serving leaves the row unverified, not failed. A
-  // shared grant has no per-user target group and is already serving, so it
-  // passes unchecked.
+  // A shared grant has no per-user target group to read and its instance is
+  // already serving other tenants; a dedicated one takes the shared gate.
   if (assignment.is_shared || !assignment.instance_id?.startsWith("i-")) return
-  const userId = await userIdOf(page)
-  let states: string[] = []
-  const servingDeadline = Date.now() + PREMIUM_SERVING_TIMEOUT_MS
-  for (;;) {
-    states = premiumTargetHealth(userId)
-    if (states.includes("healthy")) return
-    if (Date.now() > servingDeadline) break
-    await new Promise((r) => setTimeout(r, 15_000))
-  }
-  test.skip(
-    true,
-    `rows ${rows} [premium]: premium-${userId}-tg never reported a healthy ` +
-      `target (states: ${states.join(",") || "none"}) - the dev cluster could ` +
-      `not keep a premium task serving; rerun when it has free CPU`,
+  await skipUnlessPremiumTargetHealthy(
+    `${rows} [premium]`,
+    await userIdOf(page),
   )
 }
 
 // Never leave the shared premium account holding an instance: a stuck
 // assignment degrades the dev environment for everyone and keeps billing for
-// the capacity. Asserted rather than best-effort, per the lane's own rule.
-test.afterEach(async () => {
-  if (!premiumHeld) return
-  premiumHeld = false
+// the capacity.
+//
+// The 200 is not the proof. DELETE /users/me/premium/assign is fail-open by
+// design - users_me.py logs a failed release and still answers
+// {"released": true}, and release_premium_user fails open on timeout, leaving
+// the expiration sweep as the backstop. So read the assignment back, exactly
+// as this lane reads S3 back after a 200.
+// /premium/status fails open too: on an internal error it answers 200 with
+// {assignment: null, error: "..."}, so a null alone is not proof of a release.
+// Reject the error field before believing it.
+async function assignmentState(
+  api: APIRequestContext,
+  headers: Record<string, string>,
+): Promise<unknown> {
+  try {
+    const st = await api.get("/users/me/premium/status", {
+      headers,
+      timeout: REQUEST_TIMEOUT_MS,
+    })
+    if (!st.ok()) return `HTTP ${st.status()}`
+    const body = await st.json()
+    if (body.error) return `status error: ${body.error}`
+    return body.assignment ?? "released"
+  } catch (e) {
+    return `status unreachable: ${(e as Error).message.split("\n")[0]}`
+  }
+}
+
+async function releaseAndConfirm(stage: string) {
   const { api, headers } = await apiLogin(
     PREMIUM_USER.email,
     PREMIUM_USER.password,
@@ -283,9 +400,76 @@ test.afterEach(async () => {
       timeout: PREMIUM_RELEASE_TIMEOUT_MS,
     })
     expect(res.ok(), await res.text()).toBe(true)
+    await expect
+      .poll(() => assignmentState(api, headers), {
+        timeout: PREMIUM_RELEASE_TIMEOUT_MS,
+        intervals: [10_000],
+        message:
+          `${stage}: the assignment survived a 200 release - premium ` +
+          `capacity is still held on the shared dev environment`,
+      })
+      .toBe("released")
   } finally {
     await api.dispose()
   }
+}
+
+// The lane's closing invariant: nothing may still be held BY US. It reads
+// first and repairs second - releasing first would let this hook fix the very
+// leak it exists to report and then pass green - but it still repairs, so a
+// reported leak is not also left behind. `15-premium-aws` closes on the same
+// invariant, including the ALB half: a release can take the assignment row and
+// the listener rule while leaving the per-user target group behind, and this
+// lane creates one on every dedicated premium row.
+//
+// It is the net for an afterEach that never ran at all - a worker crash, say.
+// It is NOT a guard against an afterEach cut short by the body's own timeout:
+// a hook gets its own clock, bounded by the test-timeout value rather than by
+// whatever the body left over.
+async function expectNothingHeld() {
+  const { api, headers } = await apiLogin(
+    PREMIUM_USER.email,
+    PREMIUM_USER.password,
+  )
+  try {
+    const held = await assignmentState(api, headers)
+    if (held !== "released") {
+      await api
+        .delete("/users/me/premium/assign", {
+          headers,
+          timeout: PREMIUM_RELEASE_TIMEOUT_MS,
+        })
+        .catch(() => {})
+    }
+    expect(
+      held,
+      "the lane finished with premium capacity still held on shared dev",
+    ).toBe("released")
+    const me = await api.get("/users/me", {
+      headers,
+      timeout: REQUEST_TIMEOUT_MS,
+    })
+    expect(me.ok(), await me.text()).toBe(true)
+    expectPremiumTargetGroupGone((await me.json()).id, "afterAll")
+  } finally {
+    await api.dispose()
+  }
+}
+
+test.afterEach(async () => {
+  if (!premiumHeld) return
+  premiumHeld = false
+  await releaseAndConfirm("afterEach")
+})
+
+// The last net. An afterEach can be cut short when the test it follows has
+// already burned its timeout, and these rows carry long ones - so assert once
+// at the end of the lane that nothing is still held BY US, the invariant
+// `15-premium-aws` closes its own lane on.
+test.afterAll(async () => {
+  if (!premiumLaneRan) return
+  test.setTimeout(5 * 60_000)
+  await expectNothingHeld()
 })
 
 // Sign in as the tier's account and read back the two facts every row below
@@ -407,8 +591,12 @@ function findNode(nodes: TreeNode[], name: string): TreeNode | undefined {
   return undefined
 }
 
-// The bucket, the upload and the sync round-trip are the account's own, so
-// this row needs no premium assignment - only the premium account.
+// The bucket, the upload and the sync round-trip are the account's own, so the
+// premium variant needs the premium account but no premium assignment - it
+// goes through the API and never mounts the dashboard, so nothing assigns.
+// It stays behind RUN_PREMIUM_AWS all the same: one variable answers "may this
+// run touch the premium account at all?" for the whole S3-2x block, and a
+// per-row exception is a worse trade than the row costing one extra flag.
 for (const tier of TIERS) {
   const id = { free: "S3-01", premium: "S3-21" }[tier.key]
   test(`${id} - The per-user bucket is real and an upload really lands its object @slow`, async () => {
@@ -541,6 +729,22 @@ for (const tier of TIERS) {
 
       const { bucket, headers } = await enterAs(page, tier, rows)
       const wsId = await openWorkspace(page, "e2e-s3import")
+      // Without this the row is green whether or not a premium instance was
+      // involved: the v2 run's import completed through the app's 502 fallback
+      // while the premium task was refusing traffic, and every S3 claim below
+      // still passed.
+      const importRequests: Record<string, string>[] = []
+      if (tier.key === "premium") {
+        page.on("request", (req) => {
+          if (
+            new RegExp(`/workflow/sample_data/${wsId}(?:[/?]|$)`).test(
+              req.url(),
+            )
+          ) {
+            importRequests.push(req.headers())
+          }
+        })
+      }
       const inputPrefix = `app/studio_data/input/${wsId}/`
       const outputPrefix = `app/studio_data/output/${wsId}/`
 
@@ -552,6 +756,9 @@ for (const tier of TIERS) {
         })
       try {
         await importSampleData(page, "e2e-s3import")
+        if (tier.key === "premium") {
+          expectPremiumRouted(importRequests, "sample-import")
+        }
         await expect
           .poll(() => s3ObjectCount(bucket, inputPrefix), {
             timeout: 120_000,
@@ -606,6 +813,26 @@ for (const tier of TIERS) {
       } = await enterAs(page, tier, rows)
       const wsName = "e2e-s3pub"
       const wsId = await openWorkspace(page, wsName)
+      // What makes the premium variant more than an expensive copy of the free
+      // one. Everything else here is tier-agnostic: the bucket is per-user, and
+      // increment_workflow_count picks its table from the user's subscription
+      // tier rather than from the task that served the run - so a premium user
+      // whose run fell back to the shared tier (the app strips its routing
+      // headers on a 502/503) would still write premium_user_assignments, still
+      // land outputs in the premium bucket, and still pass every assert below.
+      // The run's own headers and the premium log group are what tell the two
+      // apart.
+      const runHeaders: Record<string, string>[] = []
+      if (tier.key === "premium") {
+        page.on("request", (req) => {
+          if (
+            req.method() === "POST" &&
+            new RegExp(`/run/${wsId}(?:[/?]|$)`).test(req.url())
+          ) {
+            runHeaders.push(req.headers())
+          }
+        })
+      }
       let recordId = 0
       try {
         await importSampleData(page, wsName)
@@ -614,27 +841,60 @@ for (const tier of TIERS) {
         // slot in its own tier's assignment table while it executes and
         // releases it on completion; the failure-path decrement stays with
         // the unit suite
+        // A bare select, deliberately. Both tables key user_id uniquely -
+        // free_user_assignments by uq_free_user_id, premium_user_assignments
+        // by idx_unique_user_assignment, which permits duplicates only for the
+        // NULL standby sentinels - so a two-line answer here is a broken
+        // invariant and must surface, not be collapsed by an aggregate.
         const countSql =
           `SELECT active_workflow_count FROM ${tier.assignmentTable} ` +
           `WHERE user_id = ${userId};`
         expect(runSql(countSql), "rows 538 / 543: pre-run baseline").toBe("0")
         await reproduceTutorial(page, "Tutorial1")
+        const runWindow = windowStart()
         const { workspaceId: runWs, uid } = await startRun(page, "RUN ALL")
         await expect
-          .poll(() => runSql(countSql), {
-            timeout: 180_000,
-            intervals: [10_000],
-            message: "active_workflow_count never reached 1 during the run",
-          })
+          .poll(
+            polled(() => runSql(countSql)),
+            {
+              timeout: 180_000,
+              intervals: [10_000],
+              message: "active_workflow_count never reached 1 during the run",
+            },
+          )
           .toBe("1")
         await awaitRunFinished(page, "Tutorial1", runWs, uid)
         await expect
-          .poll(() => runSql(countSql), {
-            timeout: 120_000,
-            intervals: [10_000],
-            message: "active_workflow_count did not return to 0 after the run",
-          })
+          .poll(
+            polled(() => runSql(countSql)),
+            {
+              timeout: 120_000,
+              intervals: [10_000],
+              message:
+                "active_workflow_count did not return to 0 after the run",
+            },
+          )
           .toBe("0")
+
+        // Read after the run finishes, not at the POST: a fallback retry is a
+        // second request that lands after startRun has already resolved on the
+        // first. PREM-07's free-group negative is deliberately not imported -
+        // it needs that lane's delivery-catch-up probe, and the premium-group
+        // positive already fixes which task executed the workflow.
+        if (tier.key === "premium") {
+          expectPremiumRouted(runHeaders, "run POST")
+          await expect
+            .poll(
+              polled(() =>
+                cloudwatchHas(PREMIUM_LOG_GROUP, `(ID: ${uid},`, runWindow),
+              ),
+              {
+                ...CLOUDWATCH_POLL,
+                message: `no WORKFLOW START for run ${uid} in ${PREMIUM_LOG_GROUP} - the run did not execute on the premium instance`,
+              },
+            )
+            .toBe(true)
+        }
 
         // Rows 407 / BT-1004: the run's outputs really landed in the user's
         // own bucket - the direct S3 read, before any publish
@@ -781,20 +1041,41 @@ for (const tier of TIERS) {
               : "not found (pre-warmed cache - moot per the sheet)"),
         )
       } finally {
-        if (recordId) {
-          await page.request
-            .post(`${apiUrl()}/api/dataview/publish/${recordId}/off`, {
-              headers,
-              timeout: UPLOAD_TIMEOUT_MS,
-            })
-            .catch(() => {})
+        // A fresh token: this row's ceiling is close to the Firebase ID
+        // token's lifetime, and a 401 here would strand a published record and
+        // a workspace on dev. Teardown failures are logged rather than thrown -
+        // they must not mask the row's own verdict - but nor may they be
+        // silent, which is what a bare .catch(() => {}) made them.
+        const teardown = await apiHeaders(page).catch(() => headers)
+        const cleanup = async (
+          what: string,
+          run: () => Promise<APIResponse>,
+        ) => {
+          try {
+            const res = await run()
+            if (!res.ok()) {
+              console.log(
+                `[16-storage-aws] ${id} teardown ${what}: ${res.status()}`,
+              )
+            }
+          } catch (e) {
+            console.log(`[16-storage-aws] ${id} teardown ${what} threw: ${e}`)
+          }
         }
-        await page.request
-          .delete(`${apiUrl()}/workspace/${wsId}`, {
-            headers,
+        if (recordId) {
+          await cleanup("publish-off", () =>
+            page.request.post(
+              `${apiUrl()}/api/dataview/publish/${recordId}/off`,
+              { headers: teardown, timeout: UPLOAD_TIMEOUT_MS },
+            ),
+          )
+        }
+        await cleanup("workspace-delete", () =>
+          page.request.delete(`${apiUrl()}/workspace/${wsId}`, {
+            headers: teardown,
             timeout: UPLOAD_TIMEOUT_MS,
-          })
-          .catch(() => {})
+          }),
+        )
       }
     })
   })
