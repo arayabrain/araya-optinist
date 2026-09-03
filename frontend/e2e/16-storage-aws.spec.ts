@@ -115,10 +115,8 @@ const PREMIUM_ASSIGN_TIMEOUT_MS = 15 * 60_000
 // needs far more than REQUEST_TIMEOUT_MS - the same budget `15-premium-aws`
 // gives its own assign calls.
 const PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS = 5 * 60_000
-// How often the assign is driven while waiting. Far above the endpoint's own
-// 30s per-user rate limit, and above the app's re-trigger cadence (every third
-// null-status poll, five times), so a probe lands when the browser has gone
-// quiet rather than fighting it for the same window.
+// How often the assign is driven while waiting - far above the endpoint's own
+// 30s per-user rate limit.
 const PREMIUM_ASSIGN_PROBE_INTERVAL_MS = 2 * 60_000
 // What skipUnlessPremiumTargetHealthy spends; mirrored here for the budget sum
 const PREMIUM_SERVING_TIMEOUT_MS = 5 * 60_000
@@ -206,14 +204,40 @@ async function premiumStatus(page: Page): Promise<PremiumStatus> {
   return { is_premium: !!body.is_premium, assignment: body.assignment ?? null }
 }
 
-// /premium/assign turns away an attempt inside its 30s per-user window with a
-// 503 whose detail names the limit - the same status a real placement failure
-// takes, which is why the message is what tells them apart.
-function isAssignRateLimited(
-  status: number,
-  body: { detail?: string },
-): boolean {
-  return status === 503 && /too frequent/i.test(body.detail ?? "")
+// The one thing a premium row asserts that its free twin cannot. Everything
+// else in these rows reads a bucket named on the user record, so it holds
+// whichever task served the request - and the app strips its routing headers
+// and retries on the shared tier after a 502, so "it was premium" has to be
+// read off the wire.
+function expectPremiumRouted(captured: Record<string, string>[], what: string) {
+  expect(captured.length, `no ${what} request was captured`).toBeGreaterThan(0)
+  for (const h of captured) {
+    expect(
+      h["x-user-tier"],
+      `a ${what} request did not carry x-user-tier: premium - the app fell ` +
+        `back to the shared tier, so this row proves nothing its free twin ` +
+        `does not`,
+    ).toBe("premium")
+    expect(
+      h["x-routing-id"],
+      `a ${what} request carried no x-routing-id`,
+    ).toBeTruthy()
+  }
+}
+
+// expect.poll does not retry a throwing callback - it invokes it once and
+// propagates. A single CloudWatch throttle or SSM hiccup would therefore end
+// an eight-minute row red. Hand the error back as the polled value instead: a
+// transient one is retried away, a persistent one times out carrying its own
+// message.
+function polled<T>(read: () => T): () => T | string {
+  return () => {
+    try {
+      return read()
+    } catch (e) {
+      return `read failed: ${(e as Error).message.split("\n")[0]}`
+    }
+  }
 }
 
 async function userIdOf(page: Page): Promise<number> {
@@ -229,12 +253,14 @@ async function userIdOf(page: Page): Promise<number> {
 // really serves: the assignment row is where active_workflow_count lives, and
 // the app drives its workflow run through the ALB.
 async function signInPremium(page: Page, rows: string) {
-  // Owed from here, before anything is read back: the dashboard mounts on
-  // login and the app's provider assigns immediately, so capacity can already
-  // be held by the time either of the two checks below throws.
-  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+  // Before login(), not after: it authenticates, then retries on its own
+  // /dashboard timeout - and the second attempt's goto("/login") on a session
+  // that is already authenticated redirects away, so the button-submit
+  // assertion throws from OUTSIDE its inner catch. Capacity is held by then,
+  // and a flag set after the call would never be reached.
   premiumHeld = true
   premiumLaneRan = true
+  await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
 
   // The account trap this suite has been bitten by before: an account can say
   // "Premium" on /users/me while /premium/status says free (billing grace).
@@ -246,65 +272,71 @@ async function signInPremium(page: Page, rows: string) {
   ).toBe(true)
 
   // Poll the provider's own result, and drive the assign alongside it so one
-  // failed assign-on-mount cannot cost the whole budget. Nothing here asserts
-  // the probe's status: /premium/assign is rate-limited to one per user per
-  // 30s and answers a turned-away attempt with 503, while the app's provider
-  // keeps re-opening that window from the browser - so a 503 is routinely the
-  // rate limiter, not a verdict about the pool. The probe's last real answer
-  // is kept for the deadline below to decide on instead.
+  // failed assign-on-mount cannot cost the whole budget. Nothing in here may
+  // throw or assert: every read is a symptom of the environment this loop
+  // exists to wait out, so a 5xx, a timed-out probe or an unreachable status
+  // endpoint must reach the deadline as evidence rather than end the row.
+  // A 503 never becomes the last answer - the endpoint's rate limit answers
+  // with one, and it would displace a real reply.
   let assignment = status.assignment
   let lastStatus = 0
-  let lastBody: {
-    scaling_in_progress?: boolean
-    instance_id?: string
-    detail?: string
-  } = {}
+  let lastBody: { scaling_in_progress?: boolean; instance_id?: string } = {}
+  let lastError = ""
   const assignDeadline = Date.now() + PREMIUM_ASSIGN_TIMEOUT_MS
   let nextProbeAt = Date.now() + PREMIUM_ASSIGN_PROBE_INTERVAL_MS
   while (!assignment) {
     if (Date.now() >= nextProbeAt) {
       nextProbeAt = Date.now() + PREMIUM_ASSIGN_PROBE_INTERVAL_MS
-      const probe = await page.request.post(
-        `${apiUrl()}/users/me/premium/assign`,
-        {
-          headers: await apiHeaders(page),
-          timeout: PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS,
-        },
-      )
-      const body = await probe.json().catch(() => ({}))
-      if (!isAssignRateLimited(probe.status(), body)) {
-        lastStatus = probe.status()
-        lastBody = body
+      try {
+        const probe = await page.request.post(
+          `${apiUrl()}/users/me/premium/assign`,
+          {
+            headers: await apiHeaders(page),
+            timeout: PREMIUM_ASSIGN_REQUEST_TIMEOUT_MS,
+          },
+        )
+        if (probe.status() !== 503) {
+          lastStatus = probe.status()
+          lastBody = await probe.json().catch(() => ({}))
+        }
+      } catch (e) {
+        lastError = `assign probe: ${(e as Error).message.split("\n")[0]}`
       }
     }
-    assignment = (await premiumStatus(page)).assignment
+    try {
+      assignment = (await premiumStatus(page)).assignment
+    } catch (e) {
+      lastError = `premium status: ${(e as Error).message.split("\n")[0]}`
+    }
     if (assignment) break
     if (Date.now() > assignDeadline) {
-      // Three ways this budget runs out without a broken assign flow: the pool
-      // is still starting capacity, the cascade parked us on the warming pool
-      // tier, or every probe was rate-limited - which can only happen while
-      // something is successfully assigning, so it is the same verdict. Only a
-      // real answer that is none of those is a failure.
-      // 503 is what this endpoint answers for the rate limit AND for a
-      // placement it refuses, and `isAssignRateLimited` tells them apart on a
-      // message string that lives in another tree with nothing pinning it. So
-      // any 503 is inconclusive here: neither is a broken assign flow, and a
-      // rewording must degrade to a skip rather than to a red row fifteen
-      // minutes into the cold path. A 500 still fails - that is the route's
-      // own internal error, not an answer about capacity.
+      // What each clause below means the environment did:
+      //   scaling_in_progress  the pool is still starting capacity
+      //   AUTOSCALING_POOL     the cascade parked us on the warming tier
+      //   lastStatus 0         no probe ever got a non-503 answer, which
+      //                        needs something else to be assigning
+      // A 503 is never recorded, so reaching the deadline with lastStatus 0
+      // covers the rate limit, a placement the Lambda refused, AND the
+      // service's own exception talking to it - a genuinely broken assign flow
+      // among them. Separating those needs an unpinned message string from
+      // another tree, so the sign-off protocol carries it instead:
+      // E2E_FAIL_ON_SKIP=1 reddens all of these, with lastBody and lastError
+      // in the reason, so the cause is printed rather than lost. Any other
+      // real status still fails.
       test.skip(
         !!lastBody.scaling_in_progress ||
           lastBody.instance_id === AUTOSCALING_POOL ||
-          lastStatus === 0 ||
-          lastStatus === 503,
-        `rows ${rows} [premium]: the dev pool could not place premium ` +
-          `capacity within ${PREMIUM_ASSIGN_TIMEOUT_MS / 60_000} min ` +
-          `(last probe: ${lastStatus || "rate-limited throughout"} ` +
-          `${JSON.stringify(lastBody)}) - rerun when the cluster has free CPU`,
+          lastStatus === 0,
+        `rows ${rows} [premium]: no premium assignment within ` +
+          `${PREMIUM_ASSIGN_TIMEOUT_MS / 60_000} min (last probe: ` +
+          `${lastStatus || "503 or unanswered throughout"} ` +
+          `${JSON.stringify(lastBody)}${lastError ? `; ${lastError}` : ""}) - ` +
+          `a cold pool or the assign flow itself; the payload says which, and ` +
+          `a sign-off run's E2E_FAIL_ON_SKIP=1 turns this red either way`,
       )
       throw new Error(
         `no premium assignment appeared and the backend is not scaling: ` +
-          `${lastStatus} ${JSON.stringify(lastBody)}`,
+          `${lastStatus} ${JSON.stringify(lastBody)}${lastError ? `; ${lastError}` : ""}`,
       )
     }
     await new Promise((r) => setTimeout(r, 15_000))
@@ -333,7 +365,28 @@ async function signInPremium(page: Page, rows: string) {
 // {"released": true}, and release_premium_user fails open on timeout, leaving
 // the expiration sweep as the backstop. So read the assignment back, exactly
 // as this lane reads S3 back after a 200.
-async function releaseAndConfirm(stage: string, checkTargetGroup = false) {
+// /premium/status fails open too: on an internal error it answers 200 with
+// {assignment: null, error: "..."}, so a null alone is not proof of a release.
+// Reject the error field before believing it.
+async function assignmentState(
+  api: APIRequestContext,
+  headers: Record<string, string>,
+): Promise<unknown> {
+  try {
+    const st = await api.get("/users/me/premium/status", {
+      headers,
+      timeout: REQUEST_TIMEOUT_MS,
+    })
+    if (!st.ok()) return `HTTP ${st.status()}`
+    const body = await st.json()
+    if (body.error) return `status error: ${body.error}`
+    return body.assignment ?? "released"
+  } catch (e) {
+    return `status unreachable: ${(e as Error).message.split("\n")[0]}`
+  }
+}
+
+async function releaseAndConfirm(stage: string) {
   const { api, headers } = await apiLogin(
     PREMIUM_USER.email,
     PREMIUM_USER.password,
@@ -345,38 +398,56 @@ async function releaseAndConfirm(stage: string, checkTargetGroup = false) {
     })
     expect(res.ok(), await res.text()).toBe(true)
     await expect
-      .poll(
-        async () => {
-          const st = await api.get("/users/me/premium/status", {
-            headers,
-            timeout: REQUEST_TIMEOUT_MS,
-          })
-          if (!st.ok()) return `HTTP ${st.status()}`
-          return (await st.json()).assignment ?? "released"
-        },
-        {
-          timeout: PREMIUM_RELEASE_TIMEOUT_MS,
-          intervals: [10_000],
-          message:
-            `${stage}: the assignment survived a 200 release - premium ` +
-            `capacity is still held on the shared dev environment`,
-        },
-      )
-      .toBe("released")
-    // The other half of the invariant, asserted once at the end of the lane
-    // rather than after every row: this lane creates a per-user target group
-    // on every dedicated premium row, and a release can take the row and the
-    // rule while leaving the group behind. `15-premium-aws` places it in the
-    // same hook, and a still-propagating deletion must not fail a good row's
-    // teardown.
-    if (checkTargetGroup) {
-      const me = await api.get("/users/me", {
-        headers,
-        timeout: REQUEST_TIMEOUT_MS,
+      .poll(() => assignmentState(api, headers), {
+        timeout: PREMIUM_RELEASE_TIMEOUT_MS,
+        intervals: [10_000],
+        message:
+          `${stage}: the assignment survived a 200 release - premium ` +
+          `capacity is still held on the shared dev environment`,
       })
-      expect(me.ok(), await me.text()).toBe(true)
-      expectPremiumTargetGroupGone((await me.json()).id, stage)
+      .toBe("released")
+  } finally {
+    await api.dispose()
+  }
+}
+
+// The lane's closing invariant: nothing may still be held BY US. It reads
+// first and repairs second - releasing first would let this hook fix the very
+// leak it exists to report and then pass green - but it still repairs, so a
+// reported leak is not also left behind. `15-premium-aws` closes on the same
+// invariant, including the ALB half: a release can take the assignment row and
+// the listener rule while leaving the per-user target group behind, and this
+// lane creates one on every dedicated premium row.
+//
+// It is the net for an afterEach that never ran at all - a worker crash, say.
+// It is NOT a guard against an afterEach cut short by the body's own timeout:
+// a hook gets its own clock, bounded by the test-timeout value rather than by
+// whatever the body left over.
+async function expectNothingHeld() {
+  const { api, headers } = await apiLogin(
+    PREMIUM_USER.email,
+    PREMIUM_USER.password,
+  )
+  try {
+    const held = await assignmentState(api, headers)
+    if (held !== "released") {
+      await api
+        .delete("/users/me/premium/assign", {
+          headers,
+          timeout: PREMIUM_RELEASE_TIMEOUT_MS,
+        })
+        .catch(() => {})
     }
+    expect(
+      held,
+      "the lane finished with premium capacity still held on shared dev",
+    ).toBe("released")
+    const me = await api.get("/users/me", {
+      headers,
+      timeout: REQUEST_TIMEOUT_MS,
+    })
+    expect(me.ok(), await me.text()).toBe(true)
+    expectPremiumTargetGroupGone((await me.json()).id, "afterAll")
   } finally {
     await api.dispose()
   }
@@ -395,7 +466,7 @@ test.afterEach(async () => {
 test.afterAll(async () => {
   if (!premiumLaneRan) return
   test.setTimeout(5 * 60_000)
-  await releaseAndConfirm("afterAll", true)
+  await expectNothingHeld()
 })
 
 // Sign in as the tier's account and read back the two facts every row below
@@ -655,6 +726,22 @@ for (const tier of TIERS) {
 
       const { bucket, headers } = await enterAs(page, tier, rows)
       const wsId = await openWorkspace(page, "e2e-s3import")
+      // Without this the row is green whether or not a premium instance was
+      // involved: the v2 run's import completed through the app's 502 fallback
+      // while the premium task was refusing traffic, and every S3 claim below
+      // still passed.
+      const importRequests: Record<string, string>[] = []
+      if (tier.key === "premium") {
+        page.on("request", (req) => {
+          if (
+            new RegExp(`/workflow/sample_data/${wsId}(?:[/?]|$)`).test(
+              req.url(),
+            )
+          ) {
+            importRequests.push(req.headers())
+          }
+        })
+      }
       const inputPrefix = `app/studio_data/input/${wsId}/`
       const outputPrefix = `app/studio_data/output/${wsId}/`
 
@@ -666,6 +753,9 @@ for (const tier of TIERS) {
         })
       try {
         await importSampleData(page, "e2e-s3import")
+        if (tier.key === "premium") {
+          expectPremiumRouted(importRequests, "sample-import")
+        }
         await expect
           .poll(() => s3ObjectCount(bucket, inputPrefix), {
             timeout: 120_000,
@@ -732,7 +822,10 @@ for (const tier of TIERS) {
       const runHeaders: Record<string, string>[] = []
       if (tier.key === "premium") {
         page.on("request", (req) => {
-          if (req.method() === "POST" && req.url().includes(`/run/${wsId}`)) {
+          if (
+            req.method() === "POST" &&
+            new RegExp(`/run/${wsId}(?:[/?]|$)`).test(req.url())
+          ) {
             runHeaders.push(req.headers())
           }
         })
@@ -745,31 +838,39 @@ for (const tier of TIERS) {
         // slot in its own tier's assignment table while it executes and
         // releases it on completion; the failure-path decrement stays with
         // the unit suite
-        // MAX, not a bare select: premium_user_assignments carries no unique
-        // key on user_id, so a stale row from an interrupted run would return
-        // two lines and fail this as "the counter is wrong" rather than as
-        // leftover state.
+        // A bare select, deliberately. Both tables key user_id uniquely -
+        // free_user_assignments by uq_free_user_id, premium_user_assignments
+        // by idx_unique_user_assignment, which permits duplicates only for the
+        // NULL standby sentinels - so a two-line answer here is a broken
+        // invariant and must surface, not be collapsed by an aggregate.
         const countSql =
-          `SELECT MAX(active_workflow_count) FROM ${tier.assignmentTable} ` +
+          `SELECT active_workflow_count FROM ${tier.assignmentTable} ` +
           `WHERE user_id = ${userId};`
         expect(runSql(countSql), "rows 538 / 543: pre-run baseline").toBe("0")
         await reproduceTutorial(page, "Tutorial1")
         const runWindow = windowStart()
         const { workspaceId: runWs, uid } = await startRun(page, "RUN ALL")
         await expect
-          .poll(() => runSql(countSql), {
-            timeout: 180_000,
-            intervals: [10_000],
-            message: "active_workflow_count never reached 1 during the run",
-          })
+          .poll(
+            polled(() => runSql(countSql)),
+            {
+              timeout: 180_000,
+              intervals: [10_000],
+              message: "active_workflow_count never reached 1 during the run",
+            },
+          )
           .toBe("1")
         await awaitRunFinished(page, "Tutorial1", runWs, uid)
         await expect
-          .poll(() => runSql(countSql), {
-            timeout: 120_000,
-            intervals: [10_000],
-            message: "active_workflow_count did not return to 0 after the run",
-          })
+          .poll(
+            polled(() => runSql(countSql)),
+            {
+              timeout: 120_000,
+              intervals: [10_000],
+              message:
+                "active_workflow_count did not return to 0 after the run",
+            },
+          )
           .toBe("0")
 
         // Read after the run finishes, not at the POST: a fallback retry is a
@@ -778,24 +879,12 @@ for (const tier of TIERS) {
         // it needs that lane's delivery-catch-up probe, and the premium-group
         // positive already fixes which task executed the workflow.
         if (tier.key === "premium") {
-          expect(runHeaders.length, "no run POST was captured").toBeGreaterThan(
-            0,
-          )
-          for (const h of runHeaders) {
-            expect(
-              h["x-user-tier"],
-              "a run POST did not carry x-user-tier: premium - the app fell " +
-                "back to the shared tier and this row proves nothing the free " +
-                "variant does not",
-            ).toBe("premium")
-            expect(
-              h["x-routing-id"],
-              "a run POST carried no x-routing-id",
-            ).toBeTruthy()
-          }
+          expectPremiumRouted(runHeaders, "run POST")
           await expect
             .poll(
-              () => cloudwatchHas(PREMIUM_LOG_GROUP, `(ID: ${uid},`, runWindow),
+              polled(() =>
+                cloudwatchHas(PREMIUM_LOG_GROUP, `(ID: ${uid},`, runWindow),
+              ),
               {
                 ...CLOUDWATCH_POLL,
                 message: `no WORKFLOW START for run ${uid} in ${PREMIUM_LOG_GROUP} - the run did not execute on the premium instance`,
