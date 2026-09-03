@@ -305,6 +305,12 @@ export function awsJson<T>(args: string): T {
     execSync(`aws ${args} --output json --region ${AWS_REGION}`, {
       timeout: 60_000,
       stdio: ["pipe", "pipe", "pipe"],
+      // Same reason `runCompose` carries one: a `get-log-events` page of a few
+      // hundred lines with `exc_info` tracebacks, JSON-escaped, passes Node's
+      // 1MB default and surfaces as an opaque ENOBUFS from inside whatever
+      // poll asked for it. The CLI caps its own response at 1MB, so this is
+      // only ever headroom.
+      maxBuffer: 64 * 1024 * 1024,
     }).toString(),
   )
 }

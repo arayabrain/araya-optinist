@@ -9,7 +9,9 @@ import {
   APIRequestContext,
   APIResponse,
   Browser,
+  Locator,
   Page,
+  request,
 } from "@playwright/test"
 
 import {
@@ -38,6 +40,7 @@ import {
   reproduceTutorial,
   runShellOverSsm,
   runSql,
+  runSqlWriteOnDev,
   runTutorial,
   s3ObjectCount,
   skipUnlessPremiumTargetHealthy,
@@ -1101,6 +1104,52 @@ for (const tier of TIERS) {
   })
 }
 
+// The visitor's route to one published record's details, shared by S3-04 and
+// S3-08. The anonymous listing is eventually consistent with the publish and
+// reads the DB rather than the files, so it is polled before the UI is opened;
+// the row is found by the uid the grid's ID column renders, because the
+// record's display name belongs to the run helper rather than to either test.
+async function openPublicDetails(
+  viewer: Page,
+  wsName: string,
+  uid: string,
+): Promise<Locator> {
+  await expect
+    .poll(
+      async () => {
+        const res = await viewer.request.get(
+          `${apiUrl()}/api/public/dataview?limit=100&offset=0`,
+          { timeout: REQUEST_TIMEOUT_MS },
+        )
+        if (!res.ok()) return `HTTP ${res.status()}`
+        const body = await res.json()
+        const records = (Array.isArray(body) ? body : (body.items ?? [])) as {
+          uid?: string
+        }[]
+        return records.some((r) => r.uid === uid) ? "listed" : "absent"
+      },
+      {
+        timeout: 120_000,
+        intervals: [10_000],
+        message: `published run ${uid} never appeared in /api/public/dataview`,
+      },
+    )
+    .toBe("listed")
+  await viewer.goto("/public")
+  await filterWorkspace(viewer, wsName)
+  const row = viewer
+    .locator(".MuiDataGrid-row")
+    .filter({ has: viewer.getByText(uid.slice(0, 8)) })
+    .first()
+  await expect(row).toBeVisible({ timeout: 30_000 })
+  await row
+    .locator('[data-field="details"] [data-testid="InsightsIcon"]')
+    .click()
+  const dialog = viewer.locator('[role="dialog"]')
+  await expect(dialog).toBeVisible({ timeout: 15_000 })
+  return dialog
+}
+
 test.describe("Published sync error and recovery on real S3", () => {
   test.use({ storageState: freeStorageState() })
 
@@ -1200,44 +1249,7 @@ test.describe("Published sync error and recovery on real S3", () => {
       })
       const viewer = await ctx.newPage()
       try {
-        // The anonymous listing is eventually consistent with the publish;
-        // open the UI only once the record is really listed (same poll as
-        // S3-03, and the listing reads the DB, not the deleted yaml)
-        await expect
-          .poll(
-            async () => {
-              const res = await viewer.request.get(
-                `${apiUrl()}/api/public/dataview?limit=100&offset=0`,
-                { timeout: REQUEST_TIMEOUT_MS },
-              )
-              if (!res.ok()) return `HTTP ${res.status()}`
-              const body = await res.json()
-              const records = (
-                Array.isArray(body) ? body : (body.items ?? [])
-              ) as { uid?: string }[]
-              return records.some((r) => r.uid === uid) ? "listed" : "absent"
-            },
-            {
-              timeout: 120_000,
-              intervals: [10_000],
-              message: `published run ${uid} never appeared in /api/public/dataview`,
-            },
-          )
-          .toBe("listed")
-        await viewer.goto("/public")
-        await filterWorkspace(viewer, wsName)
-        // The run's own row, by the uid the grid's ID column renders - the
-        // record's display name belongs to the run helper, not this test
-        const row = viewer
-          .locator(".MuiDataGrid-row")
-          .filter({ has: viewer.getByText(uid.slice(0, 8)) })
-          .first()
-        await expect(row).toBeVisible({ timeout: 30_000 })
-        await row
-          .locator('[data-field="details"] [data-testid="InsightsIcon"]')
-          .click()
-        const dialog = viewer.locator('[role="dialog"]')
-        await expect(dialog).toBeVisible({ timeout: 15_000 })
+        const dialog = await openPublicDetails(viewer, wsName, uid)
 
         // Row 717: the error state - icon, alert, and a Retry button. A 503
         // renders it at once; a 202 rides the auto-retry ladder out first
@@ -1362,6 +1374,28 @@ function freeTierHostId(): string {
     `ecs describe-container-instances --cluster ${FREE_CLUSTER} ` +
       `--container-instances ${ci}`,
   ).containerInstances[0].ec2InstanceId
+}
+
+// The job's per-run banner. Waiting for a fresh one puts the caller at the
+// start of a 5-minute window, so whatever it does next is observable for most
+// of that window before the next tick can act on it.
+const SYNC_TICK_MARKER = "Starting published experiment validation job"
+
+async function awaitFreshSyncTick() {
+  const from = Date.now()
+  await expect
+    .poll(
+      () =>
+        logTail(BACKGROUND_LOG, 100).events.some(
+          (e) => e.ingestionTime > from && e.message.includes(SYNC_TICK_MARKER),
+        ),
+      {
+        timeout: 7 * 60_000,
+        intervals: [15_000],
+        message: `no "${SYNC_TICK_MARKER}" tick in ${BACKGROUND_LOG} within 7 minutes`,
+      },
+    )
+    .toBe(true)
 }
 
 let freeHost = ""
@@ -1496,22 +1530,7 @@ test.describe("Publish repair and batch sync on the real free tier", () => {
       // Row 723 needs the five pending rows to be observable before a sync
       // tick eats them, so wait for a fresh tick and publish right after it -
       // the batch then sits pending for most of a 5-minute window.
-      const tickMarker = "Starting published experiment validation job"
-      const alignStart = Date.now()
-      await expect
-        .poll(
-          () =>
-            logTail(BACKGROUND_LOG, 100).events.some(
-              (e) =>
-                e.ingestionTime > alignStart && e.message.includes(tickMarker),
-            ),
-          {
-            timeout: 7 * 60_000,
-            intervals: [15_000],
-            message: `no "${tickMarker}" tick in ${BACKGROUND_LOG} within 7 minutes`,
-          },
-        )
-        .toBe(true)
+      await awaitFreshSyncTick()
 
       // All five in one atomic flip (the already-published original is
       // re-pended by the same update), which is also what makes "one sync run
@@ -1603,6 +1622,698 @@ test.describe("Publish repair and batch sync on the real free tier", () => {
           timeout: COPY_TIMEOUT_MS,
         })
         .catch(() => {})
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Rows 720 / 721 / 722 / 725 / 726 - and sheet 20's 2032, which restates 722
+// plus the public read that follows it: the publish sync's own state machine,
+// run against the real background tier and the real public tier. What kept these
+// rows manual is that their verdict is a DB transition plus the tier's own log
+// line - neither of which a browser can see - so each one below pairs an
+// `expect.poll` on `experiment_records.local_sync_status` with the log line
+// naming THIS run's uid.
+//
+// Free-only, like S3-04 and S3-05: what these rows ask about is the background
+// job and the public instance, and both behave identically whichever tier
+// published the record, so a premium variant would spend a real assignment to
+// watch the same thing twice.
+// ---------------------------------------------------------------------------
+
+const METRIC_NAMESPACE = "OptiNiSt/BackgroundJobs/development"
+// Two ticks plus margin - S3-05's budget, for S3-05's reason: the job has been
+// observed to log "No pending experiments" on the tick a change lands in and
+// only pick the row up on the next one.
+const SYNC_SETTLE_MS = 13 * 60_000
+
+// Sum a background-job metric from the moment the caller's own work started.
+// One-sided by construction: other traffic on the shared environment can only
+// ADD to the window, so `>= 1` cannot manufacture a pass on an idle
+// environment where the job never touched our row - which is the failure this
+// guards. It is deliberately not an equality.
+function metricSumSince(name: string, sinceMs: number): number {
+  const points = awsJson<{ Sum: number }[]>(
+    `cloudwatch get-metric-statistics --namespace ${METRIC_NAMESPACE} ` +
+      `--metric-name ${name} --statistics Sum --period 60 ` +
+      `--start-time ${Math.floor(sinceMs / 1000)} ` +
+      `--end-time ${Math.floor(Date.now() / 1000)} --query 'Datapoints'`,
+  )
+  return points.reduce((sum, p) => sum + (p.Sum ?? 0), 0)
+}
+
+// The awslogs driver ships asynchronously and CloudWatch's own propagation
+// adds to that, so a line the DB transition implies can trail the transition
+// it explains by seconds. Every log and metric assertion below therefore
+// polls, where reading once would be a race the sync job usually wins.
+async function awaitBackgroundLine(needle: string, since = 0) {
+  await expect
+    .poll(
+      () =>
+        logTail(BACKGROUND_LOG, 1000).events.some(
+          (e) => e.ingestionTime > since && e.message.includes(needle),
+        ),
+      {
+        ...CLOUDWATCH_POLL,
+        message: `no "${needle}" line in ${BACKGROUND_LOG}`,
+      },
+    )
+    .toBe(true)
+}
+
+async function awaitMetric(name: string, sinceMs: number, why: string) {
+  await expect
+    .poll(() => metricSumSince(name, sinceMs), {
+      ...CLOUDWATCH_POLL,
+      message: why,
+    })
+    .toBeGreaterThanOrEqual(1)
+}
+
+// Both refuse an empty read rather than dressing it as data: `Number("")` is
+// 0, which reads like a plausible version, and an empty status string would
+// poll to timeout with no hint that the query, not the job, is what failed.
+const syncStatusOf = (recordId: number) => {
+  const out = runSql(
+    `SELECT local_sync_status FROM experiment_records WHERE id = ${recordId};`,
+  ).trim()
+  if (!out) throw new Error(`no experiment_records row for id ${recordId}`)
+  return out
+}
+
+const versionOf = (recordId: number) => {
+  const out = runSql(
+    `SELECT version FROM experiment_records WHERE id = ${recordId};`,
+  ).trim()
+  const version = Number(out)
+  if (!out || !Number.isFinite(version)) {
+    throw new Error(
+      `unreadable version for record ${recordId}: ${out || "empty"}`,
+    )
+  }
+  return version
+}
+
+function s3Aside(bucket: string, key: string, local: string) {
+  execSync(`aws s3 cp s3://${bucket}/${key} ${local} --region ${AWS_REGION}`, {
+    timeout: 60_000,
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+  execSync(`aws s3 rm s3://${bucket}/${key} --region ${AWS_REGION}`, {
+    timeout: 60_000,
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+}
+
+function s3Restore(bucket: string, key: string, local: string) {
+  execSync(`aws s3 cp ${local} s3://${bucket}/${key} --region ${AWS_REGION}`, {
+    timeout: 60_000,
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+}
+
+// A genuinely unauthenticated caller (`anon`, never `viewer` - that name
+// belongs to the browser page the UI halves drive). The `request` fixture inherits the
+// describe's storage state, so it is not the anonymous visitor rows 725/726
+// and the public-tier comments describe; `18-stripe-audit` and `22-disruptive`
+// take a fresh context for the same reason. The caller disposes it.
+function anonymousApi(): Promise<APIRequestContext> {
+  return request.newContext()
+}
+
+// The setup the three rows below share: a real finished run in a fresh
+// workspace, and the dataview record the sync job and the public tier will
+// act on. Publishing is left to the caller - each row publishes at a different
+// moment relative to the job's 5-minute tick.
+async function stageFinishedRun(
+  page: Page,
+  wsName: string,
+): Promise<{
+  wsId: number
+  uid: string
+  recordId: number
+  bucket: string
+  headers: Record<string, string>
+}> {
+  await gotoDashboard(page)
+  const wsId = await openWorkspace(page, wsName)
+  const headers = await apiHeaders(page)
+  const me = await page.request.get(`${apiUrl()}/users/me`, {
+    headers,
+    timeout: REQUEST_TIMEOUT_MS,
+  })
+  expect(me.ok(), await me.text()).toBe(true)
+  const bucket: string | undefined = (await me.json()).attributes
+    ?.remote_bucket_name
+  expect(
+    bucket,
+    "the free user has no remote_bucket_name attribute",
+  ).toBeTruthy()
+
+  await importSampleData(page, wsName)
+  const { uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+
+  // The sync job's own precondition (success = 1) is written by an async
+  // record write after the run reports finished, so a publish issued before it
+  // lands would leave the row outside the job's query and every wait below
+  // would time out on a row the job never had.
+  await expect
+    .poll(
+      () =>
+        runSql(
+          `SELECT success FROM experiment_records ` +
+            `WHERE workspace_id = ${wsId} AND uid = '${sqlLiteral(uid)}';`,
+        ),
+      {
+        timeout: 180_000,
+        intervals: [10_000],
+        message: `experiment_records.success never reached 1 for ${wsId}/${uid}`,
+      },
+    )
+    .toBe("1")
+
+  let recordId = 0
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(
+          `${apiUrl()}/api/dataview?limit=100&offset=0&workspace_id=${wsId}`,
+          { headers, timeout: REQUEST_TIMEOUT_MS },
+        )
+        if (!res.ok()) return `HTTP ${res.status()}`
+        const { items } = await res.json()
+        const record = (items as { id: number; uid?: string }[]).find(
+          (r) => r.uid === uid,
+        )
+        if (!record) return "absent"
+        recordId = record.id
+        return "found"
+      },
+      {
+        timeout: 120_000,
+        intervals: [10_000],
+        message: `no dataview record for run ${uid}`,
+      },
+    )
+    .toBe("found")
+
+  return { wsId, uid, recordId, bucket: bucket!, headers }
+}
+
+// Never leave a published row the job cannot validate: it would fail every
+// five minutes for as long as it is published, and nine failures publish
+// PersistentSyncFailure, which HEALTH-14 asserts is empty. Unpublishing takes
+// the row out of the job's query and deleting the workspace takes it out for
+// good (the query joins on `workspaces.deleted = 0`).
+//
+// Both calls report what they actually answered. `.catch()` alone swallows
+// only transport failures - a 401 from a token that expired during a long row,
+// or a 404, RESOLVES - so a status-blind teardown can believe it cleaned up
+// while leaving exactly the row this comment says must never exist. The
+// headers are re-read here rather than reused: the ones captured at setup can
+// be an hour old by the time a long S3-07 reaches its `finally`, and the
+// Firebase access token does not outlive that. Reported, never `expect`ed: a
+// throw in a `finally` would mask whatever sent us into it.
+async function unstageRun(
+  page: Page,
+  headers: Record<string, string>,
+  recordId: number,
+  wsId: number,
+) {
+  let live = headers
+  try {
+    live = await apiHeaders(page)
+  } catch {
+    // The page is gone - a test timeout closes it - so the captured headers
+    // are the only ones left to try.
+  }
+  const settle = async (what: string, call: () => Promise<APIResponse>) => {
+    try {
+      const res = await call()
+      if (!res.ok()) {
+        console.warn(
+          `[16-storage-aws] teardown: ${what} answered ${res.status()} - ` +
+            `${await res.text()}. A published row the sync job cannot ` +
+            `validate may have been left behind; check it by hand.`,
+        )
+      }
+    } catch (e) {
+      console.warn(`[16-storage-aws] teardown: ${what} did not complete - ${e}`)
+    }
+  }
+  if (recordId) {
+    await settle(`unpublish record ${recordId}`, () =>
+      page.request.post(`${apiUrl()}/api/dataview/publish/${recordId}/off`, {
+        headers: live,
+        timeout: UPLOAD_TIMEOUT_MS,
+      }),
+    )
+  }
+  await settle(`delete workspace ${wsId}`, () =>
+    page.request.delete(`${apiUrl()}/workspace/${wsId}`, {
+      headers: live,
+      timeout: UPLOAD_TIMEOUT_MS,
+    }),
+  )
+}
+
+test.describe("Publish sync status transitions on the real tiers", () => {
+  test.use({ storageState: freeStorageState() })
+
+  // Row 726. The self-heal is a DB write the browser never sees: the visitor
+  // gets an ordinary 200 whether the row said `synced` or `error`, which is
+  // exactly why the row was manual. Two things separate "the endpoint healed
+  // it" from "the 5-minute job happened to heal it in the same window": the
+  // public tier logs the correction under this uid, and the endpoint bumps
+  // `version` where the job's `_mark_sync_complete` leaves it alone.
+  test("S3-06 - A published record stuck at error self-heals to synced on the first public read @slow", async ({
+    page,
+  }) => {
+    skipUnlessOptedIn("726")
+    // The public read's own poll, plus the tick alignment before the injection.
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 28 * 60_000)
+
+    const wsName = "e2e-s3heal"
+    let recordId = 0
+    let wsId = 0
+    let headers: Record<string, string> = {}
+    const anon = await anonymousApi()
+    try {
+      const staged = await stageFinishedRun(page, wsName)
+      ;({ wsId, recordId, headers } = staged)
+      const { uid } = staged
+
+      const published = await page.request.post(
+        `${apiUrl()}/api/dataview/publish/${recordId}/on`,
+        { headers, timeout: UPLOAD_TIMEOUT_MS },
+      )
+      expect(published.ok(), await published.text()).toBe(true)
+
+      // Reach the row's premise honestly: the data really is available on the
+      // public tier, so the error status below is a lie about a healthy
+      // record - the only state the self-heal is meant to correct.
+      await expect
+        .poll(
+          async () =>
+            (
+              await anon.get(
+                `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
+                { timeout: UPLOAD_TIMEOUT_MS },
+              )
+            ).status(),
+          {
+            timeout: 10 * 60_000,
+            intervals: [20_000],
+            message: "the published record never became publicly readable",
+          },
+        )
+        .toBe(200)
+      expect(
+        syncStatusOf(recordId),
+        "a publicly readable record should be synced before the row's own edit",
+      ).toBe("synced")
+
+      // The whole verdict rests on the job not touching the row between the
+      // forced `error` and the public read - `_mark_sync_complete` would set
+      // `synced` with no version bump, and the assertion below would then read
+      // as a product regression when it is really a lost race. The critical
+      // section is a few SSM round trips wide; taking a fresh tick first buys
+      // it most of a 5-minute cycle.
+      await awaitFreshSyncTick()
+      const versionBefore = versionOf(recordId)
+      runSqlWriteOnDev(
+        `UPDATE experiment_records SET local_sync_status = 'error' ` +
+          `WHERE id = ${recordId}`,
+      )
+      expect(syncStatusOf(recordId), "the row's premise did not land").toBe(
+        "error",
+      )
+
+      const t0 = windowStart()
+      const healed = await anon.get(
+        `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
+        { timeout: UPLOAD_TIMEOUT_MS },
+      )
+      expect(
+        healed.status(),
+        `the error row did not serve: ${await healed.text()}`,
+      ).toBe(200)
+
+      // Far inside a single 5-minute tick, so the job is not the likely
+      // author; the two assertions after it are what make that certain.
+      await expect
+        .poll(() => syncStatusOf(recordId), {
+          timeout: 90_000,
+          intervals: [5_000],
+          message: "the error status was never corrected back to synced",
+        })
+        .toBe("synced")
+      expect(
+        versionOf(recordId),
+        "the status changed without the endpoint's version bump - the " +
+          "background job corrected it, not the public read this row is about",
+      ).toBe(versionBefore + 1)
+      // Quote-free by necessity: cloudwatchHas rejects a pattern carrying
+      // either quote, and the line quotes both statuses.
+      const healLine = `${wsId}/${uid} data is available, updating sync status from`
+      await expect
+        .poll(() => cloudwatchHas(PUBLIC_LOG_GROUP, healLine, t0), {
+          ...CLOUDWATCH_POLL,
+          message: `no self-heal line for ${wsId}/${uid} in ${PUBLIC_LOG_GROUP}`,
+        })
+        .toBe(true)
+    } finally {
+      await anon.dispose()
+      await unstageRun(page, headers, recordId, wsId)
+    }
+  })
+
+  // Rows 720 + 721 + 722 in one narrative, because they are one: the job has
+  // to carry a record all the way to `synced` (720) before breaking it can
+  // mean anything (721), and the repair is only a repair of that break (722).
+  // Three 5-minute ticks is what the row costs; the first of them is a wait
+  // 721 would have to spend anyway.
+  //
+  // Row 721's other half - that a `synced` row whose S3 files vanish is NEVER
+  // demoted, because `_get_pending_experiments` only ever selects
+  // pending/error - is deliberately not automated here. It is an assertion
+  // that nothing happens for two ticks, it would pin a documented design gap
+  // in place as a change-detector, and `test_sync_job_db_state.py::
+  // TestPendingSelectionStatuses` already settles the same question against
+  // the compiled query in under a second.
+  test("S3-07 - The sync job carries a publish to synced, fails it to error when S3 loses the config, and retries it back into a public 200 @slow", async ({
+    page,
+  }) => {
+    skipUnlessOptedIn("720 / 721 / 722 / 2032")
+    // Three settle windows, their CloudWatch polls, and the public read the
+    // last act now waits out.
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 62 * 60_000)
+
+    const wsName = "e2e-s3sync"
+    const asideDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-s3sync-"))
+    let recordId = 0
+    let wsId = 0
+    let headers: Record<string, string> = {}
+    let bucket = ""
+    // Both files `validate_experiment_in_s3` requires, so the failure below
+    // cannot hinge on which one the validator happens to look for first.
+    let asideKeys: { key: string; local: string }[] = []
+    let filesAside = false
+    const anon = await anonymousApi()
+    const restoreAll = () => {
+      // Skips what was never copied aside: with the flag armed before the
+      // loop, a failure part-way through leaves some locals absent.
+      for (const { key, local } of asideKeys) {
+        if (fs.existsSync(local)) s3Restore(bucket, key, local)
+      }
+      filesAside = false
+    }
+
+    try {
+      const staged = await stageFinishedRun(page, wsName)
+      ;({ wsId, recordId, headers, bucket } = staged)
+      const { uid } = staged
+      const prefix = `app/studio_data/output/${wsId}/${uid}`
+      asideKeys = ["experiment.yaml", "workflow.yaml"].map((name) => ({
+        key: `${prefix}/${name}`,
+        local: path.join(asideDir, name),
+      }))
+
+      // --- Row 720: publish parks the row, the job validates it and flips it.
+      // Aligned first: the `pending` read below is a claim about the state the
+      // publish leaves, and a tick landing between the two would answer
+      // `synced` and fail it for the wrong reason.
+      await awaitFreshSyncTick()
+      const t0 = windowStart()
+      const published = await page.request.post(
+        `${apiUrl()}/api/dataview/publish/${recordId}/on`,
+        { headers, timeout: UPLOAD_TIMEOUT_MS },
+      )
+      expect(published.ok(), await published.text()).toBe(true)
+      expect(
+        syncStatusOf(recordId),
+        "publish must park the row pending for the job to pick up",
+      ).toBe("pending")
+
+      await expect
+        .poll(() => syncStatusOf(recordId), {
+          timeout: SYNC_SETTLE_MS,
+          intervals: [15_000],
+          message: "the sync job never validated the freshly published row",
+        })
+        .toBe("synced")
+      await awaitBackgroundLine(`Successfully validated ${wsId}/${uid}`)
+      await awaitMetric(
+        "ExperimentsSynced",
+        t0,
+        "the job flipped the row without publishing ExperimentsSynced",
+      )
+      // The validate-then-trigger half of the row. The trigger is a
+      // fire-and-forget task started after the DB flip, so it can only be
+      // waited for, never read once - and a failed ALB call logs a different
+      // line, which is the regression this row exists to catch.
+      await awaitBackgroundLine(
+        `Proactive download triggered for ${wsId}/${uid}`,
+      )
+
+      // --- Row 721: a pending row whose S3 config is gone fails to error.
+      // The files go first and the status second, so the job can never see a
+      // pending row while the prefix is still intact.
+      // Armed BEFORE the loop: `s3Aside` deletes as it goes, so a throw on the
+      // second key would otherwise leave the first one deleted with the
+      // `finally` believing nothing was moved.
+      filesAside = true
+      for (const { key, local } of asideKeys) s3Aside(bucket, key, local)
+      runSqlWriteOnDev(
+        `UPDATE experiment_records SET local_sync_status = 'pending' ` +
+          `WHERE id = ${recordId}`,
+      )
+      const tErr = windowStart()
+      await expect
+        .poll(() => syncStatusOf(recordId), {
+          timeout: SYNC_SETTLE_MS,
+          intervals: [15_000],
+          message:
+            "the job never failed the row whose required S3 files are gone",
+        })
+        .toBe("error")
+      await awaitBackgroundLine(
+        `Failed to validate ${wsId}/${uid} after 3 attempts`,
+      )
+      await awaitMetric(
+        "SyncErrors",
+        tErr,
+        "the job errored the row without publishing SyncErrors",
+      )
+
+      // --- Row 722: `error` stays in the job's query, so putting the files
+      // back is the whole retry - nothing re-queues the row by hand.
+      const tFix = windowStart()
+      restoreAll()
+      await expect
+        .poll(() => syncStatusOf(recordId), {
+          timeout: SYNC_SETTLE_MS,
+          intervals: [15_000],
+          message: "the restored row was never retried back to synced",
+        })
+        .toBe("synced")
+      // A NEW validated line: the one act 1 logged for this uid is still in
+      // the tail, so only its ingestion time tells the retry apart from it.
+      await awaitBackgroundLine(`Successfully validated ${wsId}/${uid}`, tFix)
+      await awaitMetric(
+        "ExperimentsSynced",
+        tFix,
+        "the retry flipped the row without publishing ExperimentsSynced",
+      )
+      // Row 2032's second half: the retry is only a recovery if the visitor
+      // gets the experiment back, not merely if the DB says `synced`. Polled
+      // rather than read once - the public tier refills its local copy from
+      // S3 on demand, so the first read after the restore can still be
+      // downloading what the row above already validated.
+      await expect
+        .poll(
+          async () =>
+            (
+              await anon.get(
+                `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`,
+                { timeout: UPLOAD_TIMEOUT_MS },
+              )
+            ).status(),
+          {
+            timeout: 10 * 60_000,
+            intervals: [20_000],
+            message: "reproduce never reached 200 after the row was retried",
+          },
+        )
+        .toBe(200)
+    } finally {
+      if (filesAside) {
+        try {
+          restoreAll()
+        } catch {
+          // the workspace delete below drops the prefix anyway
+        }
+      }
+      await anon.dispose()
+      await unstageRun(page, headers, recordId, wsId)
+      fs.rmSync(asideDir, { recursive: true, force: true })
+    }
+  })
+
+  // Row 725. The sheet calls the 202 unprovokable - the public reproduce
+  // downloads on demand first, so the visitor's own request usually repairs
+  // the very state it was meant to observe. It is provokable, deterministically:
+  // `download_experiment` clears the local experiment directory and refills it
+  // from S3, and `validate_for_display` needs experiment.yaml where
+  // `validate_experiment_in_s3` needs experiment.yaml AND workflow.yaml. Remove
+  // only experiment.yaml and the download still succeeds (the prefix is not
+  // empty, so no 404) while leaving nothing displayable - which on a `pending`
+  // row is precisely the 202 branch. Publishing right after a fresh tick keeps
+  // the row pending for most of a five-minute window, because the same missing
+  // file would otherwise have the job demote it to `error` and answer 503.
+  test("S3-08 - A published-but-unsynced experiment answers 202 pending_sync to the public, and 200 once its config is back @slow", async ({
+    page,
+    browser,
+  }) => {
+    skipUnlessOptedIn("725")
+    test.setTimeout(RUN_TEST_TIMEOUT_MS + 30 * 60_000)
+
+    const wsName = "e2e-s3pending"
+    const asideDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-s3pending-"))
+    let recordId = 0
+    let wsId = 0
+    let headers: Record<string, string> = {}
+    let bucket = ""
+    let key = ""
+    const local = path.join(asideDir, "experiment.yaml")
+    let fileAside = false
+    const anon = await anonymousApi()
+
+    try {
+      const staged = await stageFinishedRun(page, wsName)
+      ;({ wsId, recordId, headers, bucket } = staged)
+      const { uid } = staged
+      key = `app/studio_data/output/${wsId}/${uid}/experiment.yaml`
+      const reproduceUrl = `${apiUrl()}/api/public/dataview/workflow/reproduce/${wsId}/${uid}`
+
+      await awaitFreshSyncTick()
+      const published = await page.request.post(
+        `${apiUrl()}/api/dataview/publish/${recordId}/on`,
+        { headers, timeout: UPLOAD_TIMEOUT_MS },
+      )
+      // Publish validates the S3 prefix itself, so the config has to be taken
+      // away after it, not before.
+      expect(published.ok(), await published.text()).toBe(true)
+      s3Aside(bucket, key, local)
+      fileAside = true
+      expect(
+        syncStatusOf(recordId),
+        "the row must still be pending - a tick beat the staging",
+      ).toBe("pending")
+
+      const pending = await anon.get(reproduceUrl, {
+        timeout: UPLOAD_TIMEOUT_MS,
+      })
+      expect(
+        pending.status(),
+        `reproduce should have answered 202: ${await pending.text()}`,
+      ).toBe(202)
+      const body = await pending.json()
+      expect(body.status).toBe("pending_sync")
+      expect(body.message).toContain("Publishing in progress")
+      expect(pending.headers()["retry-after"]).toBe("300")
+      // Not a one-off race: a second read answers the same, which is what
+      // makes the auto-retry the row describes a stable state to retry into
+      // rather than a window the first request closes behind itself.
+      const again = await anon.get(reproduceUrl, {
+        timeout: UPLOAD_TIMEOUT_MS,
+      })
+      expect(again.status(), await again.text()).toBe(202)
+
+      // What the visitor actually sees, reported rather than asserted. The
+      // sheet expects the hourglass, the info alert and a ~10s auto-retry
+      // ladder, and `useSyncRetry` does render exactly that - but only from
+      // its `catch`, and axios resolves a 202 like any other 2xx, so nothing
+      // in the app reaches that branch on the real response. Asserting the
+      // sheet's expectation here would encode a frontend defect as this
+      // lane's pass criterion, so the dialog is opened, described and left
+      // for the row's owner to adjudicate. Row 725's server half above is the
+      // part this test decides.
+      const ctx = await browser.newContext({
+        baseURL: process.env.BASE_URL,
+        storageState: undefined,
+      })
+      const viewer = await ctx.newPage()
+      let reproduceCalls = 0
+      viewer.on("request", (req) => {
+        if (req.url().includes(`/workflow/reproduce/${wsId}/${uid}`)) {
+          reproduceCalls += 1
+        }
+      })
+      try {
+        const dialog = await openPublicDetails(viewer, wsName, uid)
+        // Reported alongside the icons: opening the UI costs enough that the
+        // 5-minute tick can demote the row to `error` first, and a dialog
+        // describing an errored record says nothing about the pending state.
+        const statusAtOpen = syncStatusOf(recordId)
+        // Three retry intervals: enough for the ladder to show itself if the
+        // app ever reaches it.
+        await viewer.waitForTimeout(31_000)
+        const hourglass = await dialog
+          .locator('[data-testid="HourglassEmptyIcon"]')
+          .first()
+          .isVisible()
+        const errorIcon = await dialog
+          .locator('[data-testid="ErrorOutlineIcon"]')
+          .first()
+          .isVisible()
+        const alert = await dialog
+          .locator(".MuiAlert-root")
+          .first()
+          .textContent()
+          .catch(() => null)
+        console.log(
+          `[16-storage-aws] S3-08 public dialog over a 202: ` +
+            `local_sync_status=${statusAtOpen} at open / ` +
+            `${syncStatusOf(recordId)} after, ` +
+            `hourglass=${hourglass}, errorIcon=${errorIcon}, ` +
+            `reproduceRequests=${reproduceCalls} in ~31s, ` +
+            `alert=${JSON.stringify(alert)}`,
+        )
+      } finally {
+        await ctx.close()
+      }
+
+      // The other half of the row: once the data is really there the same URL
+      // answers 200, so the 202 above was the sync state and not a broken
+      // record. Restoring also returns the row to a state the job can
+      // validate, which is what keeps the teardown quiet.
+      s3Restore(bucket, key, local)
+      fileAside = false
+      await expect
+        .poll(
+          async () =>
+            (
+              await anon.get(reproduceUrl, { timeout: UPLOAD_TIMEOUT_MS })
+            ).status(),
+          {
+            timeout: 10 * 60_000,
+            intervals: [20_000],
+            message: "reproduce never reached 200 after the config came back",
+          },
+        )
+        .toBe(200)
+    } finally {
+      if (fileAside) {
+        try {
+          s3Restore(bucket, key, local)
+        } catch {
+          // the workspace delete below drops the prefix anyway
+        }
+      }
+      await anon.dispose()
+      await unstageRun(page, headers, recordId, wsId)
+      fs.rmSync(asideDir, { recursive: true, force: true })
     }
   })
 })
