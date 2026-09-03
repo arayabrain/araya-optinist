@@ -687,6 +687,55 @@ export function premiumTargetHealth(userId: number): string[] {
   }
 }
 
+// A dedicated assignment goes live (DB row, ALB rule, target group) before the
+// premium ECS task on that instance serves traffic, so work driven through the
+// ALB too early answers 502. Waiting out the task placement is not the row
+// under test: a cluster that never gets a premium target serving leaves those
+// rows unverified rather than failed. Shared by every lane that drives real
+// work at a premium instance - `16-storage-aws` failed its first premium run
+// for want of this gate, which is why it lives here rather than in one spec.
+export async function skipUnlessPremiumTargetHealthy(
+  rows: string,
+  userId: number,
+) {
+  const deadline = Date.now() + 5 * 60_000
+  let states: string[] = []
+  for (;;) {
+    states = premiumTargetHealth(userId)
+    if (states.includes("healthy")) return
+    if (Date.now() > deadline) break
+    await new Promise((r) => setTimeout(r, 15_000))
+  }
+  test.skip(
+    true,
+    `rows ${rows}: premium-${userId}-tg never reported a healthy target ` +
+      `(states: ${states.join(",") || "none"}) - the dev cluster could not ` +
+      `keep a premium task serving; rerun when it has free CPU`,
+  )
+}
+
+// The ALB half of "nothing is still held by us". A hard release can delete the
+// assignment row and the listener rule but fail the target-group deletion,
+// stranding a rule-less TG no sweep can find (issue #814) - so /premium/status
+// reporting released is only half the invariant. Only a genuine NotFound counts
+// as absence: premiumTargetHealth() is no substitute, it swallows every error
+// and returns [] for an existing-but-empty group exactly as for a missing one.
+export function expectPremiumTargetGroupGone(userId: number, stage: string) {
+  try {
+    execSync(
+      `aws elbv2 describe-target-groups --names premium-${userId}-tg ` +
+        `--region ${AWS_REGION}`,
+      { timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+    )
+  } catch (e) {
+    const msg =
+      (e as Error).message + String((e as { stderr?: Buffer }).stderr || "")
+    if (msg.includes("TargetGroupNotFound")) return
+    throw e
+  }
+  throw new Error(`${stage}: premium-${userId}-tg still exists after release`)
+}
+
 // ---------------------------------------------------------------------------
 // Premium pool inspection and staging, shared by the @prem lane and the
 // disruptive lane's premium rows (OUT-04/05).
