@@ -161,6 +161,58 @@ Every lane that writes refuses to start anywhere but development:
 - **`runSqlWriteOnDev`** makes the same assertion for the one sanctioned SQL
   write path.
 
+## Running a production release round
+
+`E2E_TARGET=<name>` reads `e2e/.env.<name>` in place of `e2e/.env`, so a target is
+chosen whole: origin, API, RDS selectors, Stripe selector and accounts together.
+Half a swap points the browser at one environment and the API or the account at
+another, which reads as a login failure rather than as a mistake. Both files are
+gitignored; `e2e/.env.prod.example` is the committed template.
+
+A target inverts the usual precedence: its values win over the shell, so a
+one-off `TEST_USER_EMAIL=...` on the command line is overridden rather than
+honoured, and the run prints which keys that happened to. A missing target file,
+a target name that is not `[A-Za-z0-9_-]+`, or a file lacking `BASE_URL`,
+`API_URL`, `HEALTH_ENV` or the `TEST_USER_*` pair all fail at start-up rather
+than falling back to development.
+
+```bash
+cd frontend
+E2E_TARGET=prod npx playwright test e2e/17-aws-health.spec.ts
+E2E_TARGET=prod RUN_CLEANUP=1 npx playwright test e2e/99-cleanup.spec.ts
+```
+
+```bash
+python3 infrastructure/scripts/manual_test_scan.py --check production --cases release \
+  --user-email <the release premium account> -o scan-report.md
+```
+
+The scan requires a pinned target on production, either `--user-email` or
+`--user-id`: unpinned it selects the newest premium account, which on production
+is a paying customer, and reports their billing history as release results.
+
+**What runs there.** The lanes that mutate infrastructure, Stripe or the database
+refuse to start off development, and `12-admin` / `13-account` refuse anything but
+localhost, so the guards make the choice. What is left is the browser specs, which
+carry no environment gate: release sheets 01-05, 07, 08 and part of 10. They write
+as the test account, and `globalSetup` skips its cleanup off development, hence the
+sweep above; AUTH-04's registrations are outside it and need an admin.
+`18-stripe-audit` runs too, minus AUDIT-09 and AUDIT-10, which skip on a live
+key. AUDIT-10's question is answered by the scan, but AUDIT-09's is not: nothing
+else compares the app's own invoice list against Stripe's or resolves the hosted
+invoice and PDF links, so rows 244-250 are unverified on production rather than
+covered elsewhere. Restoring them means letting the GET-only reads run against a
+live key, as `manual_test_scan.py` already does under `--check production`.
+
+**Accounts.** Production's Firebase project is not development's, so no
+development account or password carries over; the addresses exist already and the
+passwords live in the shared credential store. `TEST_PREMIUM_*` is a database
+state an admin stages with `PUT /admin/users/{id}/subscription`, no payment
+needed. `TEST_STRIPE_*` cannot be staged that way: its rows read Stripe's API, so
+the account must own a real customer with a live subscription, and borrowing an
+existing customer id fails the scan's own identity checks besides pointing the
+cancel/reactivate rows at a real payer.
+
 ## Operator-run, not CI-enforced
 
 Every lane above needs AWS credentials and a live environment, so none of them
@@ -218,7 +270,10 @@ care about.
 ## Credentials and test accounts
 
 All credentials come from env vars, or `frontend/e2e/.env` (gitignored,
-simple `KEY=VALUE` lines). Nothing is ever committed.
+simple `KEY=VALUE` lines). Nothing is ever committed. `E2E_TARGET=<name>` reads
+`e2e/.env.<name>` instead, which is how a production round selects its whole
+environment at once; see [Running a production release
+round](#running-a-production-release-round).
 
 | Variable                                           | Required                          | Purpose                                                                                                                                                                                                                            |
 | -------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -240,6 +295,10 @@ simple `KEY=VALUE` lines). Nothing is ever committed.
 | `FIREBASE_ADMIN_PYTHON`                            | optional, deployed env only       | interpreter that can `import firebase_admin`, used by `23-subscription-lifecycle` LC-16 to force `email_verified` on the throwaway it registers. `helpers.ts` does this inside the backend container, which a deployed run has no local copy of; Firebase is the same shared dev project either way. Defaults to `python3`, and LC-16 skips with a named reason rather than failing when the import is unavailable |
 | `TEST_STRIPE_EMAIL` / `TEST_STRIPE_PASSWORD`       | optional, deployed env only       | an account whose subscription is really backed by Stripe, i.e. one that owns a Stripe customer with a live subscription. **Not** `TEST_PREMIUM_*` or `TEST_PREMIUM2_*`: those are premium in the database only and own no Stripe customer at all, so every Stripe-side assertion about them would pass against nothing. Enables AUDIT-09 and STRIPE-01, which otherwise skip - and the skip reason distinguishes "unset" from "set, but that account has no Stripe customer". This account does **not** need to be premium-routable: expect `/users/me/premium/status` to report `is_premium: false` for it, because a premium subscription expiring within 24 hours reads as "Limit Grace" (integer-day truncation in `crud_users.py`) and dev bills Premium daily. That is a known app bug, not a broken account - don't "fix" this slot by pointing it at an e2e account with no Stripe data |
 | `TEST_PREMIUM2_EMAIL` / `TEST_PREMIUM2_PASSWORD`   | optional                          | second premium account, needed only by PREM-06 (two-user scale-down)                                                                                                                                                               |
+| `E2E_TARGET`                                       | optional                          | reads `e2e/.env.<name>` in place of `e2e/.env`, and its values win over the shell; see [Running a production release round](#running-a-production-release-round)                                                     |
+| `HEALTH_ENV`                                       | default `development`             | which deployed environment the AWS-reading lanes name: `17-aws-health`'s resources, the log groups `helpers.ts` exports, the Stripe secret `stripeKey()` fetches, and `18-stripe-audit`'s `--check`. `subscr` is production |
+| `STRIPE_SECRET_ENV`                                | default `<HEALTH_ENV>-optinist`   | overrides which `<env>/stripe/config` secret is read, when the Stripe account is not named after `HEALTH_ENV`                                                                                                       |
+| `RDS_PROXY_HOST` / `RDS_SECRET_ID` / `RDS_SSM_INSTANCE_NAME` | development defaults    | where the SQL-over-SSM rows read. The defaults name development, so a run against another environment must set all three or it reports development's data as that environment's                                     |
 
 The account must exist in **both** Firebase (email/password sign-in,
 email verified) and the target environment's DB. Note: the `test_users` in

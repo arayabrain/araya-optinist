@@ -190,10 +190,15 @@ export const AWS_REGION = "ap-northeast-1"
 // (premium routing headers only exist after assignment and only the app sends
 // them), workflow compute logs on the tier that ran it, and login-time lines
 // land on the default (free) tier.
-export const FREE_LOG_GROUP = "/ecs/development-optinist-cloud-taskdef"
-export const PREMIUM_LOG_GROUP =
-  "/ecs/development-premium-optinist-cloud-taskdef"
-export const PUBLIC_LOG_GROUP = "/ecs/development-public-optinist-cloud-taskdef"
+// Named for the environment under test, as 17-aws-health names its resources:
+// hardcoding development had a production run watch development's group and
+// time out on a line that had landed correctly somewhere else. Exported so the
+// spec reads the same four names rather than deriving identical ones twice.
+export const TARGET_ENV = process.env.HEALTH_ENV || "development"
+export const FREE_LOG_GROUP = `/ecs/${TARGET_ENV}-optinist-cloud-taskdef`
+export const PREMIUM_LOG_GROUP = `/ecs/${TARGET_ENV}-premium-optinist-cloud-taskdef`
+export const PUBLIC_LOG_GROUP = `/ecs/${TARGET_ENV}-public-optinist-cloud-taskdef`
+export const BACKGROUND_LOG_GROUP = `/ecs/${TARGET_ENV}-background-optinist-cloud-taskdef`
 
 // MUI's default error.main, which the theme does not override: the colour the
 // destructive buttons must actually be.
@@ -598,6 +603,24 @@ export function stripeAccountSkipReason(): string {
 
 let stripeKeyCache = ""
 
+export const LIVE_STRIPE_REFUSAL = "refusing to read Stripe with a live key"
+
+// The rows that read Stripe in-process cannot run where the key is live, but the
+// rest of their lane can: manual_test_scan.py reads the same account GET-only
+// under --check production. So this names the reason and they skip on it, and
+// the throw below stays as the backstop for a call that did not ask first. Any
+// other failure here - absent credentials, a malformed secret - returns "" on
+// purpose, so it surfaces where it happens instead of as a silent skip.
+export function liveStripeSkipReason(): string {
+  try {
+    stripeKey()
+    return ""
+  } catch (e) {
+    const message = (e as Error).message
+    return message.includes(LIVE_STRIPE_REFUSAL) ? message : ""
+  }
+}
+
 export function stripeKey(): string {
   if (stripeKeyCache) return stripeKeyCache
   // Same secret the app and manual_test_scan.py read: <env>-optinist/stripe/config
@@ -617,7 +640,7 @@ export function stripeKey(): string {
   // A live key would make these reads production reads; the scan refuses one
   // without --allow-live and so does this.
   if (key.startsWith("sk_live")) {
-    throw new Error("refusing to read Stripe with a live key")
+    throw new Error(LIVE_STRIPE_REFUSAL)
   }
   stripeKeyCache = key
   return key

@@ -411,6 +411,20 @@ def main():
     env = args.env or ("subscr-optinist" if prod else "development-optinist")
     allow_test_interval = args.allow_test_interval or not prod
     allow_live = args.allow_live or prod
+    # Production's newest premium account is a paying customer, and auditing one
+    # reports their billing history as release results. Keyed on the environment
+    # actually read rather than on --check, since --env alone can point every
+    # query at production. `is None` because --user-id 0 is falsy and would
+    # otherwise fall through to the unpinned query.
+    if (
+        (prod or env.startswith("subscr"))
+        and args.user_id is None
+        and not args.user_email
+    ):
+        raise SystemExit(
+            f"auditing {env} needs --user-email or --user-id: name the release"
+            " test account rather than auditing a real customer"
+        )
 
     results = []
 
