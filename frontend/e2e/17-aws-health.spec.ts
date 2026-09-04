@@ -5,15 +5,20 @@ import { test, expect } from "@playwright/test"
 import {
   AWS_REGION,
   awsJson,
+  BACKGROUND_LOG_GROUP as BACKGROUND_LOG,
   cloudwatchHas,
+  FREE_LOG_GROUP as FREE_LOG,
   FREE_USER,
   isLocalBaseUrl,
   logTail,
+  PREMIUM_LOG_GROUP as PREMIUM_LOG,
+  PUBLIC_LOG_GROUP as PUBLIC_LOG,
   RDS_PROXY_HOST,
   runSql,
   skipWithoutCreds,
   sqlLiteral,
   sqlSkipReason,
+  TARGET_ENV,
 } from "./helpers"
 
 // Read-only truth for the AWS Monitoring sheets (BT-1101..1108, BT-1111,
@@ -41,7 +46,7 @@ import {
 
 // Which deployed environment to read. `subscr` is production; the lane writes
 // nothing, so pointing it there is the intended way to health-check a release.
-const ENV = process.env.HEALTH_ENV || "development"
+const ENV = TARGET_ENV
 const CLUSTER = `${ENV}-optinist-cloud-cluster`
 const SERVICES = [
   `${ENV}-optinist-cloud-service`,
@@ -52,13 +57,8 @@ const SERVICES = [
 const FREE_TG = `${ENV}-optinist-tg`
 const PUBLIC_TG = `${ENV}-optinist-public-tg`
 const RDS_INSTANCE = `${ENV}-optinist-cloud-rds`
-const FREE_LOG = `/ecs/${ENV}-optinist-cloud-taskdef`
-const PREMIUM_LOG = `/ecs/${ENV}-premium-optinist-cloud-taskdef`
-const PUBLIC_LOG = `/ecs/${ENV}-public-optinist-cloud-taskdef`
-const BACKGROUND_LOG = `/ecs/${ENV}-background-optinist-cloud-taskdef`
 const METRIC_NAMESPACE = `OptiNiSt/BackgroundJobs/${ENV}`
 const BUCKET_PREFIX = `${ENV}-optinist-user-`
-const LISTENER_PORT = ENV === "development" ? 8080 : 443
 
 // Terraform declares these for every environment. Per-user premium target-group
 // alarms are deliberately absent: they come and go with the assignment pool.
@@ -391,7 +391,9 @@ test.describe("Compute and routing", () => {
         `$(aws elbv2 describe-load-balancers --region ${AWS_REGION} ` +
         `--query 'LoadBalancers[?LoadBalancerName==\`${ENV}-optinist-lb\`]` +
         `.LoadBalancerArn' --output text) ` +
-        `--query 'Listeners[?Port==\`${LISTENER_PORT}\`].ListenerArn | [0]'`,
+        // Terraform sets this listener to 443 or 8080 on enable_custom_domain,
+        // so exclude the redirect listener rather than naming a port.
+        `--query 'Listeners[?Port!=\`80\`].ListenerArn | [0]'`,
     )
     type Rule = {
       Priority: string

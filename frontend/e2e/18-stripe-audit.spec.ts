@@ -11,8 +11,8 @@ import {
   STRIPE_USER,
   apiLogin,
   isLocalBaseUrl,
-  skipWithoutCreds,
   liveStripeSkipReason,
+  skipWithoutCreds,
   stripeAccountSkipReason,
   stripeGet,
   stripeSubscriptionFor,
@@ -54,9 +54,19 @@ type Verdict = { sheet: string; status: string; evidence: string }
 
 let verdicts: Record<string, Verdict> = {}
 let scanError = ""
+let scanSkipReason = ""
 
 test.beforeAll(() => {
   if (isLocalBaseUrl()) return
+  // The scan refuses to choose its own target on production, and this lane's
+  // target is TEST_STRIPE_*. Unset, there is no account to audit - which is
+  // environment-shaped inability, not a failure to report.
+  if (CHECK === "production" && !STRIPE_USER.email) {
+    scanSkipReason =
+      "TEST_STRIPE_EMAIL is not set, and --check production will not select " +
+      "its own target"
+    return
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-scan-"))
   try {
     // Pinned to the account this lane is about. Unpinned, the scan targets
@@ -86,8 +96,13 @@ test.beforeAll(() => {
   } catch (e) {
     // A non-zero exit means the scan itself found a FAIL row, which the
     // per-row assertions below are about to name. Only a missing result file
-    // is a broken run.
-    scanError = (e as Error).message.split("\n")[0]
+    // is a broken run. The child's stderr rides alongside the message because
+    // execFileSync's first line is only the command that was run, which on its
+    // own says nothing about why the scan stopped.
+    const err = e as Error & { stderr?: Buffer | string }
+    scanError = [err.message.split("\n")[0], String(err.stderr ?? "").trim()]
+      .filter(Boolean)
+      .join(" -- ")
   }
   const jsonPath = path.join(dir, "scan.json")
   if (fs.existsSync(jsonPath)) {
@@ -102,6 +117,7 @@ function skipUnlessDeployed(rows: string) {
     isLocalBaseUrl(),
     `rows ${rows}: reads the deployed environment's Stripe account and RDS; BASE_URL is local`,
   )
+  test.skip(!!scanSkipReason, `rows ${rows}: ${scanSkipReason}`)
   expect(scanError, `the scan did not produce a result: ${scanError}`).toBe("")
   // Without this a scan that silently produced nothing would pass every test
   // below by vacuously finding no bad row.
@@ -205,6 +221,8 @@ test.describe("The app's invoice list against Stripe's", () => {
       isLocalBaseUrl(),
       "rows 244-250: reads the deployed app and its Stripe account; BASE_URL is local",
     )
+    // Before stripeAccountSkipReason, which reads Stripe itself and would throw
+    // on the live key this skip exists to avoid.
     const liveKey = liveStripeSkipReason()
     test.skip(!!liveKey, `rows 244-250: ${liveKey}`)
     const reason = stripeAccountSkipReason()
