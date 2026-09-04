@@ -35,8 +35,48 @@ def aws(region, *args):
     return json.loads(out) if out else None
 
 
+def aws_optional(region, *args):
+    """Like aws(), but returns None instead of raising when the call fails.
+
+    Used only for presentational lookups, so a missing/expired image can never
+    turn a drift report into a crash.
+    """
+    try:
+        return aws(region, *args)
+    except RuntimeError:
+        return None
+
+
 def short(digest):
     return (digest or "—").replace("sha256:", "")[:12]
+
+
+def resolve_version(region, repo, digest, cache):
+    """Best-effort ECR tag(s) for a digest, so a stale row can name its build.
+
+    Purely presentational — it never feeds the OK/STALE decision. A digest no
+    longer present in ECR yields None and the row falls back to the digest
+    alone, so a report can never fail on the lookup. Cached per digest, so
+    tasks sharing an image cost one call.
+    """
+    if digest in cache:
+        return cache[digest]
+    tags = (
+        aws_optional(
+            region,
+            "ecr",
+            "describe-images",
+            "--repository-name",
+            repo,
+            "--image-ids",
+            f"imageDigest={digest}",
+            "--query",
+            "imageDetails[0].imageTags",
+        )
+        or []
+    )
+    cache[digest] = ", ".join(tags) or None
+    return cache[digest]
 
 
 def chunks(seq, n):
@@ -76,12 +116,15 @@ def main():
         print(f"ERROR: {args.repo}:{args.tag} not found in ECR ({region}).")
         return 2
     target = img["imageDigest"]
-    date_tags = [t for t in img.get("imageTags", []) if t != args.tag]
+    version_tags = [t for t in img.get("imageTags", []) if t != args.tag]
     print(f"Target  {args.repo}:{args.tag}")
     print(
         f"  digest  {short(target)}   pushed {img.get('imagePushedAt','?')}"
-        f"   aka {', '.join(date_tags) or '—'}"
+        f"   aka {', '.join(version_tags) or '—'}"
     )
+    # Prefer a version tag; fall back to the requested tag, never to the digest
+    # (the summary already prints the digest alongside this label).
+    target_label = ", ".join(version_tags) or args.tag
     print()
 
     # 2. Services to inspect.
@@ -98,6 +141,7 @@ def main():
 
     rows = []  # (service, desired, running, tag, digest, status, note)
     ci_to_ec2 = {}  # container-instance ARN -> ec2 instance id (resolved lazily)
+    digest_to_version = {}  # image digest -> ECR tag(s), for naming stale builds
 
     for batch in chunks(services, 10):
         descs = (
@@ -199,7 +243,15 @@ def main():
                     elif digest is None:
                         status, note = "UNKNOWN", "no imageDigest reported"
                     else:
-                        status, note = "STALE", "running != target digest"
+                        status = "STALE"
+                        running_ver = resolve_version(
+                            region, args.repo, digest, digest_to_version
+                        )
+                        note = (
+                            f"running {running_ver} != target {target_label}"
+                            if running_ver
+                            else "running != target digest"
+                        )
                     rows.append(
                         (
                             name,
@@ -249,7 +301,7 @@ def main():
         for r in stale:
             print(
                 f"  ▲ {r[0]} stale — recycle/repull its host to pull"
-                f" {short(target)}"
+                f" {target_label} ({short(target)})"
             )
         for r in down:
             print(
