@@ -296,7 +296,7 @@ LB_CHECK_PID=$!
 #   cleanup worker dies -> this instance stops clearing its own EBS data, which
 #                          no other instance can do for it
 # The load balancer check is excluded: it finishes on its own, and its exit is
-# not a failure. `|| EXIT_STATUS=$?` keeps `set -e` from pre-empting the log.
+# not a failure. `|| EXIT_STATUS=$?` keeps `set -e` from preempting the log.
 EXIT_STATUS=0
 wait -n "$APP_PID" ${CLEANUP_PID:+"$CLEANUP_PID"} || EXIT_STATUS=$?
 
