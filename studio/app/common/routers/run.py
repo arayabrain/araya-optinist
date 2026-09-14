@@ -27,6 +27,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_result import (
@@ -136,6 +137,11 @@ async def run(
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -185,6 +191,11 @@ async def run_id(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         # Check if this is a KeyError with a specific workflow yaml error message
         if isinstance(e, KeyError) and "Workflow yaml error" in str(e):
@@ -280,6 +291,11 @@ async def run_result(
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -299,6 +315,11 @@ async def cancel_run(workspace_id: str, uid: str):
     except HTTPException as e:
         logger.error(e)
         raise e
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -329,6 +350,11 @@ async def apply_filter(
         )
 
         return True
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
