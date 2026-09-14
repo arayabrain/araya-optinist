@@ -1,2 +1,3 @@
 # NWB RoiResponseSeries is (time, roi); FluoData is (roi, time), so transpose on load.
+# A plain HDF5 or MAT array has no fixed orientation: set this to match the file.
 transpose: True

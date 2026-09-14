@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 
+import numpy as np
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -22,6 +23,14 @@ from studio.app.common.core.utils.datetime_utils import (
 )
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
+
+
+def _time_first(data, n_roi):
+    # ponytail: a square array counts as (roi, time); its axes cannot be told apart
+    data = np.asarray(data)
+    if data.ndim == 2 and data.shape[0] == n_roi:
+        return data.T
+    return data
 
 
 class NWBCreater:
@@ -239,7 +248,7 @@ class NWBCreater:
 
             roi_resp_dict = {
                 "name": roi["name"],
-                "data": roi["data"],
+                "data": _time_first(roi["data"], len(roi["region"])),
                 "rois": region_roi,
                 "unit": roi["unit"],
                 "timestamps": roi.get("timestamps"),
