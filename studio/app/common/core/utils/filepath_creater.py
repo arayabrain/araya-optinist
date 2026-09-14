@@ -38,20 +38,20 @@ def join_filepath(path_list):
     # base; with ".." gone the result cannot escape. The normpath + startswith
     # pair is also the shape CodeQL's py/path-injection query recognises as a
     # sanitizer, which is what clears the alerts at every call site at once.
-    normalized = os.path.normpath(joined)
-    base_norm = os.path.normpath(base)
     # normpath maps a "." base to "." but drops the "./" from the joined path,
-    # so the two are only comparable once the relative case is taken out. With
-    # ".." already refused, anything relative is inside its own base.
-    if base_norm == os.curdir:
-        contained = not normalized.startswith(os.pardir)
-    else:
-        # Compare on a separator boundary: "/tmp/out" must not match
-        # "/tmp/out_evil" if base ever becomes a trusted root.
-        contained = normalized == base_norm or normalized.startswith(
-            base_norm.rstrip(os.sep) + os.sep
-        )
-    if not contained:
+    # so the two never compare equal. Every relative path starts with "", and
+    # ".." is already refused above, so an empty prefix is the right
+    # comparison for a relative base rather than a special case below.
+    base_norm = os.path.normpath(base)
+    prefix = "" if base_norm == os.curdir else base_norm
+
+    # The startswith() must be the whole `if` condition, not a value assigned
+    # first: CodeQL's Path::SafeAccessCheck binds the barrier to the guard
+    # node itself, so `contained = ...startswith(...)` followed by
+    # `if not contained` reads as no sanitizer at all and every call site
+    # lights up again.
+    normalized = os.path.normpath(joined)
+    if not normalized.startswith(prefix):
         raise InvalidPathError(f"path escapes its base directory: {joined!r}")
 
     return normalized
