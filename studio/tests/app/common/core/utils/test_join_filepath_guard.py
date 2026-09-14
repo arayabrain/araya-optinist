@@ -57,6 +57,38 @@ def test_traversal_out_of_the_base_is_refused(parts):
         join_filepath(parts)
 
 
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["C:\\temp\\studio\\output", "..\\output_evil\\secret"],
+        [OUT, "1", "..\\..\\etc"],
+        [OUT, "1", "sub\\..\\..\\etc"],
+    ],
+)
+def test_backslash_traversal_is_refused(parts):
+    """normpath treats "\\" as a separator on Windows, and dir_path.py still
+    builds Windows roots, so a slash-only check would let these normalise out
+    of the base there."""
+    with pytest.raises(InvalidPathError):
+        join_filepath(parts)
+
+
+def test_the_base_itself_is_contained():
+    """A single-element list is the base. The containment check appends a
+    separator to both sides, which must not turn that into an escape."""
+    assert join_filepath([OUT]) == OUT
+    assert join_filepath(f"{OUT}/1") == f"{OUT}/1"
+
+
+# Not tested, deliberately: the containment check compares on a separator
+# boundary, so ".../output" cannot accept ".../output_evil". No input reaches
+# that branch today -- "/".join means the joined string always begins with
+# path_list[0] verbatim, and the only thing that breaks it is "..", refused
+# above. It is defence in depth against base becoming a trusted root rather
+# than the caller's first element, and a test asserting otherwise would pass
+# with the boundary removed.
+
+
 def test_sideways_move_into_another_workspace_is_refused():
     """`../other` normalises back inside OUTPUT_DIR, so containment alone
     would allow it. It still leaves workspace 1, which is why ".." is refused

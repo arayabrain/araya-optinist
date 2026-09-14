@@ -27,11 +27,12 @@ def join_filepath(path_list):
     else:
         assert False, "Path is not list"
 
-    # Reject ".." outright rather than merely containing it. A segment that
-    # normalises back inside the base can still cross into another workspace:
-    # [OUTPUT_DIR, "1", "../other/expt"] stays under OUTPUT_DIR but leaves
-    # workspace 1.
-    if ".." in joined.split("/"):
+    # Reject ".." outright rather than merely containing it: a segment that
+    # normalises back inside the base still crosses workspaces, as
+    # [OUTPUT_DIR, "1", "../other/expt"] does. Both separators, because
+    # normpath treats "\\" as one on Windows and dir_path.py still builds
+    # Windows roots -- a slash-only check would miss "..\\other".
+    if ".." in joined.replace("\\", "/").split("/"):
         raise InvalidPathError(f"path contains '..': {joined!r}")
 
     # "/".join, not os.path.join, so an absolute component never resets the
@@ -42,15 +43,23 @@ def join_filepath(path_list):
     # so the two never compare equal. Every relative path starts with "", and
     # ".." is already refused above, so an empty prefix is the right
     # comparison for a relative base rather than a special case below.
+    # Compared on a separator boundary so a sibling sharing a name prefix --
+    # ".../output_evil" against a ".../output" base -- is not read as
+    # contained. The base itself gets the separator appended too, so the
+    # comparison stays a single startswith(): CodeQL binds its barrier to the
+    # guard node, and `a != b and not c.startswith(d)` reads as no sanitizer.
     base_norm = os.path.normpath(base)
-    prefix = "" if base_norm == os.curdir else base_norm
+    prefix = "" if base_norm == os.curdir else base_norm.rstrip(os.sep) + os.sep
 
     # The startswith() must be the whole `if` condition, not a value assigned
     # first: CodeQL's Path::SafeAccessCheck binds the barrier to the guard
     # node itself, so `contained = ...startswith(...)` followed by
     # `if not contained` reads as no sanitizer at all and every call site
     # lights up again.
-    normalized = os.path.normpath(joined)
+    # Trailing separator on both sides: "/a/b" vs prefix "/a/b/" would fail an
+    # otherwise-correct containment, and appending it here keeps the check to
+    # the one call the query recognises.
+    normalized = os.path.normpath(joined) + os.sep
     if not normalized.startswith(prefix):
         raise InvalidPathError(
             # Defence in depth: with ".." refused above, "/".join means no
@@ -59,7 +68,7 @@ def join_filepath(path_list):
             f"path escapes its base directory: {joined!r}"
         )
 
-    return normalized
+    return normalized[: -len(os.sep)]
 
 
 def create_filepath(dirname, filename):
