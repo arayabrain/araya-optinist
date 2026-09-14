@@ -46,10 +46,17 @@ def test_response_does_not_echo_the_rejected_path(client):
     [
         "/run/result/1/%2E%2E",
         "/run/cancel/1/%2E%2E",
+        "/run/filter/1/%2E%2E/node",
     ],
 )
 def test_run_handlers_report_a_rejected_path_as_400_not_500(client, path):
     """These wrap everything in `except Exception`; without an explicit
-    re-raise the guard's rejection surfaces as a server fault."""
+    re-raise the guard's rejection surfaces as a server fault.
+
+    `run` and `run_id` carry the same re-raise for consistency but are not
+    listed: with the session fixture's stubbed dependencies they fail on
+    `current_user` before any path is built, so a case here would assert on
+    the stub rather than on the guard.
+    """
     response = client.post(path, json={})
     assert response.status_code == 400

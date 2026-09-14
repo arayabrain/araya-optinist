@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from studio.app.common.core.snakemake.smk import SmkParam
-from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import OutputPath
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.schemas.nwb import NWBParams
@@ -153,10 +152,6 @@ class ExptOutputPathIds:
                 if len(path_parts) >= 2:
                     try:
                         return cls(output_dir="/".join(path_parts[:2]))
-                    # A rejected path is a security refusal, not corrupt
-                    # data: do not downgrade it to "no data" below.
-                    except InvalidPathError:
-                        raise
                     except (ValueError, IndexError, AssertionError):
                         pass
 

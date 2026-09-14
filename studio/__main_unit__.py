@@ -205,11 +205,12 @@ async def invalid_path_handler(request: Request, exc: InvalidPathError):
     have to validate their own path parameters, and nothing new can slip
     through by forgetting to.
     """
-    # repr() and strip the line breaks: the message carries the caller's
-    # string verbatim, and a CRLF in it would forge log records. CodeQL
-    # does not flag this -- an exception argument is not a modelled source.
-    detail = repr(str(exc)).replace("\\r", "").replace("\\n", "")
-    logger.warning(f"Rejected path parameter: {detail}")
+    # repr(): the message carries the caller's string verbatim, and a CRLF in
+    # it would otherwise forge log records. repr escapes them to the two
+    # characters \\r and \\n, which is both sufficient and lossless -- stripping
+    # them afterwards would also eat them out of a legitimate filename. CodeQL
+    # does not flag this; an exception argument is not a modelled source.
+    logger.warning(f"Rejected path parameter: {repr(str(exc))}")
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={"detail": "Invalid path parameter"},
