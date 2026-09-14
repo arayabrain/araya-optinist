@@ -76,6 +76,39 @@ def test_the_result_is_normalised():
     assert join_filepath([OUT, ".", "1"]) == f"{OUT}/1"
 
 
+@pytest.mark.parametrize(
+    "parts,expected",
+    [
+        ([], None),  # InvalidPathError -- see the test below
+        ([OUT, ""], OUT),  # a trailing empty element loses its separator
+        ([".", "output", "1"], "output/1"),  # a "." base is not an escape
+    ],
+)
+def test_boundary_shapes_return_what_callers_now_get(parts, expected):
+    """These return values changed with the guard; nothing else pins them."""
+    if expected is None:
+        with pytest.raises(InvalidPathError):
+            join_filepath(parts)
+    else:
+        assert join_filepath(parts) == expected
+
+
+def test_an_empty_list_is_refused_rather_than_asserted():
+    """An `assert` would vanish under `python -O` and the next line indexes
+    path_list, so the guard would raise IndexError from inside itself."""
+    with pytest.raises(InvalidPathError):
+        join_filepath([])
+
+
+def test_a_foreign_absolute_prefix_is_appended_not_refused():
+    """A stored config written under a different OUTPUT_DIR keeps its prefix:
+    normalize_output_path cannot strip it and it contains no "..", so the
+    guard passes it through. The read then fails exactly as it did before --
+    this guard does not turn those records into 400s."""
+    foreign = "/tmp/optinist/output/1/x.json"
+    assert join_filepath([OUT, foreign]) == f"{OUT}{foreign}"
+
+
 def test_invalid_path_error_is_a_value_error():
     """The snakemake rule processes import this module in conda environments
     without FastAPI, so the exception must not depend on it."""
