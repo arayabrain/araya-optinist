@@ -214,11 +214,17 @@ describe("analytics", () => {
       const seen: string[] = []
       const unsubscribe = subscribeAnalyticsConsent((d) => seen.push(d))
 
-      setAnalyticsConsent("granted")
-      setAnalyticsConsent("denied")
+      try {
+        setAnalyticsConsent("granted")
+        setAnalyticsConsent("denied")
 
-      expect(seen).toEqual(["granted", "denied"])
-      unsubscribe()
+        expect(seen).toEqual(["granted", "denied"])
+      } finally {
+        // A failing assertion must not leave the listener behind for the next
+        // test. _resetForTesting() clears the set too, so this is belt and
+        // braces -- but it keeps the test readable on its own terms.
+        unsubscribe()
+      }
     })
 
     it("drops listeners on reset, so one test cannot leak into the next", () => {
