@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# `wait -n PID...` honours its PID arguments only from bash 5.1; below that it
+# returns on whichever job exits next. Checked before `alembic upgrade head`
+# rather than beside the `wait`, so a refusal costs no migration.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    echo "FATAL: 'wait -n PID...' requires bash >= 5.1, found $BASH_VERSION" >&2
+    exit 1
+fi
+
 # === AWS CREDENTIAL DIAGNOSTIC (remove after investigation of #612) ===
 echo "=== AWS CREDENTIAL DIAGNOSTIC ==="
 echo "AWS_ACCESS_KEY_ID set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "YES (${AWS_ACCESS_KEY_ID:0:4}...)" || echo "NO")"
@@ -217,8 +225,13 @@ fi
 # the guards below skip any child that hasn't launched yet.
 _forward_shutdown() {
     echo "Received shutdown signal, forwarding to child processes..."
-    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null
-    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
+    # `|| true` is required, not tidiness: `set -e` applies to a trap-invoked
+    # body, and a kill against an exited child ends the `&&` list non-zero,
+    # aborting the handler mid-way. The call site at the end of the script is
+    # exempt -- it sits in a `|| true` list.
+    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null || true
+    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null || true
+    [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null || true
 }
 trap _forward_shutdown TERM INT
 
@@ -278,8 +291,26 @@ check_load_balancer() {
 check_load_balancer &
 LB_CHECK_PID=$!
 
-# Wait for all background processes to complete
-# This ensures the container keeps running as long as the application is running
-wait $APP_PID
-wait $LB_CHECK_PID
-[ -n "$CLEANUP_PID" ] && wait "$CLEANUP_PID" 2>/dev/null
+# Supervise both critical children, so ECS replaces the task when either dies:
+#   app exits          -> nothing is serving
+#   cleanup worker dies -> this instance stops clearing its own EBS data, which
+#                          no other instance can do for it
+# The load balancer check is excluded: it finishes on its own, and its exit is
+# not a failure. `|| EXIT_STATUS=$?` keeps `set -e` from preempting the log.
+EXIT_STATUS=0
+wait -n "$APP_PID" ${CLEANUP_PID:+"$CLEANUP_PID"} || EXIT_STATUS=$?
+
+if ! kill -0 "$APP_PID" 2>/dev/null; then
+    echo "Application exited (status: $EXIT_STATUS), stopping the task"
+elif [ -n "$CLEANUP_PID" ] && ! kill -0 "$CLEANUP_PID" 2>/dev/null; then
+    echo "Cleanup worker exited unexpectedly (status: $EXIT_STATUS), stopping the task"
+fi
+
+# _forward_shutdown only sends SIGTERM; wait for the children to drain rather
+# than cutting in-flight requests. `|| true` throughout: a kill or wait against
+# an already-dead process fails, which `set -e` would take as our exit status.
+_forward_shutdown || true
+wait "$APP_PID" 2>/dev/null || true
+[ -n "$CLEANUP_PID" ] && { wait "$CLEANUP_PID" 2>/dev/null || true; }
+[ -n "$LB_CHECK_PID" ] && { wait "$LB_CHECK_PID" 2>/dev/null || true; }
+exit "$EXIT_STATUS"

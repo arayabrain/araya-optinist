@@ -545,6 +545,11 @@ unknown` is what tells the two apart, and it means the apply ran from a source
 tree whose revision could not be determined — worth investigating rather than
 recording.
 
+> **Terraform will not plan outside a git checkout.** The same revision also triggers the
+> image rebuild (`null_resource.build_and_deploy` in `deployment.tf`), so
+> `terraform_build_info.sh` fails rather than falling back to a constant — a constant
+> would silently stop new images from deploying.
+
 > **Why only the ECS cluster is tagged:** the commit is deliberately *not* added to
 > `provider.default_tags`. A default tag would apply the value to every taggable resource,
 > so each new-commit apply would churn dozens of resources' tags at once. Instead it is

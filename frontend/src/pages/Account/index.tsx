@@ -58,6 +58,7 @@ import { AppDispatch } from "store/store"
 import { convertBytes } from "utils"
 import {
   getAnalyticsConsent,
+  subscribeAnalyticsConsent,
   isGtmEnabled,
   setAnalyticsConsent,
 } from "utils/analytics"
@@ -81,6 +82,12 @@ const Account = () => {
   const [isName, setIsName] = useState<string>()
   const [analyticsConsent, setAnalyticsConsentState] =
     useState(getAnalyticsConsent)
+  // Keeps this in step with the banner, which can be answered while the page is
+  // already mounted. Re-reading on subscribe closes the mount-to-effect gap.
+  useEffect(() => {
+    setAnalyticsConsentState(getAnalyticsConsent())
+    return subscribeAnalyticsConsent(setAnalyticsConsentState)
+  }, [])
 
   const ref = useRef<HTMLInputElement>(null)
 
@@ -496,7 +503,8 @@ const Account = () => {
           </>
         )}
       </BoxFlex>
-      {/* ponytail: shown only once a decision exists, so this and the notice cannot disagree without any shared state. */}
+      {/* Rendered only once a decision exists, by which point the banner has
+          dismissed itself -- so only this direction needs a subscription. */}
       {isGtmEnabled() && analyticsConsent !== null && (
         <BoxFlex>
           <TitleData>Analytics Cookies</TitleData>
@@ -505,7 +513,6 @@ const Account = () => {
             onChange={(e) => {
               const decision = e.target.checked ? "granted" : "denied"
               setAnalyticsConsent(decision)
-              setAnalyticsConsentState(decision)
             }}
             inputProps={{ "aria-label": "Allow analytics cookies" }}
           />
