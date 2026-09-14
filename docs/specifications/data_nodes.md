@@ -26,6 +26,12 @@ OptiNiSt accepts a variety of data types. Data are added in "nodes", depending o
   - A Dataset describes an n-dimensional array and provides the primary means for storing data,
   - An Attribute* is a small dataset that is attached to a specific group or dataset and is typically used to store metadata specific to the object they are associated with.
  - ".hdf5", ".nwb", ".HDF5", ".NWB"
+- The selected dataset's rank decides what the node outputs and what it may connect to:
+  - 3D or 4D -> ImageData (time, y, x), the only type accepted by image inputs such as suite2p_file_convert and caiman_mc
+  - 2D -> FluoData (roi, time). An NWB `RoiResponseSeries` (stored (time, roi)) is oriented automatically using its sibling `rois` dataset, for files written before and after 2026-09
+  - 1D -> IscellData
+- A dataset wired into an input of the wrong rank is refused when the workflow is submitted, with a message naming the dataset, its shape and the expected type.
+- An OptiNiSt NWB file contains the raw movie under `acquisition/TwoPhotonSeries/data` only when `save_raw_image_to_nwb` was on for the run; otherwise it references the original image files and cannot feed Suite2p or CaImAn on reload.
 #### Matlab
  - Format:
  - File Extension: ".mat"
