@@ -16,7 +16,10 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import TIMEZONE_KEY
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.common.core.workflow.workflow import (
     NodeRunStatus,
     OutputPath,
@@ -231,6 +234,10 @@ class ExptConfigReader:
                 f"experiment.yaml is missing or empty: [{workspace_id}/{unique_id}]"
             )
             return None
+        # A rejected path is a security refusal, not corrupt data: it must not
+        # be downgraded to "no data" by the broad clause below.
+        except InvalidPathError:
+            raise
         except (ValueError, yaml.YAMLError) as e:
             logger.warning(
                 f"experiment config read error: [{workspace_id}/{unique_id}] {e}"

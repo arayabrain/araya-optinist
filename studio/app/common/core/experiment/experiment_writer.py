@@ -32,7 +32,10 @@ from studio.app.common.core.utils.datetime_utils import (
     get_datetime_for_timezone_formatted,
 )
 from studio.app.common.core.utils.filelock_handler import FileLockUtils
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.common.core.workflow.workflow import (
     NodeRunStatus,
     ProcessType,
@@ -76,6 +79,10 @@ class ExptConfigWriter:
                 expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
                 self.builder.set_config(expt_config)
                 self.add_run_info()
+            # A rejected path is a security refusal, not corrupt data: it must not
+            # be downgraded to "no data" by the broad clause below.
+            except InvalidPathError:
+                raise
             except (AssertionError, ValueError, KeyError, yaml.YAMLError):
                 # An existing but empty/corrupt experiment.yaml would otherwise
                 # abort the run; recreate it from scratch instead.

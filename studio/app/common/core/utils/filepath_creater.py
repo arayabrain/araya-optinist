@@ -52,7 +52,12 @@ def join_filepath(path_list):
     # lights up again.
     normalized = os.path.normpath(joined)
     if not normalized.startswith(prefix):
-        raise InvalidPathError(f"path escapes its base directory: {joined!r}")
+        raise InvalidPathError(
+            # Defence in depth: with ".." refused above, "/".join means no
+            # input reaches here. Do not read it in a log as evidence the
+            # containment check caught something the ".." ban missed.
+            f"path escapes its base directory: {joined!r}"
+        )
 
     return normalized
 

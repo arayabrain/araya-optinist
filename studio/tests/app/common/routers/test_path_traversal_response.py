@@ -23,18 +23,18 @@ TRAVERSAL = "%2E%2E/%2E%2E/etc/passwd"
         f"/api/visualizations/inittimedata/{TRAVERSAL}",
     ],
 )
-def test_a_traversal_is_refused_with_400(client, path):
+def test_traversal_is_refused_with_400(client, path):
     response = client.get(path)
     assert response.status_code == 400
 
 
-def test_a_sideways_move_between_workspaces_is_refused(client):
+def test_sideways_move_between_workspaces_is_refused(client):
     """Normalises back inside OUTPUT_DIR, so containment alone would allow it."""
     response = client.get("/api/visualizations/html/1/%2E%2E/2/x.html")
     assert response.status_code == 400
 
 
-def test_the_response_does_not_echo_the_rejected_path(client):
+def test_response_does_not_echo_the_rejected_path(client):
     """The detail is fixed text -- reflecting the input would hand an attacker
     a way to probe the filesystem layout through the error message."""
     response = client.get(f"/api/visualizations/data/{TRAVERSAL}")
