@@ -302,8 +302,8 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Input:** FluoData (neural activity), BehaviorData (behavioral variables), IsCellData (optional)
   - **Neural data should have shape (n_neurons, n_timepoints)** (the default `transpose: True` turns it into time x cells).
   - **Behavior data should have shape (n_timepoints, n_behavioral_variables)** and the same number of time points as the neural data.
-  - **Trigger column:** thresholded per frame; a trial starts at each detected transition.
-  - **Feature columns:** read at the trigger frame and treated as categorical conditions (a few discrete levels each). Every combination of levels must occur at least once. Continuous columns (many distinct values) and constant columns are rejected.
+  - **Trigger column:** thresholded per frame; a trial starts at the first frame above (or below) threshold after each transition. A signal already above threshold at frame 0 counts as an 'up' trigger, as in ETA.
+  - **Feature columns:** read at the trigger frame and treated as categorical conditions (a few discrete levels each). Every combination of levels must occur at least once. Continuous columns (many distinct values) and constant columns are rejected. Unbalanced trial counts (a condition with fewer than 3 trials, or a 10x spread) are averaged as they are and logged as a warning; the per-condition counts are stored in the NWB file.
   - **Trials whose window leaves the recording are dropped** with a warning; conditions with unequal trial counts are averaged over all their trials.
 - **Output:** HeatMapData per selected marginalization and component: rows are the condition combinations (in level order), columns are frames relative to the trigger. The NWB file also stores the explained variance ratio per marginalization and the level values of each feature.
 - **Parameters:**
@@ -320,20 +320,21 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
       - 'cross' detects either transition (the feature values at up and down edges are usually different, so prefer 'up' or 'down').
     - **trigger_threshold** [float, default: 0.5]: Threshold value for trigger detection.
     - **trigger_duration** [list of 2 ints, default: [-10, 10]]: Frames before (negative) and after the trigger to include; before < after.
-    - **feature_columns** [list of ints, default: [0, 2]]: Columns in behavior data used as conditions for the dPCA analysis (at least one, usually 1 to 3).
+    - **feature_columns** [list of ints, default: [0, 2]]: Columns in behavior data used as conditions for the dPCA analysis (at least one, usually 1 to 3). The default pair is the only full-factorial design in the sample behavior CSV and is heavily unbalanced, so the defaults are a smoke test rather than an analysis.
 
   - **dPCA:**
 
     - **labels** [str, default: 'tbc']: One character per data axis: time first, then one per feature column, so its length must be 1 + number of feature columns. Marginalizations are referred to by subsets of these characters (e.g. 'tb').
-    - **regularizer** [float, default: 0]: If > 0, the regularization weight is regularizer\*var(data). Helps prevent overfitting.
+    - **regularizer** [float >= 0, default: 0]: If > 0, the regularization weight is regularizer\*var(data). Helps prevent overfitting. The library's 'auto' search is not supported.
     - **n_components** [int, default: 8]: Number of components kept in every marginalization. Must not exceed the number of cells.
     - **n_iter** [int, default: 0]: Number of iterations for the randomized SVD solver (sklearn).
+    - **seed** [int, default: 0]: Random seed for the SVD solver; the same seed gives the same components on the same data.
 
   - **Plot:**
     - **figure_components** [list of ints, default: [0, 1]]: Which dPCA components to plot; each must be below n_components.
     - **figure_features** [list of str, default: ['t', 'b', 'c', 'tbc']]: Which marginalizations to plot; each must be a subset of `labels`.
 
-- **Errors:** the node fails before fitting with a message naming the problem when the time axes differ (check `transpose`), a column index is out of range, `labels` has the wrong length, a feature column is constant or continuous, a level combination has no trials, no trigger is found, or a plot selection is outside `n_components` or the marginalizations.
+- **Errors:** the node fails before fitting with a message naming the problem when the time axes differ (check `transpose`), a column index is out of range, `labels` has the wrong length, `regularizer` is negative or 'auto', a feature column is constant or continuous, a level combination has no trials, no trigger is found, or a plot selection is outside `n_components` or the marginalizations.
 
 ###### [TSNE](https://scikit-learn.org/stable/modules/generated/sklearn.manifold.TSNE.html) (t-distributed stochastic neighbor embedding)
 

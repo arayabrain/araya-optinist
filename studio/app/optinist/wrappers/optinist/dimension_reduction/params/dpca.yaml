@@ -13,6 +13,7 @@ dPCA:
   regularizer: 0 # 0 = none; float = weight * var(data)
   n_components: 8 # per marginalization, at most the number of cells
   n_iter: 0 # randomized SVD power iterations
+  seed: 0 # random seed for the SVD, same seed gives the same components
 
 Plot:
   figure_components: [0, 1] # each below n_components

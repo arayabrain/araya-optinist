@@ -14,8 +14,12 @@ from studio.app.optinist.wrappers.optinist.utils import (
 
 logger = AppLogger.get_logger()
 
+MAX_LISTED_COMBINATIONS = 10
+
 
 def _as_list(value):
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
     return list(value) if isinstance(value, (list, tuple, np.ndarray)) else [value]
 
 
@@ -41,11 +45,10 @@ def calc_trigger(behavior_data, trigger_type, trigger_threshold):
 
 
 def build_trials(D, triggers, features, feature_columns, duration):
-    """Reshape (time, unit) data into dPCA trial data.
+    """Average (time, unit) data around the triggers per feature level combination.
 
-    Returns trialX of shape (max_trials, unit, window, levels_1, levels_2, ...)
-    padded with NaN where a condition has fewer trials, plus the level values
-    of each feature.
+    Returns the trial mean of shape (unit, window, levels_1, levels_2, ...), the
+    trial count per combination and the level values of each feature.
     """
     d0, d1 = duration
     n_time, n_unit = D.shape
@@ -91,21 +94,28 @@ def build_trials(D, triggers, features, feature_columns, duration):
     if len(missing):
         combos = ", ".join(
             "(" + ", ".join(str(levels[i][k]) for i, k in enumerate(m)) + ")"
-            for m in missing
+            for m in missing[:MAX_LISTED_COMBINATIONS]
         )
+        more = len(missing) - MAX_LISTED_COMBINATIONS
+        if more > 0:
+            combos += f" and {more} more"
         raise ValueError(
             f"no trials for feature level combination(s) {combos} of columns "
             f"{list(feature_columns)}; every combination needs at least one "
             "trigger, choose other feature_columns"
         )
+    if counts.min() < 3 or counts.max() > 10 * counts.min():
+        logger.warning(
+            "unbalanced trial counts per condition %s for columns %s; a "
+            "condition with few trials weighs as much as the others in the fit",
+            counts.tolist(),
+            list(feature_columns),
+        )
 
-    trialX = np.full((counts.max(), n_unit, d1 - d0) + cond_shape, np.nan)
-    slot = np.zeros(cond_shape, dtype=int)
+    sums = np.zeros((n_unit, d1 - d0) + cond_shape)
     for trig, code in zip(triggers, codes):
-        idx = tuple(code)
-        trialX[(slot[idx], slice(None), slice(None)) + idx] = D[trig + d0 : trig + d1].T
-        slot[idx] += 1
-    return trialX, levels
+        sums[(slice(None), slice(None)) + tuple(code)] += D[trig + d0 : trig + d1].T
+    return sums / counts, counts, levels
 
 
 def prepare_inputs(X, B, iscell, params):
@@ -163,6 +173,17 @@ def prepare_inputs(X, B, iscell, params):
             f"{labels!r}; choose from {marginalizations}"
         )
 
+    try:
+        regularizer = float(params["regularizer"])
+    except (TypeError, ValueError):
+        regularizer = -1.0
+    if regularizer < 0:
+        raise ValueError(
+            "regularizer must be a number >= 0 (0 disables it); the library's "
+            f"'auto' search is not supported by this node, got "
+            f"{params['regularizer']!r}"
+        )
+
     n_components = int(params["n_components"])
     if n_components > X.shape[1]:
         raise ValueError(
@@ -188,13 +209,19 @@ def prepare_inputs(X, B, iscell, params):
             f"{trigger_column} with threshold {params['trigger_threshold']}"
         )
     features = [B[triggers, c] for c in feature_columns]
-    trialX, levels = build_trials(X, triggers, features, feature_columns, duration)
+    mean, counts, levels = build_trials(
+        X, triggers, features, feature_columns, duration
+    )
 
     return {
-        "trialX": trialX,
+        "mean": mean,
+        "counts": counts,
         "levels": levels,
         "labels": labels,
+        "regularizer": regularizer,
         "n_components": n_components,
+        "n_iter": int(params["n_iter"]),
+        "seed": int(params.get("seed", 0)),
         "duration": duration,
         "figure_features": figure_features,
         "figure_components": figure_components,
@@ -222,7 +249,6 @@ def dpca_fit(
         None if iscell is None else iscell.data,
         params,
     )
-    trialX = prepared["trialX"]
     labels = prepared["labels"]
 
     # modules specific to function
@@ -230,12 +256,17 @@ def dpca_fit(
 
     dpca = dPCA.dPCA(
         labels=labels,
-        regularizer=params["regularizer"],
+        regularizer=prepared["regularizer"],
         n_components=prepared["n_components"],
-        n_iter=params["n_iter"],
+        n_iter=prepared["n_iter"],
     )
-    # ponytail: trialX only matters for regularizer='auto', unreachable from the UI
-    result = dpca.fit_transform(np.nanmean(trialX, axis=0), trialX)
+    # the library seeds its randomized SVD from the global RNG
+    rng_state = np.random.get_state()
+    np.random.seed(prepared["seed"])
+    try:
+        result = dpca.fit_transform(prepared["mean"])
+    finally:
+        np.random.set_state(rng_state)
 
     d0, d1 = prepared["duration"]
     columns = list(range(d0, d1))
@@ -253,6 +284,7 @@ def dpca_fit(
         postprocess[f"explained_variance_ratio_{key}"] = np.asarray(ratio)
     for label, values in zip(labels[1:], prepared["levels"]):
         postprocess[f"levels_{label}"] = np.asarray(values)
+    postprocess["trial_counts"] = prepared["counts"]
     info["nwbfile"] = {NWBDATASET.POSTPROCESS: {function_id: postprocess}}
 
     return info
