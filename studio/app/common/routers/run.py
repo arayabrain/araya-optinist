@@ -29,6 +29,11 @@ from studio.app.common.core.utils.datetime_utils import (
 )
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
+from studio.app.common.core.workflow.workflow_input_validator import (
+    WorkflowValidationError,
+    ensure_structure_caches,
+    validate_input_edges,
+)
 from studio.app.common.core.workflow.workflow_result import (
     NodeResult,
     WorkflowMonitor,
@@ -101,6 +106,8 @@ async def run(
 ):
     try:
         await _check_storage_quota(current_user.id)
+        await ensure_structure_caches(remote_bucket_name, workspace_id)
+        validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
         runner = WorkflowRunner(
@@ -132,6 +139,11 @@ async def run(
             detail=str(e).strip('"'),  # Remove quotes from the KeyError message
         )
 
+    except WorkflowValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
+
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
@@ -159,6 +171,8 @@ async def run_id(
 ):
     try:
         await _check_storage_quota(current_user.id)
+        await ensure_structure_caches(remote_bucket_name, workspace_id)
+        validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
 
         runner = WorkflowRunner(
             remote_bucket_name, workspace_id, uid, runItem, current_user.id
@@ -181,6 +195,11 @@ async def run_id(
         logger.info("forcerun list: %s", runItem.forceRunList)
 
         return uid
+
+    except WorkflowValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
 
     except RemoteStorageLockError as e:
         logger.error(e)

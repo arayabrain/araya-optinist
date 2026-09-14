@@ -58,7 +58,8 @@ def data_slice(
     # Handle case where no slice specs are provided
     if slice_dims is None:
         logger.debug("No slice specifications provided, returning original data")
-        return return_as_data_type(data, raw_data, output_dir, "sliced_data")
+        output_data = return_as_data_type(data, raw_data, output_dir, "sliced_data")
+        return {"sliced_data": list(output_data.values())[0]}
 
     # Convert slice_dims to list format if it's a string
     if isinstance(slice_dims, str):

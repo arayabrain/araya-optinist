@@ -1,2 +1,2 @@
-# NWB RoiResponseSeries is (time, roi); FluoData is (roi, time), so transpose on load.
+# Only for plain HDF5 arrays stored (time, roi). NWB RoiResponseSeries input is oriented on load and ignores this.
 transpose: True

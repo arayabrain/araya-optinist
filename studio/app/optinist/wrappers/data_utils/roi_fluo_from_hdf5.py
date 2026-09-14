@@ -37,7 +37,7 @@ def roi_fluo_from_hdf5(
         np.nanmax(cell_img.data, axis=0), output_dir=output_dir, file_name="all_roi"
     )
 
-    if params["transpose"]:
+    if params["transpose"] and not getattr(fluo, "nwb_oriented", False):
         fluorescence = FluoData(np.transpose(fluo.data), file_name="fluorescence")
     else:
         fluorescence = FluoData(fluo.data, file_name="fluorescence")
