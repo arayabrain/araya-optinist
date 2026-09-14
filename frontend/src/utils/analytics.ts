@@ -22,6 +22,11 @@ let _pending: AnalyticsEvent[] = []
 // private modes), which would otherwise leave GTM granted but nothing pushed.
 let _sessionConsent: ConsentDecision | null = null
 
+// Module state is not reactive, so a component that read the consent at mount
+// never learns about a decision made elsewhere in the same document -- the
+// banner and the Account page render side by side on a first visit.
+const _consentListeners = new Set<(decision: ConsentDecision) => void>()
+
 export function isGtmEnabled(): boolean {
   return GTM_ID_PATTERN.test(process.env.REACT_APP_GTM_ID ?? "")
 }
@@ -52,29 +57,20 @@ export function trackEvent(
   window.dataLayer?.push({ ...params, event })
 }
 
-// Module state alone is not reactive, so a component that read the consent at
-// mount never learns about a decision made elsewhere in the same document --
-// the banner and the Account page render side by side on a first visit.
-const CONSENT_CHANGE_EVENT = "analytics-consent-change"
-
 export function subscribeAnalyticsConsent(
   listener: (decision: ConsentDecision) => void,
 ): () => void {
-  const handler = (event: Event) =>
-    listener((event as CustomEvent<ConsentDecision>).detail)
-  window.addEventListener(CONSENT_CHANGE_EVENT, handler)
-  return () => window.removeEventListener(CONSENT_CHANGE_EVENT, handler)
+  _consentListeners.add(listener)
+  return () => {
+    _consentListeners.delete(listener)
+  }
 }
 
 export function setAnalyticsConsent(decision: ConsentDecision): void {
   _sessionConsent = decision
   safeLocalStorage.setItem(CONSENT_STORAGE_KEY, decision)
   updateGtagConsent(decision)
-  window.dispatchEvent(
-    new CustomEvent<ConsentDecision>(CONSENT_CHANGE_EVENT, {
-      detail: decision,
-    }),
-  )
+  _consentListeners.forEach((listener) => listener(decision))
 
   const pending = _pending
   _pending = []
@@ -96,4 +92,5 @@ export function normalizePath(pathname: string): string {
 export function _resetForTesting(): void {
   _pending = []
   _sessionConsent = null
+  _consentListeners.clear()
 }

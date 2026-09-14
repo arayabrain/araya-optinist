@@ -16,6 +16,7 @@ import {
   initAnalyticsConsent,
   isGtmEnabled,
   normalizePath,
+  _resetForTesting,
   setAnalyticsConsent,
   subscribeAnalyticsConsent,
   trackEvent,
@@ -211,12 +212,23 @@ describe("analytics", () => {
       // The banner and the Account page render side by side on a first visit,
       // so the Account control has to hear a decision made in the banner.
       const seen: string[] = []
-      subscribeAnalyticsConsent((decision) => seen.push(decision))
+      const unsubscribe = subscribeAnalyticsConsent((d) => seen.push(d))
 
       setAnalyticsConsent("granted")
       setAnalyticsConsent("denied")
 
       expect(seen).toEqual(["granted", "denied"])
+      unsubscribe()
+    })
+
+    it("drops listeners on reset, so one test cannot leak into the next", () => {
+      const seen: string[] = []
+      subscribeAnalyticsConsent((d) => seen.push(d))
+
+      _resetForTesting()
+      setAnalyticsConsent("granted")
+
+      expect(seen).toEqual([])
     })
 
     it("stops notifying once unsubscribed", () => {

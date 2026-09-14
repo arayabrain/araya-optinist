@@ -8,7 +8,11 @@
 # The values are gathered at apply time by scripts/terraform_build_info.sh and
 # stamped onto the ECS cluster as tags (see aws_ecs_cluster.main in compute.tf).
 # The tag only changes when the git commit changes, so no-op applies produce no
-# diff and only the single ECS cluster resource churns on a real deploy.
+# diff. Blast radius on a real deploy is no longer just the cluster tag:
+# deployment.tf keys null_resource.build_and_deploy on the same value, so a new
+# commit rebuilds the image and rolls every service in the cluster. Note the
+# revision is the repository HEAD, which is coarser than "the image changed" --
+# a docs-only commit triggers the same rollout.
 #
 # Inspect from the running environment with:
 #   aws ecs describe-clusters --clusters <cluster-name> --include TAGS \

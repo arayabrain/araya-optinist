@@ -207,6 +207,16 @@ else
     echo "This is expected in local development, but should not happen in production."
 fi
 
+# `wait -n PID...` only honours its arguments from bash 5.1. Below that the
+# PIDs are ignored and it returns when ANY job exits -- which here is the load
+# balancer check, minutes after boot, on every task: a silent cluster-wide
+# crash loop. The runtime image (python:3.11-slim, bookworm) ships 5.2, but
+# nothing enforces that, so fail loudly rather than mysteriously.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    echo "FATAL: 'wait -n PID...' requires bash >= 5.1, found $BASH_VERSION" >&2
+    exit 1
+fi
+
 # Forward ECS stop signals (SIGTERM) to child processes so the cleanup
 # worker and app can shut down gracefully; without this the signal reaches
 # only the shell and children are killed abruptly.
@@ -219,6 +229,7 @@ _forward_shutdown() {
     echo "Received shutdown signal, forwarding to child processes..."
     [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null
     [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
+    [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null
 }
 trap _forward_shutdown TERM INT
 
@@ -297,8 +308,14 @@ elif [ -n "$CLEANUP_PID" ] && ! kill -0 "$CLEANUP_PID" 2>/dev/null; then
     echo "Cleanup worker exited unexpectedly (status: $EXIT_STATUS), stopping the task"
 fi
 
-# Stop the surviving child. `|| true` because the handler's last command is a
-# kill that fails once a process is already gone, which `set -e` would
-# otherwise treat as this script's exit status.
+# Signal the surviving children, then wait for them to finish draining.
+# _forward_shutdown only sends SIGTERM; exiting straight after it would cut
+# in-flight requests and deny cleanup_worker.py the graceful shutdown its own
+# docstring promises. `|| true` throughout because a kill or wait against an
+# already-dead process fails, which `set -e` would otherwise treat as this
+# script's exit status.
 _forward_shutdown || true
+wait "$APP_PID" 2>/dev/null || true
+[ -n "$CLEANUP_PID" ] && { wait "$CLEANUP_PID" 2>/dev/null || true; }
+[ -n "$LB_CHECK_PID" ] && { wait "$LB_CHECK_PID" 2>/dev/null || true; }
 exit "$EXIT_STATUS"
