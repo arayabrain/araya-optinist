@@ -70,13 +70,26 @@ export function setAnalyticsConsent(decision: ConsentDecision): void {
   _sessionConsent = decision
   safeLocalStorage.setItem(CONSENT_STORAGE_KEY, decision)
   updateGtagConsent(decision)
-  _consentListeners.forEach((listener) => listener(decision))
 
+  // Flush before notifying: a listener that throws would otherwise take this
+  // function with it, leaving the queued entry pageview neither sent nor
+  // cleared and skipping every listener after it.
   const pending = _pending
   _pending = []
   if (decision === "granted") {
     pending.forEach(({ event, params }) => trackEvent(event, params))
   }
+
+  // One listener's failure must not hide the decision from the others; this
+  // is exported, so a caller outside the app can subscribe too.
+  _consentListeners.forEach((listener) => {
+    try {
+      listener(decision)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Analytics consent listener failed", e)
+    }
+  })
 }
 
 export function initAnalyticsConsent(): void {

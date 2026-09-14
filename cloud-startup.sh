@@ -1,6 +1,21 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# `wait -n PID...` only honours its arguments from bash 5.1. Below that the
+# PIDs are ignored and it returns when ANY job exits -- which later on is the
+# load balancer check, minutes after boot, on every task: a silent
+# cluster-wide crash loop. The runtime image (python:3.11-slim, bookworm)
+# ships 5.2, but nothing enforces that.
+#
+# Checked here rather than next to the `wait` it protects: everything below
+# has side effects -- `alembic upgrade head` migrates the database -- and a
+# task that is going to refuse to run should refuse before it changes
+# anything.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    echo "FATAL: 'wait -n PID...' requires bash >= 5.1, found $BASH_VERSION" >&2
+    exit 1
+fi
+
 # === AWS CREDENTIAL DIAGNOSTIC (remove after investigation of #612) ===
 echo "=== AWS CREDENTIAL DIAGNOSTIC ==="
 echo "AWS_ACCESS_KEY_ID set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "YES (${AWS_ACCESS_KEY_ID:0:4}...)" || echo "NO")"
@@ -207,16 +222,6 @@ else
     echo "This is expected in local development, but should not happen in production."
 fi
 
-# `wait -n PID...` only honours its arguments from bash 5.1. Below that the
-# PIDs are ignored and it returns when ANY job exits -- which here is the load
-# balancer check, minutes after boot, on every task: a silent cluster-wide
-# crash loop. The runtime image (python:3.11-slim, bookworm) ships 5.2, but
-# nothing enforces that, so fail loudly rather than mysteriously.
-if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
-    echo "FATAL: 'wait -n PID...' requires bash >= 5.1, found $BASH_VERSION" >&2
-    exit 1
-fi
-
 # Forward ECS stop signals (SIGTERM) to child processes so the cleanup
 # worker and app can shut down gracefully; without this the signal reaches
 # only the shell and children are killed abruptly.
@@ -227,9 +232,18 @@ fi
 # the guards below skip any child that hasn't launched yet.
 _forward_shutdown() {
     echo "Received shutdown signal, forwarding to child processes..."
-    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null
-    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
-    [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null
+    # `|| true` on every line, not just for tidiness: a kill against a child
+    # that has already exited fails, and `set -e` applies to this body when
+    # the trap fires it -- unlike the call at the end of the script, which is
+    # in a `|| true` list and therefore exempt. Without these, a signal
+    # arriving once the load balancer check has finished (the steady state of
+    # any task older than five minutes) aborts the handler on its last line
+    # before the drain below can run; and a signal arriving with the cleanup
+    # worker already dead -- the case this supervision exists for -- aborts on
+    # the first line, so the app is never signalled at all.
+    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null || true
+    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null || true
+    [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null || true
 }
 trap _forward_shutdown TERM INT
 

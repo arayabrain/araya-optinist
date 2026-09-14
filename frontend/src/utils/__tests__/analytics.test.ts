@@ -227,6 +227,33 @@ describe("analytics", () => {
       }
     })
 
+    it("flushes queued events even when a listener throws", () => {
+      // setAnalyticsConsent is exported, so a listener is not necessarily a
+      // React setState that cannot throw. One that does must not swallow the
+      // entry pageview queued before the visitor answered.
+      trackEvent("route_change", { page_path: "/" })
+      subscribeAnalyticsConsent(() => {
+        throw new Error("listener blew up")
+      })
+
+      expect(() => setAnalyticsConsent("granted")).not.toThrow()
+      expect(window.dataLayer).toEqual([
+        { event: "route_change", page_path: "/" },
+      ])
+    })
+
+    it("notifies later listeners after an earlier one throws", () => {
+      const seen: string[] = []
+      subscribeAnalyticsConsent(() => {
+        throw new Error("listener blew up")
+      })
+      subscribeAnalyticsConsent((d) => seen.push(d))
+
+      setAnalyticsConsent("granted")
+
+      expect(seen).toEqual(["granted"])
+    })
+
     it("drops listeners on reset, so one test cannot leak into the next", () => {
       const seen: string[] = []
       subscribeAnalyticsConsent((d) => seen.push(d))
