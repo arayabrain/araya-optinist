@@ -102,7 +102,7 @@ export function createParamFormItemComponent({
       value
         .split(",")
         .filter(Boolean)
-        .map((e) => (Number(e) ? Number(e) : e))
+        .map((e) => (Number.isNaN(Number(e)) ? e : Number(e)))
 
     const onBlur = (e: ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
       const newValue = e.target.value
