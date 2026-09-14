@@ -23,16 +23,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/git_ref_info.sh"
 resolve_git_ref_info "$SCRIPT_DIR/.."
 
-# The commit is no longer decoration: deployment.tf keys
-# null_resource.build_and_deploy on it, so falling back to "unknown" would
-# leave the trigger set identical across commits -- the exact condition that
-# made a routine apply skip the image build. Fail the plan instead, loudly,
-# rather than restoring that silently wherever git metadata is absent (a
-# packaged bundle, a .git-stripped CI checkout).
-#
-# The check lives here, not in resolve_git_ref_info: ecr_build_push.sh sources
-# the same helper and has no such constraint, and the branch and tag are only
-# ever recorded, so their empty/unknown values stay harmless.
+# deployment.tf keys null_resource.build_and_deploy on the commit, so an
+# "unknown" fallback would make the trigger constant and skip the image build.
+# Here rather than in resolve_git_ref_info: ecr_build_push.sh shares the helper
+# and has no such constraint, and branch/tag are only ever recorded.
 if [ "$GIT_INFO_COMMIT" = "unknown" ]; then
   echo "terraform_build_info.sh: no git metadata under $SCRIPT_DIR/.." >&2
   echo "  source_revision would be constant, so a new image would not deploy." >&2

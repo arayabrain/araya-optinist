@@ -1,16 +1,9 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
-# `wait -n PID...` only honours its arguments from bash 5.1. Below that the
-# PIDs are ignored and it returns when ANY job exits -- which later on is the
-# load balancer check, minutes after boot, on every task: a silent
-# cluster-wide crash loop. The runtime image (python:3.11-slim, bookworm)
-# ships 5.2, but nothing enforces that.
-#
-# Checked here rather than next to the `wait` it protects: everything below
-# has side effects -- `alembic upgrade head` migrates the database -- and a
-# task that is going to refuse to run should refuse before it changes
-# anything.
+# `wait -n PID...` honours its PID arguments only from bash 5.1; below that it
+# returns on whichever job exits next. Checked before `alembic upgrade head`
+# rather than beside the `wait`, so a refusal costs no migration.
 if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
     echo "FATAL: 'wait -n PID...' requires bash >= 5.1, found $BASH_VERSION" >&2
     exit 1
@@ -232,15 +225,10 @@ fi
 # the guards below skip any child that hasn't launched yet.
 _forward_shutdown() {
     echo "Received shutdown signal, forwarding to child processes..."
-    # `|| true` on every line, not just for tidiness: a kill against a child
-    # that has already exited fails, and `set -e` applies to this body when
-    # the trap fires it -- unlike the call at the end of the script, which is
-    # in a `|| true` list and therefore exempt. Without these, a signal
-    # arriving once the load balancer check has finished (the steady state of
-    # any task older than five minutes) aborts the handler on its last line
-    # before the drain below can run; and a signal arriving with the cleanup
-    # worker already dead -- the case this supervision exists for -- aborts on
-    # the first line, so the app is never signalled at all.
+    # `|| true` is required, not tidiness: `set -e` applies to a trap-invoked
+    # body, and a kill against an exited child ends the `&&` list non-zero,
+    # aborting the handler mid-way. The call site at the end of the script is
+    # exempt -- it sits in a `|| true` list.
     [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null || true
     [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null || true
     [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null || true
@@ -303,16 +291,12 @@ check_load_balancer() {
 check_load_balancer &
 LB_CHECK_PID=$!
 
-# Supervise the critical children. Waiting on $APP_PID alone means a cleanup
-# worker that dies during normal operation goes unnoticed: the shell keeps
-# waiting, ECS keeps reporting the task healthy, and this instance silently
-# stops cleaning up its own EBS data -- which no other instance can do for it.
-# `wait -n` returns as soon as either one exits, so the task can be replaced.
-#
-# The load balancer check is deliberately excluded: it finishes on its own
-# within a few minutes and its exit is not a failure of the task.
-# `|| EXIT_STATUS=$?` keeps a non-zero child status from tripping `set -e`
-# before the reason has been logged.
+# Supervise both critical children, so ECS replaces the task when either dies:
+#   app exits          -> nothing is serving
+#   cleanup worker dies -> this instance stops clearing its own EBS data, which
+#                          no other instance can do for it
+# The load balancer check is excluded: it finishes on its own, and its exit is
+# not a failure. `|| EXIT_STATUS=$?` keeps `set -e` from pre-empting the log.
 EXIT_STATUS=0
 wait -n "$APP_PID" ${CLEANUP_PID:+"$CLEANUP_PID"} || EXIT_STATUS=$?
 
@@ -322,12 +306,9 @@ elif [ -n "$CLEANUP_PID" ] && ! kill -0 "$CLEANUP_PID" 2>/dev/null; then
     echo "Cleanup worker exited unexpectedly (status: $EXIT_STATUS), stopping the task"
 fi
 
-# Signal the surviving children, then wait for them to finish draining.
-# _forward_shutdown only sends SIGTERM; exiting straight after it would cut
-# in-flight requests and deny cleanup_worker.py the graceful shutdown its own
-# docstring promises. `|| true` throughout because a kill or wait against an
-# already-dead process fails, which `set -e` would otherwise treat as this
-# script's exit status.
+# _forward_shutdown only sends SIGTERM; wait for the children to drain rather
+# than cutting in-flight requests. `|| true` throughout: a kill or wait against
+# an already-dead process fails, which `set -e` would take as our exit status.
 _forward_shutdown || true
 wait "$APP_PID" 2>/dev/null || true
 [ -n "$CLEANUP_PID" ] && { wait "$CLEANUP_PID" 2>/dev/null || true; }

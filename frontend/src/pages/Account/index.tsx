@@ -82,10 +82,8 @@ const Account = () => {
   const [isName, setIsName] = useState<string>()
   const [analyticsConsent, setAnalyticsConsentState] =
     useState(getAnalyticsConsent)
-  // Keeps this control in step with the consent banner, which can be answered
-  // while the Account page is already mounted on a first visit. Re-reading on
-  // subscribe closes the mount-to-effect gap, so a consumer never has to pair
-  // this with its own getAnalyticsConsent() call in the right order.
+  // Keeps this in step with the banner, which can be answered while the page is
+  // already mounted. Re-reading on subscribe closes the mount-to-effect gap.
   useEffect(() => {
     setAnalyticsConsentState(getAnalyticsConsent())
     return subscribeAnalyticsConsent(setAnalyticsConsentState)
@@ -505,10 +503,8 @@ const Account = () => {
           </>
         )}
       </BoxFlex>
-      {/* Shown only once a decision exists, so the notice has already
-          dismissed itself by the time this renders -- the banner needs no
-          counterpart subscription. The reverse direction does: see the
-          effect above. */}
+      {/* Rendered only once a decision exists, by which point the banner has
+          dismissed itself -- so only this direction needs a subscription. */}
       {isGtmEnabled() && analyticsConsent !== null && (
         <BoxFlex>
           <TitleData>Analytics Cookies</TitleData>
@@ -516,7 +512,6 @@ const Account = () => {
             checked={analyticsConsent === "granted"}
             onChange={(e) => {
               const decision = e.target.checked ? "granted" : "denied"
-              // The subscription above applies the new value.
               setAnalyticsConsent(decision)
             }}
             inputProps={{ "aria-label": "Allow analytics cookies" }}
