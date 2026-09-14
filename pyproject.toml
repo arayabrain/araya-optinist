@@ -144,15 +144,9 @@ profile = "black"
 
 [tool.pytest.ini_options]
 pythonpath = "."
-testpaths = "/app/studio/tests"
-env = [
-  "OPTINIST_DIR=/app/studio/test_data",
-  "IS_TEST=True",
-  "IS_STANDALONE=True",
-  "REMOTE_STORAGE_TYPE=1",  # See .env
-  "MOCK_STORAGE_DIR=/tmp/studio/mock_storage",  # See .env
-
-]
+testpaths = "studio/tests"
+# NOTE: The test environment variables are set in the root `conftest.py`, so that
+# they stay tied to the checkout location instead of the container layout.
 filterwarnings = [
     "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
     "ignore:Deprecated call to `pkg_resources.declare_namespace:DeprecationWarning",

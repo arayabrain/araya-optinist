@@ -20,6 +20,7 @@ define run_test_service
 endef
 
 PYTEST = poetry run pytest -s
+PYTEST_NATIVE ?= python3 -m pytest -s
 
 .PHONY: test_run_all
 test_run_all:
@@ -42,6 +43,13 @@ test_backend:
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
 	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing")
+
+# Same tests as test_backend, run against the ambient environment (conda env,
+# venv, ...) instead of a container. Override PYTEST_NATIVE to pick another one,
+# e.g. `make test_backend_native PYTEST_NATIVE="poetry run pytest -s"`.
+.PHONY: test_backend_native
+test_backend_native:
+	$(PYTEST_NATIVE) studio/tests/app/ -m "not heavier_processing"
 
 .PHONY: test_backend_full
 test_backend_full:

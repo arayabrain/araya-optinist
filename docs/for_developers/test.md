@@ -18,6 +18,7 @@ Other Makefile targets:
 |---|---|
 | `make test_backend` | Backend tests only -- `pytest studio/tests/app/ -m "not heavier_processing"` in Docker |
 | `make test_backend_full` | Backend tests including `heavier_processing` |
+| `make test_backend_native` | The same backend tests, outside Docker |
 | `make test_frontend` | Frontend tests only in Docker |
 
 ### Frontend only (local, from `frontend/`)
@@ -31,29 +32,75 @@ Other Makefile targets:
 
 Stack: Jest + React Testing Library via `react-app-rewired` (CRA). Test files live in `__tests__/` directories or alongside source as `*.test.{ts,tsx}`.
 
-### Backend only (local, from repo root)
+### Backend only (local, outside Docker)
+
+From the repo root:
 
 ```
-cd studio && poetry run pytest tests/app/ -m "not heavier_processing"
+make test_backend_native
 ```
 
-Tests live in `studio/tests/` and `studio/app/optinist/microscopes/tests/`. Conftest at `studio/tests/app/conftest.py`. Backend tests may require env vars -- see `docker-compose.test.yml` for `PYTHONPATH`, `STRIPE_*`, etc.
+`PYTEST_NATIVE` is the pytest command and defaults to `python3 -m pytest -s`, so
+point it at whatever environment has the dependencies installed:
+
+```
+make test_backend_native PYTEST_NATIVE="poetry run pytest -s"
+make test_backend_native PYTEST_NATIVE="~/miniforge3/envs/<env>/bin/python3 -m pytest -s"
+```
+
+Run pytest directly when you want to narrow the run to one file.
+
+There is no native equivalent of `make test_backend_full`. The two
+`heavier_processing` tests drive snakemake with `use_conda`, which needs the
+suite2p conda env the container builds, so they stay Docker-only.
+
+Two rules keep this lane equivalent to the Docker one, and are worth knowing
+before you add a test:
+
+- **Run it from the repo root.** `pyproject.toml` sets `pythonpath = "."` relative
+  to the rootdir, which is what makes `studio` importable, and a git worktree
+  resolves `studio` to the wrong checkout without it.
+- **The test environment comes from the root `conftest.py`, not your shell.**
+  `OPTINIST_DIR`, `IS_TEST`, `IS_STANDALONE`, the storage settings, `TZ=UTC` and
+  dummy `STRIPE_*` credentials are all set there, before any `studio` module is
+  imported, and they overwrite whatever the shell exported. Add new test env vars
+  there rather than to `docker-compose.test.yml` alone, or the native lane
+  silently diverges. `TZ` in particular is load-bearing: subscription
+  expirations round-trip through the DB as naive datetimes, so a JST machine
+  shifts them by nine hours.
+
+Tests live in `studio/tests/` and `studio/app/optinist/microscopes/tests/`. Two
+conftests: the root one sets the environment described above, and
+`studio/tests/app/conftest.py` holds the app fixtures (`client`, dependency
+overrides, session teardown).
+
+#### Avoid hardcoding absolute paths into fixtures
+
+`heavier_processing` tests aside, the suite should not care where the checkout
+lives. The trap is snakemake's conda env addressing: `Env.address` is
+`<env_dir>/<md5>_`, and the md5 covers the **absolute path** of the env dir along
+with the env yaml. A marker directory committed under `studio/test_data` is
+therefore only findable from the checkout it was generated in -- `/app` in the
+container. `test_smk_utils.py` builds its own env fixture under `tmp_path`
+instead, and pins the ported hash function against the container-path hash by
+passing that path explicitly.
 
 #### The suite writes into `studio/test_data`, and deletes part of it
 
-`pyproject.toml` points `OPTINIST_DIR` at `studio/test_data` for pytest, so the
-run uses that tree as its data directory rather than `/tmp/studio`. Two
-consequences worth knowing before you chase a phantom failure:
+The root `conftest.py` points `OPTINIST_DIR` at `studio/test_data`, so the run
+uses that tree as its data directory rather than `/tmp/studio`. Two consequences
+worth knowing before you chase a phantom failure:
 
 - **`studio/test_data/output` is deleted at session teardown.** The session
-  fixture in `conftest.py` ends with `shutil.rmtree`. That directory is
-  generated, not a fixture, so this is intended -- but it means a tree you have
-  run several partial suites against can leave `test_experiment.py`,
+  fixture in `studio/tests/app/conftest.py` ends with `shutil.rmtree`. That
+  directory is generated, not a fixture, so this is intended -- but it means a
+  tree you have run several partial suites against can leave `test_experiment.py`,
   `test_outputs.py`, `test_workflow.py`, `test_filepath_creater.py` and
   `test_workflow_reader.py` failing with `FileNotFoundError` on the *next* run.
   Those failures are local state, not your change. To confirm, re-run in a clean
-  checkout: `git worktree add /tmp/baseline HEAD` (copy `studio/config` across
-  for the gitignored Firebase creds and `.env`), then run the suite there.
+  checkout: `git worktree add /tmp/baseline HEAD`, then run the suite there. A
+  bare worktree is enough -- the tests no longer need the gitignored
+  `studio/config/.env` copied across.
 - **Lock files are left behind and are gitignored.** `InputFileLock` creates
   `input/<workspace>/.locks/<file>.lock` and the logger's
   `ConcurrentRotatingFileHandler` creates `logs/.__studio.lock`. Both are covered
