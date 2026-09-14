@@ -1,19 +1,19 @@
 I/O:
-  transpose: True
+  transpose: True # neural data must be (time, cells) after this
   standard_mean: True
   standard_std: True
-  trigger_column: 1
+  trigger_column: 1 # behavior column thresholded per frame to find trials
   trigger_type: 'up' # ['up', 'down', 'cross']
   trigger_threshold: 0.5
-  trigger_duration: [-10, 10]
-  feature_columns: [0, 2]
+  trigger_duration: [-10, 10] # frames [before, after] the trigger, before < after
+  feature_columns: [0, 2] # categorical behavior columns read at the trigger frame; every level combination must occur
 
 dPCA:
-  labels: 'tbc'
-  regularizer: 0
-  n_components: 8
-  n_iter: 0
+  labels: 'tbc' # one char per axis: time, then one per feature column
+  regularizer: 0 # 0 = none; float = weight * var(data)
+  n_components: 8 # per marginalization, at most the number of cells
+  n_iter: 0 # randomized SVD power iterations
 
 Plot:
-  figure_components: [0, 1]
-  figure_features: ['t', 'b', 'c', 'tbc']
+  figure_components: [0, 1] # each below n_components
+  figure_features: ['t', 'b', 'c', 'tbc'] # subsets of labels to plot
