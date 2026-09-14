@@ -61,7 +61,7 @@ def suite2p_spike_deconv(
                 "table_name": "Deconvolved",
                 "region": list(range(len(spks))),
                 "name": function_id + "_Deconvolved",
-                "data": spks,
+                "data": spks.T,
                 "unit": "lumens",
                 "rate": ops["fs"],
             }

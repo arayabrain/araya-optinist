@@ -58,7 +58,7 @@ def vacant_roi(
                 "table_name": "Fluorescence",
                 "region": list(range(len(timeseries))),
                 "name": "Fluorescence",
-                "data": timeseries,
+                "data": timeseries.T,
                 "unit": "lumens",
                 "rate": nwbfile.get("imaging_plane", {}).get("imaging_rate", 30),
             }

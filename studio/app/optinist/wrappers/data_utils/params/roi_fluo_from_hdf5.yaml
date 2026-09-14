@@ -1,4 +1,2 @@
-# This is a temporary measure. Generally, Transpose should be set to True.
-# However, when Transpose is set to True, the data coordinates may sometimes be reversed.
-# Therefore, it may be switched to False on the screen.
+# NWB RoiResponseSeries is (time, roi); FluoData is (roi, time), so transpose on load.
 transpose: True
