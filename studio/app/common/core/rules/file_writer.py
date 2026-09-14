@@ -66,12 +66,12 @@ class FileWriter:
     def _orient_nwb_fluorescence(cls, fluo: FluoData, n_rois: int):
         """NWB RoiResponseSeries is (time, roi); FluoData is (roi, time)."""
         n_rows, n_cols = fluo.data.shape
-        if n_cols == n_rois and n_rows != n_rois:
+        if (n_rows == n_rois) == (n_cols == n_rois):
+            return
+        if n_cols == n_rois:
             fluo.data = fluo.data.T
             fluo.index = np.arange(n_rows)
             fluo.cell_numbers = range(n_cols)
-        elif n_rows != n_rois:
-            return
         fluo.nwb_oriented = True
 
     @classmethod

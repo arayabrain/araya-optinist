@@ -99,6 +99,18 @@ def test_legacy_roi_first_fluorescence_is_left_alone(tmp_path):
     assert fluo.nwb_oriented
 
 
+def test_square_fluorescence_is_ambiguous_and_left_to_the_transpose_param(tmp_path):
+    arr = np.random.default_rng(4).random((N_ROI, N_ROI))
+    h5 = _h5(tmp_path, {"g/data": arr}, rois=N_ROI)
+
+    fluo = FileWriter.hdf5(_rule(tmp_path, h5, "g/data"))["input_x"]
+
+    assert np.array_equal(fluo.data, arr)
+    assert not getattr(fluo, "nwb_oriented", False)
+    out = fluo_from_hdf5(fluo, str(tmp_path), params={"transpose": True})
+    assert np.array_equal(out["fluorescence"].data, arr.T)
+
+
 @pytest.mark.skipif(not os.path.exists(LEGACY_NWB), reason="fixture missing")
 def test_repo_legacy_nwb_fixture_comes_out_roi_time(tmp_path):
     rule = _rule(

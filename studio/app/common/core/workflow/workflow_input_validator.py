@@ -3,6 +3,7 @@ import os
 from typing import Dict, Optional
 
 import h5py
+import numpy as np
 
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
@@ -18,6 +19,7 @@ from studio.app.common.routers.files import (
 )
 from studio.app.const import NOT_DISPLAY_ARGS_LIST, MetadataCacheFile
 from studio.app.dir_path import DIRPATH
+from studio.app.optinist.routers.mat import MatGetter
 from studio.app.wrappers import wrapper_dict
 
 
@@ -117,15 +119,18 @@ def _dataset_shape(workspace_id: str, source: Node, dataset_path: str):
     if shape is not None:
         return shape
 
-    if source.type != NodeType.HDF5:
-        return None
-    local_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
-    if not os.path.isfile(local_path):
+    workspace_dir = os.path.realpath(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+    local_path = os.path.realpath(join_filepath([workspace_dir, file_path]))
+    if not local_path.startswith(workspace_dir + os.sep) or not os.path.isfile(
+        local_path
+    ):
         return None
     try:
-        with h5py.File(local_path, "r") as f:
-            return f[dataset_path].shape
-    except (KeyError, OSError):
+        if source.type == NodeType.HDF5:
+            with h5py.File(local_path, "r") as f:
+                return f[dataset_path].shape
+        return np.shape(MatGetter.data(local_path, dataset_path))
+    except Exception:
         return None
 
 

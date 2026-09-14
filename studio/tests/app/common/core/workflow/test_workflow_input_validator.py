@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import h5py
 import numpy as np
 import pytest
+import scipy.io
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
@@ -189,6 +190,48 @@ def test_local_file_is_read_when_cache_is_missing(workspace):
     edges = {"e": _edge("in", "HDF5Data", "algo", "image", "ImageData")}
     with pytest.raises(WorkflowValidationError):
         validate_input_edges(workspace, nodes, edges)
+
+
+def test_local_matlab_file_is_read_when_cache_is_missing(workspace):
+    scipy.io.savemat(
+        join_filepath([DIRPATH.INPUT_DIR, workspace, "f.mat"]),
+        {"data": {"behavior": np.zeros((50, 7))}},
+    )
+    nodes = {
+        "in": _node("in", "MatlabFileNode", "f.mat", "f.mat", matPath="data/behavior"),
+        "algo": _node(
+            "algo",
+            "AlgorithmNode",
+            "suite2p_file_convert",
+            "suite2p/suite2p_file_convert",
+        ),
+    }
+    edges = {"e": _edge("in", "MatlabData", "algo", "image", "ImageData")}
+    with pytest.raises(WorkflowValidationError, match=r"\(50, 7\)"):
+        validate_input_edges(workspace, nodes, edges)
+
+
+def test_a_path_escaping_the_workspace_is_not_opened(workspace):
+    other = f"{workspace}_other"
+    os.makedirs(join_filepath([DIRPATH.INPUT_DIR, other]))
+    try:
+        with h5py.File(join_filepath([DIRPATH.INPUT_DIR, other, "f.h5"]), "w") as f:
+            f["g/data"] = np.zeros((50, 7))
+        nodes = {
+            "in": _node(
+                "in", "HDF5FileNode", "f.h5", f"../{other}/f.h5", hdf5Path="g/data"
+            ),
+            "algo": _node(
+                "algo",
+                "AlgorithmNode",
+                "suite2p_file_convert",
+                "suite2p/suite2p_file_convert",
+            ),
+        }
+        edges = {"e": _edge("in", "HDF5Data", "algo", "image", "ImageData")}
+        validate_input_edges(workspace, nodes, edges)
+    finally:
+        shutil.rmtree(join_filepath([DIRPATH.INPUT_DIR, other]), ignore_errors=True)
 
 
 def test_matlab_uses_its_own_cache(workspace):
