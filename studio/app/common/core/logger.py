@@ -343,8 +343,8 @@ class AppLogger:
         else:
             hash_source = uid
 
-        # SHA-256 rather than MD5: the digest is derived from a user id, and
-        # truncating to 16 hex chars keeps the existing id length.
+        # 16 hex chars: the width log_reader's client filter and the log-line
+        # format both assume.
         client_id = hashlib.sha256(hash_source.encode()).hexdigest()
         client_id = client_id[0:16]
 
