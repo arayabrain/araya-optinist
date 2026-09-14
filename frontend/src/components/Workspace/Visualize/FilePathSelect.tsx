@@ -1,7 +1,8 @@
 import { FC, useId, useState, ReactElement } from "react"
 import { useSelector } from "react-redux"
 
-import { Divider } from "@mui/material"
+import { Box, Divider } from "@mui/material"
+import { grey } from "@mui/material/colors"
 import FormControl from "@mui/material/FormControl"
 import FormHelperText from "@mui/material/FormHelperText"
 import InputLabel from "@mui/material/InputLabel"
@@ -25,10 +26,21 @@ const toDisplayDataValue = (
   filePath: string | null | undefined,
 ) => (nodeId && filePath ? `${nodeId}/${filePath}` : "")
 
-const toNodeHeaderLabel = (nodeId: string, nodeName: string | undefined) =>
-  nodeName && !nodeId.startsWith(`${nodeName}_`)
-    ? `${nodeName} (${nodeId})`
-    : nodeId
+// the nanoid suffix is the only part that tells two runs of one algorithm apart
+const toNodeIdParts = (nodeId: string, nodeName: string | undefined) =>
+  nodeName && nodeId.startsWith(`${nodeName}_`)
+    ? {
+        headerLabel: nodeId,
+        name: nodeName,
+        uid: nodeId.slice(nodeName.length + 1),
+      }
+    : {
+        headerLabel: nodeName ? `${nodeName} (${nodeId})` : nodeId,
+        name: nodeName,
+        uid: nodeId,
+      }
+
+type SelectedLabel = { text: string; uid?: string; title: string }
 
 export const FilePathSelect: FC<{
   dataType?: DATA_TYPE
@@ -136,8 +148,8 @@ export const FilePathSelect: FC<{
   }
 
   const menuItemList: ReactElement[] = []
-  const selectedLabelByValue = new Map<string, string>()
-  const setSelectedLabel = (value: string, selectedLabel: string) => {
+  const selectedLabelByValue = new Map<string, SelectedLabel>()
+  const setSelectedLabel = (value: string, selectedLabel: SelectedLabel) => {
     if (value) {
       selectedLabelByValue.set(value, selectedLabel)
     }
@@ -156,7 +168,7 @@ export const FilePathSelect: FC<{
       filePath.forEach((pathElm, index) => {
         const value = toDisplayDataValue(pathInfo.nodeId, pathElm)
         const fileName = pathElm ? getFileName(pathElm) : ""
-        setSelectedLabel(value, fileName)
+        setSelectedLabel(value, { text: fileName, title: fileName })
         menuItemList.push(
           <MenuItem
             value={value}
@@ -171,7 +183,8 @@ export const FilePathSelect: FC<{
       })
     } else {
       const value = toDisplayDataValue(pathInfo.nodeId, filePath)
-      setSelectedLabel(value, pathInfo.nodeName ?? "")
+      const inputLabel = pathInfo.nodeName ?? ""
+      setSelectedLabel(value, { text: inputLabel, title: inputLabel })
       menuItemList.push(
         <MenuItem
           value={value}
@@ -188,15 +201,24 @@ export const FilePathSelect: FC<{
   algorithmNodeOutputPathInfoList
     .filter((pathInfo) => pathInfo.paths.length > 0)
     .forEach((pathInfo) => {
-      const nodeLabel = toNodeHeaderLabel(pathInfo.nodeId, pathInfo.nodeName)
+      const { headerLabel, name, uid } = toNodeIdParts(
+        pathInfo.nodeId,
+        pathInfo.nodeName,
+      )
       menuItemList.push(
         <ListSubheader key={`header/${pathInfo.nodeId}`}>
-          <Divider textAlign="center">{nodeLabel}</Divider>
+          <Divider textAlign="center">{headerLabel}</Divider>
         </ListSubheader>,
       )
       pathInfo.paths.forEach((outputPath) => {
         const value = toDisplayDataValue(pathInfo.nodeId, outputPath.filePath)
-        setSelectedLabel(value, `${outputPath.outputKey} (${nodeLabel})`)
+        setSelectedLabel(value, {
+          text: name
+            ? `${outputPath.outputKey} (${name})`
+            : outputPath.outputKey,
+          uid,
+          title: `${outputPath.outputKey} (${pathInfo.nodeId})`,
+        })
         menuItemList.push(
           <MenuItem
             value={value}
@@ -217,7 +239,7 @@ export const FilePathSelect: FC<{
     })
 
   const selectedValue = toDisplayDataValue(selectedNodeId, selectedFilePath)
-  const selectedLabel = selectedLabelByValue.get(selectedValue) ?? ""
+  const selectedLabel = selectedLabelByValue.get(selectedValue)
 
   return (
     <FormControl style={{ minWidth: 150, maxWidth: 220 }} variant="standard">
@@ -225,8 +247,21 @@ export const FilePathSelect: FC<{
       <Select
         labelId={labelId}
         value={selectedValue}
-        renderValue={() => selectedLabel}
-        SelectDisplayProps={{ title: selectedLabel || undefined }}
+        renderValue={() =>
+          selectedLabel && (
+            <Box display="flex" gap={0.5} alignItems="baseline">
+              <Box overflow="hidden" textOverflow="ellipsis">
+                {selectedLabel.text}
+              </Box>
+              {selectedLabel.uid && (
+                <Box flexShrink={0} color={grey[600]} fontSize={14}>
+                  {selectedLabel.uid}
+                </Box>
+              )}
+            </Box>
+          )
+        }
+        SelectDisplayProps={{ title: selectedLabel?.title }}
         open={open}
         onClose={handleClose}
         onOpen={handleOpen}

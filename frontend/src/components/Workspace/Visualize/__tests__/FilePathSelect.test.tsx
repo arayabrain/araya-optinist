@@ -1,8 +1,9 @@
+/* eslint-disable no-undef */
 import { Provider } from "react-redux"
 
 import configureStore from "redux-mock-store"
 
-import { afterEach, describe, it, expect, jest } from "@jest/globals"
+import { afterEach, describe, it, jest } from "@jest/globals"
 import { act, fireEvent, render, screen } from "@testing-library/react"
 
 import { FilePathSelect } from "components/Workspace/Visualize/FilePathSelect"
@@ -123,7 +124,7 @@ describe("FilePathSelect", () => {
     ).toBeInTheDocument()
   })
 
-  it("shows the node id of the selected output in the closed select", () => {
+  it("keeps the id suffix of the selected output out of the truncated text", () => {
     const { onSelect, view } = renderSelect(twoEtaNodesState)
     openMenu()
 
@@ -149,8 +150,13 @@ describe("FilePathSelect", () => {
     )
 
     const combobox = screen.getByRole("combobox")
-    expect(combobox).toHaveTextContent(`mean (${ETA_B})`)
+    expect(combobox).toHaveTextContent("mean (eta)")
     expect(combobox).toHaveAttribute("title", `mean (${ETA_B})`)
+
+    // the nanoid is its own element, so only the shared text can be ellipsized
+    const uid = screen.getByText("abwqe9qgh1")
+    expect(uid).toBeInTheDocument()
+    expect(getComputedStyle(uid).flexShrink).toBe("0")
   })
 
   it("heads an input node with its id and keeps the file name on the item", () => {
