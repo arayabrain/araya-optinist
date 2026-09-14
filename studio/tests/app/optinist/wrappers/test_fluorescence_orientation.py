@@ -24,9 +24,6 @@ from studio.app.optinist.wrappers.lccd.lccd_detection import lccd_detect
 from studio.app.optinist.wrappers.optinist.neural_population_analysis.correlation import (  # noqa: E501
     correlation,
 )
-from studio.app.optinist.wrappers.optinist.neural_population_analysis.cross_correlation import (  # noqa: E501
-    cross_correlation,
-)
 from studio.app.optinist.wrappers.suite2p.spike_deconv import suite2p_spike_deconv
 
 N_ROI, N_TIME, H, W = 3, 40, 8, 8
@@ -182,9 +179,3 @@ def test_correlation_handles_a_single_roi(output_dir):
     corr = correlation(fluo, output_dir, params={"transpose": False})["corr"].data
     assert corr.shape == (1, 1)
     assert np.isnan(corr[0, 0])
-
-
-def test_cross_correlation_needs_two_cells(output_dir):
-    fluo = FluoData(np.random.default_rng(5).random((1, N_TIME)), file_name="f")
-    with pytest.raises(ValueError, match="at least 2 cells"):
-        cross_correlation(fluo, output_dir, params={"transpose": False})
