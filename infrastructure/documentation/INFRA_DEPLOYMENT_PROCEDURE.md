@@ -322,9 +322,16 @@ There are three ways to read it back, depending on what you have access to:
 docker buildx imagetools inspect \
   --format '{{json .Image.Config.Labels}}' <ECR_URI>:latest | python3 -m json.tool
 
-#    `aws ecr batch-get-image ... --query 'images[0].imageManifest'` does NOT
-#    show these. It returns the manifest, which holds only the config digest
-#    and the layer list; the labels live in the config blob it points at.
+#    Two ways this can mislead, both measured:
+#    - `aws ecr batch-get-image ... --query 'images[0].imageManifest'` does NOT
+#      show these. It returns the manifest, which holds only the config digest
+#      and the layer list; the labels live in the config blob it points at.
+#    - `.Image` is the config only while the tag names a single-platform image,
+#      which is what ecr_build_push.sh's plain `docker build` produces. Against
+#      a multi-platform index `.Image` is a map keyed by platform, and the
+#      format above prints `null` with no error. Use
+#      `{{json (index .Image "linux/amd64").Config.Labels}}` if the build ever
+#      becomes multi-platform.
 
 # 2. From a running container — the raw record, including the branch
 docker exec <CONTAINER> cat /app/BUILD_INFO
