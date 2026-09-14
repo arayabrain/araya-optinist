@@ -19,6 +19,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_user_remote_bucket_name,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.workflow import workflow_input_validator as validator
 from studio.app.common.core.workflow.workflow import Edge, Node, NodeData
 from studio.app.common.core.workflow.workflow_input_validator import (
     WorkflowValidationError,
@@ -317,3 +318,29 @@ def test_run_route_returns_422_and_writes_no_experiment(client, workspace, monke
     finally:
         overrides.pop(get_user_remote_bucket_name, None)
         overrides[get_current_user] = previous_user
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "node_type,expected",
+    [
+        ("HDF5FileNode", [MetadataCacheFile.HDF5_STRUCTURE]),
+        ("MatlabFileNode", [MetadataCacheFile.MAT_STRUCTURE]),
+        ("ImageFileNode", []),
+    ],
+)
+async def test_only_the_caches_a_workflow_can_need_are_fetched(
+    workspace, monkeypatch, node_type, expected
+):
+    """A tiff-only workflow must not pay for an S3 round trip."""
+    calls = []
+
+    async def record(bucket, ws, cache_file):
+        calls.append(cache_file)
+
+    monkeypatch.setattr(validator, "download_structure_cache", record)
+    nodes = {"in": _node("in", node_type, "f", "f")}
+
+    await validator.ensure_structure_caches("bucket", workspace, nodes)
+
+    assert calls == expected

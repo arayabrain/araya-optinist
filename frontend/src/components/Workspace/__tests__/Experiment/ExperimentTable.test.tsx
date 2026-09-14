@@ -28,7 +28,7 @@ import { Experiments } from "store/slice/Experiments/ExperimentsType"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
 import { reset } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
-import { RootState } from "store/store"
+import { rootReducer, RootState } from "store/store"
 
 // One factory per module. There used to be three for ExperimentsActions and two
 // for the api module, and jest keeps only the last of each - which is how
@@ -42,24 +42,53 @@ jest.mock("api/experiments/Experiments", () => ({
   renameExperimentApi: jest.fn(),
 }))
 
-jest.mock("store/slice/Experiments/ExperimentsActions", () => ({
-  getExperiments: jest.fn(),
-  deleteExperimentByUid: jest.fn(),
-}))
+jest.mock("store/slice/Experiments/ExperimentsActions", () => {
+  const actual = jest.requireActual(
+    "store/slice/Experiments/ExperimentsActions",
+  )
+  return {
+    __esModule: true,
+    ...actual,
+    getExperiments: Object.assign(jest.fn(), actual.getExperiments),
+    deleteExperimentByUid: Object.assign(
+      jest.fn(),
+      actual.deleteExperimentByUid,
+    ),
+  }
+})
 
-jest.mock("store/slice/Pipeline/PipelineSlice", () => ({
-  clearCurrentPipeline: jest.fn(),
-}))
+jest.mock("store/slice/Pipeline/PipelineSlice", () => {
+  const actual = jest.requireActual("store/slice/Pipeline/PipelineSlice")
+  return {
+    __esModule: true,
+    ...actual,
+    clearCurrentPipeline: Object.assign(jest.fn(), actual.clearCurrentPipeline),
+  }
+})
 
-jest.mock("store/slice/Workflow/WorkflowActions", () => ({
-  reproduceWorkflow: jest.fn(),
-}))
+jest.mock("store/slice/Workflow/WorkflowActions", () => {
+  const actual = jest.requireActual("store/slice/Workflow/WorkflowActions")
+  // Object.assign keeps .fulfilled/.pending, which the real slices match on.
+  return {
+    __esModule: true,
+    ...actual,
+    reproduceWorkflow: Object.assign(jest.fn(), actual.reproduceWorkflow),
+  }
+})
 
-jest.mock("store/slice/VisualizeItem/VisualizeItemSlice", () => ({
-  reset: jest.fn(),
-}))
+jest.mock("store/slice/VisualizeItem/VisualizeItemSlice", () => {
+  const actual = jest.requireActual(
+    "store/slice/VisualizeItem/VisualizeItemSlice",
+  )
+  return {
+    __esModule: true,
+    ...actual,
+    reset: Object.assign(jest.fn(), actual.reset),
+  }
+})
 
 jest.mock("store/slice/Experiments/ExperimentsSelectors", () => ({
+  __esModule: true,
   ...jest.requireActual("store/slice/Experiments/ExperimentsSelectors"),
   selectExperimentsStatusIsUninitialized: jest.fn(),
   selectExperimentsStatusIsError: jest.fn(),
@@ -72,7 +101,19 @@ describe("ExperimentTable", () => {
   let store: Store<RootState, AnyAction>
 
   beforeEach(() => {
+    // Real initial state, so a slice shape change is a compile error here
+    // instead of being cast away. Only what the tests actually depend on is
+    // overridden.
+    const initialState = rootReducer(undefined, { type: "@@INIT" })
     store = mockStore({
+      ...initialState,
+      workspace: {
+        ...initialState.workspace,
+        currentWorkspace: {
+          ...initialState.workspace.currentWorkspace,
+          workspaceId: 1,
+        },
+      },
       experiments: {
         status: "fulfilled",
         experimentList: {
@@ -116,114 +157,7 @@ describe("ExperimentTable", () => {
           },
         },
       } as Experiments,
-      algorithmList: {
-        isLatest: false,
-        tree: {},
-      },
-      algorithmNode: {},
-      displayData: {
-        timeSeries: {},
-        heatMap: {},
-        image: {},
-        csv: {},
-        roi: {},
-        scatter: {},
-        bar: {},
-        html: {},
-        histogram: {},
-        line: {},
-        pie: {},
-        polar: {},
-        structured: {},
-        loading: false,
-        statusRoi: {
-          temp_add_roi: [],
-          temp_delete_roi: [],
-          temp_merge_roi: [],
-        },
-        loadingStack: [],
-        isEditRoiCommitting: false,
-      },
-      fileUploader: {},
-      mode: {
-        mode: false,
-        loading: false,
-      },
-      flowElement: {
-        flowNodes: [],
-        flowEdges: [],
-        flowPosition: [0, 0, 0],
-        elementCoord: {
-          x: 0,
-          y: 0,
-        },
-      },
-      inputNode: {},
-      handleColor: {
-        colorMap: { "#000000": "#000000" },
-        nextKey: 0,
-      },
-      filesTree: {},
-      nwb: {
-        params: {},
-      },
-      rightDrawer: {
-        open: false,
-        mode: "nwb",
-        currendNodeId: null,
-      },
-      visualaizeItem: {
-        selectedItemId: null,
-        items: {},
-        layout: [],
-        clickedRois: {},
-      },
-      snakemake: {
-        params: {},
-      },
-      pipeline: {
-        run: {
-          uid: "",
-          status: "Finished",
-          runPostData: {
-            name: "",
-            nodeDict: {},
-            edgeDict: {},
-            nwbParam: {},
-            snakemakeParam: {},
-            forceRunList: [],
-          },
-          runResult: {},
-        },
-        runBtn: 1,
-      },
-      hdf5: { trees: {} },
-      matlab: { trees: {} },
-      workspace: {
-        workspace: {
-          items: [],
-          total: 0,
-          limit: 0,
-          offset: 0,
-        },
-        currentWorkspace: {
-          statusRoi: undefined,
-          roiFilePath: undefined,
-          workspaceId: 1,
-          workspaceName: undefined,
-          selectedTab: 0,
-          ownerId: undefined,
-        },
-        loading: false,
-      },
-      user: {
-        loading: false,
-        logoutGeneration: 0,
-      },
-      logsModal: {
-        open: false,
-      },
-    } as unknown as RootState)
+    })
 
     // redux-mock-store has no thunk middleware here and returns the action from
     // dispatch, so a creator whose result is chained has to hand back an object

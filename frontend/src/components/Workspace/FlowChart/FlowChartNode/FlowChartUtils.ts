@@ -1,11 +1,11 @@
 import { Connection } from "reactflow"
 
-import { TreeNodeType } from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
+import { TreeNodeType } from "components/Workspace/FlowChart/FlowChartNode/StructuredFileTree"
 import {
   isHDF5InputNode,
   isMatlabInputNode,
 } from "store/slice/InputNode/InputNodeUtils"
-import { RootState, store } from "store/store"
+import { RootState } from "store/store"
 
 export const STRUCTURED_HANDLE_TYPES = ["HDF5Data", "MatlabData"]
 
@@ -37,6 +37,9 @@ export function findDatasetShape(
   return undefined
 }
 
+// The handle advertises the single best-fit type for the rank; isRankCompatible
+// is deliberately looser, so a 2D handle labelled FluoData still accepts an
+// IscellData input. Rank is all the file tells us, so only 3D+ vs rest is refused.
 export function handleTypeForRank(ndim: number | undefined, fallback: string) {
   if (ndim == null) return fallback
   if (ndim >= 3) return "ImageData"
@@ -44,7 +47,6 @@ export function handleTypeForRank(ndim: number | undefined, fallback: string) {
   return "IscellData"
 }
 
-// ponytail: rank is the only thing the file tells us, same rule as the backend precheck
 export function isRankCompatible(
   ndim: number | undefined,
   targetType: string,
@@ -71,14 +73,14 @@ export function selectStructuredDatasetNdim(nodeId: string) {
   }
 }
 
-export function isValidConnection(connection: Connection) {
+export function isConnectionValid(connection: Connection, state: RootState) {
   if (connection.sourceHandle != null && connection.targetHandle != null) {
     const source = getHandleType(connection.sourceHandle)
     const target = getHandleType(connection.targetHandle)
     if (STRUCTURED_HANDLE_TYPES.includes(source)) {
       const ndim = selectStructuredDatasetNdim(
         getHandleNodeId(connection.sourceHandle),
-      )(store.getState())
+      )(state)
       return isRankCompatible(ndim, target)
     }
     // NOTE: SpikingActivityData is the same as FluoData. Just renamed for suite2p_spike_deconv.

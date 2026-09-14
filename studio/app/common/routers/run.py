@@ -106,7 +106,9 @@ async def run(
 ):
     try:
         await _check_storage_quota(current_user.id)
-        await ensure_structure_caches(remote_bucket_name, workspace_id)
+        await ensure_structure_caches(
+            remote_bucket_name, workspace_id, runItem.nodeDict
+        )
         validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
@@ -148,6 +150,9 @@ async def run(
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -171,7 +176,9 @@ async def run_id(
 ):
     try:
         await _check_storage_quota(current_user.id)
-        await ensure_structure_caches(remote_bucket_name, workspace_id)
+        await ensure_structure_caches(
+            remote_bucket_name, workspace_id, runItem.nodeDict
+        )
         validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
 
         runner = WorkflowRunner(
@@ -204,6 +211,10 @@ async def run_id(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+
+    except HTTPException:
+        raise
+
     except Exception as e:
         # Check if this is a KeyError with a specific workflow yaml error message
         if isinstance(e, KeyError) and "Workflow yaml error" in str(e):

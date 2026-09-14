@@ -390,4 +390,7 @@ async function dragConnect(page: Page, from: Locator, to: Locator) {
   await page.mouse.down()
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 })
   await page.mouse.up()
+  // Settle before the caller asserts: a "no new edge" count would otherwise
+  // match on the first poll whether or not the drag was actually refused.
+  await expect(page.locator(".react-flow__connectionline")).toHaveCount(0)
 }
