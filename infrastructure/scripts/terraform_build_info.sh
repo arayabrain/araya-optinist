@@ -19,7 +19,20 @@ set -euo pipefail
 # regardless of the caller's working directory.
 cd "$(dirname "$0")/.."
 
-git_commit=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+# The commit is no longer decoration: deployment.tf keys
+# null_resource.build_and_deploy on it, so falling back to a constant would
+# leave the trigger set identical across commits -- the exact condition that
+# made a routine apply skip the image build. Fail the plan instead, loudly,
+# rather than restoring that silently wherever git metadata is absent (a
+# packaged bundle, a .git-stripped CI checkout).
+if ! git_commit=$(git rev-parse HEAD 2>/dev/null); then
+  echo "terraform_build_info.sh: no git metadata under $(pwd)." >&2
+  echo "  source_revision would be constant, so a new image would not deploy." >&2
+  echo "  Run terraform from a git checkout." >&2
+  exit 1
+fi
+
+# The branch is only ever a tag value, so a fallback is harmless here.
 git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 # `|| true` keeps the dirty check non-fatal under `set -e`
 git_status=$(git status --porcelain 2>/dev/null || true)
