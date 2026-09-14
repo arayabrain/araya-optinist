@@ -34,7 +34,10 @@ def calc_trigger(behavior_data, trigger_type, trigger_threshold):
         raise ValueError(
             f"trigger_type must be 'up', 'down' or 'cross', got {trigger_type!r}"
         )
-    return np.where(edges)[0] + 1
+    idx = np.where(edges)[0] + 1
+    if trigger_type != "down" and flg[0]:
+        idx = np.insert(idx, 0, 0)
+    return idx
 
 
 def build_trials(D, triggers, features, feature_columns, duration):
@@ -120,6 +123,8 @@ def prepare_inputs(X, B, iscell, params):
 
     trigger_column = int(params["trigger_column"])
     feature_columns = [int(c) for c in _as_list(params["feature_columns"])]
+    if not feature_columns:
+        raise ValueError("feature_columns needs at least one behavior column")
     for col in [trigger_column] + feature_columns:
         if not 0 <= col < B.shape[1]:
             raise ValueError(

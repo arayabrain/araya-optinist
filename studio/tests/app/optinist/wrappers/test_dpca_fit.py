@@ -93,6 +93,13 @@ def test_build_trials_rejects_missing_combination_and_bad_features():
         mod.build_trials(D, np.arange(2, 98, 4), [np.arange(24) / 23], [3], [-1, 1])
 
 
+def test_calc_trigger_counts_signal_already_high_at_frame_zero():
+    signal = np.array([1, 1, 0, 0, 1, 0])
+    assert mod.calc_trigger(signal, "up", 0.5).tolist() == [0, 4]
+    assert mod.calc_trigger(signal, "cross", 0.5).tolist() == [0, 2, 4, 5]
+    assert mod.calc_trigger(signal, "down", 0.5).tolist() == [2, 5]
+
+
 def test_defaults_run_on_sample_behavior(fluo, behavior, defaults):
     prepared = _prepare(fluo, behavior, defaults)
     assert prepared["trialX"].shape[1:] == (N_ROI, 20, 2, 2)
@@ -111,6 +118,7 @@ def test_defaults_run_on_sample_behavior(fluo, behavior, defaults):
         ({"n_components": 40}, "exceeds the number of cells"),
         ({"figure_components": [0, 9]}, "figure_components"),
         ({"trigger_threshold": 5}, "no 'up' trigger"),
+        ({"feature_columns": [], "labels": "t"}, "at least one behavior column"),
         ({"feature_columns": [0, 7]}, r"no trials for .*\(1.0, -1.0\)"),
         ({"feature_columns": [3, 7]}, "continuous"),
     ],

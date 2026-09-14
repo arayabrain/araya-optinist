@@ -101,6 +101,7 @@ export function createParamFormItemComponent({
     const splitValue = (value: string) =>
       value
         .split(",")
+        .map((e) => e.trim())
         .filter(Boolean)
         .map((e) => (Number.isNaN(Number(e)) ? e : Number(e)))
 

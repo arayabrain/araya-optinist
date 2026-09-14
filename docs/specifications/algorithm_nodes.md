@@ -320,7 +320,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
       - 'cross' detects either transition (the feature values at up and down edges are usually different, so prefer 'up' or 'down').
     - **trigger_threshold** [float, default: 0.5]: Threshold value for trigger detection.
     - **trigger_duration** [list of 2 ints, default: [-10, 10]]: Frames before (negative) and after the trigger to include; before < after.
-    - **feature_columns** [list of ints, default: [0, 2]]: Columns in behavior data used as conditions for the dPCA analysis (1 to 3 columns).
+    - **feature_columns** [list of ints, default: [0, 2]]: Columns in behavior data used as conditions for the dPCA analysis (at least one, usually 1 to 3).
 
   - **dPCA:**
 
