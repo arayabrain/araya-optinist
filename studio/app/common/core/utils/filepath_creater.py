@@ -14,6 +14,27 @@ class InvalidPathError(ValueError):
 
 
 def join_filepath(path_list):
+    """Join path parts, refusing anything that would leave the base directory.
+
+    CONSTRAINT -- do not restructure the containment check.
+
+        The startswith() must be the entire `if` condition.
+
+            OK  if not normalized.startswith(prefix):
+
+            NG  contained = normalized.startswith(prefix)
+                if not contained:
+
+            NG  if normalized != base_norm and not normalized.startswith(p):
+
+        CodeQL's Path::SafeAccessCheck binds its barrier to the guard node, so
+        either NG form reads as no sanitizer and py/path-injection goes from 0
+        back to 151 across the whole codebase. Both were measured; both are
+        behaviourally identical to the OK form.
+
+        Nothing local catches this -- not a test, not a linter. Only the
+        CodeQL job, which is not a required check.
+    """
     if isinstance(path_list, str):
         joined = path_list
         base = path_list
@@ -35,38 +56,18 @@ def join_filepath(path_list):
     if ".." in joined.replace("\\", "/").split("/"):
         raise InvalidPathError(f"path contains '..': {joined!r}")
 
-    # "/".join, not os.path.join, so an absolute component never resets the
-    # base; with ".." gone the result cannot escape. The normpath + startswith
-    # pair is also the shape CodeQL's py/path-injection query recognises as a
-    # sanitizer, which is what clears the alerts at every call site at once.
-    # normpath maps a "." base to "." but drops the "./" from the joined path,
-    # so the two never compare equal. Every relative path starts with "", and
-    # ".." is already refused above, so an empty prefix is the right
-    # comparison for a relative base rather than a special case below.
-    # Compared on a separator boundary so a sibling sharing a name prefix --
-    # ".../output_evil" against a ".../output" base -- is not read as
-    # contained. The base itself gets the separator appended too, so the
-    # comparison stays a single startswith(): CodeQL binds its barrier to the
-    # guard node, and `a != b and not c.startswith(d)` reads as no sanitizer.
+    # Separator on both sides, so a sibling sharing a name prefix is not read
+    # as contained: ".../output_evil" against a ".../output" base.
+    #   relative base -> "" (normpath drops the "./", so "." never matches)
+    #   absolute base -> base + separator
     base_norm = os.path.normpath(base)
     prefix = "" if base_norm == os.curdir else base_norm.rstrip(os.sep) + os.sep
 
-    # The startswith() must be the whole `if` condition, not a value assigned
-    # first: CodeQL's Path::SafeAccessCheck binds the barrier to the guard
-    # node itself, so `contained = ...startswith(...)` followed by
-    # `if not contained` reads as no sanitizer at all and every call site
-    # lights up again.
-    # Trailing separator on both sides: "/a/b" vs prefix "/a/b/" would fail an
-    # otherwise-correct containment, and appending it here keeps the check to
-    # the one call the query recognises.
     normalized = os.path.normpath(joined) + os.sep
     if not normalized.startswith(prefix):
-        raise InvalidPathError(
-            # Defence in depth: with ".." refused above, "/".join means no
-            # input reaches here. Do not read it in a log as evidence the
-            # containment check caught something the ".." ban missed.
-            f"path escapes its base directory: {joined!r}"
-        )
+        # Defence in depth: "/".join never resets the base, and ".." is
+        # refused above, so no input reaches here today.
+        raise InvalidPathError(f"path escapes its base directory: {joined!r}")
 
     return normalized[: -len(os.sep)]
 

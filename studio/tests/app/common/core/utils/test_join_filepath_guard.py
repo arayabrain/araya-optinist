@@ -3,6 +3,12 @@
 Guarding it there rather than at each router means a new endpoint cannot
 forget the check. These tests pin what it accepts, what it refuses, and the
 string it returns -- 185 call sites depend on the last one.
+
+What they cannot pin is that CodeQL still recognises the guard. Its barrier
+binds to the guard node, so hoisting the startswith() out of the `if` -- into
+a variable, a helper, an early return -- keeps every test here passing while
+py/path-injection goes from 0 back to 151. See the CONSTRAINT block in
+join_filepath's docstring before refactoring it.
 """
 import os
 
