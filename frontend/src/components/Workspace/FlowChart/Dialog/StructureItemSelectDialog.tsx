@@ -20,9 +20,9 @@ import {
   TreeDirType,
   TreeFileType,
   FileNodeConfig,
+  useStructuredTree,
 } from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
 import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
-import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
 import { AppDispatch } from "store/store"
 
 type StructureItemSelectProps = {
@@ -128,7 +128,7 @@ const StructureTreeView = memo(function StructureTreeView({
   fileSelect: string
   setFileSelect: (value: string) => void
 }) {
-  const [tree, isLoading] = useStructuredTree(nodeId, config)
+  const [tree, isLoading] = useStructuredTree(nodeId, config, true)
   const [expanded, setExpanded] = useState<string[]>([])
 
   // Calculate paths to expand when fileSelect changes
@@ -337,27 +337,3 @@ const StructureTreeNode = memo(function TreeNode({
     )
   }
 })
-
-function useStructuredTree(
-  nodeId: string,
-  config: FileNodeConfig,
-): [TreeNodeType[] | undefined, boolean] {
-  const dispatch = useDispatch<AppDispatch>()
-  const tree = useSelector(config.selectTree())
-  const isLoading = useSelector(config.selectIsLoading())
-  const filePathRaw = useSelector(config.selectFilePath(nodeId))
-  const filePath = Array.isArray(filePathRaw) ? filePathRaw[0] : filePathRaw
-  const workspaceId = useSelector(selectCurrentWorkspaceId)
-  useEffect(() => {
-    if (workspaceId && !isLoading && filePath) {
-      dispatch(
-        config.getTree({
-          path: filePath as string,
-          workspaceId: Number(workspaceId),
-        }),
-      )
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, filePath])
-  return [tree, isLoading]
-}

@@ -116,10 +116,22 @@ function convertToOutputPath(dto: OutputPathsDTO) {
 }
 
 // Handle workflow yaml error occurring when using v1.0 yaml in v2.0
+export const WORKFLOW_YAML_ERROR = "Workflow yaml error, see FAQ"
+
 export function handleWorkflowYamlError(
   error: ApiError,
   enqueueSnackbar: (message: string, options?: OptionsObject) => SnackbarKey,
 ): void {
+  const detail = (error?.response?.data as { detail?: unknown } | undefined)
+    ?.detail
+  if (
+    error?.response?.status === 422 &&
+    typeof detail === "string" &&
+    detail !== WORKFLOW_YAML_ERROR
+  ) {
+    enqueueSnackbar(detail, { variant: "warning", autoHideDuration: 30000 })
+    return
+  }
   // Catch workflow yaml parameter errors
   if (error?.response?.status === 422) {
     const snackbarOptions: OptionsObject = {
@@ -147,7 +159,7 @@ export function handleWorkflowYamlError(
         )
       },
     }
-    enqueueSnackbar("Workflow yaml error, see FAQ\n", snackbarOptions)
+    enqueueSnackbar(`${WORKFLOW_YAML_ERROR}\n`, snackbarOptions)
   } else {
     enqueueSnackbar("Failed to Run workflow", { variant: "error" })
   }

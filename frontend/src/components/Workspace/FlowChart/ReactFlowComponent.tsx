@@ -34,6 +34,7 @@ import {
   TreeItemDragObject,
   TreeItemDropResult,
 } from "components/Workspace/FlowChart/DnDItemType"
+import { isValidConnection } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import {
   reactFlowEdgeTypes,
   reactFlowNodeTypes,
@@ -154,6 +155,7 @@ export const ReactFlowComponent = memo(function ReactFlowComponent(
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={isValidConnection}
             onInit={onInit}
             onDragOver={onDragOver}
             onNodeDragStop={onNodeDragStop}

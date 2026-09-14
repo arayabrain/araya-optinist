@@ -197,14 +197,8 @@ describe("ExperimentTable", () => {
         },
         runBtn: 1,
       },
-      hdf5: {
-        isLoading: false,
-        tree: [],
-      },
-      matlab: {
-        isLoading: false,
-        tree: [],
-      },
+      hdf5: { trees: {} },
+      matlab: { trees: {} },
       workspace: {
         workspace: {
           items: [],
@@ -229,7 +223,7 @@ describe("ExperimentTable", () => {
       logsModal: {
         open: false,
       },
-    })
+    } as unknown as RootState)
 
     // redux-mock-store has no thunk middleware here and returns the action from
     // dispatch, so a creator whose result is chained has to hand back an object
