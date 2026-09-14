@@ -114,9 +114,9 @@ def cross_correlation(
             axis=1,
         )
 
-    name = f"{str(cb[i][0])}-{str(cb[i][1])}"
-    info[name] = TimeSeriesData(arr1.T, file_name=name)
-    name = f"shuffle {str(cb[i][0])}-{str(cb[i][1])}"
-    info[name] = TimeSeriesData(arr2.T, file_name=name)
+        name = f"{str(cb[i][0])}-{str(cb[i][1])}"
+        info[name] = TimeSeriesData(arr1.T, file_name=name)
+        name = f"shuffle {str(cb[i][0])}-{str(cb[i][1])}"
+        info[name] = TimeSeriesData(arr2.T, file_name=name)
 
     return info
