@@ -76,6 +76,12 @@ def test_1d_dataset_is_iscell(tmp_path):
     )
 
 
+def test_scalar_dataset_is_refused_by_name(tmp_path):
+    h5 = _h5(tmp_path, {"g/data": np.float64(3.0)})
+    with pytest.raises(ValueError, match="'g/data' is a scalar"):
+        FileWriter.hdf5(_rule(tmp_path, h5, "g/data"))
+
+
 def test_nwb_time_first_fluorescence_is_oriented_to_roi_time(tmp_path):
     arr = np.random.default_rng(1).random((N_TIME, N_ROI))
     h5 = _h5(tmp_path, {"g/data": arr}, rois=N_ROI)
