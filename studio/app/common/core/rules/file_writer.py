@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import uuid
 
 import h5py
 import numpy as np
@@ -21,6 +22,8 @@ from studio.app.optinist.routers.mat import MatGetter
 
 def dataclass_for_rank(ndim: int):
     """The rank rule, in one place. The run-time precheck compares against this."""
+    if ndim < 1:
+        return None
     if ndim >= 3:
         return ImageData
     return FluoData if ndim == 2 else IscellData
@@ -69,7 +72,7 @@ class FileWriter:
             dataset = f[rule_config.hdf5Path]
             n_rois = cls._sibling_roi_count(dataset)
             cached = cls._cached_tiff(rule_config, rule_config.hdf5Path)
-            data = dataset[:] if cached is None else None
+            data = dataset[()] if cached is None else None
 
         if cached is not None:
             return cls._image_info(rule_config, nwbfile, ImageData([cached]))
@@ -124,7 +127,7 @@ class FileWriter:
     def _tiff_cache_path(cls, rule_config: Rule, source_key: str):
         """One tiff per (file, dataset, mtime) per workspace, not one per run.
 
-        ponytail: never pruned, so a re-uploaded input leaks its old tiff;
+        Never pruned, so a re-uploaded input leaks its old tiff;
         add a sweep if workspaces grow faster than users delete them.
         """
         src = rule_config.input
@@ -157,7 +160,7 @@ class FileWriter:
             )
 
         cache_dir = os.path.dirname(os.path.dirname(os.path.dirname(cache_path)))
-        tmp_dir = f"{cache_dir}.{os.getpid()}"
+        tmp_dir = f"{cache_dir}.{uuid.uuid4().hex}"
         try:
             image = ImageData(data, output_dir=tmp_dir, file_name="image")
             create_directory(os.path.dirname(cache_path))
@@ -180,6 +183,8 @@ class FileWriter:
         cls, rule_config: Rule, nwbfile, data, source_key: str = None
     ):
         produced = dataclass_for_rank(data.ndim)
+        if produced is None:
+            raise ValueError(f"'{source_key}' is a scalar dataset; expected 1D or more")
         if produced is ImageData:
             if data.dtype == np.float64:
                 # halves the tiff; astype peaks at ~1.5x the input in memory
@@ -198,7 +203,7 @@ class FileWriter:
             ]
             nwbfile.pop("image_series", None)
             info["nwbfile"] = {"input": nwbfile}
-        elif produced is IscellData and data.ndim == 1:
+        elif produced is IscellData:
             info = {rule_config.return_arg: IscellData(data)}
 
             if NWBDATASET.COLUMN not in nwbfile:

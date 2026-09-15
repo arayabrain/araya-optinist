@@ -97,7 +97,7 @@ def lccd_detect(
                 "table_name": "Fluorescence",
                 "region": list(range(len(timeseries))),
                 "name": "Fluorescence",
-                "data": timeseries.T,
+                "data": timeseries,
                 "unit": "lumens",
                 "rate": nwbfile.get("imaging_plane", {}).get("imaging_rate", 30),
             }

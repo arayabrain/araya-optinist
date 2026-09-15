@@ -131,6 +131,14 @@ def test_1d_and_2d_into_fluo_arg_pass(workspace, shape):
     validate_input_edges(workspace, nodes, edges)
 
 
+def test_scalar_dataset_is_refused(workspace):
+    nodes, edges = _graph(
+        workspace, [], "fluo_from_hdf5", "utils/fluo_from_hdf5", "fluo", "FluoData"
+    )
+    with pytest.raises(WorkflowValidationError, match="is a scalar"):
+        validate_input_edges(workspace, nodes, edges)
+
+
 def test_3d_into_fluo_arg_is_refused(workspace):
     nodes, edges = _graph(
         workspace,

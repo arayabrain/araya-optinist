@@ -83,8 +83,14 @@ def validate_input_edges(
         if shape is None:
             continue
 
+        produced = dataclass_for_rank(len(shape))
+        if produced is None:
+            raise WorkflowValidationError(
+                f"{source.type} dataset '{dataset_path}' is a scalar; "
+                f"{target.data.label}.{arg_name} expects {expected.__name__}"
+            )
         expects_image = issubclass(expected, ImageData)
-        if issubclass(dataclass_for_rank(len(shape)), ImageData) != expects_image:
+        if issubclass(produced, ImageData) != expects_image:
             raise WorkflowValidationError(
                 f"{source.type} dataset '{dataset_path}' has shape {tuple(shape)} "
                 f"but {target.data.label}.{arg_name} expects {expected.__name__} "

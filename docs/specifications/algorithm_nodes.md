@@ -259,7 +259,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **I/O:**
 
     - **target_index** [int (columns start from 0), default 1]: Index of the target behavioral variable.
-    - **transpose_x** [bool, default: False]: Whether to transpose the neural data matrix.
+    - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
     - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
     - **standard_x_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
     - **standard_x_std** [bool, default: True]: Whether to standardize X by dividing by std.
@@ -283,7 +283,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **I/O:**
 
-    - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+    - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
     - **standard_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
     - **standard_std** [bool, default: True]: Whether to standardize X by dividing by std.
 
@@ -346,7 +346,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **I/O:**
 
-    - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+    - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
     - **standard_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
     - **standard_std** [bool, default: True]: Whether to standardize X by dividing by std.
 
@@ -374,7 +374,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
     - **target_index** [int (columns start from 0), default 1]: Column index of behavioral variable to model.
     - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
-    - **transpose_y** [bool, default: True]: Whether to transpose the behavior data matrix.
+    - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
     - **standard_x_mean** [bool, default: True]: Standardize X by subtracting mean.
     - **standard_x_std\*** [bool, default: True]: Standardize X by dividing by std.
     - **standard_y_mean** [bool, default: True]: Standardize Y by subtracting mean.
@@ -401,7 +401,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
     - **target_index** [int (columns start from 0), default 1]: Index of target behavioral variable to use as class labels.
     - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
-    - **transpose_y** [bool, default: True]: Whether to transpose the behavior data matrix.
+    - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
     - **standard_x_mean** [bool, default: True]: Standardize X by subtracting mean.
     - **standard_x_std\*** [bool, default: True]: Standardize X by dividing by std.
 
@@ -432,7 +432,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **I/O:**
   - **target_index** [int (columns start from 0), default 1]: Index of target behavioral variable to use as class labels.
   - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
-  - **transpose_y** [bool, default: True]: Whether to transpose the behavior data matrix.
+  - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
   - **standard_x_mean** [bool, default: True]: Standardize X by subtracting mean.
   - **standard_x_std\*** [bool, default: True]: Standardize X by dividing by std.
 
@@ -512,7 +512,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Parameters:**
 - **I/O:**
 
-  - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+  - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
   - **standard_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
   - **standard_std** [bool, default: True]: Whether to standardize X by dividing by std.
 
@@ -565,7 +565,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
 - **Output:** FluoData
 - **Parameters:**
-  - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+  - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
 ###### roi_from_hdf5
 
@@ -596,7 +596,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
       - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
 - **Output:** IscellData, FluoData
 - **Parameters:**
-  - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+  - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
 
 ###### vacant_roi
