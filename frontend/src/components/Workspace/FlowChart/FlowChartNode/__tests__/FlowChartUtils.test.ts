@@ -1,10 +1,10 @@
-import { describe, expect, jest, test } from "@jest/globals"
+import { describe, expect, test } from "@jest/globals"
 
 import {
   findDatasetShape,
   handleTypeForRank,
   isRankCompatible,
-  isValidConnection,
+  isConnectionValid,
   selectStructuredDatasetNdim,
 } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import { RootState, store } from "store/store"
@@ -56,7 +56,7 @@ describe("rank based connection rule", () => {
   })
 })
 
-describe("isValidConnection with a structured source", () => {
+describe("isConnectionValid with a structured source", () => {
   const state = {
     ...store.getState(),
     inputNode: {
@@ -90,18 +90,16 @@ describe("isValidConnection with a structured source", () => {
   })
 
   test("2D dataset cannot reach an ImageData input, 3D can, unknown is allowed", () => {
-    const spy = jest.spyOn(store, "getState").mockReturnValue(state)
     const conn = (source: string, target: string) => ({
       source,
       target: "algo",
       sourceHandle: `${source}--hdf5--HDF5Data`,
       targetHandle: `algo--image--${target}`,
     })
-    expect(isValidConnection(conn("in1", "ImageData"))).toBe(false)
-    expect(isValidConnection(conn("in1", "FluoData"))).toBe(true)
-    expect(isValidConnection(conn("in2", "ImageData"))).toBe(true)
-    expect(isValidConnection(conn("in3", "ImageData"))).toBe(true)
-    spy.mockRestore()
+    expect(isConnectionValid(conn("in1", "ImageData"), state)).toBe(false)
+    expect(isConnectionValid(conn("in1", "FluoData"), state)).toBe(true)
+    expect(isConnectionValid(conn("in2", "ImageData"), state)).toBe(true)
+    expect(isConnectionValid(conn("in3", "ImageData"), state)).toBe(true)
   })
 
   test("typed handles keep the old rule", () => {
@@ -111,11 +109,11 @@ describe("isValidConnection with a structured source", () => {
       sourceHandle: `a--out--${s}`,
       targetHandle: `b--in--${t}`,
     })
-    expect(isValidConnection(conn("ImageData", "ImageData"))).toBe(true)
-    expect(isValidConnection(conn("ImageData", "FluoData"))).toBe(false)
-    expect(isValidConnection(conn("SpikingActivityData", "FluoData"))).toBe(
-      true,
-    )
-    expect(isValidConnection(conn("FluoData", "BaseData"))).toBe(true)
+    expect(isConnectionValid(conn("ImageData", "ImageData"), state)).toBe(true)
+    expect(isConnectionValid(conn("ImageData", "FluoData"), state)).toBe(false)
+    expect(
+      isConnectionValid(conn("SpikingActivityData", "FluoData"), state),
+    ).toBe(true)
+    expect(isConnectionValid(conn("FluoData", "BaseData"), state)).toBe(true)
   })
 })

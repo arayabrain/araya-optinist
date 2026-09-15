@@ -16,12 +16,14 @@ import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
 
 import {
-  TreeNodeType,
-  TreeDirType,
-  TreeFileType,
   FileNodeConfig,
   useStructuredTree,
 } from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
+import {
+  TreeNodeType,
+  TreeDirType,
+  TreeFileType,
+} from "components/Workspace/FlowChart/FlowChartNode/StructuredFileTree"
 import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
 import { AppDispatch } from "store/store"
 

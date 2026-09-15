@@ -13,31 +13,13 @@ import {
 } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import { useHandleColor } from "components/Workspace/FlowChart/FlowChartNode/HandleColorHook"
 import { NodeContainer } from "components/Workspace/FlowChart/FlowChartNode/NodeContainer"
+import { TreeNodeType } from "components/Workspace/FlowChart/FlowChartNode/StructuredFileTree"
 import { HANDLE_STYLE } from "const/flowchart"
 import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import { selectInputNodeDefined } from "store/slice/InputNode/InputNodeSelectors"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
 import { AppDispatch, RootState } from "store/store"
-
-export type TreeNodeType = TreeDirType | TreeFileType
-
-export interface TreeDirType {
-  path: string
-  name: string
-  isDir: true
-  nodes: TreeNodeType[]
-  dataType?: string | null
-}
-
-export interface TreeFileType {
-  path: string
-  name: string
-  isDir: false
-  dataType?: string | null
-  shape?: number[] | null
-  nbytes?: string
-}
 
 export interface FileNodeConfig {
   fileType: string

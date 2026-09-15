@@ -5,15 +5,13 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteStorageController,
-    RemoteStorageSimpleReader,
-)
+from studio.app.common.core.rules.file_writer import dataclass_for_rank
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import Edge, Node, NodeType
 from studio.app.common.dataclass.base import BaseData
 from studio.app.common.dataclass.image import ImageData
 from studio.app.common.routers.files import (
+    download_structure_cache,
     get_hdf5_structure_dict,
     get_mat_structure_dict,
 )
@@ -27,18 +25,18 @@ class WorkflowValidationError(ValueError):
     pass
 
 
-async def ensure_structure_caches(remote_bucket_name: str, workspace_id: str):
-    if not RemoteStorageController.is_available():
-        return
-    for cache_file in (
-        MetadataCacheFile.HDF5_STRUCTURE,
-        MetadataCacheFile.MAT_STRUCTURE,
-    ):
-        try:
-            async with RemoteStorageSimpleReader(remote_bucket_name) as reader:
-                await reader.download_input_data(workspace_id, cache_file)
-        except Exception:
-            pass
+async def ensure_structure_caches(
+    remote_bucket_name: str, workspace_id: str, nodeDict: Dict[str, Node]
+):
+    """Fetch only the metadata caches the workflow's own nodes can need."""
+    node_types = {node.type for node in nodeDict.values()}
+    wanted = {
+        NodeType.HDF5: MetadataCacheFile.HDF5_STRUCTURE,
+        NodeType.MATLAB: MetadataCacheFile.MAT_STRUCTURE,
+    }
+    for node_type, cache_file in wanted.items():
+        if node_type in node_types:
+            await download_structure_cache(remote_bucket_name, workspace_id, cache_file)
 
 
 def validate_input_edges(
@@ -50,6 +48,9 @@ def validate_input_edges(
     Anything that cannot be resolved (missing cache and file, unknown function,
     untyped arg) is skipped; the node error path still catches it at run time.
     """
+    caches = {}
+    workspace_dir = os.path.realpath(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+
     for edge in edgeDict.values():
         source = nodeDict.get(edge.source)
         target = nodeDict.get(edge.target)
@@ -72,12 +73,18 @@ def validate_input_edges(
             if source.type == NodeType.HDF5
             else source.data.matPath
         )
-        shape = _dataset_shape(workspace_id, source, dataset_path)
+        if source.type not in caches:
+            caches[source.type] = (
+                get_hdf5_structure_dict(workspace_id)
+                if source.type == NodeType.HDF5
+                else get_mat_structure_dict(workspace_id)
+            )
+        shape = _dataset_shape(workspace_dir, caches[source.type], source, dataset_path)
         if shape is None:
             continue
 
         expects_image = issubclass(expected, ImageData)
-        if (len(shape) >= 3) != expects_image:
+        if issubclass(dataclass_for_rank(len(shape)), ImageData) != expects_image:
             raise WorkflowValidationError(
                 f"{source.type} dataset '{dataset_path}' has shape {tuple(shape)} "
                 f"but {target.data.label}.{arg_name} expects {expected.__name__} "
@@ -103,23 +110,17 @@ def _expected_arg_type(function_path: str, arg_name: str) -> Optional[type]:
     return param.annotation
 
 
-def _dataset_shape(workspace_id: str, source: Node, dataset_path: str):
+def _dataset_shape(workspace_dir: str, cache: dict, source: Node, dataset_path: str):
     if not dataset_path:
         return None
     file_path = source.data.path
     if isinstance(file_path, list):
         file_path = file_path[0]
 
-    cache = (
-        get_hdf5_structure_dict(workspace_id)
-        if source.type == NodeType.HDF5
-        else get_mat_structure_dict(workspace_id)
-    )
     shape = _find_shape(cache.get(file_path, []), dataset_path)
     if shape is not None:
         return shape
 
-    workspace_dir = os.path.realpath(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
     local_path = os.path.realpath(join_filepath([workspace_dir, file_path]))
     if not local_path.startswith(workspace_dir + os.sep) or not os.path.isfile(
         local_path

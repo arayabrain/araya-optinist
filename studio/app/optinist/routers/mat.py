@@ -6,12 +6,11 @@ from fastapi import APIRouter, Depends
 from pymatreader import read_mat
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
-from studio.app.common.core.storage.remote_storage_controller import (
-    RemoteStorageController,
-    RemoteStorageSimpleReader,
-)
 from studio.app.common.core.utils.filepath_creater import join_filepath
-from studio.app.common.routers.files import get_mat_structure_dict
+from studio.app.common.routers.files import (
+    download_structure_cache,
+    get_mat_structure_dict,
+)
 from studio.app.const import MetadataCacheFile
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.schemas.mat import MatNode
@@ -98,16 +97,9 @@ async def get_matfiles(
     if remote storage is available). Falls back to extracting from the file directly.
     """
     # Try to download cached structure from S3 first
-    if RemoteStorageController.is_available():
-        try:
-            async with RemoteStorageSimpleReader(
-                remote_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.download_input_data(
-                    workspace_id, MetadataCacheFile.MAT_STRUCTURE
-                )
-        except Exception:
-            pass  # Ignore errors - will fall back to file extraction
+    await download_structure_cache(
+        remote_bucket_name, workspace_id, MetadataCacheFile.MAT_STRUCTURE
+    )
 
     # Check for cached structure
     structure_dict = get_mat_structure_dict(workspace_id)
