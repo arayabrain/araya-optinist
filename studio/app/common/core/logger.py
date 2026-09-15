@@ -343,7 +343,9 @@ class AppLogger:
         else:
             hash_source = uid
 
-        client_id = hashlib.md5(hash_source.encode()).hexdigest()
+        # 16 hex chars: the width log_reader's client filter and the log-line
+        # format both assume.
+        client_id = hashlib.sha256(hash_source.encode()).hexdigest()
         client_id = client_id[0:16]
 
         return client_id
