@@ -1,0 +1,5 @@
+# `suite2p.yaml` is hashed byte-for-byte by
+# `studio/tests/app/common/core/snakemake/test_smk_utils.py`, which pins the
+# digest snakemake produced in the test container. A CRLF checkout on Windows
+# would change those bytes and break the pinned hash, so keep it verbatim.
+studio/test_data/conda_envs/**/*.yaml -text

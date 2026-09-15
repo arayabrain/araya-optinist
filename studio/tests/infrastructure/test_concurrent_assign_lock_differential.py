@@ -31,6 +31,7 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import MagicMock, patch
 
 from aws_constants import InstanceState
+
 from conftest import setup_db_mock
 
 USER_ID = 77
