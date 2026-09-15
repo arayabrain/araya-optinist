@@ -30,6 +30,7 @@ from studio.app.common.core.utils.datetime_utils import (
     parse_datetime_for_timezone,
 )
 from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
     join_filepath,
     normalize_output_path,
 )
@@ -77,6 +78,10 @@ class WorkflowResult:
 
         try:
             expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+        # A rejected path is a security refusal, not corrupt data: it must not
+        # be downgraded to "no data" by the broad clause below.
+        except InvalidPathError:
+            raise
         except (AssertionError, ValueError, KeyError, yaml.YAMLError):
             # No usable status yet, which during polling is not an error: the
             # process can die before writing one, or mid-write and leave a torn

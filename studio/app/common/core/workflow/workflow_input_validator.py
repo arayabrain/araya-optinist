@@ -6,7 +6,10 @@ import h5py
 import numpy as np
 
 from studio.app.common.core.rules.file_writer import dataclass_for_rank
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.common.core.workflow.workflow import Edge, Node, NodeType
 from studio.app.common.dataclass.base import BaseData
 from studio.app.common.dataclass.image import ImageData
@@ -127,7 +130,14 @@ def _dataset_shape(workspace_dir: str, cache: dict, source: Node, dataset_path: 
     if shape is not None:
         return shape
 
-    local_path = os.path.realpath(join_filepath([workspace_dir, file_path]))
+    # join_filepath refuses a traversal outright; validation is best-effort, so
+    # an unresolvable input is skipped here rather than failing the workflow.
+    # The realpath check below still stands: it catches a symlink out of the
+    # workspace, which a string-level guard cannot see.
+    try:
+        local_path = os.path.realpath(join_filepath([workspace_dir, file_path]))
+    except InvalidPathError:
+        return None
     if not local_path.startswith(workspace_dir + os.sep) or not os.path.isfile(
         local_path
     ):
