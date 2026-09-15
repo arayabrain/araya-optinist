@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+from typing import Optional
 
 import pytest
 
@@ -42,7 +43,9 @@ def _marker_path(env_dirpath: str, layout: str) -> str:
     }[layout]
 
 
-def _build_conda_env_fixture(env_rootpath: str, marker_layout: str = "sibling") -> None:
+def _build_conda_env_fixture(
+    env_rootpath: str, marker_layout: Optional[str] = "sibling"
+) -> None:
     """
     Reproduce what snakemake leaves behind for a conda env: a `<md5>_` directory
     -- the md5 covering the realpath of the env dir followed by the env file's

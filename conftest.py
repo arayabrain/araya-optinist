@@ -1,8 +1,10 @@
 """
 Test environment, applied before any `studio` module is imported.
 
-Mirrors the `environment` block of `docker-compose.test.yml`, with three
-differences that make the suite runnable outside the container as well:
+Supersedes the `environment` block of `docker-compose.test.yml`: it sets the
+same variables, and overrides that block's `TZ` and `STRIPE_*` with identical
+values, so the container lane is unchanged. Three differences make the suite
+runnable outside the container as well:
 
 - `OPTINIST_DIR` derives from this file's location, so it resolves to `/app` in
   the container and to the checkout root anywhere else.
