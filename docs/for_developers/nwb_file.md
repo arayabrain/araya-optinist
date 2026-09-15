@@ -13,7 +13,7 @@
 ## Array orientation
 
 - `FluoData` / `SpikingActivityData` in memory: `(roi, time)`, matching Suite2p `F` and CaImAn `C`.
-- `Fluorescence` / `RoiResponseSeries` written to NWB: `(time, roi)`, the NWB convention. Every writer transposes before writing, and `fluo_from_hdf5` transposes back on load.
+- `Fluorescence` / `RoiResponseSeries` written to NWB: `(time, roi)`, the NWB convention. Writers pass the `(roi, time)` array as is; `NWBCreater.fluorescence` transposes the axis whose length matches the `rois` region, so configs replayed from older pickles land in the same orientation. `fluo_from_hdf5` transposes back on load.
 - `ImageData`: `(time, y, x)`.
 
 ## Suite2p
