@@ -105,12 +105,8 @@ const MERGE_ROI = "Merge ROI"
 const PROMOTE_ROI = "Set as Cell ROI"
 const CELL_ROI = "/cell_roi.json"
 // suite2p and the hdf5 wrappers write noncell_roi.json, caiman/lccd/vacant_roi
-// write non_cell_roi.json
-const PROMOTE_ROI_FILES = [
-  "/noncell_roi.json",
-  "/non_cell_roi.json",
-  "/all_roi.json",
-]
+// write non_cell_roi.json. all_roi is not offered: no commit path regenerates it.
+const PROMOTE_ROI_FILES = ["/noncell_roi.json", "/non_cell_roi.json"]
 
 const isEditableRoiPath = (path?: string | null): path is string =>
   [CELL_ROI, ...PROMOTE_ROI_FILES].some((file) => path?.includes(file))
@@ -252,6 +248,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
         temp_add_roi: [],
         temp_delete_roi: [],
         temp_merge_roi: [],
+        temp_promote_roi: [],
       }
     )
   }, [selectedStatus])

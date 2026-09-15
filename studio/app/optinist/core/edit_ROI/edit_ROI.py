@@ -91,6 +91,12 @@ class EditROI:
     def num_cell(self):
         return self.tmp_data.im.shape[0]
 
+    @property
+    def __cell_roi_im(self):
+        # A pending promotion stays out of cell_roi until commit resolves it.
+        drawn = ~np.isin(self.tmp_iscell, [CellType.NON_ROI, CellType.TEMP_PROMOTE])
+        return np.nanmax(self.tmp_data.im[drawn], axis=0, initial=np.nan)
+
     def get_status(self) -> RoiStatus:
         roi_status = self.tmp_data.status()
         roi_status.temp_promote_roi = np.where(
@@ -108,9 +114,7 @@ class EditROI:
 
         info = {
             "cell_roi": RoiData(
-                np.nanmax(
-                    self.tmp_data.im[self.tmp_iscell != CellType.NON_ROI], axis=0
-                ),
+                self.__cell_roi_im,
                 output_dir=self.node_dirpath,
                 file_name="cell_roi",
             ),
@@ -134,9 +138,7 @@ class EditROI:
 
         info = {
             "cell_roi": RoiData(
-                np.nanmax(
-                    self.tmp_data.im[self.tmp_iscell != CellType.NON_ROI], axis=0
-                ),
+                self.__cell_roi_im,
                 output_dir=self.node_dirpath,
                 file_name="cell_roi",
             ),
@@ -274,9 +276,7 @@ class EditROI:
             has_trace = np.arange(len(im)) < len(info["fluorescence"].data)
             non_cell_im = im[(iscell == CellType.NON_ROI) & has_trace]
             info["non_cell_roi"] = RoiData(
-                np.nanmax(non_cell_im, axis=0)
-                if len(non_cell_im) > 0
-                else np.full(im.shape[1:], np.nan),
+                np.nanmax(non_cell_im, axis=0, initial=np.nan),
                 output_dir=self.node_dirpath,
                 file_name=non_cell_roi_file_name,
             )
@@ -336,9 +336,7 @@ class EditROI:
 
         info = {
             "cell_roi": RoiData(
-                np.nanmax(
-                    self.tmp_data.im[self.tmp_iscell != CellType.NON_ROI], axis=0
-                ),
+                self.__cell_roi_im,
                 output_dir=self.node_dirpath,
                 file_name="cell_roi",
             ),

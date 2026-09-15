@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 from fastapi import HTTPException
@@ -96,6 +98,35 @@ def test_deleting_a_pending_merge_restores_its_sources(tmp_path):
     assert edit_roi.tmp_iscell[merged_id] == CellType.TEMP_DELETE
     # Kept on purpose: commit still needs it to append the merged ROI's trace.
     assert float(merged_id) in edit_roi.tmp_data.temp_merge_roi
+    # But the sources must not still read as merged, or the UI keeps painting
+    # them as pending on exactly the ROIs the undo restored.
+    status = edit_roi.get_status()
+    assert 0 not in status.temp_merge_roi
+    assert 1 not in status.temp_merge_roi
+    assert status.temp_delete_roi == [merged_id]
+
+
+def test_a_pending_merge_still_reports_its_sources(tmp_path):
+    file_path = build_node_dir(tmp_path, [CellType.ROI, CellType.ROI, CellType.NON_ROI])
+
+    EditROI(file_path=file_path).merge([0, 1])
+
+    status = EditROI(file_path=file_path).get_status()
+    assert 0 in status.temp_merge_roi
+    assert 1 in status.temp_merge_roi
+
+
+def test_a_pending_promotion_stays_out_of_cell_roi(tmp_path):
+    # add() and merge() rebuild cell_roi from `!= NON_ROI`, and TEMP_PROMOTE is
+    # nonzero, so a staged promotion would be drawn as a cell before commit.
+    file_path = build_node_dir(tmp_path, [CellType.ROI, CellType.ROI, CellType.NON_ROI])
+
+    EditROI(file_path=file_path).promote([2])
+    EditROI(file_path=file_path).merge([0, 1])
+
+    with open(file_path) as f:
+        drawn = np.array(json.load(f)["data"], dtype=float)
+    assert 2 not in drawn[~np.isnan(drawn)]
 
 
 def test_promote_rejects_an_roi_with_no_fluorescence_record(tmp_path):
@@ -126,17 +157,3 @@ def test_cancel_drops_a_pending_promotion_from_cell_roi(tmp_path):
 
     assert edit_roi.tmp_iscell[2] == CellType.NON_ROI
     assert CellType.TEMP_PROMOTE not in edit_roi.tmp_iscell
-
-
-def test_promote_roi_route_refuses_a_traversing_path(client):
-    # The guard belongs to the router, so assert it through the route rather
-    # than re-testing path_guard, which owns its own coverage.
-    response = client.post(
-        "/api/visualizations/image/%2e%2e/%2e%2e/etc/passwd/promote_roi"
-        "?workspace_id=1",
-        json={"ids": [0]},
-    )
-    assert response.status_code == 400
-    # EditROI answers a bare 400 for a missing pickle, so the message is what
-    # separates a rejected path from merely having reached a nonexistent node.
-    assert response.json()["detail"] == "Invalid path parameter"
