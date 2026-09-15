@@ -58,7 +58,10 @@ def commit_edit(data: EditRoiData, ops: Suite2pData, iscell, node_dirpath, funct
         return info
 
     for roi_id, roi_data in temp_roi_data_dict.items():
-        iscell[int(roi_id)] = CellType.ROI
+        # A pending ROI the user deleted before committing still has its temp
+        # entry, and its trace is still appended to keep F aligned with im.
+        if iscell[int(roi_id)] != CellType.TEMP_DELETE:
+            iscell[int(roi_id)] = CellType.ROI
         # Save fluorescence traces of added roi
         if isinstance(roi_data, RoiPos):
             stat0 = get_stat0_add_roi(
@@ -118,7 +121,7 @@ def commit_edit(data: EditRoiData, ops: Suite2pData, iscell, node_dirpath, funct
         "fluorescence": FluoData(ops["F"], file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "cell_roi": RoiData(
-            np.nanmax(data.im[iscell != CellType.NON_ROI], axis=0),
+            np.nanmax(data.im[iscell != CellType.NON_ROI], axis=0, initial=np.nan),
             output_dir=node_dirpath,
             file_name="cell_roi",
         ),

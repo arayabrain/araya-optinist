@@ -113,6 +113,17 @@ async def delete_roi(filepath: str, roi_list: RoiList):
 
 
 @router.post(
+    "/image/{filepath:path}/promote_roi",
+    response_model=bool,
+    dependencies=[Depends(is_workspace_owner)],
+)
+async def promote_roi(filepath: str, roi_list: RoiList):
+    filepath = resolve_absolute_output_path(filepath)
+    EditROI(file_path=filepath).promote(roi_list.ids)
+    return True
+
+
+@router.post(
     "/image/{filepath:path}/commit_edit",
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
