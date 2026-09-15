@@ -44,6 +44,13 @@ test_backend:
 	# build/run
 	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing")
 
+# One file or one -k expression, same image and env as CI. Running pytest in the
+# dev container instead fails tests that pass in CI: it sets no STRIPE_* vars.
+.PHONY: test_backend_one
+test_backend_one:
+	docker compose -f docker-compose.test.yml build test_studio_backend
+	docker compose -f docker-compose.test.yml run --rm test_studio_backend $(PYTEST) $(T)
+
 # Same tests as test_backend, run against the ambient environment (conda env,
 # venv, ...) instead of a container. Override PYTEST_NATIVE to pick another one,
 # e.g. `make test_backend_native PYTEST_NATIVE="poetry run pytest -s"`.

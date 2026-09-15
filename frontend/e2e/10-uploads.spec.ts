@@ -112,6 +112,25 @@ async function selectAnotherStructurePath(
   return chosen
 }
 
+// Tick one named dataset (whatever the record arrived with) and write it
+// back onto the node.
+async function selectStructurePath(
+  dialog: Locator,
+  node: Locator,
+  datasetPath: string,
+) {
+  const checkbox = dialog
+    .locator(`[role="treeitem"][id$="-${datasetPath}"]`)
+    .locator('input[type="checkbox"]')
+    .first()
+  if (!(await checkbox.isChecked())) await checkbox.check()
+  await dialog.getByRole("button", { name: "OK" }).click()
+  await expect(dialog).toBeHidden({ timeout: 15_000 })
+  await expect(
+    node.locator(".selectFilePath").filter({ hasText: "↳" }),
+  ).toHaveText(`↳ ${datasetPath}`, { timeout: 15_000 })
+}
+
 async function openStructureDialog(page: Page, nodeClass: string) {
   const node = page.locator(nodeClass)
   await expect(node).toBeVisible({ timeout: 15_000 })
@@ -276,4 +295,102 @@ test.describe("Input node dialogs and uploads", () => {
       "data/behavior",
     )
   })
+
+  // The HDF5 handle is typed by the rank of the selected dataset: a 2D
+  // dataset cannot reach an ImageData input in either drag direction, a 3D
+  // one can. Tutorial4 arrives wired data/image -> suite2p_file_convert.
+  test("UPL-09 - HDF5 handle type follows the dataset and gates connections", async ({
+    page,
+  }) => {
+    await reproduceTutorial(page, "Tutorial4")
+    const hdf5Node = page.locator(".react-flow__node-HDF5FileNode")
+    const hdf5Handle = hdf5Node.locator(".react-flow__handle")
+    const convertHandle = page.locator(
+      '.react-flow__node-AlgorithmNode:has-text("suite2p_file_convert") .react-flow__handle[data-handleid$="--image--ImageData"]',
+    )
+    const first = await openStructureDialog(
+      page,
+      ".react-flow__node-HDF5FileNode",
+    )
+    await selectStructurePath(first.dialog, hdf5Node, "data/image")
+    await expect(hdf5Handle).toHaveAttribute("title", "type: ImageData", {
+      timeout: 30_000,
+    })
+
+    const edgeCount = await page.locator(".react-flow__edge").count()
+    // Remove the shipped HDF5 -> suite2p_file_convert edge (the x on the edge)
+    const hdf5Edge = page.locator(
+      `.react-flow__edge[data-testid^="rf__edge-"][data-testid*="--hdf5--HDF5Data"]`,
+    )
+    await hdf5Edge.hover()
+    await hdf5Edge.locator("button.flowbutton").click()
+    await expect(page.locator(".react-flow__edge")).toHaveCount(edgeCount - 1)
+
+    const second = await openStructureDialog(
+      page,
+      ".react-flow__node-HDF5FileNode",
+    )
+    await selectStructurePath(second.dialog, hdf5Node, "data/behavior")
+    await expect(hdf5Handle).toHaveAttribute("title", "type: FluoData")
+
+    await dragConnect(page, hdf5Handle, convertHandle)
+    await expect(page.locator(".react-flow__edge")).toHaveCount(edgeCount - 1)
+    await dragConnect(page, convertHandle, hdf5Handle)
+    await expect(page.locator(".react-flow__edge")).toHaveCount(edgeCount - 1)
+
+    const again = await openStructureDialog(
+      page,
+      ".react-flow__node-HDF5FileNode",
+    )
+    await selectStructurePath(again.dialog, hdf5Node, "data/image")
+    await expect(hdf5Handle).toHaveAttribute("title", "type: ImageData")
+    await dragConnect(page, hdf5Handle, convertHandle)
+    await expect(page.locator(".react-flow__edge")).toHaveCount(edgeCount)
+  })
+
+  // A saved workflow can still carry a mismatched edge (or the tree may not
+  // have loaded when the user connected), so the backend refuses it at
+  // submission and the message reaches the snackbar.
+  test("UPL-10 - Submitting a 2D dataset into an image input is refused with the reason", async ({
+    page,
+  }) => {
+    await reproduceTutorial(page, "Tutorial4")
+    const hdf5Node = page.locator(".react-flow__node-HDF5FileNode")
+    const { dialog } = await openStructureDialog(
+      page,
+      ".react-flow__node-HDF5FileNode",
+    )
+    await selectStructurePath(dialog, hdf5Node, "data/behavior")
+
+    const runResponse = page.waitForResponse(
+      (r) =>
+        r.request().method() === "POST" &&
+        /\/run\//.test(r.url()) &&
+        !r.url().includes("/run/result"),
+    )
+    await page.locator('button:has([data-testid="ArrowDropDownIcon"])').click()
+    await page.locator('li:text-is("RUN")').click()
+    await page.locator('button:text-is("RUN")').click()
+    const response = await runResponse
+    expect(response.status()).toBe(422)
+    const detail = (await response.json()).detail as string
+    expect(detail).toContain("data/behavior")
+    expect(detail).toContain("suite2p_file_convert.image expects ImageData")
+    await expect(page.getByText(detail)).toBeVisible({ timeout: 15_000 })
+  })
 })
+
+// React Flow connects on pointer events, so drive the mouse from the centre
+// of one handle to the centre of the other.
+async function dragConnect(page: Page, from: Locator, to: Locator) {
+  const a = await from.boundingBox()
+  const b = await to.boundingBox()
+  if (!a || !b) throw new Error("handle not visible")
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 })
+  await page.mouse.up()
+  // Settle before the caller asserts: a "no new edge" count would otherwise
+  // match on the first poll whether or not the drag was actually refused.
+  await expect(page.locator(".react-flow__connectionline")).toHaveCount(0)
+}
