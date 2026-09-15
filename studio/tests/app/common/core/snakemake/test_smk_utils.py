@@ -2,6 +2,8 @@ import hashlib
 import os
 import shutil
 
+import pytest
+
 from studio.app.common.core.snakemake.smk_utils import SmkInternalUtils
 from studio.app.dir_path import DIRPATH
 
@@ -25,13 +27,29 @@ container_env_rootpath = f"/app/studio/test_data/conda_envs/{conda_name}"
 container_env_hash = "361e81b39710026dc0021c8cf18e6fad"
 
 
-def _build_conda_env_fixture(env_rootpath: str, create_marker: bool = True) -> None:
+def _marker_path(env_dirpath: str, layout: str) -> str:
     """
-    Reproduce what snakemake leaves behind for a conda env: a `<md5>_` directory,
-    holding an `env_setup_done` marker once creation finished, where the md5
-    covers the realpath of the env dir followed by the env file's bytes.
+    The two `env_setup_done` layouts `verify_conda_env_exists` accepts. The name
+    is snakemake's, not this test's, and only its existence is ever read.
+    """
+    return {
+        # What snakemake writes today:
+        # `snakemake.deployment.conda.get_env_setup_done_flag_file`
+        "sibling": f"{env_dirpath}.env_setup_done",
+        # Older snakemake wrote the flag inside the env dir. This is the layout
+        # the fixture formerly committed under `studio/test_data` used.
+        "inside": f"{env_dirpath}/env_setup_done",
+    }[layout]
 
-    `create_marker=False` leaves the directory without the marker, which is the
+
+def _build_conda_env_fixture(env_rootpath: str, marker_layout: str = "sibling") -> None:
+    """
+    Reproduce what snakemake leaves behind for a conda env: a `<md5>_` directory
+    -- the md5 covering the realpath of the env dir followed by the env file's
+    bytes, the trailing `_` snakemake's own suffix -- plus the empty
+    `env_setup_done` flag it writes once creation finished.
+
+    `marker_layout` picks which flag layout to write; `None` writes none, the
     state of an env snakemake has not finished creating.
     """
     os.makedirs(env_rootpath, exist_ok=True)
@@ -44,8 +62,8 @@ def _build_conda_env_fixture(env_rootpath: str, create_marker: bool = True) -> N
 
     env_dirpath = f"{env_rootpath}/{md5hash.hexdigest()}_"
     os.makedirs(env_dirpath, exist_ok=True)
-    if create_marker:
-        open(f"{env_dirpath}/env_setup_done", "w").close()
+    if marker_layout is not None:
+        open(_marker_path(env_dirpath, marker_layout), "w").close()
 
 
 def test_conda_env_hash():
@@ -60,7 +78,8 @@ def test_conda_env_hash():
     assert env_hash == container_env_hash, f"Invalid conda env hash: {env_hash}"
 
 
-def test_SmkInternalUtils(tmp_path):
+@pytest.mark.parametrize("marker_layout", ["sibling", "inside"])
+def test_SmkInternalUtils(tmp_path, marker_layout):
     """
     The committed fixture is addressed by the container path, so it only resolves
     inside Docker. Build an equivalent env for the current path instead, and keep
@@ -77,7 +96,7 @@ def test_SmkInternalUtils(tmp_path):
     conda_env_rootpath = f"{tmp_path}/conda_envs/{conda_name}"
     conda_env_filepath = f"{conda_env_rootpath}/{conda_name}.yaml"
 
-    _build_conda_env_fixture(conda_env_rootpath)
+    _build_conda_env_fixture(conda_env_rootpath, marker_layout=marker_layout)
 
     conda_env_exists = SmkInternalUtils.verify_conda_env_exists(
         conda_name, conda_env_rootpath, conda_env_filepath
@@ -95,7 +114,7 @@ def test_SmkInternalUtils_without_created_env(tmp_path):
     conda_env_rootpath = f"{tmp_path}/conda_envs/{conda_name}"
     conda_env_filepath = f"{conda_env_rootpath}/{conda_name}.yaml"
 
-    _build_conda_env_fixture(conda_env_rootpath, create_marker=False)
+    _build_conda_env_fixture(conda_env_rootpath, marker_layout=None)
 
     conda_env_exists = SmkInternalUtils.verify_conda_env_exists(
         conda_name, conda_env_rootpath, conda_env_filepath
