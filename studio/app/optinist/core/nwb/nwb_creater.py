@@ -26,7 +26,7 @@ from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
 
 def _time_first(data, n_roi):
-    # ponytail: a square array counts as (roi, time); its axes cannot be told apart
+    # a square array counts as (roi, time); its axes cannot be told apart
     data = np.asarray(data)
     if data.ndim == 2 and data.shape[0] == n_roi:
         return data.T
