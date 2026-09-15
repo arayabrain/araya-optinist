@@ -16,7 +16,9 @@ import {
   initAnalyticsConsent,
   isGtmEnabled,
   normalizePath,
+  _resetForTesting,
   setAnalyticsConsent,
+  subscribeAnalyticsConsent,
   trackEvent,
 } from "utils/analytics"
 import {
@@ -205,6 +207,75 @@ describe("analytics", () => {
     })
   })
 
+  describe("subscribeAnalyticsConsent", () => {
+    it("notifies a listener in the same document", () => {
+      // The banner and the Account page render side by side on a first visit,
+      // so the Account control has to hear a decision made in the banner.
+      const seen: string[] = []
+      const unsubscribe = subscribeAnalyticsConsent((d) => seen.push(d))
+
+      try {
+        setAnalyticsConsent("granted")
+        setAnalyticsConsent("denied")
+
+        expect(seen).toEqual(["granted", "denied"])
+      } finally {
+        // A failing assertion must not leave the listener behind for the next
+        // test. _resetForTesting() clears the set too, so this is belt and
+        // braces -- but it keeps the test readable on its own terms.
+        unsubscribe()
+      }
+    })
+
+    it("flushes queued events even when a listener throws", () => {
+      // setAnalyticsConsent is exported, so a listener is not necessarily a
+      // React setState that cannot throw. One that does must not swallow the
+      // entry pageview queued before the visitor answered.
+      trackEvent("route_change", { page_path: "/" })
+      subscribeAnalyticsConsent(() => {
+        throw new Error("listener blew up")
+      })
+
+      expect(() => setAnalyticsConsent("granted")).not.toThrow()
+      expect(window.dataLayer).toEqual([
+        { event: "route_change", page_path: "/" },
+      ])
+    })
+
+    it("notifies later listeners after an earlier one throws", () => {
+      const seen: string[] = []
+      subscribeAnalyticsConsent(() => {
+        throw new Error("listener blew up")
+      })
+      subscribeAnalyticsConsent((d) => seen.push(d))
+
+      setAnalyticsConsent("granted")
+
+      expect(seen).toEqual(["granted"])
+    })
+
+    it("drops listeners on reset, so one test cannot leak into the next", () => {
+      const seen: string[] = []
+      subscribeAnalyticsConsent((d) => seen.push(d))
+
+      _resetForTesting()
+      setAnalyticsConsent("granted")
+
+      expect(seen).toEqual([])
+    })
+
+    it("stops notifying once unsubscribed", () => {
+      const seen: string[] = []
+      const unsubscribe = subscribeAnalyticsConsent((d) => seen.push(d))
+
+      setAnalyticsConsent("granted")
+      unsubscribe()
+      setAnalyticsConsent("denied")
+
+      expect(seen).toEqual(["granted"])
+    })
+  })
+
   describe("initAnalyticsConsent", () => {
     it("re-applies a stored grant", () => {
       localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
@@ -242,16 +313,22 @@ describe("analytics", () => {
   })
 
   describe("index.html head snippet", () => {
-    const inlineScripts = (
-      fs
-        .readFileSync(
-          path.join(__dirname, "../../../public/index.html"),
-          "utf8",
-        )
-        .match(/<script>[\s\S]*?<\/script>/g) ?? []
+    // Capture the body directly rather than stripping the tags off the match:
+    // a single replace pass over the delimiters can leave a delimiter behind.
+    // [^>]* on the end tag too: `</script foo>` is still an end tag.
+    const scriptTag = /<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi
+    const html = fs.readFileSync(
+      path.join(__dirname, "../../../public/index.html"),
+      "utf8",
     )
-      .map((tag) => tag.replace(/<\/?script>/g, ""))
-      .filter((source) => /consent|gtm\.js/.test(source))
+    const inlineScripts: string[] = []
+    for (
+      let match = scriptTag.exec(html);
+      match !== null;
+      match = scriptTag.exec(html)
+    ) {
+      if (/consent|gtm\.js/.test(match[1])) inlineScripts.push(match[1])
+    }
 
     // window.eval, not eval: only the former makes the gtag declaration a
     // property of window, which is the browser behaviour utils/analytics.ts

@@ -481,7 +481,7 @@ The `client_id` is propagated across three execution boundaries:
 
 `ClientIdLoggingMiddleware` runs on every HTTP request:
 - Extracts uid from Firebase/JWT token
-- Generates `client_id` = first 16 chars of MD5(uid)
+- Generates `client_id` = first 16 chars of SHA-256(uid)
 - Stores in `ContextVar` for the request lifetime
 
 **File:** `studio/app/common/core/middleware/logging_middleware.py`
@@ -849,7 +849,7 @@ poetry run python main.py --log-level DEBUG
 |----------|------|---------|
 | `AppLogger.get_logging_config()` | `studio/app/common/core/logger.py` | Loads YAML config, applies concurrent handler, adds ClientIdFilter |
 | `AppLogger.init_logger()` | `studio/app/common/core/logger.py` | One-time logging initialization via `dictConfig()` |
-| `AppLogger.generate_client_id()` | `studio/app/common/core/logger.py` | MD5 hash of uid, truncated to 16 chars |
+| `AppLogger.generate_client_id()` | `studio/app/common/core/logger.py` | SHA-256 hash of uid, truncated to 16 chars |
 | `LoggingConfigHelper._apply_log_level_override()` | `studio/app/common/core/logger.py` | Apply a level string to all loggers and handlers (used by `--log-level` CLI only) |
 | `LoggingConfigHelper.load_and_configure_logging_config()` | `studio/app/common/core/logger.py` | Unified config loading with path adjustment and concurrent handler setup |
 | `ClientIdLoggingMiddleware.__call__()` | `studio/app/common/core/middleware/logging_middleware.py` | Extracts uid from request, sets client_id in context |

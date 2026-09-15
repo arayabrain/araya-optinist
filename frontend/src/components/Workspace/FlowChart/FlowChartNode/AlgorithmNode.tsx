@@ -17,10 +17,7 @@ import {
 
 import { AlgorithmInfo } from "api/algolist/AlgoList"
 import { DialogContext } from "components/Workspace/FlowChart/Dialog/DialogContext"
-import {
-  toHandleId,
-  isValidConnection,
-} from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
+import { toHandleId } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import { useHandleColor } from "components/Workspace/FlowChart/FlowChartNode/HandleColorHook"
 import { NodeContainer } from "components/Workspace/FlowChart/FlowChartNode/NodeContainer"
 import { HANDLE_STYLE } from "const/flowchart"
@@ -341,7 +338,6 @@ const ArgHandle = memo(function ArgHandle({
         background: rgb_color,
         top: i * 25 + 15,
       }}
-      isValidConnection={isValidConnection}
     >
       <Tooltip
         title={
@@ -381,7 +377,6 @@ const ReturnHandle = memo<HandleProps>(function ReturnHandle({
         background: color,
         top: i * 25 + 15,
       }}
-      isValidConnection={isValidConnection}
     >
       <Tooltip
         title={
