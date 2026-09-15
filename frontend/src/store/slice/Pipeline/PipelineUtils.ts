@@ -127,7 +127,7 @@ export function handleWorkflowYamlError(
   if (
     error?.response?.status === 422 &&
     typeof detail === "string" &&
-    detail !== WORKFLOW_YAML_ERROR
+    !detail.startsWith(WORKFLOW_YAML_ERROR)
   ) {
     enqueueSnackbar(detail, { variant: "warning", autoHideDuration: 30000 })
     return
@@ -159,7 +159,10 @@ export function handleWorkflowYamlError(
         )
       },
     }
-    enqueueSnackbar(`${WORKFLOW_YAML_ERROR}\n`, snackbarOptions)
+    enqueueSnackbar(
+      `${typeof detail === "string" ? detail : WORKFLOW_YAML_ERROR}\n`,
+      snackbarOptions,
+    )
   } else {
     enqueueSnackbar("Failed to Run workflow", { variant: "error" })
   }

@@ -45,6 +45,17 @@ describe("handleWorkflowYamlError", () => {
     expect(snackbar.mock.calls[0][0]).toContain(WORKFLOW_YAML_ERROR)
   })
 
+  test("a 422 yaml message with a specific key keeps text and FAQ action", () => {
+    const snackbar = enqueue()
+    const detail = `${WORKFLOW_YAML_ERROR}: unknown parameter 'transpose' for dpca; reset the node's parameters and run again`
+    handleWorkflowYamlError(
+      { response: { status: 422, data: { detail } } },
+      snackbar,
+    )
+    expect(snackbar.mock.calls[0][0]).toContain("unknown parameter 'transpose'")
+    expect(snackbar.mock.calls[0][1]).toHaveProperty("action")
+  })
+
   test("any other status is the generic failure", () => {
     const snackbar = enqueue()
     handleWorkflowYamlError({ response: { status: 500 } }, snackbar)

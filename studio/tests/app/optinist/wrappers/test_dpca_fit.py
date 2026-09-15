@@ -156,6 +156,9 @@ def test_defaults_run_on_sample_behavior(fluo, behavior, defaults):
         ({"feature_columns": [], "labels": "t"}, "at least one behavior column"),
         ({"feature_columns": [0, 7]}, r"no trials for .*\(1.0, -1.0\)"),
         ({"feature_columns": [3, 7]}, "continuous"),
+        ({"regularizer": "inf"}, "regularizer must be a number"),
+        ({"regularizer": "nan"}, "regularizer must be a number"),
+        ({"seed": -1}, "seed must be between"),
     ],
 )
 def test_guards_raise_before_fitting(fluo, behavior, defaults, over, match):

@@ -1,4 +1,5 @@
 import itertools
+import math
 
 import numpy as np
 
@@ -177,12 +178,16 @@ def prepare_inputs(X, B, iscell, params):
         regularizer = float(params["regularizer"])
     except (TypeError, ValueError):
         regularizer = -1.0
-    if regularizer < 0:
+    if regularizer < 0 or not math.isfinite(regularizer):
         raise ValueError(
             "regularizer must be a number >= 0 (0 disables it); the library's "
             f"'auto' search is not supported by this node, got "
             f"{params['regularizer']!r}"
         )
+
+    seed = int(params.get("seed", 0))
+    if not 0 <= seed < 2**32:
+        raise ValueError(f"seed must be between 0 and 2**32 - 1, got {seed}")
 
     n_components = int(params["n_components"])
     if n_components > X.shape[1]:
@@ -221,7 +226,7 @@ def prepare_inputs(X, B, iscell, params):
         "regularizer": regularizer,
         "n_components": n_components,
         "n_iter": int(params["n_iter"]),
-        "seed": int(params.get("seed", 0)),
+        "seed": seed,
         "duration": duration,
         "figure_features": figure_features,
         "figure_components": figure_components,
