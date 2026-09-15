@@ -11,6 +11,11 @@
 #                same checkout is a no-op. The checkout state is recorded too,
 #                not just the commit: re-applying one commit from a tag after
 #                a branch does rewrite TfGitBranch and TfGitTag.
+#   Blast radius no longer just the cluster tag: deployment.tf keys
+#                null_resource.build_and_deploy on the commit, so a new one
+#                rebuilds the image and rolls every service. The value is the
+#                repository HEAD, coarser than "the image changed" -- a
+#                docs-only commit triggers the same rollout.
 #
 # Read back with:
 #   aws ecs describe-clusters --clusters <cluster-name> --include TAGS \

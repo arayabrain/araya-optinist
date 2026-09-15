@@ -127,11 +127,23 @@ infrastructure layer.
 | File | Role |
 | --- | --- |
 | `scripts/git_ref_info.sh` | Shared git-ref resolution, sourced by both this script and `ecr_build_push.sh` |
-| `scripts/terraform_build_info.sh` | Emits the apply-time git commit/branch/tag/dirty as JSON (no `jq` dependency) |
+| `scripts/terraform_build_info.sh` | Emits the apply-time git commit/branch/tag/dirty as JSON (no `jq` dependency). **Fails the plan** when git metadata is absent — see below |
 | `deploy_info.tf` | `data.external.tf_build_info` runs the script at apply time |
 | `compute.tf` (`aws_ecs_cluster.main`) | Stamps `TfGitCommit` / `TfGitBranch` / `TfGitTag` tags from that data |
 
 Design notes:
+
+- **The commit is a deployment trigger, not only a tag.** `deployment.tf` keys
+  `null_resource.build_and_deploy` on it, so a new commit rebuilds the image and rolls
+  every service in the cluster. Two consequences:
+  - The script **exits non-zero** rather than falling back to `"unknown"` when git
+    metadata is missing. A constant revision would leave the trigger set identical across
+    commits, which is the condition that made a routine apply skip the image build
+    entirely — restoring it silently would be worse than refusing to plan. Run terraform
+    from a git checkout.
+  - The revision is the **repository HEAD**, which is coarser than "the image changed":
+    a docs-only commit triggers the same rebuild and cluster-wide rollout. This errs
+    towards deploying too often rather than too rarely, which is the safe direction.
 
 - The commit is stamped onto a **single** long-lived resource (the ECS cluster), not via
   `provider.default_tags`, so only that one resource changes on a real deploy instead of

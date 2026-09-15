@@ -23,6 +23,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/git_ref_info.sh"
 resolve_git_ref_info "$SCRIPT_DIR/.."
 
+# deployment.tf keys null_resource.build_and_deploy on the commit, so an
+# "unknown" fallback would make the trigger constant and skip the image build.
+# Here rather than in resolve_git_ref_info: ecr_build_push.sh shares the helper
+# and has no such constraint, and branch/tag are only ever recorded.
+if [ "$GIT_INFO_COMMIT" = "unknown" ]; then
+  echo "terraform_build_info.sh: no git metadata under $SCRIPT_DIR/.." >&2
+  echo "  source_revision would be constant, so a new image would not deploy." >&2
+  echo "  Run terraform from a git checkout." >&2
+  exit 1
+fi
+
 # `|| true` keeps the dirty check non-fatal under `set -e`
 git_status=$(git -C "$SCRIPT_DIR/.." status --porcelain 2>/dev/null || true)
 if [ -n "$git_status" ]; then
