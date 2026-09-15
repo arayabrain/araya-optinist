@@ -8,6 +8,7 @@ from aws_constants import (
     PremiumInstanceConfig,
     RoutingHeaders,
 )
+
 from conftest import MockRow, setup_db_mock
 
 TEST_INSTANCE_ID = "i-testlambda123"

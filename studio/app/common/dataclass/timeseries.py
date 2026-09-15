@@ -46,6 +46,8 @@ class TimeSeriesData(BaseData):
 
         self.std = std
         self.sem = sem
+        # True once the loader has put the array in (roi, time); wrappers skip transpose
+        self.nwb_oriented = False
 
         # Handle index for empty data case
         if index is not None:

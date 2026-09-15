@@ -26,9 +26,16 @@ OptiNiSt accepts a variety of data types. Data are added in "nodes", depending o
   - A Dataset describes an n-dimensional array and provides the primary means for storing data,
   - An Attribute* is a small dataset that is attached to a specific group or dataset and is typically used to store metadata specific to the object they are associated with.
  - ".hdf5", ".nwb", ".HDF5", ".NWB"
+- The selected dataset's rank decides what the node outputs and what it may connect to:
+  - 3D or more -> ImageData (time, y, x), the only type accepted by image inputs such as suite2p_file_convert and caiman_mc. A float64 dataset is written out as float32. The tiff is cached per workspace under `output/{workspace_id}/input_tiff/`, keyed by file, dataset and modification time, so repeated runs over the same input reuse one copy instead of writing one per run.
+  - 2D -> FluoData. An NWB `RoiResponseSeries` (stored (time, roi)) is transposed to (roi, time) automatically using its sibling 1D `rois` dataset, for files written before and after 2026-09; any other 2D array is passed through as stored, so the node's `transpose` parameter still applies.
+  - 1D -> IscellData
+- A dataset wired into an input of the wrong rank is refused when the workflow is submitted, with a message naming the dataset, its shape and the expected type.
+- An OptiNiSt NWB file contains the raw movie under `acquisition/TwoPhotonSeries/data` only when `save_raw_image_to_nwb` was on for the run; otherwise it references the original image files and cannot feed Suite2p or CaImAn on reload.
 #### Matlab
  - Format:
  - File Extension: ".mat"
+- The selected variable's rank decides the output type exactly as for HDF5 above (3D+ -> ImageData with the same float32 downcast, 2D -> FluoData, 1D -> IscellData), and the same rank check refuses a mismatched edge at submission. The NWB `rois` orientation repair is HDF5-only.
 #### Microscope
  - File Extensions: ".nd2", ".oir", ".isxd", ".thor.zip"
 

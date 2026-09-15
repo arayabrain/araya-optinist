@@ -267,6 +267,22 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
     return structure_dict
 
 
+async def download_structure_cache(
+    remote_bucket_name: str, workspace_id: str, cache_file: str
+) -> None:
+    """Best-effort refresh of a metadata cache from S3.
+
+    Callers fall back to reading the file itself, so a failure is logged, not raised.
+    """
+    if not RemoteStorageController.is_available():
+        return
+    try:
+        async with RemoteStorageSimpleReader(remote_bucket_name) as reader:
+            await reader.download_input_data(workspace_id, cache_file)
+    except Exception as e:
+        logger.debug(f"structure cache download failed ({cache_file}): {e}")
+
+
 def get_hdf5_structure_dict(workspace_id: str) -> dict:
     """Get cached HDF5 structure dictionary."""
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
