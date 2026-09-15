@@ -52,18 +52,26 @@ make test_backend_native PYTEST_NATIVE="~/miniforge3/envs/<env>/bin/python3 -m p
 so a plain `poetry install` skips it). Run pytest directly when you want to
 narrow the run to one file.
 
-**Budget five minutes and ~1.4 GB for the first run in a new checkout.** The
-lccd snakemake tests are `lighter_processing`, so both lanes run them, and they
-execute snakemake with `use_conda`. `DIRPATH.SNAKEMAKE_CONDA_ENV_DIR` is
-`<checkout>/.snakemake/conda`, so each checkout builds its own copy of the lccd
-and optinist environments -- conda or mamba on `PATH` and network access are
-required. Measured on a pristine worktree: 320 s for the first run, ~40 s for
-every run after. The container has the same tests but a warm cache.
+**Budget five minutes and over a gigabyte for the first run in a new checkout.**
+The lccd snakemake tests are `lighter_processing`, so both lanes run them, and
+they execute snakemake with `use_conda`. `DIRPATH.SNAKEMAKE_CONDA_ENV_DIR` is
+`<checkout>/.snakemake/conda`, so a fresh checkout builds the lccd and optinist
+environments -- conda or mamba on `PATH` and network access are required.
+Measured on a pristine worktree: 320 s for the first run against ~40 s for every
+run after, and 1.2-1.4 GB depending on the platform.
+
+Docker pays that cost too, and separately. `Dockerfile.test` pre-builds no
+environment, and compose bind-mounts `.:/app`, so `make test_backend` on a fresh
+clone builds into that clone's own `.snakemake/conda`. The two lanes cannot
+share the result: the env address hashes the absolute env dir, which is
+`/app/.snakemake/conda` in the container and `<checkout>/.snakemake/conda`
+natively. A checkout exercised both ways therefore holds two full copies of each
+environment.
 
 There is no native equivalent of `make test_backend_full`. The two
-`heavier_processing` tests it adds run a suite2p workflow end to end; they are
-deselected by both lanes here and this PR does not attempt them outside the
-container, so treat them as unverified natively.
+`heavier_processing` tests it adds run a suite2p workflow end to end. They are
+deselected by both lanes above and are not run outside the container, so treat
+them as unverified natively.
 
 Two rules keep this lane equivalent to the Docker one, and are worth knowing
 before you add a test:
@@ -89,14 +97,14 @@ overrides, session teardown).
 
 #### Avoid hardcoding absolute paths into fixtures
 
-`heavier_processing` tests aside, the suite should not care where the checkout
-lives. The trap is snakemake's conda env addressing: `Env.address` is
-`<env_dir>/<md5>_`, and the md5 covers the **absolute path** of the env dir along
-with the env yaml. A marker directory committed under `studio/test_data` is
-therefore only findable from the checkout it was generated in -- `/app` in the
-container. `test_smk_utils.py` builds its own env fixture under `tmp_path`
-instead, and pins the ported hash function against the container-path hash by
-passing that path explicitly.
+The suite should not care where the checkout lives. The trap is snakemake's
+conda env addressing: `Env.address` is `<env_dir>/<md5>_`, and the md5 covers the
+**absolute path** of the env dir along with the env yaml. A marker directory
+committed under `studio/test_data` is therefore findable only from the checkout
+that generated it, which is why two of them used to live there, one per
+platform, and why neither matched an arbitrary checkout. `test_smk_utils.py`
+builds its own env fixture under `tmp_path` instead, and pins the ported hash
+function against the container-path hash by passing that path explicitly.
 
 #### The suite writes into `studio/test_data`, and deletes part of it
 

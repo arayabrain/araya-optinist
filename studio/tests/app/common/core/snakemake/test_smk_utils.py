@@ -10,8 +10,9 @@ conda_name = "suite2p"
 conda_env_yaml_path = f"{DIRPATH.DATA_DIR}/conda_envs/{conda_name}/{conda_name}.yaml"
 
 """
-Address of the conda env fixture committed under `studio/test_data/conda_envs`,
-and the hash snakemake gave it when it built the env inside the test container.
+Address of the conda env fixture that used to be committed under
+`studio/test_data/conda_envs`, and the hash snakemake gave it when it built the
+env inside the test container.
 Snakemake hashes the absolute path of the env dir, so this pair is only
 reproducible by passing the path explicitly -- see `test_conda_env_hash`.
 
