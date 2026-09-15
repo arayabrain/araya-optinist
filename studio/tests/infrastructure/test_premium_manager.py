@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
+
 from conftest import MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
