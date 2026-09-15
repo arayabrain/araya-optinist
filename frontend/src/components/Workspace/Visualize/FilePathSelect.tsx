@@ -1,7 +1,8 @@
-import { FC, useState, ReactElement } from "react"
+import { FC, useId, useState, ReactElement } from "react"
 import { useSelector } from "react-redux"
 
-import { Divider } from "@mui/material"
+import { Box, Divider } from "@mui/material"
+import { grey } from "@mui/material/colors"
 import FormControl from "@mui/material/FormControl"
 import FormHelperText from "@mui/material/FormHelperText"
 import InputLabel from "@mui/material/InputLabel"
@@ -19,6 +20,27 @@ import {
   selectPipelineNodeResultSuccessList,
 } from "store/slice/Pipeline/PipelineSelectors"
 import { RootState } from "store/store"
+
+const toDisplayDataValue = (
+  nodeId: string | null,
+  filePath: string | null | undefined,
+) => (nodeId && filePath ? `${nodeId}/${filePath}` : "")
+
+// the nanoid suffix is the only part that tells two runs of one algorithm apart
+const toNodeIdParts = (nodeId: string, nodeName: string | undefined) =>
+  nodeName && nodeId.startsWith(`${nodeName}_`)
+    ? {
+        headerLabel: nodeId,
+        name: nodeName,
+        uid: nodeId.slice(nodeName.length + 1),
+      }
+    : {
+        headerLabel: nodeName ? `${nodeName} (${nodeId})` : nodeId,
+        name: nodeName,
+        uid: nodeId,
+      }
+
+type SelectedLabel = { text: string; uid?: string; title: string }
 
 export const FilePathSelect: FC<{
   dataType?: DATA_TYPE
@@ -52,6 +74,7 @@ export const FilePathSelect: FC<{
       prevFilePathInfoList.length === nextFilePathInfoList.length &&
       prevFilePathInfoList.every(
         (prevInfo, index) =>
+          prevInfo.nodeId === nextFilePathInfoList[index].nodeId &&
           prevInfo.filePath === nextFilePathInfoList[index].filePath &&
           prevInfo.fileType === nextFilePathInfoList[index].fileType &&
           prevInfo.dataType === nextFilePathInfoList[index].dataType &&
@@ -104,6 +127,7 @@ export const FilePathSelect: FC<{
       }),
   )
 
+  const labelId = useId()
   const [open, setOpen] = useState(false)
   const handleClose = () => {
     setOpen(false)
@@ -124,32 +148,46 @@ export const FilePathSelect: FC<{
   }
 
   const menuItemList: ReactElement[] = []
+  const selectedLabelByValue = new Map<string, SelectedLabel>()
+  const setSelectedLabel = (value: string, selectedLabel: SelectedLabel) => {
+    if (value) {
+      selectedLabelByValue.set(value, selectedLabel)
+    }
+  }
   inputNodeFilePathInfoList.forEach((pathInfo) => {
     const filePath = pathInfo.filePath
+    if (Array.isArray(filePath) && filePath.length === 0) {
+      return
+    }
+    menuItemList.push(
+      <ListSubheader key={`header/${pathInfo.nodeId}`}>
+        <Divider textAlign="center">{pathInfo.nodeId}</Divider>
+      </ListSubheader>,
+    )
     if (Array.isArray(filePath)) {
-      filePath.forEach((pathElm) => {
+      filePath.forEach((pathElm, index) => {
+        const value = toDisplayDataValue(pathInfo.nodeId, pathElm)
+        const fileName = pathElm ? getFileName(pathElm) : ""
+        setSelectedLabel(value, { text: fileName, title: fileName })
         menuItemList.push(
           <MenuItem
-            value={
-              pathInfo.nodeId && pathElm ? `${pathInfo.nodeId}/${pathElm}` : ""
-            }
+            value={value}
             onClick={() =>
               onSelectHandle(pathInfo.nodeId, pathElm ?? "", pathInfo.dataType)
             }
-            key={pathInfo.nodeId}
+            key={`${pathInfo.nodeId}/${index}`}
           >
-            {getFileName(pathElm)}
+            {fileName}
           </MenuItem>,
         )
       })
     } else {
+      const value = toDisplayDataValue(pathInfo.nodeId, filePath)
+      const inputLabel = pathInfo.nodeName ?? ""
+      setSelectedLabel(value, { text: inputLabel, title: inputLabel })
       menuItemList.push(
         <MenuItem
-          value={
-            pathInfo.nodeId && pathInfo.filePath
-              ? `${pathInfo.nodeId}/${pathInfo.filePath}`
-              : ""
-          }
+          value={value}
           onClick={() =>
             onSelectHandle(pathInfo.nodeId, filePath ?? "", pathInfo.dataType)
           }
@@ -160,54 +198,79 @@ export const FilePathSelect: FC<{
       )
     }
   })
-  algorithmNodeOutputPathInfoList.forEach((pathInfo, index) => {
-    menuItemList.push(
-      <ListSubheader key={index}>
-        <Divider textAlign="center">{pathInfo.nodeName}</Divider>
-      </ListSubheader>,
-    )
-    pathInfo.paths.forEach((outputPath) => {
-      menuItemList.push(
-        <MenuItem
-          value={
-            pathInfo.nodeId && outputPath.filePath
-              ? `${pathInfo.nodeId}/${outputPath.filePath}`
-              : ""
-          }
-          onClick={() =>
-            onSelectHandle(
-              pathInfo.nodeId,
-              outputPath.filePath,
-              outputPath.type,
-              outputPath.outputKey,
-            )
-          }
-          key={`${pathInfo.nodeId}/${outputPath.filePath}`}
-        >
-          {outputPath.outputKey}
-        </MenuItem>,
+  algorithmNodeOutputPathInfoList
+    .filter((pathInfo) => pathInfo.paths.length > 0)
+    .forEach((pathInfo) => {
+      const { headerLabel, name, uid } = toNodeIdParts(
+        pathInfo.nodeId,
+        pathInfo.nodeName,
       )
+      menuItemList.push(
+        <ListSubheader key={`header/${pathInfo.nodeId}`}>
+          <Divider textAlign="center">{headerLabel}</Divider>
+        </ListSubheader>,
+      )
+      pathInfo.paths.forEach((outputPath) => {
+        const value = toDisplayDataValue(pathInfo.nodeId, outputPath.filePath)
+        setSelectedLabel(value, {
+          text: name
+            ? `${outputPath.outputKey} (${name})`
+            : outputPath.outputKey,
+          uid,
+          title: `${outputPath.outputKey} (${pathInfo.nodeId})`,
+        })
+        menuItemList.push(
+          <MenuItem
+            value={value}
+            onClick={() =>
+              onSelectHandle(
+                pathInfo.nodeId,
+                outputPath.filePath,
+                outputPath.type,
+                outputPath.outputKey,
+              )
+            }
+            key={`${pathInfo.nodeId}/${outputPath.outputKey}`}
+          >
+            {outputPath.outputKey}
+          </MenuItem>,
+        )
+      })
     })
-  })
+
+  const selectedValue = toDisplayDataValue(selectedNodeId, selectedFilePath)
+  const selectedLabel = selectedLabelByValue.get(selectedValue)
 
   return (
     <FormControl style={{ minWidth: 150, maxWidth: 220 }} variant="standard">
-      <InputLabel>{label ? label : "Select Item"}</InputLabel>
+      <InputLabel id={labelId}>{label ? label : "Select Item"}</InputLabel>
       <Select
-        value={
-          selectedNodeId && selectedFilePath
-            ? `${selectedNodeId}/${selectedFilePath}`
-            : ""
+        labelId={labelId}
+        value={selectedValue}
+        renderValue={() =>
+          selectedLabel && (
+            <Box display="flex" gap={0.5} alignItems="baseline">
+              <Box overflow="hidden" textOverflow="ellipsis">
+                {selectedLabel.text}
+              </Box>
+              {selectedLabel.uid && (
+                <Box flexShrink={0} color={grey[600]} fontSize={14}>
+                  {selectedLabel.uid}
+                </Box>
+              )}
+            </Box>
+          )
         }
+        SelectDisplayProps={{ title: selectedLabel?.title }}
         open={open}
         onClose={handleClose}
         onOpen={handleOpen}
       >
         {menuItemList}
       </Select>
-      {inputNodeFilePathInfoList.length +
-        algorithmNodeOutputPathInfoList.length ===
-        0 && <FormHelperText error={true}>no data</FormHelperText>}
+      {menuItemList.length === 0 && (
+        <FormHelperText error={true}>no data</FormHelperText>
+      )}
     </FormControl>
   )
 }
