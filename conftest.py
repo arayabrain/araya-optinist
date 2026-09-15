@@ -4,8 +4,8 @@ Test environment, applied before any `studio` module is imported.
 Mirrors the `environment` block of `docker-compose.test.yml`, with three
 differences that make the suite runnable outside the container as well:
 
-- Paths derive from this file's location, so the same values resolve to `/app`
-  in the container and to the checkout root anywhere else.
+- `OPTINIST_DIR` derives from this file's location, so it resolves to `/app` in
+  the container and to the checkout root anywhere else.
 - Values are set unconditionally, so a shell configured for running the app
   natively cannot leak into a test run.
 - Stripe credentials are dummies. The suite never calls Stripe, and this drops
@@ -28,6 +28,9 @@ _TEST_ENV = {
     "IS_TEST": "True",
     "IS_STANDALONE": "True",
     "REMOTE_STORAGE_TYPE": "1",  # See studio/config/.env
+    # Kept as the container's literal path rather than derived: concurrent runs
+    # from two checkouts already share `DIRPATH.LOCKFILE_DIR`, so deriving this
+    # one alone would suggest an isolation the lane does not have.
     "MOCK_STORAGE_DIR": "/tmp/studio/mock_storage",  # See studio/config/.env
     "STRIPE_SECRET_KEY": "sk_test_dummy_123",
     "STRIPE_WEBHOOK_SECRET": "whsec_dummy_123",

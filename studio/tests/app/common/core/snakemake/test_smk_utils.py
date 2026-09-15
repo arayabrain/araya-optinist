@@ -14,16 +14,24 @@ Address of the conda env fixture committed under `studio/test_data/conda_envs`,
 and the hash snakemake gave it when it built the env inside the test container.
 Snakemake hashes the absolute path of the env dir, so this pair is only
 reproducible by passing the path explicitly -- see `test_conda_env_hash`.
+
+If `suite2p.yaml` changes, `container_env_hash` must be regenerated from
+snakemake's own output, never from `_get_conda_env_hash`: the constant is an
+independent oracle, and recomputing it with the function under test turns the
+assertion into a tautology.
 """
 container_env_rootpath = f"/app/studio/test_data/conda_envs/{conda_name}"
 container_env_hash = "361e81b39710026dc0021c8cf18e6fad"
 
 
-def _build_conda_env_fixture(env_rootpath: str) -> None:
+def _build_conda_env_fixture(env_rootpath: str, create_marker: bool = True) -> None:
     """
-    Reproduce what snakemake leaves behind for a successfully created conda env:
-    a `<md5>_` directory holding an `env_setup_done` marker, where the md5 covers
-    the realpath of the env dir followed by the env file's bytes.
+    Reproduce what snakemake leaves behind for a conda env: a `<md5>_` directory,
+    holding an `env_setup_done` marker once creation finished, where the md5
+    covers the realpath of the env dir followed by the env file's bytes.
+
+    `create_marker=False` leaves the directory without the marker, which is the
+    state of an env snakemake has not finished creating.
     """
     os.makedirs(env_rootpath, exist_ok=True)
     shutil.copy(conda_env_yaml_path, f"{env_rootpath}/{conda_name}.yaml")
@@ -35,7 +43,8 @@ def _build_conda_env_fixture(env_rootpath: str) -> None:
 
     env_dirpath = f"{env_rootpath}/{md5hash.hexdigest()}_"
     os.makedirs(env_dirpath, exist_ok=True)
-    open(f"{env_dirpath}/env_setup_done", "w").close()
+    if create_marker:
+        open(f"{env_dirpath}/env_setup_done", "w").close()
 
 
 def test_conda_env_hash():
@@ -85,11 +94,7 @@ def test_SmkInternalUtils_without_created_env(tmp_path):
     conda_env_rootpath = f"{tmp_path}/conda_envs/{conda_name}"
     conda_env_filepath = f"{conda_env_rootpath}/{conda_name}.yaml"
 
-    _build_conda_env_fixture(conda_env_rootpath)
-    for entry in os.listdir(conda_env_rootpath):
-        marker = f"{conda_env_rootpath}/{entry}/env_setup_done"
-        if os.path.exists(marker):
-            os.remove(marker)
+    _build_conda_env_fixture(conda_env_rootpath, create_marker=False)
 
     conda_env_exists = SmkInternalUtils.verify_conda_env_exists(
         conda_name, conda_env_rootpath, conda_env_filepath

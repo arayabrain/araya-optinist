@@ -48,18 +48,31 @@ make test_backend_native PYTEST_NATIVE="poetry run pytest -s"
 make test_backend_native PYTEST_NATIVE="~/miniforge3/envs/<env>/bin/python3 -m pytest -s"
 ```
 
-Run pytest directly when you want to narrow the run to one file.
+`poetry install --with test` provides one (the `test` group is `optional = true`,
+so a plain `poetry install` skips it). Run pytest directly when you want to
+narrow the run to one file.
+
+**Budget five minutes and ~1.4 GB for the first run in a new checkout.** The
+lccd snakemake tests are `lighter_processing`, so both lanes run them, and they
+execute snakemake with `use_conda`. `DIRPATH.SNAKEMAKE_CONDA_ENV_DIR` is
+`<checkout>/.snakemake/conda`, so each checkout builds its own copy of the lccd
+and optinist environments -- conda or mamba on `PATH` and network access are
+required. Measured on a pristine worktree: 320 s for the first run, ~40 s for
+every run after. The container has the same tests but a warm cache.
 
 There is no native equivalent of `make test_backend_full`. The two
-`heavier_processing` tests drive snakemake with `use_conda`, which needs the
-suite2p conda env the container builds, so they stay Docker-only.
+`heavier_processing` tests it adds run a suite2p workflow end to end; they are
+deselected by both lanes here and this PR does not attempt them outside the
+container, so treat them as unverified natively.
 
 Two rules keep this lane equivalent to the Docker one, and are worth knowing
 before you add a test:
 
-- **Run it from the repo root.** `pyproject.toml` sets `pythonpath = "."` relative
-  to the rootdir, which is what makes `studio` importable, and a git worktree
-  resolves `studio` to the wrong checkout without it.
+- **Run it from the repo root.** `testpaths` and the `make` targets are written
+  relative to it. Running from `studio/` happens to work -- pytest finds the
+  rootdir from the ini file, not the working directory, so `pythonpath = "."` and
+  the root `conftest.py` still resolve against the repo root -- but nothing keeps
+  it working, so prefer the root.
 - **The test environment comes from the root `conftest.py`, not your shell.**
   `OPTINIST_DIR`, `IS_TEST`, `IS_STANDALONE`, the storage settings, `TZ=UTC` and
   dummy `STRIPE_*` credentials are all set there, before any `studio` module is
