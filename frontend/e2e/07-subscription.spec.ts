@@ -165,7 +165,13 @@ test.describe("Free plan state", () => {
       // so a free user never has it at any width
       ["/subscription", 'h3:has-text("Subscription Plans")'],
       ["/account", 'h2:has-text("Account Profile")'],
-      ["/subscription/manage", "text=Free Plan"],
+      // "Free Plan" is the pre-response default, so it cannot fail. The button
+      // is disabled until the page's three subscription requests settle, and
+      // an error swaps the page for an alert, so it only enables on a real load
+      [
+        "/subscription/manage",
+        'button:has-text("Subscribe Now"):not([disabled])',
+      ],
     ]
     const viewports = [
       { width: 375, height: 812 },
