@@ -91,6 +91,10 @@ test.describe("Stripe cancel / reactivate round-trip", () => {
       process.env.BASE_URL || "",
       "this lane only runs against the development environment",
     ).toContain("development-optinist")
+    // A retry re-does the mutation instead of re-observing it
+    expect(test.info().project.retries, "run this lane with --retries 0").toBe(
+      0,
+    )
   })
 
   test("STRIPE-01 - Cancelling schedules it in Stripe and reactivating clears it", async () => {

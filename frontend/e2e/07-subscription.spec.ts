@@ -160,15 +160,18 @@ test.describe("Free plan state", () => {
     // The machine-checkable half of the responsive row: the page still renders
     // its own landmark, and nothing spills sideways. Overlap and legibility
     // stay a human read.
-    // The manage page shows a skeleton until getUserSubscription resolves, and
-    // waiting on that response rather than on the landmark's timeout is what
-    // stops the 30 s flake this row hit on production
-    const pages: [string, string, RegExp?][] = [
+    const pages: [string, string][] = [
       // Not the "Current Plan:" status line - that renders for paid plans only,
       // so a free user never has it at any width
       ["/subscription", 'h3:has-text("Subscription Plans")'],
       ["/account", 'h2:has-text("Account Profile")'],
-      ["/subscription/manage", "text=Free Plan", /\/api\/subsc\/mgmts(\?|$)/],
+      // "Free Plan" is the pre-response default, so it cannot fail. The button
+      // is disabled until the page's three subscription requests settle, and
+      // an error swaps the page for an alert, so it only enables on a real load
+      [
+        "/subscription/manage",
+        'button:has-text("Subscribe Now"):not([disabled])',
+      ],
     ]
     const viewports = [
       { width: 375, height: 812 },
@@ -178,10 +181,8 @@ test.describe("Free plan state", () => {
 
     for (const viewport of viewports) {
       await page.setViewportSize(viewport)
-      for (const [url, landmark, gate] of pages) {
-        const settled = gate ? page.waitForResponse(gate) : null
+      for (const [url, landmark] of pages) {
         await page.goto(url)
-        await settled
         await expect(page.locator(landmark).first()).toBeVisible({
           timeout: 30_000,
         })

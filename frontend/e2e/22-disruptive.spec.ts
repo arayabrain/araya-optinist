@@ -125,6 +125,8 @@ function guardDisruptive(): void {
     process.env.BASE_URL || "",
     "this lane only runs against the development environment",
   ).toContain("development-optinist")
+  // A retry re-does the mutation instead of re-observing it
+  expect(test.info().project.retries, "run this lane with --retries 0").toBe(0)
 }
 
 // The scheduler stops this environment at 13:00 UTC on weekdays and verifies

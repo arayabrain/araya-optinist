@@ -600,17 +600,10 @@ test.describe("Storage and database", () => {
       "no active user names a remote bucket: the query or the schema moved",
     ).toBeGreaterThan(0)
 
-    const live = new Set(
-      awsJson<string[]>(
-        `s3api list-buckets --query 'Buckets[?starts_with(Name, ` +
-          `\`${BUCKET_PREFIX}\`)].Name'`,
-      ),
-    )
     // The seeded admin account points at the shared app-storage bucket, so the
     // naming contract only binds the buckets that are per-user. Counting them
-    // is also what keeps this test honest: with a wrong prefix `live` comes back
-    // empty, every declared name still answers head-bucket, and the contract
-    // loop below iterates nothing.
+    // is also what keeps this test honest: with a wrong prefix every declared
+    // name still answers head-bucket and the contract loop iterates nothing.
     const perUserRows = declaredRows.filter(([, name]) =>
       name.startsWith(BUCKET_PREFIX),
     )
@@ -619,6 +612,14 @@ test.describe("Storage and database", () => {
       `no declared bucket starts with ${BUCKET_PREFIX} - the prefix or the ` +
         `attributes key changed, and the contract below checks nothing`,
     ).toBeGreaterThan(0)
+
+    // One listing for the common case; head-bucket is the per-name fallback
+    const live = new Set(
+      awsJson<string[]>(
+        `s3api list-buckets --query 'Buckets[?starts_with(Name, ` +
+          `\`${BUCKET_PREFIX}\`)].Name'`,
+      ),
+    )
     const missing = declared.filter(
       (name) => !live.has(name) && !bucketExists(name),
     )

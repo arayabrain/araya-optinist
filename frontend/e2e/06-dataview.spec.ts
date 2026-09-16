@@ -287,18 +287,26 @@ test.describe("Private Dataview @slow", () => {
     // Custom pagination: a native <select name="limit"> (10/50/100, default 50)
     const limitSelect = page.locator('select[name="limit"]')
     // The DataGrid virtualizes, so rendered rows cannot be counted and the page
-    // size is asserted on the request instead. Every option is exercised because
-    // items.length <= limit is vacuous on a dataset smaller than any limit.
+    // size is asserted on the request and its response instead. The fixture
+    // holds two records, so the slice itself is only provable once total
+    // exceeds a limit; the echoed limit proves the query carried it. 10 goes
+    // first: the page opens at the default 50, so 50 first would not refetch.
     for (const limit of ["10", "50", "100"]) {
       const refetch = page.waitForResponse(
         (r) =>
+          r.ok() &&
           r.url().includes("/api/dataview") &&
-          r.url().includes(`limit=${limit}`),
+          new URL(r.url()).searchParams.get("limit") === limit,
       )
       await limitSelect.selectOption(limit)
-      const { items } = (await (await refetch).json()) as { items: unknown[] }
+      const body = (await (await refetch).json()) as {
+        items: unknown[]
+        total: number
+        limit: number
+      }
       await expect(limitSelect).toHaveValue(limit)
-      expect(items.length).toBeLessThanOrEqual(Number(limit))
+      expect(body.limit).toBe(Number(limit))
+      expect(body.items.length).toBe(Math.min(Number(limit), body.total))
     }
     await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
       { timeout: 15_000 },
