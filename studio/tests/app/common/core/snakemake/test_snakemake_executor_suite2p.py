@@ -5,12 +5,9 @@ import pytest
 
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.mode import MODE
-from studio.app.common.core.snakemake.smk import ForceRun, SmkParam
+from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
-from studio.app.common.core.snakemake.snakemake_executor import (
-    delete_dependencies,
-    snakemake_execute,
-)
+from studio.app.common.core.snakemake.snakemake_executor import snakemake_execute
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteSyncAction,
@@ -18,6 +15,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.pickle_handler import PickleReader
 from studio.app.common.core.workflow.workflow import Edge, Node, NodeData
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
 from studio.app.dir_path import DIRPATH
 
 # Set test mode before getting bucket name at module level
@@ -158,20 +156,10 @@ def test_snakemake_delete_dependencies():
     assert os.path.exists(node_2nd_pkl_path), "Dependencies files not found"
 
     # Run delete_dependencies
-    smk_param.forcerun = [
-        ForceRun(
-            nodeId=node_1st_node_id,
-            name=node_1st_node_label,
-        ),
-        ForceRun(
-            nodeId=node_2nd_node_id,
-            name=node_2nd_node_label,
-        ),
-    ]
     delete_dependencies(
         workspace_id=workspace_id,
         unique_id=unique_id,
-        smk_params=smk_param,
+        node_ids=[node_1st_node_id, node_2nd_node_id],
         nodeDict=nodeDict,
         edgeDict=edgeDict,
     )

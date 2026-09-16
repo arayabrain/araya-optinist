@@ -1,18 +1,1 @@
-edit_roi_wrapper_dict = {
-    "suite2p": {
-        "conda_name": "suite2p",
-        "function": {},
-    },
-    "lccd": {
-        "conda_name": None,
-        "function": {},
-    },
-    "caiman": {
-        "conda_name": None,
-        "function": {},
-    },
-    "vacant_roi": {
-        "conda_name": None,
-        "function": {},
-    },
-}
+edit_roi_algos = ("suite2p", "lccd", "caiman", "vacant_roi")

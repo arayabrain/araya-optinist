@@ -9,7 +9,6 @@ from fastapi import HTTPException, status
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageWriter,
@@ -19,9 +18,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_recent_updated_files
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
-from studio.app.common.core.workflow.workflow import ProcessType
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.dataclass.base import BaseData
-from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
 from studio.app.optinist.core.nwb.nwb_creater import overwrite_nwb
 from studio.app.optinist.dataclass import EditRoiData, IscellData, RoiData
@@ -210,6 +209,7 @@ class EditROI:
         self.__save_json(info)
 
     async def commit(self):
+        self.__drop_deleted_pending_rows()
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.ROI
 
         if "suite2p" in self.function_id:
@@ -270,8 +270,8 @@ class EditROI:
         non_cell_roi_file_name = self.__non_cell_roi_file_name()
         if non_cell_roi_file_name:
             im = info["edit_roi_data"].im
-            # Only ROIs the fluorescence output has a record for: the
-            # delete-every-ROI path empties F while im keeps its rows, and
+            # Only ROIs the fluorescence output has a record for: a node an
+            # older release committed can hold fewer traces than im rows, and
             # drawing those would offer a click that answers 500.
             has_trace = np.arange(len(im)) < len(info["fluorescence"].data)
             non_cell_im = im[(iscell == CellType.NON_ROI) & has_trace]
@@ -285,7 +285,8 @@ class EditROI:
 
         self.__update_pickle_for_roi_edition(self.pickle_file_path, info)
         self.__save_json(info)
-        self.__update_whole_nwb(info)
+        self.__update_whole_nwb()
+        self.__invalidate_downstream()
 
         (
             os.remove(self.tmp_pickle_file_path)
@@ -348,34 +349,66 @@ class EditROI:
             else None
         )
 
+    def __drop_deleted_pending_rows(self):
+        """A pending add or merge deleted before commit leaves no row behind.
+
+        Pending rows sit after the committed ones, so dropping them only renumbers
+        the pending tail: im pixel values, iscell and the temp_* indices.
+        """
+        data = self.tmp_data
+        num_committed = len(self.output_info.get("fluorescence").data)
+        pending = np.arange(self.num_cell) >= num_committed
+        drop = pending & (self.tmp_iscell == CellType.TEMP_DELETE)
+        # a source that a surviving pending merge still averages from must stay
+        for merged, parents in data.temp_merge_roi.items():
+            if self.tmp_iscell[int(merged)] != CellType.TEMP_DELETE:
+                drop[list(parents)] = False
+        if not drop.any():
+            return
+
+        keep = ~drop
+        new_index = np.cumsum(keep) - 1
+        data.im = data.im[keep]
+        for new, old in enumerate(np.nonzero(keep)[0]):
+            if new != old:
+                data.im[new][~np.isnan(data.im[new])] = new
+        self.tmp_iscell = self.tmp_iscell[keep]
+        data.temp_add_roi = {
+            int(new_index[i]): pos for i, pos in data.temp_add_roi.items() if keep[i]
+        }
+        data.temp_merge_roi = {
+            float(new_index[int(i)]): [int(new_index[p]) for p in parents]
+            for i, parents in data.temp_merge_roi.items()
+            if keep[int(i)]
+        }
+        data.temp_delete_roi = {
+            int(new_index[int(i)]): None for i in data.temp_delete_roi if keep[int(i)]
+        }
+
     def __non_cell_roi_file_name(self):
         for file_name in ("non_cell_roi", "noncell_roi"):
             if os.path.exists(join_filepath([self.node_dirpath, f"{file_name}.json"])):
                 return file_name
         return None
 
-    def __update_whole_nwb(self, output_info):
-        smk_config = SmkConfigReader.read(
-            self.workflow_ids.workspace_id, self.workflow_ids.unique_id
-        )
+    def __update_whole_nwb(self):
+        whole_nwb_path = join_filepath([self.workflow_dirpath, "whole.nwb"])
+        # save_all_nwb pops "input" from the dict it is given
+        Runner.save_all_nwb(whole_nwb_path, dict(self.output_info["nwbfile"]))
 
-        # get last_outputs
-        last_outputs = smk_config.get("last_output")
-
-        # delete data not to be processed from the list of last_output
-        excluded_last_output_keyword = f"/{ProcessType.POST_PROCESS.id}/"
-        effective_last_outputs = [
-            v for v in last_outputs if excluded_last_output_keyword not in v
+    def __invalidate_downstream(self):
+        """Delete downstream node results so the next RUN recomputes them."""
+        workspace_id = self.workflow_ids.workspace_id
+        unique_id = self.workflow_ids.unique_id
+        workflow = WorkflowConfigReader.read(workspace_id, unique_id)
+        children = [
+            edge.target
+            for edge in workflow.edgeDict.values()
+            if edge.source == self.function_id
         ]
-
-        for last_output in effective_last_outputs:
-            last_output_path = join_filepath([DIRPATH.OUTPUT_DIR, last_output])
-            last_output_info = self.__update_pickle_for_roi_edition(
-                last_output_path, output_info
-            )
-            whole_nwb_path = join_filepath([self.workflow_dirpath, "whole.nwb"])
-
-            Runner.save_all_nwb(whole_nwb_path, last_output_info["nwbfile"])
+        delete_dependencies(
+            workspace_id, unique_id, children, workflow.nodeDict, workflow.edgeDict
+        )
 
     def __save_json(self, output_info):
         for k, v in output_info.items():
@@ -396,4 +429,3 @@ class EditROI:
             else:
                 self.output_info[k] = v
         PickleWriter.write(pickle_path=file_path, info=self.output_info)
-        return self.output_info

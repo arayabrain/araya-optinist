@@ -32,6 +32,7 @@ import Switch from "@mui/material/Switch"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
+import { markNodeUpdated } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import {
   addRoi,
   cancelRoi,
@@ -71,6 +72,7 @@ import {
   selectImageItemEndIndex,
   selectRoiItemFilePath,
   selectRoiItemIndex,
+  selectRoiItemNodeId,
   selectImageItemDuration,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
@@ -202,6 +204,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
   )
   const meta = useSelector(selectImageMeta(path))
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const roiNodeId = useSelector(selectRoiItemNodeId(itemId))
 
   const refRoiFilePath = useRef(roiFilePath)
 
@@ -737,16 +740,26 @@ const ImagePlotChart = memo(function ImagePlotChart({
     if (!roiFilePath || workspaceId === undefined) return
     try {
       await dispatch(commitRoi({ path: roiFilePath, workspaceId })).unwrap()
-      workspaceId &&
-        (await dispatch(
-          getRoiData({ path: roiFilePath, workspaceId }),
-        ).unwrap())
 
-      enqueueSnackbar("Successfully committed to Edit ROI.", {
-        variant: "success",
-      })
-      resetTimeSeries()
-      resetRoisClick(itemId)
+      // Commit discards the downstream results on the server; flag those
+      // nodes for the next RUN the same way a changed parameter does, before
+      // the refresh below, which can fail on its own
+      if (roiNodeId) dispatch(markNodeUpdated({ nodeId: roiNodeId }))
+      enqueueSnackbar(
+        "Successfully committed to Edit ROI. Run the workflow to update downstream results.",
+        { variant: "success" },
+      )
+
+      try {
+        await dispatch(getRoiData({ path: roiFilePath, workspaceId })).unwrap()
+        resetTimeSeries()
+        resetRoisClick(itemId)
+      } catch (error) {
+        enqueueSnackbar(
+          "Committed, but the ROI image could not be reloaded. Reload the page.",
+          { variant: "warning" },
+        )
+      }
     } catch (error) {
       enqueueSnackbar("Failed to commit Edit ROI.", { variant: "error" })
     } finally {
