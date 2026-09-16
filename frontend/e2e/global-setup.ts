@@ -87,13 +87,16 @@ async function saveLoginState(
 }
 
 // Firebase-side truth: catches the throwaways whose DB row is already gone, so
-// an aborted run's accounts do not pile up in the console forever
+// an aborted run's accounts do not pile up in the console forever.
+// E2E_SKIP_FIREBASE_SWEEP holds it off, e.g. while a throwaway is being
+// inspected. A failure never blocks the run, but a partial delete is a failure
+// too, so the warning does not call it skipped.
 function sweepStaleFirebaseUsers(disposable: boolean) {
-  if (!disposable) return
+  if (!disposable || process.env.E2E_SKIP_FIREBASE_SWEEP) return
   try {
     console.log(`Swept ${sweepE2eFirebaseUsers()} stale Firebase test users`)
   } catch (e) {
-    console.warn(`Firebase sweep skipped: ${e}`)
+    console.warn(`Firebase sweep did not complete: ${e}`)
   }
 }
 

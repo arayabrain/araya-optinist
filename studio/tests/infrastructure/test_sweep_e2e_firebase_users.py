@@ -6,17 +6,15 @@ clean one.
 """
 
 import importlib.util
+import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-MODULE_PATH = (
-    Path(__file__).resolve().parents[3]
-    / ".github"
-    / "scripts"
-    / "sweep_e2e_firebase_users.py"
-)
+REPO_ROOT = Path(__file__).resolve().parents[3]
+MODULE_PATH = REPO_ROOT / ".github" / "scripts" / "sweep_e2e_firebase_users.py"
 
 _spec = importlib.util.spec_from_file_location("sweep_e2e_firebase_users", MODULE_PATH)
 sweeper = importlib.util.module_from_spec(_spec)
@@ -32,7 +30,7 @@ def user(email):
 
 
 def stale_uids(users):
-    return sweeper.stale_uids(users, NOW_MS)
+    return [u.uid for u in sweeper.stale_users(users, NOW_MS)]
 
 
 SWEPT = [
@@ -77,6 +75,39 @@ def test_mixed_list_selects_only_the_throwaways():
     assert stale_uids(users) == [f"uid-{email}" for email in SWEPT]
 
 
+# Interpolations other than the timestamp, with a value they are known to take.
+# Anything else fails the test: check what the expression can produce before
+# adding it here, because the matcher admits only [a-z_] in the prefix.
+KNOWN_INTERPOLATIONS = {"${role.toLowerCase()}": "operator"}
+
+
+def rendered_spec_addresses():
+    literal = re.compile(r"`(e2e_[^`]*@test\.com)`")
+    for spec in sorted((REPO_ROOT / "frontend" / "e2e").glob("*.spec.ts")):
+        for lit in literal.findall(spec.read_text()):
+            rendered = lit.replace("${Date.now()}", "1786520283944")
+            for expr, value in KNOWN_INTERPOLATIONS.items():
+                rendered = rendered.replace(expr, value)
+            yield spec.name, lit, rendered
+
+
+# The regex admits only [a-z_] prefixes, so a spec that registers a new shape
+# would silently opt out of cleanup. Render every literal the specs carry.
+def test_every_throwaway_the_specs_register_is_matched():
+    throwaways = [r for r in rendered_spec_addresses() if "Date.now()" in r[1]]
+    assert throwaways, "no throwaway literals found: the spec naming moved"
+    unknown = [r for r in throwaways if "${" in r[2]]
+    assert unknown == [], "add the interpolation to KNOWN_INTERPOLATIONS"
+    unmatched = [r for r in throwaways if not sweeper.THROWAWAY.fullmatch(r[2])]
+    assert unmatched == []
+
+
+def test_no_fixed_spec_account_is_matched():
+    fixed = [r for r in rendered_spec_addresses() if "Date.now()" not in r[1]]
+    matched = [r for r in fixed if sweeper.THROWAWAY.fullmatch(r[2])]
+    assert matched == []
+
+
 def stamped(age_ms):
     return f"e2e_admin_mutable_{NOW_MS - age_ms}@test.com"
 
@@ -95,18 +126,22 @@ def test_an_account_from_an_earlier_run_is_swept():
 
 
 class FakeAuth:
-    """delete_users reports per-uid failures in its result rather than raising."""
+    """delete_users reports per-uid failures in its result rather than raising.
+
+    Failures land on the LAST entries of each batch, so a batch-local index
+    differs from the position in the full list and a wrong lookup is caught.
+    """
 
     def __init__(self, failures_per_batch=0):
         self.batches = []
+        self.deleted = []
         self.failures_per_batch = failures_per_batch
 
     def delete_users(self, uids):
         self.batches.append(len(uids))
-        errors = [
-            SimpleNamespace(index=i, reason="QUOTA_EXCEEDED")
-            for i in range(min(self.failures_per_batch, len(uids)))
-        ]
+        self.deleted += uids
+        failing = range(max(len(uids) - self.failures_per_batch, 0), len(uids))
+        errors = [SimpleNamespace(index=i, reason="QUOTA_EXCEEDED") for i in failing]
         return SimpleNamespace(success_count=len(uids) - len(errors), errors=errors)
 
 
@@ -120,10 +155,39 @@ def test_deletes_are_batched_under_the_api_cap():
     assert auth.batches == [1000, 1000, 500]
 
 
+def test_sweep_deletes_exactly_the_stale_throwaways():
+    auth = FakeAuth()
+    users = [user(email) for email in SWEPT + SPARED] + [user(stamped(0))]
+    assert sweeper.sweep(auth, users, NOW_MS) == len(SWEPT)
+    assert auth.deleted == [f"uid-{email}" for email in SWEPT]
+
+
 def test_a_partial_delete_is_not_reported_as_a_clean_sweep():
     auth = FakeAuth(failures_per_batch=3)
-    with pytest.raises(RuntimeError, match="deleted 1494, 6 failed"):
-        sweeper.sweep(auth, batch_of(1500), NOW_MS)
+    users = batch_of(1500)
+    with pytest.raises(RuntimeError, match="deleted 1494, 6 failed") as exc:
+        sweeper.sweep(auth, users, NOW_MS)
+    # every failed account is named: the last three of each batch
+    failed = [users[i].uid for i in (997, 998, 999, 1497, 1498, 1499)]
+    assert str(exc.value).endswith(str([f"{uid}: QUOTA_EXCEEDED" for uid in failed]))
+
+
+def test_only_the_shared_test_project_may_be_swept(tmp_path):
+    cred = tmp_path / "firebase_private.json"
+    cred.write_text(json.dumps({"project_id": "araya-optinist-development"}))
+    assert sweeper.credential_project(cred) == "araya-optinist-development"
+    cred.write_text(json.dumps({"project_id": "araya-optinist-production"}))
+    with pytest.raises(SystemExit, match="araya-optinist-production"):
+        sweeper.credential_project(cred)
+    cred.write_text("{}")
+    with pytest.raises(SystemExit):
+        sweeper.credential_project(cred)
+
+
+def test_dry_run_selects_without_deleting():
+    dry = sweeper.DryRun()
+    users = [user(email) for email in SWEPT + SPARED]
+    assert sweeper.sweep(dry, users, NOW_MS) == len(SWEPT)
 
 
 def test_nothing_to_delete_makes_no_api_call():
