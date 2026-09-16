@@ -1,4 +1,9 @@
-import { execFileSync, execSync } from "child_process"
+import {
+  ExecFileSyncOptions,
+  ExecSyncOptions,
+  execFileSync,
+  execSync,
+} from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
@@ -471,6 +476,46 @@ except auth.UserNotFoundError:
     pass
 `,
   )
+}
+
+const SWEEP_SCRIPT = ".github/scripts/sweep_e2e_firebase_users.py"
+// list_users pages the whole project, so the sweep outgrows the one-shot timeout
+const SWEEP_TIMEOUT_MS = 120_000
+
+// The e2e Firebase project is the same whichever BASE_URL a run targets, so a
+// deployed run needs no container: an interpreter that can import
+// firebase_admin reads the checkout's own credential, and the sweep script
+// refuses any project but the shared test one. Named rather than guessed, so a
+// missing dependency reads as such and not as a product bug.
+export const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
+
+// A run that dies before its afterAll orphans the Firebase user even though the
+// DB row is gone, which puts it beyond the reach of any DB-driven cleanup.
+// Returns how many accounts the sweep removed; the script lists each address
+// on stderr, which passes straight through to the run's log.
+export function sweepE2eFirebaseUsers(): number {
+  const opts = {
+    cwd: REPO_ROOT,
+    stdio: ["ignore", "pipe", "inherit"],
+    timeout: SWEEP_TIMEOUT_MS,
+  } satisfies ExecSyncOptions & ExecFileSyncOptions
+  const out = (
+    isLocalBaseUrl()
+      ? execSync(
+          `${COMPOSE} exec -T studio-dev-be poetry run python ${SWEEP_SCRIPT}`,
+          opts,
+        )
+      : execFileSync(FIREBASE_PYTHON, [SWEEP_SCRIPT], opts)
+  )
+    .toString()
+    .trim()
+  // poetry and firebase_admin can print their own lines before the count, and
+  // an empty output parses as 0 rather than as the failure it is
+  const last = out.split("\n").pop() ?? ""
+  if (!/^\d+$/.test(last)) {
+    throw new Error(`sweep printed ${JSON.stringify(out)} instead of a count`)
+  }
+  return Number(last)
 }
 
 export function activeUserRows(email: string): number {

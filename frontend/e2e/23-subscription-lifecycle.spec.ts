@@ -9,6 +9,7 @@ import {
   authHeaders,
   confirmDialog,
   ERROR_RED,
+  FIREBASE_PYTHON,
   isLocalBaseUrl,
   login,
   REPO_ROOT,
@@ -84,13 +85,9 @@ async function loginKeepWarnings(page: Page) {
 }
 
 // helpers.ts forces email_verified through the backend container, which a
-// deployed run has no local copy of. Firebase is the shared dev project either
-// way, so the same Admin SDK call works from here - it just needs an
-// interpreter that has firebase_admin. Named rather than guessed, because the
-// alternative is a test that fails for a missing dependency and reads like a
-// product bug.
-const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
-
+// deployed run has no local copy of; FIREBASE_PYTHON reaches the same shared
+// project from the host. Skip with a name when it cannot import firebase_admin,
+// because the alternative is a failure that reads like a product bug.
 function firebaseAdminSkipReason(): string {
   try {
     execFileSync(FIREBASE_PYTHON, ["-c", "import firebase_admin"], {
