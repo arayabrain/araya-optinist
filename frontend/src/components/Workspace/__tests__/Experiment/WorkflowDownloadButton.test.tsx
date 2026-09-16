@@ -36,6 +36,7 @@ describe("WorkflowDownloadButton", () => {
 
     // Find the workflow download button using data-testid
     const downloadButton = screen.getByTestId("workflow-download-button")
+    expect(downloadButton).toHaveAccessibleName("Download workflow config")
 
     // Mock the click event
     fireEvent.click(downloadButton)
@@ -47,7 +48,7 @@ describe("WorkflowDownloadButton", () => {
 
     // Get the hidden anchor element used for downloading using data-testid
     const link = await waitFor(() =>
-      screen.getByTestId("workflow-download-link"),
+      screen.getByTestId("workflow-download-anchor"),
     )
 
     // Check that the download attribute is set correctly

@@ -192,7 +192,7 @@ test.describe("Record Management", () => {
     const row = await firstRecordRow(page)
 
     const downloadPromise = page.waitForEvent("download", { timeout: 30_000 })
-    await row.locator('[data-testid="snakemake-download-link"]').click()
+    await row.locator('[data-testid="snakemake-download-button"]').click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toMatch(/^snakemake_.*\.yaml$/)
 
@@ -220,7 +220,7 @@ test.describe("Record Management", () => {
       .locator('tr:has([data-testid="reproduce-button"])')
       .filter({ has: page.getByText("Tutorial1", { exact: true }) })
       .first()
-      .locator('[data-testid="nwb-download-link"]')
+      .locator('[data-testid="nwb-download-button"]')
     // The record's nwb flag lands after "Workflow finished", and the table only
     // reads it when the tab mounts
     await expect(async () => {

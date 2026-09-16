@@ -63,7 +63,7 @@ export const NWBDownloadButton = memo(function NWBDownloadButton({
             color="primary"
             disabled={!hasNWB}
             aria-label="Download NWB file"
-            data-testid="nwb-download-link"
+            data-testid="nwb-download-button"
           >
             <SimCardDownloadOutlinedIcon />
           </IconButton>
@@ -112,7 +112,7 @@ export const SnakemakeDownloadButton = memo(function SnakemakeDownloadButton() {
       <IconButton
         onClick={onClick}
         aria-label="Download Snakemake config"
-        data-testid="snakemake-download-link"
+        data-testid="snakemake-download-button"
       >
         <SimCardDownloadOutlinedIcon color="primary" />
       </IconButton>
@@ -164,7 +164,7 @@ export const WorkflowDownloadButton = memo(function WorkflowDownloadButton() {
         download={`workflow_${uid}.yaml`}
         className="hidden"
         ref={ref}
-        data-testid="workflow-download-link"
+        data-testid="workflow-download-anchor"
       >
         {/* 警告が出るので空文字を入れておく */}{" "}
       </a>

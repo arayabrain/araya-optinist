@@ -48,6 +48,9 @@ describe("SnakemakeDownloadButton", () => {
       name: "Download Snakemake config",
     })
 
+    // The testid and the clickable button are the same node
+    expect(screen.getByTestId("snakemake-download-button")).toBe(downloadButton)
+
     // Check if the button is enabled (i.e., clickable)
     expect(downloadButton).toBeEnabled()
 

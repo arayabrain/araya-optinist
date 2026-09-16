@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 import "@testing-library/jest-dom"
 import { Provider } from "react-redux"
 
@@ -25,6 +26,7 @@ const store = mockStore(mockStoreData)
 
 describe("NWBDownloadButton", () => {
   beforeEach(() => {
+    ;(downloadExperimentNwbApi as jest.Mock).mockClear()
     ;(downloadExperimentNwbApi as jest.Mock).mockResolvedValue(
       "mocked NWB file content",
     )
@@ -49,6 +51,9 @@ describe("NWBDownloadButton", () => {
       name: "Download NWB file",
     })
 
+    // The testid and the clickable button are the same node
+    expect(screen.getByTestId("nwb-download-button")).toBe(downloadButton)
+
     // Check if the button is enabled (i.e., clickable)
     expect(downloadButton).toBeEnabled()
 
@@ -64,5 +69,43 @@ describe("NWBDownloadButton", () => {
 
     // Check that the download attribute is set correctly
     expect(link).toHaveAttribute("download", "nwb_testName.nwb")
+  })
+
+  it("renders the button disabled when the record has no NWB", () => {
+    render(
+      <Provider store={store}>
+        <ExperimentUidContext.Provider value="exp1">
+          <NWBDownloadButton
+            name="testName"
+            hasNWB={false}
+            isRemoteSynced={true}
+          />
+        </ExperimentUidContext.Provider>
+      </Provider>,
+    )
+
+    const button = screen.getByTestId("nwb-download-button")
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(downloadExperimentNwbApi).not.toHaveBeenCalled()
+  })
+
+  it("renders neither the button nor the anchor while the data is unsynced", () => {
+    render(
+      <Provider store={store}>
+        <ExperimentUidContext.Provider value="exp1">
+          <NWBDownloadButton
+            name="testName"
+            hasNWB={true}
+            isRemoteSynced={false}
+          />
+        </ExperimentUidContext.Provider>
+      </Provider>,
+    )
+
+    expect(screen.queryByTestId("nwb-download-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("nwb-download-anchor")).not.toBeInTheDocument()
+    // the icon is aria-hidden, so this only pins which element replaces them
+    expect(screen.getByTestId("CloudQueueIcon")).toBeInTheDocument()
   })
 })
