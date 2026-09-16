@@ -1,98 +1,20 @@
-import time
+import os
 
 import numpy as np
-from scipy import stats
+from scipy.ndimage import percentile_filter
 
-from studio.app.common.core.logger import AppLogger
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData
 
-logger = AppLogger.get_logger()
+# numpy ports of what suite2p's extraction does for a manually added ROI
+# (create_cell_pix, extendROI, create_neuropil_masks, extract_traces), so a
+# commit does not need the suite2p conda env.
 
 
-def masks_and_traces(ops, stat_manual, stat_orig):
-    """main extraction function
-    inputs: ops and stat
-    creates cell and neuropil masks and extracts traces
-    returns: F (ROIs x time), Fneu (ROIs x time), F_chan2, Fneu_chan2, ops, stat
-    F_chan2 and Fneu_chan2 will be empty if no second channel
-    """
-    from suite2p import detection, extraction
-
-    if "aspect" in ops:
-        dy, dx = int(ops["aspect"] * 10), 10
-    else:
-        d0 = ops["diameter"]
-        dy, dx = (d0, d0) if isinstance(d0, int) else d0
-    t0 = time.time()
-    # Concatenate stat so a good neuropil function can be formed
-    stat_all = stat_orig
-    for n in range(len(stat_manual)):
-        stat_all.append(stat_manual[n])
-    stat_all = detection.stats.roi_stats(stat_all, dy, dx, ops["Ly"], ops["Lx"])
-
-    cell_masks = [
-        extraction.masks.create_cell_mask(
-            stat, Ly=ops["Ly"], Lx=ops["Lx"], allow_overlap=ops["allow_overlap"]
-        )
-        for stat in stat_all
-    ]
-    cell_pix = extraction.masks.create_cell_pix(stat_all, Ly=ops["Ly"], Lx=ops["Lx"])
-    manual_roi_stats = stat_all[-len(stat_manual) :]
-    manual_cell_masks = cell_masks[-len(stat_manual) :]
-
-    manual_neuropil_masks = extraction.masks.create_neuropil_masks(
-        ypixs=[stat["ypix"] for stat in manual_roi_stats],
-        xpixs=[stat["xpix"] for stat in manual_roi_stats],
-        cell_pix=cell_pix,
-        inner_neuropil_radius=ops["inner_neuropil_radius"],
-        min_neuropil_pixels=ops["min_neuropil_pixels"],
-    )
-    logger.info("Masks made in %0.2f sec.", (time.time() - t0))
-
-    F, Fneu, F_chan2, Fneu_chan2, ops = extraction.extract_traces_from_masks(
-        ops, manual_cell_masks, manual_neuropil_masks
-    )
-
-    # compute activity statistics for classifier
-    npix = np.array([stat_orig[n]["npix"] for n in range(len(stat_orig))]).astype(
-        "float32"
-    )
-    for n in range(len(manual_roi_stats)):
-        manual_roi_stats[n]["npix_norm"] = manual_roi_stats[n]["npix"] / np.mean(
-            npix[:100]
-        )  # What if there are less than 100 cells?
-        manual_roi_stats[n]["compact"] = 1
-        manual_roi_stats[n]["footprint"] = 2
-        manual_roi_stats[n]["manual"] = 1  # Add manual key
-
-    # subtract neuropil and compute skew, std from F
-    dF = F - ops["neucoeff"] * Fneu
-    sk = stats.skew(dF, axis=1)
-    sd = np.std(dF, axis=1)
-
-    for n in range(F.shape[0]):
-        manual_roi_stats[n]["skew"] = sk[n]
-        manual_roi_stats[n]["std"] = sd[n]
-        manual_roi_stats[n]["med"] = [
-            np.mean(manual_roi_stats[n]["ypix"]),
-            np.mean(manual_roi_stats[n]["xpix"]),
-        ]
-
-    dF = extraction.preprocess(
-        F=dF,
-        baseline=ops["baseline"],
-        win_baseline=ops["win_baseline"],
-        sig_baseline=ops["sig_baseline"],
-        fs=ops["fs"],
-        prctile_baseline=ops["prctile_baseline"],
-    )
-
-    spks = extraction.dcnv.oasis(
-        F=dF, batch_size=ops["batch_size"], tau=ops["tau"], fs=ops["fs"]
-    )
-
-    return F, Fneu, F_chan2, Fneu_chan2, spks, ops, manual_roi_stats
+def median_pix(ypix, xpix):
+    ymed, xmed = np.median(ypix), np.median(xpix)
+    imin = np.argmin((xpix - xmed) ** 2 + (ypix - ymed) ** 2)
+    return [ypix[imin], xpix[imin]]
 
 
 def get_stat0_add_roi(ops, posx, posy, sizex, sizey):
@@ -102,7 +24,6 @@ def get_stat0_add_roi(ops, posx, posy, sizex, sizey):
     xrange += int(np.floor(sizex / 2))
     yrange += int(np.floor(sizey / 2))
 
-    ellipse = np.zeros((yrange.size, xrange.size), np.bool)
     x, y = np.meshgrid(np.arange(0, xrange.size, 1), np.arange(0, yrange.size, 1))
     ellipse = (
         (y - sizey / 2) ** 2 / (sizey / 2) ** 2
@@ -114,13 +35,158 @@ def get_stat0_add_roi(ops, posx, posy, sizex, sizey):
     ellipse = ellipse[np.logical_and(yrange >= 0, yrange < ops["Ly"]), :]
     yrange = yrange[np.logical_and(yrange >= 0, yrange < ops["Ly"])]
 
-    med = [sizex, sizey]
     x, y = np.meshgrid(xrange, yrange)
     ypix = y[ellipse].flatten()
     xpix = x[ellipse].flatten()
-    lam = np.ones(ypix.shape)
+    return {"ypix": ypix, "xpix": xpix, "lam": np.ones(ypix.shape, np.float32)}
 
-    return [{"ypix": ypix, "xpix": xpix, "lam": lam, "npix": ypix.size, "med": med}]
+
+def merge_stat(stat, ids):
+    merged_cells = np.unique(np.array(ids))
+    ypix = np.concatenate([stat[n]["ypix"] for n in merged_cells])
+    xpix = np.concatenate([stat[n]["xpix"] for n in merged_cells])
+    lam = np.concatenate([stat[n]["lam"] for n in merged_cells])
+
+    # remove overlaps from merged cells regions
+    _, goodi = np.unique(np.stack((ypix, xpix), axis=1), return_index=True, axis=0)
+    lam = lam[goodi]
+    return {
+        "ypix": ypix[goodi],
+        "xpix": xpix[goodi],
+        "lam": lam / lam.sum() * merged_cells.size,
+        "chan2_prob": -1,
+        "inmerge": -1,
+    }
+
+
+def roi_diameter(ops):
+    if "aspect" in ops:
+        return int(ops["aspect"] * 10), 10
+    d0 = ops["diameter"]
+    return (d0, d0) if isinstance(d0, int) else tuple(d0)
+
+
+def soma_crop(ypix, xpix, lam, med):
+    if ypix.size <= 10:
+        return np.ones(ypix.size, bool)
+    dists = ((ypix - med[0]) ** 2 + (xpix - med[1]) ** 2) ** 0.5
+    radii = np.arange(0, dists.max(), 1)
+    area = np.array([lam[dists < r].sum() for r in radii])
+    darea = np.diff(area)
+    radius = radii[-1]
+    threshold = darea.max() / 3
+    above = np.nonzero(darea > threshold)[0]
+    if above.size:
+        below = np.nonzero(darea[above[0] :] < threshold)[0]
+        if below.size:
+            radius = radii[below[0] + above[0]]
+    crop = dists < radius
+    return crop if crop.sum() else np.ones(ypix.size, bool)
+
+
+def ellipse_radius(ypix, xpix, lam, med, dy, dx, thres=2):
+    """Semi-major axis of the 2-sigma gaussian fit to the soma crop, in pixels."""
+    crop = soma_crop(ypix, xpix, lam, med)
+    y, x, lam = ypix[crop] / dy, xpix[crop] / dx, lam[crop].astype(float)
+    positive = lam > 0
+    y, x, lam = y[positive], x[positive], lam[positive]
+    lam = lam / lam.sum()
+    yx = np.stack((y, x))
+    mu = (lam * yx).sum(axis=1)
+    yx = (yx - mu[:, np.newaxis]) * lam**0.5
+    radii = thres * np.maximum(0, np.real(np.linalg.eigvals(yx @ yx.T))) ** 0.5
+    return float(radii.max() * np.mean((dx, dy)))
+
+
+def complete_stat(stat0, stat, ops):
+    """Fill the fields read on a new ROI, leaving the existing ones untouched."""
+    Ly, Lx = ops["Ly"], ops["Lx"]
+    occupied = np.zeros((Ly, Lx), bool)
+    for s in stat:
+        occupied[s["ypix"], s["xpix"]] = True
+    ypix, xpix, lam = stat0["ypix"], stat0["xpix"], stat0["lam"]
+    stat0["med"] = median_pix(ypix, xpix)
+    stat0["npix"] = ypix.size
+    stat0["overlap"] = occupied[ypix, xpix]
+    stat0["radius"] = ellipse_radius(ypix, xpix, lam, stat0["med"], *roi_diameter(ops))
+    return stat0
+
+
+def extend_roi(ypix, xpix, Ly, Lx, niter):
+    for _ in range(niter):
+        yx = np.array(
+            (
+                (ypix, ypix, ypix, ypix - 1, ypix + 1),
+                (xpix, xpix + 1, xpix - 1, xpix, xpix),
+            )
+        ).reshape(2, -1)
+        yu = np.unique(yx, axis=1)
+        inside = np.all((yu[0] >= 0, yu[0] < Ly, yu[1] >= 0, yu[1] < Lx), axis=0)
+        ypix, xpix = yu[:, inside]
+    return ypix, xpix
+
+
+def cell_pix_map(stat, Ly, Lx, lam_percentile=50.0):
+    lammap = np.zeros((Ly, Lx))
+    for s in stat:
+        lammap[s["ypix"], s["xpix"]] = np.maximum(
+            lammap[s["ypix"], s["xpix"]], s["lam"]
+        )
+    radius = np.median([s["radius"] for s in stat])
+    filt = percentile_filter(lammap, percentile=lam_percentile, size=int(radius * 5))
+    return ~np.logical_or(lammap < filt, lammap == 0)
+
+
+def neuropil_pixels(ypix, xpix, cell_pix, inner_radius, min_pixels, extend_by=5):
+    Ly, Lx = cell_pix.shape
+    ypix, xpix = extend_roi(ypix, xpix, Ly, Lx, inner_radius)
+    nring = np.sum(~cell_pix[ypix, xpix])
+    ypix1, xpix1 = ypix, xpix
+    for _ in range(100):
+        if np.sum(~cell_pix[ypix1, xpix1]) - nring > min_pixels:
+            break
+        ypix1, xpix1 = np.meshgrid(
+            np.arange(
+                max(0, ypix1.min() - extend_by), min(Ly, ypix1.max() + extend_by + 1)
+            ),
+            np.arange(
+                max(0, xpix1.min() - extend_by), min(Lx, xpix1.max() + extend_by + 1)
+            ),
+            indexing="ij",
+        )
+    mask = np.zeros((Ly, Lx), bool)
+    mask[ypix1, xpix1] = ~cell_pix[ypix1, xpix1]
+    mask[ypix, xpix] = False
+    return np.nonzero(mask)
+
+
+def extract_traces(ops, stat, targets):
+    """F and Fneu of `targets` from the registered binary; `stat` holds every ROI."""
+    Ly, Lx = ops["Ly"], ops["Lx"]
+    reg_file = ops["reg_file"]
+    if not os.path.exists(reg_file):
+        raise FileNotFoundError(f"registered movie not found: {reg_file}")
+    nframes = os.path.getsize(reg_file) // (Ly * Lx * 2)
+    mov = np.memmap(reg_file, dtype=np.int16, mode="r", shape=(nframes, Ly, Lx))
+    cell_pix = cell_pix_map(stat, Ly, Lx)
+
+    F = np.zeros((len(targets), nframes), np.float32)
+    Fneu = np.zeros_like(F)
+    for i, s in enumerate(targets):
+        keep = slice(None) if ops.get("allow_overlap", False) else ~s["overlap"]
+        lam = s["lam"][keep].astype(np.float32)
+        if lam.size > 0:
+            pixels = mov[:, s["ypix"][keep], s["xpix"][keep]].astype(np.float32)
+            F[i] = pixels @ (lam / lam.sum())
+        ny, nx = neuropil_pixels(
+            s["ypix"],
+            s["xpix"],
+            cell_pix,
+            ops.get("inner_neuropil_radius", 2),
+            ops.get("min_neuropil_pixels", 350),
+        )
+        Fneu[i] = mov[:, ny, nx].astype(np.float32).mean(axis=1)
+    return F, Fneu
 
 
 def set_nwbfile(ops, iscell, edit_roi_data: EditRoiData, function_id):

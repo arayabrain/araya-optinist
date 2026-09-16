@@ -134,7 +134,7 @@ async def commit_edit(
 ):
     filepath = resolve_absolute_output_path(filepath)
     try:
-        EditRoiUtils.execute(filepath, remote_bucket_name)
+        await EditRoiUtils.execute(filepath, remote_bucket_name)
 
     except RemoteStorageLockError as e:
         logger.error(e)

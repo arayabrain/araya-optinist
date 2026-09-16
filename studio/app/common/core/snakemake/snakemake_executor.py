@@ -1,10 +1,9 @@
 import asyncio
 import os
 import time
-from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from snakemake.api import (
     DAGSettings,
@@ -37,7 +36,6 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import get_pickle_file, join_filepath
-from studio.app.common.core.workflow.workflow import Edge, Node
 from studio.app.common.core.workflow.workflow_result import WorkflowResult
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
@@ -343,48 +341,6 @@ def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple
         )
 
     return observe_success, observe_lock_conflict, upload_confirmed
-
-
-def delete_dependencies(
-    workspace_id: str,
-    unique_id: str,
-    smk_params: SmkParam,
-    nodeDict: Dict[str, Node],
-    edgeDict: Dict[str, Edge],
-):
-    queue = deque()
-
-    for param in smk_params.forcerun:
-        queue.append(param.nodeId)
-
-    while True:
-        # terminate condition
-        if len(queue) == 0:
-            break
-
-        # delete pickle
-        node_id = queue.pop()
-        algo_name = nodeDict[node_id].data.label
-
-        pickle_filepath = join_filepath(
-            [
-                DIRPATH.OUTPUT_DIR,
-                get_pickle_file(
-                    workspace_id=workspace_id,
-                    unique_id=unique_id,
-                    node_id=node_id,
-                    algo_name=algo_name,
-                ),
-            ]
-        )
-
-        if os.path.exists(pickle_filepath):
-            os.remove(pickle_filepath)
-
-        # 全てのedgeを見て、node_idがsourceならtargetをqueueに追加する
-        for edge in edgeDict.values():
-            if node_id == edge.source:
-                queue.append(edge.target)
 
 
 def delete_procs_dependencies(

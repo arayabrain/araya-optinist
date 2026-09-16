@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
+from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
 )
@@ -24,11 +25,12 @@ WORKSPACE = f"{DIRPATH.OUTPUT_DIR}/non_cell_projection_ws"
 
 @pytest.fixture(autouse=True)
 def no_remote_storage(monkeypatch):
-    # commit() uploads to S3 wherever remote storage is configured, which the
-    # projection has nothing to do with.
+    # commit() uploads to S3 wherever remote storage is configured and rewrites
+    # whole.nwb; neither has anything to do with the projection.
     monkeypatch.setattr(
         RemoteStorageController, "is_available", staticmethod(lambda: False)
     )
+    monkeypatch.setattr(Runner, "save_all_nwb", classmethod(lambda cls, *a: None))
 
 
 @pytest.fixture
@@ -42,10 +44,22 @@ def node_dirpath(request):
 def build_node(node_dirpath, iscell):
     os.makedirs(node_dirpath, exist_ok=True)
 
-    # last_output is empty so commit() stops after the projections: whole.nwb is
-    # a separate concern from the one under test.
-    with open(f"{os.path.dirname(node_dirpath)}/snakemake.yaml", "w") as f:
-        yaml.dump({"last_output": []}, f)
+    # commit() reads workflow.yaml to find the nodes downstream of this one; a
+    # lone node has none, so nothing else is touched.
+    node_id = os.path.basename(node_dirpath)
+    node = {
+        "type": "AlgorithmNode",
+        "data": {
+            "label": "vacant_roi",
+            "param": {},
+            "path": "vacant_roi",
+            "type": "algorithm",
+        },
+        "position": {"x": 0, "y": 0},
+        "style": {},
+    }
+    with open(f"{os.path.dirname(node_dirpath)}/workflow.yaml", "w") as f:
+        yaml.dump({"nodeDict": {node_id: node}, "edgeDict": {}}, f)
 
     im = np.full((NUM_ROI, *SHAPE), np.nan)
     for i in range(NUM_ROI):

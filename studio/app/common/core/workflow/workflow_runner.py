@@ -15,7 +15,6 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import FlowConfig, ForceRun, Rule, SmkParam
 from studio.app.common.core.snakemake.snakemake_executor import (
-    delete_dependencies,
     delete_procs_dependencies,
     snakemake_execute,
 )
@@ -46,6 +45,7 @@ from studio.app.common.core.workflow.workflow import (
     RunItem,
     WorkflowRunStatus,
 )
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
 from studio.app.common.core.workflow.workflow_params import get_typecheck_params
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
@@ -278,7 +278,7 @@ class WorkflowRunner:
             delete_dependencies(
                 workspace_id=self.workspace_id,
                 unique_id=self.unique_id,
-                smk_params=snakemake_params,
+                node_ids=[p.nodeId for p in snakemake_params.forcerun],
                 nodeDict=self.nodeDict,
                 edgeDict=self.edgeDict,
             )

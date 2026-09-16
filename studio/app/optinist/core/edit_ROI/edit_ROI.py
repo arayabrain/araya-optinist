@@ -9,7 +9,6 @@ from fastapi import HTTPException, status
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageWriter,
@@ -19,9 +18,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_recent_updated_files
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
-from studio.app.common.core.workflow.workflow import ProcessType
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.dataclass.base import BaseData
-from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
 from studio.app.optinist.core.nwb.nwb_creater import overwrite_nwb
 from studio.app.optinist.dataclass import EditRoiData, IscellData, RoiData
@@ -285,7 +284,8 @@ class EditROI:
 
         self.__update_pickle_for_roi_edition(self.pickle_file_path, info)
         self.__save_json(info)
-        self.__update_whole_nwb(info)
+        self.__update_whole_nwb()
+        self.__invalidate_downstream()
 
         (
             os.remove(self.tmp_pickle_file_path)
@@ -354,28 +354,24 @@ class EditROI:
                 return file_name
         return None
 
-    def __update_whole_nwb(self, output_info):
-        smk_config = SmkConfigReader.read(
-            self.workflow_ids.workspace_id, self.workflow_ids.unique_id
-        )
+    def __update_whole_nwb(self):
+        whole_nwb_path = join_filepath([self.workflow_dirpath, "whole.nwb"])
+        # save_all_nwb pops "input" from the dict it is given
+        Runner.save_all_nwb(whole_nwb_path, dict(self.output_info["nwbfile"]))
 
-        # get last_outputs
-        last_outputs = smk_config.get("last_output")
-
-        # delete data not to be processed from the list of last_output
-        excluded_last_output_keyword = f"/{ProcessType.POST_PROCESS.id}/"
-        effective_last_outputs = [
-            v for v in last_outputs if excluded_last_output_keyword not in v
+    def __invalidate_downstream(self):
+        """Delete downstream node results so the next RUN recomputes them."""
+        workspace_id = self.workflow_ids.workspace_id
+        unique_id = self.workflow_ids.unique_id
+        workflow = WorkflowConfigReader.read(workspace_id, unique_id)
+        children = [
+            edge.target
+            for edge in workflow.edgeDict.values()
+            if edge.source == self.function_id
         ]
-
-        for last_output in effective_last_outputs:
-            last_output_path = join_filepath([DIRPATH.OUTPUT_DIR, last_output])
-            last_output_info = self.__update_pickle_for_roi_edition(
-                last_output_path, output_info
-            )
-            whole_nwb_path = join_filepath([self.workflow_dirpath, "whole.nwb"])
-
-            Runner.save_all_nwb(whole_nwb_path, last_output_info["nwbfile"])
+        delete_dependencies(
+            workspace_id, unique_id, children, workflow.nodeDict, workflow.edgeDict
+        )
 
     def __save_json(self, output_info):
         for k, v in output_info.items():
@@ -396,4 +392,3 @@ class EditROI:
             else:
                 self.output_info[k] = v
         PickleWriter.write(pickle_path=file_path, info=self.output_info)
-        return self.output_info

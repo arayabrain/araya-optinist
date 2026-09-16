@@ -31,6 +31,10 @@ export const algorithmNodeSlice = createSlice({
   name: ALGORITHM_NODE_SLICE_NAME,
   initialState,
   reducers: {
+    markNodeUpdated: (state, action: PayloadAction<{ nodeId: string }>) => {
+      const node = state[action.payload.nodeId]
+      if (node) node.isUpdate = true
+    },
     updateParam: (
       state,
       action: PayloadAction<{
@@ -155,5 +159,5 @@ export const algorithmNodeSlice = createSlice({
   },
 })
 
-export const { updateParam } = algorithmNodeSlice.actions
+export const { updateParam, markNodeUpdated } = algorithmNodeSlice.actions
 export default algorithmNodeSlice.reducer

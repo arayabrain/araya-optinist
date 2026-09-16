@@ -32,6 +32,7 @@ import Switch from "@mui/material/Switch"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
+import { markNodeUpdated } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import {
   addRoi,
   cancelRoi,
@@ -71,6 +72,7 @@ import {
   selectImageItemEndIndex,
   selectRoiItemFilePath,
   selectRoiItemIndex,
+  selectRoiItemNodeId,
   selectImageItemDuration,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
@@ -202,6 +204,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
   )
   const meta = useSelector(selectImageMeta(path))
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const roiNodeId = useSelector(selectRoiItemNodeId(itemId))
 
   const refRoiFilePath = useRef(roiFilePath)
 
@@ -742,9 +745,13 @@ const ImagePlotChart = memo(function ImagePlotChart({
           getRoiData({ path: roiFilePath, workspaceId }),
         ).unwrap())
 
-      enqueueSnackbar("Successfully committed to Edit ROI.", {
-        variant: "success",
-      })
+      // Commit discards the downstream results on the server; flag those
+      // nodes for the next RUN the same way a changed parameter does
+      if (roiNodeId) dispatch(markNodeUpdated({ nodeId: roiNodeId }))
+      enqueueSnackbar(
+        "Successfully committed to Edit ROI. Run the workflow to update downstream results.",
+        { variant: "success" },
+      )
       resetTimeSeries()
       resetRoisClick(itemId)
     } catch (error) {
