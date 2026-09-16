@@ -150,16 +150,99 @@ describe("FilePathSelect", () => {
     )
 
     const combobox = screen.getByRole("combobox")
-    expect(combobox).toHaveTextContent("mean (eta)")
+    expect(combobox).toHaveTextContent(`mean (${ETA_B})`)
     expect(combobox).toHaveAttribute("title", `mean (${ETA_B})`)
 
-    // the nanoid is its own element, so only the shared text can be ellipsized
-    const uid = screen.getByText("abwqe9qgh1")
-    expect(uid).toBeInTheDocument()
+    // jsdom has no layout, so this pins the flex rules, not the rendered pixels
+    const uid = screen.getByText("abwqe9qgh1)")
     expect(getComputedStyle(uid).flexShrink).toBe("0")
+    const text = screen.getByText("mean (eta_")
+    expect(getComputedStyle(text).textOverflow).toBe("ellipsis")
+    expect(getComputedStyle(text).overflow).toBe("hidden")
   })
 
-  it("heads an input node with its id and keeps the file name on the item", () => {
+  it("keeps an unprefixed id in the truncatable text with the file name first", () => {
+    const state = buildState({
+      flowNodes: [
+        { id: "input_kt62vwavq2", data: { label: "data.csv", type: "input" } },
+      ],
+      inputNode: {
+        input_kt62vwavq2: {
+          fileType: "csv",
+          selectedFilePath: "/input/data.csv",
+          param: {},
+        },
+      },
+    })
+    renderSelect(state, {
+      selectedNodeId: "input_kt62vwavq2",
+      selectedFilePath: "/input/data.csv",
+    })
+
+    // one box: the file name ellipsises last, the id is what gets clipped
+    expect(screen.getByText("data.csv (input_kt62vwavq2)")).toBeInTheDocument()
+    expect(screen.queryByText(/^kt62vwavq2\)$/)).not.toBeInTheDocument()
+  })
+
+  it("tells two input nodes holding the same file apart", () => {
+    const state = buildState({
+      flowNodes: [
+        { id: "input_aaaaaaaaaa", data: { label: "dup.csv", type: "input" } },
+        { id: "input_bbbbbbbbbb", data: { label: "dup.csv", type: "input" } },
+      ],
+      inputNode: {
+        input_aaaaaaaaaa: {
+          fileType: "csv",
+          selectedFilePath: "/input/dup.csv",
+          param: {},
+        },
+        input_bbbbbbbbbb: {
+          fileType: "csv",
+          selectedFilePath: "/input/dup.csv",
+          param: {},
+        },
+      },
+    })
+    const { onSelect, view } = renderSelect(state)
+    openMenu()
+
+    expect(screen.getByText("dup.csv (input_aaaaaaaaaa)")).toBeInTheDocument()
+    expect(screen.getByText("dup.csv (input_bbbbbbbbbb)")).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole("option", { name: "dup.csv" })[1])
+    expect(onSelect).toHaveBeenCalledWith(
+      "input_bbbbbbbbbb",
+      "/input/dup.csv",
+      DATA_TYPE_SET.CSV,
+      undefined,
+    )
+
+    view.rerender(
+      <Provider store={mockStore(state)}>
+        <FilePathSelect
+          selectedNodeId="input_bbbbbbbbbb"
+          selectedFilePath="/input/dup.csv"
+          onSelect={onSelect}
+        />
+      </Provider>,
+    )
+    expect(screen.getByRole("combobox")).toHaveTextContent(
+      "dup.csv (input_bbbbbbbbbb)",
+    )
+  })
+
+  it("heads a result whose node is no longer on the canvas with its bare id", () => {
+    const state = buildState({
+      flowNodes: [],
+      runResult: { orphan_9: etaOutputs("orphan_9") },
+    })
+    renderSelect(state)
+    openMenu()
+
+    expect(screen.getByText("orphan_9")).toBeInTheDocument()
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument()
+  })
+
+  it("heads an input node with its name and id and keeps the file name on the item", () => {
     const state = buildState({
       flowNodes: [
         {
@@ -180,12 +263,20 @@ describe("FilePathSelect", () => {
       selectedFilePath: "/input/sample_mouse2p_image.tiff",
     })
 
-    expect(screen.getByRole("combobox")).toHaveTextContent(
-      "sample_mouse2p_image.tiff",
+    const combobox = screen.getByRole("combobox")
+    expect(combobox).toHaveTextContent(
+      "sample_mouse2p_image.tiff (input_kt62vwavq2)",
+    )
+    expect(combobox).toHaveAttribute(
+      "title",
+      "sample_mouse2p_image.tiff (input_kt62vwavq2)",
     )
 
     openMenu()
-    expect(screen.getByText("input_kt62vwavq2")).toBeInTheDocument()
+    // header in the menu plus the closed control behind it
+    expect(
+      screen.getAllByText("sample_mouse2p_image.tiff (input_kt62vwavq2)"),
+    ).toHaveLength(2)
     fireEvent.click(
       screen.getByRole("option", { name: "sample_mouse2p_image.tiff" }),
     )
@@ -200,7 +291,10 @@ describe("FilePathSelect", () => {
   it("lists every file of a multi-file input node", () => {
     const state = buildState({
       flowNodes: [
-        { id: "input_zz1", data: { label: "image.tiff", type: "input" } },
+        {
+          id: "input_zz1",
+          data: { label: "image1.tiff ... and 1 files", type: "input" },
+        },
       ],
       inputNode: {
         input_zz1: {
@@ -219,7 +313,9 @@ describe("FilePathSelect", () => {
     expect(
       view.baseElement.querySelectorAll(".MuiListSubheader-root"),
     ).toHaveLength(1)
-    expect(screen.getByText("input_zz1")).toBeInTheDocument()
+    expect(
+      screen.getByText("image1.tiff ... and 1 files (input_zz1)"),
+    ).toBeInTheDocument()
     expect(
       screen.getByRole("option", { name: "image1.tiff" }),
     ).toBeInTheDocument()
@@ -231,6 +327,22 @@ describe("FilePathSelect", () => {
         String(args[0]).includes("same key"),
       ),
     ).toBe(false)
+  })
+
+  it("omits an input node whose file list is empty", () => {
+    const state = buildState({
+      flowNodes: [{ id: "input_empty", data: { label: "", type: "input" } }],
+      inputNode: {
+        input_empty: { fileType: "image", selectedFilePath: [], param: {} },
+      },
+    })
+    const { view } = renderSelect(state)
+
+    expect(screen.getByText("no data")).toBeInTheDocument()
+    openMenu()
+    expect(
+      view.baseElement.querySelectorAll(".MuiListSubheader-root"),
+    ).toHaveLength(0)
   })
 
   it("omits nodes whose outputs are all filtered out by dataType", () => {
@@ -312,9 +424,21 @@ describe("FilePathSelect", () => {
       flowNodes: [{ id: legacyId, data: { label: "eta", type: "algorithm" } }],
       runResult: { [legacyId]: etaOutputs(legacyId) },
     })
-    renderSelect(state)
+    const { onSelect, view } = renderSelect(state)
     openMenu()
 
     expect(screen.getByText(`eta (${legacyId})`)).toBeInTheDocument()
+
+    view.rerender(
+      <Provider store={mockStore(state)}>
+        <FilePathSelect
+          selectedNodeId={legacyId}
+          selectedFilePath={`/output/${legacyId}/mean.json`}
+          onSelect={onSelect}
+        />
+      </Provider>,
+    )
+    // no name prefix to split on, so the whole id stays in the one text box
+    expect(screen.getByText(`mean (${legacyId})`)).toBeInTheDocument()
   })
 })

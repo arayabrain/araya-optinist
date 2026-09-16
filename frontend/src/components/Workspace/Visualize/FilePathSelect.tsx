@@ -26,21 +26,19 @@ const toDisplayDataValue = (
   filePath: string | null | undefined,
 ) => (nodeId && filePath ? `${nodeId}/${filePath}` : "")
 
-// the nanoid suffix is the only part that tells two runs of one algorithm apart
-const toNodeIdParts = (nodeId: string, nodeName: string | undefined) =>
-  nodeName && nodeId.startsWith(`${nodeName}_`)
-    ? {
-        headerLabel: nodeId,
-        name: nodeName,
-        uid: nodeId.slice(nodeName.length + 1),
-      }
-    : {
-        headerLabel: nodeName ? `${nodeName} (${nodeId})` : nodeId,
-        name: nodeName,
-        uid: nodeId,
-      }
+// The nanoid is the only part that tells two runs of one algorithm apart, so
+// an id that carries its name prefix is split there. Input and legacy ids are
+// not split: the group header and the tooltip already disambiguate them.
+const toNodeIdParts = (nodeId: string, nodeName: string | undefined) => {
+  const prefixed = !!nodeName && nodeId.startsWith(`${nodeName}_`)
+  return {
+    headerLabel: prefixed || !nodeName ? nodeId : `${nodeName} (${nodeId})`,
+    idHead: prefixed ? `${nodeName}_` : "",
+    uid: prefixed ? nodeId.slice(nodeName.length + 1) : "",
+  }
+}
 
-type SelectedLabel = { text: string; uid?: string; title: string }
+type SelectedLabel = { text: string; uid: string; title: string }
 
 export const FilePathSelect: FC<{
   dataType?: DATA_TYPE
@@ -149,9 +147,19 @@ export const FilePathSelect: FC<{
 
   const menuItemList: ReactElement[] = []
   const selectedLabelByValue = new Map<string, SelectedLabel>()
-  const setSelectedLabel = (value: string, selectedLabel: SelectedLabel) => {
+  const setSelectedLabel = (
+    value: string,
+    itemText: string,
+    nodeId: string,
+    idParts: ReturnType<typeof toNodeIdParts>,
+  ) => {
     if (value) {
-      selectedLabelByValue.set(value, selectedLabel)
+      const { idHead, uid } = idParts
+      selectedLabelByValue.set(value, {
+        text: uid ? `${itemText} (${idHead}` : `${itemText} (${nodeId})`,
+        uid: uid && `${uid})`,
+        title: `${itemText} (${nodeId})`,
+      })
     }
   }
   inputNodeFilePathInfoList.forEach((pathInfo) => {
@@ -159,16 +167,17 @@ export const FilePathSelect: FC<{
     if (Array.isArray(filePath) && filePath.length === 0) {
       return
     }
+    const idParts = toNodeIdParts(pathInfo.nodeId, pathInfo.nodeName)
     menuItemList.push(
       <ListSubheader key={`header/${pathInfo.nodeId}`}>
-        <Divider textAlign="center">{pathInfo.nodeId}</Divider>
+        <Divider textAlign="center">{idParts.headerLabel}</Divider>
       </ListSubheader>,
     )
     if (Array.isArray(filePath)) {
       filePath.forEach((pathElm, index) => {
         const value = toDisplayDataValue(pathInfo.nodeId, pathElm)
         const fileName = pathElm ? getFileName(pathElm) : ""
-        setSelectedLabel(value, { text: fileName, title: fileName })
+        setSelectedLabel(value, fileName, pathInfo.nodeId, idParts)
         menuItemList.push(
           <MenuItem
             value={value}
@@ -183,8 +192,7 @@ export const FilePathSelect: FC<{
       })
     } else {
       const value = toDisplayDataValue(pathInfo.nodeId, filePath)
-      const inputLabel = pathInfo.nodeName ?? ""
-      setSelectedLabel(value, { text: inputLabel, title: inputLabel })
+      setSelectedLabel(value, pathInfo.nodeName ?? "", pathInfo.nodeId, idParts)
       menuItemList.push(
         <MenuItem
           value={value}
@@ -201,24 +209,15 @@ export const FilePathSelect: FC<{
   algorithmNodeOutputPathInfoList
     .filter((pathInfo) => pathInfo.paths.length > 0)
     .forEach((pathInfo) => {
-      const { headerLabel, name, uid } = toNodeIdParts(
-        pathInfo.nodeId,
-        pathInfo.nodeName,
-      )
+      const idParts = toNodeIdParts(pathInfo.nodeId, pathInfo.nodeName)
       menuItemList.push(
         <ListSubheader key={`header/${pathInfo.nodeId}`}>
-          <Divider textAlign="center">{headerLabel}</Divider>
+          <Divider textAlign="center">{idParts.headerLabel}</Divider>
         </ListSubheader>,
       )
       pathInfo.paths.forEach((outputPath) => {
         const value = toDisplayDataValue(pathInfo.nodeId, outputPath.filePath)
-        setSelectedLabel(value, {
-          text: name
-            ? `${outputPath.outputKey} (${name})`
-            : outputPath.outputKey,
-          uid,
-          title: `${outputPath.outputKey} (${pathInfo.nodeId})`,
-        })
+        setSelectedLabel(value, outputPath.outputKey, pathInfo.nodeId, idParts)
         menuItemList.push(
           <MenuItem
             value={value}
@@ -249,7 +248,7 @@ export const FilePathSelect: FC<{
         value={selectedValue}
         renderValue={() =>
           selectedLabel && (
-            <Box display="flex" gap={0.5} alignItems="baseline">
+            <Box display="flex" alignItems="baseline">
               <Box overflow="hidden" textOverflow="ellipsis">
                 {selectedLabel.text}
               </Box>
