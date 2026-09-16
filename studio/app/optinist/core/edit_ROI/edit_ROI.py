@@ -270,8 +270,8 @@ class EditROI:
         non_cell_roi_file_name = self.__non_cell_roi_file_name()
         if non_cell_roi_file_name:
             im = info["edit_roi_data"].im
-            # Only ROIs the fluorescence output has a record for: the
-            # delete-every-ROI path empties F while im keeps its rows, and
+            # Only ROIs the fluorescence output has a record for: a node an
+            # older release committed can hold fewer traces than im rows, and
             # drawing those would offer a click that answers 500.
             has_trace = np.arange(len(im)) < len(info["fluorescence"].data)
             non_cell_im = im[(iscell == CellType.NON_ROI) & has_trace]

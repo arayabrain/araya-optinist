@@ -740,20 +740,26 @@ const ImagePlotChart = memo(function ImagePlotChart({
     if (!roiFilePath || workspaceId === undefined) return
     try {
       await dispatch(commitRoi({ path: roiFilePath, workspaceId })).unwrap()
-      workspaceId &&
-        (await dispatch(
-          getRoiData({ path: roiFilePath, workspaceId }),
-        ).unwrap())
 
       // Commit discards the downstream results on the server; flag those
-      // nodes for the next RUN the same way a changed parameter does
+      // nodes for the next RUN the same way a changed parameter does, before
+      // the refresh below, which can fail on its own
       if (roiNodeId) dispatch(markNodeUpdated({ nodeId: roiNodeId }))
       enqueueSnackbar(
         "Successfully committed to Edit ROI. Run the workflow to update downstream results.",
         { variant: "success" },
       )
-      resetTimeSeries()
-      resetRoisClick(itemId)
+
+      try {
+        await dispatch(getRoiData({ path: roiFilePath, workspaceId })).unwrap()
+        resetTimeSeries()
+        resetRoisClick(itemId)
+      } catch (error) {
+        enqueueSnackbar(
+          "Committed, but the ROI image could not be reloaded. Reload the page.",
+          { variant: "warning" },
+        )
+      }
     } catch (error) {
       enqueueSnackbar("Failed to commit Edit ROI.", { variant: "error" })
     } finally {

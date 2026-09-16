@@ -10,6 +10,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
+    RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import resolve_absolute_output_path
@@ -31,6 +32,19 @@ def roi_filepath(filepath: str, workspace_id: Union[int, str]) -> str:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="filepath does not belong to the authorized workspace",
         )
+    return filepath
+
+
+def unlocked_roi_filepath(filepath: str = Depends(roi_filepath)) -> str:
+    """The same path, refused while a commit or a run is rewriting the experiment."""
+    ids = ExptOutputPathIds(os.path.dirname(filepath))
+    try:
+        RemoteSyncLockFileUtil.check_sync_lock_file(
+            ids.workspace_id, ids.unique_id, raise_error=True
+        )
+    except RemoteStorageLockError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
     return filepath
 
 
@@ -96,7 +110,7 @@ async def status_roi(
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def add_roi(pos: RoiPos, filepath: str = Depends(roi_filepath)):
+async def add_roi(pos: RoiPos, filepath: str = Depends(unlocked_roi_filepath)):
     EditROI(file_path=filepath).add(pos)
     return True
 
@@ -106,7 +120,7 @@ async def add_roi(pos: RoiPos, filepath: str = Depends(roi_filepath)):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def merge_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
+async def merge_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)):
     EditROI(file_path=filepath).merge(roi_list.ids)
     return True
 
@@ -116,7 +130,7 @@ async def merge_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def delete_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
+async def delete_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)):
     EditROI(file_path=filepath).delete(roi_list.ids)
     return True
 
@@ -126,7 +140,9 @@ async def delete_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def promote_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
+async def promote_roi(
+    roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)
+):
     EditROI(file_path=filepath).promote(roi_list.ids)
     return True
 
@@ -161,6 +177,6 @@ async def commit_edit(
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def cancel_edit(filepath: str = Depends(roi_filepath)):
+async def cancel_edit(filepath: str = Depends(unlocked_roi_filepath)):
     EditROI(file_path=filepath).cancel()
     return True

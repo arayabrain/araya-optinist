@@ -41,7 +41,7 @@ def node_dirpath(request):
     shutil.rmtree(WORKSPACE, ignore_errors=True)
 
 
-def build_node(node_dirpath, iscell):
+def build_node(node_dirpath, iscell, num_trace=NUM_ROI):
     os.makedirs(node_dirpath, exist_ok=True)
 
     # commit() reads workflow.yaml to find the nodes downstream of this one; a
@@ -70,7 +70,7 @@ def build_node(node_dirpath, iscell):
         info={
             "edit_roi_data": EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), im=im),
             "iscell": IscellData(np.array(iscell)),
-            "fluorescence": FluoData(np.zeros((NUM_ROI, NUM_FRAME))),
+            "fluorescence": FluoData(np.zeros((num_trace, NUM_FRAME))),
             "nwbfile": {},
         },
     )
@@ -134,21 +134,36 @@ async def test_non_cell_roi_is_all_nan_when_every_roi_is_a_cell(node_dirpath):
 
 @pytest.mark.asyncio
 async def test_non_cell_roi_excludes_rows_with_no_fluorescence_record(node_dirpath):
-    # Deleting every ROI empties F while im keeps its rows. Drawing those would
-    # offer a click that answers 500.
+    # A node an older release committed can hold fewer traces than im rows.
+    # Drawing those would offer a click that answers 500.
+    file_path = build_node(
+        node_dirpath, [CellType.ROI] * NUM_ROI, num_trace=NUM_ROI - 1
+    )
+
+    EditROI(file_path=file_path).delete([0, 1, 2])
+    await EditROI(file_path=file_path).commit()
+
+    assert drawn_ids(node_dirpath, "non_cell_roi") == [0, 1]
+    assert drawn_ids(node_dirpath, "cell_roi") == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_every_roi_keeps_them_all_promotable(node_dirpath):
+    # Delete-all keeps its rows and their traces, exactly as a partial delete
+    # does, so every ROI stays visible as a non-cell and can be promoted back.
     file_path = build_node(node_dirpath, [CellType.ROI] * NUM_ROI)
 
     EditROI(file_path=file_path).delete([0, 1, 2])
     await EditROI(file_path=file_path).commit()
 
-    assert drawn_ids(node_dirpath, "non_cell_roi") == []
+    assert drawn_ids(node_dirpath, "non_cell_roi") == [0, 1, 2]
     assert drawn_ids(node_dirpath, "cell_roi") == []
+    edit_roi = EditROI(file_path=file_path)
+    assert len(edit_roi.output_info["fluorescence"].data) == NUM_ROI
 
 
 @pytest.mark.asyncio
 async def test_deleting_the_last_cell_while_non_cells_remain_commits(node_dirpath):
-    # The wrapper's all-deleted special case does not fire while committed
-    # non-cells are present, so the normal path reduces an empty selection.
     file_path = build_node(
         node_dirpath, [CellType.ROI, CellType.NON_ROI, CellType.NON_ROI]
     )

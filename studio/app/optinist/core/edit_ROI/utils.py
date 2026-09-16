@@ -43,36 +43,42 @@ class EditRoiUtils:
         workspace_id = ids.workspace_id
         unique_id = ids.unique_id
 
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
-            # Check for remote-sync-lock-file
-            # - If lock file exists, an exception is raised (raise_error=True)
-            RemoteSyncLockFileUtil.check_sync_lock_file(
-                workspace_id, unique_id, raise_error=True
-            )
+        # The commit rewrites the node pickle, its JSON and whole.nwb in place, so
+        # the experiment takes the lock whether or not remote storage is enabled.
+        # - If lock file exists, an exception is raised (raise_error=True)
+        RemoteSyncLockFileUtil.check_sync_lock_file(
+            workspace_id, unique_id, raise_error=True
+        )
+        RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
 
-            # creating remote-sync-lock-file
-            RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+        try:
+            # Operate remote storage data.
+            if RemoteStorageController.is_available():
+                # creating remote_sync_status file.
+                # - The status file is used to pass bucket info to subsequent
+                #   processing.
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                    remote_bucket_name,
+                    workspace_id,
+                    unique_id,
+                    RemoteSyncAction.UPLOAD,
+                )
 
-            # creating remote_sync_status file.
-            # - The status file is used to pass bucket info to subsequent processing.
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-                remote_bucket_name,
-                workspace_id,
-                unique_id,
-                RemoteSyncAction.UPLOAD,
-            )
+            # Commit in a worker process: the node pickle carries the whole movie,
+            # and the event loop must stay responsive meanwhile.
+            with ProcessPoolExecutor(max_workers=1) as executor:
+                logger.info("start edit_roi commit process.")
 
-        # Commit in a worker process: the node pickle carries the whole movie,
-        # and the event loop must stay responsive meanwhile.
-        with ProcessPoolExecutor(max_workers=1) as executor:
-            logger.info("start edit_roi commit process.")
+                await asyncio.get_running_loop().run_in_executor(
+                    executor,
+                    partial(cls._execute_process, filepath, client_id=client_id),
+                )
 
-            await asyncio.get_running_loop().run_in_executor(
-                executor, partial(cls._execute_process, filepath, client_id=client_id)
-            )
-
-            logger.info("finish edit_roi commit process.")
+                logger.info("finish edit_roi commit process.")
+        finally:
+            # A commit that fails before EditROI.commit releases the lock itself
+            # would otherwise hold the experiment until the stale-lock timeout.
+            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
     @classmethod
     @with_client_id_context  # Automatically set client_id for logging

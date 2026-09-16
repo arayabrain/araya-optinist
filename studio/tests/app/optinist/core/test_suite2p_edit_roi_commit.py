@@ -123,3 +123,38 @@ def test_delete_only_touches_flags_and_not_the_movie(tmp_path):
     assert list(info["iscell"].data) == [CellType.NON_ROI, CellType.ROI]
     assert info["ops"].data["F"].shape == (2, FRAMES)
     assert data.delete_roi == [0]
+
+
+def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    roi_y, roi_x = disk(NEW_ROI.posy, NEW_ROI.posx, 3)
+    movie[:, roi_y, roi_x] += 500
+    ops, im = build(tmp_path, movie)
+
+    # every ROI deleted, then committed
+    data = EditRoiData(images=None, im=im)
+    for i in range(len(CELLS)):
+        data.temp_delete_roi[i] = None
+    iscell = np.array([CellType.TEMP_DELETE] * len(CELLS))
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    ops = info["ops"].data
+    assert list(info["iscell"].data) == [CellType.NON_ROI] * len(CELLS)
+    assert ops["F"].shape[0] == len(ops["stat"]) == len(info["edit_roi_data"].im)
+
+    # an ROI added afterwards must land on the same row in im and in F
+    data = info["edit_roi_data"]
+    data.im = np.vstack((data.im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    new_id = len(CELLS)
+    data.temp_add_roi[new_id] = NEW_ROI
+    iscell = np.append(info["iscell"].data, CellType.TEMP_ADD)
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    ops = info["ops"].data
+    assert ops["F"].shape[0] == ops["Fneu"].shape[0] == new_id + 1
+    assert len(ops["stat"]) == new_id + 1
+    assert len(info["fluorescence"].data) == len(info["edit_roi_data"].im)
+    assert list(info["iscell"].data) == [CellType.NON_ROI] * new_id + [CellType.ROI]
+    assert np.allclose(ops["F"][new_id], FLAT + 500, atol=1e-2)
