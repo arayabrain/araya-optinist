@@ -209,6 +209,7 @@ class EditROI:
         self.__save_json(info)
 
     async def commit(self):
+        self.__drop_deleted_pending_rows()
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.ROI
 
         if "suite2p" in self.function_id:
@@ -347,6 +348,42 @@ class EditROI:
             if os.path.exists(self.tmp_pickle_file_path)
             else None
         )
+
+    def __drop_deleted_pending_rows(self):
+        """A pending add or merge deleted before commit leaves no row behind.
+
+        Pending rows sit after the committed ones, so dropping them only renumbers
+        the pending tail: im pixel values, iscell and the temp_* indices.
+        """
+        data = self.tmp_data
+        num_committed = len(self.output_info.get("fluorescence").data)
+        pending = np.arange(self.num_cell) >= num_committed
+        drop = pending & (self.tmp_iscell == CellType.TEMP_DELETE)
+        # a source that a surviving pending merge still averages from must stay
+        for merged, parents in data.temp_merge_roi.items():
+            if self.tmp_iscell[int(merged)] != CellType.TEMP_DELETE:
+                drop[list(parents)] = False
+        if not drop.any():
+            return
+
+        keep = ~drop
+        new_index = np.cumsum(keep) - 1
+        data.im = data.im[keep]
+        for new, old in enumerate(np.nonzero(keep)[0]):
+            if new != old:
+                data.im[new][~np.isnan(data.im[new])] = new
+        self.tmp_iscell = self.tmp_iscell[keep]
+        data.temp_add_roi = {
+            int(new_index[i]): pos for i, pos in data.temp_add_roi.items() if keep[i]
+        }
+        data.temp_merge_roi = {
+            float(new_index[int(i)]): [int(new_index[p]) for p in parents]
+            for i, parents in data.temp_merge_roi.items()
+            if keep[int(i)]
+        }
+        data.temp_delete_roi = {
+            int(new_index[int(i)]): None for i in data.temp_delete_roi if keep[int(i)]
+        }
 
     def __non_cell_roi_file_name(self):
         for file_name in ("non_cell_roi", "noncell_roi"):
