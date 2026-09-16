@@ -44,7 +44,12 @@ describe("SnakemakeDownloadButton", () => {
     )
 
     // Find the Snakemake download button
-    const downloadButton = screen.getByRole("button")
+    const downloadButton = screen.getByRole("button", {
+      name: "Download Snakemake config",
+    })
+
+    // The testid and the clickable button are the same node
+    expect(screen.getByTestId("snakemake-download-button")).toBe(downloadButton)
 
     // Check if the button is enabled (i.e., clickable)
     expect(downloadButton).toBeEnabled()
@@ -59,7 +64,7 @@ describe("SnakemakeDownloadButton", () => {
 
     // Get the hidden anchor element using data-testid
     const link = await waitFor(() =>
-      screen.getByTestId("snakemake-download-link"),
+      screen.getByTestId("snakemake-download-anchor"),
     )
 
     // Check that the download attribute is set correctly
