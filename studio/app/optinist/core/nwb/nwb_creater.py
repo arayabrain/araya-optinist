@@ -21,6 +21,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
@@ -478,9 +479,8 @@ def save_nwb(save_path, input_config, config):
 
 
 def overwrite_nwbfile(save_path, config):
-    tmp_save_path = os.path.join(
-        os.path.dirname(save_path),
-        "tmp_" + os.path.basename(save_path),
+    tmp_save_path = join_filepath(
+        [os.path.dirname(save_path), "tmp_" + os.path.basename(save_path)]
     )
     with NWBHDF5IO(save_path, "r") as src_io:
         old_nwbfile = src_io.read()
@@ -494,8 +494,8 @@ def overwrite_nwbfile(save_path, config):
 
 def overwrite_nwb(config, save_path, nwb_file_name):
     # バックアップファイルを作成
-    nwb_path = os.path.join(save_path, nwb_file_name)
-    tmp_nwb_path = os.path.join(save_path, "tmp_" + nwb_file_name)
+    nwb_path = join_filepath([save_path, nwb_file_name])
+    tmp_nwb_path = join_filepath([save_path, "tmp_" + nwb_file_name])
 
     # NWBファイルの読み込み
     with NWBHDF5IO(nwb_path, "r") as io:
