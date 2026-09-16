@@ -1,4 +1,5 @@
 import os
+from typing import Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -19,6 +20,18 @@ from studio.app.optinist.schemas.roi import RoiList, RoiPos, RoiStatus
 router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
+
+
+def roi_filepath(filepath: str, workspace_id: Union[int, str]) -> str:
+    """The node path an ROI endpoint acts on, bound to the workspace it authorized."""
+    filepath = resolve_absolute_output_path(filepath)
+    path_workspace_id = ExptOutputPathIds(os.path.dirname(filepath)).workspace_id
+    if path_workspace_id != str(workspace_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="filepath does not belong to the authorized workspace",
+        )
+    return filepath
 
 
 async def ensure_experiment_synced_for_edit(
@@ -70,10 +83,9 @@ async def ensure_experiment_synced_for_edit(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def status_roi(
-    filepath: str,
+    filepath: str = Depends(roi_filepath),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    filepath = resolve_absolute_output_path(filepath)
     # Ensure experiment is synced before Edit ROI operations
     await ensure_experiment_synced_for_edit(filepath, remote_bucket_name)
     return EditROI(file_path=filepath).get_status()
@@ -84,8 +96,7 @@ async def status_roi(
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def add_roi(filepath: str, pos: RoiPos):
-    filepath = resolve_absolute_output_path(filepath)
+async def add_roi(pos: RoiPos, filepath: str = Depends(roi_filepath)):
     EditROI(file_path=filepath).add(pos)
     return True
 
@@ -95,8 +106,7 @@ async def add_roi(filepath: str, pos: RoiPos):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def merge_roi(filepath: str, roi_list: RoiList):
-    filepath = resolve_absolute_output_path(filepath)
+async def merge_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
     EditROI(file_path=filepath).merge(roi_list.ids)
     return True
 
@@ -106,8 +116,7 @@ async def merge_roi(filepath: str, roi_list: RoiList):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def delete_roi(filepath: str, roi_list: RoiList):
-    filepath = resolve_absolute_output_path(filepath)
+async def delete_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
     EditROI(file_path=filepath).delete(roi_list.ids)
     return True
 
@@ -117,8 +126,7 @@ async def delete_roi(filepath: str, roi_list: RoiList):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def promote_roi(filepath: str, roi_list: RoiList):
-    filepath = resolve_absolute_output_path(filepath)
+async def promote_roi(roi_list: RoiList, filepath: str = Depends(roi_filepath)):
     EditROI(file_path=filepath).promote(roi_list.ids)
     return True
 
@@ -129,10 +137,9 @@ async def promote_roi(filepath: str, roi_list: RoiList):
     dependencies=[Depends(is_workspace_owner)],
 )
 async def commit_edit(
-    filepath: str,
+    filepath: str = Depends(roi_filepath),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    filepath = resolve_absolute_output_path(filepath)
     try:
         await EditRoiUtils.execute(filepath, remote_bucket_name)
 
@@ -154,7 +161,6 @@ async def commit_edit(
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def cancel_edit(filepath: str):
-    filepath = resolve_absolute_output_path(filepath)
+async def cancel_edit(filepath: str = Depends(roi_filepath)):
     EditROI(file_path=filepath).cancel()
     return True
