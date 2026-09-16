@@ -179,7 +179,7 @@ describe("FilePathSelect", () => {
       selectedFilePath: "/input/data.csv",
     })
 
-    // one box: the file name ellipsises last, the id is what gets clipped
+    // one box: the file name is clipped last, the id is what gets cut off
     expect(screen.getByText("data.csv (input_kt62vwavq2)")).toBeInTheDocument()
     expect(screen.queryByText(/^kt62vwavq2\)$/)).not.toBeInTheDocument()
   })
