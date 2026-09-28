@@ -34,7 +34,7 @@
 
 5. **Recovery points are created before the apply, and closed deliberately afterwards**
    - A manual snapshot and a retained parameter group of the outgoing family are both prerequisites, and both are verified rather than assumed.
-   - **Do not count on the automated retention as a long window on development.** The retention period reads the same in both environments, but the development instance is recreated nightly, so its point-in-time window only spans the current instance's lifetime. The manual snapshot is what makes a rollback possible there.
+   - **On an environment that is rebuilt on a schedule, the automated retention is not one continuous window.** The retention period reads the same as production's, but each cycle's instance carries its own backup, so what exists is one window per cycle rather than an unbroken span. Point-in-time recovery is available *within* those windows and nowhere between them. A manual snapshot is what covers the gaps.
    - Deleting the manual snapshot and the retained parameter group is what closes the rollback window, so it is a decision with an agreed duration rather than cleanup.
 
 ---
@@ -226,7 +226,8 @@ Neither RDS instance is publicly accessible and the proxy is TLS-only, so the in
 ```bash
 # Reads the remote script from stdin and prints its stdout.
 ssm_sh() {
-  local iid cid status tmp
+  # 'st' rather than 'status': under zsh, status is read-only.
+  local iid cid st tmp
   iid=$(aws ec2 describe-instances \
     --filters Name=tag:Name,Values="${ENV}-optinist-background" \
               Name=instance-state-name,Values=running \
@@ -237,12 +238,16 @@ ssm_sh() {
     --parameters "file://$tmp" --query Command.CommandId --output text)
   rm -f "$tmp"
   while :; do
-    status=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
+    st=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
       --query Status --output text)
-    case "$status" in
+    case "$st" in
       Success) break ;;
       Pending|InProgress|Delayed) sleep 3 ;;
+      # Print stdout as well as stderr on failure: a block that dies partway still
+      # produced everything up to that point, and that output is the diagnosis.
       *) aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
+           --query StandardOutputContent --output text
+         aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
            --query StandardErrorContent --output text >&2; return 1 ;;
     esac
   done
@@ -288,33 +293,127 @@ assert_rehearsal() {
   esac
 }
 
+# Both destructive helpers show the target's real attributes and require a typed
+# confirmation. The name predicate says "this could be a clone"; the preview is what
+# tells you it is the clone you meant.
+confirm_target() {
+  local kind="$1" id="$2" reply
+  echo "--- about to delete this $kind:"
+  case "$kind" in
+    instance) aws rds describe-db-instances --db-instance-identifier "$id" \
+        --query 'DBInstances[0].{id:DBInstanceIdentifier,ev:EngineVersion,
+                 created:InstanceCreateTime,class:DBInstanceClass,
+                 pg:DBParameterGroups[0].DBParameterGroupName}' || return 1 ;;
+    snapshot) aws rds describe-db-snapshots --db-snapshot-identifier "$id" \
+        --query 'DBSnapshots[0].{id:DBSnapshotIdentifier,type:SnapshotType,
+                 ev:EngineVersion,created:SnapshotCreateTime,src:DBInstanceIdentifier}' || return 1 ;;
+  esac
+  printf 'type the identifier to confirm: '
+  read -r reply
+  [ "$reply" = "$id" ] || { echo "ABORTED: input did not match" >&2; return 1; }
+}
+
 # Deletes a clone, but keeps a final snapshot and the automated backups anyway. They
 # are cheap on a throwaway, and the habit is what makes a mistyped identifier
 # survivable rather than terminal.
 drop_clone() {
   assert_rehearsal "$1" || return 1
+  confirm_target instance "$1" || return 1
   aws rds delete-db-instance --db-instance-identifier "$1" \
     --final-db-snapshot-identifier "$1-final" --no-delete-automated-backups
   aws rds wait db-instance-deleted --db-instance-identifier "$1"
 }
 
-# Snapshots need the same guard. Phase 0B's source snapshot is taken from the production
-# instance, so an unguarded delete here can destroy a real recovery point - the newest
-# manual snapshot is exactly what an accidental instance delete falls back to.
+# Snapshots need the same guard, and need it more: there is no final-snapshot fallback
+# for a snapshot, so an accepted-but-wrong delete here is unrecoverable. Phase 0B's
+# source snapshot is taken from the production instance, and the newest manual snapshot
+# is exactly what an accidental instance delete falls back to.
 drop_snapshot() {
   assert_rehearsal "$1" || return 1
+  confirm_target snapshot "$1" || return 1
   aws rds delete-db-snapshot --db-snapshot-identifier "$1"
 }
 ```
 
-Verify both guards before relying on them, against names that must never be accepted:
+**What the guards do and do not protect.** Worth knowing precisely, because the difference decides how
+much attention each step still needs.
+
+| | |
+|---|---|
+| Refuses any identifier without `rehearsal` in it | So both live instances, and every pre-upgrade snapshot, are outside the accept set. Confirm this before relying on it: `describe-db-instances` and `describe-db-snapshots` filtered on `contains(…, 'rehearsal')` should both return nothing at the start of the work |
+| Shows the target's real attributes before acting | Engine version, creation time and parameter group for an instance; type and source for a snapshot. An identifier that is accepted but wrong usually looks wrong here |
+| Requires the identifier typed back | No single keystroke deletes anything |
+| `drop_clone` keeps a final snapshot and the automated backups | Even an accepted-and-wrong instance delete is recoverable |
+| **`drop_snapshot` has no fallback** | A snapshot cannot be snapshotted. The predicate and the confirmation are the only protection, which is why both are there |
+| Neither protects against a name you deliberately gave a real asset | Do not put `rehearsal` in the name of anything you intend to keep |
+
+#### Verifying the guards before use
+
+Verify both guards before relying on them, against names that must never be accepted. **Set `ENV`
+first** - see the session setup under [Procedure](#procedure). With `ENV` unset the test still refuses,
+but it refuses a name that does not exist, which is a weaker test than the one intended.
+
+Four checks. All four must hold; any one failing is an abort condition.
+
+**Never pass a real identifier to `drop_clone` or `drop_snapshot` as a test.** The point of the test is
+that the predicate refuses it - but if the predicate is broken, which is the thing being checked, the
+wrapper goes on to describe that real resource and prompt for confirmation, and a live database is then
+one keystroke away. So the predicate is tested directly, on real names, and the wrappers are tested only
+on names that do not exist.
 
 ```bash
-drop_clone    "${ENV}-optinist-cloud-rds"
-drop_snapshot "${ENV}-pre-upgrade-20260101-0000"
-# Expected: REFUSING twice, and nothing sent to AWS. Anything else means the guard is
-# not working, which is an abort condition - see Abort conditions above.
+echo "${ENV:?set ENV before testing the guards}"
+DB=${ENV}-optinist-cloud-rds
+
+# 0. These are shell functions: they do not survive a new terminal, and a copy pasted
+#    from an earlier revision is worse than none. Re-paste all four, then read one back.
+declare -f drop_clone
+# Expected: it calls assert_rehearsal, then confirm_target, and passes
+# --no-delete-automated-backups. Anything missing means an older revision is loaded.
+
+# 1. The accept set must be empty of real assets before starting
+aws rds describe-db-instances \
+  --query 'DBInstances[?contains(DBInstanceIdentifier,`rehearsal`)].DBInstanceIdentifier' --output text
+aws rds describe-db-snapshots --snapshot-type manual \
+  --query 'DBSnapshots[?contains(DBSnapshotIdentifier,`rehearsal`)].DBSnapshotIdentifier' --output text
+# Expected: empty for both. Anything listed here is inside the guards' accept set and
+# must be renamed or accounted for before going further.
+
+# 2. The predicate refuses real identifiers. Called directly, so there is no code path
+#    to a delete even if it were broken.
+assert_rehearsal "$DB"
+assert_rehearsal "$(aws rds describe-db-snapshots --db-instance-identifier "$DB" \
+  --snapshot-type manual --query 'DBSnapshots[0].DBSnapshotIdentifier' --output text)"
+# Expected: REFUSING twice, naming each identifier. The second one is a snapshot that
+# really exists, which is the case that matters - it has no final-snapshot fallback.
+
+# 3. The wrappers consult the predicate. The only property these strings need is that
+#    they lack "rehearsal"; they deliberately do not resemble any real identifier, so
+#    that editing one cannot accidentally produce a live name.
+drop_clone    "guard-test-instance-must-be-refused"
+drop_snapshot "guard-test-snapshot-must-be-refused"
+# Expected: REFUSING twice, naming each string. No preview, no prompt, nothing sent to
+# AWS. A preview appearing here means the predicate is not wired into the wrapper - abort.
+
+# 4. The accept path works - a guard that refuses everything is not a working guard.
+#    This uses the identifier phase 0A will really pass to drop_clone, so it checks the
+#    operand that matters rather than an arbitrary string containing "rehearsal".
+#    Unlike check 3 the name is not the protection here - it has to be accepted. What
+#    protects this call is that the clone does not exist yet.
+drop_clone "${ENV}-optinist-rds-upgrade-rehearsal"
+# Expected: past assert_rehearsal, then confirm_target fails to describe an instance
+# that does not exist yet and returns before prompting. The accept path is proven
+# without anything being deleted.
+#
+# If the clone DOES already exist - re-running these checks in a new shell partway
+# through phase 0A - this reaches the prompt instead. Answer with anything but the
+# identifier, or interrupt. That is still a pass; it just is not the state check 4
+# was written for.
 ```
+
+The dates in the fabricated names are arbitrary and deliberately impossible - `00000000-0000` is not a
+timestamp any real snapshot carries. Do not substitute a real date here: check 2 already covers real
+snapshot names, and it covers them without going near a delete.
 
 ### Shared helper: sanitise a log before posting it
 
@@ -330,6 +429,7 @@ redact() {
     -e 's/\b(development|subscr)-optinist/<ENV>-optinist/g' \
     -e 's/\/ecs\/(development|subscr)-/\/ecs\/<ENV>-/g' \
     -e 's/proxy-[a-z0-9]{8,}/proxy-<TOKEN>/g' \
+    -e 's/\.[a-z0-9]{8,}\.([a-z0-9-]+)\.rds\.amazonaws\.com/.<TOKEN>.\1.rds.amazonaws.com/g' \
     -e 's/\bi-[0-9a-f]{8,}/i-A/g' \
     -e 's/\bdb-[A-Z0-9]{10,}/db-A/g' \
     -e 's/db\.[a-z0-9]+\.[a-z]+/<INSTANCE_CLASS>/g'
@@ -350,6 +450,7 @@ than restating it, so it only has to be corrected in one place.
 | The environment prefix | `<ENV>` | Matches PR #620, the worked example in this repository |
 | The AWS account id | `<ACCOUNT_ID>` | Enables cross-account enumeration |
 | The proxy endpoint's account token | `proxy-<TOKEN>` | A resolvable hostname |
+| An **instance** endpoint's account token - the label between the identifier and the region | `<TOKEN>` | Same reason. Most steps never print an endpoint; step 10 does, because proving which database it reached is the point of it |
 | Instance ids and `DbiResourceId` values | `i-A`, `db-A` | Per-resource identifiers |
 | Instance class, volume type and size | Generalise | Capacity information: it lets someone size an attack without reconnaissance |
 | **Durations, engine versions, `sql_mode`, precheck findings, metric values, cost figures** | **Keep as measured** | Outcome measurements. Later phases and the acceptance criteria are written against them, so redacting these breaks the work's own definition of done |
@@ -365,10 +466,20 @@ governed by IAM.
 Set the environment once per session. `ENV` is the Terraform `var.environment` value.
 
 ```bash
+export AWS_PROFILE=<the profile for this account>
 export AWS_REGION=ap-northeast-1
-export ENV=development          # or the production value
+export ENV=<the Terraform var.environment value>
+export FROM=<the current major version, e.g. 8.0>
+export TO=<the target major version, e.g. 8.4>
 DB=${ENV}-optinist-cloud-rds
+echo "profile=$AWS_PROFILE env=$ENV from=$FROM to=$TO db=$DB"
 ```
+
+**This block is the only place in this document where something has to be substituted by hand.**
+`<FROM>` and `<TO>` appear elsewhere in prose and in expected-output comments, where they are
+placeholders on purpose - but every *command* from here on uses `$FROM` and `$TO`, so nothing else needs
+editing before it is run. If a command still contains an angle-bracket placeholder, that is a defect in
+this document, not something to fill in.
 
 ### Prerequisites
 
@@ -387,6 +498,12 @@ Both tfvars files are gitignored and are not in a fresh checkout. Obtain them be
 Know what the worst case already costs, before any phase runs. This is the number an accidental delete
 falls back to, and it is usually older than people assume.
 
+**Run it for the environment the next phase operates on, not for both.** Phase 0 operates on
+development, so it is development's floor that matters there; production's belongs to phase 4, which
+establishes it by taking and verifying its own pre-upgrade snapshot. Reading production's floor earlier
+answers no question that phase 0 asks, and it puts a production API call inside a phase that otherwise
+makes none.
+
 ```bash
 # Automated backups: the point-in-time window, and whether there is one at all
 aws rds describe-db-instances --db-instance-identifier "$DB" \
@@ -398,9 +515,10 @@ aws rds describe-db-instance-automated-backups \
   --query "DBInstanceAutomatedBackups[?DBInstanceIdentifier=='${DB}'].{status:Status,
            from:RestoreWindow.EarliestTime,to:RestoreWindow.LatestTime}" --output table
 # Expected: read the active row's window, and do not assume it matches the retention
-# period. On an instance that is deleted and restored nightly the window spans only the
-# current instance's lifetime - hours, not weeks - because each night's instance carries
-# its own. Earlier nights appear as separate retained rows covering only themselves.
+# period. On an instance that is deleted and restored on a schedule, the active row spans
+# only the current instance's lifetime - hours - and every earlier cycle appears as its
+# own `retained` row covering only its own window. Read the whole list, not just the
+# active row: together they say which moments are recoverable and which are not.
 
 # Manual snapshots: these survive an instance delete, so they are the true floor
 aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type manual \
@@ -440,20 +558,51 @@ Nearly free: the nightly snapshot already exists, so this costs a few hours of o
 ```bash
 CLONE=${ENV}-optinist-rds-upgrade-rehearsal
 SNAP=${DB}-dev-scheduler          # the scheduler's nightly snapshot
+```
 
-# 1. Confirm the source snapshot is usable and on the outgoing version
+#### The upgrade — steps 1 to 11
+
+Restore a clone, upgrade it, and measure what changed. **Only step 3 carries a deadline**: caveat 3 below
+is about a restore still reading the source snapshot when the scheduled stop recreates it, and after step 3
+nothing in 0A reads that snapshot again.
+
+##### Step 1 — confirm the source snapshot
+
+```bash
+# Confirm the source snapshot is usable and on the outgoing version
 aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
   --query 'DBSnapshots[0].{status:Status,ev:EngineVersion,created:SnapshotCreateTime}'
-# Expected: available, <FROM>.x, last night's timestamp
+# Expected: available, <FROM>.x. Read the timestamp rather than assuming it is last
+# night's: the snapshot is recreated by the scheduled stop, so on a day following days
+# the environment did not run it is that much older. On a Monday it is Friday's. The
+# clone will carry that data, which changes nothing for the precheck or the timing -
+# but record which day it actually is.
+```
 
-# 2. A private parameter group for the clone, copied from the live one.
+##### Step 2 — a private parameter group for the clone
+
+```bash
+# A private parameter group for the clone, copied from the live one.
 #    Do not attach the live group - see edge case 1.
 aws rds copy-db-parameter-group \
   --source-db-parameter-group-identifier "${ENV}-optinist-ssl" \
   --target-db-parameter-group-identifier rehearsal-ssl-from \
   --target-db-parameter-group-description "outgoing-family rehearsal copy"
 
-# 3. Read the restore parameters from the live instance rather than hardcoding them.
+#    The copy's output does not show the user-set parameters, so check them. The clone
+#    and the drill's restore both attach this group: a copy that lost them produces an
+#    instance that rejects the application's TLS-only connections, and it would also
+#    make the "connection succeeded" check further down meaningless.
+aws rds describe-db-parameters --db-parameter-group-name rehearsal-ssl-from --source user \
+  --query 'Parameters[].{name:ParameterName,value:ParameterValue}' --output table
+# Expected: the same user-set parameters as the live group - compare against
+# `describe-db-parameters --db-parameter-group-name "${ENV}-optinist-ssl" --source user`
+```
+
+##### Step 3 — restore the clone
+
+```bash
+# Read the restore parameters from the live instance rather than hardcoding them.
 #    restore_rds() in dev_scheduler.py is the reference for which values a restore needs.
 read -r CLASS STORAGE SUBNET SG <<<"$(aws rds describe-db-instances \
   --db-instance-identifier "$DB" --output text \
@@ -467,46 +616,198 @@ aws rds restore-db-instance-from-db-snapshot \
   --db-parameter-group-name rehearsal-ssl-from \
   --no-publicly-accessible --no-multi-az
 aws rds wait db-instance-available --db-instance-identifier "$CLONE"
+```
 
-# 4. The clone must have inherited a backup retention period, or RDS takes no
-#    automatic pre-upgrade snapshot and step 7 has nothing to work with.
+##### Step 4 — confirm what the clone came up as
+
+```bash
+# Confirm what the clone actually came up as. Two things matter here and neither is
+#    visible in the restore call's own response.
 aws rds describe-db-instances --db-instance-identifier "$CLONE" \
-  --query 'DBInstances[0].{retention:BackupRetentionPeriod,rid:DbiResourceId}'
-# Expected: retention greater than zero
+  --query 'DBInstances[0].{status:DBInstanceStatus,retention:BackupRetentionPeriod,
+           rid:DbiResourceId,pg:DBParameterGroups[0].DBParameterGroupName,
+           pgs:DBParameterGroups[0].ParameterApplyStatus}'
+# Expected: available, retention greater than zero, and pg rehearsal-ssl-from / in-sync.
+#
+# retention: zero means RDS takes no automatic pre-upgrade snapshot, so step 12 has
+# nothing to work with and the drill cannot run.
+#
+# pg: while the restore is still creating, this reports the DEFAULT group with
+# ParameterApplyStatus "applying" even though the restore passed --db-parameter-group-name.
+# That is normal mid-flight, but it has to be re-read once the instance is available. If
+# it is still the default group then the clone is NOT carrying require_secure_transport,
+# and the "connection succeeded" check further down would pass for the wrong reason -
+# attach the group with modify-db-instance before continuing.
+#
+# Note DbiResourceId: step 14 asserts it changed after the drill's restore.
+```
 
-# 5. A target-family parameter group carrying the same user-set parameters
+##### Step 5 — resolve the target version and family, and build the target parameter group
+
+```bash
+# Resolve the target version and its parameter group family. Both come from the API
+#    rather than being spelled out: `ModifyDBInstance` needs a concrete version, and the
+#    family is not simply "mysql" plus the version - it is "mysql" plus the *major*
+#    version, so composing it by hand is a guess. Resolve it the same way the Terraform
+#    provider resolves `engine_version = "<TO>"`: the region default for that major.
+read -r TARGET TO_FAMILY <<<"$(aws rds describe-db-engine-versions --engine mysql \
+  --engine-version "$TO" --default-only --output text \
+  --query 'DBEngineVersions[0].[EngineVersion,DBParameterGroupFamily]')"
+echo "target=$TARGET family=$TO_FAMILY"
+# Expected: both non-empty, e.g. a concrete x.y.z and mysql<TO>. Empty means the major
+# version has no default in this region - stop.
+
+#    Confirm the resolved version is reachable from where the clone is now.
+aws rds describe-db-engine-versions --engine mysql \
+  --engine-version "$(aws rds describe-db-instances --db-instance-identifier "$CLONE" \
+    --query 'DBInstances[0].EngineVersion' --output text)" \
+  --query "DBEngineVersions[0].ValidUpgradeTarget[?EngineVersion=='${TARGET}'].{v:EngineVersion,
+           major:IsMajorVersionUpgrade,auto:AutoUpgrade}" --output table
+# Expected: one row, IsMajorVersionUpgrade true, AutoUpgrade false. An empty table means
+# the resolved default is not reachable from here - stop and pick from the full
+# ValidUpgradeTarget list instead.
+
+#    Record TARGET: phase 1 must land on the same version, and the duration measured
+#    below is only comparable for the same version.
+
+#    Now the parameter group. There is no existing group on the new family to copy, so
+#    this one is built - but the parameters are read from the live group rather than
+#    retyped, for the same reason step 3 reads the restore parameters off the live
+#    instance. A value that differs from expectation should be carried, not silently
+#    replaced by what this document assumed.
 aws rds create-db-parameter-group --db-parameter-group-name rehearsal-ssl-to \
-  --db-parameter-group-family "mysql<TO>" --description "target-family rehearsal"
-aws rds modify-db-parameter-group --db-parameter-group-name rehearsal-ssl-to \
-  --parameters "ParameterName=require_secure_transport,ParameterValue=1,ApplyMethod=immediate" \
-               "ParameterName=time_zone,ParameterValue=UTC,ApplyMethod=immediate"
+  --db-parameter-group-family "$TO_FAMILY" --description "target-family rehearsal"
 
-# 6. Upgrade, and record the duration
+SRC_PARAMS=()
+while IFS=$'\t' read -r n v t; do
+  [ "$t" = static ] && m=pending-reboot || m=immediate
+  SRC_PARAMS+=("ParameterName=${n},ParameterValue=${v},ApplyMethod=${m}")
+done < <(aws rds describe-db-parameters --db-parameter-group-name "${ENV}-optinist-ssl" \
+  --source user --query 'Parameters[].[ParameterName,ParameterValue,ApplyType]' --output text)
+printf '%s\n' "${SRC_PARAMS[@]}"
+# Expected: one line per user-set parameter in the live group. An empty list means the
+# source group name is wrong - stop, because the clone would then upgrade with engine
+# defaults and the TLS check further down would pass for the wrong reason.
+
+aws rds modify-db-parameter-group --db-parameter-group-name rehearsal-ssl-to \
+  --parameters "${SRC_PARAMS[@]}"
+
+#    Read it back. The modify call reports only the group name, not what it stored.
+aws rds describe-db-parameters --db-parameter-group-name rehearsal-ssl-to --source user \
+  --query 'Parameters[].{name:ParameterName,value:ParameterValue,applyType:ApplyType}' --output table
+# Expected: the same names and values as the live group. If a parameter the live group
+# sets is missing here, it does not exist in the new family - which is a finding for the
+# upgrade itself, not just for the rehearsal.
+```
+
+##### Step 6 — upgrade, and record the duration
+
+```bash
+# Upgrade, and record the duration. TARGET was resolved in step 5.
+#    The family change and the version change go in ONE ModifyDBInstance - that ordering
+#    is B3, rehearsed here before it matters on a live instance.
 date -u
 aws rds modify-db-instance --db-instance-identifier "$CLONE" \
-  --engine-version "<TO>" --db-parameter-group-name rehearsal-ssl-to \
+  --engine-version "$TARGET" --db-parameter-group-name rehearsal-ssl-to \
   --allow-major-version-upgrade --apply-immediately
 aws rds wait db-instance-available --db-instance-identifier "$CLONE"
 date -u
 ```
 
-Then the precheck log. This comes from the DB log file API rather than CloudWatch, so the clone needs no log exports.
+
+**Do not take the duration from the wall clock.** The `date -u` pair brackets the whole call including
+the waiter's polling lag, and RDS also reports `available` for a while after `--apply-immediately` before
+the status transitions - so a waiter can even return before the upgrade starts. Measured on this stack,
+the wall clock read more than four times the actual outage.
+
+RDS timestamps the real thing in its event stream. Take the numbers from there:
 
 ```bash
-aws rds describe-db-log-files --db-instance-identifier "$CLONE" \
-  --query 'DescribeDBLogFiles[?contains(LogFileName,`PrePatchCompatibility`)].LogFileName' \
-  --output text | while read -r f; do
-    aws rds download-db-log-file-portion --db-instance-identifier "$CLONE" \
-      --log-file-name "$f" --starting-token 0 --output text
-  done | tee /tmp/prepatch.log
-grep -icE '^\[?(error|fatal)' /tmp/prepatch.log
-# Expected: 0. Any error here fails the same way on the real instance.
-
-grep -inE 'warning|notice' /tmp/prepatch.log
-# Expected: read every line. Warnings are not automatically benign.
+aws rds describe-events --source-identifier "$CLONE" --source-type db-instance \
+  --duration 120 --query 'Events[].{t:Date,msg:Message}' --output table
 ```
 
-Then the in-database state:
+Three different durations come out of that, and they are for different purposes:
+
+| From | To | What it is | Used for |
+|-------------------------|-----------------------|-----------------------|-----------------------|
+| `The downtime started` | `DB instance restarted` | **The outage users experience** | The number the production announcement quotes |
+| `The downtime started` | `engine major version upgrade complete` | The same, upper bound | A safety margin on the above |
+| `The pre-check started` | the last `Finished DB Instance backup` | The whole operation | The window the operator has to hold |
+
+Also worth reading off the same output: the pre-check runs automatically as part of the upgrade and
+reports its own start and finish, and RDS takes its automatic pre-upgrade backups either side - those are
+the snapshots step 12 goes looking for.
+
+**A waiter timeout is not a failure.** `aws rds wait db-instance-available` gives up after 30 minutes
+(60 attempts, 30s apart) and exits non-zero, while the upgrade carries on regardless. A major version
+upgrade can exceed that. If the waiter errors, do not re-issue the modify and do not touch the instance -
+poll instead:
+
+```bash
+while :; do
+  s=$(aws rds describe-db-instances --db-instance-identifier "$CLONE" \
+    --query 'DBInstances[0].[DBInstanceStatus,EngineVersion]' --output text)
+  echo "$(date -u +%H:%M:%S) $s"
+  case "$s" in available*) break ;; esac
+  sleep 60
+done
+date -u
+# Expected: the status walks through upgrading / modifying / configuring-* and settles on
+# available with the new version. The measured duration is from the first `date -u` to
+# here - that is the figure the production announcement is built on, so take it from the
+# status transition rather than from whenever the waiter happened to return.
+```
+
+##### Step 7 — the precheck log
+
+This comes from the DB log file API rather than CloudWatch, so the clone needs no log exports.
+
+**The precheck log does not exist until the upgrade has run**, because the upgrade is what generates it.
+Before step 6 the instance carries only its error logs and a `mysqlUpgrade` file left over from earlier
+history; `PrePatchCompatibility.log` appears afterwards. So this step cannot be done early, and an empty
+result here means the upgrade has not finished rather than that the check was clean.
+
+**List before fetching.** Filtering on one guessed name silently produces an empty file, which reads
+exactly like "no problems found" - the failure mode worth the extra command.
+
+```bash
+# List everything first, and read the list.
+aws rds describe-db-log-files --db-instance-identifier "$CLONE" \
+  --query 'DescribeDBLogFiles[].{name:LogFileName,size:Size,written:LastWritten}' --output table
+# Expected: an upgrade-related file with a LastWritten from the upgrade you just ran.
+# Candidates seen on this stack: `mysqlUpgrade`, and `PrePatchCompatibility.log` when the
+# engine produces one. If neither is newer than the upgrade, the precheck output has not
+# landed yet - wait and list again rather than concluding it was clean.
+
+for f in $(aws rds describe-db-log-files --db-instance-identifier "$CLONE" --output text \
+  --query "DescribeDBLogFiles[?contains(LogFileName,'Upgrade')
+           || contains(LogFileName,'upgrade')
+           || contains(LogFileName,'PrePatch')].LogFileName"); do
+  echo "===== $f"
+  aws rds download-db-log-file-portion --db-instance-identifier "$CLONE" \
+    --log-file-name "$f" --starting-token 0 --output text
+done | tee /tmp/prepatch.log
+wc -l /tmp/prepatch.log
+# Expected: non-zero. An empty file means the filter matched nothing - go back to the
+# listing above. This is the failure mode that looks like success.
+
+# The precheck log ends with its own tally. Read that rather than grepping for the word
+# "error", which also matches check titles like "Checks for errors in column definitions"
+# and the tally line itself - a grep count is not the verdict.
+grep -E '^(Errors|Warnings|Database Objects Affected):' /tmp/prepatch.log
+awk -F': *' '/^Errors:/{print ($2==0 ? "PASS: Errors=0" : "ABORT: Errors=" $2)}' /tmp/prepatch.log
+# Expected: PASS. A non-zero Errors count fails the same way on the real instance and is
+# an abort condition for the whole plan.
+
+# Warnings do not block, but every one gets read - they are the list of behaviour that
+# changes under you. Each numbered check reports either "No issues found" or its detail.
+grep -nE '^[0-9]+\)|^\tNo issues found' /tmp/prepatch.log
+# Expected: every check accounted for. Then read the detail under any that is not
+# "No issues found", and record what each one means for this stack in the phase's log.
+```
+
+##### Step 8 — the in-database state
 
 ```bash
 CLONE_HOST=$(aws rds describe-db-instances --db-instance-identifier "$CLONE" \
@@ -522,58 +823,342 @@ DBN=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.std
 mariadb --ssl -h $CLONE_HOST -u "\$DBU" --connect-timeout=10 "\$DBN" -t <<'SQL'
 SELECT VERSION();
 SELECT @@sql_mode;
+SELECT PLUGIN_NAME, PLUGIN_STATUS, LOAD_OPTION FROM information_schema.PLUGINS
+ WHERE PLUGIN_NAME LIKE '%native_password%';
 SELECT @@innodb_buffer_pool_size, @@innodb_dedicated_server, @@binlog_format, @@log_output;
+SELECT @@innodb_io_capacity, @@innodb_io_capacity_max, @@innodb_adaptive_hash_index,
+       @@innodb_change_buffering, @@innodb_buffer_pool_instances;
+SELECT @@innodb_redo_log_capacity, @@innodb_flush_method, @@innodb_log_writer_threads,
+       @@innodb_buffer_pool_chunk_size;
 SELECT user, host, plugin FROM mysql.user ORDER BY user;
 SQL
 SH
 ```
 
+`mysql_native_password` is a **server option, not a system variable** - `SELECT @@mysql_native_password` fails with `ERROR 1193 Unknown system variable`. Its configured value is therefore read from the parameter group instead:
+
+```bash
+aws rds describe-db-parameters --db-parameter-group-name rehearsal-ssl-to \
+  --query "Parameters[?ParameterName=='mysql_native_password'].[ParameterValue,ApplyType,IsModifiable]" \
+  --output text
+# Expected: ON  static  False - RDS pins it on, so the option cannot be turned off by
+# mistake. An empty result means the parameter does not exist in this family, which is
+# a different and more serious finding: see the auth row in the table below.
+```
+
+**The client aborts on the first SQL error and `set -e` then discards the whole block**, so one bad statement costs every reading. If a statement fails, fix it and re-run rather than reading around it - all of these are `SELECT`s, so re-running is free. A variable that does not exist on one of the two versions raises `ERROR 1193` and aborts the block: drop that line for that side rather than guessing at a substitute.
+
+**Take the same readings on the live instance before it is upgraded**, through the proxy, so there is a
+before-and-after pair for the same variables. Without the "before" half these numbers say what the new
+version does, not what changed.
+
 | Query | Expected | What it settles |
 |-------------------------|-----------------------|-----------------------|
 | `VERSION()` | `<TO>.x` | The upgrade reached the engine, not just `PendingModifiedValues` |
 | `@@sql_mode` | Unchanged from `<FROM>` | Query acceptance behaviour does not change across the upgrade |
-| `@@innodb_buffer_pool_size` | May change - see edge case 5 | The one measurable delta of a family change |
+| `information_schema.PLUGINS` for `%native_password%` | A row, `ACTIVE` | The precheck warns the plugin is off by default in upstream `<TO>`. This says whether the running server still has it |
+| **The connection itself** | Succeeded | The strongest evidence available here, and it costs nothing: if `mysql.user` shows the connecting account on `mysql_native_password`, then a successful login **is** proof the plugin authenticates on `<TO>`. Read the two rows together rather than either alone |
+| `@@innodb_buffer_pool_size`, `@@innodb_dedicated_server` | May change together | The buffer pool sizing change - see edge case 6. `@@innodb_buffer_pool_instances` follows it automatically, because the engine forces it to 1 below a 1 GiB pool |
+| `@@innodb_redo_log_capacity` | May change | Same class as the buffer pool: a family may pin it where the next leaves `innodb_dedicated_server` to derive it. A smaller redo log checkpoints more often, which is write IO - and it compounds with any `innodb_io_capacity` increase |
+| `@@innodb_io_capacity` and the other InnoDB values | **May change, and the RDS family diff does not predict it** | These are parameters RDS pins in neither family, so the *engine* default changes underneath. Comparing family defaults alone misses them entirely, which is why they are read from the running server |
 | `@@binlog_format` | May change to `ROW` | Harmless with no replicas and no external consumers |
-| `mysql.user` plugins | Existing users keep their plugin | The proxy's client auth type keeps working |
+| `mysql.user` plugins | Existing users keep their plugin | The proxy's client auth type keeps working. The precheck flags these users as using a deprecated method - flagging is not breaking |
 
 The connection succeeding at all is the `require_secure_transport` check: TLS against a group that requires it, on the new family.
 
-Then alembic. `DB_HOST` wins over `MYSQL_SERVER` in the URL builder, so override both.
+##### Step 9 — the same readings on the live `<FROM>` instance
+
+Step 8 says what the new version does. Only the pair says what **changed**, and the "before" half exists only while the live instance is still on `<FROM>`: after phase 1 it is gone for good. Run this any time before phase 1. Every statement is a `SELECT`, and it reads the instance endpoint rather than the proxy so the access path matches step 8's.
+
+```bash
+LIVE_HOST=$(aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].Endpoint.Address' --output text)
+
+ssm_sh <<SH
+set -e
+CFG=\$(aws secretsmanager get-secret-value --region ${AWS_REGION} \
+  --secret-id ${ENV}-optinist/database/config --query SecretString --output text)
+export MYSQL_PWD=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.stdin)["password"])')
+DBU=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.stdin)["username"])')
+DBN=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.stdin)["database"])')
+mariadb --ssl -h $LIVE_HOST -u "\$DBU" --connect-timeout=10 "\$DBN" -t <<'SQL'
+SELECT VERSION();
+SELECT @@sql_mode;
+SELECT @@innodb_buffer_pool_size, @@innodb_dedicated_server, @@binlog_format, @@log_output;
+SELECT @@innodb_io_capacity, @@innodb_io_capacity_max, @@innodb_adaptive_hash_index,
+       @@innodb_change_buffering, @@innodb_buffer_pool_instances;
+SELECT @@innodb_redo_log_capacity, @@innodb_flush_method, @@innodb_log_writer_threads,
+       @@innodb_buffer_pool_chunk_size;
+SQL
+SH
+# Expected: VERSION() is <FROM>.x. If it is <TO>.x you are pointed at the clone.
+```
+
+The plugin and `mysql.user` queries are deliberately left out. They answer "does authentication still work on `<TO>`", which the `<FROM>` side cannot inform.
+
+Then read the **configured** side for both families, because `innodb_buffer_pool_size` is the one value RDS may pin rather than let the engine derive:
+
+```bash
+for G in "${ENV}-optinist-ssl" rehearsal-ssl-to; do
+  echo "== $G"
+  aws rds describe-db-parameters --db-parameter-group-name "$G" \
+    --query "Parameters[?ParameterName=='innodb_buffer_pool_size' ||
+             ParameterName=='innodb_dedicated_server' ||
+             ParameterName=='innodb_io_capacity'].[ParameterName,ParameterValue,Source]" \
+    --output text
+done
+# A formula such as {DBInstanceClassMemory*3/4} on one side and nothing on the other is
+# the whole difference. An empty value on both sides means the engine derives it, and
+# the measured numbers above are the only evidence that exists.
+```
+
+Record the two sets side by side. **A difference in `innodb_buffer_pool_size` is the one that changes a decision** - see edge case 6.
+
+##### Step 10 — alembic
+
+**What this step is for.** Every check so far went through the `mariadb` client, which is a different client library from the one the application uses. This is the only step that exercises the application's own stack - pydantic settings, SQLAlchemy, pymysql, alembic - against the new engine, and it runs the same `alembic upgrade head` the deploy runs. On a clone of a live database the migration is a **no-op**, because the clone is already at head; what is being proved is that the runner works, not that a migration applies.
+
+**What a `docker exec` into this container does and does not inherit.** `DatabaseConfig` in `studio/app/common/db/config.py` reads `MYSQL_SERVER`, `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE`. **None of those are container environment variables.** The task definition supplies `DB_HOST`, `DB_USER`, `DB_PASSWORD` and `DB_NAME`, and `cloud-startup.sh` - the entrypoint - re-exports them under the `MYSQL_*` names. Those exports exist only in the entrypoint's own process tree.
+
+A `docker exec` starts from the container's *configured* environment, so it sees `DB_*` and not `MYSQL_*`, and `studio/config/.env` is not in the image either. Left alone, `DatabaseConfig` therefore resolves `MYSQL_USER` and `MYSQL_DATABASE` to `None`, pymysql falls back to `root` with no password, and the connection fails with `1045 Access denied for user 'root'` - which looks like an authentication problem with the new engine and is nothing of the kind.
+
+**So the mapping has to be repeated inside the exec**, from the container's own `DB_*` values. Reading them there rather than passing them in means no credential is written into the SSM command. Overriding `DB_HOST` does nothing, because the mapping that consumes it has already run; `MYSQL_SERVER` is the value to override.
+
+**Why the target is proved first, and why the proof has to abort rather than print.** The deployed `.env` points `MYSQL_SERVER` at the **RDS Proxy**, which fronts the **live** instance. If the override failed to take effect, `alembic upgrade head` would run against live development.
+
+The dangerous case is not a failed connection - `set -e` catches that. It is a **successful connection to the wrong database**, which `set -e` cannot see. Both halves run inside one SSM invocation, so a version printed for a human to read would be read *after* the migration had already run. The version check therefore exits non-zero itself, which is what makes running both halves in one block safe.
 
 ```bash
 ssm_sh <<SH
 set -e
 C=\$(docker ps --format '{{.Names}}' | grep -m1 -- -background-optinist-cloud-container)
-docker exec -e DB_HOST=$CLONE_HOST -e MYSQL_SERVER=$CLONE_HOST -w /app "\$C" \
-  sh -c 'alembic current && alembic upgrade head && alembic current'
+
+docker exec -i -e MYSQL_SERVER=$CLONE_HOST -w /app "\$C" sh -s <<'INNER'
+set -e
+# Repeat the entrypoint's DB_* to MYSQL_* mapping, which a docker exec does not inherit.
+# MYSQL_SERVER is not mapped here: it comes from the -e above, pointing at the clone.
+export MYSQL_USER="\$DB_USER" MYSQL_PASSWORD="\$DB_PASSWORD" MYSQL_DATABASE="\$DB_NAME"
+[ -n "\$MYSQL_USER" ] && [ -n "\$MYSQL_DATABASE" ] || {
+  echo "ABORT: DB_USER / DB_NAME are absent from this container" >&2; exit 1; }
+
+# 1. Prove the target, through the application's own configuration and connection,
+#    and ABORT here if it is not the clone. Same engine construction as the SSL
+#    check in cloud-startup.sh.
+python3 -c "
+import sys
+from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
+from sqlalchemy import create_engine, text
+print('MYSQL_SERVER =', DATABASE_CONFIG.MYSQL_SERVER)
+creator = get_ssl_creator()
+kwargs = {'creator': creator} if creator else {}
+engine = create_engine(DATABASE_CONFIG.DATABASE_URL, **kwargs)
+with engine.connect() as c:
+    v = c.execute(text('SELECT VERSION()')).scalar()
+engine.dispose()
+print('VERSION()    =', v)
+if not v.startswith('${TO}.'):
+    sys.exit('ABORT: expected ${TO}.x, got ' + v + ' - this is not the clone')
+"
+
+# 2. Only then migrate. set -e and the exit above are what stop this line.
+alembic current && alembic heads && alembic upgrade head && alembic current
+INNER
 SH
-# Expected: the same revision before and after. Head is already applied on a clone
-# of a live database, so this confirms rather than migrates.
+# Expected, in order:
+#   MYSQL_SERVER is the clone's endpoint, and VERSION() is <TO>.x.
+#   current and heads report the same revision, and current is unchanged afterwards.
+#
+# Failure modes, and what each one means:
+#   "ABORT: DB_USER / DB_NAME are absent" - the container does not carry them under
+#     those names. Read its environment before guessing: docker exec "$C" env | grep
+#     -E '^(DB_|MYSQL_)' - and fix the mapping above rather than the credentials.
+#   "1045 Access denied for user 'root'" - the mapping above did not happen, so
+#     DatabaseConfig resolved the user to None and pymysql fell back to root. Not an
+#     engine problem, however much it looks like one.
+#   "ABORT: expected ... got <FROM>.x" - the override did not take effect and this
+#     reached the live instance through the proxy. Nothing was migrated. Re-read
+#     CLONE_HOST before retrying.
+#   An empty MYSQL_SERVER, then a connection error - CLONE_HOST was unset. An empty
+#     environment variable still wins over any file, so the client fell back to
+#     localhost inside the container. Nothing was migrated.
+#   No output at all - the container name did not match, and the assignment to C
+#     aborted the block under set -e.
+#   current BEHIND heads - the migration then really did apply, which on a throwaway
+#     clone is harmless and in fact more informative than the no-op. Investigate why
+#     a clone of a live database was not at head before trusting the rest of 0A.
 ```
 
-Then the rollback drill, which is the reason 0A exists.
+The `VERSION()` line also proves the application's driver authenticates and negotiates TLS against `<TO>`, which the `mariadb` client in step 8 could not establish on the application's behalf.
+
+**Why an application-layer check belongs in phase 0.** It is a fair objection that a failure here is fixed in the application, not in AWS. The answer is that phase 0 exists to find what should abort the plan, and this is one of those things regardless of which layer ends up owning the fix. Note also what the later phases actually give:
+
+- `cloud-startup.sh` runs `alembic upgrade head` on every container start, and exits non-zero if it fails - so ECS marks the deployment failed and reverts to the previous task definition. The phase 1 apply therefore does exercise this path by itself.
+- **But that revert does not undo the engine upgrade.** The previous image carries the same driver versions, so it fails against `<TO>` identically. ECS keeps reverting, the environment stays down, and recovery is either an RDS snapshot rollback - the drill in steps 12 to 14 - or an application fix made under time pressure. In phase 4 the same event is a production outage.
+
+So the later phases detect it; they do not make it cheap. Here it costs one command against a throwaway clone, and the finding arrives while the decision is still "do not apply yet" rather than "restore or hotfix". If it does fail, the fix is an application change and belongs in its own blocking issue - which is exactly the thing worth knowing before the apply rather than during it.
+
+Be clear about what this does **not** prove: the clone is already at head, so no migration is applied and no DDL runs against `<TO>`. What is proved is that the driver stack connects, authenticates, negotiates TLS and that the migration runner executes.
+
+##### Step 11 — rehearse the parameter pins the apply will carry
+
+Steps 8 and 9 measure what the new version does by default. Where that differs from `<FROM>` and the difference is not wanted, the phase 1 parameter group pins the value back - see edge case 6. **This step proves the pins produce the intended running state, on the clone, before the apply relies on them.** Skip it only if the pair showed nothing worth pinning.
+
+**Run it before the drill.** The drill restores the clone from its pre-upgrade snapshot, so afterwards there is no `<TO>` instance to test against.
+
+Three things this settles that the pair cannot:
+
+- Whether a **formula** such as `{DBInstanceClassMemory*3/4}` is accepted and evaluates on the new family, rather than only on the old one where it was observed.
+- Whether the values actually resolve as intended once applied together - a derived value and the switch that derives it interact.
+- Whether a `static` parameter reaches the running server, or sits at `pending-reboot` while the instance keeps the old value. That failure state looks exactly like a successful apply.
+
+```bash
+# The group the clone is on, and the pins to rehearse. Derive this list from the
+# step 8 / step 9 pair rather than copying it: it is version-specific.
+# Every element is quoted. Unquoted, the buffer pool expression is a glob that matches
+# nothing, which bash passes through unchanged but zsh rejects outright.
+PG=rehearsal-ssl-to
+PINS=(
+  "ParameterName=innodb_dedicated_server,ParameterValue=0,ApplyMethod=pending-reboot"
+  "ParameterName=innodb_buffer_pool_size,ParameterValue={DBInstanceClassMemory*3/4},ApplyMethod=pending-reboot"
+  "ParameterName=innodb_redo_log_capacity,ParameterValue=2147483648,ApplyMethod=pending-reboot"
+  "ParameterName=innodb_io_capacity,ParameterValue=200,ApplyMethod=pending-reboot"
+  "ParameterName=innodb_io_capacity_max,ParameterValue=2000,ApplyMethod=pending-reboot"
+)
+printf '%s\n' "${PINS[@]}"
+# Expected: five lines, the expression intact and unexpanded.
+
+# 1. Prove the group is attached to nothing but the clone. A pin on a group the live
+#    instance is using would take effect there, and most of these are dynamic.
+aws rds describe-db-instances \
+  --query "DBInstances[?DBParameterGroups[0].DBParameterGroupName=='${PG}'].DBInstanceIdentifier" \
+  --output text
+# Expected: exactly the clone's identifier, and nothing else. Anything else aborts.
+
+# 2. Apply the pins, behind both guards. They are chained with && rather than run as
+#    separate lines, so a refusal stops the modify instead of only printing above it -
+#    the same predicate PRE-1 verified, which accepts only rehearsal-scoped names, so
+#    the live group and the live instance are both refused.
+#    Every pin is pending-reboot, including the dynamic ones, so one reboot applies
+#    them together rather than leaving a half-configured server.
+assert_rehearsal "$PG" && assert_rehearsal "$CLONE" && \
+  aws rds modify-db-parameter-group --db-parameter-group-name "$PG" --parameters "${PINS[@]}"
+
+aws rds describe-db-parameters --db-parameter-group-name "$PG" --source user \
+  --query 'Parameters[].[ParameterName,ParameterValue,ApplyMethod]' --output text
+# Expected: the five pins read back, plus whatever the group already carried.
+
+# 3. Reboot the clone, which is what a static parameter needs. Behind the guard again,
+#    chained for the same reason.
+assert_rehearsal "$CLONE" && \
+  aws rds reboot-db-instance --db-instance-identifier "$CLONE" >/dev/null
+
+aws rds wait db-instance-available --db-instance-identifier "$CLONE"
+aws rds describe-db-instances --db-instance-identifier "$CLONE" \
+  --query 'DBInstances[0].{status:DBInstanceStatus,pg:DBParameterGroups[0].DBParameterGroupName,
+           pgs:DBParameterGroups[0].ParameterApplyStatus}'
+# Expected: available, the rehearsal group, in-sync. A status of
+# incompatible-parameters means one of the pins is not viable - see below.
+```
+
+Then re-run **step 8's SQL block** and read the same variables. They should now report the `<FROM>` figures rather than the `<TO>` defaults, on a `<TO>` server.
+
+**The one real risk, and why it is run here.** A bad `static` parameter can leave the instance in `incompatible-parameters`, unable to start. On a throwaway clone that costs nothing, and finding it here is the entire point - the alternative is finding it on a live instance during the apply. It also **does not block the drill**: the drill restores from the clone's automatic pre-upgrade snapshot, which is independent of the clone's current state and attaches the outgoing-family group, and `delete-db-instance` works on an instance in that state. If it happens, record which pin caused it and drop that pin from the phase 1 group.
+
+
+#### The rollback drill — steps 12 to 14
+
+**This group is the reason 0A exists.** It is the only place the rollback is executed rather than described.
+
+**0A can be split across days here**, because from this point the scheduled stop no longer constrains
+anything: the drill restores from the clone's *own* automatic pre-upgrade snapshot, held by the retention
+period the clone inherited in step 4, rather than from the nightly one.
+
+A reasonable split is steps 1 to 10 on one day, then step 11, the drill and the teardown on the next.
+Doing the upgrade group's checks on the first day is worth it: the precheck log is an abort condition for
+the whole plan, and `SELECT VERSION()` is what proves the upgrade reached the engine rather than being
+queued. Learn both before walking away.
+
+**If the terminal stayed open**, the shell process still holds every variable and helper, and there is nothing to rebuild. Verify that rather than assume it, because one thing does expire on its own:
+
+```bash
+echo "env=$ENV from=$FROM to=$TO db=$DB clone=$CLONE"
+for f in ssm_sh assert_rehearsal confirm_target drop_clone drop_snapshot redact; do
+  declare -f "$f" >/dev/null 2>&1 && echo "$f: present" || echo "$f: MISSING - re-paste it"
+done
+aws sts get-caller-identity --query Account --output text
+```
+
+The last line is the one that matters. **Credentials expire while the shell does not**, so an overnight pause typically ends with an `ExpiredToken` on the first call - re-authenticate and carry on. Nothing else goes stale: an instance endpoint is derived from its identifier, so both the clone's and the live instance's survive a reboot and an overnight destroy-and-restore, and `ssm_sh` re-resolves the SSM target on every call rather than caching it.
+
+To resume **in a new shell** instead:
+
+```bash
+# The helpers and every variable are shell state and do not survive a new terminal.
+# Re-run the session setup from the top of Procedure, which sets FROM and TO as well.
+DB=${ENV}-optinist-cloud-rds
+CLONE=${ENV}-optinist-rds-upgrade-rehearsal
+# Re-paste the four guard helpers, then:
+declare -f drop_clone
+# Expected: assert_rehearsal, confirm_target, --no-delete-automated-backups.
+
+# The drill's restore in step 13 needs these. Re-read them; the values are the same
+# even though the live instance is a different one after an overnight cycle.
+read -r CLASS STORAGE SUBNET SG <<<"$(aws rds describe-db-instances \
+  --db-instance-identifier "$DB" --output text \
+  --query 'DBInstances[0].[DBInstanceClass,StorageType,DBSubnetGroup.DBSubnetGroupName,
+           VpcSecurityGroups[0].VpcSecurityGroupId]')"
+
+aws rds describe-db-instances --db-instance-identifier "$CLONE" \
+  --query 'DBInstances[0].{status:DBInstanceStatus,ev:EngineVersion,
+           pg:DBParameterGroups[0].DBParameterGroupName,
+           pgs:DBParameterGroups[0].ParameterApplyStatus,
+           endpoint:Endpoint.Address}'
+# Expected: available, <TO>.x, the target-family rehearsal group, in-sync - the clone
+# is still where the first day left it. The endpoint is unchanged by a reboot, so
+# steps 8 and 11 can re-read it the same way.
+```
+
+Steps 8 to 11 also need the in-VPC command path, so **wait for the environment to have started** before resuming: `ssm_sh` looks for a *running* instance and fails fast if the morning cycle has not completed. The drill and the teardown use only the RDS API and do not care.
+
+Nothing touches the clone overnight, and this is worth knowing rather than assuming: the scheduler acts on **one explicitly configured identifier** - `RDS_INSTANCE_ID` in its own environment - not on a tag selector, so a clone that inherited the live instance's tags from the snapshot is still out of its reach. See edge case 3 for why those inherited tags are misleading in other ways. The clone does keep billing, which is the cost of the split.
 
 **What this drill is a rehearsal of:** the [Rollback](#procedure-1) procedure, which is the authoritative
-version and is written for a live instance. This drill covers only its restore mechanics - steps 0 and 2
-there - because a clone has no traffic to stop, is deliberately kept off the RDS Proxy, and is outside
-Terraform state. So the drill cannot exercise that procedure's steps 1, 3, 4 and 5; Phase 2 covers proxy
-re-registration for real, and the rest are only ever exercised in an actual rollback.
+version and is written for a live instance. **Its steps are numbered separately from this phase's** - the
+mapping is below.
+
+| Rollback step | Rehearsed here? |
+|-------------------------|-----------------------|
+| 0 — choose and confirm the restore source | Yes, as **step 12** |
+| 1 — stop traffic, disable the manager rules | No. A clone serves nothing |
+| 2 — free the identifier, restore under it | Yes, as **steps 13 and 14** |
+| 3 — re-register the proxy target | No. The clone is deliberately kept off the proxy; Phase 2 covers this for real |
+| 4 — revert Terraform and re-converge | No. The clone is outside Terraform state |
+| 5 — restore traffic, check the scheduler | No, for the same reason as 1 |
+
+So the drill proves the restore mechanics and measures them. The four steps it cannot reach are only ever
+exercised in an actual rollback, which is why the Rollback section is written to be read on its own.
 
 Read the Rollback section for the concepts - why a restore *is* the rollback, which recovery points
 exist, and how long the window stays open. They are not repeated here.
 
+##### Step 12 — locate the automatic pre-upgrade snapshot
+
 ```bash
-# 7. Locate the automatic pre-upgrade snapshot this clone's own upgrade produced.
+# Locate the automatic pre-upgrade snapshot this clone's own upgrade produced.
 PRE=$(aws rds describe-db-snapshots --db-instance-identifier "$CLONE" \
   --snapshot-type automated \
-  --query 'reverse(sort_by(DBSnapshots[?starts_with(EngineVersion,`<FROM>`)],
-           &SnapshotCreateTime))[0].DBSnapshotIdentifier' --output text)
+  --query "reverse(sort_by(DBSnapshots[?starts_with(EngineVersion,'${FROM}')],
+           &SnapshotCreateTime))[0].DBSnapshotIdentifier" --output text)
 echo "$PRE"
 # Expected: a snapshot id. "None" means RDS took none, so check the retention period
 # from step 4 - and note that the same absence on a real instance would mean the
 # Rollback procedure has lost one of its recovery points.
+```
 
-# 8. Free the identifier, then restore under it. This is the path that keeps
+##### Step 13 — free the identifier, then restore under it
+
+```bash
+# Free the identifier, then restore under it. This is the path that keeps
 #    Terraform convergent. Time both halves.
 #    assert_rehearsal first: this is the one delete in the procedure that is meant to
 #    happen, which makes it the one most likely to be re-run against the wrong name.
@@ -590,8 +1175,12 @@ aws rds restore-db-instance-from-db-snapshot \
   --no-publicly-accessible --no-multi-az
 aws rds wait db-instance-available --db-instance-identifier "$CLONE"
 date -u
+```
 
-# 9. Confirm what came back
+##### Step 14 — confirm what came back
+
+```bash
+# Confirm what came back
 aws rds describe-db-instances --db-instance-identifier "$CLONE" \
   --query 'DBInstances[0].{ev:EngineVersion,endpoint:Endpoint.Address,rid:DbiResourceId,
            pg:DBParameterGroups[0].DBParameterGroupName,
@@ -601,9 +1190,14 @@ aws rds describe-db-instances --db-instance-identifier "$CLONE" \
 # different, which is why a real rollback must re-register the proxy target.
 ```
 
+
 Record the measured durations. They replace estimates in any rollback decision.
 
-Tear down the same day, and in any case before phase 1:
+#### Teardown
+
+Tear down as soon as the drill is finished, and in any case before phase 1 - that is the hard deadline,
+because a clone still referencing the live parameter group makes the phase 1 apply fail to destroy it
+(caveat 1). Same-day is the cost-saving deadline, not the correctness one.
 
 ```bash
 drop_clone "$CLONE"
@@ -667,7 +1261,7 @@ residual risk is what gate 2 prices.
 The announced downtime comes from 0A unless production holds materially more data.
 
 ```bash
-for E in <development env> <production env>; do
+for E in "$ENV" <the other environment>; do
   echo "== $E"
   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeStorageSpace \
     --dimensions "Name=DBInstanceIdentifier,Value=${E}-optinist-cloud-rds" \
@@ -710,7 +1304,8 @@ The exposure is not the operation but the session: `DB` and `CLONE` are both def
 production.
 
 ```bash
-export ENV=<production env> SSM_NAME=<production env>-optinist-background
+# Re-run the session setup with ENV set to production, then:
+export SSM_NAME=${ENV}-optinist-background
 DB=${ENV}-optinist-cloud-rds
 CLONE=${ENV}-optinist-rds-upgrade-rehearsal
 SNAP=${ENV}-optinist-rehearsal-source-$(date +%Y%m%d-%H%M)
@@ -881,6 +1476,34 @@ aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
 # Expected: one target, AVAILABLE
 ```
 
+**If the new parameter group carries pins**, verify they took effect. Skip this if the phase 0A pair found nothing worth pinning. A pin that did not apply is the failure state worth naming, because it looks exactly like a clean apply: the group shows the value, the instance shows `available`, and the engine is still running the `<TO>` default.
+
+```bash
+# The group's name is generated by name_prefix (B1), so read it rather than assume it.
+NEWPG=$(aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].DBParameterGroups[0].DBParameterGroupName' --output text)
+
+# The configured side, and whether anything is still waiting for a reboot.
+aws rds describe-db-parameters --db-parameter-group-name "$NEWPG" --source user \
+  --query 'Parameters[].[ParameterName,ParameterValue,ApplyType,ApplyMethod]' --output text
+# Expected: every pin present. A `static` pin whose value has not taken effect below
+# needs a reboot - the upgrade's own reboot should have served, and if it did not,
+# reboot-db-instance and re-read.
+
+# The running side. Re-run the InnoDB readings from phase 0A step 8 against this
+# instance rather than the clone: same block, with the endpoint below in place of
+# CLONE_HOST.
+LIVE_HOST=$(aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].Endpoint.Address' --output text)
+echo "$LIVE_HOST"
+# Expected: every pinned variable reports the `<FROM>` figure from the 0A pair, not
+# the `<TO>` default. Derived values follow their pin - a buffer pool back at its
+# `<FROM>` size brings `innodb_buffer_pool_instances` back with it, so that one
+# corroborates without being pinned itself.
+```
+
+Record the result next to 0A's pair. Three columns - `<FROM>` measured, `<TO>` default measured, `<TO>` pinned measured - is what makes the soak's metrics attributable, and it is also what #898 quotes when it argues the production apply changes one thing.
+
 #### What you can roll back to after this apply
 
 Confirm this list is real before applying, not after. The rollback procedure is in
@@ -891,17 +1514,29 @@ Confirm this list is real before applying, not after. The rollback procedure is 
 | `<ENV>-pre-upgrade-<date>` | Step 3 above | **Never** - manual snapshots persist until deleted | `<FROM>`, the state immediately before the apply |
 | `<ENV>-optinist-ssl-rollback` | Step 4 above | Never | The parameter group that `<FROM>` instance needs |
 | Automatic pre-upgrade snapshots | RDS, up to two, immediately before the upgrade | With the retention period | `<FROM>` |
-| Point-in-time recovery | The automated backup | See the warning below | Any point in the window |
+| Point-in-time recovery | The automated backup | With the retention period | Any point **inside a window** - see below |
 
-**On development, point-in-time recovery is a same-day net, not a 35-day one.** The retention period
-reads 35, but the instance is recreated every night, so its automated backup window only spans the
-*current* instance's lifetime - typically hours, starting at that morning's restore. Earlier nights
-survive as separate retained backups, each covering only its own night. Production, which is never
-deleted, does have the full window.
+**On development, point-in-time recovery is a set of windows, not one span.** The retention period reads
+the same as production's, but the instance is rebuilt every cycle, so each cycle carries its own backup:
+one `active` row for the current instance, and one `retained` row per earlier cycle, each covering only
+that cycle's own lifetime. Production, which is never deleted, does have a single continuous window.
 
-The practical consequence for this phase: **the manual snapshot from step 3 is the only fresh,
-full-fidelity recovery point development has.** It is not a belt-and-braces extra on top of a 35-day
-net. Treat it accordingly.
+What that means in practice on development - read the `describe-db-instance-automated-backups` output
+rather than assuming, because the shape follows whatever the schedule is:
+
+| Target moment | Recoverable? |
+|-------------------------|-----------------------|
+| Today, e.g. just before this apply | **Yes** - the `active` window |
+| An earlier day, within that day's running hours | **Yes** - from that day's `retained` backup |
+| Overnight, between a stop and the next start | **No** - no instance existed |
+| A day the environment did not run at all | **No** - same reason |
+| Older than the retention period | No |
+
+So point-in-time recovery does cover a same-day rollback of this apply, and it covers a later rollback
+at the granularity of a running day. The manual snapshot from step 3 is still the primary recovery
+point, for three reasons that do not depend on the window shape: its contents are known, it is
+identified by name rather than by reconstructing which window contains a moment, and it survives an
+instance delete. Take it and verify it regardless.
 
 **A rollback after a night has passed needs one more thing.** The evening stop replaces the scheduler's
 fixed-name snapshot with a `<TO>` one, and the Lambda points at the `<TO>`-family parameter group. So a
@@ -927,7 +1562,7 @@ aws rds describe-db-instances --db-instance-identifier "$DB" \
            pgs:DBParameterGroups[0].ParameterApplyStatus,pending:PendingModifiedValues,
            retention:BackupRetentionPeriod}'
 # Expected: <TO>.x, available, in-sync, pending == {}, retention unchanged.
-# Retention is the one property the snapshot chain can lose - see edge case 4.
+# Retention is the one property the snapshot chain can lose - see edge case 5.
 
 # 3. The restore raised no InvalidParameterCombination, the failure B3 predicts
 SINCE=$(( ($(date +%s) - 12*3600) * 1000 ))
@@ -1062,7 +1697,7 @@ for M in CPUUtilization ReadIOPS WriteIOPS DatabaseConnections \
     --output table
 done
 # Expected: 14 daily points per metric. BufferCacheHitRatio is the one to watch -
-# see edge case 5.
+# see edge case 6.
 ```
 
 ### Phase 4: apply to production
@@ -1143,7 +1778,7 @@ done
 aws ce get-cost-and-usage --granularity DAILY \
   --time-period "Start=$(date -u -v-7d +%Y-%m-%d),End=$(date -u +%Y-%m-%d)" \
   --metrics UnblendedCost \
-  --filter '{"Dimensions":{"Key":"USAGE_TYPE","Values":["APN1-ExtendedSupport:Yr1-Yr2:MySQL<FROM>"]}}' \
+  --filter '{"Dimensions":{"Key":"USAGE_TYPE","Values":["APN1-ExtendedSupport:Yr1-Yr2:MySQL${FROM}"]}}' \
   --query 'ResultsByTime[].{day:TimePeriod.Start,cost:Total.UnblendedCost.Amount}' --output table
 # Expected: falling to zero from the day after the production apply
 
@@ -1231,9 +1866,8 @@ nothing here requires reading that phase or substituting its variable names. Rea
 Five steps. Do not skip step 0 - a rollback that starts by deleting the evidence cannot be diagnosed.
 
 ```bash
-# Set these once. ENV is the Terraform var.environment value for the environment in trouble.
-export AWS_REGION=ap-northeast-1
-export ENV=<the environment in trouble>
+# Run the session setup from the top of Procedure, with ENV set to the environment in
+# trouble. It sets FROM and TO, which the checks below compare against.
 DB=${ENV}-optinist-cloud-rds
 ROLLBACK_PG=${ENV}-optinist-ssl-rollback
 ```
@@ -1250,9 +1884,9 @@ aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type man
 # Nothing here means the rollback window was closed - see below.
 
 aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type automated \
-  --query 'reverse(sort_by(DBSnapshots[?starts_with(EngineVersion,`<FROM>`)],
+  --query "reverse(sort_by(DBSnapshots[?starts_with(EngineVersion,'${FROM}')],
            &SnapshotCreateTime))[:3].{id:DBSnapshotIdentifier,ev:EngineVersion,
-           created:SnapshotCreateTime}' --output table
+           created:SnapshotCreateTime}" --output table
 # The fallback. Prefer the manual snapshot: it is the one whose contents are known.
 
 RESTORE_FROM=<the chosen snapshot id>
@@ -1487,7 +2121,27 @@ that stop runs, the fixed-name scheduler snapshot is still on the new version.
 - Delete the clone by hand, the same day it is created.
 - Finish before the scheduled stop for a second reason: the stop recreates the nightly snapshot under a fixed identifier, so it must delete the existing one first, and a restore still reading that snapshot can block the deletion and make the stop fail.
 
-### 3. The parameter group destroy fails after a successful upgrade
+### 3. The clone claims to be the live instance
+
+**Problem:** RDS copies the source instance's tags onto a snapshot and back onto anything restored from
+it, so a clone arrives carrying the live instance's `Name`, and `ManagedBy = terraform` while being in no
+state file. A cost report grouped by `Name` attributes the rehearsal to the live instance, and a drift
+audit finds a Terraform-tagged resource nothing manages.
+
+**Solution:** retag it as soon as the restore is available. Nothing keys off these tags functionally, so
+this is about not misleading a later reader.
+
+```bash
+aws rds add-tags-to-resource --resource-name "$(aws rds describe-db-instances \
+  --db-instance-identifier "$CLONE" --query 'DBInstances[0].DBInstanceArn' --output text)" \
+  --tags Key=Name,Value="$CLONE" Key=ManagedBy,Value=manual Key=Purpose,Value=rehearsal
+aws rds list-tags-for-resource --resource-name "$(aws rds describe-db-instances \
+  --db-instance-identifier "$CLONE" --query 'DBInstances[0].DBInstanceArn' --output text)" \
+  --query 'TagList[].{k:Key,v:Value}' --output table
+# Expected: Name is the clone's own identifier, ManagedBy is manual
+```
+
+### 4. The parameter group destroy fails after a successful upgrade
 
 **Problem:** Terraform destroys the outgoing parameter group after the instance update completes. If RDS still reports it as in use, the destroy fails with `InvalidDBParameterGroupState`.
 
@@ -1495,7 +2149,7 @@ that stop runs, the fixed-name scheduler snapshot is still on the new version.
 - Re-run the apply. Nothing is lost in that state - the instance is already on the new group.
 - If it persists, check for a clone or a manually created instance still referencing the group.
 
-### 4. The snapshot chain loses the backup retention period
+### 5. The snapshot chain loses the backup retention period
 
 **Problem:** `BackupRetentionPeriod` is not a restore parameter; it carries over in practice but is not guaranteed. A zero retention means RDS takes no automatic pre-upgrade snapshot, so a rollback silently loses a recovery point.
 
@@ -1503,16 +2157,21 @@ that stop runs, the fixed-name scheduler snapshot is still on the new version.
 - Assert the retention period in every phase 2 cycle check, not just once.
 - It does not decay gradually - if the chain loses it, it reads zero at the first cycle, which is why two cycles settle the question.
 
-### 5. The database is slower after the upgrade
+### 6. The database is slower after the upgrade
 
-**Problem:** A family change can alter InnoDB memory and IO defaults. Where RDS stopped pinning a buffer pool size in favour of a derived value, the pool can shrink, so more reads reach disk.
+**Problem:** A major version changes InnoDB memory and IO defaults, and **a family diff does not show most of them.** Two distinct mechanisms produce the same symptom:
+
+1. **RDS stops pinning a value and the engine derives it instead.** `innodb_buffer_pool_size` is the case that matters: a family pinning a fraction of instance memory gives way to one where `innodb_dedicated_server` derives the size, and the pool can end up smaller. This mechanism *is* visible in a family diff.
+2. **RDS pins the value in neither family, and the engine default changed underneath.** Both sides read as unset, so a family diff shows nothing at all - and this is the larger group. Between MySQL 8.0 and 8.4 it covered `innodb_io_capacity`, `innodb_io_capacity_max`, `innodb_adaptive_hash_index` and `innodb_change_buffering`.
 
 **Solution:**
-- The symptom is slower, not wrong, and it is attributable: it appears as `BufferCacheHitRatio` falling with `ReadIOPS` rising, not as an error.
-- Pin the buffer pool size explicitly in the new parameter group if it appears.
-- Compare against the phase 3 baseline. A change in any other metric is not explained by the family change and should be triaged as an application question.
+- The symptom is slower, not wrong: `BufferCacheHitRatio` falling, `ReadIOPS` or `WriteIOPS` rising, read latency up. Not an error.
+- **Do not attribute by diffing family defaults.** Mechanism 2 is undetectable that way. Attribute by comparing step 8's readings against step 9's - the same running server, before and after.
+- `innodb_io_capacity` deserves a decision rather than observation. A large increase tells InnoDB's page cleaner it has IO headroom the volume may not have, so the upgrade doubles as an IO tuning change. Pinning it and `innodb_io_capacity_max` to the outgoing values in the new parameter group separates the two changes; tune deliberately afterwards, as its own piece of work.
+- Pin `innodb_buffer_pool_size` explicitly in the new group if the step 8 / step 9 pair shows the pool shrinking.
+- Compare against the phase 3 baseline. A metric that moved with **no** corresponding difference in the step 8 / step 9 pair is the one to triage as an application question.
 
-### 6. A failure during the soak is hard to attribute
+### 7. A failure during the soak is hard to attribute
 
 **Problem:** Application bug or upgrade artefact?
 
@@ -1540,8 +2199,9 @@ The `general` and `slowquery` exports produce nothing because both logs are at t
 
 | Metric | Why | Expected after upgrade |
 |-------------------------|-----------------------|-----------------------|
-| `BufferCacheHitRatio` | The family change's one measurable effect | May fall - see edge case 5 |
+| `BufferCacheHitRatio` | Buffer pool sizing | May fall - see edge case 6 |
 | `ReadIOPS` | Corroborates the above | May rise with a smaller buffer pool |
+| `WriteIOPS` | Background flushing, if `innodb_io_capacity` rose - edge case 6, mechanism 2 | May rise independently of any application change |
 | `CPUUtilization` | Baseline comparison | Unchanged |
 | `DatabaseConnections` | Pool health after the rollout | Returns to the pre-upgrade level |
 | `FreeableMemory` | Pool sizing sanity | Unchanged |
@@ -1597,7 +2257,7 @@ Intervals for the in-process jobs are in `studio/app/common/core/subscription/co
 
 **The backend pytest lane does not reach the deployed database.** `make test_backend` runs against a containerised MySQL, as do `make alembic_check`, `make premium_lock_it` and `make workflow_count_it`. They validate the code against the target major version, which CI already does continuously. They are regression cover, not upgrade verification.
 
-Only the deployed e2e lanes reach the upgraded instance, and they reach it through the RDS Proxy - the same path every ECS task uses for `DB_HOST`. That makes them evidence for the proxy authentication chain as well as for the queries.
+Only the deployed e2e lanes reach the upgraded instance, and they reach it through the RDS Proxy - the same path every ECS task uses for `MYSQL_SERVER`. That makes them evidence for the proxy authentication chain as well as for the queries.
 
 | Lane | What it covers on a deployed environment |
 |-------------------------|-----------------------|
