@@ -475,11 +475,23 @@ DB=${ENV}-optinist-cloud-rds
 echo "profile=$AWS_PROFILE env=$ENV from=$FROM to=$TO db=$DB"
 ```
 
-**This block is the only place in this document where something has to be substituted by hand.**
-`<FROM>` and `<TO>` appear elsewhere in prose and in expected-output comments, where they are
-placeholders on purpose - but every *command* from here on uses `$FROM` and `$TO`, so nothing else needs
-editing before it is run. If a command still contains an angle-bracket placeholder, that is a defect in
-this document, not something to fill in.
+**Run this block first; the rest of the document assumes it.** `<FROM>`, `<TO>` and `<ENV>` also appear in
+prose and in expected-output comments, where they are placeholders on purpose - but from here on every
+*command* uses `$FROM`, `$TO` and `$ENV`, so a version or environment name never has to be typed twice.
+
+A handful of commands do still carry an angle-bracket placeholder, and each one is a value only the
+operator can supply:
+
+| Where | Placeholder |
+|-------------------------|-----------------------|
+| This block | The profile, the environment, and the two versions |
+| Phase 0C's setup | The same, plus the deployment checkout's path |
+| **B6**, comparing what is deployed | The deployed ref |
+| Phase 5, sweeping both environments | The other environment's name |
+| Rollback, choosing a restore source | The snapshot id, and the service counts recorded earlier |
+
+Anywhere else, a placeholder left in a command is a defect in this document rather than something to
+fill in.
 
 **Comments sit on their own line, never trailing a command.** `zsh` does not treat `#` as a comment in
 interactive input unless `INTERACTIVE_COMMENTS` is set, and it is off by default. A trailing comment then
@@ -1227,7 +1239,7 @@ echo "$PRE"
 # Everything step 13 needs, checked now, while the clone is still here to fall back on.
 # Step 13 deletes before it restores, so a blank or stale value below becomes a failed
 # restore with no clone left to retry from.
-[ -n "$PRE" ] && [ "$PRE" != None ] || echo "ABORT: no <FROM> snapshot to restore from"
+[ -n "$PRE" ] && [ "$PRE" != None ] || echo "ABORT: no ${FROM} snapshot to restore from"
 
 aws rds describe-db-snapshots --db-snapshot-identifier "$PRE" \
   --query 'DBSnapshots[0].{status:Status,ev:EngineVersion,created:SnapshotCreateTime}'
@@ -1526,13 +1538,11 @@ aws rds describe-db-parameter-groups \
 
 `terraform plan` is read-only, so the B4 gate can run days ahead instead of inside the phase 1 window. Running it early turns "the plan looked right" into a decision already made, with time to fix what it finds.
 
-**This phase needs the Terraform edit to exist, uncommitted, in the working tree.** The gate asserts
-that the instance shows `update` and that the parameter group is created under a generated name - both
-of which are properties of the change, so an unmodified checkout produces "no changes" instead and the
-gate proves nothing. Make the edit, run 0C, and leave committing it to the phase 1 branch.
-
-Leaving it uncommitted costs nothing and buys one thing: nothing has been pushed, so a gate failure costs
-only a local edit.
+**This phase needs the Terraform edit present in the tree Terraform plans from.** The gate asserts that
+the instance shows `update` and that the parameter group is created under a generated name - both are
+properties of the change, so an unmodified checkout produces "no changes" and the gate proves nothing.
+Whether the edit is committed makes no difference to the plan, and phase 1 requires a clean worktree
+(**B6**), so committing it first is the simpler path.
 
 **Run it from the directory Terraform actually applies from.** That may not be the repository you have been
 editing: a separate deployment checkout is a common arrangement, and it is the one whose working tree
@@ -1541,21 +1551,54 @@ carries the edit before planning, not the copy you typed it into.
 
 **Expect more in the plan than the RDS changes**, and know which extras are benign:
 
-- `null_resource.build_and_deploy` and `null_resource.deploy_to_ecs` trigger on `var.git_branch`, the ALB
-  DNS name and the ECR repository URL. **None of those is the git commit**, so a different checked-out
-  commit does not replace them.
-- `data.external.tf_build_info` *does* read the real commit, and it feeds tags on the ECS cluster. A
-  checkout at a different commit than the last apply therefore shows **`aws_ecs_cluster.main` updating its
-  tags** - one resource, and benign.
+- **Read the deploy trigger from the state, not from the checkout.** `null_resource.build_and_deploy`
+  triggers on the ALB DNS name, the ECR repository URL, `var.git_branch` and - depending on the revision
+  of the configuration that was last applied - `source_revision`, the git commit. Whether that last key is
+  present decides whether an apply from a new commit rebuilds the image at all, and the checked-out
+  configuration is not evidence: only the plan's `before` triggers are.
+- `data.external.tf_build_info` reads the real commit and feeds tags on the ECS cluster, so a checkout at
+  a different commit than the last apply shows **`aws_ecs_cluster.main` updating its tags** - one
+  resource, and benign.
+- **A trigger key that disappears is also a change.** Applying a configuration older than the one in state
+  removes the key and replaces the resource, which rebuilds the image once and then leaves the trigger set
+  constant across commits - so later applies skip the build. That is a regression, not a rollout, and it is
+  invisible unless the `before`/`after` trigger maps are compared.
 
 **Record which resources the plan contains, not just the ones the gate asserts.** Whether the image
 rebuild and the ECS rollout appear is what decides whether the apply is also an application deploy, and
 therefore what the production window in phase 4 has to cover. That is a claim worth settling from a plan
 rather than from reading the configuration.
 
+This usually runs in a different terminal from the AWS CLI work, and in a different directory, so it needs
+its own setup. It does not need the delete guards or `FROM`, because nothing here deletes anything.
+
 ```bash
-cd infrastructure/terraform
+export AWS_PROFILE=<the profile for this account>
+export AWS_REGION=ap-northeast-1
+export ENV=<the Terraform var.environment value>
+cd <the deployment checkout>/infrastructure/terraform
+
+# Prove which tree is about to be planned. With two checkouts of one repository this is
+# the check that matters most, and it costs nothing.
+git rev-parse --abbrev-ref HEAD
+git log -1 --oneline
+git status --porcelain
+grep -nE 'family|name_prefix|engine_version|allow_major_version_upgrade' infrastructure.tf
+# Expected: the phase 1 branch, a commit carrying the edit, and the INCOMING family and
+# engine version in the grep. An outgoing-version value means this is the wrong
+# checkout - fix that before planning, not after reading a confusing plan.
+
+echo "ENV=$ENV"
+# Expected: the development environment's value. **Stop if it is anything else.** The
+# next command attaches this directory to that environment's remote state, and
+# -reconfigure replaces whatever it was attached to before.
+```
+
+```bash
 terraform init -backend-config="backends/${ENV}.hcl" -reconfigure
+
+# plan is read-only against AWS but it takes a state lock. Let it finish: an
+# interrupted plan can leave a lock behind that blocks the next deploy.
 terraform plan -var-file="environments/${ENV}.tfvars" -out=tfplan-dryrun
 
 terraform show -json tfplan-dryrun | jq -r '
@@ -1587,12 +1630,34 @@ terraform show -json tfplan-dryrun | jq -r '
 # Expected: one line per pin, values intact, plus the parameters the group already had.
 # Missing pins here mean the plan is for a different change than phase 1 will apply.
 
+# The deploy trigger, before and after. This is what says whether the apply rebuilds
+# the image, and why.
+terraform show -json tfplan-dryrun | jq -r '
+  .resource_changes[] | select(.address=="null_resource.build_and_deploy")
+  | {before: .change.before.triggers, after: .change.after.triggers}'
+# Expected: the two maps differ in exactly the way the change explains. A key present
+# in before and absent in after means the configuration being applied is OLDER than the
+# one in state - see the third note above.
+
 # Every resource the plan touches, so the extras are recorded rather than noticed.
 terraform show -json tfplan-dryrun | jq -r '
   .resource_changes[] | select(.change.actions != ["no-op"])
   | "\(.address) -> \(.change.actions|join(","))"' | sort
-# Expected: the two RDS resources, and whatever else this stack moves. Read it against
-# the note above before treating anything as a surprise.
+
+# Then attribute them. replace_paths names the attribute that forces each replacement,
+# which is what separates "our change did this" from "this was already drifting".
+terraform show -json tfplan-dryrun | jq -r '
+  .resource_changes[] | select(.change.actions != ["no-op"])
+  | "\(.address)  replace_paths=\(.change.replace_paths // [])"'
+# Expected from the engine change itself: the instance updating in place, the parameter
+# group replaced on family and name_prefix, and whatever derives the group's name -
+# typically a scheduler environment variable and an IAM policy scoped to it.
+#
+# **Everything else is drift, and it will ride along with the apply.** An AMI data
+# source with most_recent = true replaces its instance whenever the upstream image is
+# rebuilt; a replacement like that has nothing to do with the engine upgrade and can
+# take network egress with it. Triage the list before deciding to apply: the gate above
+# passes on the two RDS resources while any number of unrelated resources move.
 
 # The plan file holds every variable value, including whatever the tfvars carry. It is
 # not necessarily gitignored in a deployment checkout, so remove it once the gate has
