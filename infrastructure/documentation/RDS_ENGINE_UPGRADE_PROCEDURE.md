@@ -115,9 +115,22 @@ Both `family` and `name` are ForceNew on `aws_db_parameter_group`, so changing t
 
 `create_before_destroy` is therefore not a help here; with a hard-coded name it is what makes the apply fail.
 
-**Fix:** use `name_prefix` in place of `name`, and update the resource's `Name` tag to match. This is durable across future family changes. A one-off rename embedding the target version also works, at the cost of another rename next time.
+**Fix:** use `name_prefix` in place of `name`. This is durable across future family changes. A one-off rename embedding the target version also works, at the cost of another rename next time.
 
-Consumers follow automatically because every reference derives from `aws_db_parameter_group.main.name`: the instance's `parameter_group_name`, the scheduler Lambda's `RDS_PARAMETER_GROUP_NAME` environment variable, and the parameter group ARN in the scheduler's IAM policy.
+The resource's `Name` tag is deliberately left as it was - it is a tag rather than an identifier, nothing reads it, and changing it would add a diff to the plan that the gate would then have to account for.
+
+Consumers follow automatically because every reference derives from `aws_db_parameter_group.main.name`. **How many consumers there are depends on the environment:**
+
+| Consumer | Where | Present when |
+|-------------------------|-----------------------|-----------------------|
+| The instance's `parameter_group_name` | `infrastructure.tf` | **Always** |
+| The scheduler Lambda's `RDS_PARAMETER_GROUP_NAME` | `dev_schedule.tf` | Only with `enable_dev_schedule` |
+| The parameter group ARN in the scheduler's IAM policy | `dev_schedule.tf` | Only with `enable_dev_schedule` |
+
+**So the three-consumer blast radius is development's.** Both of the non-instance consumers sit in
+`dev_schedule.tf` under `count = var.enable_dev_schedule ? 1 : 0`, so on an environment without the scheduler
+the instance is the **sole** consumer. Confirm which case applies before sizing the change - phase 4 has a
+one-line check for it.
 
 #### B2: apply_immediately is unset, so the upgrade is deferred and then lost
 
@@ -219,9 +232,33 @@ The parameter group is the only identity that moves on an upgrade, and every con
 
 A changed `DbiResourceId` matters in one place: **the RDS Proxy target must be re-registered.** The proxy deregisters its target when the instance is deleted and does not register a replacement on its own. On development `ensure_rds_proxy_target()` does this on the next scheduler start; on production it is a manual `register-db-proxy-targets`.
 
+### Before pasting anything: one line, first
+
+**This has to come before the helper definitions below, not with the rest of the setup.** `zsh` does not treat
+`#` as a comment in interactive input unless `INTERACTIVE_COMMENTS` is set, and it is off by default — and a
+comment in the wrong place does not merely print noise, it can abandon a function definition outright (see
+*Conventions* below). The helpers are the first thing an operator pastes, so the `setopt` has to precede them.
+
+```bash
+setopt interactive_comments 2>/dev/null || true
+```
+
+The rest of the session setup — profile, region, `ENV`, `TF_ENV`, `FROM`, `TO`, `DB` — is under
+[Procedure](#procedure), because unlike this line it is needed only once the commands start.
+
 ### Shared helper: run a command inside the VPC
 
 Neither RDS instance is publicly accessible and the proxy is TLS-only, so the in-database checks run from an in-VPC instance over SSM. This is the same mechanism the e2e suite uses in `runShellOverSsm`.
+
+**Two things about the function body, both learned the hard way:**
+
+- **The failure branch prints stdout as well as stderr.** A block that dies partway still produced everything
+  up to that point, and that output is the diagnosis.
+- **The body carries no comments, deliberately.** A comment inside its `case` is not the harmless noise a
+  comment elsewhere is: with zsh's `INTERACTIVE_COMMENTS` off, `#` is read as the start of a **case pattern**,
+  which is a **hard parse error**. The function then does not exist, and the only symptom is
+  `command not found: ssm_sh` several steps later. Verified by pasting it into `zsh -f -i` both ways. Keep
+  explanation in prose here, not in the block.
 
 ```bash
 # Reads the remote script from stdin and prints its stdout.
@@ -243,8 +280,6 @@ ssm_sh() {
     case "$st" in
       Success) break ;;
       Pending|InProgress|Delayed) sleep 3 ;;
-      # Print stdout as well as stderr on failure: a block that dies partway still
-      # produced everything up to that point, and that output is the diagnosis.
       *) aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
            --query StandardOutputContent --output text
          aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
@@ -426,12 +461,12 @@ redact() {
   acct=$(aws sts get-caller-identity --query Account --output text)
   sed -E \
     -e "s/${acct}/<ACCOUNT_ID>/g" \
-    -e 's/\b(development|subscr)-optinist/<ENV>-optinist/g' \
+    -e 's/(^|[^[:alnum:]-])(development|subscr)-optinist/\1<ENV>-optinist/g' \
     -e 's/\/ecs\/(development|subscr)-/\/ecs\/<ENV>-/g' \
     -e 's/proxy-[a-z0-9]{8,}/proxy-<TOKEN>/g' \
     -e 's/\.[a-z0-9]{8,}\.([a-z0-9-]+)\.rds\.amazonaws\.com/.<TOKEN>.\1.rds.amazonaws.com/g' \
-    -e 's/\bi-[0-9a-f]{8,}/i-A/g' \
-    -e 's/\bdb-[A-Z0-9]{10,}/db-A/g' \
+    -e 's/(^|[^[:alnum:]-])i-[0-9a-f]{8,}/\1i-A/g' \
+    -e 's/(^|[^[:alnum:]-])db-[A-Z0-9]{10,}/\1db-A/g' \
     -e 's/db\.[a-z0-9]+\.[a-z]+/<INSTANCE_CLASS>/g'
 }
 
@@ -439,6 +474,21 @@ redact() {
 # sql_mode values, precheck findings, metric values and cost figures are left intact -
 # acceptance criteria are written against them.
 ```
+
+**Three rules are anchored on `(^|[^[:alnum:]-])` rather than on `\b`, and that is not a style choice.**
+BSD `sed -E` - `/usr/bin/sed` on macOS - has no `\b`. It does not error on one; **it simply never matches, and
+exits 0.** With `\b` in place, the environment prefix, the `i-…` instance ids and the `db-…` resource ids -
+**the three rows this document's own substitution table declares mandatory** - passed through untouched while
+the other five rules fired, so the output looked filtered. Measured, then fixed:
+
+```
+with \b :  name subscr-optinist-cloud-rds / ssm i-0abc123456789def0 / res db-ABCDEFGHIJKLMNOP
+anchored:  name <ENV>-optinist-cloud-rds  / ssm i-A                 / res db-A
+```
+
+The capture group is what preserves the character the anchor consumed, and the alternation with `^` is what
+keeps a match at the start of a line. **Verify any change to these rules against a line that exercises all
+eight**, including one identifier at the very start of a line.
 
 The filter is a convenience, not a guarantee: it does not know about values it has never seen. Check the result before posting.
 
@@ -469,11 +519,29 @@ Set the environment once per session. `ENV` is the Terraform `var.environment` v
 export AWS_PROFILE=<the profile for this account>
 export AWS_REGION=ap-northeast-1
 export ENV=<the Terraform var.environment value>
+export TF_ENV=<the backends/ and environments/ file basename>
 export FROM=<the current major version, e.g. 8.0>
 export TO=<the target major version, e.g. 8.4>
 DB=${ENV}-optinist-cloud-rds
-echo "profile=$AWS_PROFILE env=$ENV from=$FROM to=$TO db=$DB"
+setopt interactive_comments 2>/dev/null || true
+echo "profile=$AWS_PROFILE env=$ENV tf_env=$TF_ENV from=$FROM to=$TO db=$DB"
 ```
+
+> **`ENV` names resources. `TF_ENV` names files. They are not the same value, and on production they differ.**
+>
+> `ENV` is the Terraform `var.environment` value, which is what every resource name is built from —
+> `${ENV}-optinist-cloud-rds`, `${ENV}-optinist-rds-proxy`, and so on. **The files under `backends/` and
+> `environments/` are named after the environment in prose, not after that value:**
+>
+> | | `ENV` | `TF_ENV` |
+> |---|---|---|
+> | Development | `development` | `development` |
+> | **Production** | **`subscr`** | **`production`** |
+>
+> **The two coincide on development**, so the mistaken `backends/${ENV}.hcl` works there and hides the
+> problem. On production it resolves to `backends/subscr.hcl`, which does not exist — and it fails at the
+> **first** terraform command of the window, before a plan exists. `TF_ENV` is used **only** for those two
+> paths; everywhere else, `ENV`.
 
 **Run this block first; the rest of the document assumes it.** `<FROM>`, `<TO>` and `<ENV>` also appear in
 prose and in expected-output comments, where they are placeholders on purpose - but from here on every
@@ -484,20 +552,40 @@ operator can supply:
 
 | Where | Placeholder |
 |-------------------------|-----------------------|
-| This block | The profile, the environment, and the two versions |
+| This block | The profile, the environment, **the backend/tfvars basename**, and the two versions. `ENV` and `TF_ENV` are two separate substitutions and they differ on production |
 | Phase 0C's setup | The same, plus the deployment checkout's path |
 | **B6**, comparing what is deployed | The deployed ref |
+| **Phase 3, criterion 6's baseline** | Production's instance identifier and profile, as `PROD_DB` / `PROD_PROFILE`. Deliberately not `DB`: that step reads production from a shell pointed at development, and reassigning `DB` is how the capture silently becomes the wrong environment's |
 | Phase 5, sweeping both environments | The other environment's name |
 | Rollback, choosing a restore source | The snapshot id, and the service counts recorded earlier |
 
 Anywhere else, a placeholder left in a command is a defect in this document rather than something to
 fill in.
 
-**Comments sit on their own line, never trailing a command.** `zsh` does not treat `#` as a comment in
-interactive input unless `INTERACTIVE_COMMENTS` is set, and it is off by default. A trailing comment then
-becomes arguments: `date -u   # t0` fails with `illegal time format`, and `VAR=value   # note` runs `#` as
-a command and leaves `VAR` unset in the shell. Both were observed while executing this document, and the
-second is the dangerous one because it fails quietly.
+**Set `INTERACTIVE_COMMENTS` before pasting anything, and keep comments on their own line.** `zsh` does not
+treat `#` as a comment in interactive input unless `INTERACTIVE_COMMENTS` is set, and it is off by default.
+The setup block above turns it on; without it, every commented block in this document misbehaves in one of
+two ways.
+
+A *trailing* comment becomes arguments: `date -u   # t0` fails with `illegal time format`, and
+`VAR=value   # note` runs `#` as a command and leaves `VAR` unset. The second is the dangerous one because
+it fails quietly.
+
+A comment *on its own line inside a pasted function body* behaves in one of two ways, and **the difference
+decides whether the function exists at all:**
+
+| Where the comment sits | What happens |
+|-------------------------|-----------------------|
+| The **first line of the body**, as in `inv` | Stored as the function's first command, so every call begins with `funcname:1: command not found: #`. **Noise, not breakage** - but noise printed immediately before a verdict line is how a real `FAIL` gets overlooked, which is the whole reason the helpers print one verdict per item |
+| Inside a **`case`**, as `ssm_sh` used to | `#` is read as the start of a **case pattern**. That is a **hard parse error**: `parse error near 'esac'`, the definition is abandoned, and stray fragments of the body execute on their own. **The function does not exist**, and the only symptom arrives steps later as `command not found: ssm_sh` |
+
+The second was reproduced by pasting `ssm_sh` into `zsh -f -i` with comments off - it reported
+`NOT DEFINED`, having first issued a real `aws ssm get-command-invocation` with an empty command id.
+`ssm_sh`'s body now carries no comments for that reason.
+
+**So keeping comments on their own line is necessary but not sufficient**, and the `setopt` is what actually
+makes this document safe to paste — which is why it is in the very first block, **ahead of every helper
+definition.** All three behaviours were observed while executing this document.
 
 ### Prerequisites
 
@@ -1595,24 +1683,28 @@ echo "ENV=$ENV"
 ```
 
 ```bash
-terraform init -backend-config="backends/${ENV}.hcl" -reconfigure
+terraform init -backend-config="backends/${TF_ENV}.hcl" -reconfigure
 
 # plan is read-only against AWS but it takes a state lock. Let it finish: an
 # interrupted plan can leave a lock behind that blocks the next deploy.
-terraform plan -var-file="environments/${ENV}.tfvars" -out=tfplan-dryrun
+# Outside the working tree: a plan file holds every variable value, and an untracked
+# file inside the repository trips the clean-tree guard in ecr_build_push.sh - harmless
+# here, because 0C never applies, but the same command is used where it is not.
+PLAN=$(mktemp -t tfplan-dryrun)
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
 
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.type=="aws_db_instance")
   | "\(.address) -> \(.change.actions|join(","))"'
 # Expected: aws_db_instance.main -> update
 # Any create, delete or "create,delete" aborts the work
 
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.type=="aws_db_parameter_group")
   | "\(.address) -> \(.change.actions|join(","))"'
 # Expected: one create and one delete - the create_before_destroy replacement
 
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.type=="aws_db_parameter_group"
     and (.change.actions|index("create")))
   | {name: .change.after.name, name_prefix: .change.after.name_prefix,
@@ -1623,7 +1715,7 @@ terraform show -json tfplan-dryrun | jq -r '
 # The pinned parameters, if the phase 0A pair produced any. Terraform has to accept
 # them, and an RDS expression such as {DBInstanceClassMemory*3/4} is the one to watch:
 # a bare brace is literal in HCL, but a mistyped ${...} would be read as interpolation.
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.type=="aws_db_parameter_group"
     and (.change.actions|index("create")))
   | .change.after.parameter[]? | "\(.name) = \(.value) [\(.apply_method)]"'
@@ -1632,7 +1724,7 @@ terraform show -json tfplan-dryrun | jq -r '
 
 # The deploy trigger, before and after. This is what says whether the apply rebuilds
 # the image, and why.
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.address=="null_resource.build_and_deploy")
   | {before: .change.before.triggers, after: .change.after.triggers}'
 # Expected: the two maps differ in exactly the way the change explains. A key present
@@ -1640,13 +1732,13 @@ terraform show -json tfplan-dryrun | jq -r '
 # one in state - see the third note above.
 
 # Every resource the plan touches, so the extras are recorded rather than noticed.
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.change.actions != ["no-op"])
   | "\(.address) -> \(.change.actions|join(","))"' | sort
 
 # Then attribute them. replace_paths names the attribute that forces each replacement,
 # which is what separates "our change did this" from "this was already drifting".
-terraform show -json tfplan-dryrun | jq -r '
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.change.actions != ["no-op"])
   | "\(.address)  replace_paths=\(.change.replace_paths // [])"'
 # Expected from the engine change itself: the instance updating in place, the parameter
@@ -1659,10 +1751,7 @@ terraform show -json tfplan-dryrun | jq -r '
 # take network egress with it. Triage the list before deciding to apply: the gate above
 # passes on the two RDS resources while any number of unrelated resources move.
 
-# The plan file holds every variable value, including whatever the tfvars carry. It is
-# not necessarily gitignored in a deployment checkout, so remove it once the gate has
-# been read.
-rm -f tfplan-dryrun
+rm -f "$PLAN"
 ```
 
 0C cannot prove the replacement succeeds - a name collision only surfaces at apply time.
@@ -1671,38 +1760,129 @@ rm -f tfplan-dryrun
 
 Weekdays, while the environment is up, and finishing before the scheduled stop (B3, B4).
 
-```bash
-# 1. Hold off the scheduler. The override expires by itself.
-aws lambda invoke --function-name "${ENV}-dev-scheduler" \
-  --payload '{"action":"override","hours":6}' \
-  --cli-binary-format raw-in-base64-out /dev/stdout
+**Fourteen steps in three groups, numbered one for one with #897's tasks P1-1 to P1-14.** Phase 4 applies
+this same sequence against production, so the numbering is what lets it cite the steps instead of restating
+them: read **"phase 1 step N"** wherever phase 4 refers to one. Phase 0A's steps are a separate sequence -
+always say which phase's step is meant.
 
-# 2. The instance must be there. Anything but available aborts (B4).
+**Run the steps in one shell session.** Four variables are established in one step and read in a later one:
+`PRESNAP` (step 4), `PLAN` (step 7), `NEWPG` and `LIVE_HOST` (step 12). A step is one paste; a fresh session
+loses the lot.
+
+#### Before the apply — steps 1 to 6
+
+Nothing here changes the database. All six are preconditions, and **step 1 and step 6 are the two that
+cannot be done afterwards.**
+
+##### Step 1 — the `<FROM>` readings exist, and the pins are decided
+
+Two preconditions that a later step cannot recover. **This step is a read, plus one file check - it changes
+nothing.**
+
+```bash
+# The pins the apply will carry must already be in the Terraform change. Read them from
+# the file rather than from memory: a pin that is absent here is a tuning change that
+# ships silently alongside the version change, and the family diff will not show it.
+grep -oE 'name += +"innodb_[a-z_]+"' infrastructure/terraform/infrastructure.tf | sort
+# Expected: one line per pin the phase 0A step 8 / step 9 pair justified. For 8.0 -> 8.4
+# that is six: dedicated_server, buffer_pool_size, buffer_pool_instances,
+# redo_log_capacity, io_capacity, io_capacity_max.
+```
+
+```bash
+# The "before" half of the pair. Confirm it was recorded; if it was not, take it NOW.
+# On development it came from phase 0A step 9. On production there is no phase 0A, so
+# this is where it happens - and after the apply the <FROM> instance no longer exists,
+# so there is no later opportunity.
+aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].{ev:EngineVersion,endpoint:Endpoint.Address}'
+# Expected: <FROM>.x. Then run phase 0A step 8's SQL block against that endpoint, unless
+# the readings are already on file.
+```
+
+##### Step 2 — read the stop schedule, and extend it only if needed
+
+```bash
+# The deadline. The scheduler stops this environment on a fixed schedule, and an apply
+# interrupted by that stop is B4 territory: the instance is deleted while Terraform is
+# mid-flight. Read the schedule rather than remembering it.
+aws events describe-rule --name "${ENV}-dev-schedule-stop" \
+  --query '[Name,ScheduleExpression,State]' --output text
+# Expected: the stop cron, and ENABLED. Convert it to local time - that is this phase's
+# deadline, and finishing before it is the plan rather than the fallback.
+```
+
+**The override below is the fallback, not the default.** It is capped at twelve hours and expires on a clock
+from the moment it is set, so an override set in the morning cannot reach an evening stop even at the cap.
+Set it only when an overrun becomes likely, and late enough to clear the deadline.
+
+```bash
+aws lambda invoke --function-name "${ENV}-dev-scheduler" \
+  --payload '{"action":"override","hours":12}' \
+  --cli-binary-format raw-in-base64-out /dev/stdout
+# Expected, in the FUNCTION's response rather than the invoke's own status:
+#   {"statusCode": 200, "action": "override", "hours": N, "expires_at": "..."}
+#
+# A statusCode of 400 with "OVERRIDE_PARAM_NAME not configured" is the silent failure
+# here: the invoke still reports success while nothing was set.
+#
+# Compare expires_at against the stop time read above. Falling short means the stop runs
+# anyway. There is no second check available - the function exposes start, stop and
+# override, and no way to query the override's state - so expires_at is the evidence.
+#
+# The next scheduled start clears the override unconditionally, so it cannot leak into
+# the nightly cycles phase 2 needs. It does mean that skipping a stop leaves the
+# environment up overnight, and the following start then runs against an environment
+# that is already running.
+```
+
+**Production has no scheduler, so phase 4 skips this step entirely** - its timing is free. That is the one
+step of the fourteen that does not carry over.
+
+##### Step 3 — the instance is available
+
+```bash
+# Anything but available aborts (B4).
 aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{status:DBInstanceStatus,ev:EngineVersion}'
 # Expected: available, <FROM>.x
+```
 
-# 3. Manual snapshot, in addition to the automated retention. A manual snapshot is the
-#    only recovery point that survives an instance delete, so this is not optional and
-#    it is not complete until it reads available.
-SNAP=${ENV}-pre-upgrade-$(date +%Y%m%d-%H%M)
-aws rds create-db-snapshot --db-instance-identifier "$DB" --db-snapshot-identifier "$SNAP"
-aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
-aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
+##### Step 4 — the manual pre-upgrade snapshot
+
+A manual snapshot is the **only** recovery point that survives an instance delete, so this is not optional,
+and it is not complete until it reads `available`.
+
+```bash
+# PRESNAP, not SNAP. This snapshot is a recovery point that must outlive the phase,
+# whereas SNAP elsewhere in this document names a restore *source* that gets deleted -
+# phase 0B ends with drop_snapshot "$SNAP". Two meanings in one shell session is how a
+# recovery point gets deleted by a line copied from another phase.
+PRESNAP=${ENV}-pre-upgrade-$(date +%Y%m%d-%H%M)
+aws rds create-db-snapshot --db-instance-identifier "$DB" --db-snapshot-identifier "$PRESNAP"
+aws rds wait db-snapshot-available --db-snapshot-identifier "$PRESNAP"
+aws rds describe-db-snapshots --db-snapshot-identifier "$PRESNAP" \
   --query 'DBSnapshots[0].{id:DBSnapshotIdentifier,status:Status,ev:EngineVersion,
            created:SnapshotCreateTime}'
 # Expected: available, <FROM>.x. This is the rollback point - do not proceed on a
 # snapshot still reported as creating.
+```
 
-# 4. Retain an outgoing-family parameter group for rollback. The apply destroys the
-#    managed one, and the outgoing engine cannot use the new family.
+##### Step 5 — retain an outgoing-family parameter group
+
+The apply destroys the managed group, and the outgoing engine cannot use the new family. A rollback needs a
+group to attach.
+
+```bash
 aws rds copy-db-parameter-group \
   --source-db-parameter-group-identifier "${ENV}-optinist-ssl" \
   --target-db-parameter-group-identifier "${ENV}-optinist-ssl-rollback" \
   --target-db-parameter-group-description "outgoing-family rollback target"
+```
 
-#    Verify it. A rollback attaches this group, so a copy that silently did not happen
-#    is only discovered during the restore - after the restore has been committed.
+```bash
+# Verify it. A rollback attaches this group, so a copy that silently did not happen is
+# only discovered during the restore - after the restore has been committed.
 aws rds describe-db-parameter-groups \
   --db-parameter-group-name "${ENV}-optinist-ssl-rollback" \
   --query 'DBParameterGroups[0].{name:DBParameterGroupName,family:DBParameterGroupFamily}'
@@ -1714,38 +1894,113 @@ aws rds describe-db-parameters --db-parameter-group-name "${ENV}-optinist-ssl-ro
 # Expected: the same user-set parameters as the live group - require_secure_transport
 # and time_zone. A copy that lost them restores an instance that rejects the
 # application's TLS-only connections.
-
-# 5. Clean worktree (B6), then plan to a file
-git status --porcelain
-# Expected: empty
-cd infrastructure/terraform
-terraform init -backend-config="backends/${ENV}.hcl" -reconfigure
-terraform plan -var-file="environments/${ENV}.tfvars" -out=tfplan
 ```
 
-Run the same two gate assertions as phase 0C against `tfplan`, then:
+##### Step 6 — confirm the recovery points are real, before applying
+
+**Before, not after.** Two of the four recovery points cannot be verified directly - the automatic
+pre-upgrade snapshots do not exist until the upgrade takes them - so verify their **precondition** instead.
+The full table of what each one restores to is in
+[What you can roll back to after this apply](#what-you-can-roll-back-to-after-this-apply) below; this step
+is the checking.
 
 ```bash
-terraform apply tfplan
+aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].{retention:BackupRetentionPeriod,delProt:DeletionProtection,
+           window:PreferredBackupWindow}'
+# Expected: retention greater than zero. **A zero means RDS takes no automatic
+# pre-upgrade snapshot at all**, which removes a recovery point without saying so. On an
+# environment rebuilt nightly this is worth re-reading today rather than trusting an
+# earlier reading - the retention period is one of the things a restore can silently drop
+# (edge case 5).
 
-# Confirm the upgrade happened rather than being queued (B2)
+aws rds describe-db-instance-automated-backups \
+  --query "DBInstanceAutomatedBackups[?DBInstanceIdentifier=='${DB}'].{status:Status,
+           rid:DbiResourceId,from:RestoreWindow.EarliestTime,to:RestoreWindow.LatestTime}" \
+  --output table
+# Expected: one `active` row for the instance running now, whose window starts when this
+# cycle started and runs to a few minutes ago. That row is what covers "just before this
+# apply". Any `retained` rows are earlier cycles.
+```
+
+#### The gate — steps 7 to 9
+
+Steps 7 and 8 are mechanical. **Step 9 is judgement, and it is the one that cannot be delegated to an
+assertion.**
+
+##### Step 7 — clean worktree, then plan to a file outside the tree
+
+```bash
+git status --porcelain
+# Expected: empty (B6)
+cd infrastructure/terraform
+terraform init -backend-config="backends/${TF_ENV}.hcl" -reconfigure
+```
+
+```bash
+# The plan file goes OUTSIDE the working tree. An untracked file inside the repository
+# makes the tree dirty, and ecr_build_push.sh - which this apply invokes - refuses to
+# build a dirty tree. Writing the plan into the repository therefore breaks the apply it
+# was written for. mktemp also gives it 0600, which matters: a plan file contains every
+# variable value, including whatever the tfvars carry.
+PLAN=$(mktemp -t tfplan)
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
+```
+
+##### Step 8 — the two gate assertions
+
+Run the phase 0C assertions against `"$PLAN"`, **including the attribution step**. The gate passes on two
+resources - `aws_db_instance.main` showing `update` rather than a replacement, and the parameter group
+showing one create and one delete. **The plan will contain more than two, and every one of them applies.**
+
+##### Step 9 — classify the whole plan by root cause
+
+**Before applying, not after.** On a stack of any age the extra entries are not noise, they are separate
+decisions that happen to be riding along. Each one belongs in one of these buckets, and the phase log
+records which:
+
+| Bucket | How to recognise it | What to do |
+|-------------------------|-----------------------|-----------------------|
+| The engine change | The instance, the parameter group, and whatever derives the group's name | Intended |
+| The deploy (**B6**) | `null_resource` replacements whose `triggers` carry the git commit | Expected. Its rollout time belongs in the announced window |
+| Runtime state versus configuration | A count or an instance the configuration declares statically while something scales it at runtime | Decide deliberately. The apply will overwrite the runtime state |
+| Drift | An AMI data source with `most_recent`, a JSON body, a recomputed hash | Usually harmless, but read the ones that replace rather than update |
+
+**A replacement is not an update.** Anything in the plan showing `delete,create` rather than `create,delete`
+is destroyed before its successor exists, so whatever depends on it is down in between. An egress path,
+a NAT instance or a gateway in that state takes the private subnets with it for as long as the
+replacement takes - and if the in-VPC command path has no interface endpoint of its own, the checks in
+steps 11 to 14 fail during that window. **Retry them once the apply settles rather than diagnosing them**,
+and record the gap so that a soak metric can be attributed to it instead of to the engine.
+
+#### The apply and what it must prove — steps 10 to 14
+
+**Step 10 is the irreversible one.** Steps 11 to 14 are four separate claims, and passing three of them
+proves nothing about the fourth.
+
+##### Step 10 — apply
+
+```bash
+terraform apply "$PLAN"
+```
+
+##### Step 11 — the upgrade happened rather than being queued
+
+```bash
+# B2: an upgrade that was accepted but deferred leaves the instance serving <FROM> with
+# the incoming version sitting in PendingModifiedValues.
 aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{ev:EngineVersion,status:DBInstanceStatus,
            pg:DBParameterGroups[0].DBParameterGroupName,
            pgs:DBParameterGroups[0].ParameterApplyStatus,pending:PendingModifiedValues}'
 # Expected: <TO>.x, available, in-sync, pending == {}
-
-# The scheduler Lambda must now point at the renamed parameter group (B1)
-aws lambda get-function-configuration --function-name "${ENV}-dev-scheduler" \
-  --query 'Environment.Variables.RDS_PARAMETER_GROUP_NAME'
-# Expected: the name_prefix-generated name, not the old literal
-
-aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
-  --query 'Targets[].{id:RdsResourceId,state:TargetHealth.State,reason:TargetHealth.Reason}'
-# Expected: one target, AVAILABLE
 ```
 
-**If the new parameter group carries pins**, verify they took effect. Skip this if the phase 0A pair found nothing worth pinning. A pin that did not apply is the failure state worth naming, because it looks exactly like a clean apply: the group shows the value, the instance shows `available`, and the engine is still running the `<TO>` default.
+##### Step 12 — the pins took effect
+
+Skip this only if the phase 0A pair found nothing worth pinning. **A pin that did not apply is the failure
+state worth naming, because it looks exactly like a clean apply**: the group shows the value, the instance
+shows `available`, and the engine is still running the `<TO>` default.
 
 ```bash
 # The group's name is generated by name_prefix (B1), so read it rather than assume it.
@@ -1758,7 +2013,9 @@ aws rds describe-db-parameters --db-parameter-group-name "$NEWPG" --source user 
 # Expected: every pin present. A `static` pin whose value has not taken effect below
 # needs a reboot - the upgrade's own reboot should have served, and if it did not,
 # reboot-db-instance and re-read.
+```
 
+```bash
 # The running side. Re-run the InnoDB readings from phase 0A step 8 against this
 # instance rather than the clone: same block, with the endpoint below in place of
 # CLONE_HOST.
@@ -1771,19 +2028,52 @@ echo "$LIVE_HOST"
 # corroborates without being pinned itself.
 ```
 
-Record the result next to 0A's pair. Three columns - `<FROM>` measured, `<TO>` default measured, `<TO>` pinned measured - is what makes the soak's metrics attributable, and it is also what #898 quotes when it argues the production apply changes one thing.
+Record the result next to 0A's pair. Three columns - `<FROM>` measured, `<TO>` default measured, `<TO>`
+pinned measured - is what makes the soak's metrics attributable, and it is also what #898 quotes when it
+argues the production apply changes one thing.
+
+##### Step 13 — the scheduler Lambda follows the renamed group
+
+```bash
+# B1: name_prefix generated a new name, and every consumer of the old literal must have
+# followed. This is the consumer that a plan does not obviously show.
+aws lambda get-function-configuration --function-name "${ENV}-dev-scheduler" \
+  --query 'Environment.Variables.RDS_PARAMETER_GROUP_NAME'
+# Expected: the name_prefix-generated name, not the old literal
+```
+
+**Production has no scheduler, so phase 4 has one fewer consumer to check** - the instance and the IAM
+policy remain.
+
+##### Step 14 — the proxy target is healthy
+
+```bash
+aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
+  --query 'Targets[].{id:RdsResourceId,state:TargetHealth.State,reason:TargetHealth.Reason}'
+# Expected: one target, AVAILABLE
+```
+
+An in-place upgrade does not move `DbiResourceId`, so no re-registration should be needed - **confirm it
+rather than assume it.** A restore does move it, which is why the rollback procedure has a re-registration
+step and this one does not.
 
 #### What you can roll back to after this apply
 
-Confirm this list is real before applying, not after. The rollback procedure is in
+**Reference for step 6, not a step of its own.** Step 6 holds the two commands that check this; what
+follows is what each recovery point is, and what the window shapes mean. The rollback procedure is in
 [Rollback](#rollback); this is what it has to work with.
 
 | Recovery point | Created by | Expires | Restores to |
 |-------------------------|-----------------------|-----------------------|-----------------------|
-| `<ENV>-pre-upgrade-<date>` | Step 3 above | **Never** - manual snapshots persist until deleted | `<FROM>`, the state immediately before the apply |
-| `<ENV>-optinist-ssl-rollback` | Step 4 above | Never | The parameter group that `<FROM>` instance needs |
+| `<ENV>-pre-upgrade-<date>` | **Step 4** | **Never** - manual snapshots persist until deleted | `<FROM>`, the state immediately before the apply |
+| `<ENV>-optinist-ssl-rollback` | **Step 5** | Never | The parameter group that `<FROM>` instance needs |
 | Automatic pre-upgrade snapshots | RDS, up to two, immediately before the upgrade | With the retention period | `<FROM>` |
 | Point-in-time recovery | The automated backup | With the retention period | Any point **inside a window** - see below |
+
+The first two rows are created and verified by their own steps. The other two cannot be verified directly -
+the automatic snapshots do not exist until the upgrade takes them - which is why **step 6 checks their
+precondition instead**: a retention period greater than zero, and an `active` automated-backup row covering
+the moment before the apply.
 
 **On development, point-in-time recovery is a set of windows, not one span.** The retention period reads
 the same as production's, but the instance is rebuilt every cycle, so each cycle carries its own backup:
@@ -1802,7 +2092,7 @@ rather than assuming, because the shape follows whatever the schedule is:
 | Older than the retention period | No |
 
 So point-in-time recovery does cover a same-day rollback of this apply, and it covers a later rollback
-at the granularity of a running day. The manual snapshot from step 3 is still the primary recovery
+at the granularity of a running day. The manual snapshot from step 4 is still the primary recovery
 point, for three reasons that do not depend on the window shape: its contents are known, it is
 identified by name rather than by reconstructing which window contains a moment, and it survives an
 instance delete. Take it and verify it regardless.
@@ -1817,13 +2107,45 @@ to miss when the rollback is framed as "undo the apply".
 
 This proves B3. Within each cycle, check 1 runs in the evening after the stop; the rest need the morning restore.
 
+**This phase is not optional in the way the others are, and not because it gates the release.** The cycle
+runs whether anyone watches it or not, so the only choice is between a twenty-minute deliberate check and
+finding out because the environment is broken in the morning. Edge case 5 and the proxy re-registration are
+both failures that have happened on this stack.
+
+**Be precise about what it does and does not gate.** An environment that is never destroyed has no nightly
+cycle, so none of this bears on that environment's *upgrade*, and nor does it bear on its *rollback* - a
+rollback restores an outgoing-version snapshot against the retained outgoing-family group, which phase 0A
+drills directly. What this phase uniquely covers is the other direction: **an incoming-version snapshot
+restored against the incoming-family group.** Any later restore of the upgraded environment takes that path,
+so the finding is worth having - it is just not a gate on the upgrade itself.
+
+**The six checks are not one sitting.** Check 1 is the evening, after the stop; checks 2 to 6 need the
+morning restore, and they are grouped below accordingly. The checks are numbered 1 to 6 throughout, and
+#897's sub-checks **a** to **e** map onto them — **c** covers checks 3 and 4 together.
+
+> **Do not run the morning group in the evening.** `stop_rds()` **deletes** the instance rather than
+> stopping it, so `describe-db-instances` returns `DBInstanceNotFound` and the proxy has no target. The
+> failure is loud rather than misleading, but the single block this used to be invited exactly that mistake.
+
+#### The evening, after the stop — check 1
+
 ```bash
 # 1. The evening snapshot must itself be on the new version
 aws rds describe-db-snapshots --db-snapshot-identifier "${DB}-dev-scheduler" \
   --query 'DBSnapshots[0].{ev:EngineVersion,status:Status,created:SnapshotCreateTime}'
 # Expected: <TO>.x, available, tonight's timestamp.
 # Still <FROM> means the upgrade never completed.
+```
 
+This is the only check that has to happen in the evening, and it is the cheapest of the six. **The snapshot
+it reads is the one the morning restore consumes**, so a `<FROM>` reading here predicts tomorrow's failure
+before it happens.
+
+#### The morning, after the restore — checks 2 to 6
+
+Run these as one block: `SINCE` is set in check 3 and read again in check 4.
+
+```bash
 # 2. The morning restore
 aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{ev:EngineVersion,status:DBInstanceStatus,
@@ -1869,28 +2191,116 @@ Every scheduled path that touches the database has a cadence of 24 hours or less
 | # | Exit criterion |
 |---|-----------------------|
 | 1 | Phase 2's checks pass on two consecutive cycles, including the retention period |
-| 2 | The deployed e2e lanes are green, with skips promoted to failures |
+| 2 | The deployed e2e lanes are green, with skips promoted to failures. The environment's own release set may stand in for the two expensive lanes - see [Testing](#testing) for what that substitution does and does not cover |
 | 3 | The engine-version assertion is green - see [Testing](#testing) |
 | 4 | Every scheduled job has run at least once on the new version with no SQL error, by invoking it rather than waiting |
 | 5 | The log queries are clean |
 | 6 | Production baseline metrics captured - this cannot be done after phase 4 |
 
-Criterion 4, invoking rather than waiting. Each payload is the literal `input` the EventBridge target sends, so a manual invoke reproduces the scheduled invocation.
+**The duration is compressible. The checks are not, and one of them is irreversible.** Under release
+pressure the temptation is to shorten the phase by dropping criteria, so rank them before deciding:
+
+| Criterion | What skipping it costs | Verdict |
+|-------------------------|-----------------------|-----------------------|
+| **6** | **The ability to answer "did the upgrade make it slower?", permanently.** There is no second chance after phase 4 | **Never skip.** It is one command and a few minutes - the worst value-per-minute trade available |
+| **2** | The only application-level evidence that the new version runs the application's real queries. The pre-check is schema-driven and never sees a query | **Do not skip** - but it can be made much cheaper. See [Testing](#testing): the release set plus criterion 4 substitutes for the two expensive lanes |
+| **4** | Paths that fail silently inside a scheduled job rather than visibly in the application. **It also carries part of criterion 2** once the expensive lanes are substituted, because it is what exercises the storage tracking and premium paths | **Do not skip** |
+| 5 | Partly covered by 2 and 4 | Can be shortened |
+| 1 | One cycle carries most of the decision; the second protects the environment's own nightly operation | One cycle can suffice to decide phase 4 |
+| 3 | Future regression cover, not verification of this upgrade. Every assertion in it is also a manual step in phase 4's checklist | Can follow phase 4 |
+
+So the phase can be finished in a day or two of checks rather than a week of waiting - but **finish it by
+running the criteria, not by letting time pass.**
+
+**Each criterion has its own section below.** Three of them are carried out elsewhere in this document and
+appear here as pointers, so that every number in the table above resolves to a heading rather than to
+whichever section the reader happens to know about.
+
+#### Criterion 1 — two nightly cycles
+
+Carried out by [Phase 2](#phase-2-two-nightly-destroy-and-restore-cycles): its six checks, on each of two
+consecutive cycles. Nothing to run here.
+
+**One cycle carries most of the phase 4 decision.** The second protects this environment's own nightly
+operation rather than the upgrade, so it can run alongside or after phase 4 - see the ranking above.
+
+#### Criterion 2 — the deployed e2e evidence
+
+Carried out by the lanes in [Testing](#testing), with skips promoted to failures - `E2E_FAIL_ON_SKIP=1`,
+which fails the run on any skip *or on zero executed tests*. Without it a lane that skipped everything reads
+green, and the cases that reach the database are individually gated.
+
+**The two expensive lanes may be substituted by the environment's own release set**, and
+[Choosing the lanes](#choosing-the-lanes-and-substituting-the-release-set-for-the-expensive-two) sets out
+what that does and does not cover. **The substitution is conditional on criterion 4 being run in full**,
+because the largest hand-written SQL surface in the repository is only ever executed there.
+
+#### Criterion 3 — the engine-applied test case
+
+New test coverage rather than verification of the upgrade in hand: see
+[The engine-version assertion](#the-engine-version-assertion). **Every assertion in it also appears as a
+manual step in phase 4's checklist**, so it can follow phase 4 without weakening any phase. It is the one
+criterion that is safe to defer.
+
+#### Criterion 4 — invoke every scheduled job
+
+Invoking rather than waiting. Each payload is the literal `input` the EventBridge target sends, so a manual invoke reproduces the scheduled invocation.
+
+**This step writes and deletes.** It is not a read-only probe like criterion 6. The cleanup jobs remove data, and `ExpirationLifecycleJob` runs on a 24-hour cadence, so invoking it performs a day's worth of expiry processing at once. On a shared environment, announce it in the same breath as the upgrade.
+
+> **Do not invoke `<ENV>-dev-scheduler`.** It is a Lambda like the others and it sits in the same naming
+> scheme, but it is the one that **stops and restores the database**. Invoking it during this phase deletes
+> the instance you are soaking. The count of scheduled jobs includes it; the list below deliberately does
+> not.
 
 ```bash
-inv() { aws lambda invoke --function-name "${ENV}-$1" --payload "$2" \
-  --cli-binary-format raw-in-base64-out /dev/stdout | head -c 2000; echo; }
+# Separate the invocation status from the response payload: with both on stdout they
+# interleave, and it is the status that carries FunctionError.
+inv() {
+  # 'st' rather than 'status': under zsh, status is read-only.
+  local resp st
+  resp=$(mktemp -t lambdaresp)
+  st=$(aws lambda invoke --function-name "${ENV}-$1" --payload "$2" \
+         --cli-binary-format raw-in-base64-out "$resp" 2>&1)
+  if ! printf '%s' "$st" | grep -qE '"StatusCode":[[:space:]]*200'; then
+    echo "FAIL $1 -- the invoke itself did not return 200"
+  elif printf '%s' "$st" | grep -q FunctionError; then
+    echo "FAIL $1 -- FunctionError"
+  else
+    echo "ok   $1"
+  fi
+  printf '  status: %s\n' "$(printf '%s' "$st" | tr -d '\n')"
+  printf '  payload: '; head -c 600 "$resp"; echo
+  rm -f "$resp"
+}
 SCHED='"source":"aws.events","detail-type":"Scheduled Event"'
+```
 
+**The verdict needs both conditions; neither alone is enough.**
+
+- **`StatusCode: 200` is not success.** A Lambda that starts and then raises still returns 200, with
+  `"FunctionError": "Unhandled"` beside it. Trusting the status code would miss a SQL error inside the
+  handler, which is the exact failure this criterion exists to detect.
+- **Absence of `FunctionError` is not success either.** A `ResourceNotFoundException` or an
+  `AccessDeniedException` never reaches the handler, so the CLI's error text contains no `FunctionError` at
+  all - testing only for that string would report a Lambda that never ran as having passed.
+
+So the helper requires a 200 **and** no `FunctionError`, and prints one verdict line per invoke instead of
+leaving it to be read out of the JSON. Verified against seven shaped inputs in both shells: success,
+success with no spaces in the JSON, a raised handler, not-found, access-denied, a 429, and empty output.
+
+```bash
 inv free-manager        "{$SCHED,\"detail\":{\"action\":\"monitor\"}}"
 inv premium-manager     "{$SCHED,\"detail\":{\"action\":\"monitor\"}}"
 inv premium-cleanup     "{$SCHED,\"detail\":{\"action\":\"cleanup\"}}"
 inv common-user-manager "{$SCHED,\"detail\":{\"action\":\"manage_users\"}}"
 inv cost-tracker   '{}'
 inv public-cleanup '{}'
-# Expected: a success status per invoke. public-cleanup is otherwise daily,
-# so this removes a full day of waiting.
+# Expected: ok on every line. public-cleanup is otherwise daily, so this removes a
+# full day of waiting.
 ```
+
+**One Lambda is reached by none of this.** `free_cleanup` holds about fifteen raw statements, has no EventBridge schedule, and no invoker appears either in the Terraform or in the free-manager package - so it is correctly outside a list of *scheduled* jobs, yet its SQL is exercised by nothing in this phase. Record it as an uncovered path rather than invoking it blind: it deletes, and firing a deletion Lambda whose trigger and payload have not been established is a worse risk than the gap. Establishing what invokes it is separate work.
 
 The in-process background jobs have no Lambda, so call them directly:
 
@@ -1898,76 +2308,235 @@ The in-process background jobs have no Lambda, so call them directly:
 ssm_sh <<'SH'
 set -e
 C=$(docker ps --format '{{.Names}}' | grep -m1 -- -background-optinist-cloud-container)
-docker exec -w /app "$C" python - <<'PY'
+echo "container: $C"
+docker exec -i -w /app "$C" python - <<'PY'
+import traceback
 from studio.app.common.core.background.expiration_lifecycle_job import ExpirationLifecycleJob
 from studio.app.common.core.background.premium_expiration_sweep_job import PremiumExpirationSweepJob
 from studio.app.common.core.background.storage_reconciliation_job import StorageReconciliationJob
 from studio.app.common.core.background.cleanup_job import DataCleanupJob
 from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
 
+failed = []
 for job in (ExpirationLifecycleJob, PremiumExpirationSweepJob,
             StorageReconciliationJob, DataCleanupJob, PublishedExperimentSyncJob):
     print(f"== {job.__name__}", flush=True)
-    job.run()
+    try:
+        job.run()
+        print(f"   ok {job.__name__}", flush=True)
+    except Exception:
+        failed.append(job.__name__)
+        traceback.print_exc()
+        print(f"   FAIL {job.__name__}", flush=True)
+print("FAILED:", failed or "none", flush=True)
 PY
 SH
-# Expected: each job prints its name then completes. ExpirationLifecycleJob runs on a
-# 24-hour interval, so this is the invoke that saves the most waiting.
+# Expected: FAILED: none on the last line. ExpirationLifecycleJob runs on a 24-hour
+# interval, so this is the invoke that saves the most waiting.
 ```
 
-Criterion 5, the logs. The first three must be empty; the fourth confirms the invokes above landed.
+**`docker exec` needs `-i` here, and without it this block silently does nothing.** `python -` reads its program from stdin, and **`docker exec` does not forward stdin to the container unless `-i` is given**. Without it the interpreter reaches EOF immediately, runs an empty program, and **exits 0** - so `set -e` does not fire, SSM reports `Success`, the whole thing returns in a couple of seconds, and not one job has run. The same applies to any `docker exec ... sh -s` or `python -` elsewhere in this document.
+
+**Silence is not a pass.** That failure mode is indistinguishable from success unless the expected output is stated in advance, so state it: the run is only valid when all three of these appear.
+
+| Marker | Proves |
+|-------------------------|-----------------------|
+| `container: ecs-<ENV>-background-...` | The container lookup resolved. An empty value here means the block ran against nothing |
+| **Five** `== <JobName>` lines | The interpreter received its program |
+| `FAILED: none` on the last line | Every job was attempted and none raised |
+
+Anything less means the block **did not run**, not that it passed. A correct run takes minutes, not seconds, because `ExpirationLifecycleJob` performs a day of expiry processing.
+
+**Each job is caught individually, and the last line is the verdict.** Without the `try`, the first job to raise ends the loop and the remaining four are never attempted - and the second in the list is the premium sweep, whose query is the one already known to be fragile. A run that stops early looks much like a run that passed: several jobs printed their names and no error was reported for them, because they never executed. This is the same defect as a failing SQL block discarding the readings that preceded it, which is why the pattern is spelled out rather than left to judgement.
+
+#### Criterion 5 — the log queries
+
+**Two things about the window and the filters have to be settled first, or the results cannot be read.**
+
+**1. Choose the window from the apply, not from the clock.** On an environment with a nightly stop, a
+24-hour window always contains a large band of connection failures - the scheduler deletes the instance
+while the Lambdas keep running on their cadences, so `9501 Timed-out waiting to acquire database
+connection` repeats for as long as the environment is down. That band is expected, predates the upgrade,
+and is not evidence of anything. Anchor the window **after the apply settled** instead:
 
 ```bash
 SINCE=$(( ($(date +%s) - 24*3600) * 1000 ))
+# And, for anything where the question is "is this still happening?", the moment the
+# rollout finished rather than 24 hours ago:
+AFTER=$(( $(date -j -f '%Y-%m-%d %H:%M:%S' '<YYYY-MM-DD HH:MM:SS>' +%s) * 1000 ))
+echo "AFTER=$AFTER  ($(date -r $((AFTER/1000)) '+%F %T'))"
 
+# CloudWatch reports times as epoch milliseconds, which are unreadable next to the
+# apply's own timestamps. 'ts_fmt' rather than 'fmt': fmt(1) is a real command.
+# The empty-field skip matters: a logged message ending in a newline arrives as two
+# lines, and the blank one would otherwise print as 1970.
+ts_fmt() {
+  while IFS=$'\t' read -r ts rest; do
+    [ -n "$ts" ] || continue
+    printf '%s  %s\n' "$(date -r $((ts/1000)) '+%Y-%m-%d %H:%M:%S')" "$rest"
+  done
+}
+```
+
+Production has no nightly stop, so its logs carry no such band - which cuts both ways. **A `9501` in
+production's window is a finding, where the same line on a scheduled environment usually is not.**
+
+**2. Numeric error codes are unusable as filter terms.** CloudWatch matches a quoted string as a
+*substring*, and MySQL's error numbers are short, so they hit connection ids, ports, request ids and
+durations. Both were observed: `1290` matched `clientConnection=1290121671` and port `12903`, and `3065`
+matched port `30654` in a `/health` access line. Filter on the exception class names instead - they are
+distinctive and they caught the real errors exactly.
+
+```bash
 aws logs describe-log-streams \
   --log-group-name "/aws/rds/instance/${DB}/error" \
   --order-by LastEventTime --descending --max-items 3 \
-  --query 'logStreams[].{stream:logStreamName,last:lastEventTimestamp}'
-# Expected: a recent lastEventTimestamp. Silence means the export broke,
-# not that nothing went wrong.
+  --query 'logStreams[].[lastEventTimestamp,logStreamName]' --output text | ts_fmt
+# Expected: a lastEventTimestamp AFTER the apply. This is the one query here where
+# silence is the failure: it means the export did not survive the family change.
+```
 
+```bash
 aws logs filter-log-events --log-group-name "/aws/rds/proxy/${ENV}-optinist-rds-proxy" \
   --start-time "$SINCE" \
-  --filter-pattern '?"Access denied" ?"authentication" ?ConnectionRefusedError ?1290' \
+  --filter-pattern '?"Access denied" ?"Authentication failed" ?ConnectionRefusedError ?"error 1290"' \
   --query 'events[].message' --output text
 # Expected: empty
+```
 
-for LG in "/ecs/${ENV}-optinist-cloud-taskdef" "/ecs/${ENV}-background-optinist-cloud-taskdef"; do
+```bash
+for LG in "/ecs/${ENV}-optinist-cloud-taskdef" \
+          "/ecs/${ENV}-background-optinist-cloud-taskdef" \
+          "/ecs/${ENV}-premium-optinist-cloud-taskdef" \
+          "/ecs/${ENV}-public-optinist-cloud-taskdef"; do
   echo "== $LG"
   aws logs filter-log-events --log-group-name "$LG" --start-time "$SINCE" \
-    --filter-pattern '?OperationalError ?ProgrammingError ?InternalError ?"1064" ?"3065"' \
-    --query 'events[].message' --output text
+    --filter-pattern '?OperationalError ?ProgrammingError ?InternalError ?IntegrityError' \
+    --query 'events[].message' --output text | head -c 1500
+  echo
 done
 # Expected: empty
+```
 
+**The Lambda handlers need their own query, and it is not optional.** A handler can catch a SQL exception, log it, and still return `StatusCode: 200` with a success-shaped body - so criterion 4's verdict does not cover this, and the ECS log groups never see it because these run in Lambda:
+
+```bash
+for L in free-manager premium-manager premium-cleanup common-user-manager cost-tracker \
+         public-cleanup free-cleanup; do
+  N=$(aws logs filter-log-events --log-group-name "/aws/lambda/${ENV}-$L" \
+        --start-time "$AFTER" \
+        --filter-pattern '?"9501" ?OperationalError ?ProgrammingError ?InternalError ?Traceback' \
+        --query 'length(events)' --output text)
+  echo "$L: $N"
+done
+# Expected: every number zero. Several zeros per Lambda is normal - the query is
+# applied per page of a paginated call.
+```
+
+**Count, do not print, when the question is "any left?".** Piping messages through `head` shows the
+*oldest* matches, because the result is time-ascending - the wrong end of the list for a recency question,
+and it silently truncates. `length(events)` cannot mislead that way.
+
+```bash
 aws logs filter-log-events --log-group-name "/ecs/${ENV}-background-optinist-cloud-taskdef" \
   --start-time "$SINCE" \
-  --filter-pattern '?premium_expiration ?free_manager ?cost_tracker ?storage_tracking' \
-  --query 'events[].message' --output text | tail -40
-# Expected: NOT empty - this shows the criterion 4 jobs ran. An empty result means
-# nothing was exercised, not that nothing failed.
+  --filter-pattern '?storage_tracking ?premium_expiration ?StorageReconciliation ?DataCleanup ?ExpirationLifecycle' \
+  --query 'events[].[timestamp,message]' --output text | ts_fmt | tail -30
+# Expected: NOT empty, with entries after the apply. This is separate evidence from
+# criterion 4: it shows the container's own scheduler running these on the new
+# version unattended, rather than only responding to a manual invoke.
 ```
+
+**Read that last one for what each job actually did, not just that it ran.** `ExpirationLifecycleJob`
+logs `No remote bucket configured, skipping expiration lifecycle` where no remote bucket is set, so it
+completes without touching the database. It counts as invoked, not as exercised - and criterion 4's `ok`
+for it means only that it returned.
 
 Do not read the `general` and `slowquery` exports as a signal either way: both logs are at the engine default of off, so they produce nothing before or after an upgrade.
 
-Criterion 6, the baseline. Capture it for production before phase 4; it cannot be taken afterwards.
+#### Criterion 6 — the production baseline
+
+Capture it for **production** before phase 4. The `Average` figures remain queryable for months, but the
+`Maximum` ones do not - see the note at the end of this section.
+
+Every command here is read-only, so the step carries no destructive risk. It carries three others, and all three are about reading or keeping the *wrong thing* rather than about breaking something:
+
+1. **The wrong environment, silently.** This is the only step in phase 3 that reads production, while every variable in the shell points at development. A capture against `$DB` succeeds, returns fourteen days of development metrics, and looks exactly like a correct result - and it cannot be retaken after phase 4. **Use `PROD_DB`; do not reassign `$DB` or `$ENV`.**
+2. **The shell keeping a production context.** Phase 0 makes no production API call, so this is the first one in the whole upgrade. **Pass `--profile` inline and never `export AWS_PROFILE`**: a `terraform` command inherited into a production-pointing shell is the failure this avoids.
+3. **Losing the capture.** It is the one irreversible reading in the procedure, so it is written to a file rather than to the terminal.
 
 ```bash
-for M in CPUUtilization ReadIOPS WriteIOPS DatabaseConnections \
-         BufferCacheHitRatio ReadLatency FreeableMemory; do
-  echo "== $M"
-  aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name "$M" \
-    --dimensions "Name=DBInstanceIdentifier,Value=$DB" \
-    --start-time "$(date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)" \
-    --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --period 86400 --statistics Average Maximum \
-    --query 'sort_by(Datapoints,&Timestamp)[].{t:Timestamp,avg:Average,max:Maximum}' \
-    --output table
-done
-# Expected: 14 daily points per metric. BufferCacheHitRatio is the one to watch -
-# see edge case 6.
+# The only hand-substitution point in this step. PROD_* deliberately, so nothing
+# else in the session is repointed.
+PROD_DB=<production db instance identifier>
+PROD_PROFILE=<production profile name>
+OUT=$HOME/baseline-production-$(date +%Y%m%d-%H%M).txt
 ```
+
+**Why `$HOME` here, when saved plans use `mktemp`.** The two have opposite requirements. A plan file must
+live outside the git worktree, because `ecr_build_push.sh` refuses to build a dirty tree, and it is
+consumed by the apply that follows it - `mktemp` is right because the file is transient and 0600 suits a
+file holding every variable value. This capture is the reverse: it has to survive until phase 5's
+comparison, weeks later. `$TMPDIR` is a per-session directory subject to periodic cleanup and cleared on
+reboot, so `mktemp` would put a reading that cannot be retaken somewhere it may disappear before it is
+used. A gitignored path inside the repository works equally well, and is invisible to the clean-tree
+guard because `git status --porcelain` does not list ignored files.
+
+```bash
+# A gate in the same spirit as assert_rehearsal: refuse to capture unless this
+# really is production and really is still on the outgoing version.
+assert_prod() {
+  local ev
+  ev=$(aws rds describe-db-instances --profile "$PROD_PROFILE" \
+         --db-instance-identifier "$PROD_DB" \
+         --query 'DBInstances[0].EngineVersion' --output text) || return 1
+  case "$ev" in
+    ${FROM}.*) return 0 ;;
+    *) echo "ABORT: $PROD_DB reports $ev, expected ${FROM}.x" >&2
+       echo "       wrong instance, or already upgraded" >&2
+       return 1 ;;
+  esac
+}
+```
+
+```bash
+# Confirm the identity before capturing. A development identifier here stops the step.
+aws rds describe-db-instances --profile "$PROD_PROFILE" \
+  --db-instance-identifier "$PROD_DB" \
+  --query 'DBInstances[0].{id:DBInstanceIdentifier,ev:EngineVersion,
+           status:DBInstanceStatus,pg:DBParameterGroups[0].DBParameterGroupName}'
+# Expected: production's identifier, <FROM>.x, available.
+```
+
+```bash
+# Guarded with && so a failed gate creates no file at all.
+assert_prod && {
+  for M in CPUUtilization ReadIOPS WriteIOPS DatabaseConnections \
+           BufferCacheHitRatio ReadLatency WriteLatency FreeableMemory; do
+    echo "== $M"
+    aws cloudwatch get-metric-statistics --profile "$PROD_PROFILE" \
+      --namespace AWS/RDS --metric-name "$M" \
+      --dimensions "Name=DBInstanceIdentifier,Value=$PROD_DB" \
+      --start-time "$(date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)" \
+      --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --period 86400 --statistics Average Maximum \
+      --query 'sort_by(Datapoints,&Timestamp)[].{t:Timestamp,avg:Average,max:Maximum}' \
+      --output table
+  done
+} 2>&1 | tee "$OUT"
+```
+
+```bash
+# The capture is only captured once it is on disk. An empty file is not a reading.
+wc -l "$OUT" && grep -c "^== " "$OUT"
+# Expected: eight headings, and 14 daily points under each.
+```
+
+`WriteLatency` is in the list alongside `ReadLatency` because edge case 6's second mechanism is background flushing driven by `innodb_io_capacity`, which shows on the write side.
+
+**`BufferCacheHitRatio` returns no datapoints on a standard RDS MySQL instance** - measured, not predicted. It is an Aurora metric and is not published to `AWS/RDS` here, so its section of the capture comes back empty. That is the expected result, and it is why the loop carries `ReadIOPS`, `ReadLatency` and `FreeableMemory`: those hold the observable consequences of a buffer pool change, and they are the metrics to compare in edge case 6's place. In practice they are better instruments anyway - on a cache-served workload `ReadIOPS` is flat enough that a sizing change stands out against it immediately. And once phase 1 pins the pool, edge case 6's concern is closed by the pin regardless of what is measurable.
+
+When posting this capture, redact the instance identifier and **keep the metric values** - the acceptance criteria are written against them.
 
 ### Phase 4: apply to production
 
@@ -1978,36 +2547,230 @@ means the upgrade does not complete and the instance stays on `<FROM>`, so the c
 than the data. Decide in advance whether that outcome means reschedule or investigate-in-place, so the
 decision is not made under time pressure inside the window.
 
-The sequence is phase 1's, with `ENV` set to the production value. Two steps are restated here rather
-than left to the reference, because this is the environment where skipping them is unrecoverable.
+**Run phase 1 steps 1 to 14, with `ENV` set to the production value.** That sequence is numbered so this
+phase can cite it rather than paraphrase it. **Four differences** — three in the steps, and one in the file
+names that is easy to miss because development hides it:
+
+| | On production |
+|-------------------------|-----------------------|
+| **`TF_ENV`, not `ENV`, names the backend and tfvars files** | `$ENV` is `subscr` while the files are `backends/production.hcl` and `environments/production.tfvars`. **The two values coincide on development**, so `backends/${ENV}.hcl` works there — and on production it names a file that does not exist, failing at the **first** terraform command of the window. Set `TF_ENV` in the setup block and use it for those two paths only |
+
+**Check the scheduler's absence rather than assuming it.** The next two rows skip steps because production has
+no scheduler — but that is **not a property of the environment.** Every resource in `dev_schedule.tf` is gated
+by `count = var.enable_dev_schedule ? 1 : 0`; the variable defaults to `false` and **neither tfvars example
+sets it either way**, so nothing in the repository settles it. Two steps are skipped unrecoverably on the
+answer, and the check costs nothing and needs no AWS call:
+
+```bash
+grep -n enable_dev_schedule "environments/${TF_ENV}.tfvars"
+# Expected: no match, or "= false". EITHER means the scheduler is absent and the two
+# steps below are correctly skipped.
+# A "= true" means production DOES have a <ENV>-dev-scheduler, and then phase 1 steps 2
+# and 13 must be RUN, not skipped.
+```
+
+The three step differences:
+
+| Phase 1 step | On production |
+|-------------------------|-----------------------|
+| **Step 1** — the `<FROM>` readings and the pins | **Carries more weight here.** On development the "before" half came from phase 0A step 9; **production has no phase 0A**, so step 1 is the only place it can be taken, and after the apply the `<FROM>` instance is gone |
+| **Step 2** — the stop schedule and the override | **Skipped.** Production has no scheduler, so there is no deadline and no override to set |
+| **Step 13** — the scheduler Lambda's parameter group | **Skipped**, for the same reason — and the blast radius is *smaller* here than on development. Both non-instance consumers of the generated name, the Lambda's `RDS_PARAMETER_GROUP_NAME` and the IAM policy's `pg:` ARN, live in `dev_schedule.tf` under the same `count`. **Where the scheduler is absent, `aws_db_instance.main` is the sole consumer**, and the apply covers it |
+
+Everything else is identical. Two of the steps are restated in full below rather than left to the
+reference, because this is the environment where skipping them is unrecoverable.
+
+#### The day before the window — rehearse every read-only check
+
+**A command that has been executed carries a fraction of the defect rate of one that has only been written.**
+That is the measured pattern across this work: phase 0A found nine defects on first execution, phase 1 found
+one - and the difference was not better writing, it was that phase 0C had already run the same plan gate.
+Commands reviewed but never run have kept failing at close to the first-execution rate.
+
+So **run every read-only check against production the day before**, and spend the window on the three things
+that actually change something. Nothing below modifies anything.
+
+**A rehearsal proves the command, not the state.** Instance status, service counts and alarm states all move,
+so **a rehearsed check still has to be run inside the window** - rehearsing it does not discharge it. Only the
+pre-window items complete early.
+
+| Rehearse | What the rehearsal settles |
+|-------------------------|-----------------------|
+| Phase 1 steps 1, 3 and 6 | Every resource name resolves, and the queries return the shape the assertions expect |
+| The ECS and alarm checks below | The four service names and the three alarm names are right, on an environment nobody has queried in this work |
+| The proxy reach check below | `ssm_sh` reaches production, and the in-VPC path exists there at all |
+| **The health lane** | **A complete `e2e/.env.prod`**, which does not exist yet and which the config refuses to start without, the case count, and a green baseline on `<FROM>` - so a failure afterwards cannot be mistaken for one the upgrade caused |
+| The certificate check below | That it will not fail the health lane for an unrelated reason |
+
+**Three things cannot be rehearsed, and they are the whole window**: the snapshot, the parameter-group copy
+and the apply. The first two are additive and could be done early, but then **re-verify them at apply time** -
+a copy taken a week before is stale if anyone touched the live group since.
+
+```bash
+# ORIGIN is a hand-substitution point: this document never sets BASE_URL, and the health
+# lane's target file is where the value belongs. Assign it here rather than assuming it.
+ORIGIN=<the production https origin, e.g. https://www.example.com>
+HOST=$(printf '%s' "$ORIGIN" | sed -E 's#^https?://##; s#[:/].*##')
+[ -n "$HOST" ] || { echo "ABORT: ORIGIN did not yield a host" >&2; }
+echo "host=$HOST"
+```
+
+```bash
+# The TLS certificate, which the health lane fails below 14 days. Read it now: an
+# expiring certificate discovered after the upgrade reads as an upgrade problem.
+# stderr is kept deliberately - see below.
+echo | openssl s_client -servername "$HOST" -connect "$HOST":443 \
+  | openssl x509 -noout -enddate
+# Expected: notAfter more than 14 days out. This is HEALTH-19's own check, run early.
+```
+
+**`stderr` is not discarded here, and the host is checked before use.** With `2>/dev/null` and an unset
+origin, `openssl` was handed an empty host and answered
+`Could not find certificate from <stdin>` — which reads as a certificate fault. **That is the exact
+misattribution this step exists to prevent**, arriving from the step itself. The verdict also comes through a
+pipe, so `openssl x509`'s status is what survives, not `s_client`'s: read the output rather than the exit
+code.
+
+```bash
+# The application's own path: the proxy endpoint, reached from inside the VPC. On
+# development this was inferred from the ECS services coming up, because cloud-startup.sh
+# verifies the connection and runs alembic before the container reports healthy. Here it
+# is checked directly, because production's window is not the place to be inferring.
+PROXY=$(aws rds describe-db-proxies --db-proxy-name "${ENV}-optinist-rds-proxy"   --query 'DBProxies[0].Endpoint' --output text)
+echo "$PROXY"
+# Then run phase 0A step 8's SQL block with "$PROXY" in place of CLONE_HOST.
+# Expected before the window: <FROM>.x through the proxy. After the apply: <TO>.x.
+# A failure here while the instance itself is available is a proxy problem, not an
+# engine one - and on production the proxy target is not re-registered automatically.
+```
+
+**Use the suite's own target mechanism rather than exporting variables by hand.** `frontend/e2e/.env.prod`
+carries the whole environment — `frontend/e2e/.env.prod.example` lists the keys — and
+`frontend/playwright.config.ts` **hard-fails at startup** if that file is missing a required one. Hand-rolled
+exports get none of that, and the target file's values **override the shell**, so an exported
+`RDS_PROXY_HOST` would be silently ignored anyway.
+
+```bash
+# Confirm the target file exists and is complete BEFORE the window. The config refuses
+# to start on an incomplete one, which is the guard worth having.
+( cd frontend && ls -l e2e/.env.prod && \
+  for k in BASE_URL API_URL HEALTH_ENV RDS_PROXY_HOST RDS_SECRET_ID \
+           RDS_SSM_INSTANCE_NAME STRIPE_SECRET_ENV TEST_USER_EMAIL TEST_USER_PASSWORD; do
+    grep -qE "^${k}=." e2e/.env.prod && echo "ok   $k" || echo "MISSING $k"
+  done )
+# Expected: ok on every line. RDS_SSM_INSTANCE_NAME is a tag:Name value, so it reads
+# ${ENV}-optinist-background; HEALTH_ENV is the var.environment value, i.e. the same as $ENV.
+```
+
+```bash
+# Run from frontend/ in a SUBSHELL so the working directory is not left changed - the
+# blocks after this one are relative to infrastructure/terraform.
+( cd frontend && E2E_TARGET=prod yarn test:e2e e2e/17-aws-health.spec.ts --retries 0 )
+```
+
+Four things about that invocation, each of which was wrong in an earlier draft of this document:
+
+- **`HEALTH_ENV` is the variable, not `TARGET_ENV`.** `frontend/e2e/helpers.ts` has
+  `export const TARGET_ENV = process.env.HEALTH_ENV || "development"` — `TARGET_ENV` is a TypeScript constant
+  and `process.env.TARGET_ENV` is read nowhere. Setting it is **inert**, and the failure is silent and
+  asymmetric: the lane grades **development's** ECS, ALB, alarms and log groups while the `RDS_*` values still
+  point SQL at **production**, and the off-development guard `if (ENV !== "development")` never fires. A green
+  run would be filed as production's baseline having checked nothing of production's compute layer.
+- **Off development the lane requires four variables, plus `BASE_URL`** — `RDS_PROXY_HOST`,
+  `RDS_SSM_INSTANCE_NAME`, `RDS_SECRET_ID` and **`STRIPE_SECRET_ENV`**. They are `expect()`s, not skips, so a
+  missing one **fails all 29 cases**. `BASE_URL` unset is worse: it defaults to localhost, which **skips** all
+  29.
+- **`--retries 0`**, because the config retries once by default, which doubles the AWS reads and the HTTP load
+  this puts on production and muddies the baseline. And **not `--headed`**: no case in this lane drives a
+  browser, so the only window it opens is the login, and it breaks outright on a headless host.
+- **`E2E_FAIL_ON_SKIP=1` is deliberately absent here.** On development it is the right flag. On production
+  **`HEALTH-27` skips whenever the ALB alarm has no retained ALARM transition** — its own comment notes
+  development produces one on every weekday start-up, so a healthy production plausibly has none — and
+  `HEALTH-29` skips with no unpublished experiment. Both would turn the rehearsal red for nothing. **Read the
+  reporter's skip list and account for each entry** instead of trusting the exit code.
+
+**Expect 29 collected cases.** `HEALTH-19` skips on development, whose ALB is plain HTTP on `:8080`, and
+executes here. Read that difference off the **skip-summary reporter's `N executed` line**, not off Playwright's
+own total — Playwright reports 29 tests either way.
+
+**This lane is read-only against the database but not inert against the environment.** Every SQL call goes
+through a read-only assertion, and nothing calls `update-service` or `set-alarm-state`. But `HEALTH-25` POSTs
+a duplicate registration to production and asserts it is refused, `HEALTH-26` fires 20 concurrent requests at
+the public tier, and `globalSetup` performs a real login. None of it writes; all of it is traffic.
+
+**Record the rehearsal's results.** The point of the green baseline is that it is on file: after the apply, a
+failure is either new or it is not, and that distinction is only available if the before state was written
+down.
 
 ```bash
 # 1. Manual pre-upgrade snapshot. This is the production rollback point, and the only
 #    recovery point that survives an instance delete. Take it and confirm it, every time.
-SNAP=${ENV}-pre-upgrade-$(date +%Y%m%d-%H%M)
-aws rds create-db-snapshot --db-instance-identifier "$DB" --db-snapshot-identifier "$SNAP"
-aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
-aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
+#    PRESNAP, not SNAP. This snapshot is a recovery point that must outlive the phase,
+#    whereas SNAP elsewhere in this document names a restore *source* that gets deleted -
+#    phase 0B ends with drop_snapshot "$SNAP". Two meanings in one shell session is how a
+#    recovery point gets deleted by a line copied from another phase.
+PRESNAP=${ENV}-pre-upgrade-$(date +%Y%m%d-%H%M)
+aws rds create-db-snapshot --db-instance-identifier "$DB" --db-snapshot-identifier "$PRESNAP"
+aws rds wait db-snapshot-available --db-snapshot-identifier "$PRESNAP"
+aws rds describe-db-snapshots --db-snapshot-identifier "$PRESNAP" \
   --query 'DBSnapshots[0].{id:DBSnapshotIdentifier,status:Status,ev:EngineVersion,
            size:AllocatedStorage,created:SnapshotCreateTime}'
 # Expected: available, <FROM>.x. A snapshot still being created is not a recovery point.
 
-# 2. Retain an outgoing-family parameter group, so a rollback has a group to attach
+# 2. Retain an outgoing-family parameter group, so a rollback has a group to attach.
+#    The SOURCE name is the OUTGOING one, and it only exists before the first apply:
+#    afterwards name_prefix has replaced it with a generated name (B1). So this command
+#    is resolvable exactly once per environment. If the copy was already made, do NOT
+#    re-run it - copy-db-parameter-group is not idempotent and returns
+#    DBParameterGroupAlreadyExistsFault. Verify it instead, with the two checks below.
 aws rds copy-db-parameter-group \
   --source-db-parameter-group-identifier "${ENV}-optinist-ssl" \
   --target-db-parameter-group-identifier "${ENV}-optinist-ssl-rollback" \
   --target-db-parameter-group-description "outgoing-family rollback target"
 
+# 2b. Verify the copy. This is phase 1 step 5's second half, restated because it is the
+#     half most easily dropped - and because a copy that silently did not happen is
+#     otherwise discovered during the restore, after the restore has been committed.
+aws rds describe-db-parameter-groups \
+  --db-parameter-group-name "${ENV}-optinist-ssl-rollback" \
+  --query 'DBParameterGroups[0].{name:DBParameterGroupName,family:DBParameterGroupFamily}'
+# Expected: the name, and family mysql<FROM>
+
+aws rds describe-db-parameters --db-parameter-group-name "${ENV}-optinist-ssl-rollback" \
+  --source user \
+  --query 'Parameters[].{name:ParameterName,value:ParameterValue}' --output table
+# Expected: the same user-set parameters as the live group - require_secure_transport
+# and time_zone. A copy that lost them restores an instance that rejects the
+# application's TLS-only connections.
+
 # 3. Switch the backend. Forgetting this corrupts the other environment's state.
-terraform init -backend-config="backends/${ENV}.hcl" -reconfigure
-terraform workspace show; terraform state list | grep -c aws_db_instance
-# Expected: the state lists exactly one aws_db_instance, and it is production's
+terraform init -backend-config="backends/${TF_ENV}.hcl" -reconfigure
+terraform workspace show
+terraform state list | grep aws_db_instance
+# Expected: exactly one line, and it is production's instance. NOT grep -c: a count
+# cannot show WHICH instance, which is the half of this check that guards against
+# applying production's plan to the other environment's state. The pipe also discards
+# terraform's own exit status, so a locked or unconfigured backend prints nothing rather
+# than failing - an empty result here is a backend problem, not an empty state.
 ```
 
-Then phase 1's remaining steps: confirm the instance is `available`, confirm the worktree is clean,
-plan to a file, pass both gate assertions, and apply.
+**Step 1 completes before the window opens**, not inside it - it is the `<FROM>` reading that cannot be taken
+afterwards, and it changes nothing, so there is no reason to spend window time on it.
 
-After the apply, in addition to phase 1's checks:
+Then **phase 1 steps 3 to 12** in order: the instance is `available`; the snapshot; the retained parameter
+group **and its verification**; the recovery points are real; a clean worktree and a plan written outside it;
+both gate assertions; the plan classified by root cause; the apply; the upgrade proved to have happened rather
+than been queued; and the pins proved to be in effect.
+
+**Step 5's verification is not optional and is easy to drop**, because the copy command is restated above
+while the two `describe-*` checks are not. They are what catches a copy that lost `require_secure_transport` -
+which restores an instance that refuses the application's TLS-only connections - and **a copy that silently
+did not happen is otherwise discovered during the restore, after the restore has been committed.**
+`copy-db-parameter-group` is **not idempotent**, so if the copy was made early, *verify* it rather than
+re-running the command, which returns `DBParameterGroupAlreadyExistsFault`.
+
+After the apply, in addition to **phase 1 step 14** — the proxy target, which matters more here because
+production does not get the scheduler's automatic re-registration:
 
 ```bash
 # Every service rolled cleanly. All four - the public tier is a separate service
@@ -2090,8 +2853,9 @@ Phase 1 and Phase 4 gates do.
 
 ```bash
 cd infrastructure/terraform
-terraform plan -var-file="environments/${ENV}.tfvars" -out=tfplan-cleanup
-terraform show -json tfplan-cleanup | jq -r '
+PLAN=$(mktemp -t tfplan-cleanup)
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[]
   | select(.change.actions != ["no-op"])
   | "\(.address) -> \(.change.actions|join(","))"'
@@ -2120,10 +2884,10 @@ The snapshot restore is therefore the whole rollback, and it works because **the
 
 | Source | Created by | Engine version |
 |-------------------------|-----------------------|-----------------------|
-| Manual pre-upgrade snapshot | Phase 1 step 3, phase 4 | `<FROM>` |
+| Manual pre-upgrade snapshot | Phase 1 step 4, phase 4 | `<FROM>` |
 | Automatic pre-upgrade snapshots | RDS, up to two, when the retention period is greater than zero | `<FROM>` |
 | Automated backup retention | Continuous | `<FROM>` up to the upgrade |
-| Retained rollback parameter group | Phase 1 step 4, phase 4 | Outgoing family |
+| Retained rollback parameter group | Phase 1 step 5, phase 4 | Outgoing family |
 
 Verify a snapshot's engine version before relying on it.
 
@@ -2284,14 +3048,15 @@ git show --stat "$UPGRADE_COMMIT"
 git revert --no-edit "$UPGRADE_COMMIT"
 
 cd infrastructure/terraform
-terraform init -backend-config="backends/${ENV}.hcl" -reconfigure
-terraform plan -var-file="environments/${ENV}.tfvars" -out=tfplan-rollback
-terraform show -json tfplan-rollback | jq -r '
+terraform init -backend-config="backends/${TF_ENV}.hcl" -reconfigure
+PLAN=$(mktemp -t tfplan-rollback)
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
+terraform show -json "$PLAN" | jq -r '
   .resource_changes[] | select(.type=="aws_db_instance")
   | "\(.address) -> \(.change.actions|join(","))"'
 # Expected: update, or no change at all. A create or delete here would destroy the
 # instance just restored, so anything else aborts.
-terraform apply tfplan-rollback
+terraform apply "$PLAN"
 ```
 
 **Step 5. Bring traffic back, and close the loop on the scheduler.**
@@ -2522,6 +3287,7 @@ The longest cadence is 24 hours, which is why two nightly cycles covers every sc
 | Cadence | Jobs |
 |-------------------------|-----------------------|
 | 5 minutes | `free-manager`, `PublishedExperimentSyncJob` |
+| 5 minutes | `free-manager` - the fastest cadence |
 | 10 minutes | `common-user-manager` |
 | 15 minutes | `premium-manager` |
 | 1 hour | `premium-cleanup`, `cost-tracker`, `DataCleanupJob`, `StorageReconciliationJob`, `PremiumExpirationSweep` |
@@ -2542,7 +3308,7 @@ Only the deployed e2e lanes reach the upgraded instance, and they reach it throu
 | Lane | What it covers on a deployed environment |
 |-------------------------|-----------------------|
 | `17-aws-health` | Read-only. Instance availability, alarms, encrypted connection, and real SQL reads through the proxy. Can be pointed at production |
-| `15-premium-aws` | The only hand-written SQL in the codebase - the advisory lock calls |
+| `15-premium-aws` | Advisory lock calls, through the premium assignment path |
 | `16-storage-aws` | Storage aggregation against the deployed database |
 | Browser specs | The application paths, with skips promoted to failures |
 
@@ -2552,17 +3318,61 @@ Three properties of the suite to know before running it:
 - One subscription lane writes to the shared development database without an opt-in flag. Decide deliberately whether a soak includes it.
 - The disruptive lane refuses to run when another account has been active recently, and refuses when it cannot tell. That refusal is usually the correct outcome on a shared environment.
 
+### Choosing the lanes, and substituting the release set for the expensive two
+
+The two AWS-facing lanes beyond the health lane are **expensive** - together they run well over an hour. Before spending that, establish what they uniquely add, because the answer depends on what the other criteria have already exercised rather than on the lanes' names.
+
+**Enumerate the hand-written SQL first.** An engine version change is most likely to surface in SQL written by hand, because the ORM normalises the rest. **Enumerate it in two places, not one** - the application and the Lambda packages are separate codebases with separate database access styles, and searching only for the ORM's `text(...)` wrapper misses the second entirely:
+
+| Hand-written SQL | Where | Already exercised against `<TO>` by |
+|-------------------------|-----------------------|-----------------------|
+| `GET_LOCK` / `RELEASE_LOCK` | `workspace_data_capacity_services.py` | The premium path, which criterion 4 invokes |
+| `GET_LOCK` / `RELEASE_LOCK` | `startup_leader.py` | **Phase 1's own apply.** `__main_unit__.py` calls it from the startup hook on the public tier, so every deploy runs it |
+| `GET_LOCK` / `RELEASE_LOCK` | `storage_tracking.py` | Criterion 4 invokes the storage tracking job directly |
+| `CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` server defaults | `models/base.py`, `experiment.py`, the alembic versions | **Phase 1's own apply.** `cloud-startup.sh` runs `alembic upgrade head` and exits non-zero on failure, so a service that is up is a service whose DDL applied |
+| **Roughly 120 raw `execute()` statements** | **The Lambda packages** - `premium_manager` (63, plus 5 in its utils), `premium_cleanup` (21), `free_cleanup` (15), `common_user_manager` (6), `cost_tracker` (5), `free_user_utils` (5). They use the driver directly rather than the ORM | **Criterion 4 alone.** Nothing else reaches them |
+
+Two conclusions, and the second is the one that matters:
+
+1. **The advisory lock mechanism is not confined to one lane.** It appears three times, and the site that runs on every deploy is the startup leader election, not the premium path.
+2. **The Lambda packages hold by far the largest hand-written SQL surface in the repository, and criterion 4 is the only thing that executes it.** That makes criterion 4 the most valuable application-level check in this phase rather than a formality.
+
+So the expensive lanes are largely redundant with criterion 4, which reaches more SQL than they do. The residual risk in aggregation SQL is `GROUP BY` strictness, and that is closed by measurement rather than by testing: step 8 records `sql_mode`, and a value without `ONLY_FULL_GROUP_BY` cannot start rejecting a query the outgoing version accepted.
+
+**So an environment's own standard release e2e set, plus criterion 4, is an acceptable substitute for the two expensive lanes - but the substitution is conditional on criterion 4 being run in full.** Dropping invokes and substituting the lanes at the same time would leave that 120-statement surface untested. Run the health lane regardless; it is read-only and cheap. Record the substitution and this reasoning in the phase log, so a later reader sees a decision rather than an omission.
+
+**One gap the substitution leaves, and it is cheap to close.** The startup leader election is wrapped in a `try/except` that logs and returns, so **a service reaching `running == desired` does not prove its `GET_LOCK` succeeded.** The evidence is in the log group, not in the service state:
+
+```bash
+aws logs filter-log-events --log-group-name "$PUBLIC_LOG_GROUP" \
+  --start-time $(( ($(date +%s) - 86400) * 1000 )) \
+  --filter-pattern '?"Startup sync" ?"Startup sync error"' \
+  --query 'events[].message' --output text | tail -20
+```
+
+Expected: no `Startup sync error`, and at least one line showing the election resolved - either this task won and ran the sync, or it deferred to the leader. **An empty result is not a pass**: it means nothing was exercised, in which case the lock was never taken and this check has told you nothing.
+
 ### The engine-version assertion
 
-Nothing in the health lane checked the engine version, the parameter group or `PendingModifiedValues` before this procedure existed, which meant the B2 failure state - instance on the old version with an upgrade queued - was invisible to the suite. The assertion added for it belongs in `frontend/e2e/17-aws-health.spec.ts` beside the other storage and database cases, and checks:
+Nothing in the health lane checked the parameter group's apply status or `PendingModifiedValues` before this procedure existed, which meant the B2 failure state - instance on the old version with an upgrade queued - was invisible to the suite. The assertion added for it belongs in `frontend/e2e/17-aws-health.spec.ts` beside the other storage and database cases, and checks:
 
-- the engine version matches the target major version
-- the parameter group is in sync and on the target family
 - `PendingModifiedValues` is empty
+- the parameter group is `in-sync`, because holding the right values is not the same as having them in effect
 - the version the proxy serves agrees with the version the control plane reports, which is the split-brain B2 leaves behind
 - `sql_mode` is unchanged
 
+**Write it so it names no engine version.** The first draft asserted the version against a hard-coded major and the parameter group against a hard-coded family, and both had to be removed:
+
+- **A constant that must be edited in the same commit as the `engine_version` attribute cannot fail during the upgrade it claims to guard.** The two edits ship together. What such an assertion detects is a sequencing slip, and "merged but never applied" is already caught by the plan gate, more directly.
+- **RDS rejects a parameter group whose family does not match the engine**, so asserting the family asserts an AWS invariant rather than anything about this change.
+
+Dropping both leaves every remaining assertion comparing two live readings against each other, which is what makes the case meaningful *continuously* rather than only during an upgrade - and it needs no edit at the next major version. `sql_mode` stays as a constant because it is not a version: an upgrade does not move it, so it never needs editing.
+
+**The generalisable rule: the problem is not a constant in a test, it is a constant that must be edited as part of the change the test verifies.**
+
 It deliberately does not assert a buffer pool size: that value is derived from instance memory and is expected to change across a family move, so pinning a number would turn a documented consequence into a failing test.
+
+**This case is regression cover, not verification of the upgrade in hand.** Every assertion in it also appears as a manual step in the phase 4 checklist, and phase 1 measures them on the development instance, so it can be written after the production apply without weakening any phase. Order it behind the release-critical criteria.
 
 ---
 
