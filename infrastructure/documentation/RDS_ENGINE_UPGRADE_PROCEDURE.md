@@ -3141,12 +3141,12 @@ terraform apply "$PLAN"
 **Step 5. Bring traffic back, and close the loop on the scheduler.**
 
 ```bash
-# If the shell from step 1 is gone, re-declare both from the lines written down there.
+# If the shell from step 1 is gone, redeclare both from the lines written down there.
 # An empty value here makes the loops below run zero times and print nothing, which is
 # indistinguishable from success - so refuse rather than proceed.
 # COUNTS='svc=1 svc=2 ...'   RULES='rule rule ...'
 [ -n "$COUNTS" ] && [ -n "$RULES" ] || {
-  echo "ABORT: COUNTS and RULES must be set - re-declare them from step 1's output" >&2; }
+  echo "ABORT: COUNTS and RULES must be set - redeclare them from step 1's output" >&2; }
 
 # Restore each service to ITS OWN recorded count, not blindly 1
 for P in $(echo "$COUNTS"); do
