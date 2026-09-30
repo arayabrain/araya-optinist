@@ -199,6 +199,16 @@ A `-target` apply scoped to the RDS resources avoids the rebuild but skips the s
 +  family      = "mysql<TO>"
 +  name_prefix = "${local.env_prefix}-ssl-"
    ...
++  # Pinned to the values <FROM> was measured to be running, so the upgrade changes the
++  # engine version only. Neither family sets these, so a family diff does not show them.
++  # NOT upgrade scaffolding - these stay after the two instance attributes come out.
++  parameter { name = "innodb_dedicated_server"      value = "0" }
++  parameter { name = "innodb_buffer_pool_size"      value = "{DBInstanceClassMemory*3/4}" }
++  parameter { name = "innodb_buffer_pool_instances" value = "8" }
++  parameter { name = "innodb_redo_log_capacity"     value = "2147483648" }
++  parameter { name = "innodb_io_capacity"           value = "200" }
++  parameter { name = "innodb_io_capacity_max"       value = "2000" }
++  lifecycle { create_before_destroy = true }
  }
 
  resource "aws_db_instance" "main" {
@@ -209,7 +219,14 @@ A `-target` apply scoped to the RDS resources avoids the rebuild but skips the s
  }
 ```
 
-A major-only `engine_version` resolves to the region default for that major version, which works because `auto_minor_version_upgrade` is enabled and the provider treats the value as a prefix.
+**The pinned parameters are the larger half of this change, and the one a reviewer is most likely to
+misread as optional.** The step 8 / step 9 pair measures what the outgoing version was actually running and
+what the incoming version does by default; every value that differs and is not wanted gets pinned here. The
+pins' **actual values are version-specific** - take them from that pair rather than from this example - and
+the count is whatever the pair justified. For 8.0 to 8.4 it was six. See edge case 6.
+
+A major-only `engine_version` resolves to the region default for that major version, which works because
+`auto_minor_version_upgrade` is enabled and the provider treats the value as a prefix.
 
 **Do not keep `allow_major_version_upgrade` permanently.** Removing it means a future `engine_version` edit cannot perform a major upgrade silently.
 
@@ -1281,7 +1298,7 @@ Steps 8 to 11 also need the in-VPC command path, so **wait for the environment t
 
 Nothing touches the clone overnight, and this is worth knowing rather than assuming: the scheduler acts on **one explicitly configured identifier** - `RDS_INSTANCE_ID` in its own environment - not on a tag selector, so a clone that inherited the live instance's tags from the snapshot is still out of its reach. See edge case 3 for why those inherited tags are misleading in other ways. The clone does keep billing, which is the cost of the split.
 
-**What this drill is a rehearsal of:** the [Rollback](#procedure-1) procedure, which is the authoritative
+**What this drill is a rehearsal of:** the [the rollback procedure](#the-rollback-procedure) procedure, which is the authoritative
 version and is written for a live instance. **Its steps are numbered separately from this phase's** - the
 mapping is below.
 
@@ -2143,7 +2160,12 @@ before it happens.
 
 #### The morning, after the restore — checks 2 to 6
 
-Run these as one block: `SINCE` is set in check 3 and read again in check 4.
+Run these as one block: `SINCE` is set in check 3 and read again in checks 4 and 5b.
+
+**Check 6 is the one that makes this phase worth running.** The pins live in the parameter group, and a
+restored instance re-attaches that group at start-up - so reading the pinned values back **through the proxy**
+is the only check that proves the restore carried them. Everything before it is the control plane's account of
+the restore; check 6 is the engine's.
 
 ```bash
 # 2. The morning restore
@@ -2168,10 +2190,31 @@ aws logs filter-log-events --log-group-name "/aws/lambda/${ENV}-dev-scheduler" \
   --query 'events[].message' --output text
 # Expected: empty
 
-# 5. The proxy target re-registered against the new DbiResourceId
+# 5. The proxy target is registered and healthy.
+#    RdsResourceId is the INSTANCE IDENTIFIER, not DbiResourceId - the identifier is
+#    unchanged across a restore, so comparing it to DbiResourceId proves nothing.
+#    What this check shows is that a target exists at all: the proxy auto-deregisters
+#    when the instance is deleted and does not auto-register when one reappears under
+#    the same identifier.
 aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
   --query 'Targets[].{id:RdsResourceId,state:TargetHealth.State,reason:TargetHealth.Reason}'
 # Expected: one target, AVAILABLE
+
+# 5b. The re-registration itself, which is the part #468 failed on. The scheduler
+#     reports ensure_rds_proxy_target's outcome under "rds_proxy" in its start results.
+aws logs filter-log-events --log-group-name "/aws/lambda/${ENV}-dev-scheduler" \
+  --start-time "$SINCE" --filter-pattern 'rds_proxy' \
+  --query 'events[].message' --output text | tail -5
+# Expected, across the two start passes: "deferred_still_creating" on the first, then
+# "registered" on the verify-start. That pair is the mechanism working as designed -
+# the restore is still running when the first pass fires, and the second completes it.
+#
+# "registered" is the value that matters: it means the target had been deregistered by
+# last night's delete and was added back this morning. "already_registered" would mean
+# no deregistration happened, which is worth understanding rather than passing over.
+#
+# "deferred_still_creating" on the VERIFY pass is an error, not a wait - the scheduler
+# promotes it to one itself, because it means the restore is stuck.
 
 # 6. The application reaches it through the proxy. Use ssm_sh with the proxy
 #    endpoint in place of the clone host.
@@ -2900,7 +2943,7 @@ Two further properties of the restore, both measured rather than assumed:
 
 **Metadata is not proof.** The control plane reporting the right engine version, endpoint and parameter group says nothing about whether the database serves. Connect to it, over TLS, and read the engine version from the engine. The drill does this and it is the check that distinguishes a rollback from a restore that merely looks right.
 
-### Procedure
+### The rollback procedure
 
 **This is the live procedure, and it is self-contained.** Phase 0A rehearses it on a throwaway clone;
 nothing here requires reading that phase or substituting its variable names. Read this section only.
@@ -2945,6 +2988,13 @@ aws rds describe-db-parameter-groups --db-parameter-group-name "$ROLLBACK_PG" \
 **Step 1. Stop application traffic, and preserve the evidence.** Scale the services to zero so nothing
 writes to an instance that is about to be replaced.
 
+> **`for R in $(echo "$RULES")`, never `for R in $RULES`.** **zsh does not word-split an unquoted parameter
+> expansion**, so the bare form iterates **once** over the whole string. For the rule loops that fails loudly -
+> one `disable-rule` call with every name joined into one - but for the service loop in step 5 it is silent
+> and wrong: it updates the *first* service to the *last* service's count. zsh *does* split command
+> substitution, which is why the `$(echo …)` wrapper fixes it. Measured in both shells: bare gives 3
+> iterations under bash and 1 under zsh; wrapped gives 3 under both.
+
 **Scaling to zero does not hold on its own.** The manager Lambdas re-scale resources on their own
 schedules - `free-manager` every five minutes, `premium-manager` every fifteen - so a service set to
 zero comes back before the restore finishes. Disable their EventBridge rules first. This is exactly what
@@ -2952,23 +3002,49 @@ the development scheduler's own stop path does, and for the same reason; the rul
 `SCHEDULE_RULE_NAMES` and `DELAYED_RULE_NAMES` environment variables.
 
 ```bash
-# Record the current state before changing any of it
-aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
+# Record the current state before changing any of it, as "name=count" pairs that step 5
+# can replay directly. The four counts are NOT all 1, so a single remembered number
+# cannot restore them.
+COUNTS=$(aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
   --services "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
              "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service" \
-  --query 'services[].{name:serviceName,desired:desiredCount}' --output table
-# Expected: note these counts. Step 5 restores them, and they are not all necessarily 1.
+  --query 'services[].[serviceName,desiredCount]' --output text | awk '{print $1"="$2}' | tr '\n' ' ')
+echo "COUNTS=$COUNTS"
+# Expected: four name=count pairs. WRITE THIS LINE DOWN alongside RULES - step 5 needs
+# both, and a rollback can outlive the shell it started in.
 
-# Disable the rules that would re-scale what step 2 is about to replace
-RULES="${ENV}-free-manager-schedule ${ENV}-cost-tracker-schedule \
-       ${ENV}-premium-manager-schedule ${ENV}-premium-cleanup-schedule"
-for R in $RULES; do
+# Disable the rules that would re-scale what step 2 is about to replace.
+#
+# DERIVE the list rather than transcribing it. The scheduler Lambda already carries the
+# authoritative set in SCHEDULE_RULE_NAMES and DELAYED_RULE_NAMES, and a hand-copied
+# list drifts: an earlier version of this document listed four of the five and the one
+# it omitted was free-manager-asg-events, which is triggered BY scaling ECS to zero.
+RULES=$(aws lambda get-function-configuration --function-name "${ENV}-dev-scheduler" \
+  --query 'Environment.Variables.[SCHEDULE_RULE_NAMES,DELAYED_RULE_NAMES]' --output text \
+  | tr '\t' '\n' | python3 -c 'import json,sys;print(" ".join(n for l in sys.stdin for n in json.loads(l)))')
+
+# On an environment with no scheduler - production - there is no Lambda to read, so fall
+# back to the rules that exist. This lists them rather than assuming a spelling.
+[ -n "$RULES" ] || RULES=$(aws events list-rules --name-prefix "${ENV}-" \
+  --query "Rules[?contains(Name,'manager')||contains(Name,'cleanup')||contains(Name,'tracker')].Name" \
+  --output text | tr '\t' ' ')
+
+echo "RULES=$RULES"
+# Expected: five names on development - free-manager-schedule, free-manager-asg-events,
+# cost-tracker-schedule, premium-manager-schedule, premium-cleanup-schedule.
+# WRITE THIS LINE DOWN. Step 5 re-enables exactly this set, and if the shell is lost in
+# between, an empty RULES makes step 5's loop run zero times and print nothing.
+
+for R in $(echo "$RULES"); do
   aws events disable-rule --name "$R" && echo "disabled $R"
 done
-aws events describe-rule --name "${ENV}-premium-manager-schedule" --query State
-# Expected: DISABLED. Confirm the whole list, not just this one. Check the live rule
-# names against the scheduler Lambda's environment variables - this list is the
-# expected spelling, and a rule missed here is a service that scales back up mid-restore.
+
+# Verify EVERY one, not a sample. A rule missed here is a service that scales back up
+# mid-restore, and this is the step where the omission does the damage.
+for R in $(echo "$RULES"); do
+  aws events describe-rule --name "$R" --query '[Name,State]' --output text
+done
+# Expected: DISABLED for every line.
 
 for S in "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
          "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service"; do
@@ -3039,13 +3115,16 @@ this apply so the parameter group swap is not deferred.
 ```bash
 # git revert is clean only while the upgrade commit is the newest change to
 # infrastructure.tf. Check before using it.
-UPGRADE_COMMIT=$(git log -1 --format=%H -- infrastructure/terraform/infrastructure.tf)
-git show --stat "$UPGRADE_COMMIT"
+# NEWEST_TF_COMMIT, not UPGRADE_COMMIT: this is whatever touched infrastructure.tf last,
+# which after #898's cleanup PR is the cleanup rather than the upgrade. The check below
+# is what establishes which it is.
+NEWEST_TF_COMMIT=$(git log -1 --format=%H -- infrastructure/terraform/infrastructure.tf)
+git show --stat "$NEWEST_TF_COMMIT"
 # Expected: only the engine version and parameter group family lines. If it carries
 # application changes, or if application commits have landed since, do NOT revert -
 # reverting them too would ship an unrelated rollback through the same apply (B6).
 # Edit the two lines back by hand on a branch off current HEAD instead.
-git revert --no-edit "$UPGRADE_COMMIT"
+git revert --no-edit "$NEWEST_TF_COMMIT"
 
 cd infrastructure/terraform
 terraform init -backend-config="backends/${TF_ENV}.hcl" -reconfigure
@@ -3062,22 +3141,30 @@ terraform apply "$PLAN"
 **Step 5. Bring traffic back, and close the loop on the scheduler.**
 
 ```bash
-# Restore the counts recorded in step 1, not blindly 1
-for S in "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
-         "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service"; do
-  aws ecs update-service --cluster "${ENV}-optinist-cloud-cluster" --service "$S" \
-    --desired-count <the count recorded in step 1> --force-new-deployment >/dev/null
+# If the shell from step 1 is gone, re-declare both from the lines written down there.
+# An empty value here makes the loops below run zero times and print nothing, which is
+# indistinguishable from success - so refuse rather than proceed.
+# COUNTS='svc=1 svc=2 ...'   RULES='rule rule ...'
+[ -n "$COUNTS" ] && [ -n "$RULES" ] || {
+  echo "ABORT: COUNTS and RULES must be set - re-declare them from step 1's output" >&2; }
+
+# Restore each service to ITS OWN recorded count, not blindly 1
+for P in $(echo "$COUNTS"); do
+  aws ecs update-service --cluster "${ENV}-optinist-cloud-cluster" \
+    --service "${P%%=*}" --desired-count "${P##*=}" --force-new-deployment >/dev/null \
+    && echo "restored ${P%%=*} to ${P##*=}"
 done
 
 # Re-enable every rule disabled in step 1. Leaving one disabled silently stops
 # autoscaling, premium assignment cleanup or cost metrics, with no alarm for it.
-for R in $RULES; do
+for R in $(echo "$RULES"); do
   aws events enable-rule --name "$R" && echo "enabled $R"
 done
-for R in $RULES; do
+for R in $(echo "$RULES"); do
   aws events describe-rule --name "$R" --query '[Name,State]' --output text
 done
-# Expected: ENABLED for every one
+# Expected: ENABLED for every one, and the count must match what step 1 disabled -
+# five on development.
 
 aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
   --services "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
@@ -3242,14 +3329,18 @@ The `general` and `slowquery` exports produce nothing because both logs are at t
 
 ### Metrics to compare against the baseline
 
+**These are the eight the criterion 6 baseline captures**, so the two lists stay in step.
+
 | Metric | Why | Expected after upgrade |
 |-------------------------|-----------------------|-----------------------|
-| `BufferCacheHitRatio` | Buffer pool sizing | May fall - see edge case 6 |
-| `ReadIOPS` | Corroborates the above | May rise with a smaller buffer pool |
+| `BufferCacheHitRatio` | Buffer pool sizing | **Returns no datapoints on standard RDS MySQL** - it is an Aurora metric. Measured, not assumed. The three rows below carry the buffer pool question in its place |
+| `ReadIOPS` | **The substitute for the above**, and a sensitive one: on a cache-served workload it is flat enough that a sizing change stands out | May rise with a smaller buffer pool |
+| `FreeableMemory` | The other side of pool sizing | Unchanged |
+| `ReadLatency` | What a user notices about a smaller pool | May rise with `ReadIOPS` |
 | `WriteIOPS` | Background flushing, if `innodb_io_capacity` rose - edge case 6, mechanism 2 | May rise independently of any application change |
+| `WriteLatency` | The write-side pair to the above. `ReadLatency` alone shows only half of edge case 6 | May rise with `WriteIOPS` |
 | `CPUUtilization` | Baseline comparison | Unchanged |
 | `DatabaseConnections` | Pool health after the rollout | Returns to the pre-upgrade level |
-| `FreeableMemory` | Pool sizing sanity | Unchanged |
 
 ### Alarms
 
@@ -3268,7 +3359,7 @@ The `general` and `slowquery` exports produce nothing because both logs are at t
 | `engine_version` | `aws_db_instance.main` | Major-only value, treated as a prefix |
 | `allow_major_version_upgrade` | `aws_db_instance.main` | Required for the upgrade. Removed afterwards |
 | `apply_immediately` | `aws_db_instance.main` | Prevents deferral to the maintenance window - B2. Removed afterwards |
-| `auto_minor_version_upgrade` | `aws_db_instance.main` | Already enabled. Why a major-only version works |
+| `auto_minor_version_upgrade` | `aws_db_instance.main` | **Not declared** - it takes the provider default of `true`, which is why a major-only version works. Setting it to `false` would break that, so check before assuming it is set |
 | `backup_retention_period` | `aws_db_instance.main` | Must be greater than zero for automatic pre-upgrade snapshots |
 
 ### Scheduler environment variables
