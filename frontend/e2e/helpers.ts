@@ -1432,7 +1432,11 @@ export async function ensureTutorialRecords(page: Page, workspaceName: string) {
 
 export async function reproduceTutorial(page: Page, tutorialName: string) {
   await page.locator('button[role="tab"]:has-text("Record")').click()
-  const row = page.locator(`tr:has-text("${tutorialName}")`).first()
+  // Exact: a "_copy" record shares the original's startedAt, so sort order cannot separate them
+  const row = page
+    .locator("tr")
+    .filter({ has: page.getByText(tutorialName, { exact: true }) })
+    .first()
   await expect(row).toBeVisible({ timeout: 15_000 })
   // Disabled while a previous run is still settling — wait, then reload
   // once (a fresh fetch clears stale running state)
