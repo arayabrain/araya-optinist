@@ -326,9 +326,13 @@ API defaults make it worse than it looks:
 - **`--skip-final-snapshot` leaves nothing behind at all.** Combined with the above, an accidental
   delete falls back to the newest *manual* snapshot, which may be weeks old.
 
-Neither `deletion_protection` nor the Terraform `skip_final_snapshot` setting helps here:
-`deletion_protection` is not currently enabled on these instances, and `skip_final_snapshot` governs
-only what Terraform does on destroy, not a CLI call.
+`skip_final_snapshot` does not help here: it governs only what Terraform does on destroy, not a CLI call.
+
+**`deletion_protection` does help, and only where it is enabled (#900).** It is set on production and
+deliberately off on development, whose scheduler deletes and restores the instance every weekday. So on
+development the guards below are the only thing standing between a mistyped identifier and the database, and
+on production the API refuses the call — which also means **a legitimate delete, such as the rollback, has to
+turn protection off first.**
 
 So never call `delete-db-instance` directly in this procedure. Use these:
 
@@ -632,7 +636,8 @@ makes none.
 aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{retention:BackupRetentionPeriod,delProt:DeletionProtection}'
 # Expected: retention greater than zero. Zero means no automated backups and no PITR.
-# DeletionProtection false means a mistyped delete succeeds immediately.
+# DeletionProtection: true on production, false on development (#900). False means a
+# mistyped delete succeeds immediately; true means the rollback must clear it first.
 
 aws rds describe-db-instance-automated-backups \
   --query "DBInstanceAutomatedBackups[?DBInstanceIdentifier=='${DB}'].{status:Status,
@@ -3068,6 +3073,32 @@ keeps Terraform convergent and leaves the ARN and endpoint unchanged, so nothing
 touching. The alternative - restore to a temporary identifier, verify, then rename with
 `modify-db-instance --new-db-instance-identifier` - keeps the broken instance available for diagnosis at
 the cost of an extra rename and reboot.
+
+> **Deletion protection blocks the delete below, and production has it on (#900).** The API refuses
+> `DeleteDBInstance` outright, so the rollback stops at its most important step unless protection is turned off
+> first. Turning it off is a `modify`, takes seconds, and needs no reboot — but it has to be a deliberate step
+> rather than something discovered from an error message during an incident.
+
+```bash
+# Read it before changing it: on an environment without protection this is already false
+# and the modify below is unnecessary.
+aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].DeletionProtection'
+# Expected: true on production, false on development.
+
+# Only when the line above said true.
+aws rds modify-db-instance --db-instance-identifier "$DB" \
+  --no-deletion-protection --apply-immediately \
+  --query 'DBInstance.{id:DBInstanceIdentifier,pending:PendingModifiedValues}'
+aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].DeletionProtection'
+# Expected: false. Confirm it rather than assuming, because the delete fails on this and
+# nothing else explains why.
+```
+
+**Terraform puts it back.** `deletion_protection` is declared, so step 4's apply restores it — there is no
+separate step to re-enable it, and no way to leave it off by forgetting. If the rollback is abandoned before
+step 4, re-enable it by hand.
 
 ```bash
 date -u
