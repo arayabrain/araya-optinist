@@ -620,6 +620,13 @@ resource "aws_db_parameter_group" "main" {
 }
 
 resource "aws_db_instance" "main" {
+  # deletion_protection below guards the CLI, which two settings here do not:
+  #   skip_final_snapshot    - governs terraform destroy only
+  #   DeleteAutomatedBackups - the API parameter defaults to true, so a CLI delete takes
+  #                            the point-in-time recovery window with the instance
+  # Production only: the scheduler deletes and restores development every weekday.
+  # Not ForceNew, and it blocks DeleteDBInstance only - modify operations are unaffected,
+  # so engine upgrades and parameter group changes still work.
   identifier                      = "${local.env_prefix}-cloud-rds"
   allocated_storage               = 20
   storage_type                    = "gp3"
@@ -630,6 +637,7 @@ resource "aws_db_instance" "main" {
   db_name                         = var.mysql_database
   username                        = var.mysql_user
   password                        = var.mysql_password
+  deletion_protection             = var.environment == local.production_env_prefix
   skip_final_snapshot             = false
   final_snapshot_identifier       = "${var.mysql_database}-final-snapshot"
   backup_retention_period         = 35
