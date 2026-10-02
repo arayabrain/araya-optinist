@@ -34,9 +34,13 @@ describe("WorkflowDownloadButton", () => {
       </Provider>,
     )
 
-    // Find the workflow download button using data-testid
-    const downloadButton = screen.getByTestId("workflow-download-button")
-    expect(downloadButton).toHaveAccessibleName("Download workflow config")
+    // Find the workflow download button
+    const downloadButton = screen.getByRole("button", {
+      name: "Download workflow config",
+    })
+
+    // The testid and the clickable button are the same node
+    expect(screen.getByTestId("workflow-download-button")).toBe(downloadButton)
 
     // Mock the click event
     fireEvent.click(downloadButton)
