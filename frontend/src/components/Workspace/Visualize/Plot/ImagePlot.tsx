@@ -32,7 +32,7 @@ import Switch from "@mui/material/Switch"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
-import { markNodeUpdated } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
+import { markDownstreamStale } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import {
   addRoi,
   cancelRoi,
@@ -744,7 +744,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       // Commit discards the downstream results on the server; flag those
       // nodes for the next RUN the same way a changed parameter does, before
       // the refresh below, which can fail on its own
-      if (roiNodeId) dispatch(markNodeUpdated({ nodeId: roiNodeId }))
+      if (roiNodeId) dispatch(markDownstreamStale({ nodeId: roiNodeId }))
       enqueueSnackbar(
         "Successfully committed to Edit ROI. Run the workflow to update downstream results.",
         { variant: "success" },

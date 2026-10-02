@@ -45,6 +45,8 @@ def get_roi(A, roi_thr, thr_method, swap_dim, dims):
                     neuron_id=i + 1,
                 )
                 coordinates.append(pars)
+                # keep one mask per column so row i stays component i
+                ims.append(np.zeros(dims))
                 continue
             else:
                 # we work with normalized values
@@ -182,6 +184,8 @@ def component_outputs(
 
     if len(idx_good) > 0 and A is not None:
         cell_ims = get_roi(A[:, idx_good], roi_thr, thr_method, swap_dim, dims)
+        if len(cell_ims) != len(idx_good):
+            raise ValueError("one mask per accepted component expected")
         if len(cell_ims) > 0:  # Check if get_roi returned any ROIs
             cell_ims = np.stack(cell_ims).astype(float)
             cell_ims[cell_ims == 0] = np.nan
@@ -198,6 +202,8 @@ def component_outputs(
 
     if len(idx_bad) > 0:
         non_cell_ims = get_roi(A[:, idx_bad], roi_thr, thr_method, swap_dim, dims)
+        if len(non_cell_ims) != len(idx_bad):
+            raise ValueError("one mask per rejected component expected")
         non_cell_ims = np.stack(non_cell_ims).astype(float)
         for i, j in enumerate(range(n_rois, n_rois + len(non_cell_ims))):
             non_cell_ims[i, :] = np.where(non_cell_ims[i, :] != 0, j, 0)

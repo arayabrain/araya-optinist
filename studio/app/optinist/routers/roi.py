@@ -36,7 +36,8 @@ def roi_filepath(filepath: str, workspace_id: Union[int, str]) -> str:
 
 
 def unlocked_roi_filepath(filepath: str = Depends(roi_filepath)) -> str:
-    """The same path, refused while a commit or a run is rewriting the experiment."""
+    """The same path, refused while a commit (or, with remote storage, a run)
+    holds the experiment lock."""
     ids = ExptOutputPathIds(os.path.dirname(filepath))
     try:
         RemoteSyncLockFileUtil.check_sync_lock_file(

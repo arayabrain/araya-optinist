@@ -31,9 +31,9 @@ export const algorithmNodeSlice = createSlice({
   name: ALGORITHM_NODE_SLICE_NAME,
   initialState,
   reducers: {
-    markNodeUpdated: (state, action: PayloadAction<{ nodeId: string }>) => {
+    markDownstreamStale: (state, action: PayloadAction<{ nodeId: string }>) => {
       const node = state[action.payload.nodeId]
-      if (node) node.isUpdate = true
+      if (node) node.downstreamStale = true
     },
     updateParam: (
       state,
@@ -153,11 +153,12 @@ export const algorithmNodeSlice = createSlice({
             .filter(isAlgorithmNodePostData)
             .forEach((node) => {
               state[node.id].isUpdate = false
+              state[node.id].downstreamStale = false
             })
         },
       )
   },
 })
 
-export const { updateParam, markNodeUpdated } = algorithmNodeSlice.actions
+export const { updateParam, markDownstreamStale } = algorithmNodeSlice.actions
 export default algorithmNodeSlice.reducer

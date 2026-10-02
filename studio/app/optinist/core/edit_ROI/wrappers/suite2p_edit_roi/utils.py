@@ -38,6 +38,8 @@ def get_stat0_add_roi(ops, posx, posy, sizex, sizey):
     x, y = np.meshgrid(xrange, yrange)
     ypix = y[ellipse].flatten()
     xpix = x[ellipse].flatten()
+    if ypix.size == 0:  # a 1x1 ellipse has no interior, nor one off the frame
+        raise ValueError("the ROI covers no pixel of the registered movie")
     return {"ypix": ypix, "xpix": xpix, "lam": np.ones(ypix.shape, np.float32)}
 
 
@@ -54,8 +56,6 @@ def merge_stat(stat, ids):
         "ypix": ypix[goodi],
         "xpix": xpix[goodi],
         "lam": lam / lam.sum() * merged_cells.size,
-        "chan2_prob": -1,
-        "inmerge": -1,
     }
 
 
@@ -166,7 +166,7 @@ def extract_traces(ops, stat, targets):
     reg_file = ops["reg_file"]
     if not os.path.exists(reg_file):
         raise FileNotFoundError(f"registered movie not found: {reg_file}")
-    nframes = os.path.getsize(reg_file) // (Ly * Lx * 2)
+    nframes = int(ops["nframes"])
     mov = np.memmap(reg_file, dtype=np.int16, mode="r", shape=(nframes, Ly, Lx))
     cell_pix = cell_pix_map(stat, Ly, Lx)
 

@@ -13,9 +13,13 @@ def delete_dependencies(
     node_ids: List[str],
     nodeDict: Dict[str, Node],
     edgeDict: Dict[str, Edge],
-):
-    """Delete the pickles of node_ids and of every node downstream of them."""
+) -> List[str]:
+    """Delete the pickles of node_ids and of every node downstream of them.
+
+    Returns every pickle path targeted, whether or not it existed.
+    """
     queue = deque(node_ids)
+    targeted = []
 
     while True:
         # terminate condition
@@ -38,6 +42,7 @@ def delete_dependencies(
             ]
         )
 
+        targeted.append(pickle_filepath)
         if os.path.exists(pickle_filepath):
             os.remove(pickle_filepath)
 
@@ -45,3 +50,5 @@ def delete_dependencies(
         for edge in edgeDict.values():
             if node_id == edge.source:
                 queue.append(edge.target)
+
+    return list(dict.fromkeys(targeted))

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
@@ -12,6 +13,9 @@ FRAMES = 6
 FLAT = (np.arange(FRAMES) * 10 + 100).astype(np.int16)
 CELLS = [(8, 8), (30, 22)]  # the second one sits inside the new ROI's neuropil box
 NEW_ROI = RoiPos(posx=30, posy=30, sizex=6, sizey=6)
+# mean row of the new ROI's neuropil ring under suite2p's geometry: the ring's
+# bounding box is clipped by the bottom FOV edge, so it is not the ROI's 30
+RING_MEAN_Y = 88 / 3
 
 
 def disk(cy, cx, r):
@@ -42,6 +46,7 @@ def build(tmp_path, movie):
     ops = {
         "Ly": LY,
         "Lx": LX,
+        "nframes": FRAMES,
         "reg_file": str(reg_file),
         "fs": 30.0,
         "diameter": 10,
@@ -158,3 +163,49 @@ def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
     assert len(info["fluorescence"].data) == len(info["edit_roi_data"].im)
     assert list(info["iscell"].data) == [CellType.NON_ROI] * new_id + [CellType.ROI]
     assert np.allclose(ops["F"][new_id], FLAT + 500, atol=1e-2)
+
+
+def test_a_frame_count_disagreeing_with_the_stored_traces_is_named(tmp_path):
+    ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
+    ops["nframes"] = FRAMES - 1
+    data = EditRoiData(
+        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    )
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    with pytest.raises(ValueError, match=f"nframes.* {FRAMES - 1} .* {FRAMES} frames"):
+        commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+
+def test_an_ellipse_with_no_interior_is_refused_by_name(tmp_path):
+    ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
+    tiny = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
+    data = EditRoiData(
+        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), tiny)[None]))
+    )
+    data.temp_add_roi[2] = tiny
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    with pytest.raises(ValueError, match="covers no pixel"):
+        commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+
+def test_neuropil_follows_the_ring_geometry_on_a_ramped_background(tmp_path):
+    # a ramp along y makes every mean depend on exactly which pixels it covers
+    movie = (
+        np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)) + np.arange(LY)[:, None]
+    )
+    ops, im = build(tmp_path, movie)
+    data = EditRoiData(
+        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    )
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    ops = info["ops"].data
+    # the disk is symmetric about y = 30, so its mean is the ramp at its centre
+    assert np.allclose(ops["F"][2], FLAT + 30, atol=1e-2)
+    assert np.allclose(ops["Fneu"][2], FLAT + RING_MEAN_Y, atol=1e-2)

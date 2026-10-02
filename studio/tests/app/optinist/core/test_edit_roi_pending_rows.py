@@ -4,6 +4,8 @@ import shutil
 import numpy as np
 import pytest
 import yaml
+from fastapi import HTTPException
+from pydantic import ValidationError
 
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -123,3 +125,142 @@ async def test_a_source_of_a_surviving_pending_merge_is_kept(file_path):
     assert fluorescence.shape[0] == NUM_ROI + 2
     assert iscell[NUM_ROI] == CellType.NON_ROI and iscell[NUM_ROI + 1] == CellType.ROI
     assert data.merge_roi == [float(NUM_ROI + 1), NUM_ROI, 0, -1.0]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_of_a_pending_merge_keeps_every_row(file_path):
+    # add -> row 3, merge(3, 0) -> row 4, merge(4, 1) -> row 5: row 3 is marked
+    # deleted by the first merge, but the second merge still averages from it
+    EditROI(file_path=file_path).add(ROI_A)
+    EditROI(file_path=file_path).merge([NUM_ROI, 0])
+    EditROI(file_path=file_path).merge([NUM_ROI + 1, 1])
+    await EditROI(file_path=file_path).commit()
+
+    data, iscell, fluorescence = committed(file_path)
+    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 3
+    assert iscell == [CellType.NON_ROI] * (NUM_ROI + 2) + [CellType.ROI]
+    assert data.add_roi == [NUM_ROI]
+    assert data.merge_roi == [
+        float(NUM_ROI + 1),
+        NUM_ROI,
+        0,
+        -1.0,
+        float(NUM_ROI + 2),
+        NUM_ROI + 1,
+        1,
+        -1.0,
+    ]
+    # the first merge's mask is the added ROI plus cell 0, drawn under its own index
+    merged = data.im[NUM_ROI + 1]
+    assert set(merged[~np.isnan(merged)]) == {NUM_ROI + 1}
+    assert not np.isnan(merged[1, 1]) and not np.isnan(merged[0, 0])
+
+
+@pytest.mark.asyncio
+async def test_several_operations_commit_together(file_path):
+    EditROI(file_path=file_path).add(ROI_A)
+    EditROI(file_path=file_path).delete([1])
+    EditROI(file_path=file_path).merge([NUM_ROI, 0])
+    await EditROI(file_path=file_path).commit()
+
+    data, iscell, fluorescence = committed(file_path)
+    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 2
+    assert iscell == [CellType.NON_ROI] * (NUM_ROI + 1) + [CellType.ROI]
+    assert data.add_roi == [NUM_ROI]
+    assert data.delete_roi == [1]
+    assert data.merge_roi == [float(NUM_ROI + 1), NUM_ROI, 0, -1.0]
+
+
+@pytest.mark.asyncio
+async def test_delete_all_add_delete_all_cycles_keep_rows_aligned(file_path):
+    EditROI(file_path=file_path).delete([0, 1])
+    await EditROI(file_path=file_path).commit()
+    EditROI(file_path=file_path).add(ROI_A)
+    await EditROI(file_path=file_path).commit()
+    EditROI(file_path=file_path).delete([NUM_ROI])
+    await EditROI(file_path=file_path).commit()
+
+    data, iscell, fluorescence = committed(file_path)
+    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 1
+    assert iscell == [CellType.NON_ROI] * (NUM_ROI + 1)
+    assert data.add_roi == [NUM_ROI] and data.delete_roi == [0, 1, NUM_ROI]
+
+    # every demoted row kept its trace, so any of them can come back
+    EditROI(file_path=file_path).promote([NUM_ROI])
+    await EditROI(file_path=file_path).commit()
+    assert committed(file_path)[1][NUM_ROI] == CellType.ROI
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_is_retried_without_applying_the_edit_twice(
+    file_path, monkeypatch
+):
+    EditROI(file_path=file_path).add(ROI_A)
+    edit_roi = EditROI(file_path=file_path)
+
+    def fail_once(cls, *args):
+        monkeypatch.setattr(Runner, "save_all_nwb", classmethod(lambda cls, *a: None))
+        raise RuntimeError("whole.nwb could not be written")
+
+    monkeypatch.setattr(Runner, "save_all_nwb", classmethod(fail_once))
+    with pytest.raises(RuntimeError):
+        await edit_roi.commit()
+
+    # nothing published: the node is as it was and the edit is still pending
+    data, iscell, fluorescence = committed(file_path)
+    assert fluorescence.shape[0] == NUM_ROI
+    assert data.im.shape[0] == NUM_ROI + 1
+    assert iscell[NUM_ROI] == CellType.TEMP_ADD
+    assert os.path.exists(edit_roi.tmp_pickle_file_path)
+
+    await EditROI(file_path=file_path).commit()
+    await EditROI(file_path=file_path).commit()  # nothing pending: a no-op
+
+    data, iscell, fluorescence = committed(file_path)
+    # the no-op commit must not have dropped the movie from the node pickle
+    assert EditROI(file_path=file_path).images.shape == (NUM_FRAME, *SHAPE)
+    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 1
+    assert iscell == [CellType.ROI, CellType.ROI, CellType.NON_ROI, CellType.ROI]
+    assert data.add_roi == [NUM_ROI]
+    assert not os.path.exists(edit_roi.tmp_pickle_file_path)
+
+
+def test_an_roi_covering_no_pixel_is_refused_at_add(file_path):
+    with pytest.raises(ValidationError):
+        RoiPos(posx=1, posy=1, sizex=0, sizey=2)
+    with pytest.raises(HTTPException) as exc:
+        EditROI(file_path=file_path).add(RoiPos(posx=50, posy=50, sizex=2, sizey=2))
+    assert exc.value.status_code == 400
+    assert committed(file_path)[0].im.shape[0] == NUM_ROI
+
+
+def saved_fluorescence(file_path):
+    node_dirpath = os.path.dirname(file_path)
+    fluo_dir = f"{node_dirpath}/fluorescence"
+    return {
+        name: os.path.getsize(f"{fluo_dir}/{name}") for name in os.listdir(fluo_dir)
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_a_failed_commit_restores_the_saved_outputs(
+    file_path, monkeypatch
+):
+    await EditROI(file_path=file_path).commit()  # nothing pending: writes the JSON
+    committed_outputs = saved_fluorescence(file_path)
+
+    EditROI(file_path=file_path).add(ROI_A)
+    monkeypatch.setattr(
+        Runner,
+        "save_all_nwb",
+        classmethod(lambda cls, *a: (_ for _ in ()).throw(OSError("disk full"))),
+    )
+    with pytest.raises(OSError):
+        await EditROI(file_path=file_path).commit()
+    # the outputs written before the failure describe the edit the node lacks
+    assert saved_fluorescence(file_path) != committed_outputs
+
+    EditROI(file_path=file_path).cancel()
+
+    assert saved_fluorescence(file_path) == committed_outputs
+    assert committed(file_path)[0].im.shape[0] == NUM_ROI

@@ -49,7 +49,7 @@ class EditRoiUtils:
         RemoteSyncLockFileUtil.check_sync_lock_file(
             workspace_id, unique_id, raise_error=True
         )
-        RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+        token = RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
 
         try:
             # Operate remote storage data.
@@ -76,9 +76,9 @@ class EditRoiUtils:
 
                 logger.info("finish edit_roi commit process.")
         finally:
-            # A commit that fails before EditROI.commit releases the lock itself
-            # would otherwise hold the experiment until the stale-lock timeout.
-            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+            # The one release, after the upload; the token keeps it from taking
+            # a lock another request created once this one expired.
+            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id, token)
 
     @classmethod
     @with_client_id_context  # Automatically set client_id for logging

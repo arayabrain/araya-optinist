@@ -12,7 +12,6 @@ from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageWriter,
-    RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -21,6 +20,7 @@ from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWrit
 from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.dataclass.base import BaseData
+from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
 from studio.app.optinist.core.nwb.nwb_creater import overwrite_nwb
 from studio.app.optinist.dataclass import EditRoiData, IscellData, RoiData
@@ -44,6 +44,7 @@ class EditROI:
         self.workflow_dirpath = os.path.dirname(self.node_dirpath)
         self.workflow_ids = ExptOutputPathIds(self.node_dirpath)
         self.function_id = self.workflow_ids.function_id
+        self.__finish_interrupted_publish()
 
         self.output_info: Dict = PickleReader.read(self.pickle_file_path)
         self.tmp_output_info: Dict = (
@@ -60,6 +61,9 @@ class EditROI:
         if not isinstance(self.tmp_data, EditRoiData):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
+        # With nothing pending tmp_data is the committed object itself, so the
+        # movie is kept here and dropped from what the pending pickle carries
+        self.images = self.data.images
         self.tmp_data.images = None
 
         self.tmp_iscell = self.tmp_output_info.get(
@@ -105,6 +109,11 @@ class EditROI:
 
     def add(self, roi_pos):
         new_roi = create_ellipse_mask(self.shape, roi_pos)
+        if np.isnan(new_roi).all():  # drawn outside the field of view
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="the ROI covers no pixel",
+            )
         new_roi = new_roi[np.newaxis, :, :] * self.num_cell
 
         self.tmp_data.temp_add_roi[self.num_cell] = roi_pos
@@ -230,7 +239,7 @@ class EditROI:
             )
 
             info = lccd_commit(
-                self.data.images,
+                self.images,
                 self.tmp_data,
                 self.output_info.get("fluorescence"),
                 self.tmp_iscell,
@@ -244,7 +253,7 @@ class EditROI:
             )
 
             info = vacant_roi_commit(
-                self.data.images,
+                self.images,
                 self.tmp_data,
                 self.output_info.get("fluorescence"),
                 self.tmp_iscell,
@@ -258,7 +267,7 @@ class EditROI:
             )
 
             info = caiman_commit(
-                self.data.images,
+                self.images,
                 self.tmp_data,
                 self.output_info.get("fluorescence"),
                 self.tmp_iscell,
@@ -281,18 +290,16 @@ class EditROI:
                 file_name=non_cell_roi_file_name,
             )
 
-        info["edit_roi_data"].images = self.data.images
+        info["edit_roi_data"].images = self.images
 
-        self.__update_pickle_for_roi_edition(self.pickle_file_path, info)
+        # Every step before __publish can be redone from the pending edit, so a
+        # failure there leaves a retry the same work, never the edit applied twice
+        node_pickle_path = self.pickle_file_path
+        self.__apply_output_info(info)
         self.__save_json(info)
         self.__update_whole_nwb()
-        self.__invalidate_downstream()
-
-        (
-            os.remove(self.tmp_pickle_file_path)
-            if os.path.exists(self.tmp_pickle_file_path)
-            else None
-        )
+        invalidated = self.__invalidate_downstream()
+        self.__publish(node_pickle_path)
 
         # Operate remote storage data.
         if RemoteStorageController.is_available():
@@ -300,9 +307,6 @@ class EditROI:
             ids = ExptOutputPathIds(self.node_dirpath)
             workspace_id = ids.workspace_id
             unique_id = ids.unique_id
-
-            # Delete lock file created at the start of workflow.
-            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
             # Get remote_bucket_name
             remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
@@ -321,9 +325,15 @@ class EditROI:
             )
 
             # upload update files
+            # The lock is this request's for the whole commit, upload included
             async with RemoteStorageWriter(
-                remote_bucket_name, workspace_id, unique_id
+                remote_bucket_name, workspace_id, unique_id, owns_lock=True
             ) as remote_storage_controller:
+                # The upload only propagates updates, and a stale descendant
+                # restored by a later sync would be newer than the ROI pickle
+                await remote_storage_controller.delete_experiment_files(
+                    workspace_id, unique_id, invalidated
+                )
                 await remote_storage_controller.upload_experiment(
                     workspace_id, unique_id, upload_target_files
                 )
@@ -335,6 +345,11 @@ class EditROI:
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.NON_ROI
         self.tmp_data.cancel()
 
+        # a commit that failed before publishing may have written the edit's
+        # JSON outputs; put the committed ones back
+        for v in self.output_info.values():
+            if isinstance(v, BaseData):
+                v.save_json(self.node_dirpath)
         info = {
             "cell_roi": RoiData(
                 self.__cell_roi_im,
@@ -358,15 +373,19 @@ class EditROI:
         data = self.tmp_data
         num_committed = len(self.output_info.get("fluorescence").data)
         pending = np.arange(self.num_cell) >= num_committed
-        drop = pending & (self.tmp_iscell == CellType.TEMP_DELETE)
-        # a source that a surviving pending merge still averages from must stay
-        for merged, parents in data.temp_merge_roi.items():
-            if self.tmp_iscell[int(merged)] != CellType.TEMP_DELETE:
-                drop[list(parents)] = False
-        if not drop.any():
+        keep = ~(pending & (self.tmp_iscell == CellType.TEMP_DELETE))
+        # a source that a surviving pending merge still averages from must stay,
+        # and so must that source's own sources: a merge of a merge keeps all
+        changed = True
+        while changed:
+            changed = False
+            for merged, parents in data.temp_merge_roi.items():
+                if keep[int(merged)] and not keep[list(parents)].all():
+                    keep[list(parents)] = True
+                    changed = True
+        if keep.all():
             return
 
-        keep = ~drop
         new_index = np.cumsum(keep) - 1
         data.im = data.im[keep]
         for new, old in enumerate(np.nonzero(keep)[0]):
@@ -396,8 +415,11 @@ class EditROI:
         # save_all_nwb pops "input" from the dict it is given
         Runner.save_all_nwb(whole_nwb_path, dict(self.output_info["nwbfile"]))
 
-    def __invalidate_downstream(self):
-        """Delete downstream node results so the next RUN recomputes them."""
+    def __invalidate_downstream(self) -> List[str]:
+        """Delete downstream node results so the next RUN recomputes them.
+
+        Returns their pickle paths relative to the experiment, present or not.
+        """
         workspace_id = self.workflow_ids.workspace_id
         unique_id = self.workflow_ids.unique_id
         workflow = WorkflowConfigReader.read(workspace_id, unique_id)
@@ -406,9 +428,37 @@ class EditROI:
             for edge in workflow.edgeDict.values()
             if edge.source == self.function_id
         ]
-        delete_dependencies(
+        deleted = delete_dependencies(
             workspace_id, unique_id, children, workflow.nodeDict, workflow.edgeDict
         )
+        experiment_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
+        return [os.path.relpath(path, experiment_dir) for path in deleted]
+
+    @property
+    def __staged_pickle_path(self):
+        return join_filepath([self.node_dirpath, "tmp_commit.pkl"])
+
+    def __publish(self, node_pickle_path):
+        """Replace the node pickle and retire the pending edit.
+
+        The pending edit goes first: a crash before the replace leaves the
+        staged pickle for __finish_interrupted_publish to apply, never the edit
+        applied twice on a retry.
+        """
+        PickleWriter.write(pickle_path=self.__staged_pickle_path, info=self.output_info)
+        if os.path.exists(self.tmp_pickle_file_path):
+            os.remove(self.tmp_pickle_file_path)
+        os.replace(self.__staged_pickle_path, node_pickle_path)
+
+    def __finish_interrupted_publish(self):
+        """A staged pickle with no pending edit is a commit killed mid-publish:
+        apply it. One beside a pending edit never got that far: discard it."""
+        if not os.path.exists(self.__staged_pickle_path):
+            return
+        if os.path.exists(self.tmp_pickle_file_path):
+            os.remove(self.__staged_pickle_path)
+        else:
+            os.replace(self.__staged_pickle_path, self.pickle_file_path)
 
     def __save_json(self, output_info):
         for k, v in output_info.items():
@@ -421,11 +471,14 @@ class EditROI:
                 if len(nwb_files) > 0:
                     overwrite_nwb(v, self.node_dirpath, os.path.basename(nwb_files[0]))
 
-    def __update_pickle_for_roi_edition(self, file_path, new_output_info):
+    def __apply_output_info(self, new_output_info):
         func_name = os.path.splitext(os.path.basename(self.pickle_file_path))[0]
         for k, v in new_output_info.items():
             if k == "nwbfile":
                 self.output_info[k][func_name] = v
             else:
                 self.output_info[k] = v
+
+    def __update_pickle_for_roi_edition(self, file_path, new_output_info):
+        self.__apply_output_info(new_output_info)
         PickleWriter.write(pickle_path=file_path, info=self.output_info)

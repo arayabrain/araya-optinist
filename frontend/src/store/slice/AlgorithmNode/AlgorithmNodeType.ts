@@ -21,5 +21,7 @@ type AlgorithmNodeType = {
   draftDataFilterParam?: TDataFilterParam
   originalValue: unknown
   isUpdate: boolean
+  // an ROI edit was committed: the descendants need a RUN, the node does not
+  downstreamStale?: boolean
   loadingFilterParamApi?: boolean
 }

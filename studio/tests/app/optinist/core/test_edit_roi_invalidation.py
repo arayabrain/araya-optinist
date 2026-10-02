@@ -8,6 +8,8 @@ import pytest
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
+    RemoteSyncLockFileUtil,
+    RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -154,3 +156,94 @@ def test_commit_regenerates_whole_nwb_once_from_the_roi_node(experiment):
     assert path == join_filepath([workflow_dir, "whole.nwb"])
     assert "input" in nwbfile
     assert NODES["roi"][1] in nwbfile
+
+
+def test_commit_deletes_the_descendants_remotely_and_keeps_the_lock(
+    experiment, monkeypatch, tmp_path
+):
+    from studio.app.common.core.storage.mock_storage_controller import (
+        MockStorageController,
+    )
+
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "1")
+    monkeypatch.setattr(RemoteStorageController, "is_available", lambda: True)
+    monkeypatch.setattr(MockStorageController, "MOCK_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(MockStorageController, "MOCK_INPUT_DIR", f"{tmp_path}/input")
+    monkeypatch.setattr(MockStorageController, "MOCK_OUTPUT_DIR", f"{tmp_path}/output")
+    monkeypatch.setattr(
+        RemoteSyncStatusFileUtil,
+        "get_remote_bucket_name",
+        classmethod(lambda cls, ws, uid: "bucket"),
+    )
+    remote = f"{tmp_path}/output/{workspace_id}/{unique_id}"
+    for key in ("child", "grandchild"):
+        create_directory(f"{remote}/{NODES[key][0]}")
+        PickleWriter.write(f"{remote}/{NODES[key][0]}/{NODES[key][1]}.pkl", {})
+    # the descendant may never have been synced locally; the bucket still loses it
+    os.remove(pickle_path("grandchild"))
+    # the request holds the lock, as EditRoiUtils.execute does, for the whole commit
+    token = RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+
+    roi_pickle = pickle_path("roi")
+    EditROI(roi_pickle).delete([0])
+    asyncio.run(EditROI(roi_pickle).commit())
+
+    assert not os.path.exists(f"{remote}/pca_c1/pca.pkl")
+    assert not os.path.exists(f"{remote}/cca_g1/cca.pkl")
+    assert os.path.exists(f"{remote}/{NODES['roi'][0]}/{NODES['roi'][1]}.pkl")
+    assert RemoteSyncStatusFileUtil.check_sync_status_success(workspace_id, unique_id)
+    # the writer neither refused the request's own lock nor released it
+    assert RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
+    RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id, token)
+
+
+def test_a_failure_before_publish_leaves_node_and_descendants_untouched(
+    experiment, monkeypatch
+):
+    roi_pickle = pickle_path("roi")
+    edit_roi = EditROI(roi_pickle)
+    edit_roi.delete([0])
+    monkeypatch.setattr(
+        Runner,
+        "save_all_nwb",
+        classmethod(lambda cls, *a: (_ for _ in ()).throw(OSError("disk full"))),
+    )
+
+    with pytest.raises(OSError):
+        asyncio.run(EditROI(roi_pickle).commit())
+
+    assert list(PickleReader.read(roi_pickle)["iscell"].data) == [CellType.ROI] * 2
+    assert os.path.exists(edit_roi.tmp_pickle_file_path)
+    assert os.path.exists(pickle_path("child"))
+    assert os.path.exists(pickle_path("grandchild"))
+    roi_dir = os.path.dirname(roi_pickle)
+    assert not os.path.exists(join_filepath([roi_dir, "tmp_commit.pkl"]))
+
+
+def test_a_commit_killed_between_retire_and_replace_is_finished_on_next_open(
+    experiment,
+):
+    roi_pickle = pickle_path("roi")
+    roi_dir = os.path.dirname(roi_pickle)
+    edit_roi = EditROI(roi_pickle)
+    edit_roi.delete([0])
+    # the state __publish leaves if killed after removing the pending edit:
+    # the staged pickle holds the commit, the pending pickle is gone
+    staged = PickleReader.read(edit_roi.tmp_pickle_file_path)
+    PickleWriter.write(join_filepath([roi_dir, "tmp_commit.pkl"]), staged)
+    os.remove(edit_roi.tmp_pickle_file_path)
+
+    EditROI(roi_pickle)
+
+    assert not os.path.exists(join_filepath([roi_dir, "tmp_commit.pkl"]))
+    assert list(PickleReader.read(roi_pickle)["iscell"].data) == [
+        CellType.TEMP_DELETE,
+        CellType.ROI,
+    ]
+
+    # whereas a staged pickle beside a still-pending edit never got that far
+    EditROI(roi_pickle).delete([1])
+    PickleWriter.write(join_filepath([roi_dir, "tmp_commit.pkl"]), {"stale": True})
+    EditROI(roi_pickle)
+    assert not os.path.exists(join_filepath([roi_dir, "tmp_commit.pkl"]))
+    assert "stale" not in PickleReader.read(roi_pickle)

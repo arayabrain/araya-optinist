@@ -64,3 +64,13 @@ async def test_a_concurrent_commit_is_refused_and_leaves_the_lock(filepath):
     # The refused request must not release the holder's lock on its way out.
     assert RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
     RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
+
+def test_the_lock_is_only_released_by_its_owner(filepath):
+    token = RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+
+    RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id, "someone")
+    assert RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
+
+    RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id, token)
+    assert not RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)

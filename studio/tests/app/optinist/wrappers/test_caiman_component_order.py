@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import scipy.sparse as sp
 
 from studio.app.optinist.wrappers.caiman import cnmf
@@ -67,3 +68,24 @@ def test_no_components_gives_empty_outputs_with_the_time_axis_kept():
     assert im.shape == (0, *DIMS) and F.shape == (0, FRAMES)
     assert len(iscell) == 0 and roi_list == [] and (n_rois, n_noncell) == (0, 0)
     assert np.isnan(non_cell_roi).all()
+
+
+def test_a_mask_count_that_differs_from_the_components_is_refused(monkeypatch):
+    # get_roi now emits one mask per column, empty or not; a shorter list would
+    # shift every row after the gap, so it is refused rather than realigned
+    monkeypatch.setattr(cnmf, "get_roi", lambda A, *args: labelled_masks(A, *args)[1:])
+    A = sp.csc_matrix(np.ones((PIXELS, 2)))
+    C = np.ones((2, FRAMES))
+
+    with pytest.raises(ValueError, match="one mask per"):
+        cnmf.component_outputs(A, C, [0, 1], [], DIMS, 0.9, "nrg", False)
+
+
+def test_get_roi_emits_an_empty_mask_for_an_empty_component():
+    pytest.importorskip("skimage")
+    dense = np.zeros((PIXELS, 2))
+    dense[:4, 1] = 1.0  # component 0 has no pixels at all
+    ims = cnmf.get_roi(sp.csc_matrix(dense), 0.9, "nrg", False, DIMS)
+
+    assert len(ims) == 2
+    assert not ims[0].any() and ims[1].any()

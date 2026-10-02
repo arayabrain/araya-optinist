@@ -43,6 +43,11 @@ def commit_edit(data: EditRoiData, ops: Suite2pData, iscell, node_dirpath, funct
             F = np.mean(ops["F"][roi_data, :], axis=0, keepdims=True)
             Fneu = np.mean(ops["Fneu"][roi_data, :], axis=0, keepdims=True)
 
+        if F.shape[1] != ops["F"].shape[1]:
+            raise ValueError(
+                f"ops['nframes'] is {F.shape[1]} but the stored F has "
+                f"{ops['F'].shape[1]} frames"
+            )
         ops["F"] = np.concatenate((ops["F"], F), axis=0)
         ops["Fneu"] = np.concatenate((ops["Fneu"], Fneu), axis=0)
         stat.append(stat0)
