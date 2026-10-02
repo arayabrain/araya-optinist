@@ -600,17 +600,26 @@ test.describe("Storage and database", () => {
       "no active user names a remote bucket: the query or the schema moved",
     ).toBeGreaterThan(0)
 
+    // The seeded admin account points at the shared app-storage bucket, so the
+    // naming contract only binds the buckets that are per-user. Counting them
+    // is also what keeps this test honest: with a wrong prefix every declared
+    // name still answers head-bucket and the contract loop iterates nothing.
+    const perUserRows = declaredRows.filter(([, name]) =>
+      name.startsWith(BUCKET_PREFIX),
+    )
+    expect(
+      perUserRows.length,
+      `no declared bucket starts with ${BUCKET_PREFIX} - the prefix or the ` +
+        `attributes key changed, and the contract below checks nothing`,
+    ).toBeGreaterThan(0)
+
+    // One listing for the common case; head-bucket is the per-name fallback
     const live = new Set(
       awsJson<string[]>(
         `s3api list-buckets --query 'Buckets[?starts_with(Name, ` +
           `\`${BUCKET_PREFIX}\`)].Name'`,
       ),
     )
-    expect(
-      declared.length,
-      `no declared bucket starts with ${BUCKET_PREFIX} - the prefix or the ` +
-        `attributes key changed, and the contract below checks nothing`,
-    ).toBeGreaterThan(0)
     const missing = declared.filter(
       (name) => !live.has(name) && !bucketExists(name),
     )
@@ -618,12 +627,8 @@ test.describe("Storage and database", () => {
       [],
     )
 
-    // The seeded admin account points at the shared app-storage bucket, so the
-    // naming contract only binds the buckets that are per-user - and each of
-    // those must carry its OWN user's id, or two users share a bucket.
-    for (const [id, name] of declaredRows.filter(([, n]) =>
-      n.startsWith(BUCKET_PREFIX),
-    )) {
+    // Each per-user bucket must carry its OWN user's id, or two users share one.
+    for (const [id, name] of perUserRows) {
       expect(name, `user ${id}'s bucket naming contract`).toMatch(
         new RegExp(`^${BUCKET_PREFIX}${id}-[0-9a-f]{10}$`),
       )
