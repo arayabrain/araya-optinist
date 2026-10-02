@@ -1,12 +1,13 @@
 import asyncio
+import fcntl
 import json
 import os
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import PurePath
-from typing import Dict, List
+from typing import Callable, Dict, List
 from urllib.parse import urlparse
 
 import requests
@@ -27,6 +28,7 @@ from studio.app.common.core.cloud.storage_tracking import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    InputFileLock,
     RemoteStorageController,
     RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
@@ -199,13 +201,15 @@ def _merge_image_shape_dict(workspace_id: str, known: dict, new: dict) -> None:
     cache_file = join_filepath(
         [DIRPATH.INPUT_DIR, workspace_id, MetadataCacheFile.IMAGE_SHAPE]
     )
-    try:
-        existing = get_image_shape_dict(workspace_id)
-        # An entry rewritten while the walk ran is newer than the walk's read of it.
+
+    # An entry rewritten while the walk ran is newer than the walk's read of it.
+    def merge(existing: dict) -> None:
         existing.update(
             {k: v for k, v in new.items() if existing.get(k) == known.get(k)}
         )
-        _write_json_atomic(cache_file, existing)
+
+    try:
+        _locked_json_edit(cache_file, merge)
     except OSError as e:
         logger.warning(f"image shape cache not written ({cache_file}): {e}")
 
@@ -268,13 +272,28 @@ def _structure_node_to_dict(node) -> dict:
 
 def _atomic_json_update(filepath: str, entries: dict) -> None:
     """Merge entries into a JSON file, replacing it atomically."""
-    try:
-        existing_data = JsonReader.read(filepath)
-    except (FileNotFoundError, ValueError):
-        existing_data = {}
+    _locked_json_edit(filepath, lambda data: data.update(entries))
 
-    existing_data.update(entries)
-    _write_json_atomic(filepath, existing_data)
+
+@contextmanager
+def _file_lock(filepath: str):
+    dirname, basename = os.path.split(filepath)
+    lock_dir = os.path.join(dirname, InputFileLock.LOCKS_DIRNAME)
+    os.makedirs(lock_dir, exist_ok=True)
+    with open(os.path.join(lock_dir, f"{basename}.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _locked_json_edit(filepath: str, edit: Callable[[dict], None]) -> None:
+    """Read-modify-write a JSON file under a per-file lock shared by all writers."""
+    with _file_lock(filepath):
+        try:
+            data = JsonReader.read(filepath)
+        except (FileNotFoundError, ValueError):
+            data = {}
+        edit(data)
+        _write_json_atomic(filepath, data)
 
 
 def _write_json_atomic(filepath: str, data: dict) -> None:
@@ -826,10 +845,7 @@ def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
         return
 
     try:
-        existing_data = JsonReader.read(metadata_path)
-        if filename in existing_data:
-            del existing_data[filename]
-            _write_json_atomic(metadata_path, existing_data)
+        _locked_json_edit(metadata_path, lambda data: data.pop(filename, None))
     except Exception as e:
         logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
 

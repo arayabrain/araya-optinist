@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import threading
 import time
 from glob import glob
 
@@ -377,6 +378,28 @@ def test_get_tree_detects_same_mtime_replacement(ws):
     _tif(p, (4, 5))
     os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [4, 5]
+
+
+def test_concurrent_cache_updates_are_serialized(ws, monkeypatch):
+    cache_file = str(ws / MetadataCacheFile.IMAGE_SHAPE)
+    real = files_module._write_json_atomic
+    monkeypatch.setattr(
+        files_module,
+        "_write_json_atomic",
+        lambda p, d: (time.sleep(0.2), real(p, d))[1],
+    )
+    threads = [
+        threading.Thread(
+            target=files_module._atomic_json_update,
+            args=(cache_file, {k: {"shape": [i]}}),
+        )
+        for i, k in enumerate(("a.tif", "b.tif", "c.tif"))
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(_cache(ws)) == ["a.tif", "b.tif", "c.tif"]
 
 
 def test_write_json_atomic_cleans_up_on_failure(tmp_path, monkeypatch):
