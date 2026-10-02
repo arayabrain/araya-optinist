@@ -1432,7 +1432,8 @@ export async function ensureTutorialRecords(page: Page, workspaceName: string) {
 
 export async function reproduceTutorial(page: Page, tutorialName: string) {
   await page.locator('button[role="tab"]:has-text("Record")').click()
-  // Exact: a "_copy" record shares the original's startedAt, so sort order cannot separate them
+  // Exact: a "_copy" record shares the original's startedAt, so sort order
+  // cannot separate them
   const row = page
     .locator("tr")
     .filter({ has: page.getByText(tutorialName, { exact: true }) })
@@ -1486,7 +1487,8 @@ export async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
       '[role="dialog"]:has-text("Name and run workflow")',
     )
     await expect(dialog).toBeVisible({ timeout: 15_000 })
-    // Must not contain "Tutorial" — record-row locators match by substring
+    // Must not equal a tutorial name: reproduceTutorial matches rows exactly,
+    // and 15-premium-aws reproduces this literal name
     await dialog.locator("input").fill("e2e-runall")
     await dialog.getByRole("button", { name: "Run", exact: true }).click()
   }
