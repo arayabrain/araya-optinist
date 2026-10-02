@@ -398,8 +398,10 @@ export function runCompose(
     .trim()
 }
 
+const BACKEND_EXEC = `${COMPOSE} exec -T studio-dev-be`
+
 export function runInBackend(cmd: string, input?: string): string {
-  return execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+  return execSync(`${BACKEND_EXEC} ${cmd}`, {
     cwd: REPO_ROOT,
     stdio: ["pipe", "pipe", "pipe"],
     input,
@@ -501,10 +503,7 @@ export function sweepE2eFirebaseUsers(): number {
   } satisfies ExecSyncOptions & ExecFileSyncOptions
   const out = (
     isLocalBaseUrl()
-      ? execSync(
-          `${COMPOSE} exec -T studio-dev-be poetry run python ${SWEEP_SCRIPT}`,
-          opts,
-        )
+      ? execSync(`${BACKEND_EXEC} poetry run python ${SWEEP_SCRIPT}`, opts)
       : execFileSync(FIREBASE_PYTHON, [SWEEP_SCRIPT], opts)
   )
     .toString()

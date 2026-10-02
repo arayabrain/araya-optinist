@@ -194,3 +194,48 @@ def test_nothing_to_delete_makes_no_api_call():
     auth = FakeAuth()
     assert sweeper.sweep(auth, [user("e2e_ci_free@test.com")], NOW_MS) == 0
     assert auth.batches == []
+
+
+@pytest.fixture
+def live_project(monkeypatch, tmp_path):
+    """main() against a fake SDK: an allowed credential and a mixed user list."""
+    cred = tmp_path / "firebase_private.json"
+    cred.write_text(json.dumps({"project_id": "araya-optinist-development"}))
+    monkeypatch.setattr(sweeper, "FIREBASE_PRIVATE_PATH", cred)
+    monkeypatch.setattr(sweeper.credentials, "Certificate", lambda path: path)
+    initialized = []
+    monkeypatch.setattr(sweeper.firebase_admin, "initialize_app", initialized.append)
+    monkeypatch.setattr(sweeper.time, "time", lambda: NOW_MS / 1000)
+    auth = FakeAuth()
+    users = [user(email) for email in SWEPT + SPARED]
+    auth.list_users = lambda: SimpleNamespace(iterate_all=lambda: iter(users))
+    auth.initialized = initialized
+    monkeypatch.setattr(sweeper, "auth", auth)
+    return auth
+
+
+def test_main_prints_only_the_count_on_stdout_and_the_rest_on_stderr(
+    live_project, capsys
+):
+    sweeper.main([])
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [str(len(SWEPT))]
+    lines = err.splitlines()
+    assert lines[0] == "project: araya-optinist-development"
+    assert lines[1:] == [f"sweeping {email}" for email in SWEPT]
+    assert live_project.deleted == [f"uid-{email}" for email in SWEPT]
+
+
+def test_main_dry_run_lists_the_selection_and_deletes_nothing(live_project, capsys):
+    sweeper.main(["--dry-run"])
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [str(len(SWEPT))]
+    assert err.splitlines()[-1] == f"dry run: {len(SWEPT)} would be deleted, none were"
+    assert live_project.deleted == []
+
+
+def test_main_rejects_a_mistyped_flag_before_touching_firebase(live_project):
+    with pytest.raises(SystemExit) as exc:
+        sweeper.main(["--dryrun"])
+    assert exc.value.code == 2
+    assert live_project.initialized == [] and live_project.deleted == []
