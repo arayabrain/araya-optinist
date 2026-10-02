@@ -2,14 +2,22 @@ import { expect, describe, test } from "@jest/globals"
 
 import { REACT_FLOW_NODE_TYPE_KEY } from "config/fileTypes.config"
 import {
+  selectAlgorithmIsUpdated,
   selectAlgorithmNodeById,
   selectAlgorithmParamsValue,
 } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
-import { updateParam } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
+import {
+  markDownstreamStale,
+  updateParam,
+} from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import { addAlgorithmNode } from "store/slice/FlowElement/FlowElementActions"
-import { selectNodeById } from "store/slice/FlowElement/FlowElementSelectors"
+import {
+  isParentNodeUpdatedParams,
+  selectNodeById,
+} from "store/slice/FlowElement/FlowElementSelectors"
 import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"
 import { NODE_TYPE_SET } from "store/slice/FlowElement/FlowElementType"
+import { runByCurrentUid } from "store/slice/Pipeline/PipelineActions"
 import { store, rootReducer } from "store/store"
 
 describe("AlgorithmNode", () => {
@@ -116,5 +124,45 @@ describe("AlgorithmNode", () => {
       undefined,
     )
     expect(selectAlgorithmParamsValue(nodeId, path)(targetState)).toBe(newValue)
+  })
+
+  // Edit ROI commit: descendants highlight, the node itself is not force-run
+  test(markDownstreamStale.type, () => {
+    const childId = "eta_child"
+    const withChild = (state: ReturnType<typeof rootReducer>) => ({
+      ...state,
+      flowElement: {
+        ...state.flowElement,
+        flowEdges: [{ id: "e", source: nodeId, target: childId }],
+      },
+    })
+    const added = rootReducer(initialRootState, addAlgorithmNodeAction)
+    expect(isParentNodeUpdatedParams(childId)(withChild(added))).toBe(false)
+
+    const stale = rootReducer(added, markDownstreamStale({ nodeId }))
+    expect(isParentNodeUpdatedParams(childId)(withChild(stale))).toBe(true)
+    expect(selectAlgorithmNodeById(nodeId)(stale).isUpdate).toBe(false)
+    // never reloaded, so originalValue is unset: still not a forced rerun
+    expect(selectAlgorithmIsUpdated(nodeId)(stale)).toBe(false)
+
+    const ran = rootReducer(stale, {
+      type: runByCurrentUid.fulfilled.type,
+      meta: {
+        arg: {
+          runPostData: {
+            nodeDict: {
+              [nodeId]: { id: nodeId, data: { type: nodeDataType, label } },
+            },
+          },
+        },
+      },
+    })
+    expect(isParentNodeUpdatedParams(childId)(withChild(ran))).toBe(false)
+
+    const unknown = rootReducer(
+      initialRootState,
+      markDownstreamStale({ nodeId }),
+    )
+    expect(selectAlgorithmNodeById(nodeId)(unknown)).toBeUndefined()
   })
 })

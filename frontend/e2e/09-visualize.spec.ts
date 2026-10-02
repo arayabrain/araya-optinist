@@ -10,6 +10,8 @@ import {
   ensureTutorialRecords,
   reproduceTutorial,
   runTutorial,
+  startRun,
+  awaitRunFinished,
   DATA_WS,
 } from "./helpers"
 
@@ -135,6 +137,43 @@ async function editRoiAndCommit(
 ) {
   await runRoiAction(page, action, endpoint, ids, prepare)
   await commitRoiEdit(page)
+}
+
+type RunFunction = {
+  name: string
+  outputPaths?: Record<string, { data_shape?: number[] }>
+}
+
+// experiment.yaml's per-node view of one run, via the experiments API
+async function runFunctions(page: Page, workspaceId: string, uid: string) {
+  const res = await page.request.get(`${apiUrl()}/experiments/${workspaceId}`, {
+    headers: await apiHeaders(page),
+  })
+  expect(res.ok(), await res.text()).toBe(true)
+  const experiments = (await res.json()) as Record<
+    string,
+    { function: Record<string, RunFunction> }
+  >
+  return experiments[uid].function
+}
+
+function nodeIdByName(functions: Record<string, RunFunction>, name: string) {
+  const nodeId = Object.keys(functions).find(
+    (key) => functions[key].name === name,
+  )
+  expect(nodeId, `no ${name} node in the run`).toBeTruthy()
+  return nodeId!
+}
+
+// Row count of a timeseries output: one row per cell that made it through
+function cellCount(
+  functions: Record<string, RunFunction>,
+  nodeId: string,
+  output: string,
+) {
+  const shape = functions[nodeId].outputPaths?.[output]?.data_shape
+  expect(shape, `${nodeId} has a ${output} data_shape`).toBeTruthy()
+  return shape![0]
 }
 
 test.describe("Visualize", () => {
@@ -305,49 +344,67 @@ test.describe("Visualize", () => {
     await expect(page.getByText("Add ROI", { exact: true })).toBeHidden()
   })
 
-  // Row BT-407's commit half: Add ROI, OK, then Commit Edit really re-runs
-  // the ROI processing server-side and reports success. Mints its own run:
-  // the commit recomputes off a real suite2p output, and the workspace is
-  // wiped at every suite start.
-  test("VIS-06 - Edit ROI commit really recomputes and succeeds @slow", async ({
+  // Row BT-407's commit half plus issue 538: Add ROI, OK, then Commit Edit
+  // really re-runs the ROI processing server-side, flags every node downstream
+  // of the ROI node for re-run, and a by-uid RUN recomputes those nodes against
+  // the edited ROI set while keeping the edit. Mints its own run: the commit
+  // recomputes off a real suite2p output, and the workspace is wiped at every
+  // suite start.
+  test("VIS-06 - Edit ROI commit flags downstream nodes and RUN recomputes them @slow", async ({
     page,
   }) => {
-    test.setTimeout(30 * 60_000)
-    await runTutorial(page, "Tutorial1", "RUN ALL")
+    test.setTimeout(45 * 60_000)
+    const { workspaceId, uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+    const before = await runFunctions(page, workspaceId, uid)
+    const roiNodeId = nodeIdByName(before, "suite2p_roi")
+    const etaNodeId = nodeIdByName(before, "eta")
+    const roiCellsBefore = cellCount(before, roiNodeId, "fluorescence")
+    const etaCellsBefore = cellCount(before, etaNodeId, "mean")
+
     await addImagePlot(page)
-    await selectFromMui(page, "Select Roi", "cell_roi")
-    await page.getByText("Edit ROI", { exact: true }).click()
-    await page.getByText("Add ROI", { exact: true }).click()
-    // The pending-ROI overlay is what registers the rectangle OK will post;
-    // clicking OK before it mounts posts nothing (observed failure mode).
-    await expect(page.getByTestId("roi-add-overlay")).toBeVisible({
-      timeout: 15_000,
+    await selectRoiProjection(page, "cell_roi")
+    await editRoiAndCommit(page, "Add ROI", /add_roi/, [], async () => {
+      // The pending-ROI overlay is what registers the rectangle OK will post;
+      // clicking OK before it mounts posts nothing (observed failure mode).
+      await expect(page.getByTestId("roi-add-overlay")).toBeVisible({
+        timeout: 15_000,
+      })
     })
 
-    // OK posts the pending ROI (a default rectangle when nothing is dragged)
-    const added = page.waitForResponse(
-      (r) => r.request().method() === "POST" && /add_roi/.test(r.url()),
-      { timeout: 60_000 },
-    )
-    await page.getByText("OK", { exact: true }).click()
-    expect((await added).status(), "add_roi").toBe(200)
-
-    // Commit Edit renders only once statusRoi has entries after the
-    // getStatus round-trip, which can outlast the default action timeout.
-    const commitEdit = page.getByTestId("roi-commit-edit")
-    await expect(commitEdit).toBeVisible({ timeout: 60_000 })
-
-    // Commit Edit runs the EDIT_ROI recompute in-request; the snackbar is
-    // the row's own "Success Edit ROI"
-    const committed = page.waitForResponse(
-      (r) => r.request().method() === "POST" && /commit_edit/.test(r.url()),
-      { timeout: 600_000 },
-    )
-    await commitEdit.click()
-    expect((await committed).status(), "commit_edit").toBe(200)
+    // The ROI node keeps its committed result; the node downstream of it gets
+    // the same "needs a run" highlight a changed parameter does
+    await page.locator('button[role="tab"]:has-text("Workflow")').click()
+    const flowNode = (nodeId: string) =>
+      page.locator(`.react-flow__node:has-text("${nodeId}")`)
     await expect(
-      page.getByText("Successfully committed to Edit ROI."),
-    ).toBeVisible({ timeout: 120_000 })
+      flowNode(etaNodeId).locator('[data-updated="true"]'),
+    ).toHaveCount(1, { timeout: 15_000 })
+    await expect(
+      flowNode(roiNodeId).locator('[data-updated="true"]'),
+    ).toHaveCount(0)
+
+    // Commit deleted the downstream results on disk, so a by-uid RUN
+    // recomputes exactly those nodes against the edited ROI set
+    const rerun = await startRun(page, "RUN")
+    expect(rerun.uid, "RUN reuses the edited run").toBe(uid)
+    await expect(page.locator("text=Workflow finished")).toBeHidden({
+      timeout: 30_000,
+    })
+    await awaitRunFinished(page, "Tutorial1", workspaceId, uid)
+    await expect(
+      flowNode(etaNodeId).locator('[data-updated="true"]'),
+    ).toHaveCount(0)
+
+    // The added ROI is a cell, so it gains a trace and eta gains a row
+    const after = await runFunctions(page, workspaceId, uid)
+    expect(
+      cellCount(after, roiNodeId, "fluorescence"),
+      "the added ROI has a fluorescence trace",
+    ).toBe(roiCellsBefore + 1)
+    expect(
+      cellCount(after, etaNodeId, "mean"),
+      "eta was recomputed with the added ROI",
+    ).toBe(etaCellsBefore + 1)
   })
   // Issues #472 / #486: a cell ROI demoted by Delete has to be reachable and
   // promotable again. Round trip: add a cell ROI, delete it (which is a demote —

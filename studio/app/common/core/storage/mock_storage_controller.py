@@ -400,6 +400,18 @@ class MockStorageController(BaseRemoteStorageController):
 
         return True
 
+    async def delete_experiment_files(
+        self, workspace_id: str, unique_id: str, target_files: list
+    ) -> bool:
+        experiment_remote_path = self._make_experiment_remote_path(
+            workspace_id, unique_id
+        )
+        for target_file in target_files:
+            path = join_filepath([experiment_remote_path, target_file])
+            if os.path.isfile(path):
+                os.remove(path)
+        return True
+
     async def download_thumbnail_source(
         self,
         workspace_id: str,

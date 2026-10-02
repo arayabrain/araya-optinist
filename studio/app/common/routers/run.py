@@ -21,6 +21,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
+    RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.datetime_utils import (
@@ -187,6 +188,10 @@ async def run_id(
             remote_bucket_name, workspace_id, runItem.nodeDict
         )
         validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
+
+        # An Edit ROI commit holds this lock whether or not remote storage is
+        # on; refuse before the runner rewrites the experiment's config files
+        RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
         runner = WorkflowRunner(
             remote_bucket_name, workspace_id, uid, runItem, current_user.id
