@@ -597,8 +597,11 @@ resource "aws_db_subnet_group" "main" {
 
 # RDS Parameter Group (Custom)
 resource "aws_db_parameter_group" "main" {
-  family = "mysql8.0"
-  name   = "${local.env_prefix}-ssl"
+  family = "mysql8.4"
+
+  # name_prefix, not name: create_before_destroy builds the replacement before
+  # destroying the original, and two groups cannot share one name.
+  name_prefix = "${local.env_prefix}-ssl-"
 
   parameter {
     name  = "require_secure_transport"
@@ -608,6 +611,53 @@ resource "aws_db_parameter_group" "main" {
   parameter {
     name  = "time_zone"
     value = "UTC"
+  }
+
+  # Pinned to the values 8.0 ran, so the upgrade changes the engine version only.
+  # Neither family sets these, so a family diff does not show them; the engine's own
+  # defaults do differ:
+  #   buffer pool, redo log : halve
+  #   io capacity, max      : x50, x10
+  # Not upgrade scaffolding. These stay after the two version attributes come out.
+  parameter {
+    name         = "innodb_dedicated_server"
+    value        = "0"
+    apply_method = "pending-reboot"
+  }
+
+  # The mysql8.0 family's own expression, so it still scales with instance class.
+  # Coupled to innodb_buffer_pool_instances: the pool must be a multiple of
+  # innodb_buffer_pool_chunk_size x instances.
+  parameter {
+    name         = "innodb_buffer_pool_size"
+    value        = "{DBInstanceClassMemory*3/4}"
+    apply_method = "pending-reboot"
+  }
+
+  # Does not follow the pool size. Its own default changed, so it needs its own pin.
+  parameter {
+    name         = "innodb_buffer_pool_instances"
+    value        = "8"
+    apply_method = "pending-reboot"
+  }
+
+  parameter {
+    name         = "innodb_redo_log_capacity"
+    value        = "2147483648"
+    apply_method = "pending-reboot"
+  }
+
+  # 8.4 defaults to 10000: IO headroom the provisioned volume does not have.
+  parameter {
+    name         = "innodb_io_capacity"
+    value        = "200"
+    apply_method = "pending-reboot"
+  }
+
+  parameter {
+    name         = "innodb_io_capacity_max"
+    value        = "2000"
+    apply_method = "pending-reboot"
   }
 
   lifecycle {
@@ -624,7 +674,9 @@ resource "aws_db_instance" "main" {
   allocated_storage               = 20
   storage_type                    = "gp3"
   engine                          = "mysql"
-  engine_version                  = "8.0"
+  engine_version                  = "8.4"
+  allow_major_version_upgrade     = true # remove once both environments are on 8.4
+  apply_immediately               = true # remove once both environments are on 8.4
   instance_class                  = "db.t4g.small"
   parameter_group_name            = aws_db_parameter_group.main.name
   db_name                         = var.mysql_database
