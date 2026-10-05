@@ -67,9 +67,8 @@ class SmkUtils:
 
         wrapper = cls.dict2leaf(wrapper_dict, details["path"].split("/"))
 
-        if "conda_name" in wrapper:
-            conda_name = wrapper["conda_name"]
-
+        conda_name = wrapper.get("conda_name")
+        if conda_name:
             # Handle CaImAn params modification if needed
             is_caiman = "caiman" in conda_name.lower()
             if is_caiman and cls.is_apple_silicon():
