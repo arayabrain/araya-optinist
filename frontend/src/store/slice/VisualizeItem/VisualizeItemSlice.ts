@@ -38,6 +38,7 @@ import {
   isDisplayDataItem,
   isHeatMapItem,
   isImageItem,
+  isRoiItem,
   isTimeSeriesItem,
   isCsvItem,
   isScatterItem,
@@ -965,6 +966,18 @@ export const visualaizeItemSlice = createSlice({
               height: targetItem.height,
               filePath,
               nodeId,
+            }
+            const newItem = state.items[itemId]
+            const linkable =
+              isImageItem(newItem) ||
+              isRoiItem(newItem) ||
+              isTimeSeriesItem(newItem)
+            if (!linkable) {
+              Object.values(state.items).forEach((item) => {
+                if (isHeatMapItem(item) && item.refItemId === itemId) {
+                  item.refItemId = null
+                }
+              })
             }
           } else {
             targetItem.filePath = filePath

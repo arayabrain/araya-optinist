@@ -23,6 +23,10 @@ import {
 import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContext"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { buildAnnotations } from "components/Workspace/Visualize/Plot/timeSeriesAnnotations"
+import {
+  errorBarArray,
+  frameAxisRange,
+} from "components/Workspace/Visualize/Plot/timeSeriesRange"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
 import {
@@ -266,10 +270,9 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
             line: { color },
             error_y: {
               type: "data",
-              // Keyed by frame like y; Object.values would order "0".."n" before "-10"
               array:
                 stdBool && Object.keys(dataStd).includes(key)
-                  ? dataXrange.map((x) => dataStd[key]?.[x] ?? undefined)
+                  ? errorBarArray(dataXrange, dataStd[key])
                   : null,
               visible: true,
             },
@@ -323,11 +326,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
           size: 10,
           color: "black",
         },
-        // null, not undefined: plotly then autoranges only an unset frames bound
-        range:
-          rangeUnit === "frames"
-            ? [xrange.left ?? null, xrange.right ?? null]
-            : [
+        ...(rangeUnit === "frames"
+          ? frameAxisRange(xrange.left, xrange.right)
+          : {
+              range: [
                 typeof xrange.left !== "undefined"
                   ? xrange.left / frameRate
                   : -2.5,
@@ -335,6 +337,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
                   ? (xrange.right || 0) / frameRate
                   : dataXrange.length / frameRate + 6.8,
               ],
+            }),
         showgrid: showgrid,
         showline: showline,
         showticklabels: showticklabels,

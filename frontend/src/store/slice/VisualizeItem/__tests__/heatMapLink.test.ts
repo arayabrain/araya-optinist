@@ -1,7 +1,10 @@
 import { describe, it, expect } from "@jest/globals"
 
 import { DATA_TYPE_SET } from "store/slice/DisplayData/DisplayDataType"
-import { deleteDisplayItem } from "store/slice/VisualizeItem/VisualizeItemActions"
+import {
+  deleteDisplayItem,
+  setNewDisplayDataPath,
+} from "store/slice/VisualizeItem/VisualizeItemActions"
 import {
   selectHeatMapLinkedDrawOrderList,
   selectVisualizeHeatMapLinkItemIdList,
@@ -70,6 +73,28 @@ describe("heatmap link targets", () => {
     const next = reducer(
       state,
       deleteDisplayItem({ itemId: TRACES, deleteData: false }),
+    )
+
+    expect(next.items[HEATMAP]).toMatchObject({ refItemId: null })
+  })
+
+  it("drops the link when the linked box changes to a non-ROI data type", () => {
+    const state = {
+      items: buildItems(TRACES),
+      layout: [[IMAGE, TRACES, HEATMAP]],
+      selectedItemId: null,
+      clickedRois: {},
+    } as unknown as VisualaizeItem
+
+    const next = reducer(
+      state,
+      setNewDisplayDataPath({
+        itemId: TRACES,
+        filePath: "/some/table.csv",
+        nodeId: null,
+        dataType: DATA_TYPE_SET.CSV,
+        deleteData: false,
+      }),
     )
 
     expect(next.items[HEATMAP]).toMatchObject({ refItemId: null })

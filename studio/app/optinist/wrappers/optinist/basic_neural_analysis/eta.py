@@ -117,6 +117,7 @@ def ETA(
         ind = np.where(iscell > 0)[0]
         cell_numbers = ind
         X = X[:, ind]
+        assert len(ind) > 0, "iscell marks no ROI as a cell, nothing to average"
 
     Y = Y[:, params["event_col_index"]]
 
@@ -153,14 +154,15 @@ def ETA(
     dropped_length = num_detected - len(trigger_idxs)
     dropped_edge = len(trigger_idxs) - num_event
     if dropped_length or dropped_edge:
+        reasons = [f"{dropped_edge} dropped, window crosses the recording edge"]
+        if trigger_len:  # cross drops nothing for length
+            by_length = f"{dropped_length} dropped, length differs from the modal"
+            reasons.insert(0, f"{by_length} {trigger_len}")
         logger.warning(
-            "ETA: averaged %d of %d triggers (%d dropped, length differs from the "
-            "modal %d; %d dropped, window crosses the recording edge)",
+            "ETA: averaged %d of %d triggers (%s)",
             num_event,
             num_detected,
-            dropped_length,
-            trigger_len,
-            dropped_edge,
+            "; ".join(reasons),
         )
     assert num_event > 0, f"All {num_detected} triggers were dropped, see the log"
 

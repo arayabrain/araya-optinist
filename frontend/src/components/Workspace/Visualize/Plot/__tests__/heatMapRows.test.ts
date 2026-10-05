@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals"
 
 import {
+  filterHeatMapColumns,
   filterHeatMapRows,
   heatMapZRange,
 } from "components/Workspace/Visualize/Plot/heatMapRows"
@@ -32,6 +33,33 @@ describe("filterHeatMapRows", () => {
 
   it("draws no rows when only ROIs absent from the heatmap are selected", () => {
     expect(filterHeatMapRows(z, index, [3])).toEqual({ z: [], index: [] })
+  })
+})
+
+describe("filterHeatMapColumns", () => {
+  const square = [
+    [NaN, 1, 2],
+    [1, NaN, 3],
+    [2, 3, NaN],
+  ]
+  const columns = [2, 5, 7]
+
+  it("keeps the columns of the selected ROIs, in matrix order", () => {
+    expect(filterHeatMapColumns(square, columns, [7, 2])).toEqual({
+      z: [
+        [NaN, 2],
+        [1, 3],
+        [2, NaN],
+      ],
+      columns: [2, 7],
+    })
+  })
+
+  it("keeps every column when nothing is selected", () => {
+    expect(filterHeatMapColumns(square, columns, [])).toEqual({
+      z: square,
+      columns,
+    })
   })
 })
 

@@ -58,7 +58,7 @@ def _with_conda_name(monkeypatch, conda_name):
 
 
 def test_node_without_conda_name_records_params_without_warning(caplog):
-    """eta declares no conda_name; that must not be reported as a failure (#484)."""
+    """eta declares no conda_name; that must not be reported as a failure."""
     config = _run_eta(caplog)
 
     assert CONDA_WARNING not in caplog.text

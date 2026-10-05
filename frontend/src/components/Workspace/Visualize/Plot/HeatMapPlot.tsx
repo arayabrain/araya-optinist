@@ -6,6 +6,7 @@ import { LinearProgress, Typography } from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import {
+  filterHeatMapColumns,
   filterHeatMapRows,
   heatMapZRange,
 } from "components/Workspace/Visualize/Plot/heatMapRows"
@@ -72,15 +73,28 @@ const HeatMapImple = memo(function HeatMapImple() {
     selectHeatMapLinkedDrawOrderList(itemId),
   )
   const { roisClick } = useVisualize()
+  // Only outputs that label their rows with ROI numbers declare a categorical y axis;
+  // older outputs and non-ROI heatmaps keep a positional index and must not be filtered.
+  const rowsAreRois = meta?.yaxis_type === "category"
+  const columnsAreRois = meta?.xaxis_type === "category"
   const selectedRois = useMemo(
     () =>
-      linkedDrawOrderList?.map(Number) ??
-      (refItemId != null ? roisClick[refItemId] : undefined),
-    [linkedDrawOrderList, refItemId, roisClick],
+      rowsAreRois
+        ? (linkedDrawOrderList?.map(Number) ??
+          (refItemId != null ? roisClick[refItemId] : undefined))
+        : undefined,
+    [rowsAreRois, linkedDrawOrderList, refItemId, roisClick],
   )
   const rows = useMemo(
     () => filterHeatMapRows(heatMapData, index, selectedRois),
     [heatMapData, index, selectedRois],
+  )
+  const cols = useMemo(
+    () =>
+      columnsAreRois
+        ? filterHeatMapColumns(rows.z, columns, selectedRois)
+        : { z: rows.z, columns },
+    [columnsAreRois, rows, columns, selectedRois],
   )
   // Colour scale stays that of the whole matrix while rows are filtered.
   const zRange = useMemo(() => heatMapZRange(heatMapData), [heatMapData])
@@ -90,8 +104,8 @@ const HeatMapImple = memo(function HeatMapImple() {
       heatMapData != null
         ? [
             {
-              z: rows.z,
-              x: columns,
+              z: cols.z,
+              x: cols.columns,
               y: rows.index,
               zmin: zRange?.[0],
               zmax: zRange?.[1],
@@ -123,7 +137,7 @@ const HeatMapImple = memo(function HeatMapImple() {
             },
           ]
         : [],
-    [heatMapData, rows, zRange, showscale, colorscale, columns],
+    [heatMapData, rows, cols, zRange, showscale, colorscale],
   )
 
   const layout = useMemo(

@@ -27,7 +27,7 @@ def _run(output):
 
 
 def test_last_node_pickle_is_published_after_whole_nwb(output, monkeypatch):
-    """The observer latches hasNWB on the poll that first sees the pickle (#484)."""
+    """The observer latches hasNWB on the poll that first sees the pickle."""
     pickle_seen_during_whole_nwb = []
 
     def save_all_nwb(cls, path, all_nwbfile):

@@ -311,7 +311,7 @@ const RefImageItemIdSelect = memo(function RefImageItemIdSelect({
       }),
     )
     refSub.current?.()
-    refSub.current = setLinks(itemId, value)
+    refSub.current = isNaN(value) ? undefined : setLinks(itemId, value)
   }
   const selectedRefImageItemId = useSelector(
     selectTimeSeriesItemRefImageItemId(itemId),
@@ -347,6 +347,11 @@ const HeatMapRefItemIdSelect = memo(function HeatMapRefItemIdSelect({
     selectVisualizeHeatMapLinkItemIdList,
     arrayEqualityFn,
   )
+  const filePath = useSelector(selectVisualizeDataFilePath(itemId))
+  // Undefined until HeatMapPlot has loaded the data
+  const meta = useSelector((state: RootState) =>
+    filePath != null ? state.displayData.heatMap[filePath]?.meta : undefined,
+  )
   const onChange = (event: SelectChangeEvent) => {
     const value = Number(event.target.value)
     dispatch(
@@ -356,6 +361,9 @@ const HeatMapRefItemIdSelect = memo(function HeatMapRefItemIdSelect({
       }),
     )
   }
+
+  // Only heatmaps whose rows are ROI numbers can follow an ROI selection.
+  if (meta?.yaxis_type !== "category") return null
 
   return (
     <LinkToBoxSelect

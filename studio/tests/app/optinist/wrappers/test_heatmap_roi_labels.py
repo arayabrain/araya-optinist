@@ -1,5 +1,4 @@
-"""Heatmap rows carry ROI numbers, and ROI axes are hinted as categorical, so a
-non-contiguous iscell subset renders as evenly spaced labelled rows."""
+"""Heatmap rows carry ROI numbers and ROI axes are hinted as categorical."""
 import numpy as np
 import pytest
 

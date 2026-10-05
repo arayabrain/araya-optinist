@@ -1,6 +1,4 @@
-"""ETA and correlation statistics: the n next to mean and sem is the event
-count, sem is a sample statistic, undefined values are NaN rather than a false
-number, and dropped or degenerate inputs are logged."""
+"""ETA and correlation statistics: event count, sample sem, NaN for undefined."""
 
 import logging
 import warnings
@@ -156,9 +154,26 @@ def test_iscell_does_not_change_the_event_count(tmp_path):
     assert out["mean"].shape[0] == 2
 
 
+def test_iscell_selecting_no_cell_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="iscell marks no ROI"):
+        _eta(tmp_path, iscell=IscellData(np.zeros(NUM_CELL)))
+
+
+def test_cross_edge_drop_warning_has_no_length_clause(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    # neither the onset at frame 4 nor its offset at 9 has 10 frames before it
+    behavior = _behavior(starts=[4, 80, 120])
+
+    _eta(tmp_path, behavior=behavior, params={**PARAMS, "trigger_type": "cross"})
+
+    assert "averaged 4 of 6 triggers (2 dropped, window crosses" in caplog.text
+    assert "modal" not in caplog.text
+
+
 def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):
     caplog.set_level(logging.WARNING, logger="optinist")
-    fluo = np.random.default_rng(0).random((4, 50))
+    fluo = np.random.default_rng(0).random((5, 50))
+    fluo[1] = 0.0  # exactly zero variance: np.corrcoef would warn
     fluo[3] = 0.1  # std of a constant 0.1 row is ~1e-17, not 0
 
     with warnings.catch_warnings():
@@ -166,12 +181,13 @@ def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):
         info = correlation(
             FluoData(fluo, file_name="f"),
             str(tmp_path / "default" / "uid" / "corr_1"),
-            iscell=IscellData(np.array([0, 1, 1, 1])),  # row 3 is position 2
+            iscell=IscellData(np.array([0, 1, 1, 1, 1])),  # rows 1 and 3 -> 0 and 2
             params={"transpose": False},
         )
 
     corr = info["corr"].data
-    assert np.isnan(corr[2]).all() and np.isnan(corr[:, 2]).all()
-    assert np.isfinite(corr[0, 1])
-    assert "1 ROI(s) have a constant trace" in caplog.text
-    assert "[3]" in caplog.text
+    for position in (0, 2):
+        assert np.isnan(corr[position]).all() and np.isnan(corr[:, position]).all()
+    assert np.isfinite(corr[1, 3])
+    assert "2 ROI(s) have a constant trace" in caplog.text
+    assert "[1, 3]" in caplog.text

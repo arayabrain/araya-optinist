@@ -13,6 +13,23 @@ export function filterHeatMapRows(
   return { z: keep.map((i) => z[i]), index: keep.map((i) => index[i]) }
 }
 
+// For ROI-by-ROI matrices such as correlation, the columns follow the same selection.
+export function filterHeatMapColumns(
+  z: HeatMapData,
+  columns: (number | string)[],
+  selectedRois: number[] | undefined,
+): { z: HeatMapData; columns: (number | string)[] } {
+  if (!selectedRois?.length) return { z, columns }
+
+  const keep = columns.flatMap((roi, i) =>
+    selectedRois.includes(Number(roi)) ? [i] : [],
+  )
+  return {
+    z: z.map((row) => keep.map((i) => row[i])),
+    columns: keep.map((i) => columns[i]),
+  }
+}
+
 export function heatMapZRange(
   z: HeatMapData | undefined,
 ): [number, number] | undefined {
