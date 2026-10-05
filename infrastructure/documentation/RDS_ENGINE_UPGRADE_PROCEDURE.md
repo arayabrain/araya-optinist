@@ -2705,12 +2705,33 @@ When posting this capture, redact the instance identifier and **keep the metric 
 
 ### Phase 4: apply to production
 
-No scheduler, so the timing is free, but the instance is offline for the whole upgrade and the same apply rolls every ECS service (B6). Announce using the measured upgrade duration plus the rollout time — 0B's figure if it ran, otherwise 0A's plus a margin.
+No scheduler, so the timing is free, but the instance is offline for the whole upgrade.
+
+**Whether the apply also rolls every ECS service is a measured property of the lineage, not a given — and on
+this one it does not.** An earlier revision of this section asserted the rollout and told the operator to
+announce its duration. **Measured during phase 4's pre-work: `var.git_branch` is a branch name and the
+release is a tag, so the value does not change across the release.** `null_resource.build_and_deploy` has no
+`source_revision` on this lineage, so the commit is not a trigger either. Neither null_resource re-runs, the
+four launch templates show no diff, and the free tier's ASG does not refresh.
+
+| | |
+|-------------------------|-----------------------|
+| **The window** | **The database change alone.** Announce the measured upgrade duration plus a margin — 0B's figure if it ran, otherwise 0A's |
+| **Re-read `var.git_branch` if the release process changes** | The other branch is expensive: four launch template versions plus a rolling instance refresh on the free tier, tens of minutes on top of the database change |
+
+**So the release is two actions, not one.** The apply does not build or deploy the application: the image
+comes from `ecr_build_push.sh`, which reads `git rev-parse HEAD` in the deployment clone, and the ECS
+services are cycled by hand afterwards. **Neither this document nor the release procedure states the
+combined order on its own, and following either alone drops steps from the other** — the combined order is
+in #898, *"This phase is nested inside the v1.1.11 release window"*. Two things it adds that this document
+does not: a same-morning `<FROM>` baseline for the health lane **before** the plan, and a re-read of the ECS
+and proxy checks **after** the manual service cycle.
 
 **If 0B was skipped, the precheck runs here for the first time.** It fails safe: a precheck failure
 means the upgrade does not complete and the instance stays on `<FROM>`, so the cost is the window rather
-than the data. Decide in advance whether that outcome means reschedule or investigate-in-place, so the
-decision is not made under time pressure inside the window.
+than the data. **That decision is made in advance rather than here** — #898's `P4-4` holds it: capture the
+log, attempt no in-window fix, carry on with the rest of the release, and take a second window within days.
+The remedy for a precheck error is DDL or a migration, which is reviewed work rather than window work.
 
 **Run phase 1 steps 1 to 14, with `ENV` set to the production value.** That sequence is numbered so this
 phase can cite it rather than paraphrase it. **Four differences** — three in the steps, and one in the file
@@ -2806,7 +2827,8 @@ exports get none of that, and the target file's values **override the shell**, s
 ```bash
 # Run from frontend/ in a SUBSHELL so the working directory is not left changed - the
 # blocks after this one are relative to infrastructure/terraform.
-( cd frontend && E2E_TARGET=prod yarn test:e2e e2e/17-aws-health.spec.ts --retries 0 )
+( cd frontend && E2E_TARGET=prod yarn test:e2e e2e/17-aws-health.spec.ts --retries 0 \
+    --grep-invert "@slow|@disruptive|HEALTH-25|HEALTH-26" )
 ```
 
 Four things about that invocation, each of which was wrong in an earlier draft of this document:
@@ -2824,15 +2846,39 @@ Four things about that invocation, each of which was wrong in an earlier draft o
 - **`--retries 0`**, because the config retries once by default, which doubles the AWS reads and the HTTP load
   this puts on production and muddies the baseline. And **not `--headed`**: no case in this lane drives a
   browser, so the only window it opens is the login, and it breaks outright on a headless host.
+- **`--grep-invert` deselects the two cases that are not read-only, and `@slow|@disruptive` must be repeated
+  inside it.** The config sets `grepInvert` itself, from the opt-in tags, and **a CLI `--grep-invert`
+  replaces that value rather than adding to it** - so omitting the tags makes `@disruptive` eligible the
+  moment the file filter widens.
+
+  | Deselected | Why | What covers it instead |
+  |-------------------------|-----------------------|-----------------------|
+  | `HEALTH-25` | POSTs a registration to production. It uses an **existing** address, so the application refuses it with 400 and the case re-counts the rows to prove nothing was written - but an application bug that accepted it would write first and be detected second | Its unique coverage is that the ALB routes `/api/register` to the free tier, which **an engine upgrade cannot change**: an ALB change would appear in the plan gate. The account's row state is covered by the free-account and instance-assignment cases |
+  | `HEALTH-26` | Fires 20 concurrent requests at the public tier. Not a load test - its own comment says so - but it is **the lane's only timing-dependent assertion**, so it is the likeliest to fail for a reason that is not the upgrade | The serial public-tier case covers the same endpoints; the proxy-path query covers the connection path directly. **And the release's own manual ECS service cycle restarts all four tiers against the new engine**, which is stronger evidence than 20 GETs |
+
+  **Whatever is deselected before the apply must be deselected after it**, or the two runs are different sets
+  and the comparison does not hold.
 - **`E2E_FAIL_ON_SKIP=1` is deliberately absent here.** On development it is the right flag. On production
   **`HEALTH-27` skips whenever the ALB alarm has no retained ALARM transition** — its own comment notes
   development produces one on every weekday start-up, so a healthy production plausibly has none — and
   `HEALTH-29` skips with no unpublished experiment. Both would turn the rehearsal red for nothing. **Read the
   reporter's skip list and account for each entry** instead of trusting the exit code.
 
-**Expect 29 collected cases.** `HEALTH-19` skips on development, whose ALB is plain HTTP on `:8080`, and
-executes here. Read that difference off the **skip-summary reporter's `N executed` line**, not off Playwright's
-own total — Playwright reports 29 tests either way.
+**Expect 27 collected cases** with the two deselected, 29 without. `HEALTH-19` skips on development, whose
+ALB is plain HTTP on `:8080`, and executes here. Read the difference off the **skip-summary reporter's
+`N executed` line**, not off Playwright's own total.
+
+**Measured on production on 8.0, as the before half of the pair: `26 executed, 1 skipped, 27 mapped`.**
+
+| | |
+|-------------------------|-----------------------|
+| The only skip | `HEALTH-27`, because the public target group's alarm **has no ALARM transition in its retained history** - production's alarms had not moved for roughly three months. Predicted from the alarm readings before the run, and confirmed by it |
+| Passed but **not decided** | `HEALTH-15` printed `error rate not decided: 0 validations in 24h is below the 50 the ratio needs`. So a failure there afterwards is a real signal, while a pass proves little |
+| Runtime | **about two minutes**, not the "well under a minute" the spec's own header claims - the SQL cases dominate. Budget it in the window |
+| `globalSetup` | reported `is not a disposable environment; skipping cleanup`, which is the gate that keeps its two destructive steps off production |
+
+**Anything other than that shape, afterwards, is a change.** In particular a `HEALTH-29` skip would be one:
+it passed here, so an unpublished experiment existed.
 
 **This lane is read-only against the database but not inert against the environment.** Every SQL call goes
 through a read-only assertion, and nothing calls `update-service` or `set-alarm-state`. But `HEALTH-25` POSTs
