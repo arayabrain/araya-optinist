@@ -41,6 +41,17 @@ export const selectVisualizeImageAndRoiItemIdList = (state: RootState) =>
       return !item.isWorkflowDialog && (isImageItem(item) || isRoiItem(item))
     })
 
+export const selectVisualizeHeatMapLinkItemIdList = (state: RootState) =>
+  Object.keys(state.visualaizeItem.items)
+    .map(Number)
+    .filter((itemId) => {
+      const item = selectVisualizeItemById(itemId)(state)
+      return (
+        !item.isWorkflowDialog &&
+        (isImageItem(item) || isRoiItem(item) || isTimeSeriesItem(item))
+      )
+    })
+
 export const selectVisualizeItems = (state: RootState) =>
   state.visualaizeItem.items
 
@@ -477,6 +488,26 @@ export const selectRoiItemMaxNumber = (roiFilePath: string) =>
       }
     },
   )
+
+export const selectHeatMapItemRefItemId =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.refItemId
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectHeatMapLinkedDrawOrderList =
+  (itemId: number) => (state: RootState) => {
+    const refItemId = selectHeatMapItemRefItemId(itemId)(state)
+    const refItem =
+      refItemId != null ? selectVisualizeItems(state)[refItemId] : undefined
+    return refItem != null && isTimeSeriesItem(refItem)
+      ? refItem.drawOrderList
+      : undefined
+  }
 
 export const selectHeatMapItemShowScale =
   (itemId: number) => (state: RootState) => {

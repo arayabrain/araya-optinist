@@ -7,6 +7,8 @@ class PlotMetaData:
     xlabel: Optional[str] = None
     ylabel: Optional[str] = None
     title: Optional[str] = None
+    xaxis_type: Optional[str] = None
+    yaxis_type: Optional[str] = None
 
     def value_present_dict(self):
         return {k: v for k, v in asdict(self).items() if v is not None}

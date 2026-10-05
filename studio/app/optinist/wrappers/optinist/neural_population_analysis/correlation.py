@@ -1,6 +1,7 @@
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import HeatMapData
+from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import FluoData, IscellData
 
@@ -27,6 +28,7 @@ def correlation(
     else:
         X = neural_data
 
+    ind = None
     if iscell is not None:
         iscell = iscell.data
         ind = np.where(iscell > 0)[0]
@@ -48,7 +50,13 @@ def correlation(
     }
 
     info = {
-        "corr": HeatMapData(corr, file_name="corr"),
+        "corr": HeatMapData(
+            corr,
+            columns=ind,
+            index=ind,
+            file_name="corr",
+            meta=PlotMetaData(xaxis_type="category", yaxis_type="category"),
+        ),
         "nwbfile": nwbfile,
     }
 

@@ -5,6 +5,8 @@ import { useSelector, useDispatch } from "react-redux"
 import { LinearProgress, Typography } from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { filterHeatMapRows } from "components/Workspace/Visualize/Plot/heatMapRows"
+import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { getHeatMapData } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectHeatMapColumns,
@@ -18,6 +20,8 @@ import {
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import {
   selectHeatMapItemColors,
+  selectHeatMapItemRefItemId,
+  selectHeatMapLinkedDrawOrderList,
   selectHeatMapItemShowScale,
   selectVisualizeItemHeight,
   selectVisualizeItemWidth,
@@ -60,15 +64,30 @@ const HeatMapImple = memo(function HeatMapImple() {
   const colorscale = useSelector(selectHeatMapItemColors(itemId))
   const width = useSelector(selectVisualizeItemWidth(itemId))
   const height = useSelector(selectVisualizeItemHeight(itemId))
+  const refItemId = useSelector(selectHeatMapItemRefItemId(itemId))
+  const linkedDrawOrderList = useSelector(
+    selectHeatMapLinkedDrawOrderList(itemId),
+  )
+  const { roisClick } = useVisualize()
+  const selectedRois = useMemo(
+    () =>
+      linkedDrawOrderList?.map(Number) ??
+      (refItemId != null ? roisClick[refItemId] : undefined),
+    [linkedDrawOrderList, refItemId, roisClick],
+  )
+  const rows = useMemo(
+    () => filterHeatMapRows(heatMapData, index, selectedRois),
+    [heatMapData, index, selectedRois],
+  )
 
   const data = useMemo(
     () =>
       heatMapData != null
         ? [
             {
-              z: heatMapData,
+              z: rows.z,
               x: columns,
-              y: index,
+              y: rows.index,
               type: "heatmap",
               name: "heatmap",
               colorscale: colorscale.map((value) => {
@@ -97,7 +116,7 @@ const HeatMapImple = memo(function HeatMapImple() {
             },
           ]
         : [],
-    [heatMapData, showscale, colorscale, columns, index],
+    [heatMapData, rows, showscale, colorscale, columns],
   )
 
   const layout = useMemo(
@@ -117,12 +136,15 @@ const HeatMapImple = memo(function HeatMapImple() {
       autosize: true,
       xaxis: {
         title: meta?.xlabel,
+        type: meta?.xaxis_type,
       },
       yaxis: {
         title: meta?.ylabel,
+        // A filtered subset of rows is discrete even if the full index is not.
+        type: selectedRois?.length ? "category" : meta?.yaxis_type,
       },
     }),
-    [meta, width, height],
+    [meta, width, height, selectedRois],
   )
 
   const saveFileName = useSelector(selectVisualizeSaveFilename(itemId))

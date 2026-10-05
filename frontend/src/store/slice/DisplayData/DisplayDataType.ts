@@ -93,6 +93,8 @@ export type PlotMetaData = {
   xlabel?: string
   ylabel?: string
   title?: string
+  xaxis_type?: "category"
+  yaxis_type?: "category"
 }
 
 interface BaseDisplay<T extends DATA_TYPE, Data> {

@@ -22,6 +22,7 @@ import {
 } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContext"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { buildAnnotations } from "components/Workspace/Visualize/Plot/timeSeriesAnnotations"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
 import {
@@ -288,23 +289,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     newTimeSeriesData,
   ])
 
-  const annotations = useMemo(() => {
-    const range = rangeUnit === "time" ? frameRate : 1
-    return drawOrderList.map((value) => {
-      return {
-        x:
-          Number((newDataXrange.length - 1) / range) +
-          newDataXrange.length / (10 * range),
-        y: data[value]?.y[newDataXrange.length - 1],
-        xref: "x",
-        yref: "y",
-        text: `cell: ${value}`,
-        arrowhead: 1,
-        ax: 0,
-        ay: -10,
-      }
-    })
-  }, [data, drawOrderList, newDataXrange, rangeUnit, frameRate])
+  const annotations = useMemo(
+    () => buildAnnotations(drawOrderList, newDataXrange, data),
+    [data, drawOrderList, newDataXrange],
+  )
 
   const layout = useMemo(
     () => ({
@@ -333,9 +321,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
           size: 10,
           color: "black",
         },
+        // null, not undefined: plotly then autoranges only an unset frames bound
         range:
           rangeUnit === "frames"
-            ? [xrange.left, xrange.right]
+            ? [xrange.left ?? null, xrange.right ?? null]
             : [
                 typeof xrange.left !== "undefined"
                   ? xrange.left / frameRate

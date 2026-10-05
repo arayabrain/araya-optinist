@@ -4,6 +4,7 @@ from scipy.stats import mode
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import HeatMapData, TimeSeriesData
+from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
@@ -167,7 +168,9 @@ def ETA(
         columns=list(
             np.arange(params["pre_event"], params["post_event"] + trigger_len)
         ),
+        index=list(cell_numbers) if iscell is not None else None,
         file_name="mean_heatmap",
+        meta=PlotMetaData(yaxis_type="category"),
     )
     info["nwbfile"] = nwbfile
     return info
