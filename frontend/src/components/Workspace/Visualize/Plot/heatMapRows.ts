@@ -12,3 +12,18 @@ export function filterHeatMapRows(
   )
   return { z: keep.map((i) => z[i]), index: keep.map((i) => index[i]) }
 }
+
+export function heatMapZRange(
+  z: HeatMapData | undefined,
+): [number, number] | undefined {
+  let min = Infinity
+  let max = -Infinity
+  z?.forEach((row) =>
+    row.forEach((v) => {
+      if (!Number.isFinite(v)) return
+      if (v < min) min = v
+      if (v > max) max = v
+    }),
+  )
+  return min <= max ? [min, max] : undefined
+}

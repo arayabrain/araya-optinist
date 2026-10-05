@@ -1,6 +1,9 @@
 import { describe, it, expect } from "@jest/globals"
 
-import { filterHeatMapRows } from "components/Workspace/Visualize/Plot/heatMapRows"
+import {
+  filterHeatMapRows,
+  heatMapZRange,
+} from "components/Workspace/Visualize/Plot/heatMapRows"
 
 // ETA with iscell: rows are ROI numbers, not positions.
 const z = [[0], [1], [2], [3]]
@@ -29,5 +32,21 @@ describe("filterHeatMapRows", () => {
 
   it("draws no rows when only ROIs absent from the heatmap are selected", () => {
     expect(filterHeatMapRows(z, index, [3])).toEqual({ z: [], index: [] })
+  })
+})
+
+describe("heatMapZRange", () => {
+  it("spans the whole matrix, ignoring the NaN diagonal", () => {
+    expect(
+      heatMapZRange([
+        [NaN, -0.4],
+        [0.9, NaN],
+      ]),
+    ).toEqual([-0.4, 0.9])
+  })
+
+  it("is undefined without finite values", () => {
+    expect(heatMapZRange(undefined)).toBeUndefined()
+    expect(heatMapZRange([[NaN]])).toBeUndefined()
   })
 })

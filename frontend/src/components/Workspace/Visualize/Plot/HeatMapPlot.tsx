@@ -5,7 +5,10 @@ import { useSelector, useDispatch } from "react-redux"
 import { LinearProgress, Typography } from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
-import { filterHeatMapRows } from "components/Workspace/Visualize/Plot/heatMapRows"
+import {
+  filterHeatMapRows,
+  heatMapZRange,
+} from "components/Workspace/Visualize/Plot/heatMapRows"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { getHeatMapData } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -79,6 +82,8 @@ const HeatMapImple = memo(function HeatMapImple() {
     () => filterHeatMapRows(heatMapData, index, selectedRois),
     [heatMapData, index, selectedRois],
   )
+  // Colour scale stays that of the whole matrix while rows are filtered.
+  const zRange = useMemo(() => heatMapZRange(heatMapData), [heatMapData])
 
   const data = useMemo(
     () =>
@@ -88,6 +93,8 @@ const HeatMapImple = memo(function HeatMapImple() {
               z: rows.z,
               x: columns,
               y: rows.index,
+              zmin: zRange?.[0],
+              zmax: zRange?.[1],
               type: "heatmap",
               name: "heatmap",
               colorscale: colorscale.map((value) => {
@@ -116,7 +123,7 @@ const HeatMapImple = memo(function HeatMapImple() {
             },
           ]
         : [],
-    [heatMapData, rows, showscale, colorscale, columns],
+    [heatMapData, rows, zRange, showscale, colorscale, columns],
   )
 
   const layout = useMemo(
@@ -157,6 +164,14 @@ const HeatMapImple = memo(function HeatMapImple() {
       format: saveFormat,
       filename: saveFileName,
     },
+  }
+
+  if (selectedRois?.length && rows.z.length === 0) {
+    return (
+      <Typography variant="body2" sx={{ p: 2 }}>
+        None of the selected ROIs are in this heatmap.
+      </Typography>
+    )
   }
 
   return <PlotlyChart data={data} layout={layout} config={config} />
