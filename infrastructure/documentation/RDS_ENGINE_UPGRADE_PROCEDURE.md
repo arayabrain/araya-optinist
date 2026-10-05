@@ -3032,13 +3032,38 @@ done
 # EngineLifecycleSupport still naming Extended Support is correct - it is an
 # attribute, not a charge (B5).
 
-# Extended Support charge gone, at daily granularity
+# Extended Support charge gone, at daily granularity.
+#
+# GROUPED by usage type, not filtered to one. This check used to carry
+#   --filter '{"Dimensions":{"Key":"USAGE_TYPE","Values":["...:MySQL${FROM}"]}}'
+# and it was wrong in a way that could not be seen. The JSON is SINGLE-QUOTED, so
+# ${FROM} never expanded: the filter asked for a usage type literally named
+# "MySQL${FROM}", matched nothing, and returned zero for every day - which reads
+# exactly like the charge having stopped. The failure was indistinguishable from
+# the result it was looking for, in the one check that has a deadline.
+#
+# Grouping lists whatever usage types RDS actually billed, so the Extended Support
+# line is OBSERVED to be absent rather than asserted to be.
 aws ce get-cost-and-usage --granularity DAILY \
   --time-period "Start=$(date -u -v-7d +%Y-%m-%d),End=$(date -u +%Y-%m-%d)" \
   --metrics UnblendedCost \
-  --filter '{"Dimensions":{"Key":"USAGE_TYPE","Values":["APN1-ExtendedSupport:Yr1-Yr2:MySQL${FROM}"]}}' \
-  --query 'ResultsByTime[].{day:TimePeriod.Start,cost:Total.UnblendedCost.Amount}' --output table
-# Expected: falling to zero from the day after the production apply
+  --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Relational Database Service"]}}' \
+  --group-by Type=DIMENSION,Key=USAGE_TYPE \
+  --query 'ResultsByTime[].{day:TimePeriod.Start,
+           types:Groups[].[Keys[0],Metrics.UnblendedCost.Amount]}'
+# Read TWO things from this, and the first is the guard:
+#
+#   1. The list is NOT EMPTY on any day. An empty list means the query is broken or the
+#      SERVICE value is wrong - NOT that RDS cost nothing. This is the assertion the
+#      literal filter had no way to make, and the reason it failed silently.
+#   2. A usage type containing `ExtendedSupport` appears on the days BEFORE the apply
+#      and is absent on the days after it.
+#
+# Timing, which is easy to misread. Extended Support bills per instance-hour, so the
+# apply's own day carries a PARTIAL charge and the first full zero is the day AFTER it.
+# Cost Explorer's daily data also lags, so the confirming read is two days after the
+# apply rather than one. A partial figure on the apply's own day is not evidence that
+# the charge is still running.
 
 # Inventory what is temporary. This lists rather than deletes on purpose.
 aws rds describe-db-snapshots --snapshot-type manual \
@@ -3073,9 +3098,17 @@ Three changes, and they can travel together — see the gate below for why that 
 
 The custom AMI installs its client from a different package and needs nothing.
 
-**Do not assert an empty plan.** It cannot be empty: committing anything changes `source_revision`, so
-`null_resource.build_and_deploy` is always replaced (B6). Assert per resource instead, the same way the
-Phase 1 and Phase 4 gates do.
+**Do not assert an empty plan, and do not assume which entries it carries — that differs by lineage.**
+Assert per resource instead, the same way the Phase 1 and Phase 4 gates do.
+
+| Lineage | `null_resource.build_and_deploy` | Why |
+|-------------------------|-----------------------|-----------------------|
+| **Development** | **Replaced on every commit** | `source_revision` is in its trigger map, so committing anything changes it (**B6**) |
+| **Production** | **A no-op** | **There is no `source_revision` there.** Its triggers are `alb_dns`, `var.git_branch` and `ecr_repo`, none of which this PR changes |
+
+**Measured, not inferred: phase 4's plan on production showed this resource as a no-op**, which is what
+settled that the apply was not an application rollout. An earlier version of this section asserted the
+replacement unconditionally, carrying development's behaviour into production's expectations.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/infrastructure/terraform"
@@ -3085,18 +3118,25 @@ terraform show -json "$PLAN" | jq -r '
   .resource_changes[]
   | select(.change.actions != ["no-op"])
   | "\(.address) -> \(.change.actions|join(","))"'
-# Expected, and nothing else:
-#   null_resource.build_and_deploy       -> delete,create   (always, B6)
+# Expected, and nothing else. The first line DIFFERS BY LINEAGE - see the table above:
+#   null_resource.build_and_deploy       -> delete,create   on DEVELOPMENT (source_revision)
+#                                        -> absent          on PRODUCTION (no source_revision)
 #   aws_s3_object.app_setup_script       -> update          (only if app_setup.sh changed)
+#
+# On production, build_and_deploy APPEARING is the finding: it means var.git_branch was
+# edited, and this small apply just became an application rollout.
 #
 # aws_db_instance.main must NOT appear. Its absence is the proof that
 # allow_major_version_upgrade and apply_immediately were never read back from the API.
 # If it appears, stop: something else changed, or the attributes were load-bearing.
 ```
 
-Because this apply rolls every ECS service anyway (B6), splitting the three changes into separate PRs
-buys nothing and costs an extra rollout per PR. Keep them together and rely on the per-resource
-assertion.
+**Keep the three changes together and rely on the per-resource assertion.** On development the reason is
+that the apply rolls every ECS service anyway (**B6**), so splitting them costs an extra rollout per PR. **On
+production that reason does not hold** — nothing rolls there, measured in phase 4 — but splitting still buys
+no extra proof, because the per-resource assertion gives the same evidence within one PR. Same conclusion,
+different reason, and the production one is the weaker of the two: if there were ever a reason to split them
+on that lineage, the cost of doing so is small.
 
 ---
 
