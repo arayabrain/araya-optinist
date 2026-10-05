@@ -1,5 +1,6 @@
 """ETA and correlation statistics: the n next to mean and sem is the event
-count, sem is a sample statistic, and degenerate inputs are reported, not NaN."""
+count, sem is a sample statistic, undefined values are NaN rather than a false
+number, and dropped or degenerate inputs are logged."""
 
 import logging
 import warnings
@@ -29,6 +30,10 @@ PARAMS = {
 }
 
 
+def _fluo():
+    return np.random.default_rng(0).random((NUM_CELL, NUM_FRAME))
+
+
 def _behavior(starts=EVENT_STARTS, lengths=None):
     behavior = np.zeros((NUM_FRAME, 1))
     for i, start in enumerate(starts):
@@ -38,10 +43,8 @@ def _behavior(starts=EVENT_STARTS, lengths=None):
 
 
 def _eta(tmp_path, fluo=None, behavior=None, params=None, iscell=None):
-    rng = np.random.default_rng(0)
-    fluo = rng.random((NUM_CELL, NUM_FRAME)) if fluo is None else fluo
     return ETA(
-        FluoData(fluo, file_name="f"),
+        FluoData(_fluo() if fluo is None else fluo, file_name="f"),
         BehaviorData(_behavior() if behavior is None else behavior, file_name="b"),
         str(tmp_path / "default" / "uid" / "eta_1"),
         iscell=iscell,
@@ -57,15 +60,15 @@ def test_num_sample_is_the_number_of_averaged_events(tmp_path):
     out = _postprocess(_eta(tmp_path))
 
     assert out["num_sample"] == [len(EVENT_STARTS)]
-    assert out["mean"].shape[0] == NUM_CELL  # and not the cell count
+    assert len(EVENT_STARTS) != NUM_CELL  # so the cell count would fail above
 
 
 def test_sem_is_sample_std_over_sqrt_n(tmp_path):
-    out = _postprocess(_eta(tmp_path))
+    fluo = _fluo()
+    out = _postprocess(_eta(tmp_path, fluo=fluo))
     n = len(EVENT_STARTS)
 
     np.testing.assert_allclose(out["sem"], out["std"] / np.sqrt(n))
-    fluo = np.random.default_rng(0).random((NUM_CELL, NUM_FRAME))
     windows = np.stack([fluo[:, s - 10 : s + 15] for s in EVENT_STARTS])
     np.testing.assert_allclose(out["std"], np.std(windows, axis=0, ddof=1))
 
@@ -79,7 +82,7 @@ def test_single_event_has_undefined_not_zero_std(tmp_path):
 
 
 def test_flat_cell_normalises_to_a_zero_row_not_nan(tmp_path):
-    fluo = np.random.default_rng(0).random((NUM_CELL, NUM_FRAME))
+    fluo = _fluo()
     fluo[1] = 0.7
     heatmap = _eta(tmp_path, fluo=fluo)["mean_heatmap"]
 
@@ -99,11 +102,11 @@ def test_positive_pre_event_means_the_same_window_as_negative(tmp_path):
 
 def test_negative_post_event_ends_the_window_inside_the_trigger(tmp_path):
     # post_event counts from the end of the 5-frame trigger: -5 ends at onset
-    info = _eta(tmp_path, params={**PARAMS, "post_event": -EVENT_LEN})
+    fluo = _fluo()
+    info = _eta(tmp_path, fluo=fluo, params={**PARAMS, "post_event": -EVENT_LEN})
 
     assert list(info["mean"].index) == list(range(-10, 0))
     assert info["mean"].data.shape == (NUM_CELL, 10)
-    fluo = np.random.default_rng(0).random((NUM_CELL, NUM_FRAME))
     windows = np.stack([fluo[:, s - 10 : s] for s in EVENT_STARTS])
     np.testing.assert_allclose(info["mean"].data, windows.mean(axis=0))
 
@@ -111,6 +114,11 @@ def test_negative_post_event_ends_the_window_inside_the_trigger(tmp_path):
 def test_empty_window_fails_with_the_three_terms(tmp_path):
     with pytest.raises(AssertionError, match="Empty window.*post_event -15"):
         _eta(tmp_path, params={**PARAMS, "post_event": -(10 + EVENT_LEN)})
+
+
+def test_no_triggers_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="No triggers found: no up crossing"):
+        _eta(tmp_path, behavior=np.zeros((NUM_FRAME, 1)))
 
 
 def test_dropped_events_are_logged_and_excluded_from_n(tmp_path, caplog):
@@ -121,8 +129,24 @@ def test_dropped_events_are_logged_and_excluded_from_n(tmp_path, caplog):
     out = _postprocess(_eta(tmp_path, behavior=behavior))
 
     assert out["num_sample"] == [2]
-    assert "1 of 4 triggers dropped" in caplog.text
-    assert "1 of 3 events dropped" in caplog.text
+    assert "averaged 2 of 4 triggers" in caplog.text
+    assert "1 dropped, length differs from the modal 5" in caplog.text
+    assert "1 dropped, window crosses the recording edge" in caplog.text
+
+
+def test_cross_aligns_both_edges_with_a_fixed_window(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    fluo = _fluo()
+    out = _eta(tmp_path, fluo=fluo, params={**PARAMS, "trigger_type": "cross"})
+
+    # 4 onsets and 4 offsets, no event dropped for its length
+    assert _postprocess(out)["num_sample"] == [2 * len(EVENT_STARTS)]
+    assert "dropped" not in caplog.text
+    # fixed window: abs(pre_event) before the edge to post_event after it
+    assert list(out["mean"].index) == list(range(-10, 10))
+    edges = [s for s in EVENT_STARTS] + [s + EVENT_LEN for s in EVENT_STARTS]
+    windows = np.stack([fluo[:, e - 10 : e + 10] for e in edges])
+    np.testing.assert_allclose(out["mean"].data, windows.mean(axis=0))
 
 
 def test_iscell_does_not_change_the_event_count(tmp_path):
@@ -135,14 +159,14 @@ def test_iscell_does_not_change_the_event_count(tmp_path):
 def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):
     caplog.set_level(logging.WARNING, logger="optinist")
     fluo = np.random.default_rng(0).random((4, 50))
-    fluo[2] = 1.0
+    fluo[3] = 0.1  # std of a constant 0.1 row is ~1e-17, not 0
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         info = correlation(
             FluoData(fluo, file_name="f"),
             str(tmp_path / "default" / "uid" / "corr_1"),
-            iscell=IscellData(np.array([1, 1, 1, 0])),
+            iscell=IscellData(np.array([0, 1, 1, 1])),  # row 3 is position 2
             params={"transpose": False},
         )
 
@@ -150,4 +174,4 @@ def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):
     assert np.isnan(corr[2]).all() and np.isnan(corr[:, 2]).all()
     assert np.isfinite(corr[0, 1])
     assert "1 ROI(s) have a constant trace" in caplog.text
-    assert "[2]" in caplog.text
+    assert "[3]" in caplog.text

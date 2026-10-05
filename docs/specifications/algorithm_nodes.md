@@ -238,12 +238,13 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
   - **event_col_index** [int, default 1]: Index of column in behavioral data to use for event detection.
   - **trigger_type** ['up', 'down', 'cross', default: 'up']:
-    - 'up' detects transitions 0 to trigger_threshold
-    - 'down' detects transitions trigger_threshold to 0
-    - 'cross' detects either up or down transitions.
+    - 'up' detects transitions 0 to trigger_threshold. The window runs from `pre_event` frames before the onset to `post_event` frames after the end of the event. Events whose length differs from the most common length are dropped and logged.
+    - 'down' detects transitions trigger_threshold to 0, with the same window and the same length rule.
+    - 'cross' detects both up and down transitions and averages them together with a fixed window, `pre_event` frames before each edge to `post_event` frames after it. No event is dropped for its length.
   - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
-  - **pre_event** [int (0 < pre_event < T/2), default: -10]: Number of time points before the trigger to include.
-  - **post_event** [int (T/2 > post_event < 0), default: 10]: Number of time points after the trigger to include.
+  - **pre_event** [int, default: -10]: Number of time points before the trigger to include. The sign is ignored; -10 and 10 both mean 10 frames before the onset.
+  - **post_event** [int, default: 10]: Number of time points after the end of the trigger to include. May be negative to end the window inside the event, as long as abs(pre_event) + event length + post_event is at least 1.
+  - Events whose window would cross the start or end of the recording are dropped and logged. `num_sample` in the NWB output is the number of events actually averaged.
 
 ##### Dimensionality Reduction
 

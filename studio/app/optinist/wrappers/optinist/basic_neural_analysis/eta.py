@@ -44,29 +44,25 @@ def calc_trigger(behavior_data, trigger_type, trigger_threshold):
             i += length
         else:
             i += 1
-    if trigger_lengths:
-        mode_result = mode(trigger_lengths)  # find most common length
-        trigger_len = mode_result.mode  # If scalar, use this value
-        if hasattr(trigger_len, "__len__"):  # If array use first value
-            trigger_len = trigger_len[0]
+    num_detected = len(trigger_lengths)
+    if num_detected == 0:
+        return np.array([], dtype=int), 0, 0
 
-        trigger_idx = [
-            idx
-            for idx, length in zip(trigger_idx, trigger_lengths)
-            if length == trigger_len  # if trigger_len is different (boundary cut-offs)
-        ]  # don't include
-        dropped = len(trigger_lengths) - len(trigger_idx)
-        if dropped:
-            logger.warning(
-                "ETA: %d of %d triggers dropped, length differs from the modal %d",
-                dropped,
-                len(trigger_lengths),
-                trigger_len,
-            )
-        trigger_idx = np.array(trigger_idx)
-        return trigger_idx, trigger_len
-    else:
-        return trigger_idx, 0
+    # Up and down runs differ in length, so cross aligns each edge with a fixed window
+    if trigger_type == "cross":
+        return np.array(trigger_idx), 0, num_detected
+
+    mode_result = mode(trigger_lengths)  # find most common length
+    trigger_len = mode_result.mode  # If scalar, use this value
+    if hasattr(trigger_len, "__len__"):  # If array use first value
+        trigger_len = trigger_len[0]
+
+    trigger_idx = [
+        idx
+        for idx, length in zip(trigger_idx, trigger_lengths)
+        if length == trigger_len  # if trigger_len is different (boundary cut-offs)
+    ]  # don't include
+    return np.array(trigger_idx), trigger_len, num_detected
 
 
 def calc_trigger_average(neural_data, trigger_idx, trigger_len, pre_event, post_event):
@@ -77,13 +73,6 @@ def calc_trigger_average(neural_data, trigger_idx, trigger_len, pre_event, post_
         event_end = idx + trigger_len + post_event
         if event_end <= num_frame and event_start >= 0:
             event_trigger_data.append(neural_data[event_start:event_end])
-    dropped = len(trigger_idx) - len(event_trigger_data)
-    if dropped:
-        logger.warning(
-            "ETA: %d of %d events dropped, window crosses the recording edge",
-            dropped,
-            len(trigger_idx),
-        )
     # Convert to numpy array (num_event, event_time, cell_number)
     event_trigger_data = np.array(event_trigger_data)
     return event_trigger_data
@@ -136,8 +125,12 @@ def ETA(
     post_event = params["post_event"]
 
     # calculate Triggers
-    [trigger_idxs, trigger_len] = calc_trigger(
+    trigger_idxs, trigger_len, num_detected = calc_trigger(
         Y, params["trigger_type"], params["trigger_threshold"]
+    )
+    assert num_detected > 0, (
+        f"No triggers found: no {params['trigger_type']} crossing of "
+        f"{params['trigger_threshold']} in behaviour column {params['event_col_index']}"
     )
 
     # post_event counts from the end of the trigger, so it may be negative
@@ -156,22 +149,33 @@ def ETA(
         post_event,
     )
 
-    # (cell_number, event_time_lambda)
-    if len(event_trigger_data) > 0:
-        num_event = len(event_trigger_data)
-        mean = np.mean(event_trigger_data, axis=0)
-        # Sample std; undefined with one event rather than a false zero
-        std = (
-            np.std(event_trigger_data, axis=0, ddof=1)
-            if num_event > 1
-            else np.full(mean.shape, np.nan)
+    num_event = len(event_trigger_data)
+    dropped_length = num_detected - len(trigger_idxs)
+    dropped_edge = len(trigger_idxs) - num_event
+    if dropped_length or dropped_edge:
+        logger.warning(
+            "ETA: averaged %d of %d triggers (%d dropped, length differs from the "
+            "modal %d; %d dropped, window crosses the recording edge)",
+            num_event,
+            num_detected,
+            dropped_length,
+            trigger_len,
+            dropped_edge,
         )
-        sem = std / np.sqrt(num_event)
-        mean = mean.transpose()
-        std = std.transpose()
-        sem = sem.transpose()
-    else:
-        assert False, "Output data size is 0"
+    assert num_event > 0, f"All {num_detected} triggers were dropped, see the log"
+
+    # (cell_number, event_time_lambda)
+    mean = np.mean(event_trigger_data, axis=0)
+    # Sample std; undefined with one event rather than a false zero
+    std = (
+        np.std(event_trigger_data, axis=0, ddof=1)
+        if num_event > 1
+        else np.full(mean.shape, np.nan)
+    )
+    sem = std / np.sqrt(num_event)
+    mean = mean.transpose()
+    std = std.transpose()
+    sem = sem.transpose()
 
     nwbfile = {}
     nwbfile[NWBDATASET.POSTPROCESS] = {

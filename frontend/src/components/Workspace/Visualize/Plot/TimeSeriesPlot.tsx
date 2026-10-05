@@ -266,9 +266,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
             line: { color },
             error_y: {
               type: "data",
+              // Keyed by frame like y; Object.values would order "0".."n" before "-10"
               array:
                 stdBool && Object.keys(dataStd).includes(key)
-                  ? Object.values(dataStd[key])
+                  ? dataXrange.map((x) => dataStd[key]?.[x] ?? undefined)
                   : null,
               visible: true,
             },
@@ -282,6 +283,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     span,
     dataStd,
     dataKeys,
+    dataXrange,
     newDataXrange,
     dialogFilterNodeId,
     nshades,

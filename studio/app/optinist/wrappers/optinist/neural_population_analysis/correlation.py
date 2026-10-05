@@ -37,7 +37,7 @@ def correlation(
     num_cell = X.shape[0]
 
     # calculate correlation
-    flat = np.where(np.std(X, axis=1) == 0)[0]
+    flat = np.where(np.ptp(X, axis=1) == 0)[0]  # exact, unlike std == 0
     if len(flat):
         rois = ind[flat] if ind is not None else flat
         logger.warning(
@@ -48,6 +48,8 @@ def correlation(
         )
     with np.errstate(invalid="ignore", divide="ignore"):
         corr = np.atleast_2d(np.corrcoef(X))
+    corr[flat, :] = np.nan
+    corr[:, flat] = np.nan
     for i in range(num_cell):
         corr[i, i] = np.nan
 

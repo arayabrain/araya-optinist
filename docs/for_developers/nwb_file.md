@@ -235,23 +235,27 @@ save_data=['ops', 'fluorescence', 'all_roi', 'non_cell_roi', 'cell_roi'],
 ##### NWB Output
 
 - [optinist](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
-  - [mean](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container)
-  - [sem](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container)
-  - [num_sample](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container)
+  - [mean](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): (cell, window) event-triggered average
+  - [std](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): sample standard deviation across events (ddof 1); NaN when only one event was averaged
+  - [sem](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): std / sqrt(num_sample)
+  - [num_sample](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): number of events actually averaged, after dropping events of a non-modal length and events whose window crosses the recording edge
 
 ##### Function Output
 
 info['mean'] = TimeSeriesData(
     mean,
-    std=sem,
-    index=list(np.arange(params['pre_event'], params['post_event'])),
+    std=std,
+    sem=sem,
+    index=list(range(pre_event, post_event + trigger_len)),
     cell_numbers=cell_numbers if iscell is not None else None,
     file_name='mean'
 )
 info['mean_heatmap'] = HeatMapData(
     norm_mean,
-    columns=list(np.arange(params['pre_event'], params['post_event'])),
-    file_name='mean_heatmap'
+    columns=list(np.arange(pre_event, post_event + trigger_len)),
+    index=list(cell_numbers) if iscell is not None else None,
+    file_name='mean_heatmap',
+    meta=PlotMetaData(yaxis_type='category'),
 )
 info['nwbfile'] = nwbfile
 

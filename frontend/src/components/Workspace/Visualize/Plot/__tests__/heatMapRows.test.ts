@@ -45,6 +45,14 @@ describe("heatMapZRange", () => {
     ).toEqual([-0.4, 0.9])
   })
 
+  it("ignores the null the split-JSON API serves for NaN", () => {
+    const served = [
+      [null, 1],
+      [2, null],
+    ] as unknown as number[][]
+    expect(heatMapZRange(served)).toEqual([1, 2])
+  })
+
   it("is undefined without finite values", () => {
     expect(heatMapZRange(undefined)).toBeUndefined()
     expect(heatMapZRange([[NaN]])).toBeUndefined()
