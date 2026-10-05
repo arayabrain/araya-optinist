@@ -37,7 +37,17 @@ def correlation(
     num_cell = X.shape[0]
 
     # calculate correlation
-    corr = np.atleast_2d(np.corrcoef(X))
+    flat = np.where(np.std(X, axis=1) == 0)[0]
+    if len(flat):
+        rois = ind[flat] if ind is not None else flat
+        logger.warning(
+            "correlation: %d ROI(s) have a constant trace, "
+            "their rows and columns are NaN: %s",
+            len(flat),
+            rois.tolist(),
+        )
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = np.atleast_2d(np.corrcoef(X))
     for i in range(num_cell):
         corr[i, i] = np.nan
 
