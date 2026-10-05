@@ -37,6 +37,8 @@ class Runner:
 
     @classmethod
     def run(cls, __rule: Rule, last_output, run_script_path: str):
+        # Pickled before save_all_nwb mutates it, published after whole.nwb exists
+        staged_pickle_path = f"{__rule.output}.staged"
         try:
             logger.info("start rule runner")
 
@@ -74,8 +76,6 @@ class Runner:
                 output_info,
             )
 
-            # Pickled before save_all_nwb mutates it, published after whole.nwb exists
-            staged_pickle_path = f"{__rule.output}.staged"
             PickleWriter.write(staged_pickle_path, output_info)
 
             # Save NWB data through Workflow
@@ -96,6 +96,9 @@ class Runner:
             # logging error
             err_msg = list(traceback.TracebackException.from_exception(e).format())
             logger.error("\n".join(err_msg))
+
+            if os.path.exists(staged_pickle_path):
+                os.remove(staged_pickle_path)
 
             # save error info to node pickle data.
             PickleWriter.write_error(__rule.output, e)

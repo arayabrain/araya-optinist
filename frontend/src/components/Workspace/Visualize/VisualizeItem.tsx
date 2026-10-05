@@ -366,6 +366,9 @@ const HeatMapRefItemIdSelect = memo(function HeatMapRefItemIdSelect({
   )
 })
 
+// Non-numeric on purpose: the change handlers turn Number(NO_LINK) into null.
+const NO_LINK = "none"
+
 const LinkToBoxSelect = memo(function LinkToBoxSelect({
   value,
   itemIdList,
@@ -378,8 +381,11 @@ const LinkToBoxSelect = memo(function LinkToBoxSelect({
   return (
     <FormControl fullWidth variant="standard">
       <InputLabel>Link to box (#)</InputLabel>
-      <Select value={String(value)} onChange={onChange}>
-        <MenuItem value={undefined}>{"None"}</MenuItem>
+      <Select
+        value={value == null ? NO_LINK : String(value)}
+        onChange={onChange}
+      >
+        <MenuItem value={NO_LINK}>{"None"}</MenuItem>
         {itemIdList.map((value) => (
           <MenuItem key={value} value={value}>
             {value}
