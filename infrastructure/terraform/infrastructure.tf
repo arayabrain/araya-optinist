@@ -682,8 +682,6 @@ resource "aws_db_instance" "main" {
   storage_type                    = "gp3"
   engine                          = "mysql"
   engine_version                  = "8.4"
-  allow_major_version_upgrade     = true # remove once both environments are on 8.4
-  apply_immediately               = true # remove once both environments are on 8.4
   instance_class                  = "db.t4g.small"
   parameter_group_name            = aws_db_parameter_group.main.name
   db_name                         = var.mysql_database

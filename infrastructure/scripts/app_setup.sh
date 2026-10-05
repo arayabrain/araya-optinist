@@ -251,7 +251,8 @@ if command -v yum &>/dev/null; then
     yum install -y python3-pip
 elif command -v apt-get &>/dev/null; then
     apt-get update
-    apt-get install -y mysql-client-core-8.0 python3-pip
+    # Version-agnostic: a name tied to the server version goes stale at each upgrade
+    apt-get install -y default-mysql-client python3-pip
 else
     echo "$(date): ERROR: No supported package manager found"
     exit 1
