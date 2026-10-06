@@ -159,6 +159,45 @@ def test_iscell_selecting_no_cell_fails_with_a_clear_message(tmp_path):
         _eta(tmp_path, iscell=IscellData(np.zeros(NUM_CELL)))
 
 
+def test_correlation_with_iscell_selecting_no_cell_fails_the_same_way(tmp_path):
+    with pytest.raises(AssertionError, match="iscell marks no ROI"):
+        correlation(
+            FluoData(_fluo(), file_name="f"),
+            str(tmp_path / "default" / "uid" / "corr_1"),
+            iscell=IscellData(np.zeros(NUM_CELL)),
+            params={"transpose": False},
+        )
+
+
+def test_down_windows_the_gap_to_the_next_event(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    fluo = _fluo()
+    out = _eta(tmp_path, fluo=fluo, params={**PARAMS, "trigger_type": "down"})
+
+    # the run is the 35-frame gap after each offset; the last gap reaches the end
+    # of the recording so its window (to +10 past the next onset) is dropped
+    assert _postprocess(out)["num_sample"] == [3]
+    assert "averaged 3 of 4 triggers (1 dropped, window crosses" in caplog.text
+    assert list(out["mean"].index) == list(range(-10, 45))
+    edges = [s + EVENT_LEN for s in EVENT_STARTS[:3]]
+    windows = np.stack([fluo[:, e - 10 : e + 45] for e in edges])
+    np.testing.assert_allclose(out["mean"].data, windows.mean(axis=0))
+
+
+def test_down_with_irregular_spacing_keeps_only_the_modal_gap(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    # gaps after the offsets are 35, 45 and 65 frames: no repeat, mode is 35
+    behavior = _behavior(starts=[40, 80, 130])
+
+    out = _eta(tmp_path, behavior=behavior, params={**PARAMS, "trigger_type": "down"})
+
+    assert _postprocess(out)["num_sample"] == [1]
+    assert "averaged 1 of 3 triggers (2 dropped, length differs from the modal 35)" in (
+        caplog.text
+    )
+    assert list(out["mean"].index) == list(range(-10, 45))
+
+
 def test_cross_edge_drop_warning_has_no_length_clause(tmp_path, caplog):
     caplog.set_level(logging.WARNING, logger="optinist")
     # neither the onset at frame 4 nor its offset at 9 has 10 frames before it

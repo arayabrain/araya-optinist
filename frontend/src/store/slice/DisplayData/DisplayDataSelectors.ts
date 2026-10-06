@@ -62,7 +62,7 @@ export const selectHeatMapData = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).heatMap[filePath].data
 
 export const selectHeatMapMeta = (filePath: string) => (state: RootState) =>
-  selectDisplayData(state).heatMap[filePath].meta
+  selectDisplayData(state).heatMap[filePath]?.meta
 
 export const selectHeatMapColumns = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).heatMap[filePath].columns

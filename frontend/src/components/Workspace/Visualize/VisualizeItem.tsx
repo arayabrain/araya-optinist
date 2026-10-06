@@ -23,6 +23,7 @@ import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
 import { FilePathSelect } from "components/Workspace/Visualize/FilePathSelect"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import {
+  selectHeatMapMeta,
   selectLoading,
   selectIsEditRoiCommitting,
 } from "store/slice/DisplayData/DisplayDataSelectors"
@@ -350,7 +351,7 @@ const HeatMapRefItemIdSelect = memo(function HeatMapRefItemIdSelect({
   const filePath = useSelector(selectVisualizeDataFilePath(itemId))
   // Undefined until HeatMapPlot has loaded the data
   const meta = useSelector((state: RootState) =>
-    filePath != null ? state.displayData.heatMap[filePath]?.meta : undefined,
+    filePath != null ? selectHeatMapMeta(filePath)(state) : undefined,
   )
   const onChange = (event: SelectChangeEvent) => {
     const value = Number(event.target.value)
@@ -394,9 +395,9 @@ const LinkToBoxSelect = memo(function LinkToBoxSelect({
         onChange={onChange}
       >
         <MenuItem value={NO_LINK}>{"None"}</MenuItem>
-        {itemIdList.map((value) => (
-          <MenuItem key={value} value={value}>
-            {value}
+        {itemIdList.map((id) => (
+          <MenuItem key={id} value={id}>
+            {id}
           </MenuItem>
         ))}
       </Select>

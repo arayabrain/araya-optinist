@@ -190,6 +190,7 @@ class TestFileSyncFilterEssentialOnlyMode:
             "data.h5",
             "data.mat",
             "data.nd2",
+            "func1/func1.pkl.staged",
         ]
 
         for file_path in large_files:

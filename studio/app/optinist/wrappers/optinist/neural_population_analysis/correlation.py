@@ -32,6 +32,7 @@ def correlation(
     if iscell is not None:
         iscell = iscell.data
         ind = np.where(iscell > 0)[0]
+        assert len(ind) > 0, "iscell marks no ROI as a cell, nothing to correlate"
         X = X[ind, :]
 
     num_cell = X.shape[0]
