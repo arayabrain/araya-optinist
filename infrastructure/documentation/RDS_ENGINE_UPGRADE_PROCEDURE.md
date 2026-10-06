@@ -3092,7 +3092,7 @@ Three changes, and they can travel together — see the gate below for why that 
 
 | Change | File | Plan effect |
 |-------------------------|-----------------------|-----------------------|
-| Remove `allow_major_version_upgrade` and `apply_immediately` | `infrastructure/terraform/infrastructure.tf` | **None on `aws_db_instance.main`** — that is the point |
+| Remove `allow_major_version_upgrade` and `apply_immediately` | `infrastructure/terraform/infrastructure.tf` | **An in-place `update` on `aws_db_instance.main`, carrying exactly those two attributes** — measured. An earlier version of this table said "none", which was wrong: they are write-only against the API but recorded in state |
 | Update the MySQL client package, if it has fallen behind | `infrastructure/scripts/app_setup.sh` | **Updates `aws_s3_object.app_setup_script`** — the resource carries `etag = filemd5(...)`, so any edit to the script shows up |
 | Add the snapshot-restore runbook | `infrastructure/documentation/` | None |
 
@@ -3126,9 +3126,22 @@ terraform show -json "$PLAN" | jq -r '
 # On production, build_and_deploy APPEARING is the finding: it means var.git_branch was
 # edited, and this small apply just became an application rollout.
 #
-# aws_db_instance.main must NOT appear. Its absence is the proof that
-# allow_major_version_upgrade and apply_immediately were never read back from the API.
-# If it appears, stop: something else changed, or the attributes were load-bearing.
+# aws_db_instance.main DOES appear, and the expectation that it would not was wrong.
+# Measured on production after the cleanup merged:
+#   allow_major_version_upgrade: true -> null
+#   apply_immediately:           true -> false
+# Both are write-only against the API, but they are RECORDED IN STATE, so removing them
+# from the configuration produces a diff. "Never read back from the API" was true and
+# still did not imply "no diff".
+#
+# So judge by the SET, the way phase 4's gate does: the action is `update`, replace_paths
+# is empty, and those two are the ONLY changed attributes. A third one stops the work.
+#
+# This does not weaken what the removal achieves. The guard is restored by the
+# CONFIGURATION, not by this apply - Terraform sends what the config says, so a later
+# engine_version edit is refused whether or not this diff has been applied. The diff is
+# state bookkeeping, and any later apply absorbs it; no apply needs to be scheduled for
+# it alone.
 ```
 
 **Keep the three changes together and rely on the per-resource assertion.** On development the reason is
