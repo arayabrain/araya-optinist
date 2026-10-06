@@ -291,7 +291,7 @@ is why `stop_rds()` passes `DeleteAutomatedBackups=False`), and **`--skip-final-
 behind**, so the fallback is the newest *manual* snapshot, which may be weeks old. Terraform's
 `skip_final_snapshot` governs only its own destroy, not a CLI call.
 
-`deletion_protection` (#900) is on for production and deliberately off for development, whose scheduler
+`deletion_protection` is on for production and deliberately off for development, whose scheduler
 deletes the instance every weekday. So on development the guards below are the only protection, and on
 production a legitimate delete — the rollback — has to turn protection off first.
 
@@ -442,7 +442,7 @@ than restating it.
 
 | In the output | Post as | Why |
 |-------------------------|-----------------------|-----------------------|
-| The environment prefix | `<ENV>` | Matches PR #620, the worked example in this repository |
+| The environment prefix | `<ENV>` | The convention the repository's earlier execution logs use |
 | The AWS account id | `<ACCOUNT_ID>` | Enables cross-account enumeration |
 | The proxy endpoint's account token | `proxy-<TOKEN>` | A resolvable hostname |
 | An **instance** endpoint's account token - the label between the identifier and the region | `<TOKEN>` | Same reason. Most steps never print an endpoint; step 10 does, because proving which database it reached is the point of it |
@@ -547,7 +547,7 @@ API call inside a phase that otherwise makes none.
 aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{retention:BackupRetentionPeriod,delProt:DeletionProtection}'
 # Expected: retention greater than zero. Zero means no automated backups and no PITR.
-# DeletionProtection: true on production, false on development (#900).
+# DeletionProtection: true on production, false on development.
 
 aws rds describe-db-instance-automated-backups \
   --query "DBInstanceAutomatedBackups[?DBInstanceIdentifier=='${DB}'].{status:Status,
@@ -1449,8 +1449,8 @@ rm -f "$PLAN"
 
 Weekdays, while the environment is up, and finishing before the scheduled stop (B3, B4).
 
-**Fourteen steps in three groups, numbered one for one with #897's tasks P1-1 to P1-14.** Phase 4 cites them
-as **"phase 1 step N"** rather than restating them. **Run them in one shell session**: `PRESNAP` (step 4),
+**Fourteen steps in three groups.** The numbering is what phase 4 cites, as **"phase 1 step N"**, rather than
+restating them. **Run them in one shell session**: `PRESNAP` (step 4),
 `PLAN` (step 7), `NEWPG` and `LIVE_HOST` (step 12) are set in one step and read in a later one.
 
 #### Before the apply — steps 1 to 6
@@ -1759,7 +1759,7 @@ no nightly cycle, nor on the rollback, which 0A drills directly.
 
 **Six checks in two sittings**: check 1 in the evening after the stop, checks 2 to 6 after the morning
 restore — `stop_rds()` *deletes* the instance, so the morning group run in the evening returns
-`DBInstanceNotFound`. #897's sub-checks **a** to **e** map onto them; **c** covers checks 3 and 4.
+`DBInstanceNotFound`.
 
 #### The evening, after the stop — check 1
 
@@ -1810,8 +1810,8 @@ aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
   --query 'Targets[].{id:RdsResourceId,state:TargetHealth.State,reason:TargetHealth.Reason}'
 # Expected: one target, AVAILABLE
 
-# 5b. The re-registration itself (the part #468 failed on), reported under "rds_proxy"
-#     in the scheduler's start results.
+# 5b. The re-registration itself - the part that has failed on this stack before -
+#     reported under "rds_proxy" in the scheduler's start results.
 aws logs filter-log-events --log-group-name "/aws/lambda/${ENV}-dev-scheduler" \
   --start-time "$SINCE" --filter-pattern 'rds_proxy' \
   --query 'events[].message' --output text | tail -5
@@ -2130,13 +2130,14 @@ no diff and the free tier's ASG does not refresh. **Announce the measured upgrad
 0B's figure if it ran, otherwise 0A's — and re-read `var.git_branch` if the release process changes, because
 the other lineage's rollout costs tens of minutes on top.
 
-**So the release is two actions**: the apply, and a manual image push and ECS service cycle afterwards. The
-combined order is on #898 (*"This phase is nested inside the v1.1.11 release window"*); following this
-document or the release procedure alone drops steps from the other. #898 adds a same-morning `<FROM>`
-health-lane baseline before the plan, and a re-read of the ECS and proxy checks after the service cycle.
+**So the release is two actions**: the apply, and a manual image push and ECS service cycle afterwards.
+**Neither this document nor the release procedure states the combined order, and following either alone
+drops steps from the other** — write the combined order into the window's tracking issue beforehand. Two
+things it has to add to this document: a same-morning `<FROM>` health-lane baseline before the plan, and a
+re-read of the ECS and proxy checks after the service cycle.
 
 **If 0B was skipped, the precheck runs here for the first time.** It fails safe — the instance stays on
-`<FROM>` and the cost is the window — and the response is decided in advance (#898's `P4-4`): capture the
+`<FROM>` and the cost is the window — and the response is decided in advance, not in the window: capture the
 log, attempt no in-window fix, finish the rest of the release, and take a second window within days.
 
 **Run phase 1 steps 1 to 14 with `ENV` set to the production value**, with these differences:
@@ -2536,7 +2537,7 @@ echo "$CLASS $STORAGE $SUBNET $SG"
 Terraform convergent and leaves the ARN and endpoint unchanged. The alternative — restore to a temporary
 identifier, verify, then rename — keeps the broken instance for diagnosis at the cost of a rename and reboot.
 
-> **Deletion protection blocks the delete, and production has it on (#900).** Turning it off is a `modify`
+> **Deletion protection blocks the delete, and production has it on.** Turning it off is a `modify`
 > that takes seconds — but as a deliberate step, not something discovered from an error during an incident.
 > Step 4's apply puts it back, since `deletion_protection` is declared; if the rollback is abandoned before
 > step 4, re-enable it by hand.
@@ -2600,7 +2601,7 @@ this apply so the parameter group swap is not deferred.
 
 ```bash
 # git revert is clean only while the upgrade commit is the newest change to
-# infrastructure.tf - after #898's cleanup PR it is not. Check before using it.
+# infrastructure.tf - after phase 5's cleanup PR it is not. Check before using it.
 NEWEST_TF_COMMIT=$(git log -1 --format=%H -- infrastructure/terraform/infrastructure.tf)
 git show --stat "$NEWEST_TF_COMMIT"
 # Expected: only the engine version and parameter group family lines. If it carries
@@ -2871,15 +2872,15 @@ Two lanes are localhost-only and cannot reach a deployed environment; one subscr
 ### Choosing the lanes
 
 **The two AWS-facing lanes beyond the health lane take well over an hour together, and criterion 4 reaches
-more hand-written SQL than they do** — roughly 120 raw `execute()` statements in the Lambda packages, counted
-on #897. **So the environment's own release e2e set plus criterion 4 substitutes for them, conditional on
+more hand-written SQL than they do** — roughly 120 raw `execute()` statements in the Lambda packages, which
+nothing else executes. **So the environment's own release e2e set plus criterion 4 substitutes for them, conditional on
 criterion 4 running in full.** Run the health lane regardless, and record the substitution in the phase log.
 The residual risk, `GROUP BY` strictness, is closed by measurement: step 8 records `sql_mode`, and a value
 without `ONLY_FULL_GROUP_BY` cannot start rejecting a query the outgoing version accepted.
 
 ### The engine-version assertion
 
-**Specified on #902 and deferred to after phase 4.** It closes the B2 failure state — instance on the old
+**Deferred to after phase 4, and tracked in its own issue (see References).** It closes the B2 failure state — instance on the old
 version with an upgrade queued — which nothing in the health lane checked. Every assertion in it is also a
 manual step in phase 4, so it is regression cover for the next change, not verification of this one. One
 rule from it: an assertion against a hard-coded engine version ships in the same commit as the
@@ -2928,4 +2929,4 @@ AWS documentation:
 - [Supported Regions and DB engines for RDS Proxy](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.RDS_Fea_Regions_DB-eng.Feature.RDSProxy.html)
 - [Upgrade strategies for Amazon RDS for MySQL 8.0 to 8.4](https://aws.amazon.com/blogs/database/upgrade-strategies-for-amazon-rds-for-mysql-8-0-to-8-4/) - the precheck categories and `PrePatchCompatibility.log`
 
-First applied for MySQL 8.0 to 8.4 under issue #877, whose child issues carry the per-phase execution records.
+First applied for MySQL 8.0 to 8.4 under issue #877, whose child issues carry the per-phase execution records, the combined release order used in phase 4, and the deferred engine-version assertion (#902).
