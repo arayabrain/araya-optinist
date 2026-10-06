@@ -594,6 +594,169 @@ If `subscr-optinist-rds-storage-low` fires:
    ```
 3. Update Terraform to match the new value to prevent drift.
 
+### Emergency: Restore the Database from a Snapshot
+
+**A snapshot restore is the only way back from a corrupted or mis-migrated database, and from a bad engine
+upgrade.** There is no engine downgrade: AWS states it directly, and the reason is that **the engine version
+is a property of the snapshot** — `RestoreDBInstanceFromDBSnapshot` has no engine-version parameter. So
+restoring a pre-change snapshot is the rollback, whatever the change was.
+
+Three things to know before starting. All three were measured, not assumed.
+
+| | |
+|---|---|
+| **A restore creates a new instance** | It does not modify the existing one. The original identifier has to be **freed first**, or the restore has to land on a temporary identifier and be renamed afterwards |
+| **The identifier carries the ARN and the endpoint hostname; `DbiResourceId` does not** | Restoring onto the original identifier reproduces the original endpoint, so nothing that resolves the hostname needs reconfiguring. **`DbiResourceId` is the one attribute that moves**, and that is what forces the proxy re-registration in step 5 |
+| **The snapshot does not carry the instance's configuration** | Instance class, storage type, subnet group, security groups and parameter group are **restore arguments**, not snapshot contents. Read them off the instance before deleting it (step 2); the declared values are in `infrastructure/terraform/infrastructure.tf` |
+
+**Measured durations**, from the rehearsal drill rather than estimated: **about 13 min 30 s end to end — 5
+minutes for the delete, 8 min 30 s for the restore.** Creating a fresh manual snapshot first adds about a
+minute. Budget the announcement against those figures.
+
+**For a bad engine upgrade specifically**, use
+[RDS_ENGINE_UPGRADE_PROCEDURE.md](RDS_ENGINE_UPGRADE_PROCEDURE.md)'s Rollback section instead: it adds the
+traffic-stop and rule-disable steps that an upgrade rollback needs, and it names the retained
+outgoing-family parameter group to attach.
+
+**Step 1. Choose the restore source and confirm it.**
+
+```bash
+# EVERY manual snapshot, newest first. An empty filtered result and an empty snapshot
+# list mean different things, so filter as a COLUMN rather than as a WHERE clause.
+aws rds describe-db-snapshots \
+  --db-instance-identifier subscr-optinist-cloud-rds --snapshot-type manual \
+  --region ap-northeast-1 \
+  --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[].{
+             id:DBSnapshotIdentifier,ev:EngineVersion,status:Status,
+             created:SnapshotCreateTime}' --output table
+
+# The fallback: automated backups, which also cover point-in-time recovery for 35 days.
+aws rds describe-db-snapshots \
+  --db-instance-identifier subscr-optinist-cloud-rds --snapshot-type automated \
+  --region ap-northeast-1 \
+  --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[:3].{
+             id:DBSnapshotIdentifier,ev:EngineVersion,created:SnapshotCreateTime}' \
+  --output table
+```
+
+**Prefer a manual snapshot: its contents are known and it survives an instance delete.** Verify the engine
+version on the row you pick — a snapshot restores the version it was taken on, which is the whole mechanism.
+
+**Step 2. Read the restore parameters off the instance, while it still exists.**
+
+```bash
+read -r CLASS STORAGE SUBNET SG <<<"$(aws rds describe-db-instances \
+  --db-instance-identifier subscr-optinist-cloud-rds \
+  --region ap-northeast-1 --output text \
+  --query 'DBInstances[0].[DBInstanceClass,StorageType,DBSubnetGroup.DBSubnetGroupName,
+           VpcSecurityGroups[0].VpcSecurityGroupId]')"
+echo "$CLASS $STORAGE $SUBNET $SG"
+# Expected: four non-empty values. They are unavailable once the instance is gone.
+```
+
+**Step 3. Clear deletion protection — production only.**
+
+`DeleteDBInstance` is **refused outright** while protection is on, so a legitimate delete stops here with
+nothing but an error message to explain why.
+
+```bash
+aws rds describe-db-instances --db-instance-identifier subscr-optinist-cloud-rds \
+  --region ap-northeast-1 --query 'DBInstances[0].DeletionProtection'
+# true on production, false on development. Only continue if it said true.
+
+aws rds modify-db-instance --db-instance-identifier subscr-optinist-cloud-rds \
+  --no-deletion-protection --apply-immediately --region ap-northeast-1 \
+  --query 'DBInstance.DBInstanceIdentifier'
+aws rds describe-db-instances --db-instance-identifier subscr-optinist-cloud-rds \
+  --region ap-northeast-1 --query 'DBInstances[0].DeletionProtection'
+# Expected: false. Confirm it rather than assuming.
+```
+
+**Terraform puts it back on the next apply**, because `deletion_protection` is declared — so there is no
+separate re-enable step to forget. If the restore is abandoned before that apply, re-enable it by hand.
+
+**Step 4. Free the identifier, then restore under it.**
+
+```bash
+date -u
+# The final snapshot IS the diagnostic copy of the broken instance. Keep the automated
+# backups too: --no-delete-automated-backups, because the flag DEFAULTS TO TRUE and a
+# delete written without it takes the point-in-time window with the instance.
+aws rds delete-db-instance --db-instance-identifier subscr-optinist-cloud-rds \
+  --final-db-snapshot-identifier "subscr-optinist-broken-$(date +%Y%m%d-%H%M)" \
+  --no-delete-automated-backups --region ap-northeast-1
+aws rds wait db-instance-deleted --db-instance-identifier subscr-optinist-cloud-rds \
+  --region ap-northeast-1
+
+aws rds restore-db-instance-from-db-snapshot --region ap-northeast-1 \
+  --db-instance-identifier subscr-optinist-cloud-rds \
+  --db-snapshot-identifier "<the snapshot chosen in step 1>" \
+  --db-instance-class "$CLASS" --storage-type "$STORAGE" --port 3306 \
+  --db-subnet-group-name "$SUBNET" --vpc-security-group-ids "$SG" \
+  --no-publicly-accessible --no-multi-az
+aws rds wait db-instance-available --db-instance-identifier subscr-optinist-cloud-rds \
+  --region ap-northeast-1
+date -u
+
+aws rds describe-db-instances --db-instance-identifier subscr-optinist-cloud-rds \
+  --region ap-northeast-1 \
+  --query 'DBInstances[0].{ev:EngineVersion,endpoint:Endpoint.Address,rid:DbiResourceId,
+           pg:DBParameterGroups[0].DBParameterGroupName,
+           pgs:DBParameterGroups[0].ParameterApplyStatus,
+           retention:BackupRetentionPeriod}'
+# Expected: the snapshot's engine version, the ORIGINAL endpoint hostname, a NEW
+# DbiResourceId, the parameter group in-sync, and retention unchanged.
+# A changed endpoint means the restore did not land on the original identifier - stop
+# and rename before continuing.
+```
+
+**Add `--db-parameter-group-name` if the restored version needs a different parameter-group family** from the
+one currently declared. An instance cannot attach a group from another engine family, and the restore fails
+on that argument *after* it has been committed.
+
+**Step 5. Re-register the RDS Proxy target.**
+
+The restored instance has a new `DbiResourceId`, and **the proxy does not pick up a replacement on its own.**
+
+```bash
+aws rds register-db-proxy-targets --db-proxy-name subscr-optinist-rds-proxy \
+  --target-group-name default \
+  --db-instance-identifiers subscr-optinist-cloud-rds --region ap-northeast-1
+aws rds describe-db-proxy-targets --db-proxy-name subscr-optinist-rds-proxy \
+  --region ap-northeast-1 \
+  --query '{found:length(Targets),
+            targets:Targets[].{id:RdsResourceId,state:TargetHealth.State}}'
+# Expected: found == 1, AVAILABLE. REGISTERING for a minute or two is normal.
+```
+
+**On development this step happens by itself**, on the scheduler's next start through
+`ensure_rds_proxy_target()`. **Production has no scheduler, so it is manual and load-bearing** — the
+application cannot reach the database until it completes.
+
+**Step 6. Prove the database serves — metadata is not proof.**
+
+The control plane reporting the right version, endpoint and parameter group says nothing about whether the
+database answers. **A restore that produces correct metadata and an unreachable database is a failed
+restore.** Connect over TLS and read the version from the engine, then cycle the ECS services so no
+connection pool is left holding a dead connection:
+
+```bash
+# Health check through the application
+curl -fsS https://araya-optinist.com/api/health && echo
+
+# Then force each service to start fresh tasks
+for S in subscr-optinist-cloud-service subscr-premium-optinist-cloud-service \
+         subscr-background-optinist-cloud-service subscr-public-optinist-cloud-service; do
+  aws ecs update-service --cluster subscr-optinist-cloud-cluster --service "$S" \
+    --force-new-deployment --region ap-northeast-1 --query 'service.serviceName'
+done
+```
+
+**Afterwards: check Terraform converges.** Run `terraform plan` and confirm `aws_db_instance.main` shows
+`update` or no change. **A create or delete there would destroy the instance just restored**, so anything
+else aborts. Each delete that retained its automated backups leaves its own set, distinguished only by
+`DbiResourceId`, so a later cleanup has more than one to handle.
+
 ---
 
 ## Reference: Security Maintenance
