@@ -1,4 +1,5 @@
 import gc
+import operator
 import os
 from typing import Optional
 
@@ -60,8 +61,8 @@ class ImageData(BaseData):
             if len(lengths) < 2:
                 raise ValueError(f"lengths needs at least 2 entries. Got {lengths}.")
             try:
-                lengths = [int(length) for length in lengths]
-            except (TypeError, ValueError):
+                lengths = [operator.index(length) for length in lengths]
+            except TypeError:
                 raise ValueError(f"lengths must be integers. Got {lengths}.")
             if min(lengths) <= 0:
                 raise ValueError(f"lengths must be positive. Got {lengths}.")

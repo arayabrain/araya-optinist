@@ -210,7 +210,8 @@ def caiman_cnmf(
                     "online": {
                         "max_comp_update_shape": params["max_comp_update_shape"]
                         or np.inf,
-                        "num_times_comp_updated": params["update_num_comps"] or np.inf,
+                        "num_times_comp_updated": params["num_times_comp_updated"]
+                        or np.inf,
                     },
                 }
             )

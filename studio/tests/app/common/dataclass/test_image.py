@@ -44,6 +44,12 @@ def test_split_image_lengths_non_integer_raises(tmp_path):
         image_data.split_image(str(tmp_path), lengths=["abc", 10])
 
 
+def test_split_image_lengths_non_integral_raises(tmp_path):
+    image_data, _ = make_image_data(tmp_path, frames=10)
+    with pytest.raises(ValueError, match="integers"):
+        image_data.split_image(str(tmp_path), lengths=[2.9, 7.1])
+
+
 def test_split_image_single_length_raises(tmp_path):
     image_data, _ = make_image_data(tmp_path, frames=10)
     with pytest.raises(ValueError, match="at least 2"):
