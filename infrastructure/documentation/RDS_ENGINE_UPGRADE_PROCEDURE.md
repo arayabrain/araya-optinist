@@ -2,40 +2,15 @@
 
 ## Executive Summary
 
-- **This procedure covers an in-place MySQL major version upgrade** of the RDS instances in both environments, using `ModifyDBInstance` rather than a parallel instance or a blue/green deployment.
-- **The engine change is two lines of Terraform.** Everything else in this document exists because the surrounding configuration does not tolerate those two lines without preparation.
-- **Six constraints (B1 to B6)** must be handled before any apply. They are properties of this stack, not of any particular version pair, so they recur on every major upgrade.
-- **The development scheduler's nightly destroy and restore cycle is the dominant constraint.** It makes the upgrade a same-day operation that must not span a night, and it makes the nightly cycle itself a mandatory verification step.
-- **Whether a terraform apply is also an application deploy depends on the branch lineage (B6).** On the development lineage every apply rebuilds the image and rolls every ECS service; on the production lineage the apply is the database alone, and the image push and service cycle are separate manual steps.
-- **Rollback is a snapshot restore.** There is no engine downgrade, and the restore creates a new DB instance rather than reverting the existing one.
+- **In-place MySQL major version upgrade** of the RDS instances in both environments, with `ModifyDBInstance`. Not a parallel instance: `RestoreDBInstanceFromDBSnapshot` has no engine version parameter, so a copy restores at `<FROM>` and still needs the same upgrade, frozen at its snapshot. The in-place upgrade keeps the warm storage volume.
+- **The engine change is two lines of Terraform.** Everything else here exists because the surrounding configuration does not tolerate those two lines without preparation: **six constraints, B1 to B6**, properties of this stack rather than of any version pair.
+- **The development scheduler's nightly destroy and restore cycle is the dominant constraint.** The scheduler's restore passes a parameter group but no engine version, so the parameter group swap and the engine upgrade must land in one apply, the instance must be `available` on `<TO>` before that day's scheduled stop, and the nightly cycle is itself a mandatory verification step.
+- **The apply must modify the instance, never replace it.** A replacement is an empty database behind the same endpoint, and the loss is silent. This and every other gate is an asserted command output or a plan-JSON query, never a visual read: the failure mode is an upgrade that Terraform reports as successful and RDS has deferred.
+- **Whether a terraform apply is also an application deploy depends on the branch lineage (B6).** On the development lineage every apply rebuilds the image and rolls every ECS service; on the production lineage the apply is the database alone.
+- **Recovery points are created before the apply and closed deliberately afterwards.** A manual snapshot and a retained outgoing-family parameter group are prerequisites, both verified. **On an environment rebuilt on a schedule, automated retention is not one continuous window**: each cycle's instance carries its own backup — one `active` row for the current instance, one `retained` row per earlier cycle — so point-in-time recovery reaches any moment *inside* a running day and nothing overnight. The manual snapshot covers the gaps, and deleting it is what closes the rollback window.
+- **Rollback is a snapshot restore.** There is no engine downgrade; the restore creates a new instance under the same identifier.
 
 **Version placeholders used throughout:** `<FROM>` is the current major version, `<TO>` the target, and `<ENV>` the Terraform `var.environment` value. First applied for MySQL 8.0 to 8.4 (see [References](#references)).
-
----
-
-## Key Architectural Principles
-
-1. **In-place upgrade, not a parallel instance**
-   - `RestoreDBInstanceFromDBSnapshot` has no engine version parameter, so an `<FROM>` snapshot always restores as `<FROM>`. A parallel instance therefore requires snapshot, restore, then the same engine upgrade, with the upgrade duration unchanged and a restore stacked in front of it.
-   - The copy is also frozen at the snapshot, so keeping it current means building binlog replication by hand.
-   - The in-place upgrade keeps the existing, fully warm storage volume.
-
-2. **The apply must modify the instance, never replace it**
-   - A replacement creates an empty database behind the same identifier and endpoint, so the application reconnects transparently and the loss is silent.
-   - This is enforced mechanically, by asserting against the plan JSON, not by reading the plan.
-
-3. **The parameter group swap and the engine upgrade must land in the same apply**
-   - The scheduler's restore passes a parameter group name but no engine version, so a parameter group whose family is ahead of the snapshot's engine version breaks every subsequent restore.
-   - The instance must reach `available` on `<TO>` before the same day's scheduled stop.
-
-4. **Verification is mechanical, or it does not count**
-   - Every gate in this procedure is an asserted command output or a plan-JSON query.
-   - The failure mode this guards against is a deferred upgrade that Terraform reports as successful.
-
-5. **Recovery points are created before the apply, and closed deliberately afterwards**
-   - A manual snapshot and a retained parameter group of the outgoing family are both prerequisites, and both are verified rather than assumed.
-   - **On an environment that is rebuilt on a schedule, the automated retention is not one continuous window.** Each cycle's instance carries its own backup — one `active` row for the current instance, one `retained` row per earlier cycle — so point-in-time recovery reaches any moment *inside* a running day and nothing overnight or on a day the environment did not run. A manual snapshot is what covers the gaps.
-   - Deleting the manual snapshot and the retained parameter group is what closes the rollback window, so it is a decision with an agreed duration rather than cleanup.
 
 ---
 
@@ -175,7 +150,7 @@ git diff --stat <the deployed ref>..HEAD -- studio/app studio/__main_unit__.py f
 **The pinned parameters are the larger half of this change, and not optional.** Phase 0A's step 8 / step 9
 pair measures what the outgoing version runs and what the incoming one defaults to; every value that differs
 and is not wanted is pinned here. The values and the count are **version-specific** — six for 8.0 to 8.4 — so
-take them from the pair, not from this example (edge case 6).
+take them from the pair, not from this example (edge case 3).
 
 A major-only `engine_version` resolves to the region default for that major, because
 `auto_minor_version_upgrade` is enabled and the provider treats the value as a prefix. **Do not keep
@@ -398,7 +373,7 @@ aws rds describe-db-instance-automated-backups \
            from:RestoreWindow.EarliestTime,to:RestoreWindow.LatestTime}" --output table
 # Expected: read the whole list, not just the active row. On an instance rebuilt on a
 # schedule the active row spans only the current instance's lifetime, and each earlier
-# cycle is its own `retained` row - see Key Architectural Principles, 5.
+# cycle is its own `retained` row - see the Executive Summary.
 
 # Manual snapshots: these survive an instance delete, so they are the true floor
 aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type manual \
@@ -425,7 +400,7 @@ Stop immediately if any of these is true. Each has a command that detects it in 
 | `git status --porcelain` is non-empty at the toplevel | B6. The apply fails after the RDS modification is issued |
 | It is night, a weekend or a holiday and the target is development | The scheduler may have deleted the instance |
 | The phase 0A rollback drill did not complete, or the automatic pre-upgrade snapshots were absent or on the wrong version | The rollback has no proven recovery point |
-| A rehearsal clone is still alive or still references the live parameter group | Edge case 1. The apply cannot destroy the outgoing group |
+| A rehearsal clone is still alive or still references the live parameter group | The apply cannot destroy the outgoing group while anything references it |
 | The tfvars file for the target environment is unavailable | Without a plan there is no gate |
 | The newest manual snapshot predates the work by more than the acceptable data loss | That snapshot is the floor if an instance is deleted with its automated backups |
 | `drop_clone` does not refuse a real instance identifier when tested | The guard against the procedure's most damaging typo is not working |
@@ -442,9 +417,9 @@ SNAP=${DB}-dev-scheduler
 
 #### The upgrade — steps 1 to 11
 
-Restore a clone, upgrade it, and measure what changed. **Only step 3 carries a deadline** (edge case 2: a
-restore still reading the source snapshot when the scheduled stop recreates it); after step 3 nothing in 0A
-reads that snapshot again.
+Restore a clone, upgrade it, and measure what changed. **Only step 3 carries a deadline**: the scheduled stop
+recreates the nightly snapshot under a fixed identifier and must delete the existing one first, so a restore
+still reading it can make the stop fail. After step 3 nothing in 0A reads that snapshot again.
 
 ##### Step 1 — confirm the source snapshot
 
@@ -460,7 +435,8 @@ aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
 
 ```bash
 # A private parameter group for the clone, copied from the live one.
-#    Do not attach the live group - see edge case 1.
+#    Do not attach the live group: a clone on it blocks phase 1's destroy of it, and a
+#    parameter experiment on the clone would land on the live instance.
 aws rds copy-db-parameter-group \
   --source-db-parameter-group-identifier "$LIVE_PG" \
   --target-db-parameter-group-identifier rehearsal-ssl-from \
@@ -671,7 +647,7 @@ aws rds describe-db-parameters --db-parameter-group-name rehearsal-ssl-to \
 | `@@sql_mode` | Unchanged from `<FROM>` | Query acceptance behaviour does not change across the upgrade |
 | `information_schema.PLUGINS` for `%native_password%` | A row, `ACTIVE` | The precheck warns the plugin is off by default in upstream `<TO>`. This says whether the running server still has it |
 | **The connection itself** | Succeeded | The strongest evidence available here, and it costs nothing: if `mysql.user` shows the connecting account on `mysql_native_password`, then a successful login **is** proof the plugin authenticates on `<TO>`. Read the two rows together rather than either alone |
-| `@@innodb_buffer_pool_size`, `@@innodb_dedicated_server` | May change together | The buffer pool sizing change - see edge case 6. `@@innodb_buffer_pool_instances` follows it automatically, because the engine forces it to 1 below a 1 GiB pool |
+| `@@innodb_buffer_pool_size`, `@@innodb_dedicated_server` | May change together | The buffer pool sizing change - see edge case 3. `@@innodb_buffer_pool_instances` follows it automatically, because the engine forces it to 1 below a 1 GiB pool |
 | `@@innodb_redo_log_capacity` | May change | Same class as the buffer pool: a family may pin it where the next leaves `innodb_dedicated_server` to derive it. A smaller redo log checkpoints more often, which is write IO - and it compounds with any `innodb_io_capacity` increase |
 | `@@innodb_io_capacity` and the other InnoDB values | **May change, and the RDS family diff does not predict it** | These are parameters RDS pins in neither family, so the *engine* default changes underneath. Comparing family defaults alone misses them entirely, which is why they are read from the running server |
 | `@@binlog_format` | May change to `ROW` | Harmless with no replicas and no external consumers |
@@ -708,7 +684,7 @@ done
 # numbers above are the only evidence.
 ```
 
-Record the two sets side by side. **A difference in `innodb_buffer_pool_size` is the one that changes a decision** - see edge case 6.
+Record the two sets side by side. **A difference in `innodb_buffer_pool_size` is the one that changes a decision** - see edge case 3.
 
 ##### Step 10 — alembic
 
@@ -749,7 +725,7 @@ throwaway clone, while the decision is still "do not apply yet".
 ##### Step 11 — rehearse the parameter pins the apply will carry
 
 Where the step 8 / step 9 pair shows a default that moved and is not wanted, the phase 1 parameter group pins
-it back (edge case 6). **This step proves the pins produce the intended running state on the clone, before
+it back (edge case 3). **This step proves the pins produce the intended running state on the clone, before
 the apply relies on them** - that a formula such as `{DBInstanceClassMemory*3/4}` evaluates on the new
 family, that the values resolve as intended together, and that a `static` parameter reaches the running
 server rather than sitting at `pending-reboot`, which looks exactly like a successful apply. Skip it only if
@@ -838,7 +814,7 @@ the restore parameters, and the delete-and-restore under the same identifier. Th
 **0A can be split across days here.** The drill restores from the clone's *own* automatic pre-upgrade
 snapshot, so the scheduled stop no longer constrains anything; a reasonable split is steps 1 to 10 on one
 day and step 11, the drill and the teardown on the next. Nothing touches the clone overnight — the scheduler
-acts on the one identifier in its `RDS_INSTANCE_ID`, not on tags (edge case 3) — but it keeps billing.
+acts on the one identifier in its `RDS_INSTANCE_ID`, not on tags (edge case 1) — but it keeps billing.
 
 If the terminal stayed open, the shell still holds every variable and helper; **credentials expire while the
 shell does not**, so expect an `ExpiredToken` on the first call. Verify rather than assume:
@@ -971,7 +947,7 @@ from a snapshot. **This is the last opportunity — the teardown removes the ins
 #### Teardown
 
 As soon as the drill is finished, and in any case before phase 1: a clone still referencing the live
-parameter group makes the phase 1 apply fail to destroy it (edge case 1).
+parameter group makes the phase 1 apply fail to destroy it with `InvalidDBParameterGroupState`.
 
 ```bash
 drop_clone "$CLONE"
@@ -1017,31 +993,21 @@ aws rds describe-db-instance-automated-backups \
 
 ### Phase 0B: rehearse on a clone of production - conditional
 
-**The only phase before phase 4 that touches production, and not always necessary.** Decide with the two
-gates below. Skipping it keeps the whole of phase 0 inside development, which removes an occasion for a
-mistyped identifier against production.
-
-#### Gate 1: does the production schema differ from development's?
-
-The precheck is mostly schema-driven, and the schema is whatever alembic has applied. **If both environments
-are at the same revision, 0A's precheck already covered production's schema.** They are not automatically the
-same: the environments track different branches.
+The only phase before phase 4 that touches production, and not always necessary. Skipping it keeps the whole
+of phase 0 inside development. Two gates decide:
 
 ```bash
-# Read-only. Once per environment, with ENV and the proxy endpoint pointed at each.
+# Gate 1 - does production's schema differ from development's? The precheck is mostly
+# schema-driven, and the schema is whatever alembic has applied. Once per environment,
+# with ENV and PROXY pointed at each:
 sql_run "$PROXY" <<< 'SELECT version_num FROM alembic_version;'
-# Expected: the same revision in both. If they differ, production's schema is not what
-# 0A tested and 0B should run.
-```
+# Expected: the same revision in both. If they differ, 0A's precheck did not cover
+# production's schema. Even when they match, the data-dependent table checks run over
+# rows development does not have - which gate 2 prices.
 
-Even when the revisions match, the **data-dependent** table-validation checks run over rows development does
-not have. Gate 2 prices that residual.
+# Gate 2 - how different are the data volumes? 0A's measured duration transfers unless
+# production holds materially more data.
 
-#### Gate 2: how different are the data volumes?
-
-The announced downtime comes from 0A unless production holds materially more data.
-
-```bash
 for E in "$ENV" <the other environment>; do
   echo "== $E"
   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeStorageSpace \
@@ -1051,12 +1017,11 @@ for E in "$ENV" <the other environment>; do
     --period 300 --statistics Average \
     --query 'sort_by(Datapoints,&Timestamp)[-1].Average' --output text
 done
-# Expected: subtract each from AllocatedStorage to get used space. If the two are
-# comparable, 0A's measured duration transfers and only needs a margin. When this was
-# last measured the two environments were within a few percent of each other.
+# Expected: subtract each from AllocatedStorage to get used space. Comparable means 0A's
+# duration plus a margin is the announcement; when last measured the two environments
+# were within a few percent of each other.
 ```
 
-#### The decision
 
 | Gate 1 (alembic revisions) | Gate 2 (used data volume) | Decision |
 |-------------------------|-----------------------|-----------------------|
@@ -1064,25 +1029,21 @@ done
 | Same | Production materially larger | Run 0B for the timing. The precheck is already covered |
 | **Differ** | Either | **Run 0B.** Production's schema was not tested by 0A |
 
-**If 0B is skipped, the precheck runs for the first time in phase 4.** It fails safe — the upgrade does not
-complete and the instance stays on `<FROM>`, so it costs the window rather than the data — but phase 4 needs a
+**If 0B is skipped, the precheck runs for the first time in phase 4.** It fails safe - the upgrade does not
+complete and the instance stays on `<FROM>`, so it costs the window rather than the data - but phase 4 needs a
 stated response for that outcome.
 
-#### If 0B runs
-
-0A's sequence with three differences: `ENV` and the SSM target point at production; the source is a fresh
-manual snapshot of production, **named with `rehearsal` in it** so the teardown guards accept it; and the
-rollback drill is not repeated. **Creating that snapshot is the only operation against production** — the
-exposure is the session, in which `DB` is production.
+**If 0B runs**: 0A steps 2 to 8 with `ENV` and the SSM target pointed at production, `rehearsal-ssl-from`
+copied from production's group, and the drill not repeated. **Creating the source snapshot is the only
+operation against production**; the exposure is the session, in which `DB` is production.
 
 ```bash
 # Re-run the session setup with ENV set to production, then:
-export SSM_NAME=${ENV}-optinist-background
-DB=${ENV}-optinist-cloud-rds
 CLONE=${ENV}-optinist-rds-upgrade-rehearsal
 SNAP=${ENV}-optinist-rehearsal-source-$(date +%Y%m%d-%H%M)
-
-# The one production operation in this phase. Additive: it creates, it does not modify.
+# Named with `rehearsal` in it so the teardown guard accepts it: $SNAP is a snapshot of
+# PRODUCTION, and the newest manual snapshot is what an accidental instance delete
+# falls back to.
 aws rds create-db-snapshot --db-instance-identifier "$DB" --db-snapshot-identifier "$SNAP"
 aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
 aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
@@ -1090,15 +1051,8 @@ aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
 # Expected: available, <FROM>.x
 ```
 
-Then 0A steps 2 to 8, with `rehearsal-ssl-from` copied from production's group, and 0A's teardown — there is
-no `${CLONE}-broken` snapshot and one retained backup set rather than two — plus the source snapshot:
-
-```bash
-drop_snapshot "$SNAP"
-# $SNAP is a snapshot of PRODUCTION, and the newest manual snapshot is what an accidental
-# instance delete falls back to. The guard accepts only rehearsal-scoped names, which is
-# why the source snapshot was named that way.
-```
+Then 0A's teardown - one retained backup set rather than two, and no `${CLONE}-broken` - plus
+`drop_snapshot "$SNAP"`.
 
 #### Whether 0B ran or not
 
@@ -1110,27 +1064,18 @@ list_rehearsal_artefacts
 
 ### Phase 0C: dry-run the plan gate
 
-`terraform plan` is read-only, so the B4 gate can run days ahead of the phase 1 window, with time to fix
-what it finds. Three conditions:
-
-- **The Terraform edit must be present in the tree being planned**, committed (phase 1 needs a clean
-  worktree, B6). An unmodified checkout produces "no changes" and the gate proves nothing.
-- **Run it from the directory Terraform actually applies from** — a separate deployment checkout is a common
-  arrangement. Confirm `infrastructure.tf` *there* carries the edit.
-- **Expect more in the plan than the RDS changes, and record every resource it contains.** The deploy
-  trigger's `before` map is what settles B6 for this lineage, and the checked-out configuration is not
-  evidence of it. A trigger key present in `before` and absent in `after` means the configuration being
-  applied is *older* than the one in state: the resource is replaced once and later applies skip the build,
-  a regression invisible unless the two maps are compared. `aws_ecs_cluster.main` updating its tags from
-  `data.external.tf_build_info` is benign.
-
-This usually runs in a different terminal and directory from the AWS CLI work, so it has its own setup. It
-needs no delete guards and no `FROM`.
+`terraform plan` is read-only, so **phase 1 steps 7 to 9 can run days ahead of the window**, with time to fix
+what they find. Three conditions: the Terraform edit must be **committed in the tree being planned** (an
+unmodified checkout produces "no changes" and the gate proves nothing); run it **from the directory Terraform
+actually applies from**, which may be a separate deployment checkout; and **record every resource the plan
+contains**, because the deploy trigger's `before` map is what settles B6 for this lineage, and a key present
+in `before` and absent in `after` means the configuration is *older* than the state.
 
 ```bash
 export AWS_PROFILE=<the profile for this account>
 export AWS_REGION=ap-northeast-1
 export ENV=<the Terraform var.environment value>
+export TF_ENV=<the backends/ and environments/ file basename>
 cd <the deployment checkout>/infrastructure/terraform
 
 # Prove which tree is about to be planned: with two checkouts of one repository this is
@@ -1143,68 +1088,12 @@ grep -nE 'family|name_prefix|engine_version|allow_major_version_upgrade' infrast
 # engine version in the grep. An outgoing value means the wrong checkout.
 
 echo "ENV=$ENV"
-# Expected: the development environment's value. Stop if it is anything else: the next
-# command attaches this directory to that environment's remote state.
+# Expected: the development environment's value. Stop if it is anything else: step 7's
+# init attaches this directory to that environment's remote state.
 ```
 
-```bash
-terraform init -backend-config="backends/${TF_ENV}.hcl" -reconfigure
-
-# plan takes a state lock; let it finish. The plan file goes outside the tree - see
-# phase 1 step 7 for the two reasons.
-PLAN=$(mktemp -t tfplan-dryrun)
-terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
-
-terraform show -json "$PLAN" | jq -r '
-  .resource_changes[] | select(.type=="aws_db_instance")
-  | "\(.address) -> \(.change.actions|join(","))"'
-# Expected: aws_db_instance.main -> update
-# Any create, delete or "create,delete" aborts the work
-
-terraform show -json "$PLAN" | jq -r '
-  .resource_changes[] | select(.type=="aws_db_parameter_group")
-  | "\(.address) -> \(.change.actions|join(","))"'
-# Expected: one create and one delete - the create_before_destroy replacement
-
-terraform show -json "$PLAN" | jq -r '
-  .resource_changes[] | select(.type=="aws_db_parameter_group"
-    and (.change.actions|index("create")))
-  | {name: .change.after.name, name_prefix: .change.after.name_prefix,
-     family: .change.after.family}'
-# Expected: name null (known after apply), name_prefix set, family mysql<TO>.
-# A literal name means B1 is unfixed and the apply will fail.
-
-# The pinned parameters. An RDS expression such as {DBInstanceClassMemory*3/4} is the one
-# to watch: a bare brace is literal in HCL, a mistyped ${...} is interpolation.
-terraform show -json "$PLAN" | jq -r '
-  .resource_changes[] | select(.type=="aws_db_parameter_group"
-    and (.change.actions|index("create")))
-  | .change.after.parameter[]? | "\(.name) = \(.value) [\(.apply_method)]"'
-# Expected: one line per pin, values intact, plus the parameters the group already had.
-# Missing pins here mean the plan is for a different change than phase 1 will apply.
-
-# The deploy trigger, before and after: whether the apply rebuilds the image (B6).
-terraform show -json "$PLAN" | jq -r '
-  .resource_changes[] | select(.address=="null_resource.build_and_deploy")
-  | {before: .change.before.triggers, after: .change.after.triggers}'
-# Expected: the two maps differ in exactly the way the change explains. A key in before
-# and absent in after means the configuration is OLDER than the state - see above.
-
-# Every resource the plan touches, attributed. replace_paths names the attribute that
-# forces each replacement: "our change did this" against "this was already drifting".
-terraform show -json "$PLAN" | jq -r '
-  .resource_changes[] | select(.change.actions != ["no-op"])
-  | "\(.address) -> \(.change.actions|join(","))  replace_paths=\(.change.replace_paths // [])"' | sort
-# Expected from the engine change: the instance updating in place, the parameter group
-# replaced on family and name_prefix, and whatever derives the group's name. Everything
-# else is drift and rides along with the apply - an AMI data source with most_recent
-# replaces its instance whenever the upstream image is rebuilt, and can take network
-# egress with it. Triage the list before deciding to apply.
-
-rm -f "$PLAN"
-```
-
-0C cannot prove the replacement succeeds - a name collision only surfaces at apply time.
+Then phase 1 steps 7 to 9, and `rm -f "$PLAN"`. 0C cannot prove the replacement succeeds - a name collision
+only surfaces at apply time.
 
 ### Phase 1: apply to development
 
@@ -1336,7 +1225,7 @@ aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{retention:BackupRetentionPeriod,delProt:DeletionProtection,
            window:PreferredBackupWindow}'
 # Expected: retention greater than zero. Zero means RDS takes no automatic pre-upgrade
-# snapshot at all. Re-read it today: a restore can silently drop it (edge case 5).
+# snapshot at all. Re-read it today: a restore can silently drop it (edge case 2).
 
 aws rds describe-db-instance-automated-backups \
   --query "DBInstanceAutomatedBackups[?DBInstanceIdentifier=='${DB}'].{status:Status,
@@ -1373,11 +1262,58 @@ PLAN=$(mktemp -t tfplan)
 terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
 ```
 
-##### Step 8 — the two gate assertions
+##### Step 8 — the gate assertions
 
-Run the phase 0C assertions against `"$PLAN"`, **including the attribution step**. The gate passes on two
-resources - `aws_db_instance.main` showing `update` rather than a replacement, and the parameter group
-showing one create and one delete. The plan will contain more, and every entry applies.
+The gate passes on two resources - `aws_db_instance.main` showing `update` rather than a replacement, and
+the parameter group showing one create and one delete. The plan will contain more, and every entry applies.
+
+```bash
+terraform show -json "$PLAN" | jq -r '
+  .resource_changes[] | select(.type=="aws_db_instance")
+  | "\(.address) -> \(.change.actions|join(","))"'
+# Expected: aws_db_instance.main -> update
+# Any create, delete or "create,delete" aborts the work
+
+terraform show -json "$PLAN" | jq -r '
+  .resource_changes[] | select(.type=="aws_db_parameter_group")
+  | "\(.address) -> \(.change.actions|join(","))"'
+# Expected: one create and one delete - the create_before_destroy replacement
+
+terraform show -json "$PLAN" | jq -r '
+  .resource_changes[] | select(.type=="aws_db_parameter_group"
+    and (.change.actions|index("create")))
+  | {name: .change.after.name, name_prefix: .change.after.name_prefix,
+     family: .change.after.family}'
+# Expected: name null (known after apply), name_prefix set, family mysql<TO>.
+# A literal name means B1 is unfixed and the apply will fail.
+
+# The pinned parameters. An RDS expression such as {DBInstanceClassMemory*3/4} is the one
+# to watch: a bare brace is literal in HCL, a mistyped ${...} is interpolation.
+terraform show -json "$PLAN" | jq -r '
+  .resource_changes[] | select(.type=="aws_db_parameter_group"
+    and (.change.actions|index("create")))
+  | .change.after.parameter[]? | "\(.name) = \(.value) [\(.apply_method)]"'
+# Expected: one line per pin, values intact, plus the parameters the group already had.
+# Missing pins here mean the plan is for a different change than phase 1 will apply.
+
+# The deploy trigger, before and after: whether the apply rebuilds the image (B6).
+terraform show -json "$PLAN" | jq -r '
+  .resource_changes[] | select(.address=="null_resource.build_and_deploy")
+  | {before: .change.before.triggers, after: .change.after.triggers}'
+# Expected: the two maps differ in exactly the way the change explains. A key in before
+# and absent in after means the configuration is OLDER than the state - see above.
+
+# Every resource the plan touches, attributed. replace_paths names the attribute that
+# forces each replacement: "our change did this" against "this was already drifting".
+terraform show -json "$PLAN" | jq -r '
+  .resource_changes[] | select(.change.actions != ["no-op"])
+  | "\(.address) -> \(.change.actions|join(","))  replace_paths=\(.change.replace_paths // [])"' | sort
+# Expected from the engine change: the instance updating in place, the parameter group
+# replaced on family and name_prefix, and whatever derives the group's name. Everything
+# else is drift and rides along with the apply - an AMI data source with most_recent
+# replaces its instance whenever the upstream image is rebuilt, and can take network
+# egress with it. Triage the list before deciding to apply.
+```
 
 **Judge the instance by the SET of changed attributes, never by their count.** How many attributes differ
 depends on what the state holds, and on whether the provider renders a diff for each. The criterion: the
@@ -1411,6 +1347,9 @@ be attributed to it rather than to the engine.
 
 ```bash
 terraform apply "$PLAN"
+# If the apply fails destroying the outgoing parameter group with
+# InvalidDBParameterGroupState, re-run it: the instance is already on the new group and
+# nothing is lost. If it persists, a clone or a manual instance still references the group.
 ```
 
 ##### Step 11 — the upgrade happened rather than being queued
@@ -1500,7 +1439,7 @@ Reference for step 6, which checks the preconditions of the last two rows.
 | `<ENV>-optinist-pre-upgrade-<date>` | **Step 4** | **Never** - manual snapshots persist until deleted | `<FROM>`, the state immediately before the apply |
 | `<ENV>-optinist-ssl-rollback` | **Step 5** | Never | The parameter group that `<FROM>` instance needs |
 | Automatic pre-upgrade snapshots | RDS, up to two, immediately before the upgrade | With the retention period | `<FROM>` |
-| Point-in-time recovery | The automated backup | With the retention period | Any point inside a running day on development (Key Architectural Principles, 5); any point on production |
+| Point-in-time recovery | The automated backup | With the retention period | Any point inside a running day on development (see the Executive Summary); any point on production |
 
 The manual snapshot from step 4 is the primary recovery point regardless of the window shape: its contents
 are known, it is found by name, and it survives an instance delete.
@@ -1514,7 +1453,7 @@ so the next nightly restore would aim the new family at an old snapshot (B3 in r
 
 This proves B3: **an incoming-version snapshot restored against the incoming-family group**, the path every
 later restore of the upgraded environment takes. The cycle runs whether anyone watches it or not, so the
-choice is between a twenty-minute deliberate check and a broken environment in the morning — edge case 5 and
+choice is between a twenty-minute deliberate check and a broken environment in the morning — edge case 2 and
 the proxy re-registration have both failed on this stack. It is not a gate on production's upgrade, which has
 no nightly cycle, nor on the rollback, which 0A drills directly.
 
@@ -1549,7 +1488,7 @@ aws rds describe-db-instances --db-instance-identifier "$DB" \
            pgs:DBParameterGroups[0].ParameterApplyStatus,pending:PendingModifiedValues,
            retention:BackupRetentionPeriod}'
 # Expected: <TO>.x, available, in-sync, pending == {}, retention unchanged.
-# Retention is the one property the snapshot chain can lose - see edge case 5.
+# Retention is the one property the snapshot chain can lose - see edge case 2.
 
 # 3. The restore raised no InvalidParameterCombination, the failure B3 predicts
 SINCE=$(( ($(date +%s) - 12*3600) * 1000 ))
@@ -1592,7 +1531,7 @@ sql_readings "$PROXY"
 **One cycle is the requirement; a second adds no coverage.** `restore_rds()` passes every restore parameter
 explicitly — including the parameter group — so the snapshot id is the only input that varies between cycles
 and the call reads nothing about the snapshot's provenance. The one property not passed, `BackupRetentionPeriod`
-(edge case 5), is what check 2 measures on the restored instance, so the loop closes inside one cycle. A
+(edge case 2), is what check 2 measures on the restored instance, so the loop closes inside one cycle. A
 second cycle is assurance for this environment's own nightly operation, not a gate.
 
 ### Phase 3: soak to exit criteria
@@ -2179,23 +2118,7 @@ outgoing-family group, and the next evening's stop regenerates the scheduler sna
 
 ## Edge Case Handling
 
-### 1. A rehearsal clone still references the live parameter group
-
-**Problem:** A clone attached to the live parameter group makes Terraform's destroy of that group fail with `InvalidDBParameterGroupState` during the upgrade apply. Any parameter experiment on the clone also lands on the live instance.
-
-**Solution:**
-- Give every clone its own copy of the parameter group, made with `copy-db-parameter-group`.
-- Tear all clones down before the apply, and assert that none survive.
-
-### 2. A clone outlives the rehearsal and bills overnight
-
-**Problem:** The scheduler's stop path deletes only the identifier in its own configuration, so a differently named clone is not removed at the scheduled stop and keeps billing through nights and weekends.
-
-**Solution:**
-- Delete the clone by hand, the same day it is created.
-- Finish before the scheduled stop for a second reason: the stop recreates the nightly snapshot under a fixed identifier, so it must delete the existing one first, and a restore still reading that snapshot can block the deletion and make the stop fail.
-
-### 3. The clone claims to be the live instance
+### 1. The clone claims to be the live instance
 
 **Problem:** RDS copies the source instance's tags through the snapshot onto the clone, so it arrives with
 the live instance's `Name` and `ManagedBy = terraform` while in no state file — misleading a cost report
@@ -2213,15 +2136,7 @@ aws rds list-tags-for-resource --resource-name "$(aws rds describe-db-instances 
 # Expected: Name is the clone's own identifier, ManagedBy is manual
 ```
 
-### 4. The parameter group destroy fails after a successful upgrade
-
-**Problem:** Terraform destroys the outgoing parameter group after the instance update completes. If RDS still reports it as in use, the destroy fails with `InvalidDBParameterGroupState`.
-
-**Solution:**
-- Re-run the apply. Nothing is lost in that state - the instance is already on the new group.
-- If it persists, check for a clone or a manually created instance still referencing the group.
-
-### 5. The snapshot chain loses the backup retention period
+### 2. The snapshot chain loses the backup retention period
 
 **Problem:** `BackupRetentionPeriod` is not a restore parameter; it carries over in practice but is not guaranteed. A zero retention means RDS takes no automatic pre-upgrade snapshot, so a rollback silently loses a recovery point.
 
@@ -2229,7 +2144,7 @@ aws rds list-tags-for-resource --resource-name "$(aws rds describe-db-instances 
 - Assert the retention period in phase 2's check 2, on the restored instance.
 - It does not decay gradually - if the chain loses it, it reads zero at the first cycle, which is why one cycle settles the question.
 
-### 6. The database is slower after the upgrade
+### 3. The database is slower after the upgrade
 
 **Problem:** A major version changes InnoDB memory and IO defaults, and **a family diff does not show most of them.** Two mechanisms produce the same symptom: RDS stops pinning a value and the engine derives it (`innodb_buffer_pool_size`, visible in a family diff), or RDS pins it in neither family and the engine default changed underneath (the larger group — between 8.0 and 8.4 `innodb_io_capacity`, `innodb_io_capacity_max`, `innodb_adaptive_hash_index`, `innodb_change_buffering` and `innodb_buffer_pool_instances`), which a family diff cannot show. **A value that looks derived from another may not be**: `innodb_buffer_pool_instances` did not come back when the pool was pinned back, because its own default had changed. Re-read every moved value after the pins are applied (0A step 11).
 
@@ -2240,7 +2155,7 @@ aws rds list-tags-for-resource --resource-name "$(aws rds describe-db-instances 
 - Pin `innodb_buffer_pool_size` if the pair shows the pool shrinking, and `innodb_buffer_pool_instances` alongside it. The engine requires the pool to be a multiple of `innodb_buffer_pool_chunk_size` times the instance count.
 - A metric that moved against the phase 3 baseline with **no** corresponding difference in the pair is an application question.
 
-### 7. A failure during the soak is hard to attribute
+### 4. A failure during the soak is hard to attribute
 
 **Problem:** Application bug or upgrade artefact?
 
@@ -2254,15 +2169,10 @@ aws rds list-tags-for-resource --resource-name "$(aws rds describe-db-instances 
 
 ### Log groups
 
-| Log group | Contents |
-|-------------------------|-----------------------|
-| `/aws/rds/instance/<ENV>-optinist-cloud-rds/error` | RDS error log. Must still receive data after a family change |
-| `/aws/rds/proxy/<ENV>-optinist-rds-proxy` | Proxy logs. Watch for authentication failures and refused connections |
-| `/aws/lambda/<ENV>-dev-scheduler` | Nightly stop and start. Where `InvalidParameterCombination` appears if B3 bites |
-| `/ecs/<ENV>-optinist-cloud-taskdef` | Free-tier application logs |
-| `/ecs/<ENV>-background-optinist-cloud-taskdef` | Background job logs |
-
-The `general` and `slowquery` exports produce nothing because both logs are at the engine default of off. Their silence is not a regression.
+The groups are listed under *Reference: Log Groups and Error Patterns* in `MAINTENANCE_PROCEDURES.md`. Two
+upgrade-specific facts: the RDS error log export must still receive data after a family change (criterion 5's
+first query), and the `general` and `slowquery` exports produce nothing because both logs are at the engine
+default of off - their silence is not a regression.
 
 ### Metrics to compare against the baseline
 
@@ -2274,8 +2184,8 @@ The `general` and `slowquery` exports produce nothing because both logs are at t
 | `ReadIOPS` | The substitute for the above: on a cache-served workload it is flat enough that a sizing change stands out | May rise with a smaller buffer pool |
 | `FreeableMemory` | The other side of pool sizing | Unchanged |
 | `ReadLatency` | What a user notices about a smaller pool | May rise with `ReadIOPS` |
-| `WriteIOPS` | Background flushing, if `innodb_io_capacity` rose - edge case 6, mechanism 2 | May rise independently of any application change |
-| `WriteLatency` | The write-side pair to the above. `ReadLatency` alone shows only half of edge case 6 | May rise with `WriteIOPS` |
+| `WriteIOPS` | Background flushing, if `innodb_io_capacity` rose - edge case 3, mechanism 2 | May rise independently of any application change |
+| `WriteLatency` | The write-side pair to the above. `ReadLatency` alone shows only half of edge case 3 | May rise with `WriteIOPS` |
 | `CPUUtilization` | Baseline comparison | Unchanged |
 | `DatabaseConnections` | Pool health after the rollout | Returns to the pre-upgrade level |
 
@@ -2301,12 +2211,9 @@ The `general` and `slowquery` exports produce nothing because both logs are at t
 
 ### Scheduler environment variables
 
-| Variable | Purpose |
-|-------------------------|-----------------------|
-| `RDS_PARAMETER_GROUP_NAME` | The group a nightly restore attaches. Must follow B1's rename |
-| `RDS_SNAPSHOT_ID` | Fixed identifier for the nightly snapshot |
-| `RDS_SUBNET_GROUP_NAME` | Passed on every restore |
-| `RDS_SECURITY_GROUP_IDS` | Passed on every restore |
+Listed under *Terraform Configuration* in `DEV_SCHEDULE_GUIDE.md`. The one this procedure changes is
+`RDS_PARAMETER_GROUP_NAME`, the group a nightly restore attaches, which must follow B1's rename (phase 1
+step 13).
 
 ### Scheduled jobs that touch the database
 
