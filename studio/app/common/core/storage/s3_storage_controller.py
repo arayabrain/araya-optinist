@@ -264,6 +264,20 @@ class S3StorageController(BaseRemoteStorageController):
 
         return True
 
+    async def delete_experiment_files(
+        self, workspace_id: str, unique_id: str, target_files: list
+    ) -> bool:
+        experiment_remote_path = self._make_experiment_remote_path(
+            workspace_id, unique_id
+        )
+        keys = [
+            {"Key": join_filepath([experiment_remote_path, f])} for f in target_files
+        ]
+        async with self.__get_s3_resource() as __s3_resource:
+            bucket = await __s3_resource.Bucket(self.bucket_name)
+            await self._delete_s3_objects_batched(bucket, keys)
+        return True
+
     @staticmethod
     async def _delete_s3_objects_batched(bucket, keys_to_delete: list) -> None:
         """Delete S3 objects in batches of 1000 (S3 API limit).

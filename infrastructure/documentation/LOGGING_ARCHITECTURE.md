@@ -505,7 +505,7 @@ executor.submit(func, arg1, client_id=client_id)
 init_client_id_from_snakemake_config(snakemake.config)
 ```
 
-Used in: `rules/data.py`, `rules/func.py`, `rules/post_process.py`, `rules/run_edit_ROI.py`
+Used in: `rules/data.py`, `rules/func.py`, `rules/post_process.py`
 
 **File:** `studio/app/common/core/workflow/workflow_runner.py` - passes `client_id` into snakemake config
 

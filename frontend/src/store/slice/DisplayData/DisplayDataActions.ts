@@ -346,7 +346,7 @@ export const getStatus = createAsyncThunk<
       const response = await getStatusRoi(path, workspaceId)
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )

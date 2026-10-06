@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 class RoiPos(BaseModel):
     posx: int
     posy: int
-    sizex: int
-    sizey: int
+    sizex: int = Field(ge=1)
+    sizey: int = Field(ge=1)
 
 
 class RoiList(BaseModel):

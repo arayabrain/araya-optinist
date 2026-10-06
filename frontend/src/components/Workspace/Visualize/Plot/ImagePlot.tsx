@@ -32,6 +32,7 @@ import Switch from "@mui/material/Switch"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
+import { markDownstreamStale } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import {
   addRoi,
   cancelRoi,
@@ -43,6 +44,7 @@ import {
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
+  RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectImageDataError,
@@ -71,6 +73,7 @@ import {
   selectImageItemEndIndex,
   selectRoiItemFilePath,
   selectRoiItemIndex,
+  selectRoiItemNodeId,
   selectImageItemDuration,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
@@ -202,6 +205,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
   )
   const meta = useSelector(selectImageMeta(path))
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const roiNodeId = useSelector(selectRoiItemNodeId(itemId))
 
   const refRoiFilePath = useRef(roiFilePath)
 
@@ -272,6 +276,15 @@ const ImagePlotChart = memo(function ImagePlotChart({
   useEffect(() => {
     if (!roiFilePath || !workspaceId) return
     dispatch(getStatus({ path: roiFilePath, workspaceId }))
+      .unwrap()
+      .catch((error: RejectPayload) => {
+        if (error?.status === 423) {
+          enqueueSnackbar(
+            "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes.",
+            { variant: "warning" },
+          )
+        }
+      })
     //eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roiFilePath, workspaceId])
 
@@ -737,16 +750,26 @@ const ImagePlotChart = memo(function ImagePlotChart({
     if (!roiFilePath || workspaceId === undefined) return
     try {
       await dispatch(commitRoi({ path: roiFilePath, workspaceId })).unwrap()
-      workspaceId &&
-        (await dispatch(
-          getRoiData({ path: roiFilePath, workspaceId }),
-        ).unwrap())
 
-      enqueueSnackbar("Successfully committed to Edit ROI.", {
-        variant: "success",
-      })
-      resetTimeSeries()
-      resetRoisClick(itemId)
+      // Commit discards the downstream results on the server; flag those
+      // nodes for the next RUN the same way a changed parameter does, before
+      // the refresh below, which can fail on its own
+      if (roiNodeId) dispatch(markDownstreamStale({ nodeId: roiNodeId }))
+      enqueueSnackbar(
+        "Successfully committed to Edit ROI. Run the workflow to update downstream results.",
+        { variant: "success" },
+      )
+
+      try {
+        await dispatch(getRoiData({ path: roiFilePath, workspaceId })).unwrap()
+        resetTimeSeries()
+        resetRoisClick(itemId)
+      } catch (error) {
+        enqueueSnackbar(
+          "Committed, but the ROI image could not be reloaded. Reload the page.",
+          { variant: "warning" },
+        )
+      }
     } catch (error) {
       enqueueSnackbar("Failed to commit Edit ROI.", { variant: "error" })
     } finally {

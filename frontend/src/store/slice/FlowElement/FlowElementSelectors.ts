@@ -33,6 +33,7 @@ const selectNodeIsUpdate = (nodeId: string) => (state: RootState) => {
   const { dim1: _dim1 = [], roi: _roi = [] } = draftDataFilterParam || {}
   return (
     state.algorithmNode[nodeId]?.isUpdate ||
+    state.algorithmNode[nodeId]?.downstreamStale ||
     JSON.stringify(dim1?.filter(Boolean)) !==
       JSON.stringify(_dim1?.filter(Boolean)) ||
     JSON.stringify(roi?.filter(Boolean)) !==
