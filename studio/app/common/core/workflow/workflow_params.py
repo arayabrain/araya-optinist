@@ -10,25 +10,54 @@ def read_default_params(name: str):
     return ConfigReader.read(filepath)
 
 
+FAQ_URL = "https://github.com/oist/optinist/wiki/FAQ"
+
+
 def get_typecheck_params(message_params, name):
-    default_params = read_default_params(name)
+    default_params = read_default_params(name) or {}
     if message_params != {} and message_params is not None:
-        return check_types(nest2dict(message_params), default_params, name)
+        params = nest2dict(message_params)
+        if has_outdated_shape(params, default_params):
+            unknown = sorted(params.keys() - default_params.keys())
+            logger.warning(
+                f"Invalid Workflow yaml params: {unknown} in [{name}]. See {FAQ_URL}"
+            )
+            raise KeyError(
+                f"Workflow yaml error, see FAQ: unknown parameters {unknown} for "
+                f"{name or 'this node'}; reset the node's parameters and run again"
+            )
+        return check_types(params, default_params, name)
     return default_params
 
 
+def has_outdated_shape(params, default_params):
+    """
+    True when the saved tree looks like it was written against a different
+    yaml layout (e.g. OptiNiSt v1): it has unknown keys and either shares no
+    key with the defaults or lacks a whole default group.
+    """
+    if not params:
+        return False
+    unknown = params.keys() - default_params.keys()
+    if not unknown:
+        return False
+    no_overlap = len(unknown) == len(params)
+    missing_group = any(
+        isinstance(value, dict) and key not in params
+        for key, value in default_params.items()
+    )
+    return no_overlap or missing_group
+
+
 def check_types(params, default_params, name=""):
-    faq_url = "https://github.com/oist/optinist/wiki/FAQ"
-    for key in params.keys():
+    for key in list(params):
         if key not in default_params:
             logger.warning(
-                f"Invalid Workflow yaml param: [{key}] in [{name}]. See {faq_url}"
+                f"Dropping saved param '{key}' for [{name}]: "
+                f"not in the current default yaml. See {FAQ_URL}"
             )
-            raise KeyError(
-                f"Workflow yaml error, see FAQ: unknown parameter '{key}' for "
-                f"{name or 'this node'}; reset the node's parameters and run again"
-            )
-        if isinstance(params[key], dict):
+            del params[key]
+        elif isinstance(params[key], dict):
             params[key] = check_types(params[key], default_params[key], name)
         else:
             if not isinstance(type(params[key]), type(default_params[key])):

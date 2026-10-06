@@ -3,6 +3,8 @@ import axios from "utils/axios"
 import { ParamDTO } from "utils/param/ParamType"
 
 export async function getAlgoParamsApi(algoName: string): Promise<ParamDTO> {
-  const response = await axios.get(`${BASE_URL}/params/${algoName}`)
+  const response = await axios.get(
+    `${BASE_URL}/params/${encodeURIComponent(algoName)}`,
+  )
   return response.data
 }
