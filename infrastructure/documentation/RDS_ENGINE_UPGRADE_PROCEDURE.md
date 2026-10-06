@@ -58,19 +58,19 @@
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 2. Two nightly destroy/restore cycles                     │
+│ 2. One nightly destroy/restore cycle                      │
 │    → proves the restore works against a <TO> snapshot     │
-│    → second cycle proves the steady state                 │
+│    → a second cycle is assurance, not coverage            │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
-│ 3. Soak to exit criteria (floor: two nights)               │
+│ 3. Soak to exit criteria (floor: one night)               │
 │    → deployed test lanes, scheduled jobs, logs, baseline  │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ 4. Apply to production (live)                             │
-│    → window covers DB downtime plus a full ECS rollout    │
+│    → DB downtime; an ECS rollout only if B6 says so       │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -94,7 +94,7 @@
 ### Ordering constraints
 
 - **Phase 1 must not span a night.** Weekdays only, started early enough to finish before the scheduled stop.
-- **Phase 2 cannot be compressed.** A nightly cycle happens once per night, so two nights is a floor. It is the only floor in the procedure.
+- **Phase 2 cannot be compressed below one night.** A nightly cycle happens once per night, so one night is the floor, and it is the only floor in the procedure. **A second cycle adds no coverage** — settled from the scheduler's code, not from how likely it is to differ. See Phase 2.
 - **Phase 0's clones must be gone before phase 1**, or the apply cannot destroy the outgoing parameter group.
 - **Phase 4 needs two artefacts from earlier phases**: a measured downtime for the announcement — from 0B when it runs, otherwise from 0A plus a margin — and phase 3's production baseline metrics, which cannot be captured afterwards.
 - **Phase 0 touches production only in 0B, and only to create a snapshot.** 0A and 0C are entirely within development. When 0B's gate says skip, phase 0 performs no production operation at all.
@@ -2265,7 +2265,7 @@ rollback must also revert the Lambda's parameter group, or the next nightly rest
 at an old snapshot - B3 in reverse. The [Rollback](#rollback) procedure's step 4 covers it; it is easy
 to miss when the rollback is framed as "undo the apply".
 
-### Phase 2: two nightly destroy and restore cycles
+### Phase 2: the nightly destroy and restore cycle
 
 This proves B3. Within each cycle, check 1 runs in the evening after the stop; the rest need the morning restore.
 
@@ -2368,17 +2368,34 @@ aws rds describe-db-proxies --db-proxy-name "${ENV}-optinist-rds-proxy" \
 # Expected: a failure here but not in step 2 is a proxy auth problem, not an engine one
 ```
 
-Both cycles matter. The first proves the restore works against a new-version snapshot at all; the second proves the steady state, where the snapshot one cycle produces is the snapshot the next consumes.
+**One cycle is the requirement. A second adds no coverage, and that is settled from the scheduler's code
+rather than from how likely it is to differ.**
+
+`restore_rds()` passes **every** restore parameter explicitly — instance class, subnet group, security
+groups, **parameter group**, storage type, port, log exports, MultiAZ, public accessibility — so **the
+snapshot id is the only input that varies between cycles, and the call reads nothing about the snapshot's
+provenance.** A `<TO>` snapshot taken from an in-place-upgraded instance and one taken from a restored
+instance are therefore indistinguishable to the restore: a second cycle exercises the identical code path
+with identical explicit parameters.
+
+**One property genuinely is not passed explicitly — `BackupRetentionPeriod`** — which is exactly why edge
+case 5 calls it the property the snapshot chain can lose, and it is the one place a per-generation
+degradation could hide. **Check 2 measures it on the restored instance**, so the state entering the next
+cycle matches the state that entered this one in every property the restore reads or produces. **The loop
+closes inside one cycle.**
+
+A second cycle is still worth running **for this environment's own nightly operation**, which is a different
+question from whether the upgrade may proceed. Record it as assurance rather than as a gate.
 
 ### Phase 3: soak to exit criteria
 
-**Two nights is the floor and the exit is a checklist, not a date.** Almost nothing this phase protects against is found by elapsed time: the nightly cycle scales with cycles rather than days, an application SQL incompatibility is found by exercising code paths, and a performance regression is not observable on development because it carries no meaningful load.
+**One night is the floor and the exit is a checklist, not a date.** Almost nothing this phase protects against is found by elapsed time: the nightly cycle scales with cycles rather than days, an application SQL incompatibility is found by exercising code paths, and a performance regression is not observable on development because it carries no meaningful load.
 
-Every scheduled path that touches the database has a cadence of 24 hours or less, so two nightly cycles covers all of them and a week only repeats the daily ones. See [Configuration](#scheduled-jobs-that-touch-the-database) for the cadences.
+Every scheduled path that touches the database has a cadence of 24 hours or less, so a single nightly cycle covers all of them and a week only repeats the daily ones. See [Configuration](#scheduled-jobs-that-touch-the-database) for the cadences.
 
 | # | Exit criterion |
 |---|-----------------------|
-| 1 | Phase 2's checks pass on two consecutive cycles, including the retention period |
+| 1 | Phase 2's six checks pass on **one** cycle, including the retention period. A second cycle is assurance, not coverage - see Phase 2 |
 | 2 | The deployed e2e lanes are green, with skips promoted to failures. The environment's own release set may stand in for the two expensive lanes - see [Testing](#testing) for what that substitution does and does not cover |
 | 3 | The engine-version assertion is green - see [Testing](#testing) |
 | 4 | Every scheduled job has run at least once on the new version with no SQL error, by invoking it rather than waiting |
@@ -2394,7 +2411,7 @@ pressure the temptation is to shorten the phase by dropping criteria, so rank th
 | **2** | The only application-level evidence that the new version runs the application's real queries. The pre-check is schema-driven and never sees a query | **Do not skip** - but it can be made much cheaper. See [Testing](#testing): the release set plus criterion 4 substitutes for the two expensive lanes |
 | **4** | Paths that fail silently inside a scheduled job rather than visibly in the application. **It also carries part of criterion 2** once the expensive lanes are substituted, because it is what exercises the storage tracking and premium paths | **Do not skip** |
 | 5 | Partly covered by 2 and 4 | Can be shortened |
-| 1 | One cycle carries most of the decision; the second protects the environment's own nightly operation | One cycle can suffice to decide phase 4 |
+| 1 | **Nothing.** One cycle is the whole criterion, and it cannot be compressed below one night | **Not compressible, and not reducible either** |
 | 3 | Future regression cover, not verification of this upgrade. Every assertion in it is also a manual step in phase 4's checklist | Can follow phase 4 |
 
 So the phase can be finished in a day or two of checks rather than a week of waiting - but **finish it by
@@ -2404,13 +2421,15 @@ running the criteria, not by letting time pass.**
 appear here as pointers, so that every number in the table above resolves to a heading rather than to
 whichever section the reader happens to know about.
 
-#### Criterion 1 — two nightly cycles
+#### Criterion 1 — the nightly cycle
 
-Carried out by [Phase 2](#phase-2-two-nightly-destroy-and-restore-cycles): its six checks, on each of two
-consecutive cycles. Nothing to run here.
+Carried out by [Phase 2](#phase-2-the-nightly-destroy-and-restore-cycle): its six checks, on **one** cycle.
+Nothing to run here.
 
-**One cycle carries most of the phase 4 decision.** The second protects this environment's own nightly
-operation rather than the upgrade, so it can run alongside or after phase 4 - see the ranking above.
+**A second cycle adds no coverage**, because `restore_rds()` passes every parameter explicitly and reads
+nothing about the snapshot's provenance - see Phase 2 for the argument and for the one property,
+`BackupRetentionPeriod`, that check 2 is what closes. Run a second cycle as assurance for this environment's
+own nightly operation if it is wanted; it can run alongside or after phase 4.
 
 #### Criterion 2 — the deployed e2e evidence
 
@@ -3684,7 +3703,7 @@ The `general` and `slowquery` exports produce nothing because both logs are at t
 
 ### Scheduled jobs that touch the database
 
-The longest cadence is 24 hours, which is why two nightly cycles covers every scheduled path.
+The longest cadence is 24 hours, which is why one nightly cycle covers every scheduled path.
 
 | Cadence | Jobs |
 |-------------------------|-----------------------|
