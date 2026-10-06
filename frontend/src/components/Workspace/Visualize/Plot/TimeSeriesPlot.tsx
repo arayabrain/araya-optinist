@@ -22,6 +22,11 @@ import {
 } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContext"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { buildAnnotations } from "components/Workspace/Visualize/Plot/timeSeriesAnnotations"
+import {
+  errorBarArray,
+  frameAxisRange,
+} from "components/Workspace/Visualize/Plot/timeSeriesRange"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
 import {
@@ -267,7 +272,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
               type: "data",
               array:
                 stdBool && Object.keys(dataStd).includes(key)
-                  ? Object.values(dataStd[key])
+                  ? errorBarArray(dataXrange, dataStd[key])
                   : null,
               visible: true,
             },
@@ -281,6 +286,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     span,
     dataStd,
     dataKeys,
+    dataXrange,
     newDataXrange,
     dialogFilterNodeId,
     nshades,
@@ -288,23 +294,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     newTimeSeriesData,
   ])
 
-  const annotations = useMemo(() => {
-    const range = rangeUnit === "time" ? frameRate : 1
-    return drawOrderList.map((value) => {
-      return {
-        x:
-          Number((newDataXrange.length - 1) / range) +
-          newDataXrange.length / (10 * range),
-        y: data[value]?.y[newDataXrange.length - 1],
-        xref: "x",
-        yref: "y",
-        text: `cell: ${value}`,
-        arrowhead: 1,
-        ax: 0,
-        ay: -10,
-      }
-    })
-  }, [data, drawOrderList, newDataXrange, rangeUnit, frameRate])
+  const annotations = useMemo(
+    () => buildAnnotations(drawOrderList, newDataXrange, data),
+    [data, drawOrderList, newDataXrange],
+  )
 
   const layout = useMemo(
     () => ({
@@ -333,10 +326,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
           size: 10,
           color: "black",
         },
-        range:
-          rangeUnit === "frames"
-            ? [xrange.left, xrange.right]
-            : [
+        ...(rangeUnit === "frames"
+          ? frameAxisRange(xrange.left, xrange.right)
+          : {
+              range: [
                 typeof xrange.left !== "undefined"
                   ? xrange.left / frameRate
                   : -2.5,
@@ -344,6 +337,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
                   ? (xrange.right || 0) / frameRate
                   : dataXrange.length / frameRate + 6.8,
               ],
+            }),
         showgrid: showgrid,
         showline: showline,
         showticklabels: showticklabels,

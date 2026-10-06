@@ -2,6 +2,7 @@ import json
 import mmap
 import os
 from abc import ABC, abstractmethod
+from dataclasses import fields
 from io import BufferedReader
 from pathlib import Path
 
@@ -107,7 +108,9 @@ class JsonReader:
     @classmethod
     def read_as_plot_meta(cls, filepath) -> PlotMetaData:
         json_data = cls.read(filepath) if os.path.exists(filepath) else {}
-        return PlotMetaData(**json_data)
+        # Ignore keys a newer writer may add, so mixed versions in a deploy still read
+        known = {f.name for f in fields(PlotMetaData)}
+        return PlotMetaData(**{k: v for k, v in json_data.items() if k in known})
 
 
 class ContentUnitReader(ABC):

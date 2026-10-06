@@ -182,6 +182,8 @@ class WorkflowResult:
 
         # If all nodes have already been processed, return here.
         if NodeResult.is_all_nodes_already_finished(expt_config):
+            if not expt_config.hasNWB:  # latched before whole.nwb landed
+                self.__check_has_whole_nwb()
             return node_results
 
         # Check if whole.nwb file exists

@@ -29,7 +29,7 @@ class NestDictGetter:
 
                 # get conda env infomations
                 conda_name = value.get("conda_name")
-                if conda_name is None:
+                if not conda_name:
                     # If conda env is not used, always returns True.
                     conda_env_exists = True
                 else:

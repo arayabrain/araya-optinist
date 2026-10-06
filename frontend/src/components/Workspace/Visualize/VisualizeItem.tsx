@@ -23,6 +23,7 @@ import { DisplayDataItem } from "components/Workspace/Visualize/DisplayDataItem"
 import { FilePathSelect } from "components/Workspace/Visualize/FilePathSelect"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import {
+  selectHeatMapMeta,
   selectLoading,
   selectIsEditRoiCommitting,
 } from "store/slice/DisplayData/DisplayDataSelectors"
@@ -36,6 +37,7 @@ import {
 } from "store/slice/VisualizeItem/VisualizeItemActions"
 import {
   selectDisplayDataIsSingle,
+  selectHeatMapItemRefItemId,
   selectImageItemFilePath,
   selectRoiItemFilePath,
   selectRoiItemNodeId,
@@ -44,6 +46,7 @@ import {
   selectVisualizeDataFilePath,
   selectVisualizeDataNodeId,
   selectVisualizeDataType,
+  selectVisualizeHeatMapLinkItemIdList,
   selectVisualizeImageAndRoiItemIdList,
   selectVisualizeItemHeight,
   selectVisualizeItemWidth,
@@ -51,6 +54,7 @@ import {
 import {
   selectItem,
   setItemSize,
+  setHeatMapRefItemId,
   setRoiItemFilePath,
   setTimeSeriesRefImageItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
@@ -226,6 +230,11 @@ const ItemHeader = memo(function ItemHeader({
           <RefImageItemIdSelect itemId={itemId} />
         </Box>
       )}
+      {dataType === DATA_TYPE_SET.HEAT_MAP && (
+        <Box flexGrow={1}>
+          <HeatMapRefItemIdSelect itemId={itemId} />
+        </Box>
+      )}
       {dataType === DATA_TYPE_SET.IMAGE && (
         <Box flexGrow={1}>
           <RoiSelect itemId={itemId} setRoiFilePath={setRoiFilePath} />
@@ -294,10 +303,6 @@ const RefImageItemIdSelect = memo(function RefImageItemIdSelect({
   const { setLinks } = useVisualize()
   const refSub = useRef<() => void>()
   const dispatch = useDispatch()
-  const itemIdList = useSelector(
-    selectVisualizeImageAndRoiItemIdList,
-    arrayEqualityFn,
-  )
   const onChangeRefImageItemId = (event: SelectChangeEvent) => {
     const value = Number(event.target.value)
     dispatch(
@@ -307,7 +312,7 @@ const RefImageItemIdSelect = memo(function RefImageItemIdSelect({
       }),
     )
     refSub.current?.()
-    refSub.current = setLinks(itemId, value)
+    refSub.current = isNaN(value) ? undefined : setLinks(itemId, value)
   }
   const selectedRefImageItemId = useSelector(
     selectTimeSeriesItemRefImageItemId(itemId),
@@ -320,17 +325,79 @@ const RefImageItemIdSelect = memo(function RefImageItemIdSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const itemIdList = useSelector(
+    selectVisualizeImageAndRoiItemIdList,
+    arrayEqualityFn,
+  )
+
+  return (
+    <LinkToBoxSelect
+      value={selectedRefImageItemId}
+      itemIdList={itemIdList}
+      onChange={onChangeRefImageItemId}
+    />
+  )
+})
+
+const HeatMapRefItemIdSelect = memo(function HeatMapRefItemIdSelect({
+  itemId,
+}: ItemIdProps) {
+  const dispatch = useDispatch()
+  const selectedRefItemId = useSelector(selectHeatMapItemRefItemId(itemId))
+  const itemIdList = useSelector(
+    selectVisualizeHeatMapLinkItemIdList,
+    arrayEqualityFn,
+  )
+  const filePath = useSelector(selectVisualizeDataFilePath(itemId))
+  // Undefined until HeatMapPlot has loaded the data
+  const meta = useSelector((state: RootState) =>
+    filePath != null ? selectHeatMapMeta(filePath)(state) : undefined,
+  )
+  const onChange = (event: SelectChangeEvent) => {
+    const value = Number(event.target.value)
+    dispatch(
+      setHeatMapRefItemId({
+        itemId,
+        refItemId: isNaN(value) ? null : value,
+      }),
+    )
+  }
+
+  // Only heatmaps whose rows are ROI numbers can follow an ROI selection.
+  if (meta?.yaxis_type !== "category") return null
+
+  return (
+    <LinkToBoxSelect
+      value={selectedRefItemId}
+      itemIdList={itemIdList}
+      onChange={onChange}
+    />
+  )
+})
+
+// Non-numeric on purpose: the change handlers turn Number(NO_LINK) into null.
+const NO_LINK = "none"
+
+const LinkToBoxSelect = memo(function LinkToBoxSelect({
+  value,
+  itemIdList,
+  onChange,
+}: {
+  value: number | null
+  itemIdList: number[]
+  onChange: (event: SelectChangeEvent) => void
+}) {
   return (
     <FormControl fullWidth variant="standard">
       <InputLabel>Link to box (#)</InputLabel>
       <Select
-        value={String(selectedRefImageItemId)}
-        onChange={onChangeRefImageItemId}
+        value={value == null ? NO_LINK : String(value)}
+        onChange={onChange}
       >
-        <MenuItem value={undefined}>{"None"}</MenuItem>
-        {itemIdList.map((value) => (
-          <MenuItem key={value} value={value}>
-            {value}
+        <MenuItem value={NO_LINK}>{"None"}</MenuItem>
+        {itemIdList.map((id) => (
+          <MenuItem key={id} value={id}>
+            {id}
           </MenuItem>
         ))}
       </Select>

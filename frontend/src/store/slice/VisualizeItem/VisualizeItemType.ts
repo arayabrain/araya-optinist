@@ -111,6 +111,7 @@ export interface HeatMapItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.HEAT_MAP
   showscale: boolean
   colors: ColorType[]
+  refItemId: number | null
 }
 export interface CsvItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.CSV

@@ -38,6 +38,7 @@ import {
   isDisplayDataItem,
   isHeatMapItem,
   isImageItem,
+  isRoiItem,
   isTimeSeriesItem,
   isCsvItem,
   isScatterItem,
@@ -110,6 +111,7 @@ const heatMapItemInitialValue: HeatMapItem = {
   ...displayDataCommonInitialValue,
   dataType: DATA_TYPE_SET.HEAT_MAP,
   showscale: true,
+  refItemId: null,
   colors: [
     { rgb: "rgb(0, 0, 255)", offset: "0" },
     { rgb: "rgb(200, 200, 200)", offset: "0.5" },
@@ -750,6 +752,18 @@ export const visualaizeItemSlice = createSlice({
         targetItem.refImageItemId = refImageItemId ?? null
       }
     },
+    setHeatMapRefItemId: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        refItemId: number | null
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.refItemId = action.payload.refItemId
+      }
+    },
     setHeatMapItemShowScale: (
       state,
       action: PayloadAction<{
@@ -914,6 +928,11 @@ export const visualaizeItemSlice = createSlice({
       .addCase(deleteDisplayItem, (state, action) => {
         const itemId = action.payload.itemId
 
+        Object.values(state.items).forEach((item) => {
+          if (isHeatMapItem(item) && item.refItemId === itemId) {
+            item.refItemId = null
+          }
+        })
         if (isImageItem(state.items[itemId])) {
           Object.values(state.items).forEach((item) => {
             if (isTimeSeriesItem(item) && item.refImageItemId === itemId) {
@@ -947,6 +966,18 @@ export const visualaizeItemSlice = createSlice({
               height: targetItem.height,
               filePath,
               nodeId,
+            }
+            const newItem = state.items[itemId]
+            const linkable =
+              isImageItem(newItem) ||
+              isRoiItem(newItem) ||
+              isTimeSeriesItem(newItem)
+            if (!linkable) {
+              Object.values(state.items).forEach((item) => {
+                if (isHeatMapItem(item) && item.refItemId === itemId) {
+                  item.refItemId = null
+                }
+              })
             }
           } else {
             targetItem.filePath = filePath
@@ -1058,6 +1089,7 @@ export const {
   setTimeSeriesItemDrawOrder,
   setTimeSeriesItemMaxIndex,
   setTimeSeriesRefImageItemId,
+  setHeatMapRefItemId,
   setHeatMapItemShowScale,
   setHeatMapItemColors,
   setCsvItemTranspose,
