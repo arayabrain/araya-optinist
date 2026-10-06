@@ -97,7 +97,28 @@ These variables control environment-specific behavior:
 | `frontend_domain`       | string | Custom domain                   | `"araya-optinist.com"` | `""` (uses ALB DNS)           |
 | `frontend_protocol`     | string | HTTP or HTTPS                   | `"https"`              | `"http"`                      |
 | `frontend_port`         | string | Listener port                   | `"443"`                | `"80"`                        |
+| `asg_min_size`          | number | Min ASG instances               | `1`                    | `1`                           |
 | `asg_max_size`          | number | Max ASG instances               | `3`                    | `2`                           |
+| `asg_desired_capacity`  | number | Initial ASG instances           | `1`                    | `1`                           |
+
+### Free-Tier ASG Capacity (`asg_min_size` / `asg_max_size` / `asg_desired_capacity`)
+
+`asg_desired_capacity` applies **only at creation time**: the ASG carries
+`ignore_changes = [desired_capacity]`, because the Free Manager Lambda and the
+CPU/memory scaling alarms both write desired capacity at runtime and Terraform
+must not fight them.
+
+As a result `asg_min_size` is the knob that actually moves steady-state
+capacity from Terraform — raising it makes the ASG lift desired capacity to the
+new minimum on its own. `asg_max_size` is the real ceiling on free-tier
+capacity: the Lambda clamps its computed target to the group's own
+`MinSize`/`MaxSize`, so neither scaling path can exceed it.
+
+Both bounds are read off the live ASG by the Lambda rather than copied into its
+environment, so they can also be changed directly on the group (console or
+CLI) without a redeploy. Such a change is **not** persistent: `min_size` is not
+under `ignore_changes`, so the next `terraform apply` restores the declared
+value. See `FREE_MANAGER_ARCHITECTURE.md`.
 
 ### Database Username (`mysql_user`)
 

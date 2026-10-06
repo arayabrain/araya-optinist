@@ -4,9 +4,14 @@
 - **Free Manager** handles auto-scaling and load rebalancing for free tier users
 - **ASG-based architecture** using Auto Scaling Groups instead of individual EC2 instances
 - **Proactive scaling** based on active user count (threshold: 5 users)
-- **Multi-instance rebalancing** distributes load evenly across ALL instances
+- **Two scaling triggers** act on the same ASG: this Lambda (user count) and CloudWatch CPU/memory alarms (instance load)
+- **ASG bounds are authoritative** — the instance target is clamped to the group's own `MinSize`/`MaxSize`, so capacity is retuned on the ASG, not in this Lambda
+- **Traffic distribution is the ALB's**, not this Lambda's — round robin plus sticky sessions; rebalancing only updates the assignment records
 - **Workflow protection** ensures users with active jobs are never migrated
 - **Experiment sync** automatically syncs experiment metadata after migration
+
+> **Scope note:** this document covers the free tier's *instance count*. How
+> much work a single instance can absorb is a separate concern.
 
 ## Key Architectural Principles
 
@@ -14,14 +19,16 @@
    - Monitors active user count (activity within 5 minutes)
    - Scales ASG when threshold reached (default: 5 users)
    - Calculates instances needed: `ceil(active_users / 5)`
-   - Maximum instances: 10 (configurable)
+   - Clamped to the ASG's `MinSize`/`MaxSize`, read from the group on every run
 
 2. **Proactive Rebalancing**
    - Distributes users evenly across ALL instances (not just most/least loaded)
    - Also rebalances when distribution is imbalanced without scaling
    - Waits for new instances with retry (max 17 min in code, Lambda timeout 15 min)
-   - Migrates idle users via round-robin distribution
+   - Updates the `instance_id` on idle users' assignment records, round-robin
    - Verifies distribution is balanced after migration (max-min <= 1)
+   - **This does not move traffic** — see
+     [What rebalancing does and does not do](#what-rebalancing-does-and-does-not-do)
 
 3. **Job Preservation (Triple Protection)**
    - Database field: `active_workflow_count` tracks running jobs
@@ -37,6 +44,15 @@
    - After successful migration, triggers experiment metadata sync on new instance
    - Calls internal API endpoint (`/system-internal/sync-experiments/{user_id}`)
    - Fire-and-forget: migration succeeds even if sync fails
+
+6. **ASG Configuration as the Single Source of Truth**
+   - The instance floor and ceiling are **not** held in this Lambda's
+     environment; they are read via `describe_auto_scaling_groups` each run
+   - `SetDesiredCapacity` rejects any value outside the group's bounds, and a
+     rejection aborts the invocation, so a target computed against stale
+     configuration would also cost that cycle's rebalancing and metrics
+   - Capacity can therefore be retuned on the ASG (Terraform, console or CLI)
+     without redeploying this function
 
 ## Architecture Overview
 
@@ -82,11 +98,46 @@ graph TB
     style T fill:#DDA0DD
 ```
 
+### Two Triggers on One ASG
+
+The free ASG's desired capacity has **two independent writers**. This document
+is mostly about the first; the second is defined in `monitoring.tf` and is easy
+to overlook when reading the Lambda alone.
+
+| | Trigger A — user count | Trigger B — instance load |
+|---|---|---|
+| Driven by | This Lambda, on a 5-minute schedule | CloudWatch alarms on the free ECS service |
+| Input | Active user count from `free_user_assignments` | `AWS/ECS` `CPUUtilization` / `MemoryUtilization` |
+| Mechanism | `SetDesiredCapacity` to a computed target | `scale_up` / `scale_down` simple scaling policies, +/-1 |
+| Defined in | `free_manager.tf`, `free_manager.py` | `monitoring.tf`, `compute.tf` |
+
+Three things follow from there being two:
+
+1. **They do not coordinate.** An alarm-driven adjustment survives only until
+   the next scheduled run, which recomputes the target from the user count
+   alone and may undo it. Which component should own desired capacity is an
+   open design question, not a settled model.
+2. **The load metrics are service-level, not host-level.** For an
+   EC2-launch-type service, `CPUUtilization` is utilization of the CPU units
+   *reserved by the task*, averaged across the service. Work that stalls on
+   I/O rather than CPU does not move it; the `high-iowait` alarm notifies but
+   does not scale.
+3. **Nothing else moves the ASG.** The ECS capacity provider's
+   `managed_scaling` is `DISABLED`, and ECS Application Auto Scaling is left
+   commented out in `compute.tf` because it raced against this Lambda.
+
+Both triggers are bounded by the group's `MinSize`/`MaxSize`, so neither can
+drive capacity outside the configured range.
+
 ### Scaling Strategy Matrix
 
-Formula: `instances = min(max(1, ceil(active_users / 5)), 10)`
+Formula: `instances = min(max(MinSize, ceil(active_users / 5)), MaxSize)`
 
-| Active Users | Instances Needed | Action |
+`MinSize` and `MaxSize` are the ASG's own, read from the group on every run.
+The table below shows the user-count term alone; the actual target is that
+value pulled up to `MinSize` or down to `MaxSize`.
+
+| Active Users | User-count term | Action |
 |-------------|------------------|--------|
 | 0-5 | 1 | Below threshold or 1 instance sufficient |
 | 6-10 | 2 | Scale to 2, rebalance |
@@ -94,26 +145,63 @@ Formula: `instances = min(max(1, ceil(active_users / 5)), 10)`
 | 16-20 | 4 | Scale to 4, rebalance |
 | 21-25 | 5 | Scale to 5, rebalance |
 | 26-30 | 6 | Scale to 6, rebalance |
-| 31-35 | 7 | Scale to 7, rebalance |
-| 36-40 | 8 | Scale to 8, rebalance |
-| 41-45 | 9 | Scale to 9, rebalance |
-| 46+ | 10 | Maximum instances (cap) |
+| 31+ | `ceil(users / 5)` | Scale up, rebalance |
 
-Note: Scaling triggers at >= 5 active users, but 5 users only
-needs 1 instance (`ceil(5/5) = 1`). Actual scale-up starts at 6 users.
+Notes:
+- Scaling triggers at >= 5 active users, but 5 users only needs 1 instance
+  (`ceil(5/5) = 1`). Actual scale-up by user count starts at 6 users.
+- A `MinSize` above the user-count term holds the target there: with
+  `MinSize = 3`, five active users still target 3 instances, not 1.
+- A user-count term above `MaxSize` is capped, not requested. The group's
+  maximum is the real ceiling on free-tier capacity.
 
 ### Motivation: Sticky Session Overload
 
-Without Free Manager, all users in a burst (e.g., 20 during a demo) get
-sticky session cookies to the same instance. ASG launches new instances
-but existing users remain stuck on the overloaded one. The only
-workaround is asking users to log out and back in.
+Without Free Manager, a burst of users all land on the instances that exist
+at that moment and hold sticky session cookies to them. The ASG may launch
+more instances, but nothing provisions them *ahead* of the burst, so the
+capacity arrives after the congestion.
 
-Free Manager solves this by tracking activity in the database, proactively
-scaling the ASG, waiting for instances to be ready, then rebalancing idle
-users across all instances via round-robin migration. Users with active
-workflows are protected by atomic SQL constraints, and experiment metadata
-is synced to new instances after migration.
+Free Manager addresses the capacity half of that: it tracks activity in the
+database and raises the ASG's desired capacity before the user count has
+overwhelmed the running instances. Users with active workflows are protected
+from reassignment by atomic SQL constraints, and experiment metadata is
+synced to new instances after reassignment.
+
+### What rebalancing does and does not do
+
+**Traffic distribution is the load balancer's job, not this Lambda's.**
+
+- Free-tier requests reach the free target group through a single shared
+  listener rule (the `Authorization: Bearer *` catch-all). Unlike premium,
+  there are **no per-user routing rules** for free users.
+- The target group sets no `load_balancing_algorithm_type`, so the AWS default
+  **round robin** applies, with `lb_cookie` stickiness. Every healthy instance
+  is in the rotation, registered automatically by the ASG.
+- `migrate_user_to_instance` **only updates `free_user_assignments.instance_id`**.
+  It does not change ALB routing, and `UserActivityMiddleware` overwrites that
+  column with whichever instance actually served the user's next request.
+
+So the Lambda's rebalancing step is bookkeeping plus the experiment-sync
+trigger. Actual redistribution happens when a session is new, or when its
+sticky cookie lapses.
+
+**The cookie's duration is an inactivity window, not a lifetime.** The ALB
+refreshes it on each response, so a client that keeps polling never expires
+it. Two consequences worth knowing:
+
+- An **already-active user is not moved onto newly added instances.** New
+  sessions, and users who go idle past the cookie duration and return, are
+  the ones that land on new capacity.
+- Capacity is therefore most effective when raised **before** a burst
+  arrives, not during it. Instance boot time applies on top (see
+  `CUSTOM_AMI_ARCHITECTURE.md`).
+
+What raising capacity buys is a larger rotation, which lowers the chance that
+concurrent heavy work shares one instance. It is not a per-instance quota:
+round robin counts requests rather than users, and each ALB node keeps its own
+rotation, so a small number of sessions spreads evenly in expectation rather
+than exactly.
 
 ### Flow Diagrams
 
@@ -306,18 +394,33 @@ users across instances, publishes CloudWatch metrics
 Handles three scenarios: scale up (with instance wait loop),
 conservative scale down (only if overprovisioned by >= 2),
 and rebalance-only when distribution is imbalanced.
-**Input:** `active_user_count`, `max_instances`
+**Input:** `active_user_count`
 **Output:** Dict with scaling action, migrated users, and
 balance status. Uses CloudWatch metric lock to prevent
 concurrent operations.
 **Calls:** `is_scaling_in_progress()` -> `get_service_info()`
--> `scale_service()` -> `get_available_instance_ids()` ->
-`rebalance_idle_users_multi()` -> `is_distribution_balanced()`
+-> `calculate_desired_instances()` -> `scale_service()` ->
+`get_available_instance_ids()` -> `rebalance_idle_users_multi()`
+-> `is_distribution_balanced()`
 
-Key formula:
+The bounds are not an input: they come from `get_service_info()`,
+which reads them off the ASG.
+
+#### calculate_desired_instances()
+
+**File:** `infrastructure/terraform/free_manager_package/free_manager.py`
+**Purpose:** Turn an active user count into a target instance
+count, clamped to the ASG's bounds. Pure function, no AWS calls.
+**Input:** `active_user_count`, `asg_min_size`, `asg_max_size`
+**Output:** Target instance count within `[asg_min_size, asg_max_size]`
+
 ```python
-desired = min(max(1, (active_users + 4) // 5), max_instances)
+desired = min(max(asg_min_size, ceil(active_users / USERS_PER_INSTANCE)), asg_max_size)
 ```
+
+`SetDesiredCapacity` rejects anything outside the group's bounds,
+and a rejection aborts the invocation, so clamping here is what
+keeps a cycle's rebalancing and metrics from being lost as well.
 
 Wait loop retries every 60s. Code sets `max_wait_time = 1020s`
 (17 min) but Lambda timeout is 900s (15 min), so effective
@@ -555,6 +658,17 @@ This prevents thrashing when user count hovers near a boundary.
 
 **Dashboard:** `subscr-optinist-monitoring` (integrated with premium tier monitoring)
 
+### Alarms
+
+| Alarm | Metric | Condition | Why |
+|---|---|---|---|
+| `free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 for 3 consecutive 5-minute periods | The Lambda is the only user-count writer of free-tier capacity and runs unattended. A failure leaves capacity where it is and skips that cycle's rebalancing and metric publication. Three periods distinguishes a condition the Lambda cannot get past from a self-healing transient. |
+
+Note that the free tier's CPU/memory alarms (`cpu-high`, `cpu-low`,
+`memory-high`, `memory-low`) are **scaling triggers rather than notifications**
+-- see [Two Triggers on One ASG](#two-triggers-on-one-asg). An idle
+environment holds a `-low` alarm in ALARM by design.
+
 ### Key Log Events
 
 **Free Manager Logs** (`/aws/lambda/subscr-free-manager`):
@@ -570,9 +684,9 @@ User threshold reached (18 >= 5), initiating scaling
 SCALE AND REBALANCE
 ============================================================
 Active users: 18
-Max instances: 10
+- ASG bounds: min=1, max=10
 Calculated desired instances: 4
-Formula: min(max(1, (18 + 4) // 5), 10)
+Formula: min(max(1, ceil(18 / 5)), 10)
 
 Scaling up from 2 to 4 instances
 Scaling ASG subscr-optinist-asg to desired capacity: 4
@@ -645,7 +759,11 @@ ASG_NAME                        # Auto Scaling Group name
 # Scaling Configuration
 FREE_USER_THRESHOLD             # Users to trigger scaling (default: 5)
 FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (production: 5)
-MAX_FREE_INSTANCES              # Maximum instances (default: 10)
+
+# The instance count floor and ceiling are deliberately NOT here. They are
+# read from the ASG's MinSize/MaxSize (var.asg_min_size / var.asg_max_size)
+# on every run, so the group's configuration cannot drift from what the
+# Lambda will request, and capacity can be retuned without a redeploy.
 
 # Internal API (for experiment sync after migration)
 ALB_DNS_NAME                    # ALB DNS name for internal API calls
@@ -796,7 +914,8 @@ aws ecs describe-services \
 | `handle_scheduled_monitoring()` | 5-minute monitoring loop |
 | `handle_asg_event()` | ASG lifecycle event handler |
 | `scale_and_rebalance()` | Main scaling and rebalancing logic |
-| `get_service_info()` | Get ASG capacity and ECS task counts |
+| `calculate_desired_instances()` | Target instance count, clamped to the ASG's bounds (pure) |
+| `get_service_info()` | Get ASG capacity and bounds, plus ECS task counts |
 | `scale_service()` | Scale ASG and ECS service |
 | `rebalance_idle_users_multi()` | Multi-instance rebalancing algorithm |
 | `get_available_instance_ids()` | Discover running EC2 instances |
@@ -811,7 +930,7 @@ aws ecs describe-services \
 | `count_active_free_users()` | Count users with recent activity |
 | `get_users_per_instance()` | Get user distribution map (activity-filtered) |
 | `get_idle_users_for_instance()` | Get idle users on specific instance |
-| `migrate_user_to_instance()` | Atomic user migration with workflow protection |
+| `migrate_user_to_instance()` | Repoint an assignment record's `instance_id`, with workflow protection. Does not move traffic |
 | `trigger_experiment_sync()` | Sync experiment metadata after migration |
 | `is_user_idle()` | Check if user is safe to migrate |
 | `is_distribution_balanced()` | Verify even distribution (max-min <= tolerance) |

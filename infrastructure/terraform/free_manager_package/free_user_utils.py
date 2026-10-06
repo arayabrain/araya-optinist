@@ -264,19 +264,24 @@ def trigger_experiment_sync(user_id: int) -> bool:
 
 def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
     """
-    Migrate a user to a new instance.
+    Repoint a user's assignment record at a new instance.
 
-    This updates the database record and the user's next request
-    will be routed to the new instance via load balancer.
-    After successful migration, triggers experiment metadata sync
-    on the new instance.
+    This updates the database record only. It does **not** move the
+    user's traffic: free-tier requests are distributed by the ALB
+    (round robin plus sticky sessions), and `UserActivityMiddleware`
+    overwrites `instance_id` with whichever instance actually serves
+    the user's next request. The user reaches the new instance when
+    their sticky cookie lapses, not because of this write.
+
+    After a successful update, triggers experiment metadata sync on
+    the new instance so the data is in place once they land there.
 
     Args:
         user_id: User ID to migrate
         new_instance_id: New instance ID to assign
 
     Returns:
-        True if migration successful, False otherwise
+        True if the record was updated, False otherwise
     """
     try:
         with get_db_connection() as conn:
