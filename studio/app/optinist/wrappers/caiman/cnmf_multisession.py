@@ -8,6 +8,10 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.wrappers.caiman.caiman_utils import (
+    caiman_cluster,
+    distribute_params_to_groups,
+)
 from studio.app.optinist.wrappers.caiman.cnmf import (
     get_roi,
     util_cleanup_image_memmap,
@@ -22,9 +26,8 @@ logger = AppLogger.get_logger()
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import load, local_correlations, stop_server
+    from caiman import load, local_correlations
     from caiman.base.rois import register_multisession
-    from caiman.cluster import setup_cluster
     from caiman.source_extraction.cnmf import cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -35,16 +38,16 @@ def caiman_cnmf_multisession(
     util_download_model_files()
 
     flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
+    recursive_flatten_params(params or {}, flattened_params)
     params = flattened_params
 
     Ain = params.pop("Ain", None)
     roi_thr = params.pop("roi_thr", None)
+    requested_n_processes = params.pop("n_processes", 1)
 
     # mulisiession params
+    session_lengths = params.pop("session_lengths", None)
     n_reg_files = params.pop("n_reg_files", 2)
-    if n_reg_files < 2:
-        raise Exception(f"Set n_reg_files to a integer value gte 2. Now {n_reg_files}.")
     reg_file_rate = params.pop("reg_file_rate", 1.0)
     if reg_file_rate > 1.0:
         logger.warning(
@@ -59,7 +62,14 @@ def caiman_cnmf_multisession(
     max_dist = params.pop("max_dist", 10)
     enclosed_thr = params.pop("enclosed_thr", None)
 
-    split_image_paths = images.split_image(output_dir, n_files=n_reg_files)
+    if session_lengths:
+        split_image_paths = images.split_image(output_dir, lengths=session_lengths)
+    else:
+        if n_reg_files < 2:
+            raise Exception(
+                f"Set n_reg_files to a integer value gte 2. Now {n_reg_files}."
+            )
+        split_image_paths = images.split_image(output_dir, n_files=n_reg_files)
     n_split_images = len(split_image_paths)
 
     logger.info(f"image was split into {n_split_images} parts.")
@@ -67,54 +77,32 @@ def caiman_cnmf_multisession(
     nwbfile = kwargs.get("nwbfile", {})
     fr = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
 
-    if params is None:
-        ops = CNMFParams()
-    else:
-        ops = CNMFParams(params_dict={**params, "fr": fr})
-
-    if "dview" in locals():
-        stop_server(dview=dview)  # noqa: F821
-
-    # TODO: Add parameters for node
-    n_processes = 1
-    dview = None
-    # This process launches another process to run the CNMF algorithm,
-    # so this node use at least 2 core.
-    if n_processes == 1:
-        c, dview, n_processes = setup_cluster(
-            backend="single", n_processes=n_processes, single_thread=True
-        )
-    else:
-        c, dview, n_processes = setup_cluster(
-            backend="multiprocessing", n_processes=n_processes
-        )
-    logger.debug(f"n_processes: {n_processes}")
-
     cnm_list = []
     templates = []
     mmap_paths = []
-    for split_image_path in split_image_paths:
-        split_image = imageio.volread(split_image_path)
-        split_image_mmap, _, mmap_path = util_get_image_memmap(
-            function_id, split_image, split_image_path
+    with caiman_cluster(requested_n_processes) as (dview, n_processes):
+        pathed_params = distribute_params_to_groups(
+            {**params, "fr": fr}, vars(CNMFParams())
         )
-        mmap_paths.append(mmap_path)
-        del split_image
-        gc.collect()
+        pathed_params.setdefault("patch", {})["n_processes"] = n_processes
+        ops = CNMFParams(params_dict=pathed_params)
 
-        # ops.change_params("fnames", [image_path])
-        cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
-        cnm = cnm.fit(split_image_mmap)
-        cnm_list.append(cnm)
-        templates.append(load(split_image_path).mean(0))
+        for split_image_path in split_image_paths:
+            split_image = imageio.volread(split_image_path)
+            split_image_mmap, _, mmap_path = util_get_image_memmap(
+                function_id, split_image, split_image_path
+            )
+            mmap_paths.append(mmap_path)
+            del split_image
+            gc.collect()
 
-        del split_image_mmap
-        gc.collect()
+            cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
+            cnm = cnm.fit(split_image_mmap)
+            cnm_list.append(cnm)
+            templates.append(load(split_image_path).mean(0))
 
-    # In single-thread mode dview is None and there is no cluster to stop;
-    # stop_server() would shell out to a nonexistent `ipcluster` and log errors.
-    if dview is not None:
-        stop_server(dview=dview)
+            del split_image_mmap
+            gc.collect()
 
     spatial = [cnm.estimates.A for cnm in cnm_list]
     dims = templates[0].shape

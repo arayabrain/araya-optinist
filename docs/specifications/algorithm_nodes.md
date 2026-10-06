@@ -83,6 +83,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Parameters:** Same as caiman_cnmf with the addition of:
   - n_reg_files
   - reg_file_rate
+  - **session_lengths** [list of int, default: empty]: Frames per session. If set, the input movie is split at these boundaries instead of into n_reg_files equal parts (use when sessions have unequal length).
   - **align_flag** [bool, default: true]: Align the templates before matching
   - **max_thr** [scalar, default 0]: Max threshold parameter before binarization.
   - **use_opt_flow** [bool, default: true]: Use dense optical flow to align templates
