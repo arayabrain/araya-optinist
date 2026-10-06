@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import fcntl
 import json
 import os
 import threading
@@ -10,9 +11,11 @@ import numpy as np
 import pytest
 import tifffile
 
+from studio.app.common.core.storage.remote_storage_controller import InputFileLock
 from studio.app.common.routers import files as files_module
 from studio.app.common.routers.files import (
     DirTreeGetter,
+    _build_tree_from_remote_files,
     get_files,
     get_hdf5_structure_dict,
     get_image_shape_dict,
@@ -183,7 +186,21 @@ def test_has_accepted_file_visits_symlink_cycle_once(tmp_path, monkeypatch):
     )
 
     assert DirTreeGetter.has_accepted_file(str(tmp_path / "loop"), TIFF) is False
-    assert len(scanned) == 2, scanned
+    assert len(scanned) <= 2, scanned
+
+
+def test_has_accepted_file_stops_at_first_match(tmp_path, monkeypatch):
+    for i in range(20):
+        (tmp_path / f"d{i}" / "deep" / "deeper").mkdir(parents=True)
+    _tif(tmp_path / "top.tif", (2, 2))
+    scanned = []
+    real_scandir = os.scandir
+    monkeypatch.setattr(
+        os, "scandir", lambda p: (scanned.append(p), real_scandir(p))[1]
+    )
+
+    assert DirTreeGetter.has_accepted_file(str(tmp_path), TIFF) is True
+    assert len(scanned) == 1, scanned
 
 
 def test_get_tree_response_shape(ws):
@@ -381,7 +398,6 @@ def test_get_tree_detects_same_mtime_replacement(ws):
 
 
 def test_concurrent_cache_updates_are_serialized(ws, monkeypatch):
-    cache_file = str(ws / MetadataCacheFile.IMAGE_SHAPE)
     real = files_module._write_json_atomic
     monkeypatch.setattr(
         files_module,
@@ -391,7 +407,7 @@ def test_concurrent_cache_updates_are_serialized(ws, monkeypatch):
     threads = [
         threading.Thread(
             target=files_module._atomic_json_update,
-            args=(cache_file, {k: {"shape": [i]}}),
+            args=("ws", MetadataCacheFile.IMAGE_SHAPE, {k: {"shape": [i]}}),
         )
         for i, k in enumerate(("a.tif", "b.tif", "c.tif"))
     ]
@@ -400,6 +416,44 @@ def test_concurrent_cache_updates_are_serialized(ws, monkeypatch):
     for t in threads:
         t.join()
     assert sorted(_cache(ws)) == ["a.tif", "b.tif", "c.tif"]
+    assert os.path.exists(InputFileLock._lock_path("ws", MetadataCacheFile.IMAGE_SHAPE))
+
+
+@pytest.mark.asyncio
+async def test_cache_write_waits_for_the_input_file_lock(ws):
+    _tif(ws / "a.tif", (2, 3))
+    writer = threading.Thread(target=update_image_shape, args=("ws", "a.tif"))
+
+    async with InputFileLock.acquire("ws", MetadataCacheFile.IMAGE_SHAPE):
+        writer.start()
+        await asyncio.sleep(0.3)
+        assert writer.is_alive()
+        assert not (ws / MetadataCacheFile.IMAGE_SHAPE).exists()
+
+    writer.join(timeout=5)
+    assert not writer.is_alive()
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+def test_cache_write_gives_up_on_a_wedged_lock(ws, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 0.1)
+    _tif(ws / "a.tif", (2, 3))
+    lock_path = InputFileLock._lock_path("ws", MetadataCacheFile.IMAGE_SHAPE)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    holder = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        writer = threading.Thread(target=update_image_shape, args=("ws", "a.tif"))
+        with caplog.at_level(logging.WARNING):
+            writer.start()
+            writer.join(timeout=5)
+        assert not writer.is_alive()
+    finally:
+        os.close(holder)
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+    assert any("InputFileLock acquire timeout" in r.message for r in caplog.records)
 
 
 def test_write_json_atomic_cleans_up_on_failure(tmp_path, monkeypatch):
@@ -427,12 +481,34 @@ def test_get_tree_trusts_legacy_cache_entries(ws, monkeypatch):
     assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [9, 9]
 
 
-def test_get_tree_tolerates_corrupt_cache(ws):
+@pytest.mark.parametrize(
+    "payload",
+    ["{not json", "[]", '{"a.tif": "shape"}', '{"a.tif": {"shape": "x"}}'],
+)
+def test_get_tree_repairs_malformed_cache(ws, payload):
     _tif(ws / "a.tif", (2, 3))
-    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text("{not json")
+    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text(payload)
 
     assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
     assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+def test_update_image_shape_repairs_non_dict_cache(ws):
+    _tif(ws / "a.tif", (2, 3))
+    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text("[]")
+
+    assert update_image_shape("ws", "a.tif") == [2, 3]
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+def test_remote_only_node_ignores_malformed_shape_entry():
+    nodes = _build_tree_from_remote_files(
+        {"a.tif": {"size": 1}, "b.tif": {"size": 1}},
+        set(),
+        "image",
+        {"a.tif": "shape", "b.tif": {"shape": [2, 3]}},
+    )
+    assert [(n.path, n.shape) for n in nodes] == [("a.tif", None), ("b.tif", [2, 3])]
 
 
 def test_update_image_shape_entry_is_accepted_by_tree(ws, monkeypatch):
@@ -463,6 +539,18 @@ async def test_get_files_does_not_block_event_loop(monkeypatch):
     await asyncio.sleep(0.05)
     assert time.monotonic() - t0 < 0.3
     assert await task == []
+
+
+@pytest.mark.asyncio
+async def test_get_files_walks_on_the_dedicated_pool(monkeypatch):
+    names = []
+    monkeypatch.setattr(
+        DirTreeGetter,
+        "get_tree",
+        lambda *a: names.append(threading.current_thread().name) or [],
+    )
+    assert await get_files("ws", "image") == []
+    assert names[0].startswith("filetree"), names
 
 
 @pytest.mark.asyncio

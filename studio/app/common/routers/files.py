@@ -1,11 +1,10 @@
 import asyncio
-import fcntl
 import json
 import os
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from pathlib import PurePath
 from typing import Callable, Dict, List
 from urllib.parse import urlparse
@@ -142,7 +141,9 @@ class DirTreeGetter:
                     )
         finally:
             if is_root and _shape_cache["new"]:
-                _merge_image_shape_dict(workspace_id, **_shape_cache)
+                _merge_image_shape_dict(
+                    workspace_id, _shape_cache["known"], _shape_cache["new"]
+                )
 
         return nodes
 
@@ -153,14 +154,14 @@ class DirTreeGetter:
         except OSError:
             return []
         entry = cache["known"].get(relative_path)
+        shape = _entry_shape(entry)
         # Legacy entries carry no mtime/size and are trusted until rewritten.
         if (
-            entry
-            and "shape" in entry
+            shape is not None
             and entry.get("mtime", st.st_mtime) == st.st_mtime
             and entry.get("size", st.st_size) == st.st_size
         ):
-            return entry["shape"]
+            return shape
         entry = _shape_entry(filepath, st)
         cache["new"][relative_path] = entry
         return entry["shape"]
@@ -186,22 +187,27 @@ class DirTreeGetter:
         return False
 
 
-def get_image_shape_dict(workspace_id: str):
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
+def get_image_shape_dict(workspace_id: str) -> dict:
+    return _read_json_dict(
+        join_filepath([DIRPATH.INPUT_DIR, workspace_id, MetadataCacheFile.IMAGE_SHAPE])
+    )
+
+
+def _read_json_dict(filepath: str) -> dict:
+    """Missing, unparsable or non-object JSON reads as an empty cache."""
     try:
-        tiff_format_dict = JsonReader.read(
-            join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
-        )
-        return tiff_format_dict
+        data = JsonReader.read(filepath)
     except (FileNotFoundError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _entry_shape(entry) -> list | None:
+    shape = entry.get("shape") if isinstance(entry, dict) else None
+    return shape if isinstance(shape, list) else None
 
 
 def _merge_image_shape_dict(workspace_id: str, known: dict, new: dict) -> None:
-    cache_file = join_filepath(
-        [DIRPATH.INPUT_DIR, workspace_id, MetadataCacheFile.IMAGE_SHAPE]
-    )
-
     # An entry rewritten while the walk ran is newer than the walk's read of it.
     def merge(existing: dict) -> None:
         existing.update(
@@ -209,9 +215,9 @@ def _merge_image_shape_dict(workspace_id: str, known: dict, new: dict) -> None:
         )
 
     try:
-        _locked_json_edit(cache_file, merge)
+        _locked_json_edit(workspace_id, MetadataCacheFile.IMAGE_SHAPE, merge)
     except OSError as e:
-        logger.warning(f"image shape cache not written ({cache_file}): {e}")
+        logger.warning(f"image shape cache not written ({workspace_id}): {e}")
 
 
 def read_image_shape(filepath: str) -> list:
@@ -240,8 +246,9 @@ def update_image_shape(workspace_id: str, relative_file_path: str):
     except OSError:
         return []
 
-    tiff_format_file = join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
-    _atomic_json_update(tiff_format_file, {relative_file_path: entry})
+    _atomic_json_update(
+        workspace_id, MetadataCacheFile.IMAGE_SHAPE, {relative_file_path: entry}
+    )
 
     return entry["shape"]
 
@@ -270,28 +277,18 @@ def _structure_node_to_dict(node) -> dict:
     return result
 
 
-def _atomic_json_update(filepath: str, entries: dict) -> None:
-    """Merge entries into a JSON file, replacing it atomically."""
-    _locked_json_edit(filepath, lambda data: data.update(entries))
+def _atomic_json_update(workspace_id: str, filename: str, entries: dict) -> None:
+    """Merge entries into a workspace JSON cache, replacing it atomically."""
+    _locked_json_edit(workspace_id, filename, lambda data: data.update(entries))
 
 
-@contextmanager
-def _file_lock(filepath: str):
-    dirname, basename = os.path.split(filepath)
-    lock_dir = os.path.join(dirname, InputFileLock.LOCKS_DIRNAME)
-    os.makedirs(lock_dir, exist_ok=True)
-    with open(os.path.join(lock_dir, f"{basename}.lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
-
-
-def _locked_json_edit(filepath: str, edit: Callable[[dict], None]) -> None:
-    """Read-modify-write a JSON file under a per-file lock shared by all writers."""
-    with _file_lock(filepath):
-        try:
-            data = JsonReader.read(filepath)
-        except (FileNotFoundError, ValueError):
-            data = {}
+def _locked_json_edit(
+    workspace_id: str, filename: str, edit: Callable[[dict], None]
+) -> None:
+    """Read-modify-write a workspace JSON cache under its InputFileLock."""
+    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+    with InputFileLock.acquire_sync(workspace_id, filename):
+        data = _read_json_dict(filepath)
         edit(data)
         _write_json_atomic(filepath, data)
 
@@ -330,9 +327,11 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
         )
         structure_dict = []
 
-    # Save to .hdf5_structure.json with atomic write
-    structure_file = join_filepath([dirpath, MetadataCacheFile.HDF5_STRUCTURE])
-    _atomic_json_update(structure_file, {relative_file_path: structure_dict})
+    _atomic_json_update(
+        workspace_id,
+        MetadataCacheFile.HDF5_STRUCTURE,
+        {relative_file_path: structure_dict},
+    )
 
     return structure_dict
 
@@ -347,8 +346,6 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
     """
     from studio.app.optinist.routers.mat import MatGetter
 
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
-
     try:
         structure = MatGetter.get(relative_file_path, workspace_id)
         structure_dict = [_structure_node_to_dict(node) for node in structure]
@@ -358,9 +355,11 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
         )
         structure_dict = []
 
-    # Save to .mat_structure.json with atomic write
-    structure_file = join_filepath([dirpath, MetadataCacheFile.MAT_STRUCTURE])
-    _atomic_json_update(structure_file, {relative_file_path: structure_dict})
+    _atomic_json_update(
+        workspace_id,
+        MetadataCacheFile.MAT_STRUCTURE,
+        {relative_file_path: structure_dict},
+    )
 
     return structure_dict
 
@@ -563,7 +562,7 @@ def _build_tree_from_remote_files(
     # Build nodes for root level remote-only files
     result = []
     for filename, file_info in dir_files.get("", []):
-        shape = image_shape_dict.get(filename, {}).get("shape")
+        shape = _entry_shape(image_shape_dict.get(filename))
         result.append(
             TreeNodeWithSync(
                 path=filename,
@@ -845,7 +844,9 @@ def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
         return
 
     try:
-        _locked_json_edit(metadata_path, lambda data: data.pop(filename, None))
+        _locked_json_edit(
+            workspace_id, metadata_file, lambda data: data.pop(filename, None)
+        )
     except Exception as e:
         logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
 
