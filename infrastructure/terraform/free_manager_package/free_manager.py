@@ -33,7 +33,10 @@ Required Environment Variables:
 - ASG_NAME: Auto Scaling Group name for free tier instances
 - FREE_USER_THRESHOLD: Number of active users to trigger scaling (default: 5)
 - FREE_IDLE_THRESHOLD_MINUTES: Minutes of inactivity to consider user idle (default: 5)
-- MAX_FREE_INSTANCES: Maximum number of free tier instances (default: 10)
+
+The instance count floor and ceiling are read from the ASG's own
+MinSize/MaxSize, not from configuration held here, so capacity can be
+retuned on the group without redeploying this function.
 """
 
 import json
@@ -87,6 +90,10 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
         )
     return value
 
+
+# Users one instance is provisioned to serve. Only the instance count scales,
+# so this is the divisor that turns an active user count into a target count.
+USERS_PER_INSTANCE = 5
 
 # Initialize AWS clients
 ecs_client: "ECSClient" = boto3.client("ecs")
@@ -146,7 +153,6 @@ def handle_scheduled_monitoring(event, context):
         activity_threshold_minutes = int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
         )
-        max_instances = int(get_required_env_var("MAX_FREE_INSTANCES", "10"))
 
         # Count active free tier users
         active_user_count = count_active_free_users(
@@ -163,10 +169,7 @@ def handle_scheduled_monitoring(event, context):
                 f"User threshold reached ({active_user_count} >= {user_threshold}), "
                 f"initiating scaling and rebalancing"
             )
-            result = scale_and_rebalance(
-                active_user_count=active_user_count,
-                max_instances=max_instances,
-            )
+            result = scale_and_rebalance(active_user_count=active_user_count)
         else:
             print(
                 f"User threshold not reached ({active_user_count} < {user_threshold}), "
@@ -344,16 +347,40 @@ def set_scaling_lock(in_progress: bool) -> None:
         print(f"Warning: Could not set scaling lock: {e}")
 
 
+def calculate_desired_instances(
+    active_user_count: int,
+    asg_min_size: int,
+    asg_max_size: int,
+) -> int:
+    """
+    Calculate the target instance count for the given active user count.
+
+    One instance per USERS_PER_INSTANCE users, clamped to the ASG's own
+    bounds. The bounds come from the group itself rather than from
+    configuration held here, so the capacity the ASG is configured to allow
+    is the capacity this function can ask for -- `SetDesiredCapacity` rejects
+    anything outside them.
+
+    Args:
+        active_user_count: Current number of active free tier users
+        asg_min_size: ASG MinSize
+        asg_max_size: ASG MaxSize
+
+    Returns:
+        Target instance count, within [asg_min_size, asg_max_size]
+    """
+    by_user_count = (active_user_count + USERS_PER_INSTANCE - 1) // USERS_PER_INSTANCE
+    return min(max(asg_min_size, by_user_count), asg_max_size)
+
+
 def scale_and_rebalance(
     active_user_count: int,
-    max_instances: int,
 ) -> Dict[str, Any]:
     """
     Scale ECS service and rebalance idle users to new instances.
 
     Args:
         active_user_count: Current number of active free tier users
-        max_instances: Maximum number of instances allowed
 
     Returns:
         Dictionary with scaling and rebalancing results
@@ -362,7 +389,6 @@ def scale_and_rebalance(
     print("SCALE AND REBALANCE")
     print("=" * 70)
     print(f"Active users: {active_user_count}")
-    print(f"Max instances: {max_instances}")
 
     # Check if scaling is already in progress
     if is_scaling_in_progress():
@@ -379,17 +405,23 @@ def scale_and_rebalance(
     service_info = get_service_info(cluster_name, service_name)
     current_desired = service_info["desired_count"]
     current_running = service_info["running_count"]
+    asg_min_size = service_info["min_size"]
+    asg_max_size = service_info["max_size"]
 
     print("\nCurrent state from get_service_info:")
     print(f"- Desired capacity (ASG): {current_desired}")
     print(f"- Running tasks (ECS): {current_running}")
+    print(f"- ASG bounds: min={asg_min_size}, max={asg_max_size}")
 
-    # Calculate desired instance count
-    # Simple algorithm: 1 instance per 5 users, minimum 1, maximum max_instances
-    desired_instances = min(max(1, (active_user_count + 4) // 5), max_instances)
+    desired_instances = calculate_desired_instances(
+        active_user_count, asg_min_size, asg_max_size
+    )
 
     print(f"\nCalculated desired instances: {desired_instances}")
-    print(f"Formula: min(max(1, ({active_user_count} + 4) // 5), {max_instances})")
+    print(
+        f"Formula: min(max({asg_min_size}, ceil({active_user_count} / "
+        f"{USERS_PER_INSTANCE})), {asg_max_size})"
+    )
 
     result = {
         "active_users": active_user_count,
@@ -530,14 +562,16 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
     Get current ASG and ECS service information.
 
     For free tier, we check both the ASG desired capacity and ECS service
-    status. The ASG desired capacity is the source of truth for scaling.
+    status. The ASG desired capacity is the source of truth for scaling, and
+    its MinSize/MaxSize are the bounds any new capacity must fall within.
 
     Args:
         cluster_name: ECS cluster name
         service_name: ECS service name
 
     Returns:
-        Dictionary with info (desired_count, running_count, pending_count)
+        Dictionary with info (desired_count, running_count, pending_count,
+        min_size, max_size)
     """
     print("\n" + "=" * 60)
     print("GET SERVICE INFO")
@@ -595,18 +629,22 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
     task_arns = tasks_response.get("taskArns", [])
     print(f"Running tasks: {len(task_arns)}")
 
-    # Return ASG capacity as the desired count (source of truth)
+    # Return ASG capacity and bounds (source of truth for scaling)
     # but also include ECS running/pending counts
     result = {
         "desired_count": asg["DesiredCapacity"],
         "running_count": service["runningCount"],
         "pending_count": service["pendingCount"],
+        "min_size": asg["MinSize"],
+        "max_size": asg["MaxSize"],
     }
 
     print("\nReturning:")
     print(f"desired_count (from ASG): {result['desired_count']}")
     print(f"running_count (from ECS): {result['running_count']}")
     print(f"pending_count (from ECS): {result['pending_count']}")
+    print(f"min_size (from ASG): {result['min_size']}")
+    print(f"max_size (from ASG): {result['max_size']}")
     print("=" * 60)
 
     return result

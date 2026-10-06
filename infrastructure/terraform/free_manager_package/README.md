@@ -83,18 +83,22 @@ Manages autoscaling and load balancing for free tier users. Monitors active user
 - `ASG_NAME` - Auto Scaling Group name
 - `FREE_USER_THRESHOLD` - Users to trigger scaling (default: 5)
 - `FREE_IDLE_THRESHOLD_MINUTES` - Idle threshold (default: 5)
-- `MAX_FREE_INSTANCES` - Maximum instances (default: 10)
+
+The instance count floor and ceiling are not environment variables: they are
+read from the ASG's own `MinSize`/`MaxSize` on every run.
 
 ## Scaling Algorithm
 
 ### Capacity Calculation
 ```
-desired_instances = min(max(1, (active_users + 4) // 5), max_instances)
+desired_instances = min(max(asg_min_size, ceil(active_users / 5)), asg_max_size)
 ```
 
-- **Minimum**: 1 instance always running
 - **Formula**: 1 instance per 5 users (rounded up)
-- **Maximum**: Configurable cap (default: 10)
+- **Bounds**: the ASG's own `MinSize`/`MaxSize`, read via
+  `describe_auto_scaling_groups` each run. `SetDesiredCapacity` rejects
+  anything outside them, so the group's configuration is the single source of
+  truth and capacity can be retuned without redeploying this function.
 
 ### Rebalancing Strategy
 

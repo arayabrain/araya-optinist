@@ -4,6 +4,8 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # free_manager creates boto3 clients at module level;
 # AWS_DEFAULT_REGION must be set before import to avoid NoRegionError
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -168,6 +170,96 @@ class TestHandleAsgEvent:
             body = json.loads(result["body"])
             assert "sync" in body["message"].lower()
             mock_ecs.update_service.assert_not_called()
+
+
+class TestCalculateDesiredInstances:
+    """
+    Pure function tests for calculate_desired_instances.
+
+    The target must always land inside the ASG's own bounds. SetDesiredCapacity
+    rejects anything outside them, and a rejection aborts the invocation, so
+    that cycle's rebalancing and metric publication are skipped too.
+    """
+
+    @pytest.mark.parametrize(
+        "active_users,asg_min,asg_max,expected",
+        [
+            # One instance per 5 users, rounded up, between the bounds.
+            (0, 1, 10, 1),
+            (1, 1, 10, 1),
+            (5, 1, 10, 1),
+            (6, 1, 10, 2),
+            (10, 1, 10, 2),
+            (11, 1, 10, 3),
+            (50, 1, 10, 10),
+            # Floor is the configured minimum, not a literal 1: a user count
+            # that alone would ask for fewer instances still cannot go below
+            # what the group is configured to keep running.
+            (5, 3, 5, 3),
+            (5, 5, 5, 5),
+            (10, 5, 5, 5),
+            (15, 5, 5, 5),
+            (6, 3, 5, 3),
+            (16, 3, 5, 4),
+            # Ceiling is the configured maximum: a user count that alone would
+            # ask for more instances is capped rather than requested.
+            (16, 1, 3, 3),
+            (100, 1, 3, 3),
+            # min == max pins the count regardless of load.
+            (1, 2, 2, 2),
+            (99, 2, 2, 2),
+            # A minimum of 0 is valid on an ASG and must not be raised to 1.
+            (0, 0, 4, 0),
+            (1, 0, 4, 1),
+        ],
+    )
+    def test_target_is_within_asg_bounds(
+        self, active_users, asg_min, asg_max, expected
+    ):
+        """Target matches the formula and never leaves [MinSize, MaxSize]."""
+        from free_manager import calculate_desired_instances
+
+        result = calculate_desired_instances(active_users, asg_min, asg_max)
+
+        assert result == expected
+        assert asg_min <= result <= asg_max
+
+    def test_uses_asg_bounds_from_service_info(self, mock_env_vars_free):
+        """
+        scale_and_rebalance clamps to the bounds get_service_info reports,
+        not to any value configured on the Lambda.
+        """
+        from free_manager import calculate_desired_instances, get_service_info
+
+        asg = {
+            "AutoScalingGroups": [
+                {
+                    "DesiredCapacity": 3,
+                    "MinSize": 3,
+                    "MaxSize": 5,
+                    "Instances": [],
+                }
+            ]
+        }
+        service = {
+            "services": [{"desiredCount": 3, "runningCount": 3, "pendingCount": 0}]
+        }
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
+            mock_asg.describe_auto_scaling_groups.return_value = asg
+            mock_ecs.describe_services.return_value = service
+            mock_ecs.list_tasks.return_value = {"taskArns": []}
+
+            info = get_service_info("test-cluster", "test-service")
+
+        assert info["min_size"] == 3
+        assert info["max_size"] == 5
+
+        # 5 active users would compute 1 instance from the user count alone;
+        # the ASG minimum holds it at 3, which is what the group accepts.
+        assert calculate_desired_instances(5, info["min_size"], info["max_size"]) == 3
 
 
 class TestIsDistributionBalanced:

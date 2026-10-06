@@ -76,9 +76,11 @@ resource "aws_lambda_function" "free_manager" {
       ENV_PREFIX = var.environment
 
       # Free tier configuration
-      FREE_USER_THRESHOLD         = "5"  # Trigger scaling at 5 active users
-      FREE_IDLE_THRESHOLD_MINUTES = "5"  # Consider user idle after 5 minutes (reduced from 10)
-      MAX_FREE_INSTANCES          = "10" # Maximum number of free tier instances
+      # The instance count floor/ceiling are not set here: the Lambda reads the
+      # ASG's own MinSize/MaxSize (var.asg_min_size / var.asg_max_size), so the
+      # group's configuration cannot drift from what the Lambda will request.
+      FREE_USER_THRESHOLD         = "5" # Trigger scaling at 5 active users
+      FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
 
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
@@ -221,6 +223,44 @@ resource "aws_cloudwatch_log_group" "free_manager_logs" {
   tags = {
     Name = "Free Manager Logs"
     Type = "Free-CloudWatch"
+  }
+}
+
+# ===========================
+# CloudWatch Alarm (Lambda Errors)
+# ===========================
+
+# The Lambda is the only writer of free-tier capacity, and it runs unattended
+# every 5 minutes. A failure leaves capacity where it is and silently skips
+# that cycle's rebalancing and metric publication, so the Errors metric needs
+# an action of its own rather than dashboard-only visibility.
+#
+# Three consecutive 5-minute periods: a single failed invocation is a transient
+# (a throttled API call, a cold RDS proxy connection) and self-heals on the
+# next run, whereas a condition the Lambda cannot get past repeats on every
+# run. Only the latter should page.
+resource "aws_cloudwatch_metric_alarm" "free_manager_errors" {
+  alarm_name          = "${local.env_prefix}-free-manager-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "3"
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "0"
+  alarm_description   = "Free Manager Lambda has failed on three consecutive runs; free-tier capacity is no longer being managed"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    FunctionName = aws_lambda_function.free_manager.function_name
+  }
+
+  tags = {
+    Name    = "Free Manager Errors Alarm"
+    Type    = "Free-CloudWatch"
+    Service = "free-tier"
   }
 }
 
