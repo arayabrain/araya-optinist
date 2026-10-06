@@ -831,10 +831,9 @@ A bad `static` parameter can leave the instance in `incompatible-parameters`, un
 #### The rollback drill — steps 12 to 14
 
 **This group is the reason 0A exists**: the only place the rollback is executed rather than described. It
-rehearses [the rollback procedure](#the-rollback-procedure)'s steps 0 and 2 — the restore source, and the
-delete-and-restore under the same identifier. Steps 1, 3, 4 and 5 (traffic, the proxy target, Terraform, the
-scheduler) have nothing to act on with a clone and are exercised only in an actual rollback, which is why the
-Rollback section is written to be read on its own.
+rehearses the snapshot-restore runbook's steps 1, 3 and 5 (see [Rollback](#rollback)) — the restore source,
+the restore parameters, and the delete-and-restore under the same identifier. The runbook's other steps
+(traffic, deletion protection, the proxy target) and the Terraform revert have nothing to act on with a clone.
 
 **0A can be split across days here.** The drill restores from the clone's *own* automatic pre-upgrade
 snapshot, so the scheduled stop no longer constrains anything; a reasonable split is steps 1 to 10 on one
@@ -882,14 +881,13 @@ drill and the teardown use only the RDS API.
 
 ##### Steps 12 to 14 — the rollback drill
 
-**This runs the [Rollback](#rollback) procedure's steps 0 and 2 against the clone, not a second copy of
-them.** Read that section and substitute:
+**This runs the runbook's steps 1, 3 and 5 against the clone, not a second copy of them.** Substitute:
 
-| Rollback uses | Here |
+| The runbook uses | Here |
 |-------------------------|-----------------------|
 | `$DB` | **`$CLONE`** |
-| `$ROLLBACK_PG` | **`rehearsal-ssl-from`** |
-| A **manual** pre-upgrade snapshot, with automated ones as the fallback | **An automated one.** The clone has no manual snapshot, so the selection below replaces step 0's listing |
+| `$RESTORE_PG` | **`rehearsal-ssl-from`** |
+| A **manual** snapshot, with automated ones as the fallback | **An automated one.** The clone has no manual snapshot, so the selection below replaces step 1's listing |
 | Clearing `deletion_protection` first | **Not needed.** The clone never had it |
 
 Four things are specific to the drill:
@@ -1284,10 +1282,10 @@ it reads `available`.
 # PRESNAP, not SNAP: SNAP elsewhere names a restore *source* that gets deleted (0B ends
 # with drop_snapshot "$SNAP"), and two meanings in one session is how a recovery point
 # gets deleted by a line copied from another phase.
-# THE NAME IS A REQUIREMENT. The Rollback procedure finds this snapshot by searching for
-# the literal `pre-upgrade`, because the shell that held $PRESNAP may be gone by then. A
-# release-habit name (`<ENV>-optinist-pre-v<version>-<date>`) does not contain it, and
-# the rollback then reports no recovery point at all, during an incident.
+# THE NAME IS A REQUIREMENT. The Rollback section names this snapshot as the restore
+# source, and the shell that held $PRESNAP may be gone by then; a release-habit name
+# (`<ENV>-optinist-pre-v<version>-<date>`) is not recognisable as a recovery point during
+# an incident.
 PRESNAP=${ENV}-optinist-pre-upgrade-$(date +%Y%m%d-%H%M)
 aws rds create-db-snapshot --db-instance-identifier "$DB" --db-snapshot-identifier "$PRESNAP"
 aws rds wait db-snapshot-available --db-snapshot-identifier "$PRESNAP"
@@ -1510,7 +1508,7 @@ are known, it is found by name, and it survives an instance delete.
 **A rollback after a night has passed must also revert the scheduler Lambda's parameter group** — the evening
 stop has replaced the fixed-name snapshot with a `<TO>` one, and the Lambda points at the `<TO>`-family group,
 so the next nightly restore would aim the new family at an old snapshot (B3 in reverse). The
-[Rollback](#rollback) procedure's step 4 covers it.
+[Rollback](#rollback) section's Terraform revert covers it.
 
 ### Phase 2: the nightly destroy and restore cycle
 
@@ -1907,8 +1905,8 @@ skip included, since an unpublished experiment existed here. The lane writes not
 `HEALTH-26` and the login are real traffic. **Record the results**: the baseline only works if it is on file.
 
 **Then phase 1 steps 4 and 5 against production**, from the reference, not from a copy — a restated command
-is a command that drifts. Step 4's snapshot name is a requirement the Rollback searches for; step 5's two
-verifications are the half most easily dropped.
+is a command that drifts. Step 4's snapshot name is a requirement the Rollback section relies on; step 5's
+two verifications are the half most easily dropped.
 
 **Then the backend switch, which is production-only and has no phase 1 counterpart:**
 
@@ -2068,7 +2066,9 @@ terraform show -json "$PLAN" | jq -r '
 
 There is no engine downgrade: returning to the previous version means restoring a snapshot taken before it.
 That works because **the engine version is a property of the snapshot** — `RestoreDBInstanceFromDBSnapshot`
-has no engine version parameter, the same API fact that causes B3.
+has no engine version parameter, the same API fact that causes B3. **The restore itself is the snapshot-restore
+runbook in [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#emergency-restore-the-database-from-a-snapshot)**;
+this section adds what an upgrade rollback needs on top of it.
 
 ### Recovery points
 
@@ -2082,186 +2082,38 @@ has no engine version parameter, the same API fact that causes B3.
 Verify a snapshot's engine version before relying on it. Three properties the 0A drill measured: an
 automatic pre-upgrade snapshot survives its instance's deletion **only if the delete passes
 `--no-delete-automated-backups`** (the flag defaults to true); restoring onto the original identifier
-reproduces the endpoint hostname but **`DbiResourceId` is new**, which is what forces step 3; and each delete
-that retains its backups leaves its own set under the same identifier, so a rollback plus its eventual cleanup
-means two. **Metadata is not proof**: connect over TLS and read the version from the engine.
+reproduces the endpoint hostname but **`DbiResourceId` is new**, which is what forces the proxy
+re-registration; and each delete that retains its backups leaves its own set under the same identifier, so a
+rollback plus its eventual cleanup means two. **Metadata is not proof**: connect over TLS and read the version
+from the engine.
 
 ### The rollback procedure
 
-**This is the live procedure, and it is self-contained**; phase 0A rehearses it on a clone. Five steps. Do
-not skip step 0 - a rollback that starts by deleting the evidence cannot be diagnosed.
+Run the session setup with `ENV` set to the environment in trouble, then the runbook's steps **1 to 6** with
+the values below, the Terraform revert, the runbook's step **7**, and on development the scheduler check.
+Phase 0A rehearses the runbook's steps 1, 3 and 5 on a clone; the rest have nothing to act on there.
 
 ```bash
-# Run the session setup from the top of Procedure, with ENV set to the environment in
-# trouble. It sets FROM and TO, which the checks below compare against.
 DB=${ENV}-optinist-cloud-rds
-ROLLBACK_PG=${ENV}-optinist-ssl-rollback
-```
-
-**Step 0. Choose the restore source, and confirm it.** The manual pre-upgrade snapshot from phase 1 or
-phase 4 is the primary one; RDS's automatic pre-upgrade snapshots are the fallback.
-
-```bash
-# EVERY manual snapshot, newest first, with the filter as a COLUMN rather than a WHERE
-# clause: an empty filtered result and an empty snapshot list mean different things.
-aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type manual \
-  --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[].{
-             id:DBSnapshotIdentifier,ev:EngineVersion,status:Status,
-             created:SnapshotCreateTime,
-             isTarget:contains(DBSnapshotIdentifier,`pre-upgrade`)}' --output table
-# Expected: a row with isTarget true - this phase's snapshot, available, on <FROM>. Rows
-# with isTarget false are older manual snapshots kept for unrelated reasons: not restore
-# sources, and not to be deleted in phase 5. No isTarget-true row but other rows means
-# the snapshot was named something else - find it by date. No rows at all means the
-# window really was closed.
-
-aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type automated \
-  --query "reverse(sort_by(DBSnapshots[?starts_with(EngineVersion,'${FROM}')],
-           &SnapshotCreateTime))[:3].{id:DBSnapshotIdentifier,ev:EngineVersion,
-           created:SnapshotCreateTime}" --output table
-# The fallback. Prefer the manual snapshot: it is the one whose contents are known.
-
-RESTORE_FROM=<the chosen snapshot id>
-
-# The parameter group the restored instance will attach. An outgoing-version instance
-# cannot use the new family, so this must exist and be on the old one.
-aws rds describe-db-parameter-groups --db-parameter-group-name "$ROLLBACK_PG" \
+RESTORE_PG=${ENV}-optinist-ssl-rollback
+# The retained outgoing-family group from phase 1 step 5. An outgoing-version instance
+# cannot attach the new family, and the restore fails on this argument AFTER it has been
+# committed - so prove the group exists first.
+aws rds describe-db-parameter-groups --db-parameter-group-name "$RESTORE_PG" \
   --query 'DBParameterGroups[0].{name:DBParameterGroupName,family:DBParameterGroupFamily}'
-# Expected: family mysql<FROM>. If this is missing, stop and create it by copying any
-# surviving outgoing-family group before going further - the restore in step 2 fails on
-# this argument otherwise, after it has already been committed.
+# Expected: family mysql<FROM>. If it is missing, stop and create it by copying any
+# surviving outgoing-family group before going further.
 ```
 
-**Step 1. Stop application traffic, and preserve the evidence.** Scaling to zero does not hold on its own:
-the manager Lambdas re-scale on their own schedules, so disable their EventBridge rules first, as the
-development scheduler's own stop path does.
+| Runbook step | For an upgrade rollback |
+|-------------------------|-----------------------|
+| 1 — choose the restore source | The manual snapshot `<ENV>-optinist-pre-upgrade-<date>` from phase 1 step 4 or phase 4, on `<FROM>`; RDS's automatic pre-upgrade snapshots are the fallback. Older manual snapshots on other versions are not this work's artefacts: neither restore from them nor delete them in phase 5 |
+| 5 — restore | With `RESTORE_PG` set as above, so the restored instance attaches the outgoing family |
+| 7 — traffic back | **After the Terraform revert below**, so the services connect to the re-converged instance |
 
-> **`for R in $(echo "$RULES")`, never `for R in $RULES`.** zsh does not word-split an unquoted parameter
-> expansion, so the bare form iterates once over the whole string — loudly for the rule loops, silently for
-> the service loop in step 5, which would set the *first* service to the *last* service's count. zsh does
-> split command substitution, which is what the wrapper relies on.
+**Revert the Terraform change and re-converge, between the runbook's steps 6 and 7.** Keep
+`apply_immediately = true` in place for this apply so the parameter group swap is not deferred.
 
-```bash
-# Record the current state as "name=count" pairs that step 5 can replay. The four counts
-# are NOT all 1.
-COUNTS=$(aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
-  --services "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
-             "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service" \
-  --query 'services[].[serviceName,desiredCount]' --output text | awk '{print $1"="$2}' | tr '\n' ' ')
-echo "COUNTS=$COUNTS"
-# Expected: four name=count pairs. WRITE THIS LINE DOWN alongside RULES - a rollback can
-# outlive the shell it started in.
-
-# DERIVE the rule list from the scheduler Lambda's SCHEDULE_RULE_NAMES and
-# DELAYED_RULE_NAMES rather than transcribing it: a hand-copied list drifts, and the
-# rule most easily missed, free-manager-asg-events, is triggered BY scaling ECS to zero.
-RULES=$(aws lambda get-function-configuration --function-name "${ENV}-dev-scheduler" \
-  --query 'Environment.Variables.[SCHEDULE_RULE_NAMES,DELAYED_RULE_NAMES]' --output text \
-  | tr '\t' '\n' | python3 -c 'import json,sys;print(" ".join(n for l in sys.stdin for n in json.loads(l)))')
-
-# On an environment with no scheduler - production - there is no Lambda to read, so fall
-# back to the rules that exist. This lists them rather than assuming a spelling.
-[ -n "$RULES" ] || RULES=$(aws events list-rules --name-prefix "${ENV}-" \
-  --query "Rules[?contains(Name,'manager')||contains(Name,'cleanup')||contains(Name,'tracker')].Name" \
-  --output text | tr '\t' ' ')
-
-echo "RULES=$RULES"
-# Expected: five names on development - free-manager-schedule, free-manager-asg-events,
-# cost-tracker-schedule, premium-manager-schedule, premium-cleanup-schedule.
-# WRITE THIS LINE DOWN: step 5 re-enables exactly this set.
-
-for R in $(echo "$RULES"); do
-  aws events disable-rule --name "$R" && echo "disabled $R"
-done
-
-# Verify EVERY one: a rule missed here is a service that scales back up mid-restore.
-for R in $(echo "$RULES"); do
-  aws events describe-rule --name "$R" --query '[Name,State]' --output text
-done
-# Expected: DISABLED for every line.
-
-for S in "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
-         "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service"; do
-  aws ecs update-service --cluster "${ENV}-optinist-cloud-cluster" --service "$S" \
-    --desired-count 0 --query 'service.{name:serviceName,desired:desiredCount}'
-done
-# Expected: desired 0 for all four, and still 0 a few minutes later. If one has come
-# back, a rule is still enabled.
-
-# Read the restore parameters off the instance while it still exists
-read -r CLASS STORAGE SUBNET SG <<<"$(aws rds describe-db-instances \
-  --db-instance-identifier "$DB" --output text \
-  --query 'DBInstances[0].[DBInstanceClass,StorageType,DBSubnetGroup.DBSubnetGroupName,
-           VpcSecurityGroups[0].VpcSecurityGroupId]')"
-echo "$CLASS $STORAGE $SUBNET $SG"
-# Expected: four non-empty values. They are needed in step 2 and unavailable afterwards.
-```
-
-**Step 2. Free the identifier, then restore under it.** Restoring onto the original identifier keeps
-Terraform convergent and leaves the ARN and endpoint unchanged. The alternative — restore to a temporary
-identifier, verify, then rename — keeps the broken instance for diagnosis at the cost of a rename and reboot.
-
-> **Deletion protection blocks the delete, and production has it on.** Turning it off is a `modify`
-> that takes seconds — but as a deliberate step, not something discovered from an error during an incident.
-> Step 4's apply puts it back, since `deletion_protection` is declared; if the rollback is abandoned before
-> step 4, re-enable it by hand.
-
-```bash
-aws rds describe-db-instances --db-instance-identifier "$DB" \
-  --query 'DBInstances[0].DeletionProtection'
-# Expected: true on production, false on development.
-
-# Only when the line above said true.
-aws rds modify-db-instance --db-instance-identifier "$DB" \
-  --no-deletion-protection --apply-immediately \
-  --query 'DBInstance.{id:DBInstanceIdentifier,pending:PendingModifiedValues}'
-aws rds describe-db-instances --db-instance-identifier "$DB" \
-  --query 'DBInstances[0].DeletionProtection'
-# Expected: false. Confirm it: the delete fails on this and nothing else explains why.
-```
-
-```bash
-date -u
-# The final snapshot here IS the diagnostic copy of the broken instance. Keep the
-# automated backups too: this is a live instance, not a rehearsal clone.
-aws rds delete-db-instance --db-instance-identifier "$DB" \
-  --final-db-snapshot-identifier "${DB}-broken-$(date +%Y%m%d-%H%M)" \
-  --no-delete-automated-backups
-aws rds wait db-instance-deleted --db-instance-identifier "$DB"
-
-aws rds restore-db-instance-from-db-snapshot \
-  --db-instance-identifier "$DB" --db-snapshot-identifier "$RESTORE_FROM" \
-  --db-instance-class "$CLASS" --storage-type "$STORAGE" --port 3306 \
-  --db-subnet-group-name "$SUBNET" --vpc-security-group-ids "$SG" \
-  --db-parameter-group-name "$ROLLBACK_PG" \
-  --no-publicly-accessible --no-multi-az
-aws rds wait db-instance-available --db-instance-identifier "$DB"
-date -u
-
-aws rds describe-db-instances --db-instance-identifier "$DB" \
-  --query 'DBInstances[0].{ev:EngineVersion,endpoint:Endpoint.Address,rid:DbiResourceId,
-           pg:DBParameterGroups[0].DBParameterGroupName,
-           pgs:DBParameterGroups[0].ParameterApplyStatus,
-           retention:BackupRetentionPeriod}'
-# Expected: EngineVersion back at <FROM>.x, the original endpoint hostname, a NEW
-# DbiResourceId, the rollback parameter group in-sync. A changed endpoint means the
-# restore did not land on the original identifier - stop and rename before continuing.
-```
-
-**Step 3. Re-register the RDS Proxy target.** The restored instance has a new `DbiResourceId` and the
-proxy does not pick up a replacement on its own. On development the next scheduler start would do this
-through `ensure_rds_proxy_target()`, but a rollback should not wait until morning.
-
-```bash
-aws rds register-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
-  --target-group-name default --db-instance-identifiers "$DB"
-aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
-  --query 'Targets[].{id:RdsResourceId,state:TargetHealth.State,reason:TargetHealth.Reason}'
-# Expected: one target, AVAILABLE. REGISTERING for a minute or two is normal.
-```
-
-**Step 4. Revert the Terraform change and re-converge.** Keep `apply_immediately = true` in place for
-this apply so the parameter group swap is not deferred.
 
 ```bash
 # git revert is clean only while the upgrade commit is the newest change to
@@ -2286,41 +2138,11 @@ terraform show -json "$PLAN" | jq -r '
 terraform apply "$PLAN"
 ```
 
-**Step 5. Bring traffic back, and close the loop on the scheduler.**
+**Development only, and the step most easily missed**: the scheduler must point back at an outgoing-family
+group, or tonight's restore aims the new family at an old snapshot - B3 in reverse.
+
 
 ```bash
-# If the shell from step 1 is gone, redeclare both from the lines written down there.
-# An empty value here makes the loops below run zero times and print nothing, which is
-# indistinguishable from success - so refuse rather than proceed.
-# COUNTS='svc=1 svc=2 ...'   RULES='rule rule ...'
-[ -n "$COUNTS" ] && [ -n "$RULES" ] || {
-  echo "ABORT: COUNTS and RULES must be set - redeclare them from step 1's output" >&2; }
-
-# Restore each service to ITS OWN recorded count, not blindly 1
-for P in $(echo "$COUNTS"); do
-  aws ecs update-service --cluster "${ENV}-optinist-cloud-cluster" \
-    --service "${P%%=*}" --desired-count "${P##*=}" --force-new-deployment >/dev/null \
-    && echo "restored ${P%%=*} to ${P##*=}"
-done
-
-# Re-enable every rule disabled in step 1. Leaving one disabled silently stops
-# autoscaling, premium assignment cleanup or cost metrics, with no alarm for it.
-for R in $(echo "$RULES"); do
-  aws events enable-rule --name "$R" && echo "enabled $R"
-done
-for R in $(echo "$RULES"); do
-  aws events describe-rule --name "$R" --query '[Name,State]' --output text
-done
-# Expected: ENABLED for every one, and the count must match what step 1 disabled -
-# five on development.
-
-aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
-  --services "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
-             "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service" \
-  --query 'services[].{name:serviceName,desired:desiredCount,running:runningCount,
-           rollout:deployments[0].rolloutState}'
-# Expected: running == desired, COMPLETED, at the recorded counts
-
 # Development only, and the step most easily missed: the scheduler must point back at an
 # outgoing-family group, or tonight's restore aims the new family at an old snapshot -
 # B3 in reverse, and the environment does not come up in the morning.
@@ -2336,36 +2158,22 @@ Then `sql_readings` against the proxy endpoint: `VERSION()` must report `<FROM>`
 
 ### How long the rollback window stays open
 
-The mechanism does not degrade with time: a manual snapshot never expires. What closes the window is
-housekeeping — phase 5's deletion of the two artefacts below — so **agree a retention duration before phase 1
-and do not run those deletions until it has elapsed.** Both are close to free to keep.
+The mechanism does not degrade with time: a manual snapshot never expires, and nothing about the restore gets
+harder. What closes the window is phase 5's deletion of `<ENV>-optinist-pre-upgrade-<date>` and
+`<ENV>-optinist-ssl-rollback`, so **agree a retention duration before phase 1 and do not run those deletions
+until it has elapsed**; both are close to free to keep. What does change with time:
 
-| Artefact | Needed for | Removed by |
-|-------------------------|-----------------------|-----------------------|
-| `<ENV>-optinist-pre-upgrade-<date>` | The restore source | Phase 5 inventory |
-| `<ENV>-optinist-ssl-rollback` | The group the restored instance attaches | Phase 5 inventory |
+- **The data loss grows**, and it starts inside the apply window: nothing in the forward path stops traffic, so
+  the service is up and writable for the whole window, and **the maintenance announcement is the mitigation**
+  — say in it that a rollback loses data created during the window. Days into the soak, a rollback discards
+  every write since the snapshot: acceptable on development, the real constraint on production.
+- **`git revert` stops being the clean path** once application commits have landed; revert the two lines by
+  hand on a branch off current HEAD.
+- **Terraform state has moved on**: gate the rollback plan as the forward apply was gated.
+- **Engine versions are eventually deprecated by AWS**, so a retained snapshot is not a permanent guarantee.
 
-Four things do change with elapsed time, none blocking:
-
-1. **The data loss grows**, and it starts inside the apply window: nothing in the forward path stops traffic,
-   so apart from the minutes the engine is offline the service is up and writable, and **the maintenance
-   announcement is the mitigation, not a courtesy** — say in it that *a rollback loses data created during
-   the window*. Keep the gap between the manual snapshot and the verification short. On development a
-   late rollback is a week of everyone's test data: announce it.
-2. **`git revert` stops being the clean path** once application commits have landed; revert the two lines
-   by hand on a branch off current HEAD, as step 4 says.
-3. **Terraform state has moved on**, so gate the rollback plan as the forward apply was gated.
-4. **Engine versions are eventually deprecated by AWS**, and a snapshot of a version RDS no longer offers
-   may be forced to a newer version or refused. A months-and-years concern, but the reason a retained
-   snapshot is not a permanent guarantee.
-
-On development a late rollback must also put the nightly cycle back: step 4 reverts the Lambda's parameter
-group, and the next evening's stop regenerates the scheduler snapshot at the old version.
-
-### Cost of a rollback
-
-- **Time:** the restore duration measured in phase 0A, plus proxy re-registration and the Terraform revert.
-- **Data:** everything written after the snapshot — near zero if caught during the window, every write since if it surfaces days into the soak. Acceptable on development, the real constraint on production.
+On development a late rollback must also put the nightly cycle back: the revert points the Lambda at an
+outgoing-family group, and the next evening's stop regenerates the scheduler snapshot at the old version.
 
 ---
 
