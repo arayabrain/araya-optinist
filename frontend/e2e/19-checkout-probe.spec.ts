@@ -50,6 +50,8 @@ function skipUnlessOptedIn(rows: string) {
   expect(reason, `rows ${rows} verify the plan through the deployed RDS`).toBe(
     "",
   )
+  // A retry re-does the mutation instead of re-observing it
+  expect(test.info().project.retries, "run this lane with --retries 0").toBe(0)
 }
 
 // The invariant every abandon path shares: nothing was bought. Read straight
