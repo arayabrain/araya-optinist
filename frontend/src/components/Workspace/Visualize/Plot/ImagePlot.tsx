@@ -44,6 +44,7 @@ import {
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
+  RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectImageDataError,
@@ -275,6 +276,15 @@ const ImagePlotChart = memo(function ImagePlotChart({
   useEffect(() => {
     if (!roiFilePath || !workspaceId) return
     dispatch(getStatus({ path: roiFilePath, workspaceId }))
+      .unwrap()
+      .catch((error: RejectPayload) => {
+        if (error?.status === 423) {
+          enqueueSnackbar(
+            "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes.",
+            { variant: "warning" },
+          )
+        }
+      })
     //eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roiFilePath, workspaceId])
 

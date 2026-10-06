@@ -40,6 +40,9 @@ class CellType:
 
 class EditROI:
     def __init__(self, file_path):
+        """Construct only from a route that passed unlocked_roi_filepath, or from
+        the commit worker under its lock: the recovery below replaces the node
+        pickle and must not race a commit's publish."""
         self.node_dirpath = os.path.dirname(file_path)
         self.workflow_dirpath = os.path.dirname(self.node_dirpath)
         self.workflow_ids = ExptOutputPathIds(self.node_dirpath)
@@ -446,7 +449,8 @@ class EditROI:
         applied twice on a retry.
         """
         PickleWriter.write(pickle_path=self.__staged_pickle_path, info=self.output_info)
-        with open(self.__staged_pickle_path, "rb") as f:
+        # No directory fsync: the recovery validates the staged pickle anyway
+        with open(self.__staged_pickle_path, "rb+") as f:
             os.fsync(f.fileno())
         if os.path.exists(self.tmp_pickle_file_path):
             os.remove(self.tmp_pickle_file_path)

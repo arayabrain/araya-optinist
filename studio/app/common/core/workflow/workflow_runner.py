@@ -257,6 +257,7 @@ class WorkflowRunner:
         await self._ensure_input_data_local()
 
     def run_workflow(self, background_tasks: BackgroundTasks):
+        lock_token = None
         # Operate remote storage data.
         if RemoteStorageController.is_available():
             # Check for remote-sync-lock-file
@@ -264,52 +265,58 @@ class WorkflowRunner:
             RemoteSyncLockFileUtil.check_sync_lock_file(
                 self.workspace_id, self.unique_id, raise_error=True
             )
-
-        self.set_smk_config()
-
-        snakemake_params: SmkParam = get_typecheck_params(
-            self.runItem.snakemakeParam, "snakemake"
-        )
-        snakemake_params = SmkParamReader.read(snakemake_params)
-        snakemake_params.forcerun = self.runItem.forceRunList
-
-        # delete dependencies for nodes
-        if len(snakemake_params.forcerun) > 0:
-            delete_dependencies(
-                workspace_id=self.workspace_id,
-                unique_id=self.unique_id,
-                node_ids=[p.nodeId for p in snakemake_params.forcerun],
-                nodeDict=self.nodeDict,
-                edgeDict=self.edgeDict,
-            )
-
-        # delete dependencies for procs
-        delete_procs_dependencies(
-            workspace_id=self.workspace_id,
-            unique_id=self.unique_id,
-            forceRunList=[
-                ForceRun(
-                    nodeId=ProcessType.POST_PROCESS.id,
-                    name=ProcessType.POST_PROCESS.label,
-                )
-            ],
-        )
-
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
             # creating remote-sync-lock-file
-            RemoteSyncLockFileUtil.create_sync_lock_file(
+            lock_token = RemoteSyncLockFileUtil.create_sync_lock_file(
                 self.workspace_id, self.unique_id
             )
 
-            # creating remote_sync_status file.
-            # - The status file is used to pass bucket info to subsequent processing.
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-                self.remote_bucket_name,
-                self.workspace_id,
-                self.unique_id,
-                RemoteSyncAction.UPLOAD,
+        try:
+            self.set_smk_config()
+
+            snakemake_params: SmkParam = get_typecheck_params(
+                self.runItem.snakemakeParam, "snakemake"
             )
+            snakemake_params = SmkParamReader.read(snakemake_params)
+            snakemake_params.forcerun = self.runItem.forceRunList
+
+            # delete dependencies for nodes
+            if len(snakemake_params.forcerun) > 0:
+                delete_dependencies(
+                    workspace_id=self.workspace_id,
+                    unique_id=self.unique_id,
+                    node_ids=[p.nodeId for p in snakemake_params.forcerun],
+                    nodeDict=self.nodeDict,
+                    edgeDict=self.edgeDict,
+                )
+
+            # delete dependencies for procs
+            delete_procs_dependencies(
+                workspace_id=self.workspace_id,
+                unique_id=self.unique_id,
+                forceRunList=[
+                    ForceRun(
+                        nodeId=ProcessType.POST_PROCESS.id,
+                        name=ProcessType.POST_PROCESS.label,
+                    )
+                ],
+            )
+
+            if RemoteStorageController.is_available():
+                # creating remote_sync_status file.
+                # - The status file is used to pass bucket info to subsequent
+                #   processing.
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                    self.remote_bucket_name,
+                    self.workspace_id,
+                    self.unique_id,
+                    RemoteSyncAction.UPLOAD,
+                )
+        except Exception:
+            if lock_token:
+                RemoteSyncLockFileUtil.delete_sync_lock_file(
+                    self.workspace_id, self.unique_id, lock_token
+                )
+            raise
 
         background_tasks.add_task(
             snakemake_execute,
