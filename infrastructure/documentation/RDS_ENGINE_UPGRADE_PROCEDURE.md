@@ -6,7 +6,7 @@
 - **The engine change is two lines of Terraform.** Everything else in this document exists because the surrounding configuration does not tolerate those two lines without preparation.
 - **Six constraints (B1 to B6)** must be handled before any apply. They are properties of this stack, not of any particular version pair, so they recur on every major upgrade.
 - **The development scheduler's nightly destroy and restore cycle is the dominant constraint.** It makes the upgrade a same-day operation that must not span a night, and it makes the nightly cycle itself a mandatory verification step.
-- **A terraform apply in this repository is also an application deploy.** The build trigger is the repository HEAD commit, so the apply rebuilds the image and rolls every ECS service.
+- **Whether a terraform apply is also an application deploy depends on the branch lineage, and it has to be read rather than assumed (B6).** On the development lineage `null_resource.build_and_deploy` triggers on the repository HEAD commit, so every apply rebuilds the image and rolls every ECS service. **On the production lineage there is no `source_revision` trigger at all**: the triggers are the ALB DNS name, `var.git_branch` and the ECR repository, none of which a commit changes. Measured during phase 4 — that apply was the database alone, and the image push and service cycle were separate manual steps.
 - **Rollback is a snapshot restore.** There is no engine downgrade, and the restore creates a new DB instance rather than reverting the existing one.
 
 **Version placeholders used throughout:** `<FROM>` is the current major version, `<TO>` the target, and `<ENV>` the Terraform `var.environment` value. First applied for MySQL 8.0 to 8.4 (see [References](#references)).
@@ -87,8 +87,8 @@
 | 0C | Terraform state | None - read only | No | Nothing to reverse |
 | 1 | Development instance | Offline for the upgrade | Yes - Terraform | Snapshot restore |
 | 2 | Development instance | None beyond the normal cycle | No | Snapshot restore |
-| 3 | Development instance | Test and job traffic | Yes - test assertion | Snapshot restore |
-| 4 | Production instance | Offline, plus ECS rollout | No - applies phase 1 code | Snapshot restore |
+| 3 | Development instance | Test and job traffic | **No** - the test assertion moved to its own issue | Snapshot restore |
+| 4 | Production instance | **Offline for the upgrade. No ECS rollout on this lineage** (B6) | No - applies phase 1 code | Snapshot restore |
 | 5 | Both | None | Yes - config removal | Revert the cleanup |
 
 ### Ordering constraints
@@ -577,6 +577,29 @@ setopt interactive_comments 2>/dev/null || true
 echo "profile=$AWS_PROFILE env=$ENV tf_env=$TF_ENV from=$FROM to=$TO db=$DB"
 ```
 
+**Then read the live parameter group's name, rather than assuming a literal.** The block above makes no AWS
+call; this one does, and it is the first thing every phase that touches the parameter group needs.
+
+```bash
+LIVE_PG=$(aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].DBParameterGroups[0].DBParameterGroupName' --output text)
+aws rds describe-db-parameter-groups --db-parameter-group-name "$LIVE_PG" \
+  --query 'DBParameterGroups[0].{name:DBParameterGroupName,family:DBParameterGroupFamily}'
+# Expected: a name, and family mysql<FROM>.
+#
+# A mysql<TO> family means the apply has ALREADY run, so this group is not a valid copy
+# source for a rollback group - stop and re-read what you are doing.
+```
+
+> **This is why the name is read and not written.** Before the first upgrade the group is
+> `<ENV>-optinist-ssl`, and six commands in this document used that literal. **After the first upgrade
+> `name_prefix` has replaced it with a generated name (B1)**, so every one of those commands fails on the
+> *next* upgrade — the document described exactly that mechanism and then hard-coded against it. `LIVE_PG`
+> replaces all six.
+>
+> **Re-read it after any apply that touches the group**, because the value changes at that moment. Within a
+> phase it is stable.
+
 > **`ENV` names resources. `TF_ENV` names files. They are not the same value, and on production they differ.**
 >
 > `ENV` is the Terraform `var.environment` value, which is what every resource name is built from —
@@ -743,7 +766,7 @@ aws rds describe-db-snapshots --db-snapshot-identifier "$SNAP" \
 # A private parameter group for the clone, copied from the live one.
 #    Do not attach the live group - see edge case 1.
 aws rds copy-db-parameter-group \
-  --source-db-parameter-group-identifier "${ENV}-optinist-ssl" \
+  --source-db-parameter-group-identifier "$LIVE_PG" \
   --target-db-parameter-group-identifier rehearsal-ssl-from \
   --target-db-parameter-group-description "outgoing-family rehearsal copy"
 
@@ -754,7 +777,7 @@ aws rds copy-db-parameter-group \
 aws rds describe-db-parameters --db-parameter-group-name rehearsal-ssl-from --source user \
   --query 'Parameters[].{name:ParameterName,value:ParameterValue}' --output table
 # Expected: the same user-set parameters as the live group - compare against
-# `describe-db-parameters --db-parameter-group-name "${ENV}-optinist-ssl" --source user`
+# `describe-db-parameters --db-parameter-group-name "$LIVE_PG" --source user`
 ```
 
 ##### Step 3 — restore the clone
@@ -842,7 +865,7 @@ aws rds create-db-parameter-group --db-parameter-group-name rehearsal-ssl-to \
 #    "Expected: '=', received: '*'". Shell quoting does not help, because the shell is
 #    not what is parsing it. This is not hypothetical here: the phase 1 parameter group
 #    may pin exactly such an expression, and then the next upgrade reads it back out.
-SRC_JSON=$(aws rds describe-db-parameters --db-parameter-group-name "${ENV}-optinist-ssl" \
+SRC_JSON=$(aws rds describe-db-parameters --db-parameter-group-name "$LIVE_PG" \
   --source user --query 'Parameters[].[ParameterName,ParameterValue,ApplyType]' --output text \
   | jq -Rn '[inputs | split("\t")
       | {ParameterName: .[0], ParameterValue: .[1],
@@ -1066,7 +1089,7 @@ The plugin and `mysql.user` queries are deliberately left out. They answer "does
 Then read the **configured** side for both families, because `innodb_buffer_pool_size` is the one value RDS may pin rather than let the engine derive:
 
 ```bash
-for G in "${ENV}-optinist-ssl" rehearsal-ssl-to; do
+for G in "$LIVE_PG" rehearsal-ssl-to; do
   echo "== $G"
   aws rds describe-db-parameters --db-parameter-group-name "$G" \
     --query "Parameters[?ParameterName=='innodb_buffer_pool_size' ||
@@ -1938,7 +1961,7 @@ group to attach.
 
 ```bash
 aws rds copy-db-parameter-group \
-  --source-db-parameter-group-identifier "${ENV}-optinist-ssl" \
+  --source-db-parameter-group-identifier "$LIVE_PG" \
   --target-db-parameter-group-identifier "${ENV}-optinist-ssl-rollback" \
   --target-db-parameter-group-description "outgoing-family rollback target"
 ```
@@ -2911,13 +2934,15 @@ aws rds describe-db-snapshots --db-snapshot-identifier "$PRESNAP" \
 # Expected: available, <FROM>.x. A snapshot still being created is not a recovery point.
 
 # 2. Retain an outgoing-family parameter group, so a rollback has a group to attach.
-#    The SOURCE name is the OUTGOING one, and it only exists before the first apply:
-#    afterwards name_prefix has replaced it with a generated name (B1). So this command
-#    is resolvable exactly once per environment. If the copy was already made, do NOT
-#    re-run it - copy-db-parameter-group is not idempotent and returns
-#    DBParameterGroupAlreadyExistsFault. Verify it instead, with the two checks below.
+#    $LIVE_PG is the OUTGOING group, read at the session setup rather than written as a
+#    literal: name_prefix replaces the name at every apply (B1), so a hard-coded one is
+#    correct exactly once per environment and fails on the next upgrade.
+#    Re-read it if an apply has run since the setup block.
+#    If the copy was already made, do NOT re-run this - copy-db-parameter-group is not
+#    idempotent and returns DBParameterGroupAlreadyExistsFault. Verify it instead, with
+#    the two checks below.
 aws rds copy-db-parameter-group \
-  --source-db-parameter-group-identifier "${ENV}-optinist-ssl" \
+  --source-db-parameter-group-identifier "$LIVE_PG" \
   --target-db-parameter-group-identifier "${ENV}-optinist-ssl-rollback" \
   --target-db-parameter-group-description "outgoing-family rollback target"
 
