@@ -5,7 +5,7 @@
 - **ASG-based architecture** using Auto Scaling Groups instead of individual EC2 instances
 - **Proactive scaling** based on active user count (threshold: 5 users)
 - **Two scaling triggers** act on the same ASG: this Lambda (user count) and CloudWatch CPU/memory alarms (instance load)
-- **ASG bounds are authoritative** — the instance target is clamped to the group's own `MinSize`/`MaxSize`, so capacity is retuned on the ASG, not in this Lambda
+- **ASG bounds are authoritative** — the instance target is clamped to the group's own `MinSize`/`MaxSize`, so capacity is adjusted on the ASG, not in this Lambda
 - **Traffic distribution is the ALB's**, not this Lambda's — round robin plus sticky sessions; rebalancing only updates the assignment records
 - **Workflow protection** ensures users with active jobs are never migrated
 - **Experiment sync** automatically syncs experiment metadata after migration
@@ -51,7 +51,7 @@
    - `SetDesiredCapacity` rejects any value outside the group's bounds, and a
      rejection aborts the invocation, so a target computed against stale
      configuration would also cost that cycle's rebalancing and metrics
-   - Capacity can therefore be retuned on the ASG (Terraform, console or CLI)
+   - Capacity can therefore be adjusted on the ASG (Terraform, console or CLI)
      without redeploying this function
 
 ## Architecture Overview
@@ -763,7 +763,7 @@ FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (production: 5)
 # The instance count floor and ceiling are deliberately NOT here. They are
 # read from the ASG's MinSize/MaxSize (var.asg_min_size / var.asg_max_size)
 # on every run, so the group's configuration cannot drift from what the
-# Lambda will request, and capacity can be retuned without a redeploy.
+# Lambda will request, and capacity can be adjusted without a redeploy.
 
 # Internal API (for experiment sync after migration)
 ALB_DNS_NAME                    # ALB DNS name for internal API calls

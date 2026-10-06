@@ -98,7 +98,7 @@ desired_instances = min(max(asg_min_size, ceil(active_users / 5)), asg_max_size)
 - **Bounds**: the ASG's own `MinSize`/`MaxSize`, read via
   `describe_auto_scaling_groups` each run. `SetDesiredCapacity` rejects
   anything outside them, so the group's configuration is the single source of
-  truth and capacity can be retuned without redeploying this function.
+  truth and capacity can be adjusted without redeploying this function.
 
 ### Rebalancing Strategy
 

@@ -36,7 +36,7 @@ Required Environment Variables:
 
 The instance count floor and ceiling are read from the ASG's own
 MinSize/MaxSize, not from configuration held here, so capacity can be
-retuned on the group without redeploying this function.
+adjusted on the group without redeploying this function.
 """
 
 import json
