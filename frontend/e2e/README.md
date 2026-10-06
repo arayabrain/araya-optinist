@@ -292,7 +292,8 @@ round](#running-a-production-release-round).
 | `RUN_RESTART`                                      | optional, local stack only        | opt into the `20-boot` lane (BOOT-01): restarts the backend container to observe a real boot; nothing else may share the stack while it runs                                                                                        |
 | `RUN_DISRUPTIVE`                                   | optional                          | include tests tagged `@disruptive`, which degrade the shared environment while they run. They additionally refuse to start if the database shows another user active in the last 30 minutes                                          |
 | `RUN_STRIPE_WRITE`                                 | optional, deployed env only       | opt into `21-stripe-roundtrip` (STRIPE-01): cancels a real Stripe subscription at period end and reactivates it; run with `--retries 0` and nothing else reading that account                                                        |
-| `FIREBASE_ADMIN_PYTHON`                            | optional, deployed env only       | interpreter that can `import firebase_admin`, used by `23-subscription-lifecycle` LC-16 to force `email_verified` on the throwaway it registers. `helpers.ts` does this inside the backend container, which a deployed run has no local copy of; Firebase is the same shared dev project either way. Defaults to `python3`, and LC-16 skips with a named reason rather than failing when the import is unavailable |
+| `E2E_SKIP_FIREBASE_SWEEP`                          | optional                          | set to hold off the startup sweep of stale throwaway Firebase accounts, e.g. while one is being inspected. The sweep itself refuses any credential that is not the shared test project's                                             |
+| `FIREBASE_ADMIN_PYTHON`                            | optional, deployed env only       | interpreter that can `import firebase_admin`, used by the startup Firebase sweep (against a deployed `BASE_URL` the sweep runs on the host and, without it, warns and deletes nothing) and by `23-subscription-lifecycle` LC-16 to force `email_verified` on the throwaway it registers. `helpers.ts` does this inside the backend container, which a deployed run has no local copy of; Firebase is the same shared dev project either way. Defaults to `python3`, and LC-16 skips with a named reason rather than failing when the import is unavailable |
 | `TEST_STRIPE_EMAIL` / `TEST_STRIPE_PASSWORD`       | optional, deployed env only       | an account whose subscription is really backed by Stripe, i.e. one that owns a Stripe customer with a live subscription. **Not** `TEST_PREMIUM_*` or `TEST_PREMIUM2_*`: those are premium in the database only and own no Stripe customer at all, so every Stripe-side assertion about them would pass against nothing. Enables AUDIT-09 and STRIPE-01, which otherwise skip - and the skip reason distinguishes "unset" from "set, but that account has no Stripe customer". This account does **not** need to be premium-routable: expect `/users/me/premium/status` to report `is_premium: false` for it, because a premium subscription expiring within 24 hours reads as "Limit Grace" (integer-day truncation in `crud_users.py`) and dev bills Premium daily. That is a known app bug, not a broken account - don't "fix" this slot by pointing it at an e2e account with no Stripe data |
 | `TEST_PREMIUM2_EMAIL` / `TEST_PREMIUM2_PASSWORD`   | optional                          | second premium account, needed only by PREM-06 (two-user scale-down)                                                                                                                                                               |
 | `E2E_TARGET`                                       | optional                          | reads `e2e/.env.<name>` in place of `e2e/.env`, and its values win over the shell; see [Running a production release round](#running-a-production-release-round)                                                     |
@@ -472,10 +473,14 @@ Understanding these makes failures much easier to read:
   per-test Firebase logins hit rate limits. The auth spec (login/logout
   tests) and the premium describe still log in for real — that's what they
   test.
-- **Startup cleanup** (`global-setup.ts`): deletes the test account's
-  `e2e-*` workspaces via the API so leftovers can't push rows out of the
-  virtualized workspace grid. There is deliberately no teardown: a run's data
-  survives until the next run, so it can be inspected. To drop it sooner, run
+- **Startup cleanup** (`global-setup.ts`): sweeps the shared Firebase project
+  of throwaway accounts (`e2e_<prefix>_<Date.now()>@test.com`) that an
+  interrupted run left behind and that are older than 4 hours, then deletes
+  the test account's `e2e-*` workspaces via the API so leftovers can't push
+  rows out of the virtualized workspace grid. There is deliberately no other
+  teardown: a run's data survives until the next run, so it can be inspected.
+  A throwaway you are inspecting disappears at the next run once it is 4 hours
+  old; `E2E_SKIP_FIREBASE_SWEEP=1` holds the sweep off. To drop it sooner, run
   the cleanup group (`99-cleanup`) — same `deleteE2eWorkspaces` helper, opt-in
   via `RUN_CLEANUP` so an ordinary run can never delete data mid-inspection.
   The `99-` prefix is load-bearing: workers are serial and files run in name
