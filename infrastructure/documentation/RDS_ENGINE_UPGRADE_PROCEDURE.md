@@ -199,189 +199,68 @@ An in-place upgrade takes the instance offline, upgrades the engine on the same 
 
 A changed `DbiResourceId` matters in one place: **the RDS Proxy target must be re-registered.** The proxy deregisters its target when the instance is deleted and does not register a replacement on its own. On development `ensure_rds_proxy_target()` does this on the next scheduler start; on production it is a manual `register-db-proxy-targets`. Note that the proxy's `RdsResourceId` is the *instance identifier*, not `DbiResourceId`, so comparing the two proves nothing; the evidence is a target that exists and is `AVAILABLE`.
 
-### Before pasting anything: one line, first
+### Helpers
 
-`zsh` does not treat `#` as a comment in interactive input unless `INTERACTIVE_COMMENTS` is set, and it is
-off by default. Every block in this document carries comments, so run this before pasting anything else —
-the helpers below included:
+Every function this document calls is defined in `infrastructure/scripts/rds_upgrade_helpers.sh`. Source it
+once per session, after the setup block under [Procedure](#procedure); the file defines functions only.
 
 ```bash
-setopt interactive_comments 2>/dev/null || true
+source infrastructure/scripts/rds_upgrade_helpers.sh
 ```
 
-Without it a comment misbehaves in one of three ways, all observed while executing this document:
-
-| Comment | Without the `setopt` |
+| Function | Does |
 |-------------------------|-----------------------|
-| Trailing, as in `date -u   # t0` | Becomes arguments. `VAR=value   # note` runs `#` as a command and leaves `VAR` unset, silently |
-| On its own line, first in a function body | Stored as the function's first command: every call prints `command not found: #` just before its verdict line |
-| On its own line inside a `case` | Read as a case pattern — a **hard parse error**. The function does not exist, and the symptom is `command not found: ssm_sh` several steps later |
+| `ssm_sh` | Runs the script on stdin on the environment's background instance over SSM. Neither RDS instance is publicly accessible and the proxy is TLS-only, so every in-database check goes through it |
+| `need VAR...` | Aborts if a named variable is empty. Run it before anything that interpolates into an `ssm_sh` heredoc: an empty expansion surfaces as a remote error that reads as an SSM or secret fault |
+| `assert_rehearsal ID` | Refuses any identifier without `rehearsal` in it |
+| `drop_clone ID`, `drop_snapshot ID` | Delete behind `assert_rehearsal` and a typed confirmation of the target's real attributes. `drop_clone` keeps a final snapshot and the automated backups |
+| `list_rehearsal_artefacts` | Every rehearsal-scoped instance, manual snapshot and parameter group |
+| `sql_readings HOST` | The fixed set of version, `sql_mode`, authentication and InnoDB readings against `HOST`, over TLS with the application's credentials |
+| `alembic_probe HOST MAJOR` | The application's own migration runner against `HOST`, aborting unless `HOST` reports version `MAJOR` |
+| `run_background_jobs` | Every in-process background job once, each caught individually |
+| `inv NAME PAYLOAD` | Invokes `${ENV}-NAME` and prints one verdict line. `SCHED` is the EventBridge envelope |
+| `ts_fmt` | CloudWatch epoch milliseconds to local time, on stdin |
+| `assert_prod`, `capture_baseline FILE` | The production baseline capture, refused unless `PROD_DB` is still on `<FROM>` |
+| `redact` | Replaces identifiers in a log before it is posted; the policy is the table under *Posting logs* |
 
-The third is why `ssm_sh`'s `case` carries no comment. The rest of the session setup — profile, region,
-`ENV`, `TF_ENV`, `FROM`, `TO`, `DB` — is under [Procedure](#procedure).
-
-### Shared helper: run a command inside the VPC
-
-Neither RDS instance is publicly accessible and the proxy is TLS-only, so the in-database checks run from an
-in-VPC instance over SSM — the mechanism the e2e suite uses in `runShellOverSsm`. The failure branch prints
-stdout as well as stderr, because a block that dies partway has already produced its diagnosis.
-
-```bash
-# Reads the remote script from stdin and prints its stdout.
-ssm_sh() {
-  # 'st' rather than 'status': under zsh, status is read-only.
-  local iid cid st tmp
-  iid=$(aws ec2 describe-instances \
-    --filters Name=tag:Name,Values="${ENV}-optinist-background" \
-              Name=instance-state-name,Values=running \
-    --query 'Reservations[0].Instances[0].InstanceId' --output text)
-  [ -n "$iid" ] && [ "$iid" != None ] || { echo "no running SSM target" >&2; return 1; }
-  tmp=$(mktemp); jq -Rs '{commands:[.]}' > "$tmp"
-  cid=$(aws ssm send-command --instance-ids "$iid" --document-name AWS-RunShellScript \
-    --parameters "file://$tmp" --query Command.CommandId --output text)
-  rm -f "$tmp"
-  while :; do
-    st=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
-      --query Status --output text)
-    case "$st" in
-      Success) break ;;
-      Pending|InProgress|Delayed) sleep 3 ;;
-      *) aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
-           --query StandardOutputContent --output text
-         aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
-           --query StandardErrorContent --output text >&2; return 1 ;;
-    esac
-  done
-  aws ssm get-command-invocation --command-id "$cid" --instance-id "$iid" \
-    --query StandardOutputContent --output text
-}
-
-# Expected: prints the remote stdout, or the remote stderr and a non-zero status
-```
-
-SQL is then run through the `mariadb` client that instance carries, reading credentials from Secrets Manager. The secret id is `${ENV}-optinist/database/config`.
-
-**Every `ssm_sh` heredoc below is unquoted, so the LOCAL shell expands its variables before the script is
-sent, and an empty expansion surfaces as a remote error** — with `AWS_REGION` empty, `--region` consumed the
-next flag and the instance answered `ParamValidation: argument --region: expected one argument`, which reads
-as an SSM or secret fault. Run `need` immediately before any `ssm_sh` heredoc; it names the empty variable
-locally, where the fix is:
-
-```bash
-need() {
-  local v val missing=0
-  for v in "$@"; do
-    eval "val=\$$v"
-    if [ -z "$val" ]; then echo "ABORT: $v is empty" >&2; missing=1
-    else printf '%-12s = [%s]\n' "$v" "$val"; fi
-  done
-  return $missing
-}
-# Then, before each block, name what that block interpolates. For example:
-#   need AWS_REGION ENV PROXY
-```
-
-### Shared helper: delete a rehearsal clone safely
-
-The clone and the real instance differ by one variable name in the same shell session - `CLONE` against
-`DB` - and in phase 0B that session is pointed at production. A mistyped identifier on `delete-db-instance`
-is therefore the single most damaging error available in this procedure, and two API defaults make it worse:
-**`--delete-automated-backups` defaults to true**, so the point-in-time window goes with the instance (which
-is why `stop_rds()` passes `DeleteAutomatedBackups=False`), and **`--skip-final-snapshot` leaves nothing
-behind**, so the fallback is the newest *manual* snapshot, which may be weeks old. Terraform's
-`skip_final_snapshot` governs only its own destroy, not a CLI call.
-
-`deletion_protection` is on for production and deliberately off for development, whose scheduler
-deletes the instance every weekday. So on development the guards below are the only protection, and on
-production a legitimate delete — the rollback — has to turn protection off first.
-
-**Never call `delete-db-instance` directly in this procedure.** Every identifier it may delete carries
-`rehearsal` in its name; that one predicate covers clones, their snapshots and their parameter groups alike.
-
-```bash
-# Refuses anything that is not a rehearsal-scoped identifier. The name is the only thing
-# standing between a typo and a deleted database, so assert on it rather than on care.
-assert_rehearsal() {
-  case "$1" in
-    *rehearsal*) return 0 ;;
-    *) echo "REFUSING: '$1' is not a rehearsal-scoped identifier" >&2; return 1 ;;
-  esac
-}
-
-# Both destructive helpers show the target's real attributes and require a typed
-# confirmation: the predicate says "this could be a clone", the preview says which.
-confirm_target() {
-  local kind="$1" id="$2" reply
-  echo "--- about to delete this $kind:"
-  case "$kind" in
-    instance) aws rds describe-db-instances --db-instance-identifier "$id" \
-        --query 'DBInstances[0].{id:DBInstanceIdentifier,ev:EngineVersion,
-                 created:InstanceCreateTime,class:DBInstanceClass,
-                 pg:DBParameterGroups[0].DBParameterGroupName}' || return 1 ;;
-    snapshot) aws rds describe-db-snapshots --db-snapshot-identifier "$id" \
-        --query 'DBSnapshots[0].{id:DBSnapshotIdentifier,type:SnapshotType,
-                 ev:EngineVersion,created:SnapshotCreateTime,src:DBInstanceIdentifier}' || return 1 ;;
-  esac
-  printf 'type the identifier to confirm: '
-  read -r reply
-  [ "$reply" = "$id" ] || { echo "ABORTED: input did not match" >&2; return 1; }
-}
-
-# Deletes a clone, but keeps a final snapshot and the automated backups: the habit is
-# what makes a mistyped identifier survivable rather than terminal.
-drop_clone() {
-  assert_rehearsal "$1" || return 1
-  confirm_target instance "$1" || return 1
-  aws rds delete-db-instance --db-instance-identifier "$1" \
-    --final-db-snapshot-identifier "$1-final" --no-delete-automated-backups
-  aws rds wait db-instance-deleted --db-instance-identifier "$1"
-}
-
-# Snapshots need the guard more: there is no final-snapshot fallback for a snapshot, so
-# an accepted-but-wrong delete here is unrecoverable.
-drop_snapshot() {
-  assert_rehearsal "$1" || return 1
-  confirm_target snapshot "$1" || return 1
-  aws rds delete-db-snapshot --db-snapshot-identifier "$1"
-}
-```
-
-Neither guard protects against a name you deliberately gave a real asset: do not put `rehearsal` in the name
-of anything you intend to keep.
+**Never call `delete-db-instance` directly in this procedure.** The clone and the real instance differ by one
+variable name in the same shell session - `CLONE` against `DB` - and in phase 0B that session is pointed at
+production. A mistyped identifier on `delete-db-instance` is the single most damaging error available here,
+and two API defaults make it worse: `--delete-automated-backups` defaults to true, so the point-in-time window
+goes with the instance, and `--skip-final-snapshot` leaves nothing behind, so the fallback is the newest
+*manual* snapshot. `deletion_protection` is on for production and off for development, so on development the
+guards are the only protection, and on production the rollback has to turn protection off first. Neither
+guard protects against a name you deliberately gave a real asset: do not put `rehearsal` in the name of
+anything you intend to keep.
 
 #### Verifying the guards before use
 
-Verify both guards before relying on them, with `ENV` set (see [Procedure](#procedure)). All four checks must
-hold. **Never pass a real identifier to `drop_clone` or `drop_snapshot` as a test**: if the predicate is
-broken - the thing being checked - the wrapper goes on to describe the real resource and prompt, and a live
-database is one keystroke away. So the predicate is tested directly on real names, and the wrappers only on
+With `ENV` set, all four checks must hold. **Never pass a real identifier to `drop_clone` or `drop_snapshot`
+as a test**: if the predicate is broken, the wrapper goes on to describe the real resource and prompt, and a
+live database is one keystroke away. The predicate is tested directly on real names, the wrappers only on
 names that do not exist.
 
 ```bash
 echo "${ENV:?set ENV before testing the guards}"
 DB=${ENV}-optinist-cloud-rds
 
-# 0. These are shell functions: they do not survive a new terminal, and a stale copy is
-#    worse than none. Re-paste all four, then read one back.
+# 0. The helpers are shell state: source the file again in every new terminal.
 declare -f drop_clone
 # Expected: it calls assert_rehearsal, then confirm_target, and passes
-# --no-delete-automated-backups. Anything missing means an older revision is loaded.
+# --no-delete-automated-backups.
 
 # 1. The accept set must be empty of real assets before starting
-aws rds describe-db-instances \
-  --query 'DBInstances[?contains(DBInstanceIdentifier,`rehearsal`)].DBInstanceIdentifier' --output text
-aws rds describe-db-snapshots --snapshot-type manual \
-  --query 'DBSnapshots[?contains(DBSnapshotIdentifier,`rehearsal`)].DBSnapshotIdentifier' --output text
-# Expected: empty for both. Anything listed here is inside the guards' accept set and
-# must be renamed or accounted for before going further.
+list_rehearsal_artefacts
+# Expected: empty. Anything listed is inside the guards' accept set and must be renamed
+# or accounted for before going further.
 
 # 2. The predicate refuses real identifiers. Called directly, so there is no code path
 #    to a delete even if it were broken.
 assert_rehearsal "$DB"
 assert_rehearsal "$(aws rds describe-db-snapshots --db-instance-identifier "$DB" \
   --snapshot-type manual --query 'DBSnapshots[0].DBSnapshotIdentifier' --output text)"
-# Expected: REFUSING twice, naming each identifier. The second one is a snapshot that
-# really exists, which is the case that matters - it has no final-snapshot fallback.
+# Expected: REFUSING twice, naming each identifier. The second is a snapshot that really
+# exists - the case that matters, since it has no final-snapshot fallback.
 
 # 3. The wrappers consult the predicate. The strings deliberately resemble no real
 #    identifier, so editing one cannot produce a live name.
@@ -399,46 +278,13 @@ drop_clone "${ENV}-optinist-rds-upgrade-rehearsal"
 # reaches the prompt instead: answer with anything but the identifier. Still a pass.
 ```
 
-### Shared helper: sanitise a log before posting it
+#### Posting logs
 
-Execution logs are posted to the tracking issues, which are public. Filter them rather than masking by hand:
-**editing a comment does not unpublish anything** - GitHub keeps prior revisions readable, GH Archive records
-public issue events permanently, and notification emails have already gone out.
+Execution logs are posted to the tracking issues, which are public. Pipe them through `redact` rather than
+masking by hand: editing a comment does not unpublish anything. The filter does not know about values it has
+never seen, so check the result before posting. **This table is the single source for the substitution
+policy**; the tracking issues reference it rather than restating it.
 
-```bash
-# Usage: <command> 2>&1 | redact
-redact() {
-  local acct
-  acct=$(aws sts get-caller-identity --query Account --output text)
-  sed -E \
-    -e "s/${acct}/<ACCOUNT_ID>/g" \
-    -e 's/(^|[^[:alnum:]-])(development|subscr)-optinist/\1<ENV>-optinist/g' \
-    -e 's/\/ecs\/(development|subscr)-/\/ecs\/<ENV>-/g' \
-    -e 's/proxy-[a-z0-9]{8,}/proxy-<TOKEN>/g' \
-    -e 's/\.[a-z0-9]{8,}\.([a-z0-9-]+)\.rds\.amazonaws\.com/.<TOKEN>.\1.rds.amazonaws.com/g' \
-    -e 's/(^|[^[:alnum:]-])i-[0-9a-f]{8,}/\1i-A/g' \
-    -e 's/(^|[^[:alnum:]-])db-[A-Z0-9]{10,}/\1db-A/g' \
-    -e 's/db\.[a-z0-9]+\.[a-z]+/<INSTANCE_CLASS>/g' \
-    -e 's/ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+/<PRIVATE_DNS>/g' \
-    -e 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<UUID>/g'
-}
-
-# Expected: the same text with identifiers replaced. Durations, engine versions,
-# sql_mode values, precheck findings, metric values and cost figures are left intact -
-# acceptance criteria are written against them.
-```
-
-**Three rules are anchored on `(^|[^[:alnum:]-])` because BSD `sed -E` has no `\b`** - it does not error on
-one, it simply never matches and exits 0, so with `\b` the three mandatory rows (the environment prefix,
-`i-…`, `db-…`) passed through while the other five fired and the output looked filtered. The capture group
-preserves the consumed character; the `^` alternative keeps a match at the start of a line. **Verify any
-change to these rules against a line that exercises all eight**, including an identifier at the very start.
-
-The filter is a convenience, not a guarantee: it does not know about values it has never seen. Check the
-result before posting.
-
-**This table is the single source for the substitution policy.** The tracking issues reference it rather
-than restating it.
 
 | In the output | Post as | Why |
 |-------------------------|-----------------------|-----------------------|
@@ -452,10 +298,8 @@ than restating it.
 | A private DNS name or private IP | Generalise | Subnet layout. The in-VPC smoke test prints the instance's own hostname |
 | A database username from the tfvars | Generalise | A configuration value, not a resource name |
 | **Durations, engine versions, `sql_mode`, precheck findings, metric values, cost figures** | **Keep as measured** | Outcome measurements. Later phases and the acceptance criteria are written against them, so redacting these breaks the work's own definition of done |
-
-Resource *name patterns* are fine with `<ENV>` substituted - `<ENV>-optinist-cloud-rds`,
-`/ecs/<ENV>-optinist-cloud-taskdef` and the like. They are names, not capacity, and access to them is
-governed by IAM.
+Resource *name patterns* are fine with `<ENV>` substituted - they are names, not capacity, and access to them
+is governed by IAM.
 
 ---
 
@@ -471,7 +315,10 @@ export TF_ENV=<the backends/ and environments/ file basename>
 export FROM=<the current major version, e.g. 8.0>
 export TO=<the target major version, e.g. 8.4>
 DB=${ENV}-optinist-cloud-rds
+# zsh: without this a '#' in pasted input is not a comment - `VAR=x  # note` leaves VAR
+# unset, silently, and a comment inside a pasted function's case is a parse error.
 setopt interactive_comments 2>/dev/null || true
+source infrastructure/scripts/rds_upgrade_helpers.sh
 echo "profile=$AWS_PROFILE env=$ENV tf_env=$TF_ENV from=$FROM to=$TO db=$DB"
 ```
 
@@ -519,9 +366,6 @@ commands still carry an angle-bracket placeholder, each a value only the operato
 
 Anywhere else, a placeholder left in a command is a defect in this document rather than something to
 fill in.
-
-The setup block repeats the `setopt`; see [Before pasting anything](#before-pasting-anything-one-line-first)
-for what goes wrong without it.
 
 ### Prerequisites
 
@@ -808,29 +652,7 @@ grep -nE '^[0-9]+\)|^\tNo issues found' /tmp/prepatch.log
 ```bash
 CLONE_HOST=$(aws rds describe-db-instances --db-instance-identifier "$CLONE" \
   --query 'DBInstances[0].Endpoint.Address' --output text)
-
-need AWS_REGION ENV CLONE_HOST
-
-ssm_sh <<SH
-set -e
-CFG=\$(aws secretsmanager get-secret-value --region ${AWS_REGION} \
-  --secret-id ${ENV}-optinist/database/config --query SecretString --output text)
-export MYSQL_PWD=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.stdin)["password"])')
-DBU=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.stdin)["username"])')
-DBN=\$(printf '%s' "\$CFG" | python3 -c 'import json,sys;print(json.load(sys.stdin)["database"])')
-mariadb --ssl -h $CLONE_HOST -u "\$DBU" --connect-timeout=10 "\$DBN" -t <<'SQL'
-SELECT VERSION();
-SELECT @@sql_mode;
-SELECT PLUGIN_NAME, PLUGIN_STATUS, LOAD_OPTION FROM information_schema.PLUGINS
- WHERE PLUGIN_NAME LIKE '%native_password%';
-SELECT @@innodb_buffer_pool_size, @@innodb_dedicated_server, @@binlog_format, @@log_output;
-SELECT @@innodb_io_capacity, @@innodb_io_capacity_max, @@innodb_adaptive_hash_index,
-       @@innodb_change_buffering, @@innodb_buffer_pool_instances;
-SELECT @@innodb_redo_log_capacity, @@innodb_flush_method, @@innodb_log_writer_threads,
-       @@innodb_buffer_pool_chunk_size;
-SELECT user, host, plugin FROM mysql.user ORDER BY user;
-SQL
-SH
+sql_readings "$CLONE_HOST"
 ```
 
 `mysql_native_password` is a **server option, not a system variable** (`SELECT @@mysql_native_password` fails with `ERROR 1193`), so its configured value is read from the parameter group:
@@ -842,8 +664,6 @@ aws rds describe-db-parameters --db-parameter-group-name rehearsal-ssl-to \
 # Expected: ON  static  False - RDS pins it on. An empty result means the parameter does
 # not exist in this family: see the auth row in the table below.
 ```
-
-**The client aborts on the first SQL error and `set -e` then discards the whole block.** All of these are `SELECT`s, so fix the statement and re-run. A variable that does not exist on one version raises `ERROR 1193`: drop that line for that side.
 
 | Query | Expected | What it settles |
 |-------------------------|-----------------------|-----------------------|
@@ -862,14 +682,13 @@ The connection succeeding at all is the `require_secure_transport` check: TLS ag
 ##### Step 9 — the same readings on the live `<FROM>` instance
 
 Step 8 says what the new version does; only the pair says what **changed**, and the "before" half exists only
-while the live instance is on `<FROM>`. Run it any time before phase 1: **step 8's block with `LIVE_HOST` in
-place of `CLONE_HOST`**, dropping the two authentication statements (`PLUGINS` and `mysql.user`), which the
-`<FROM>` side cannot inform.
+while the live instance is on `<FROM>`. Run it any time before phase 1. The two authentication rows say
+nothing on this side.
 
 ```bash
 LIVE_HOST=$(aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].Endpoint.Address' --output text)
-need AWS_REGION ENV LIVE_HOST
+sql_readings "$LIVE_HOST"
 # Expected: VERSION() is <FROM>.x. If it is <TO>.x you are pointed at the clone.
 ```
 
@@ -898,72 +717,24 @@ against the new engine, running the same `alembic upgrade head` the deploy runs.
 the migration is a **no-op**; what is proved is that the runner connects, authenticates, negotiates TLS and
 executes.
 
-Three things about the block, each a mistake it is written around:
-
-- **A `docker exec` does not inherit the entrypoint's environment.** `DatabaseConfig` reads `MYSQL_*`, which
-  `cloud-startup.sh` exports from the task definition's `DB_*` only in its own process tree. Left alone,
-  pymysql falls back to `root` and fails with `1045 Access denied` - not an engine problem. So the block
-  repeats the mapping from the container's own `DB_*` values, and overrides `MYSQL_SERVER` (not `DB_HOST`,
-  which has already been consumed).
-- **The target is proved first, and the proof aborts rather than prints.** The deployed configuration points
-  `MYSQL_SERVER` at the proxy, which fronts the **live** instance. A successful connection to the wrong
-  database is the case `set -e` cannot see, and a version printed for a human would be read after the
-  migration had run.
-- **`docker exec` needs `-i`.** Without it stdin is not forwarded, the shell reads an empty program, exits 0,
-  and SSM reports `Success` with nothing run. The same applies to every `docker exec … sh -s` or `python -`
-  in this document.
+`alembic_probe` proves the target first and aborts if it is not the clone: the deployed configuration points
+`MYSQL_SERVER` at the proxy, which fronts the **live** instance, and a successful connection to the wrong
+database is the case `set -e` cannot see.
 
 ```bash
 need CLONE_HOST TO
-
-ssm_sh <<SH
-set -e
-C=\$(docker ps --format '{{.Names}}' | grep -m1 -- -background-optinist-cloud-container)
-
-docker exec -i -e MYSQL_SERVER=$CLONE_HOST -w /app "\$C" sh -s <<'INNER'
-set -e
-# Repeat the entrypoint's DB_* to MYSQL_* mapping, which a docker exec does not inherit.
-# MYSQL_SERVER is not mapped here: it comes from the -e above, pointing at the clone.
-export MYSQL_USER="\$DB_USER" MYSQL_PASSWORD="\$DB_PASSWORD" MYSQL_DATABASE="\$DB_NAME"
-[ -n "\$MYSQL_USER" ] && [ -n "\$MYSQL_DATABASE" ] || {
-  echo "ABORT: DB_USER / DB_NAME are absent from this container" >&2; exit 1; }
-
-# 1. Prove the target, through the application's own configuration and connection,
-#    and ABORT here if it is not the clone. Same engine construction as the SSL
-#    check in cloud-startup.sh.
-python3 -c "
-import sys
-from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
-from sqlalchemy import create_engine, text
-print('MYSQL_SERVER =', DATABASE_CONFIG.MYSQL_SERVER)
-creator = get_ssl_creator()
-kwargs = {'creator': creator} if creator else {}
-engine = create_engine(DATABASE_CONFIG.DATABASE_URL, **kwargs)
-with engine.connect() as c:
-    v = c.execute(text('SELECT VERSION()')).scalar()
-engine.dispose()
-print('VERSION()    =', v)
-if not v.startswith('${TO}.'):
-    sys.exit('ABORT: expected ${TO}.x, got ' + v + ' - this is not the clone')
-"
-
-# 2. Only then migrate. set -e and the exit above are what stop this line.
-alembic current && alembic heads && alembic upgrade head && alembic current
-INNER
-SH
-# Expected, in order:
-#   MYSQL_SERVER is the clone's endpoint, and VERSION() is <TO>.x.
-#   current and heads report the same revision, and current is unchanged afterwards.
+alembic_probe "$CLONE_HOST" "$TO"
+# Expected, in order: MYSQL_SERVER is the clone's endpoint, VERSION() is <TO>.x, current
+# and heads report the same revision, and current is unchanged afterwards.
 #
 # Failure modes:
-#   "ABORT: DB_USER / DB_NAME are absent" - read the container's environment
-#     (docker exec "$C" env | grep -E '^(DB_|MYSQL_)') and fix the mapping, not the credentials.
-#   "1045 Access denied for user 'root'" - the mapping did not happen. Not an engine problem.
-#   "ABORT: expected ... got <FROM>.x" - the override did not take effect and this reached
-#     the live instance through the proxy. Nothing was migrated. Re-read CLONE_HOST.
-#   An empty MYSQL_SERVER, then a connection error - CLONE_HOST was unset; the client fell
-#     back to localhost inside the container. Nothing was migrated.
-#   No output at all - the container name did not match, and set -e aborted on C.
+#   "ABORT: DB_USER / DB_NAME are absent" - the container does not carry them under those
+#     names; read its environment and fix the mapping in the helper, not the credentials.
+#   "1045 Access denied for user 'root'" - the DB_* to MYSQL_* mapping did not happen.
+#     Not an engine problem.
+#   "ABORT: expected ... got <FROM>.x" - this reached the live instance through the proxy.
+#     Nothing was migrated. Re-read CLONE_HOST.
+#   No output at all - the container name did not match.
 #   current BEHIND heads - a migration really applied. Harmless on a clone; investigate
 #     why a clone of a live database was not at head before trusting the rest of 0A.
 ```
@@ -1053,7 +824,7 @@ aws rds describe-db-instances --db-instance-identifier "$CLONE" \
 # pending-reboot. incompatible-parameters means one of the pins is not viable.
 ```
 
-Then re-run **step 8's SQL block**: the pinned variables should now report the `<FROM>` figures on a `<TO>` server.
+Then `sql_readings "$CLONE_HOST"` again: the pinned variables should now report the `<FROM>` figures on a `<TO>` server.
 
 A bad `static` parameter can leave the instance in `incompatible-parameters`, unable to start. On a throwaway clone that costs nothing - finding it here rather than on the live instance is the point - and it does not block the drill, which restores from the clone's pre-upgrade snapshot and deletes an instance in that state without trouble. Record which pin caused it and drop it from the phase 1 group.
 
@@ -1075,13 +846,14 @@ shell does not**, so expect an `ExpiredToken` on the first call. Verify rather t
 
 ```bash
 echo "env=$ENV from=$FROM to=$TO db=$DB clone=$CLONE"
-for f in ssm_sh assert_rehearsal confirm_target drop_clone drop_snapshot redact; do
-  declare -f "$f" >/dev/null 2>&1 && echo "$f: present" || echo "$f: MISSING - re-paste it"
+for f in ssm_sh assert_rehearsal confirm_target drop_clone drop_snapshot sql_readings; do
+  declare -f "$f" >/dev/null 2>&1 && echo "$f: present" || echo "$f: MISSING - source the helpers"
 done
 aws sts get-caller-identity --query Account --output text
 ```
 
-To resume **in a new shell**, re-run the session setup from the top of Procedure, re-paste the helpers, then:
+To resume **in a new shell**, re-run the session setup from the top of Procedure, which sources the helpers,
+then:
 
 ```bash
 DB=${ENV}-optinist-cloud-rds
@@ -1193,7 +965,7 @@ aws rds describe-db-instances --db-instance-identifier "$CLONE" \
 the second is unavoidable. Wall clock is right here, unlike step 6: nothing can use the instance until the
 restore completes.
 
-**Metadata is not proof.** Run step 8's SQL block once more, re-reading `CLONE_HOST` first. One connection
+**Metadata is not proof.** Re-read `CLONE_HOST` and run `sql_readings` once more. One connection
 proves TLS against the outgoing-family group (the only evidence it carried `require_secure_transport`
 through the restore), `VERSION()` at `<FROM>.x` from the engine, and the `<FROM>` baseline reproducing itself
 from a snapshot. **This is the last opportunity — the teardown removes the instance.**
@@ -1258,9 +1030,8 @@ are at the same revision, 0A's precheck already covered production's schema.** T
 same: the environments track different branches.
 
 ```bash
-# Read-only. One query per environment, through the proxy.
-# Run the ssm_sh SQL block from phase 0A with this statement, once per environment.
-SELECT version_num FROM alembic_version;
+# Read-only. Once per environment, with ENV and the proxy endpoint pointed at each.
+sql_run "$PROXY" <<< 'SELECT version_num FROM alembic_version;'
 # Expected: the same revision in both. If they differ, production's schema is not what
 # 0A tested and 0B should run.
 ```
@@ -1335,16 +1106,8 @@ drop_snapshot "$SNAP"
 
 ```bash
 # Confirm no rehearsal artefact survives into phase 1, in either case
-aws rds describe-db-instances \
-  --query 'DBInstances[?contains(DBInstanceIdentifier,`rehearsal`)].DBInstanceIdentifier' \
-  --output text
-aws rds describe-db-snapshots --snapshot-type manual \
-  --query 'DBSnapshots[?contains(DBSnapshotIdentifier,`rehearsal`)].DBSnapshotIdentifier' \
-  --output text
-aws rds describe-db-parameter-groups \
-  --query 'DBParameterGroups[?contains(DBParameterGroupName,`rehearsal`)].DBParameterGroupName' \
-  --output text
-# Expected: empty for all three
+list_rehearsal_artefacts
+# Expected: empty
 ```
 
 ### Phase 0C: dry-run the plan gate
@@ -1471,8 +1234,8 @@ grep -oE 'name += +"innodb_[a-z_]+"' infrastructure/terraform/infrastructure.tf 
 # there is no 0A, so take it here - after the apply the <FROM> instance no longer exists.
 aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{ev:EngineVersion,endpoint:Endpoint.Address}'
-# Expected: <FROM>.x. Then run 0A step 8's SQL block against that endpoint, unless the
-# readings are already on file.
+# Expected: <FROM>.x. Then sql_readings against that endpoint, unless the readings are
+# already on file.
 ```
 
 ##### Step 2 — read the stop schedule, and extend it only if needed
@@ -1694,10 +1457,10 @@ aws rds describe-db-parameters --db-parameter-group-name "$NEWPG" --source user 
 # pins. Count rather than scan: a shorter list reads exactly like a correct one.
 # A `static` pin not in effect below needs a reboot; the upgrade's own should have served.
 
-# The running side: 0A step 8's block with LIVE_HOST in place of CLONE_HOST.
+# The running side.
 LIVE_HOST=$(aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].Endpoint.Address' --output text)
-need AWS_REGION ENV LIVE_HOST
+sql_readings "$LIVE_HOST"
 # Expected: every pinned variable reports the <FROM> figure from the 0A pair. Derived
 # values follow their pin - innodb_buffer_pool_instances comes back with the pool.
 ```
@@ -1820,10 +1583,10 @@ aws logs filter-log-events --log-group-name "/aws/lambda/${ENV}-dev-scheduler" \
 # deregistration happened, which is worth understanding. "deferred_still_creating" on
 # the VERIFY pass is an error: the restore is stuck.
 
-# 6. The application reaches it through the proxy: 0A step 8's block with this endpoint
-#    in place of CLONE_HOST.
-aws rds describe-db-proxies --db-proxy-name "${ENV}-optinist-rds-proxy" \
-  --query 'DBProxies[0].Endpoint' --output text
+# 6. The application's own path: the readings through the proxy.
+PROXY=$(aws rds describe-db-proxies --db-proxy-name "${ENV}-optinist-rds-proxy" \
+  --query 'DBProxies[0].Endpoint' --output text)
+sql_readings "$PROXY"
 # Expected: the pinned values at their <FROM> figures. A failure here but not in check 2
 # is a proxy auth problem, not an engine one.
 ```
@@ -1860,33 +1623,8 @@ performs a day's expiry processing at once. On a shared environment, announce it
 > **Do not invoke `<ENV>-dev-scheduler`.** It sits in the same naming scheme, but it **stops and restores the
 > database** — invoking it deletes the instance you are soaking. The list below deliberately omits it.
 
-```bash
-# Separate the invocation status from the response payload: with both on stdout they
-# interleave, and it is the status that carries FunctionError.
-inv() {
-  # 'st' rather than 'status': under zsh, status is read-only.
-  local resp st
-  resp=$(mktemp -t lambdaresp)
-  st=$(aws lambda invoke --function-name "${ENV}-$1" --payload "$2" \
-         --cli-binary-format raw-in-base64-out "$resp" 2>&1)
-  if ! printf '%s' "$st" | grep -qE '"StatusCode":[[:space:]]*200'; then
-    echo "FAIL $1 -- the invoke itself did not return 200"
-  elif printf '%s' "$st" | grep -q FunctionError; then
-    echo "FAIL $1 -- FunctionError"
-  else
-    echo "ok   $1"
-  fi
-  printf '  status: %s\n' "$(printf '%s' "$st" | tr -d '\n')"
-  printf '  payload: '; head -c 600 "$resp"; echo
-  rm -f "$resp"
-}
-SCHED='"source":"aws.events","detail-type":"Scheduled Event"'
-```
-
-**The verdict needs both conditions.** A Lambda that raises still returns `StatusCode: 200`, with
-`"FunctionError": "Unhandled"` beside it; and a `ResourceNotFoundException` never reaches the handler, so its
-error text carries no `FunctionError` at all. The helper requires a 200 **and** no `FunctionError`, and prints
-one verdict line per invoke.
+`inv` requires a 200 **and** no `FunctionError`: a handler that raises still returns 200, and a
+`ResourceNotFoundException` never reaches the handler so its error text carries no `FunctionError` at all.
 
 ```bash
 inv free-manager        "{$SCHED,\"detail\":{\"action\":\"monitor\"}}"
@@ -1904,41 +1642,12 @@ inv public-cleanup '{}'
 The in-process background jobs have no Lambda, so call them directly:
 
 ```bash
-ssm_sh <<'SH'
-set -e
-C=$(docker ps --format '{{.Names}}' | grep -m1 -- -background-optinist-cloud-container)
-echo "container: $C"
-docker exec -i -w /app "$C" python - <<'PY'
-import traceback
-from studio.app.common.core.background.expiration_lifecycle_job import ExpirationLifecycleJob
-from studio.app.common.core.background.premium_expiration_sweep_job import PremiumExpirationSweepJob
-from studio.app.common.core.background.storage_reconciliation_job import StorageReconciliationJob
-from studio.app.common.core.background.cleanup_job import DataCleanupJob
-from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
-
-failed = []
-for job in (ExpirationLifecycleJob, PremiumExpirationSweepJob,
-            StorageReconciliationJob, DataCleanupJob, PublishedExperimentSyncJob):
-    print(f"== {job.__name__}", flush=True)
-    try:
-        job.run()
-        print(f"   ok {job.__name__}", flush=True)
-    except Exception:
-        failed.append(job.__name__)
-        traceback.print_exc()
-        print(f"   FAIL {job.__name__}", flush=True)
-print("FAILED:", failed or "none", flush=True)
-PY
-SH
-# Expected: FAILED: none on the last line. ExpirationLifecycleJob runs on a 24-hour
-# interval, so this is the invoke that saves the most waiting.
+run_background_jobs
+# Expected: all three markers - `container: ecs-<ENV>-background-...`, FIVE `== <JobName>`
+# lines, and `FAILED: none` on the last line. Anything less means the block did not run,
+# not that it passed. A correct run takes minutes, not seconds: ExpirationLifecycleJob
+# performs a day of expiry processing.
 ```
-
-**Silence is not a pass** — without `-i` the block exits 0 having run nothing (0A step 10). The run is valid
-only when all three markers appear: `container: ecs-<ENV>-background-...` (the lookup resolved), **five**
-`== <JobName>` lines (the interpreter received its program), and `FAILED: none` on the last line (every job
-was attempted, each caught individually so one raising does not end the loop). A correct run takes minutes,
-not seconds.
 
 #### Criterion 5 — the log queries
 
@@ -1953,17 +1662,6 @@ SINCE=$(( ($(date +%s) - 24*3600) * 1000 ))
 # rollout finished rather than 24 hours ago:
 AFTER=$(( $(date -j -f '%Y-%m-%d %H:%M:%S' '<YYYY-MM-DD HH:MM:SS>' +%s) * 1000 ))
 echo "AFTER=$AFTER  ($(date -r $((AFTER/1000)) '+%F %T'))"
-
-# CloudWatch reports times as epoch milliseconds, which are unreadable next to the
-# apply's own timestamps. 'ts_fmt' rather than 'fmt': fmt(1) is a real command.
-# The empty-field skip matters: a logged message ending in a newline arrives as two
-# lines, and the blank one would otherwise print as 1970.
-ts_fmt() {
-  while IFS=$'\t' read -r ts rest; do
-    [ -n "$ts" ] || continue
-    printf '%s  %s\n' "$(date -r $((ts/1000)) '+%Y-%m-%d %H:%M:%S')" "$rest"
-  done
-}
 ```
 
 Production has no nightly stop, so **a `9501` in production's window is a finding**. And **filter on exception
@@ -2067,49 +1765,16 @@ OUT=$HOME/baseline-production-$(date +%Y%m%d-%H%M).txt
 ```
 
 ```bash
-# Refuse to capture unless this is production and still on the outgoing version.
-assert_prod() {
-  local ev
-  ev=$(aws rds describe-db-instances --profile "$PROD_PROFILE" \
-         --db-instance-identifier "$PROD_DB" \
-         --query 'DBInstances[0].EngineVersion' --output text) || return 1
-  case "$ev" in
-    ${FROM}.*) return 0 ;;
-    *) echo "ABORT: $PROD_DB reports $ev, expected ${FROM}.x" >&2
-       echo "       wrong instance, or already upgraded" >&2
-       return 1 ;;
-  esac
-}
-```
-
-```bash
 # Confirm the identity before capturing. A development identifier here stops the step.
 aws rds describe-db-instances --profile "$PROD_PROFILE" \
   --db-instance-identifier "$PROD_DB" \
   --query 'DBInstances[0].{id:DBInstanceIdentifier,ev:EngineVersion,
            status:DBInstanceStatus,pg:DBParameterGroups[0].DBParameterGroupName}'
 # Expected: production's identifier, <FROM>.x, available.
-```
 
-```bash
-# Guarded with && so a failed gate creates no file at all.
-assert_prod && {
-  for M in CPUUtilization ReadIOPS WriteIOPS DatabaseConnections \
-           BufferCacheHitRatio ReadLatency WriteLatency FreeableMemory; do
-    echo "== $M"
-    aws cloudwatch get-metric-statistics --profile "$PROD_PROFILE" \
-      --namespace AWS/RDS --metric-name "$M" \
-      --dimensions "Name=DBInstanceIdentifier,Value=$PROD_DB" \
-      --start-time "$(date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)" \
-      --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      --period 86400 --statistics Average Maximum \
-      --query 'sort_by(Datapoints,&Timestamp)[].{t:Timestamp,avg:Average,max:Maximum}' \
-      --output table
-  done
-} 2>&1 | tee "$OUT"
-```
+# Behind assert_prod, so a failed gate creates no file at all.
+capture_baseline "$OUT"
 
-```bash
 # The capture is only captured once it is on disk. An empty file is not a reading.
 wc -l "$OUT" && grep -c "^== " "$OUT"
 # Expected: eight headings, and 14 daily points under each.
@@ -2180,8 +1845,7 @@ week before is stale if anyone touched the live group since; re-verify at apply 
 # this was inferred from the ECS services coming up; here it is checked directly.
 PROXY=$(aws rds describe-db-proxies --db-proxy-name "${ENV}-optinist-rds-proxy"   --query 'DBProxies[0].Endpoint' --output text)
 [ -n "$PROXY" ] && [ "$PROXY" != None ] || { echo "ABORT: proxy endpoint not resolved" >&2; }
-need AWS_REGION ENV PROXY
-# Then 0A step 8's SQL block with "$PROXY" in place of CLONE_HOST.
+sql_readings "$PROXY"
 # Expected before the window: <FROM>.x through the proxy. After the apply: <TO>.x. A
 # failure here while the instance is available is a proxy problem - and on production the
 # proxy target is not re-registered automatically.
@@ -2668,9 +2332,7 @@ aws rds describe-db-parameter-groups --db-parameter-group-name "$PG" \
 # <TO> until the next evening stop regenerates it.
 ```
 
-Then confirm the application actually reaches the restored database through the proxy, using the SQL
-block from the shared helper section with the proxy endpoint as the host. `SELECT VERSION()` must report
-`<FROM>`.
+Then `sql_readings` against the proxy endpoint: `VERSION()` must report `<FROM>`, from the engine.
 
 ### How long the rollback window stays open
 
