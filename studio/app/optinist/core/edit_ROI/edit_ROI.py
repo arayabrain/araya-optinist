@@ -446,19 +446,30 @@ class EditROI:
         applied twice on a retry.
         """
         PickleWriter.write(pickle_path=self.__staged_pickle_path, info=self.output_info)
+        with open(self.__staged_pickle_path, "rb") as f:
+            os.fsync(f.fileno())
         if os.path.exists(self.tmp_pickle_file_path):
             os.remove(self.tmp_pickle_file_path)
         os.replace(self.__staged_pickle_path, node_pickle_path)
 
     def __finish_interrupted_publish(self):
         """A staged pickle with no pending edit is a commit killed mid-publish:
-        apply it. One beside a pending edit never got that far: discard it."""
+        apply it. One beside a pending edit never got that far, and one that
+        does not load never reached the disk: discard it."""
         if not os.path.exists(self.__staged_pickle_path):
             return
         if os.path.exists(self.tmp_pickle_file_path):
             os.remove(self.__staged_pickle_path)
-        else:
+            return
+        try:
+            staged = PickleReader.read(self.__staged_pickle_path)
+        except Exception:
+            staged = None
+        if PickleReader.check_is_valid_node_pickle(staged):
             os.replace(self.__staged_pickle_path, self.pickle_file_path)
+        else:
+            logger.warning("discarding unreadable staged pickle: %s", self.function_id)
+            os.remove(self.__staged_pickle_path)
 
     def __save_json(self, output_info):
         for k, v in output_info.items():

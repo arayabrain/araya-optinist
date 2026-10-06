@@ -361,6 +361,9 @@ class RemoteSyncLockFileUtil:
         create remote storage sync lock file.
         Returns the owner token, which delete_sync_lock_file can be given so a
         holder only ever releases its own lock.
+        Raises RemoteStorageLockError if the file already exists: the create is
+        exclusive, so two uvicorn workers that both passed check_sync_lock_file
+        cannot both take the lock.
         """
         remote_sync_lock_file_path = cls.__make_sync_lock_file_path(
             workspace_id, unique_id
@@ -371,7 +374,11 @@ class RemoteSyncLockFileUtil:
             exist_ok=True,
         )
         token = uuid.uuid4().hex
-        with open(remote_sync_lock_file_path, "w") as f:
+        try:
+            f = open(remote_sync_lock_file_path, "x")
+        except FileExistsError:
+            raise RemoteStorageLockError(workspace_id, unique_id)
+        with f:
             file_data = {
                 "workspace_id": workspace_id,
                 "unique_id": unique_id,
@@ -1069,6 +1076,7 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
         self.sync_action = sync_action
         self.sync_mode = sync_mode
         self.owns_lock = owns_lock
+        self.lock_token = None
 
         if not owns_lock:
             is_locked = RemoteSyncLockFileUtil.check_sync_lock_file(
@@ -1079,7 +1087,9 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
                 raise RemoteStorageLockError(workspace_id, unique_id)
 
             # generate remote-sync-lock-file
-            RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+            self.lock_token = RemoteSyncLockFileUtil.create_sync_lock_file(
+                workspace_id, unique_id
+            )
 
         # generate remote-sync-status-file (for pendding)
         # *updates are only made when self.sync_mode==ALL (full sync)
@@ -1118,7 +1128,7 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
         # delete lock file
         if not self.owns_lock:
             RemoteSyncLockFileUtil.delete_sync_lock_file(
-                self.workspace_id, self.unique_id
+                self.workspace_id, self.unique_id, self.lock_token
             )
 
 

@@ -247,3 +247,17 @@ def test_a_commit_killed_between_retire_and_replace_is_finished_on_next_open(
     EditROI(roi_pickle)
     assert not os.path.exists(join_filepath([roi_dir, "tmp_commit.pkl"]))
     assert "stale" not in PickleReader.read(roi_pickle)
+
+
+def test_a_staged_pickle_that_never_reached_the_disk_is_discarded(experiment):
+    roi_pickle = pickle_path("roi")
+    staged = join_filepath([os.path.dirname(roi_pickle), "tmp_commit.pkl"])
+    # no pending edit, so it looks like a killed publish; but a host crash
+    # can leave the staged file truncated
+    with open(staged, "wb") as f:
+        f.write(b"\x80\x04\x95")
+
+    EditROI(roi_pickle)
+
+    assert not os.path.exists(staged)
+    assert list(PickleReader.read(roi_pickle)["iscell"].data) == [CellType.ROI] * 2

@@ -98,7 +98,7 @@ async def ensure_experiment_synced_for_edit(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def status_roi(
-    filepath: str = Depends(roi_filepath),
+    filepath: str = Depends(unlocked_roi_filepath),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     # Ensure experiment is synced before Edit ROI operations

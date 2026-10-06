@@ -3,6 +3,7 @@ import shutil
 import pytest
 
 from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
     RemoteSyncLockFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -40,11 +41,14 @@ def test_a_path_in_the_authorized_workspace_passes_the_binding(client):
     assert res.status_code == 400
 
 
-MUTATING_ACTIONS = [a for a in ROI_ACTIONS if a[0] not in ("status", "commit_edit")]
-
-
-@pytest.mark.parametrize("action,body", MUTATING_ACTIONS)
-def test_an_edit_during_a_commit_is_refused_with_423(client, action, body):
+@pytest.mark.parametrize("action,body", ROI_ACTIONS)
+def test_every_roi_call_during_a_commit_is_refused_with_423(
+    client, monkeypatch, action, body
+):
+    # status included: opening the node runs the interrupted-publish recovery,
+    # which must never race the publish it would be recovering from. Without
+    # remote storage the lazy-sync reader does not refuse it first.
+    monkeypatch.setattr(RemoteStorageController, "is_available", lambda: False)
     RemoteSyncLockFileUtil.create_sync_lock_file("1", "uid")
     try:
         res = client.post(roi_url(1, action, 1), json=body)

@@ -2,8 +2,10 @@ import shutil
 
 import pytest
 
+from studio.app.common.core.storage import remote_storage_controller
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageLockError,
+    RemoteStorageWriter,
     RemoteSyncLockFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import (
@@ -64,6 +66,33 @@ async def test_a_concurrent_commit_is_refused_and_leaves_the_lock(filepath):
     # The refused request must not release the holder's lock on its way out.
     assert RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
     RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+
+
+@pytest.mark.asyncio
+async def test_a_remote_writer_only_releases_the_lock_it_took(filepath, monkeypatch):
+    monkeypatch.setattr(
+        remote_storage_controller, "RemoteStorageController", lambda bucket: None
+    )
+    writer = RemoteStorageWriter("bucket", workspace_id, unique_id)
+    # the writer's lock expired and a commit took its own meanwhile
+    RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
+    token = RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+
+    async with writer:
+        pass
+
+    assert RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
+    RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id, token)
+
+
+def test_the_lock_cannot_be_taken_twice(filepath):
+    # two uvicorn workers can both pass check_sync_lock_file; the create decides
+    token = RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+
+    with pytest.raises(RemoteStorageLockError):
+        RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+
+    RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id, token)
 
 
 def test_the_lock_is_only_released_by_its_owner(filepath):
