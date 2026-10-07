@@ -18,16 +18,24 @@ def data_slice(
 
     Parameters:
         data (BaseData): Input data to slice. Can be one of several types:
-                         BehaviorData, CsvData, FluoData, ImageData, or RoiData.
+                         BehaviorData, CsvData, FluoData, ImageData, RoiData,
+                         or IscellData.
         output_dir (str): Directory to save the output data.
         params (dict, optional): Dictionary containing slice specifications:
                                - 'slice_dims': List of slice specs for each dimension.
                                  Each spec can be:
                                  - Null/empty/':'/all: Keep the entire dimension
-                                 - 'start:end': Range slice
-                                 - 'start:step:end': Strided slice
+                                 - 'start:stop': Range slice
+                                 - 'start:stop:step': Strided slice
                                  - 'squeeze': Remove this dimension (must have size 1)
-                                 - integer: Single index to select (removes dimension)
+                                 - non-negative integer: Single index to select
+                                   (removes dimension)
+                                 Unparseable specs, 'squeeze' on a dimension of
+                                 size > 1, and out-of-range integer indices keep
+                                 the entire dimension and log a warning. A slice
+                                 that selects no elements logs a warning, and a
+                                 start:stop:step spec that appears to be in
+                                 start:step:stop order logs a corrected hint.
 
     Returns:
         dict: A dictionary containing the sliced data and any derived data products.
@@ -60,12 +68,6 @@ def data_slice(
         logger.debug("No slice specifications provided, returning original data")
         output_data = return_as_data_type(data, raw_data, output_dir, "sliced_data")
         return {"sliced_data": list(output_data.values())[0]}
-
-    # Convert slice_dims to list format if it's a string
-    if isinstance(slice_dims, str):
-        slice_dims = [s.strip() for s in slice_dims.split(",")]
-    elif isinstance(slice_dims, list):
-        slice_dims = [s.strip() if isinstance(s, str) else s for s in slice_dims]
 
     # Make sure we have specs for all dimensions
     if len(slice_dims) < ndim:
@@ -109,32 +111,52 @@ def data_slice(
                 index_specs.append(slice(None))
             continue
 
-        # Parse slice notation (start:end or start:step:end)
+        # Parse slice notation (start:stop or start:stop:step)
         if isinstance(spec, str) and ":" in spec:
+            parts = [p.strip() for p in spec.split(":")]
             try:
-                parts = [p.strip() for p in spec.split(":")]
-
                 if len(parts) == 2:
-                    # Format: start:end
+                    # Format: start:stop
                     start = int(parts[0]) if parts[0] else None
-                    end = int(parts[1]) if parts[1] else None
-                    index_specs.append(slice(start, end))
+                    stop = int(parts[1]) if parts[1] else None
+                    step = None
 
                 elif len(parts) == 3:
                     # Format: start:stop:step
                     start = int(parts[0]) if parts[0] else None
                     stop = int(parts[1]) if parts[1] else None
                     step = int(parts[2]) if parts[2] else None
-                    index_specs.append(slice(start, stop, step))
 
                 else:
                     logger.warning(f"Invalid slice format: {spec}")
                     index_specs.append(slice(None))
+                    continue
 
             except ValueError:
                 logger.warning(f"Could not parse slice spec: {spec}")
                 index_specs.append(slice(None))
+                continue
 
+            parsed = slice(start, stop, step)
+            index_specs.append(parsed)
+
+            dim_size = raw_data.shape[i]
+            # step 0 is left to fail loudly when the slice is applied
+            if step != 0:
+                n_selected = len(range(*parsed.indices(dim_size)))
+                hint = ""
+                if len(parts) == 3 and all(parts) and n_selected <= 1 and stop != 0:
+                    swapped = slice(start, step, stop)
+                    if len(range(*swapped.indices(dim_size))) > max(n_selected, 1):
+                        hint = (
+                            "; the format is start:stop:step - did you mean "
+                            f"'{parts[0]}:{parts[2]}:{parts[1]}'?"
+                        )
+                if (n_selected == 0 and dim_size > 0) or hint:
+                    logger.warning(
+                        f"Slice '{spec}' selects {n_selected} of "
+                        f"{dim_size} elements on axis {i} (0-based){hint}"
+                    )
             continue
 
         # Unrecognized specification

@@ -547,6 +547,21 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 #### OptiNiSt (Utils)
 
+###### data_slice
+
+- **Description:** Slices data along specified dimensions, e.g. to trim or downsample a time series so its length matches another node's input.
+- **Input:** BehaviorData, CsvData, FluoData, ImageData, RoiData, or IscellData
+- **Output:** sliced_data, the same type as the input (CsvData is returned as BehaviorData). For FluoData and BehaviorData inputs a mean_timeseries plot is also produced for visualization.
+- **Parameters:**
+  - **slice_dims** [list of str, default: empty]: One slice spec per dimension, in order. Each spec can be:
+    - `:` or `all`: keep the entire dimension
+    - `start:stop`: range slice (Python semantics, `stop` excluded)
+    - `start:stop:step`: strided slice, e.g. `0:8152:2` keeps every 2nd sample of the first 8152
+    - `squeeze`: remove the dimension (must have size 1)
+    - a non-negative integer: select a single index (removes the dimension)
+  - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell and downsample time.
+  - Unparseable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
+
 ###### microscope_to_img
 
 - **Description:** Data type conversion: Converts microscope data to image data.
