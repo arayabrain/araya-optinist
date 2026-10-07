@@ -561,6 +561,8 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - a non-negative integer: select a single index (removes the dimension)
   - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell and downsample time.
   - Unparsable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
+  - **cell_normalization** [str, default: `none`]: `none` or `zscore`. Z-scores each row of an indexed input (FluoData, BehaviorData, TimeSeriesData, BarData) along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Not applied to HeatMapData, whose index holds row labels.
+  - **mean_normalization** [str, default: `none`]: `none`, `zscore` or `minmax`. Applied only to the mean_timeseries output. Both normalizations are NaN-aware: a NaN sample stays NaN while the rest of the trace is normalized, a constant trace becomes zeros, and an entirely non-finite trace is left unchanged with a warning.
 
 ###### microscope_to_img
 
