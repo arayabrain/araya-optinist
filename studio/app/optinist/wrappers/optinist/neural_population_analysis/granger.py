@@ -14,7 +14,7 @@ def Granger(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(Granger_fval_mat_heatmap=HeatMapData, Granger_fval_mat_scatter=ScatterData):
     # modules specific to function
     # from sklearn.preprocessing import StandardScaler
     import itertools

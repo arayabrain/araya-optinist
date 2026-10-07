@@ -1,7 +1,12 @@
+import numpy as np
+
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.dataclass.base import BaseData
+from studio.app.common.dataclass.bar import BarData
 from studio.app.common.dataclass.csv import CsvData
+from studio.app.common.dataclass.heatmap import HeatMapData
 from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.scatter import ScatterData
+from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.dataclass.iscell import IscellData
@@ -51,6 +56,22 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
         )
         output_key = "neural_data"
 
+    elif output_type in ["timeseries_data", "TimeSeriesData"] or (
+        output_type is None and isinstance(data, TimeSeriesData)
+    ):
+        logger.debug("Processing as TimeSeriesData")
+        result = TimeSeriesData(
+            data=processed_data,
+            std=std,
+            sem=kwargs.get("sem", None),
+            index=index,
+            cell_numbers=kwargs.get("cell_numbers", None),
+            params={},
+            file_name=file_name,
+            meta=data.meta if hasattr(data, "meta") else None,
+        )
+        output_key = "timeseries"
+
     elif output_type in ["image_data", "ImageData", "image"] or (
         output_type is None and isinstance(data, ImageData)
     ):
@@ -72,7 +93,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
         )
         output_key = "iscell"
 
-    elif output_type in ["roi_data", "RoiData"] or (
+    elif output_type in ["roi_data", "RoiData", "roi"] or (
         output_type is None and isinstance(data, RoiData)
     ):
         result = RoiData(
@@ -83,14 +104,52 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
         )
         output_key = "roi"
 
-    else:
-        logger.warning(f"Unknown output_type '{output_type}', defaulting to BaseData")
-        result = BaseData(
+    elif output_type in ["bar_data", "BarData", "bar"] or (
+        output_type is None and isinstance(data, BarData)
+    ):
+        result = BarData(
             data=processed_data,
-            params={},
+            index=index,
             file_name=file_name,
+            meta=data.meta if hasattr(data, "meta") else None,
         )
-        output_key = "data"
+        output_key = "bar"
+
+    elif output_type in ["heatmap_data", "HeatMapData", "heatmap"] or (
+        output_type is None and isinstance(data, HeatMapData)
+    ):
+        heatmap_data = np.atleast_2d(processed_data)
+        columns = getattr(data, "columns", None)
+        if columns is not None and len(columns) != heatmap_data.shape[1]:
+            columns = None
+        result = HeatMapData(
+            data=heatmap_data,
+            columns=columns,
+            index=index,
+            file_name=file_name,
+            meta=data.meta if hasattr(data, "meta") else None,
+        )
+        output_key = "heatmap"
+
+    elif output_type in ["scatter_data", "ScatterData", "scatter"] or (
+        output_type is None and isinstance(data, ScatterData)
+    ):
+        # ScatterData transposes on construction; pre-transpose so the stored
+        # orientation round-trips
+        result = ScatterData(
+            data=processed_data.T,
+            file_name=file_name,
+            meta=data.meta if hasattr(data, "meta") else None,
+        )
+        output_key = "scatter"
+
+    else:
+        raise ValueError(
+            f"Unsupported data type '{type(data).__name__}' "
+            f"(output_type='{output_type}'); supported input types are "
+            "BehaviorData, CsvData, FluoData, TimeSeriesData, ImageData, "
+            "IscellData, RoiData, BarData, HeatMapData, and ScatterData"
+        )
 
     logger.debug(f"Created {type(result).__name__} with output key: {output_key}")
     return {output_key: result}

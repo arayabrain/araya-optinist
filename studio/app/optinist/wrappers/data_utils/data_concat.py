@@ -31,7 +31,8 @@ def data_concat(
         params (dict, optional): Dictionary containing concatenation specifications:
                     - 'axis': Axis along which to concatenate
                     - 'output_type': Optional output type specification
-                        (behaviors_data, neural_data, image_data, iscell_data, roi_data)
+                        (behaviors_data, neural_data, timeseries_data, image_data,
+                        iscell_data, roi_data, bar_data, heatmap_data, scatter_data)
                         If not specified, will be inferred from data1 type
                     - 'time_axis': Specified or determined by data type
                     - 'std_method': How to handle standard deviation:
