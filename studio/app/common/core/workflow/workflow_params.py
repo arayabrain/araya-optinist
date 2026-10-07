@@ -10,25 +10,73 @@ def read_default_params(name: str):
     return ConfigReader.read(filepath)
 
 
+FAQ_URL = "https://github.com/oist/optinist/wiki/FAQ"
+
+
 def get_typecheck_params(message_params, name):
     default_params = read_default_params(name)
+    if not isinstance(default_params, dict):
+        default_params = {}
     if message_params != {} and message_params is not None:
-        return check_types(nest2dict(message_params), default_params, name)
+        params = nest2dict(message_params)
+        if not default_params:
+            # No yaml to check against (a plugin algorithm); snakemake reports
+            # the missing rule itself
+            return params
+        if has_outdated_shape(params, default_params):
+            unknown = ", ".join(
+                f"'{k}'" for k in sorted(params.keys() - default_params)
+            )
+            logger.warning(
+                f"Invalid Workflow yaml params: {unknown} in [{name}]. See {FAQ_URL}"
+            )
+            raise KeyError(
+                f"Workflow yaml error, see FAQ: unknown parameters {unknown} for "
+                f"{name or 'this node'}; reset the node's parameters and run again"
+            )
+        return check_types(params, default_params, name)
     return default_params
 
 
+def has_outdated_shape(params, default_params):
+    """
+    True when the saved tree looks like it was written against a different
+    yaml layout (e.g. OptiNiSt v1): it has unknown top-level keys and either
+    shares no key with the defaults or has a key that today lives inside one
+    of the default groups (v2 nested the flat v1 keys into groups).
+    """
+    if not params:
+        return False
+    unknown = params.keys() - default_params.keys()
+    if not unknown:
+        return False
+    no_overlap = len(unknown) == len(params)
+    return no_overlap or bool(unknown & _nested_keys(default_params))
+
+
+def _nested_keys(default_params) -> set:
+    nested = set()
+    for value in default_params.values():
+        if isinstance(value, dict):
+            nested |= value.keys() | _nested_keys(value)
+    return nested
+
+
 def check_types(params, default_params, name=""):
-    faq_url = "https://github.com/oist/optinist/wiki/FAQ"
-    for key in params.keys():
+    for key in list(params):
         if key not in default_params:
             logger.warning(
-                f"Invalid Workflow yaml param: [{key}] in [{name}]. See {faq_url}"
+                f"Dropping saved param '{key}' for [{name}]: "
+                f"not in the current default yaml. See {FAQ_URL}"
             )
-            raise KeyError(
-                f"Workflow yaml error, see FAQ: unknown parameter '{key}' for "
-                f"{name or 'this node'}; reset the node's parameters and run again"
+            del params[key]
+        elif isinstance(params[key], dict) != isinstance(default_params[key], dict):
+            logger.warning(
+                f"Dropping saved param '{key}' for [{name}]: "
+                f"its shape differs from the current default yaml. See {FAQ_URL}"
             )
-        if isinstance(params[key], dict):
+            del params[key]
+        elif isinstance(params[key], dict):
             params[key] = check_types(params[key], default_params[key], name)
         else:
             if not isinstance(type(params[key]), type(default_params[key])):
