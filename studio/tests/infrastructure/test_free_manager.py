@@ -224,12 +224,9 @@ class TestCalculateDesiredInstances:
         assert result == expected
         assert asg_min <= result <= asg_max
 
-    def test_uses_asg_bounds_from_service_info(self, mock_env_vars_free):
-        """
-        scale_and_rebalance clamps to the bounds get_service_info reports,
-        not to any value configured on the Lambda.
-        """
-        from free_manager import calculate_desired_instances, get_service_info
+    def test_get_service_info_returns_the_asg_bounds(self, mock_env_vars_free):
+        """get_service_info surfaces MinSize/MaxSize for the caller to clamp to."""
+        from free_manager import get_service_info
 
         asg = {
             "AutoScalingGroups": [
@@ -257,9 +254,156 @@ class TestCalculateDesiredInstances:
         assert info["min_size"] == 3
         assert info["max_size"] == 5
 
-        # 5 active users would compute 1 instance from the user count alone;
-        # the ASG minimum holds it at 3, which is what the group accepts.
-        assert calculate_desired_instances(5, info["min_size"], info["max_size"]) == 3
+
+class TestScaleAndRebalanceUsesAsgBounds:
+    """
+    scale_and_rebalance's wiring: the bounds it reads from get_service_info
+    must be the ones it asks SetDesiredCapacity for. A regression that kept a
+    literal floor in scale_and_rebalance would still satisfy the pure-function
+    tests above, so these drive the real entry point.
+    """
+
+    @staticmethod
+    def _run(mock_env_vars_free, users, desired, minimum, maximum):
+        """Drive scale_and_rebalance, returning the autoscaling client mock."""
+        from free_manager import scale_and_rebalance
+
+        # The scale-up branch polls for readiness on a wall-clock loop. Report
+        # every instance ready and the distribution balanced so it breaks on
+        # the first attempt instead of waiting out max_wait_time.
+        ready = [f"i-{n}" for n in range(maximum)]
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.get_service_info"
+        ) as mock_info, patch(
+            "free_manager.is_scaling_in_progress", return_value=False
+        ), patch(
+            "free_manager.set_scaling_lock"
+        ), patch(
+            "free_manager.get_available_instance_ids", return_value=ready
+        ), patch(
+            "free_manager.get_users_per_instance", return_value={}
+        ), patch(
+            "free_manager.rebalance_idle_users_multi", return_value=[]
+        ), patch(
+            "free_manager.is_distribution_balanced", return_value=True
+        ), patch(
+            "time.sleep"
+        ):
+            mock_info.return_value = {
+                "desired_count": desired,
+                "running_count": desired,
+                "pending_count": 0,
+                "min_size": minimum,
+                "max_size": maximum,
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": ready}
+            scale_and_rebalance(active_user_count=users)
+            return mock_asg
+
+    def test_floor_is_the_asg_minimum_on_scale_down(self, mock_env_vars_free):
+        """users=5 alone wants 1; the minimum of 3 is requested instead."""
+        asg = self._run(mock_env_vars_free, users=5, desired=5, minimum=3, maximum=5)
+
+        asg.set_desired_capacity.assert_called_once()
+        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
+
+    def test_no_call_when_the_minimum_already_holds_capacity(self, mock_env_vars_free):
+        """
+        The old-bug shape: users=5, min=max=desired=3. The old floor of 1 made
+        this a scale-down to 1 that the group rejects; the clamped target
+        equals current desired, so nothing is requested at all.
+        """
+        asg = self._run(mock_env_vars_free, users=5, desired=3, minimum=3, maximum=3)
+
+        asg.set_desired_capacity.assert_not_called()
+
+    def test_ceiling_is_the_asg_maximum_on_scale_up(self, mock_env_vars_free):
+        """users=50 alone wants 10; the maximum of 3 is requested instead."""
+        asg = self._run(mock_env_vars_free, users=50, desired=1, minimum=1, maximum=3)
+
+        asg.set_desired_capacity.assert_called_once()
+        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
+
+    def test_scale_down_hysteresis_is_retained(self, mock_env_vars_free):
+        """A gap of 1 is left alone, as before: 6 users want 2, desired is 3."""
+        asg = self._run(mock_env_vars_free, users=6, desired=3, minimum=1, maximum=5)
+
+        asg.set_desired_capacity.assert_not_called()
+
+
+class TestHandlerFailsTheInvocation:
+    """
+    The free-manager-errors alarm watches AWS/Lambda Errors, which counts only
+    invocations ending in an unhandled exception. A handler that returned an
+    error body instead would leave the alarm permanently blind, so the
+    re-raise is the alarm's precondition and is pinned here.
+    """
+
+    def test_scheduled_failure_raises_out_of_handler(self, mock_env_vars_free):
+        """A rejected SetDesiredCapacity reaches the platform as a failure."""
+        from free_manager import handler
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.ecs_client"
+        ), patch("free_manager.autoscaling_client"), patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.ec2_client"
+        ), patch(
+            "free_manager.handle_scheduled_monitoring",
+            side_effect=Exception("ValidationError: desired capacity below MinSize"),
+        ):
+            with pytest.raises(Exception, match="ValidationError"):
+                handler({"source": "aws.events"}, MagicMock())
+
+    def test_asg_event_failure_raises_out_of_handler(self, mock_env_vars_free):
+        """The ASG-event path fails the invocation too."""
+        from free_manager import handler
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.ecs_client"
+        ), patch("free_manager.autoscaling_client"), patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.ec2_client"
+        ), patch(
+            "free_manager.handle_asg_event", side_effect=Exception("boom")
+        ):
+            with pytest.raises(Exception, match="boom"):
+                handler({"source": "aws.autoscaling"}, MagicMock())
+
+    def test_missing_asg_raises(self, mock_env_vars_free):
+        """
+        Manual Test 4's induction: ASG_NAME pointing at a missing group must
+        reach the metric, not be swallowed into a 200/500 body.
+        """
+        from free_manager import handler
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.ecs_client"
+        ) as mock_ecs, patch("free_manager.autoscaling_client") as mock_asg, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.ec2_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=5
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.is_scaling_in_progress", return_value=False
+        ), patch(
+            "free_manager.set_scaling_lock"
+        ):
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": []
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": []}
+
+            with pytest.raises(Exception, match="not found"):
+                handler({"source": "aws.events"}, MagicMock())
 
 
 class TestIsDistributionBalanced:

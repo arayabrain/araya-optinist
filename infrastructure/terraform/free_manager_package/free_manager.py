@@ -93,6 +93,11 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
 
 # Users one instance is provisioned to serve. Only the instance count scales,
 # so this is the divisor that turns an active user count into a target count.
+#
+# Paired with FREE_USER_THRESHOLD (env, also 5), which gates whether scaling
+# runs at all. Scaling starts at the threshold, but the first scale-up by user
+# count needs USERS_PER_INSTANCE + 1 users, so tuning one without the other
+# moves where scaling begins relative to where it has any effect.
 USERS_PER_INSTANCE = 5
 
 # Initialize AWS clients
@@ -134,7 +139,10 @@ def handler(event, context):
         import traceback
 
         traceback.print_exc()
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        # Fail the invocation so the error surfaces on the Lambda Errors metric,
+        # which the free-manager-errors alarm watches. Returning a 500 body
+        # would read as a success to Lambda and leave the alarm blind.
+        raise
 
 
 def handle_scheduled_monitoring(event, context):
@@ -188,7 +196,7 @@ def handle_scheduled_monitoring(event, context):
         import traceback
 
         traceback.print_exc()
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        raise
 
 
 def handle_asg_event(event, context):
@@ -282,7 +290,7 @@ def handle_asg_event(event, context):
         import traceback
 
         traceback.print_exc()
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        raise
 
 
 def is_scaling_in_progress() -> bool:

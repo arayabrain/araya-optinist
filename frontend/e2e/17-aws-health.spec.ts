@@ -509,6 +509,9 @@ test.describe("Compute and routing", () => {
     // ASG by the free-manager Lambda on launch/terminate events. A missed sync
     // leaves a task-less instance - HEALTH-03 sees the unhealthy target, this
     // sees the cause.
+    // Strict, like the inService == desired check above: mid-scale-out an
+    // instance is InService before its task is placed, so the lane assumes a
+    // settled environment.
     const free = groups.find((g) => g.name === `${ENV}-optinist-asg`)!
     const freeTasks = awsJson<number>(
       `ecs describe-services --cluster ${CLUSTER} ` +

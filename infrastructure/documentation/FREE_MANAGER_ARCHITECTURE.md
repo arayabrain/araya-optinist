@@ -203,6 +203,61 @@ round robin counts requests rather than users, and each ALB node keeps its own
 rotation, so a small number of sessions spreads evenly in expectation rather
 than exactly.
 
+### Procedure: Pre-provisioning Capacity for an Expected Burst
+
+When a larger-than-usual number of free users is expected at a known time,
+raise the ASG's minimum ahead of it. **Pre-provisioning is the primary
+mechanism; reactive scaling is a backstop** — the 5-minute polling interval,
+instance boot time and sticky sessions mean reactive scaling serves late
+arrivals, not the first wave.
+
+**1. Size it.** The Lambda's model is one instance per
+`USERS_PER_INSTANCE` (5) *concurrently active* users, where "active" means a
+request within `FREE_IDLE_THRESHOLD_MINUTES`.
+
+- Target minimum = `ceil(expected concurrent users / 5)`.
+- **Raise `asg_max_size` too if the target exceeds it.** The maximum is a
+  silent cap: the Lambda clamps to it and never reports wanting more.
+- `MinSize <= MaxSize` must hold or the update is rejected.
+
+**2. Allow lead time — at least 30 minutes before the audience connects.**
+6-10 minutes of instance boot while `use_custom_ami = false` (about 1 minute
+once the custom AMI is enabled), then task placement and two health checks at
+60-second intervals. Raising capacity *during* a burst does not help users
+whose sticky cookie is already held.
+
+**3. Choose a route.**
+
+| | Terraform (`asg_min_size` in tfvars) | Console / CLI |
+|---|---|---|
+| Takes effect | After an apply | Immediately |
+| Persistence | Durable | **Reverted by the next `terraform apply`** (`min_size` is not under `ignore_changes`) |
+| Use for | A permanent baseline change | A time-boxed window |
+
+Either way, freeze applies for the window or re-apply the override afterwards.
+
+**4. Check the whole chain** once the instances settle. All four numbers must
+agree:
+
+```
+ASG DesiredCapacity == ASG InService == ECS runningCount == healthy free targets
+```
+
+`HEALTH-03` and `HEALTH-05` in the e2e health lane assert exactly this, and
+`free-manager-errors` should read `OK`.
+
+**5. Restoring is not symmetric.** Lowering `min_size` does **not** lower
+desired capacity, because `desired_capacity` is under `ignore_changes` and
+nothing re-reads it. Capacity then drains only by `-1` steps from the
+`cpu-low` / `memory-low` alarms, or by Lambda scale-down, which needs five or
+more active users *and* a gap of two or more. **Set desired capacity
+explicitly when restoring**, or accept a gradual drain and its cost:
+
+```bash
+aws autoscaling update-auto-scaling-group --auto-scaling-group-name <asg> \
+  --min-size <original> --desired-capacity <original> --region <region>
+```
+
 ### Flow Diagrams
 
 #### Scheduled Monitoring Flow (Every 5 Minutes)
@@ -662,7 +717,17 @@ This prevents thrashing when user count hovers near a boundary.
 
 | Alarm | Metric | Condition | Why |
 |---|---|---|---|
-| `free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 for 3 consecutive 5-minute periods | The Lambda is the only user-count writer of free-tier capacity and runs unattended. A failure leaves capacity where it is and skips that cycle's rebalancing and metric publication. Three periods distinguishes a condition the Lambda cannot get past from a self-healing transient. |
+| `free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 in each of 3 consecutive 5-minute periods | The Lambda is the only user-count writer of free-tier capacity and runs unattended. A failure leaves capacity where it is and skips that cycle's rebalancing and metric publication. Three periods distinguishes a condition the Lambda cannot get past from a self-healing transient. |
+
+**The alarm has a precondition in the code.** `AWS/Lambda` `Errors` counts only
+invocations that end in an **unhandled exception**, so the handlers log the
+traceback and then re-raise. A handler that returned an error body instead
+would read as a success to Lambda and leave this alarm permanently blind — the
+same arrangement, and the same reason, as `public_cleanup`. Because EventBridge
+invokes asynchronously, `maximum_retry_attempts = 0` stops Lambda from retrying
+a raised invocation twice and stacking copies of the 15-minute scale-up wait;
+the next scheduled run five minutes later is the retry this function should get.
+`TestHandlerFailsTheInvocation` pins the re-raise.
 
 Note that the free tier's CPU/memory alarms (`cpu-high`, `cpu-low`,
 `memory-high`, `memory-low`) are **scaling triggers rather than notifications**
