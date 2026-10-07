@@ -156,27 +156,31 @@ def count_active_free_users(activity_threshold_minutes: int = 10) -> int:
 
     Returns:
         Number of active free tier users
+
+    Raises:
+        Exception: on any database failure. Deliberately not caught -- a zero
+            here is indistinguishable from an idle tier, so the caller would
+            scale nothing, report success and publish ActiveLogins = 0, hiding
+            the outage and misinstructing anyone reading the metric. Raising
+            sends it to the Lambda Errors metric instead, which the
+            free-manager-errors alarm watches. Capacity is unaffected either
+            way: the ASG holds its minimum.
     """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                activity_cutoff = datetime.now(timezone.utc) - timedelta(
-                    minutes=activity_threshold_minutes
-                )
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            activity_cutoff = datetime.now(timezone.utc) - timedelta(
+                minutes=activity_threshold_minutes
+            )
 
-                query = """
-                    SELECT COUNT(*) as count
-                    FROM free_user_assignments
-                    WHERE last_activity >= %s
-                """
-                cursor.execute(query, (activity_cutoff,))
-                result = cursor.fetchone()
+            query = """
+                SELECT COUNT(*) as count
+                FROM free_user_assignments
+                WHERE last_activity >= %s
+            """
+            cursor.execute(query, (activity_cutoff,))
+            result = cursor.fetchone()
 
-                return result["count"] if result else 0
-
-    except Exception as e:
-        print(f"Error counting active free users: {e}")
-        return 0
+            return result["count"] if result else 0
 
 
 def get_users_per_instance(activity_threshold_minutes: int = 10) -> Dict[str, int]:

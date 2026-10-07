@@ -333,6 +333,43 @@ class TestScaleAndRebalanceUsesAsgBounds:
 
         asg.set_desired_capacity.assert_not_called()
 
+    def test_scale_down_lowers_both_asg_and_ecs(self, mock_env_vars_free):
+        """
+        Scale-in with the minimum out of the way: 7 users want 2, desired is 4,
+        so the gap of 2 clears hysteresis and both sides are lowered together.
+        """
+        from free_manager import scale_and_rebalance
+
+        ready = ["i-0", "i-1", "i-2", "i-3"]
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.get_service_info"
+        ) as mock_info, patch(
+            "free_manager.is_scaling_in_progress", return_value=False
+        ), patch(
+            "free_manager.set_scaling_lock"
+        ), patch(
+            "free_manager.get_available_instance_ids", return_value=ready
+        ), patch(
+            "free_manager.get_users_per_instance", return_value={}
+        ), patch(
+            "free_manager.is_distribution_balanced", return_value=True
+        ):
+            mock_info.return_value = {
+                "desired_count": 4,
+                "running_count": 4,
+                "pending_count": 0,
+                "min_size": 1,
+                "max_size": 10,
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": ready}
+
+            scale_and_rebalance(active_user_count=7)
+
+        assert mock_asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 2
+        assert mock_ecs.update_service.call_args[1]["desiredCount"] == 2
+
 
 class TestScheduledRunResyncsEcs:
     """
@@ -388,6 +425,74 @@ class TestScheduledRunResyncsEcs:
 
         ecs.update_service.assert_not_called()
         assert json.loads(result["body"])["ecs_resynced"] is False
+
+
+class TestScheduledRunBelowThreshold:
+    """
+    Current specification, pinned so that changing it is deliberate: the
+    scaling path is not entered below FREE_USER_THRESHOLD, so the Lambda
+    neither grows nor shrinks the group there. Shrinking back to baseline
+    after a quiet period is the load alarms' job today.
+    """
+
+    def test_scale_and_rebalance_is_not_called(self, mock_env_vars_free):
+        """4 active users against a threshold of 5: no scaling decision."""
+        from free_manager import handle_scheduled_monitoring
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=4
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.scale_and_rebalance"
+        ) as mock_scale:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": 3}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 3}]
+            }
+
+            result = handle_scheduled_monitoring({"source": "aws.events"}, MagicMock())
+
+        mock_scale.assert_not_called()
+        assert json.loads(result["body"])["status"] == "no_action_needed"
+
+
+class TestDatabaseFailureReachesTheAlarm:
+    """
+    A database failure must not look like an idle tier. Returning 0 would
+    scale nothing, report success and publish ActiveLogins = 0, hiding the
+    outage behind a plausible-looking metric.
+    """
+
+    def test_db_error_raises_and_publishes_no_metric(self, mock_env_vars_free):
+        """The error reaches the handler, and no ActiveLogins datapoint is written."""
+        from free_manager import handler
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw, patch(
+            "free_manager.count_active_free_users",
+            side_effect=Exception("Can't connect to MySQL server"),
+        ):
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": 1}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1}]
+            }
+
+            with pytest.raises(Exception, match="MySQL"):
+                handler({"source": "aws.events"}, MagicMock())
+
+        mock_cw.put_metric_data.assert_not_called()
 
 
 class TestHandlerFailsTheInvocation:

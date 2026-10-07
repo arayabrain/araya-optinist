@@ -12,6 +12,20 @@
 
 > **Scope note:** this document covers the free tier's *instance count*. How
 > much work a single instance can absorb is a separate concern.
+>
+> **Two equally required behaviours.** Capacity can be prepared in advance by
+> raising the ASG minimum, **and** the group is expected to grow with the
+> free-user count and shrink when the capacity is no longer needed. Neither is
+> a substitute for the other. What is verified today is the first; reactive
+> growth and shrink are **not yet verified end to end**, and the gaps below are
+> known and tracked:
+>
+> - Scale-in by user count does not happen below the threshold — see
+>   [Conservative Scale-Down](#6-conservative-scale-down).
+> - Two components write desired capacity without coordinating — see
+>   [Two Triggers on One ASG](#two-triggers-on-one-asg).
+> - Scale-in does not protect a running workflow — see principle 3 under
+>   [Key Architectural Principles](#key-architectural-principles).
 
 ## Key Architectural Principles
 
@@ -30,10 +44,19 @@
    - **This does not move traffic** — see
      [What rebalancing does and does not do](#what-rebalancing-does-and-does-not-do)
 
-3. **Job Preservation (Triple Protection)**
+3. **Job Preservation — reassignment only**
    - Database field: `active_workflow_count` tracks running jobs
    - SQL constraint: Migration query includes `WHERE active_workflow_count = 0`
-   - Atomic updates: Users with jobs cannot be migrated (SQL-level guarantee)
+   - Atomic updates: Users with jobs cannot be **reassigned** (SQL-level guarantee)
+   - **It does not cover termination.** The guarantee is about
+     `migrate_user_to_instance()` repointing an assignment record. Nothing stops
+     the ASG terminating the instance a workflow is running on: the group
+     selects `OldestInstance`, `protect_from_scale_in` is `false`, the ECS
+     capacity provider's `managed_termination_protection` is `DISABLED`, and
+     the terminate lifecycle hook is a 300-second pause rather than a drain
+     (nothing completes the action). With sticky sessions the oldest instance
+     is the one carrying the longest-connected users, so a scale-in removes
+     exactly the instance most likely to be busy. Tracked as a known gap
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
@@ -206,10 +229,14 @@ than exactly.
 ### Procedure: Pre-provisioning Capacity for an Expected Burst
 
 When a larger-than-usual number of free users is expected at a known time,
-raise the ASG's minimum ahead of it. **Pre-provisioning is the primary
-mechanism; reactive scaling is a backstop** — the 5-minute polling interval,
-instance boot time and sticky sessions mean reactive scaling serves late
-arrivals, not the first wave.
+raise the ASG's minimum ahead of it.
+
+This is not a statement that reactive scaling matters less — both are required.
+It is a statement about **timing**: reactive scaling cannot serve the first
+wave of a burst, because of the 5-minute polling interval, 6-10 minutes of
+instance boot, and sticky sessions that keep already-active users where they
+are. Capacity that must be present *at* a known moment has to be there
+beforehand. Reactive scaling then handles what the estimate did not anticipate.
 
 **1. Size it.** The Lambda's model is one instance per
 `USERS_PER_INSTANCE` (5) *concurrently active* users, where "active" means a
@@ -713,6 +740,24 @@ and do nothing when they already agree.
 
 **Solution:** Only scales down when overprovisioned by >= 2 instances.
 This prevents thrashing when user count hovers near a boundary.
+
+**Two limits of this rule, both current behaviour:**
+
+1. **It only applies at or above the threshold.** `handle_scheduled_monitoring()`
+   enters `scale_and_rebalance()` only when the active user count reaches
+   `FREE_USER_THRESHOLD`. Below that — 0 to 4 users, which is the state after a
+   busy period ends — the Lambda makes no scaling decision at all. **The
+   user-count model never returns the group to its baseline.**
+2. **Shrinking back to baseline is the load alarms' job.** `cpu-low` (<20 %) and
+   `memory-low` (<10 %) drive the `scale_down` policy by `-1` per 300-second
+   cooldown until `MinSize` is reached. That judges "no longer needed" by task
+   CPU and memory *reservation* utilisation rather than by users, takes roughly
+   `5 min x (N - MinSize)` plus the evaluation window, and is invisible from
+   this Lambda's logs and metrics.
+
+Which component *should* own scale-in is an open question, tracked as a known
+gap. The scaling matrix above shows the user-count term only; its low rows are
+not reachable through the Lambda for the reason in limit 1.
 
 
 ---
