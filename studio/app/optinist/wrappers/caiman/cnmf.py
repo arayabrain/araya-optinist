@@ -195,11 +195,8 @@ def caiman_cnmf(
     fr = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
 
     with caiman_cluster(requested_n_processes) as (dview, n_processes):
-        pathed_params = distribute_params_to_groups(
-            {**params, "fr": fr}, vars(CNMFParams())
-        )
-        pathed_params.setdefault("patch", {})["n_processes"] = n_processes
-        ops = CNMFParams(params_dict=pathed_params)
+        ops = CNMFParams()
+        ops.change_params(distribute_params_to_groups({**params, "fr": fr}, vars(ops)))
 
         if use_online:
             ops.change_params(

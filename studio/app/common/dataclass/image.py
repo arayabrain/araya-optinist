@@ -49,7 +49,9 @@ class ImageData(BaseData):
             del data
             gc.collect()
 
-    def split_image(self, output_dir: str, n_files: int = 2, lengths: list = None):
+    def split_image(
+        self, output_dir: str, n_files: int = 2, lengths: Optional[list] = None
+    ):
         """
         Split the image along the time axis, either into n_files near-equal
         parts or at the explicit per-part frame counts given in lengths.
@@ -63,7 +65,7 @@ class ImageData(BaseData):
             try:
                 lengths = [operator.index(length) for length in lengths]
             except TypeError:
-                raise ValueError(f"lengths must be integers. Got {lengths}.")
+                raise ValueError(f"lengths must be integers. Got {lengths}.") from None
             if min(lengths) <= 0:
                 raise ValueError(f"lengths must be positive. Got {lengths}.")
             if sum(lengths) != frames:
@@ -72,6 +74,12 @@ class ImageData(BaseData):
                     f"total frames ({frames})."
                 )
         else:
+            try:
+                n_files = operator.index(n_files)
+            except TypeError:
+                raise ValueError(
+                    f"n_files must be an integer. Got {n_files}."
+                ) from None
             if n_files < 2:
                 raise ValueError(f"n_files should be greater than 1. Got {n_files}.")
             if frames < n_files:

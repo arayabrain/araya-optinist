@@ -63,6 +63,11 @@ def caiman_cnmf_multisession(
     enclosed_thr = params.pop("enclosed_thr", None)
 
     if session_lengths:
+        if n_reg_files != len(session_lengths):
+            logger.warning(
+                f"session_lengths gives {len(session_lengths)} parts; "
+                f"n_reg_files {n_reg_files} is ignored."
+            )
         split_image_paths = images.split_image(output_dir, lengths=session_lengths)
     else:
         if n_reg_files < 2:
@@ -81,11 +86,8 @@ def caiman_cnmf_multisession(
     templates = []
     mmap_paths = []
     with caiman_cluster(requested_n_processes) as (dview, n_processes):
-        pathed_params = distribute_params_to_groups(
-            {**params, "fr": fr}, vars(CNMFParams())
-        )
-        pathed_params.setdefault("patch", {})["n_processes"] = n_processes
-        ops = CNMFParams(params_dict=pathed_params)
+        ops = CNMFParams()
+        ops.change_params(distribute_params_to_groups({**params, "fr": fr}, vars(ops)))
 
         for split_image_path in split_image_paths:
             split_image = imageio.volread(split_image_path)

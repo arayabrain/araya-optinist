@@ -56,6 +56,12 @@ def test_split_image_single_length_raises(tmp_path):
         image_data.split_image(str(tmp_path), lengths=[10])
 
 
+def test_split_image_n_files_non_integral_raises(tmp_path):
+    image_data, _ = make_image_data(tmp_path, frames=10)
+    with pytest.raises(ValueError, match="n_files must be an integer"):
+        image_data.split_image(str(tmp_path), n_files=2.5)
+
+
 def test_split_image_n_files_too_small_raises(tmp_path):
     image_data, _ = make_image_data(tmp_path, frames=10)
     with pytest.raises(ValueError, match="greater than 1"):

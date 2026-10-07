@@ -37,6 +37,12 @@ def distribute_params_to_groups(flat_params: dict, groups: dict) -> dict:
     return pathed
 
 
+def _available_cpus() -> int:
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 2
+
+
 @contextmanager
 def caiman_cluster(n_processes: int = 1):
     """
@@ -51,14 +57,14 @@ def caiman_cluster(n_processes: int = 1):
     from caiman.cluster import setup_cluster
 
     n_processes = max(1, int(n_processes or 1))
-    n_processes = min(n_processes, max((os.cpu_count() or 2) - 1, 1))
+    n_processes = min(n_processes, max(_available_cpus() - 1, 1))
 
     if n_processes > 1:
-        c, dview, n_processes = setup_cluster(
+        _, dview, n_processes = setup_cluster(
             backend="multiprocessing", n_processes=n_processes
         )
     else:
-        c, dview, n_processes = setup_cluster(backend="single")
+        _, dview, n_processes = setup_cluster(backend="single")
     logger.info(f"CaImAn cluster ready. n_processes: {n_processes}")
 
     prev_handler = None
