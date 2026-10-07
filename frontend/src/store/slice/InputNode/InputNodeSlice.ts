@@ -80,6 +80,19 @@ const createInitialState = (
   return newState
 }
 
+const isPath = (p: unknown): p is string => typeof p === "string" && p !== ""
+
+const normalizeFilePath = (
+  path: unknown,
+  filePathType: "single" | "array",
+): string | string[] | undefined => {
+  const paths = (Array.isArray(path) ? path : [path]).filter(isPath)
+  if (filePathType === "array") {
+    return paths.length > 0 ? paths : undefined
+  }
+  return paths[0]
+}
+
 const initialState: InputNode = createInitialState()
 
 export const inputNodeSlice = createSlice({
@@ -146,7 +159,10 @@ export const inputNodeSlice = createSlice({
       .addCase(setInputNodeFilePath, (state, action) => {
         const { nodeId, filePath } = action.payload
         const targetNode = state[nodeId]
-        targetNode.selectedFilePath = filePath
+        targetNode.selectedFilePath = normalizeFilePath(
+          filePath,
+          FileNodeFactory.getFilePathType(targetNode.fileType),
+        )
         if (isHDF5InputNode(targetNode)) {
           targetNode.hdf5Path = undefined
         }
@@ -187,14 +203,10 @@ export const inputNodeSlice = createSlice({
           const { resultPath } = action.payload
           const target = state[nodeId]
           if (target) {
-            const filePathType = FileNodeFactory.getFilePathType(
-              target.fileType,
+            target.selectedFilePath = normalizeFilePath(
+              resultPath,
+              FileNodeFactory.getFilePathType(target.fileType),
             )
-            if (filePathType === "array") {
-              target.selectedFilePath = [resultPath]
-            } else {
-              target.selectedFilePath = resultPath
-            }
           }
         }
       })
@@ -202,39 +214,9 @@ export const inputNodeSlice = createSlice({
         // Clear previous workspace nodes and reset to initial state
         return createInitialState(undefined, state)
       })
-      .addCase(importWorkflowConfig.fulfilled, (state, action) => {
-        const newState = createInitialState(undefined, state, false)
-
-        Object.values(action.payload.nodeDict)
-          .filter(isInputNodePostData)
-          .forEach((node) => {
-            if (node.data?.fileType != null) {
-              try {
-                const baseNode = FileNodeFactory.createInputNode(
-                  node.data.fileType,
-                )
-                // Use specific param for CSV nodes
-                const param =
-                  node.data.fileType === FILE_TYPE_SET.CSV
-                    ? (node.data.param as CsvInputParamType)
-                    : baseNode.param
-                newState[node.id] = {
-                  ...baseNode,
-                  param,
-                } as InputNodeType
-              } catch (error) {
-                // eslint-disable-next-line no-console
-                console.warn(
-                  `Unsupported file type: ${node.data.fileType}`,
-                  error,
-                )
-              }
-            }
-          })
-        return newState
-      })
       .addMatcher(
         isAnyOf(
+          importWorkflowConfig.fulfilled,
           fetchWorkflow.fulfilled,
           reproduceWorkflow.fulfilled,
           privateDataviewReproduceWorkflow.fulfilled,
@@ -258,19 +240,22 @@ export const inputNodeSlice = createSlice({
                     node.data.fileType,
                   )
 
-                  // Use specific param for CSV nodes
+                  // fluo/behavior map to csv; merge the yaml param over the defaults
                   const param =
-                    node.data.fileType === FILE_TYPE_SET.CSV
-                      ? (node.data.param as CsvInputParamType)
+                    baseNode.fileType === FILE_TYPE_SET.CSV
+                      ? {
+                          ...baseNode.param,
+                          ...((node.data.param as CsvInputParamType) ?? {}),
+                        }
                       : baseNode.param
 
                   const nodeState: InputNodeType = {
                     ...baseNode,
                     param,
-                    selectedFilePath:
-                      filePathType === "array"
-                        ? (node.data.path as string[])
-                        : (node.data.path as string),
+                    selectedFilePath: normalizeFilePath(
+                      node.data.path,
+                      filePathType,
+                    ),
                   } as InputNodeType
 
                   // Add special path properties if configured
@@ -281,14 +266,14 @@ export const inputNodeSlice = createSlice({
                       isHDF5InputNode(nodeState)
                     ) {
                       ;(nodeState as HDF5InputNode).hdf5Path =
-                        node.data.hdf5Path
+                        node.data.hdf5Path || undefined
                     } else if (
                       specialPath.type === "matPath" &&
                       "matPath" in node.data &&
                       isMatlabInputNode(nodeState)
                     ) {
                       ;(nodeState as MatlabInputNode).matPath =
-                        node.data.matPath
+                        node.data.matPath || undefined
                     }
                   }
 
