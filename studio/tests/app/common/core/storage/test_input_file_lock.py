@@ -7,7 +7,9 @@ different files, fd cleanup on flock failure, and timeout fallback.
 """
 
 import asyncio
+import fcntl
 import os
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -201,6 +203,49 @@ class TestTimeout:
 
         holder_can_release.set()
         await holder
+
+    @pytest.mark.asyncio
+    async def test_acquire_sync_serializes_with_acquire(self, input_dir):
+        order = []
+
+        def sync_body():
+            with InputFileLock.acquire_sync("ws1", "data.tif"):
+                order.append("sync")
+
+        worker = threading.Thread(target=sync_body)
+        async with InputFileLock.acquire("ws1", "data.tif"):
+            worker.start()
+            await asyncio.sleep(0.2)
+            order.append("async-release")
+        worker.join(timeout=5)
+        assert order == ["async-release", "sync"]
+
+    def test_acquire_sync_times_out_and_proceeds_without_lock(
+        self, input_dir, monkeypatch, caplog
+    ):
+        import logging
+
+        monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 0.1)
+        lock_path = InputFileLock._lock_path("ws1", "data.tif")
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        holder = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        entered = threading.Event()
+
+        def attempt():
+            with InputFileLock.acquire_sync("ws1", "data.tif"):
+                entered.set()
+
+        try:
+            worker = threading.Thread(target=attempt)
+            with caplog.at_level(logging.WARNING):
+                worker.start()
+                worker.join(timeout=5)
+            assert not worker.is_alive()
+        finally:
+            os.close(holder)
+        assert entered.is_set()
+        assert any("InputFileLock acquire timeout" in r.message for r in caplog.records)
 
 
 class TestEnsureInputFileSynced:

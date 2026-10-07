@@ -6,7 +6,7 @@ import shutil
 import time
 import uuid
 from abc import ABCMeta, abstractmethod
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import Enum
@@ -457,6 +457,38 @@ class InputFileLock:
         )
 
     @classmethod
+    def _warn_timeout(cls, elapsed: float, workspace_id: str, filename: str) -> None:
+        logger.warning(
+            f"InputFileLock acquire timeout after {elapsed:.1f}s "
+            f"for {workspace_id}/{filename}; proceeding without "
+            "exclusive lock"
+        )
+
+    @classmethod
+    @contextmanager
+    def acquire_sync(cls, workspace_id: str, filename: str):
+        """Same lock, wait bound and fall-through for synchronous callers."""
+        lock_path = cls._lock_path(workspace_id, filename)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            start = time.monotonic()
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    pass
+                elapsed = time.monotonic() - start
+                if elapsed >= cls.LOCK_WAIT_MAX_SECONDS:
+                    cls._warn_timeout(elapsed, workspace_id, filename)
+                    break
+                time.sleep(cls.LOCK_WAIT_POLL_INTERVAL)
+            yield
+        finally:
+            os.close(fd)
+
+    @classmethod
     @asynccontextmanager
     async def acquire(cls, workspace_id: str, filename: str):
         lock_path = cls._lock_path(workspace_id, filename)
@@ -478,11 +510,7 @@ class InputFileLock:
                     break
                 elapsed = time.monotonic() - start
                 if elapsed >= cls.LOCK_WAIT_MAX_SECONDS:
-                    logger.warning(
-                        f"InputFileLock acquire timeout after {elapsed:.1f}s "
-                        f"for {workspace_id}/{filename}; proceeding without "
-                        "exclusive lock"
-                    )
+                    cls._warn_timeout(elapsed, workspace_id, filename)
                     break
                 await asyncio.sleep(cls.LOCK_WAIT_POLL_INTERVAL)
 
