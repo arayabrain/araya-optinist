@@ -74,6 +74,8 @@ def get_ssl_creator():
             database=cfg.MYSQL_DATABASE,
             charset=DEFAULT_CHARSET,
             ssl=SSL_CONNECT_ARGS,
+            # creator= skips the dialect's FOUND_ROWS, which the ORM rowcount needs
+            client_flag=pymysql.constants.CLIENT.FOUND_ROWS,
         )
 
     return _creator

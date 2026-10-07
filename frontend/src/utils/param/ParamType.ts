@@ -20,3 +20,9 @@ export type ParamChild = {
 export type ParamDTO = {
   [key: string]: unknown
 }
+
+export type NodeParamChange = {
+  nodeId: string
+  name: string
+  removed: string[]
+}

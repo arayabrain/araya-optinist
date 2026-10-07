@@ -136,6 +136,8 @@ def _create_ssl_connection(params):
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         ssl=SSL_ARGS,
+        # creator= skips the dialect's FOUND_ROWS, which the ORM rowcount needs
+        client_flag=pymysql.constants.CLIENT.FOUND_ROWS,
     )
 
 

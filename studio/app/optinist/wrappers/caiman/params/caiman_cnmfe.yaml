@@ -103,13 +103,12 @@ advanced:
     p_ssub: 2
     p_tsub: 2
     memory_fact: 1
-    n_processes: 1
+    n_processes: 1  # CaImAn worker processes; 1 = no worker pool
     in_memory: True
 
   merge_params:
     do_merge: True
     merge_parallel: False
-    max_merge_area: null
 
   quality_evaluation_params:
     SNR_lowest: 0.5
