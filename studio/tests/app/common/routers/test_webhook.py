@@ -912,9 +912,9 @@ class TestCheckoutStorageQuotaUpdate:
     ):
         """
         Re-upgrading a user whose quota already equals the target must not
-        attempt a fresh INSERT. Without FOUND_ROWS, MySQL reports 0 affected
-        rows both for "no such row" and for "row matched but value unchanged",
-        so the write is an upsert rather than a rowcount check.
+        attempt a fresh INSERT. The write is an upsert rather than a rowcount
+        check, so it does not depend on whether the connection reports matched
+        or changed rows.
         """
         from sqlalchemy.dialects import mysql
 
