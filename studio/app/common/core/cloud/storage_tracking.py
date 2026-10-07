@@ -193,9 +193,7 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
     try:
         with session_scope() as db:
             try:
-                # Existence is checked with a SELECT rather than the UPDATE
-                # rowcount: MySQL reports rows *changed*, so an update to an
-                # identical value returns 0 even though the row exists.
+                # SELECT, not UPDATE rowcount, so this never depends on FOUND_ROWS.
                 exists = (
                     db.execute(
                         select(UserStorageUsage.id).where(
