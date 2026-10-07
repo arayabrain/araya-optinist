@@ -265,15 +265,21 @@ export const inputNodeSlice = createSlice({
                       "hdf5Path" in node.data &&
                       isHDF5InputNode(nodeState)
                     ) {
-                      ;(nodeState as HDF5InputNode).hdf5Path =
-                        node.data.hdf5Path || undefined
+                      ;(nodeState as HDF5InputNode).hdf5Path = isPath(
+                        node.data.hdf5Path,
+                      )
+                        ? node.data.hdf5Path
+                        : undefined
                     } else if (
                       specialPath.type === "matPath" &&
                       "matPath" in node.data &&
                       isMatlabInputNode(nodeState)
                     ) {
-                      ;(nodeState as MatlabInputNode).matPath =
-                        node.data.matPath || undefined
+                      ;(nodeState as MatlabInputNode).matPath = isPath(
+                        node.data.matPath,
+                      )
+                        ? node.data.matPath
+                        : undefined
                     }
                   }
 

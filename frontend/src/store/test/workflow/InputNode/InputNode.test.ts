@@ -347,6 +347,16 @@ describe("InputNode importWorkflowConfig", () => {
             FILE_TYPE_SET.HDF5,
             { path: "y.nwb", hdf5Path: "" },
           ),
+          hdf5_object_special: inputNodePostData(
+            "hdf5_object_special",
+            FILE_TYPE_SET.HDF5,
+            { path: "z.nwb", hdf5Path: { bogus: 1 } },
+          ),
+          matlab_array_special: inputNodePostData(
+            "matlab_array_special",
+            FILE_TYPE_SET.MATLAB,
+            { path: "z.mat", matPath: ["field1"] },
+          ),
         },
         edgeDict: {},
       },
@@ -380,6 +390,14 @@ describe("InputNode importWorkflowConfig", () => {
     const hdf5EmptyNode = selectInputNodeById("hdf5_empty_special")(state)
     expect(
       isHDF5InputNode(hdf5EmptyNode) ? hdf5EmptyNode.hdf5Path : "not hdf5",
+    ).toBeUndefined()
+    const hdf5ObjectNode = selectInputNodeById("hdf5_object_special")(state)
+    expect(
+      isHDF5InputNode(hdf5ObjectNode) ? hdf5ObjectNode.hdf5Path : "not hdf5",
+    ).toBeUndefined()
+    const matlabArrayNode = selectInputNodeById("matlab_array_special")(state)
+    expect(
+      isMatlabInputNode(matlabArrayNode) ? matlabArrayNode.matPath : "not mat",
     ).toBeUndefined()
     expect(selectFilePathIsUndefined(state)).toBe(true)
   })
