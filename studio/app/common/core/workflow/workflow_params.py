@@ -14,11 +14,19 @@ FAQ_URL = "https://github.com/oist/optinist/wiki/FAQ"
 
 
 def get_typecheck_params(message_params, name):
-    default_params = read_default_params(name) or {}
+    default_params = read_default_params(name)
+    if not isinstance(default_params, dict):
+        default_params = {}
     if message_params != {} and message_params is not None:
         params = nest2dict(message_params)
+        if not default_params:
+            # No yaml to check against (a plugin algorithm); snakemake reports
+            # the missing rule itself
+            return params
         if has_outdated_shape(params, default_params):
-            unknown = sorted(params.keys() - default_params.keys())
+            unknown = ", ".join(
+                f"'{k}'" for k in sorted(params.keys() - default_params)
+            )
             logger.warning(
                 f"Invalid Workflow yaml params: {unknown} in [{name}]. See {FAQ_URL}"
             )
@@ -33,8 +41,9 @@ def get_typecheck_params(message_params, name):
 def has_outdated_shape(params, default_params):
     """
     True when the saved tree looks like it was written against a different
-    yaml layout (e.g. OptiNiSt v1): it has unknown keys and either shares no
-    key with the defaults or lacks a whole default group.
+    yaml layout (e.g. OptiNiSt v1): it has unknown top-level keys and either
+    shares no key with the defaults or has a key that today lives inside one
+    of the default groups (v2 nested the flat v1 keys into groups).
     """
     if not params:
         return False
@@ -42,11 +51,15 @@ def has_outdated_shape(params, default_params):
     if not unknown:
         return False
     no_overlap = len(unknown) == len(params)
-    missing_group = any(
-        isinstance(value, dict) and key not in params
-        for key, value in default_params.items()
-    )
-    return no_overlap or missing_group
+    return no_overlap or bool(unknown & _nested_keys(default_params))
+
+
+def _nested_keys(default_params) -> set:
+    nested = set()
+    for value in default_params.values():
+        if isinstance(value, dict):
+            nested |= value.keys() | _nested_keys(value)
+    return nested
 
 
 def check_types(params, default_params, name=""):
@@ -55,6 +68,12 @@ def check_types(params, default_params, name=""):
             logger.warning(
                 f"Dropping saved param '{key}' for [{name}]: "
                 f"not in the current default yaml. See {FAQ_URL}"
+            )
+            del params[key]
+        elif isinstance(params[key], dict) != isinstance(default_params[key], dict):
+            logger.warning(
+                f"Dropping saved param '{key}' for [{name}]: "
+                f"its shape differs from the current default yaml. See {FAQ_URL}"
             )
             del params[key]
         elif isinstance(params[key], dict):

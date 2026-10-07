@@ -1,10 +1,13 @@
-import { describe, expect, it } from "@jest/globals"
+import type { OptionsObject, SnackbarKey } from "notistack"
+
+import { describe, expect, it, jest } from "@jest/globals"
 
 import { ParamMap } from "utils/param/ParamType"
 import {
   convertToParamMap,
   describeNodeParamChanges,
   hasOutdatedShape,
+  notifyParamChanges,
   reconcileParamMap,
 } from "utils/param/ParamUtils"
 
@@ -77,9 +80,44 @@ describe("hasOutdatedShape", () => {
     ).toBe(true)
   })
 
-  it("is true for unknown keys plus a missing default group (v1 layout)", () => {
+  it("is false for a retired key when a newer default group is missing", () => {
     const saved = convertToParamMap({ border_nan: "copy", soma_crop: false })
+    expect(hasOutdatedShape(saved, defaults)).toBe(false)
+  })
+
+  it("is true for a flat key that now lives inside a default group (v1 layout)", () => {
+    const saved = convertToParamMap({ border_nan: "copy", merge_thr: 0.9 })
     expect(hasOutdatedShape(saved, defaults)).toBe(true)
+  })
+
+  it("is true when nothing overlaps group-less defaults", () => {
+    const scalars = convertToParamMap({ use_conda: true, cores: 2 })
+    expect(hasOutdatedShape(convertToParamMap({ foo: 1 }), scalars)).toBe(true)
+    expect(
+      hasOutdatedShape(convertToParamMap({ cores: 4, foo: 1 }), scalars),
+    ).toBe(false)
+  })
+})
+
+describe("notifyParamChanges", () => {
+  it("stays quiet when nothing was removed", () => {
+    const snackbar = jest.fn<SnackbarKey, [string, OptionsObject?]>(() => "key")
+    notifyParamChanges(undefined, snackbar)
+    notifyParamChanges([], snackbar)
+    expect(snackbar).not.toHaveBeenCalled()
+  })
+
+  it("names every change in one info snackbar", () => {
+    const snackbar = jest.fn<SnackbarKey, [string, OptionsObject?]>(() => "key")
+    notifyParamChanges(
+      [{ nodeId: "n1", name: "caiman_mc", removed: ["advanced/use_cuda"] }],
+      snackbar,
+    )
+    expect(snackbar).toHaveBeenCalledTimes(1)
+    expect(snackbar.mock.calls[0][0]).toBe(
+      "Parameters updated to the current version: caiman_mc (removed: advanced/use_cuda)",
+    )
+    expect(snackbar.mock.calls[0][1]).toMatchObject({ variant: "info" })
   })
 })
 

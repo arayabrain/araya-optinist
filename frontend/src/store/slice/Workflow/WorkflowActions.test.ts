@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals"
 
 import { getAlgoParamsApi } from "api/params/Params"
 import type { AlgorithmNodePostData, NodeDict } from "api/run/Run"
-import { reconcileNodeParams } from "store/slice/Workflow/WorkflowActions"
+import {
+  RECONCILE_TIMEOUT_MS,
+  reconcileNodeParams,
+} from "store/slice/Workflow/WorkflowActions"
 import { convertToParamMap } from "utils/param/ParamUtils"
 
 jest.mock("api/params/Params")
@@ -55,6 +58,9 @@ describe("reconcileNodeParams", () => {
     }
     const changes = await reconcileNodeParams(nodeDict)
     expect(mockedGetAlgoParams).toHaveBeenCalledTimes(1)
+    expect(mockedGetAlgoParams).toHaveBeenCalledWith("caiman_mc", {
+      timeout: RECONCILE_TIMEOUT_MS,
+    })
     expect(changes).toEqual([
       { nodeId: "a", name: "caiman_mc", removed: ["use_cuda"] },
     ])
@@ -84,7 +90,7 @@ describe("reconcileNodeParams", () => {
 
   it("leaves a v1-shaped tree alone so the backend can reject it", async () => {
     mockedGetAlgoParams.mockResolvedValue(mcDefaults)
-    const saved = { border_nan: "copy", soma_crop: false }
+    const saved = { border_nan: "copy", nb: 2 } // nb lives under advanced today
     const nodeDict: NodeDict = { a: algoNode("a", "caiman_mc", saved) }
     expect(await reconcileNodeParams(nodeDict)).toEqual([])
     expect(nodeDict.a.data?.param).toEqual(convertToParamMap(saved))

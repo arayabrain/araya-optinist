@@ -21,6 +21,10 @@ import {
 
 type WithParamChanges<T> = T & { paramChanges: NodeParamChange[] }
 
+// The reconcile is cosmetic (the backend drops the key at run time anyway),
+// so a slow /params request must not hold the workflow load
+export const RECONCILE_TIMEOUT_MS = 5000
+
 export async function reconcileNodeParams(
   nodeDict: NodeDict,
 ): Promise<NodeParamChange[]> {
@@ -34,17 +38,14 @@ export async function reconcileNodeParams(
         if (node.data == null || name == null) return
         let defaults = defaultsByAlgo.get(name)
         if (defaults == null) {
-          defaults = getAlgoParamsApi(name).then(convertToParamMap)
+          defaults = getAlgoParamsApi(name, {
+            timeout: RECONCILE_TIMEOUT_MS,
+          }).then(convertToParamMap)
           defaultsByAlgo.set(name, defaults)
         }
         try {
           const current = await defaults
-          if (
-            Object.keys(current).length === 0 ||
-            hasOutdatedShape(node.data.param, current)
-          ) {
-            return
-          }
+          if (hasOutdatedShape(node.data.param, current)) return
           const { params, removed } = reconcileParamMap(
             node.data.param,
             current,

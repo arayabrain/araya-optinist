@@ -161,10 +161,16 @@ export function hasOutdatedShape(saved: ParamMap, defaults: ParamMap): boolean {
   const unknown = savedKeys.filter((key) => !(key in defaults))
   if (unknown.length === 0) return false
   const noOverlap = unknown.length === savedKeys.length
-  const missingGroup = Object.entries(defaults).some(
-    ([key, param]) => isParamParent(param) && !(key in saved),
+  const nested = new Set(nestedKeys(defaults))
+  return noOverlap || unknown.some((key) => nested.has(key))
+}
+
+function nestedKeys(map: ParamMap): string[] {
+  return Object.values(map).flatMap((param) =>
+    isParamParent(param)
+      ? [...Object.keys(param.children), ...nestedKeys(param.children)]
+      : [],
   )
-  return noOverlap || missingGroup
 }
 
 export function reconcileParamMap(
