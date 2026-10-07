@@ -30,7 +30,7 @@ def data_slice(
                                  - 'squeeze': Remove this dimension (must have size 1)
                                  - non-negative integer: Single index to select
                                    (removes dimension)
-                                 Unparseable specs, 'squeeze' on a dimension of
+                                 Unparsable specs, 'squeeze' on a dimension of
                                  size > 1, and out-of-range integer indices keep
                                  the entire dimension and log a warning. A slice
                                  that selects no elements logs a warning, and a
