@@ -334,6 +334,62 @@ class TestScaleAndRebalanceUsesAsgBounds:
         asg.set_desired_capacity.assert_not_called()
 
 
+class TestScheduledRunResyncsEcs:
+    """
+    The ASG-event sync fires once per event and is not retried, so the
+    scheduled run repeats it as a backstop. It must run before the user
+    threshold is considered: a task-less instance needs correcting whether or
+    not there is anyone to scale for.
+    """
+
+    @staticmethod
+    def _run(mock_env_vars_free, active_users, asg_desired, ecs_desired):
+        from free_manager import handle_scheduled_monitoring
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=active_users
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
+        ):
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": ecs_desired}]
+            }
+
+            result = handle_scheduled_monitoring({"source": "aws.events"}, MagicMock())
+            return mock_ecs, result
+
+    def test_resyncs_below_the_user_threshold(self, mock_env_vars_free):
+        """No active users, ASG 3 and ECS 1: still corrected."""
+        ecs, result = self._run(
+            mock_env_vars_free, active_users=0, asg_desired=3, ecs_desired=1
+        )
+
+        ecs.update_service.assert_called_once_with(
+            cluster="test-cluster",
+            service="subscr-optinist-cloud-service",
+            desiredCount=3,
+        )
+        assert json.loads(result["body"])["ecs_resynced"] is True
+
+    def test_no_call_when_already_in_sync(self, mock_env_vars_free):
+        """Matching counts leave the service alone."""
+        ecs, result = self._run(
+            mock_env_vars_free, active_users=0, asg_desired=2, ecs_desired=2
+        )
+
+        ecs.update_service.assert_not_called()
+        assert json.loads(result["body"])["ecs_resynced"] is False
+
+
 class TestHandlerFailsTheInvocation:
     """
     The free-manager-errors alarm watches AWS/Lambda Errors, which counts only

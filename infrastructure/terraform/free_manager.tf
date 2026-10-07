@@ -253,19 +253,26 @@ resource "aws_lambda_function_event_invoke_config" "free_manager" {
 # that end in an unhandled exception, so a handler returning a 500 body would
 # leave this alarm permanently blind. Same arrangement as public_cleanup.
 #
-# Three 5-minute periods: one failed run is a transient (a throttled API call,
-# a cold RDS proxy connection) that the next run clears, whereas a condition
-# the Lambda cannot get past recurs on every run. Only the latter should page.
+# Three failing 5-minute periods: one failed run is a transient (a throttled
+# API call, a cold RDS proxy connection) that the next run clears, whereas a
+# condition the Lambda cannot get past recurs on every run. Only the latter
+# should page.
+#
+# 3 of 4 rather than 3 consecutive: the function publishes a datapoint only
+# when invoked, and under treat_missing_data = notBreaching a period that
+# happens to contain no invocation would reset a consecutive count. The wider
+# window tolerates that at the cost of 5 more minutes to fire.
 resource "aws_cloudwatch_metric_alarm" "free_manager_errors" {
   alarm_name          = "${local.env_prefix}-free-manager-errors"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "3"
+  evaluation_periods  = "4"
+  datapoints_to_alarm = "3"
   metric_name         = "Errors"
   namespace           = "AWS/Lambda"
   period              = "300"
   statistic           = "Sum"
   threshold           = "0"
-  alarm_description   = "Free Manager Lambda errored in each of three consecutive 5-minute periods; free-tier capacity is no longer being managed"
+  alarm_description   = "Free Manager Lambda errored in 3 of the last 4 five-minute periods; free-tier capacity is no longer being managed"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions

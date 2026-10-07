@@ -150,6 +150,7 @@ def handle_scheduled_monitoring(event, context):
     Handle periodic monitoring (every 5 minutes).
 
     Responsibilities:
+    - Resync the ECS desired count to the ASG
     - Count active users
     - Scale ASG if needed
     - Rebalance users across instances
@@ -161,6 +162,12 @@ def handle_scheduled_monitoring(event, context):
         activity_threshold_minutes = int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
         )
+
+        # Backstop for the ASG-event sync, which fires once per launch or
+        # terminate and is not retried. Runs before the user threshold is
+        # considered: a task-less instance has to be corrected whether or not
+        # there is anyone to scale for.
+        ecs_sync = sync_ecs_to_asg()
 
         # Count active free tier users
         active_user_count = count_active_free_users(
@@ -188,6 +195,8 @@ def handle_scheduled_monitoring(event, context):
                 "active_users": active_user_count,
                 "threshold": user_threshold,
             }
+
+        result["ecs_resynced"] = ecs_sync["changed"]
 
         return {"statusCode": 200, "body": json.dumps(result)}
 
@@ -228,60 +237,25 @@ def handle_asg_event(event, context):
                 "body": json.dumps({"message": "Event ignored - different ASG"}),
             }
 
-        # Sync ECS to ASG
-        cluster_name = get_required_env_var("CLUSTER_NAME")
-        service_name = get_required_env_var("FREE_SERVICE_NAME")
+        synced = sync_ecs_to_asg()
 
-        # Get ASG desired capacity
-        asg_response = autoscaling_client.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name]
-        )
-
-        if not asg_response["AutoScalingGroups"]:
-            raise ValueError(f"ASG {asg_name} not found")
-
-        asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
-        print(f"ASG desired capacity: {asg_desired}")
-
-        # Get ECS desired count
-        ecs_response = ecs_client.describe_services(
-            cluster=cluster_name, services=[service_name]
-        )
-
-        if not ecs_response["services"]:
-            raise ValueError(f"ECS service {service_name} not found")
-
-        ecs_desired = ecs_response["services"][0]["desiredCount"]
-        print(f"ECS desired count: {ecs_desired}")
-
-        # Sync if different
-        if asg_desired != ecs_desired:
-            print(f"Syncing ECS from {ecs_desired} to {asg_desired}")
-
-            ecs_client.update_service(
-                cluster=cluster_name, service=service_name, desiredCount=asg_desired
-            )
-
-            print(f"Successfully synced ECS to {asg_desired}")
-
+        if synced["changed"]:
             return {
                 "statusCode": 200,
                 "body": json.dumps(
                     {
                         "message": "ECS synced to ASG",
-                        "asg_desired": asg_desired,
-                        "ecs_previous": ecs_desired,
-                        "ecs_new": asg_desired,
+                        "asg_desired": synced["asg_desired"],
+                        "ecs_previous": synced["ecs_previous"],
+                        "ecs_new": synced["asg_desired"],
                     }
                 ),
             }
         else:
-            print(f"Already in sync at {asg_desired}")
-
             return {
                 "statusCode": 200,
                 "body": json.dumps(
-                    {"message": "Already in sync", "capacity": asg_desired}
+                    {"message": "Already in sync", "capacity": synced["asg_desired"]}
                 ),
             }
 
@@ -353,6 +327,64 @@ def set_scaling_lock(in_progress: bool) -> None:
         print(f"Scaling lock {status}")
     except Exception as e:
         print(f"Warning: Could not set scaling lock: {e}")
+
+
+def sync_ecs_to_asg() -> Dict[str, Any]:
+    """
+    Point the ECS service's desired count at the ASG's desired capacity.
+
+    The ASG is the source of truth for free-tier capacity. An instance the ASG
+    launched but ECS placed no task on cannot answer /health, so it is an
+    unhealthy target serving nobody -- Terraform no longer corrects this
+    (desired_count is ignored there), so this is the only thing that does.
+
+    Called on every ASG launch/terminate event as the fast path, and on every
+    scheduled run as a backstop in case that one event was missed.
+
+    Returns:
+        Dictionary with asg_desired, ecs_previous and whether it changed
+    """
+    asg_name = get_required_env_var("ASG_NAME")
+    cluster_name = get_required_env_var("CLUSTER_NAME")
+    service_name = get_required_env_var("FREE_SERVICE_NAME")
+
+    asg_response = autoscaling_client.describe_auto_scaling_groups(
+        AutoScalingGroupNames=[asg_name]
+    )
+    if not asg_response["AutoScalingGroups"]:
+        raise ValueError(f"ASG {asg_name} not found")
+
+    asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
+    print(f"ASG desired capacity: {asg_desired}")
+
+    ecs_response = ecs_client.describe_services(
+        cluster=cluster_name, services=[service_name]
+    )
+    if not ecs_response["services"]:
+        raise ValueError(f"ECS service {service_name} not found")
+
+    ecs_desired = ecs_response["services"][0]["desiredCount"]
+    print(f"ECS desired count: {ecs_desired}")
+
+    if asg_desired == ecs_desired:
+        print(f"Already in sync at {asg_desired}")
+        return {
+            "asg_desired": asg_desired,
+            "ecs_previous": ecs_desired,
+            "changed": False,
+        }
+
+    print(f"Syncing ECS from {ecs_desired} to {asg_desired}")
+    ecs_client.update_service(
+        cluster=cluster_name, service=service_name, desiredCount=asg_desired
+    )
+    print(f"Successfully synced ECS to {asg_desired}")
+
+    return {
+        "asg_desired": asg_desired,
+        "ecs_previous": ecs_desired,
+        "changed": True,
+    }
 
 
 def calculate_desired_instances(

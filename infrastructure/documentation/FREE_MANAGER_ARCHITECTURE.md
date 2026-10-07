@@ -231,10 +231,17 @@ whose sticky cookie is already held.
 | | Terraform (`asg_min_size` in tfvars) | Console / CLI |
 |---|---|---|
 | Takes effect | After an apply | Immediately |
-| Persistence | Durable | **Reverted by the next `terraform apply`** (`min_size` is not under `ignore_changes`) |
+| Persistence | Durable | **The next `terraform apply` removes the floor** (`min_size` is not under `ignore_changes`) |
 | Use for | A permanent baseline change | A time-boxed window |
 
-Either way, freeze applies for the window or re-apply the override afterwards.
+An apply during the window does **not** immediately remove the instances —
+`desired_capacity` is ignored, so they stay up and the environment looks fine.
+What it removes is the *floor*. With the minimum back at its declared value,
+the `cpu-low` / `memory-low` alarms can then drain capacity in `-1` steps
+whenever utilisation dips, which during an event it does (users logged in but
+idle). **Seeing the instances still running after an apply is not evidence that
+the window is safe.** Freeze applies for the window, or re-apply the override
+immediately afterwards.
 
 **4. Check the whole chain** once the instances settle. All four numbers must
 agree:
@@ -669,14 +676,24 @@ WHERE user_id = %s
 
 ### 4. ASG and ECS Out of Sync
 
-**Problem:** Manual ASG scaling or alarm-driven scaling changes ASG capacity but not ECS.
+**Problem:** Manual ASG scaling or alarm-driven scaling changes ASG capacity
+but not ECS. An instance the ASG launched with no task on it cannot answer
+`/health`, so it is an unhealthy target serving nobody. Terraform does not
+correct this — `desired_count` is under `ignore_changes` — so the Lambda is the
+only thing that does.
 
-**Solution:** Dual triggers -- ASG events sync ECS immediately
-via `handle_asg_event()`:
-- EventBridge rule triggers on launch/terminate events
-- Verifies the event is for the expected ASG before acting
-- Reads ASG desired capacity and updates ECS desired count
-  to match
+**Solution:** `sync_ecs_to_asg()`, on two paths:
+
+- **Fast path** — `handle_asg_event()`, on each launch/terminate event. The
+  EventBridge rule verifies the event is for the expected ASG before acting.
+- **Backstop** — every scheduled run, before the user threshold is considered.
+  The event path fires once per event and, with
+  `maximum_retry_attempts = 0`, is not retried, so a single transient
+  `UpdateService` failure would otherwise leave the mismatch until some later
+  ASG event. The backstop bounds that window to 5 minutes.
+
+Both read the ASG's desired capacity and set the ECS desired count to match,
+and do nothing when they already agree.
 
 
 ### 5. Unbalanced Distribution After Migration
@@ -717,7 +734,7 @@ This prevents thrashing when user count hovers near a boundary.
 
 | Alarm | Metric | Condition | Why |
 |---|---|---|---|
-| `free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 in each of 3 consecutive 5-minute periods | The Lambda is the only user-count writer of free-tier capacity and runs unattended. A failure leaves capacity where it is and skips that cycle's rebalancing and metric publication. Three periods distinguishes a condition the Lambda cannot get past from a self-healing transient. |
+| `free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 in 3 of the last 4 five-minute periods | The Lambda is the only user-count writer of free-tier capacity and runs unattended. A failure leaves capacity where it is and skips that cycle's rebalancing and metric publication. Three failing periods distinguishes a condition the Lambda cannot get past from a self-healing transient; 3 of 4 rather than 3 consecutive, because a period containing no invocation would otherwise reset the count. |
 
 **The alarm has a precondition in the code.** `AWS/Lambda` `Errors` counts only
 invocations that end in an **unhandled exception**, so the handlers log the
@@ -978,6 +995,7 @@ aws ecs describe-services \
 | `handler()` | Main Lambda handler (dual triggers) |
 | `handle_scheduled_monitoring()` | 5-minute monitoring loop |
 | `handle_asg_event()` | ASG lifecycle event handler |
+| `sync_ecs_to_asg()` | Point the ECS desired count at the ASG's desired capacity |
 | `scale_and_rebalance()` | Main scaling and rebalancing logic |
 | `calculate_desired_instances()` | Target instance count, clamped to the ASG's bounds (pure) |
 | `get_service_info()` | Get ASG capacity and bounds, plus ECS task counts |
