@@ -93,10 +93,13 @@ def test_1d_at_fluo_port_keeps_the_fluo_from_hdf5_semantics(tmp_path):
     assert out["fluorescence"].data.shape == (1, N_TIME)
 
 
-def _load_1d_from_hdf5(tmp_path):
+def _load_1d_from_hdf5(tmp_path, hdf5Path="g/behavior"):
     h5 = tmp_path / "in.h5"
+    table = np.zeros(N_TIME, dtype=[("time", "f8"), ("lick", "f8")])
+    table["lick"] = _square_wave()
     with h5py.File(h5, "w") as f:
         f["g/behavior"] = _square_wave()
+        f["g/table"] = table
     output = tmp_path / "output" / "default" / "uid" / "input_x" / "input_x.pkl"
     output.parent.mkdir(parents=True, exist_ok=True)
     rule = Rule(
@@ -106,13 +109,13 @@ def _load_1d_from_hdf5(tmp_path):
         output=str(output),
         type="hdf5",
         nwbfile={"image_series": {}},
-        hdf5Path="g/behavior",
+        hdf5Path=hdf5Path,
     )
     return FileWriter.hdf5(rule)["input_x"]
 
 
-def _eta_inputs(tmp_path):
-    loaded = _load_1d_from_hdf5(tmp_path)
+def _eta_inputs(tmp_path, hdf5Path="g/behavior"):
+    loaded = _load_1d_from_hdf5(tmp_path, hdf5Path)
     assert isinstance(loaded, IscellData)
     return {
         "behaviors_data": loaded,
@@ -122,6 +125,15 @@ def _eta_inputs(tmp_path):
 
 def test_eta_runs_on_a_1d_hdf5_behavior_dataset(tmp_path):
     info = _eta_inputs(tmp_path)
+
+    _cast_behavior_inputs(ETA, info)
+    result = ETA(**info, output_dir="w1/u1/eta-1", params=dict(ETA_PARAMS))
+
+    assert result["mean"].data.shape[0] == 3
+
+
+def test_eta_runs_on_a_compound_table_column(tmp_path):
+    info = _eta_inputs(tmp_path, "g/table/lick")
 
     _cast_behavior_inputs(ETA, info)
     result = ETA(**info, output_dir="w1/u1/eta-1", params=dict(ETA_PARAMS))

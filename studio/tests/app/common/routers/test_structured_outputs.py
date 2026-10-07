@@ -36,6 +36,13 @@ def setup_structured_test_data():
     with h5py.File(hdf5_1d_path, "w") as f:
         f.create_dataset("values", data=np.random.rand(50))
 
+    # Create a compound (table) HDF5 file; one column should resolve to bar
+    hdf5_table_path = os.path.join(input_dir, "data_table.h5")
+    with h5py.File(hdf5_table_path, "w") as f:
+        table = np.zeros(50, dtype=[("time", "f8"), ("lick", "f8")])
+        table["lick"] = np.random.rand(50)
+        f.create_dataset("table", data=table)
+
     # Create a MAT file with 2D data (should resolve to timeseries)
     mat_path = os.path.join(input_dir, "data.mat")
     scipy.io.savemat(mat_path, {"data": {"behavior": np.random.rand(80, 4)}})
@@ -54,6 +61,27 @@ def setup_structured_test_data():
                     "matPath": None,
                 },
                 "id": "hdf5_2d_node",
+                "type": "HDF5FileNode",
+                "position": {"x": 0, "y": 0},
+                "style": {
+                    "border": None,
+                    "borderRadius": None,
+                    "height": None,
+                    "padding": None,
+                    "width": None,
+                },
+            },
+            "hdf5_table_col_node": {
+                "data": {
+                    "label": "HDF5 table column",
+                    "param": {},
+                    "path": "data_table.h5",
+                    "type": "input",
+                    "fileType": "hdf5",
+                    "hdf5Path": "table/lick",
+                    "matPath": None,
+                },
+                "id": "hdf5_table_col_node",
                 "type": "HDF5FileNode",
                 "position": {"x": 0, "y": 0},
                 "style": {
@@ -264,6 +292,18 @@ def test_structured_hdf5_1d_returns_bar(client):
     assert isinstance(data["index"], list)
     assert len(data["index"]) == 50
     assert data["dataset_path"] == "values"
+
+
+def test_structured_compound_column_returns_bar(client):
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_table_col_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["data_type"] == "bar"
+    assert len(data["data"]) == 50
+    assert data["dataset_path"] == "table/lick"
 
 
 def test_structured_missing_workflow(client):

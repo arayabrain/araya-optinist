@@ -51,7 +51,11 @@ def _cast_behavior_inputs(func, input_info: dict) -> None:
             and arr.ndim == 1
             and arr.size > 0
             and arr.dtype.names is None
-            and (np.issubdtype(arr.dtype, np.number) or arr.dtype == bool)
+            and (
+                arr.dtype == bool
+                or np.issubdtype(arr.dtype, np.integer)
+                or np.issubdtype(arr.dtype, np.floating)
+            )
         ):
             input_info[name] = annotation(arr[:, None].copy())
             logger.info(
