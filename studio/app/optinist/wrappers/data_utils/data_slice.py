@@ -49,7 +49,7 @@ def data_slice(
                                  - 'squeeze': Remove this dimension (must have size 1)
                                  - non-negative integer: Single index to select
                                    (removes dimension)
-                                 Unparseable specs, 'squeeze' on a dimension of
+                                 Unparsable specs, 'squeeze' on a dimension of
                                  size > 1, and out-of-range integer indices keep
                                  the entire dimension and log a warning.
                                - 'cell_normalization': 'none' or 'zscore'. Z-scores
@@ -66,7 +66,7 @@ def data_slice(
               mean_timeseries is only produced for indexed inputs (FluoData,
               BehaviorData, TimeSeriesData, BarData) whose index dimension is not
               collapsed by an integer slice spec. HeatMapData carries row labels in
-              index and gets no mean_timeseries.
+              index, so it gets no mean_timeseries and no cell_normalization.
     """
     logger = AppLogger.get_logger()
     logger.info("Starting data slicing")
@@ -243,7 +243,9 @@ def data_slice(
                     np.asarray(cell_numbers)[index_specs[cell_dim]]
                 )
 
-        if cell_normalization == "zscore" and eff_index_dim is not None:
+        if cell_normalization == "zscore" and isinstance(data, HeatMapData):
+            logger.warning("cell_normalization is not applied to HeatMapData")
+        elif cell_normalization == "zscore" and eff_index_dim is not None:
             sliced_data = _zscore(sliced_data, axis=eff_index_dim)
             sliced_std = None
             sliced_sem = None

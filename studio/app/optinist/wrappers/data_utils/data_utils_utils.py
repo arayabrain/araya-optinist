@@ -13,6 +13,14 @@ from studio.app.optinist.dataclass.iscell import IscellData
 from studio.app.optinist.dataclass.roi import RoiData
 
 
+def _rows_as_column(processed_data, index):
+    """An indexed 1D vector is one value per row, not one row."""
+    if processed_data.ndim == 1 and index is not None:
+        if len(index) == len(processed_data):
+            return processed_data[:, None]
+    return processed_data
+
+
 def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     """Helper function to return the correct data type with processed data."""
     logger = AppLogger.get_logger()
@@ -108,7 +116,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
         output_type is None and isinstance(data, BarData)
     ):
         result = BarData(
-            data=processed_data,
+            data=_rows_as_column(processed_data, index),
             index=index,
             file_name=file_name,
             meta=data.meta if hasattr(data, "meta") else None,
@@ -118,7 +126,7 @@ def return_as_data_type(data, processed_data, output_dir, file_name, **kwargs):
     elif output_type in ["heatmap_data", "HeatMapData", "heatmap"] or (
         output_type is None and isinstance(data, HeatMapData)
     ):
-        heatmap_data = np.atleast_2d(processed_data)
+        heatmap_data = np.atleast_2d(_rows_as_column(processed_data, index))
         columns = getattr(data, "columns", None)
         if columns is not None and len(columns) != heatmap_data.shape[1]:
             columns = None

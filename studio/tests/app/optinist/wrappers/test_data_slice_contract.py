@@ -228,6 +228,40 @@ def test_bar_input_slices_rows(output_dir):
     np.testing.assert_allclose(result["sliced_data"].data, bar.data[0:3])
 
 
+def test_bar_integer_column_keeps_one_value_per_row(output_dir):
+    bar = BarData(np.random.default_rng(3).random((6, 5)), file_name="b")
+    result = data_slice(bar, output_dir, params={"slice_dims": [":", "2"]})
+
+    out = result["sliced_data"]
+    assert out.data.shape == (6, 1)
+    assert len(out.index) == 6
+    np.testing.assert_allclose(out.data[:, 0], bar.data[:, 2])
+    out.save_json(output_dir)
+
+
+def test_heatmap_integer_column_keeps_row_labels(output_dir):
+    hm = HeatMapData(
+        np.random.default_rng(4).random((4, 5)), index=[1, 3, 4, 7], file_name="h"
+    )
+    result = data_slice(hm, output_dir, params={"slice_dims": [":", "1"]})
+
+    out = result["sliced_data"]
+    assert out.data.shape == (4, 1)
+    assert list(out.index) == [1, 3, 4, 7]
+    out.save_json(output_dir)
+
+
+def test_heatmap_skips_cell_normalization(output_dir):
+    hm = HeatMapData(
+        np.random.default_rng(5).random((4, 5)), index=[1, 3, 4, 7], file_name="h"
+    )
+    result = data_slice(
+        hm, output_dir, params={"slice_dims": [], "cell_normalization": "zscore"}
+    )
+
+    np.testing.assert_allclose(result["sliced_data"].data, hm.data)
+
+
 def test_unsupported_input_type_raises(output_dir):
     html = HTMLData("<p>x</p>", file_name="h")
     with pytest.raises(ValueError, match="Unsupported data type"):
