@@ -1,3 +1,5 @@
+import { execSync } from "child_process"
+
 import { test, expect, request, Page } from "@playwright/test"
 
 import {
@@ -58,6 +60,36 @@ function scaleService(service: string, desired: number): void {
     `ecs update-service --cluster ${CLUSTER} --service ${service} ` +
       `--desired-count ${desired} --region ${AWS_REGION}`,
   )
+}
+
+// The free-manager Lambda resyncs the free ECS service up to the ASG's desired
+// capacity on every scheduled run, so it would undo a deliberate scale to zero
+// within 5 minutes. Park the schedule while these tests hold the tier down -
+// the same thing dev_scheduler does when it manipulates free-tier capacity.
+const FREE_MANAGER_SCHEDULE = "development-free-manager-schedule"
+
+// Only re-enable what this lane disabled. afterEach still runs when
+// guardDisruptive skipped the test, and dev_scheduler disables this rule
+// overnight - enabling it then would be a side effect of a skipped run.
+let scheduleParkedByUs = false
+
+function parkFreeManagerSchedule(): void {
+  execSync(
+    `aws events disable-rule --name ${FREE_MANAGER_SCHEDULE} ` +
+      `--region ${AWS_REGION}`,
+    { stdio: "pipe", timeout: 60_000 },
+  )
+  scheduleParkedByUs = true
+}
+
+function unparkFreeManagerSchedule(): void {
+  if (!scheduleParkedByUs) return
+  execSync(
+    `aws events enable-rule --name ${FREE_MANAGER_SCHEDULE} ` +
+      `--region ${AWS_REGION}`,
+    { stdio: "pipe", timeout: 60_000 },
+  )
+  scheduleParkedByUs = false
 }
 
 type PublicRecord = {
@@ -164,16 +196,21 @@ function skipIfTooCloseToScheduledStop(minutes: number): void {
 }
 
 test.describe("Disruptive: the free tier goes away @disruptive", () => {
-  test.beforeEach(guardDisruptive)
+  test.beforeEach(() => {
+    guardDisruptive()
+    parkFreeManagerSchedule()
+  })
 
   // A Playwright timeout aborts the test body without running its finally, so
   // the in-test restore is not the last line of defence it looks like. Back to
-  // one task: every test here refuses to start below that.
+  // one task, and the schedule back on: every test here refuses to start below
+  // that.
   test.afterEach(async () => {
     if (describeService(FREE_SERVICE).desiredCount === 0) {
       scaleService(FREE_SERVICE, 1)
       console.log(`restored ${FREE_SERVICE} to 1 task after an aborted outage`)
     }
+    unparkFreeManagerSchedule()
   })
 
   // Rows 809 / 810 / 812: the public tier serves the shell and /auth/login off

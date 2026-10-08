@@ -236,8 +236,9 @@ resource "aws_cloudwatch_log_group" "free_manager_logs" {
 # copies of itself. The schedule fires again in 5 minutes, which is the
 # retry this function should get.
 resource "aws_lambda_function_event_invoke_config" "free_manager" {
-  function_name          = aws_lambda_function.free_manager.function_name
-  maximum_retry_attempts = 0
+  function_name                = aws_lambda_function.free_manager.function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = 300
 }
 
 # ===========================
@@ -263,7 +264,11 @@ resource "aws_lambda_function_event_invoke_config" "free_manager" {
 # happens to contain no invocation would reset a consecutive count. The wider
 # window tolerates that at the cost of 5 more minutes to fire.
 resource "aws_cloudwatch_metric_alarm" "free_manager_errors" {
-  alarm_name          = "${local.env_prefix}-free-manager-errors"
+  # var.environment, not local.env_prefix: the Lambda itself is
+  # "${var.environment}-free-manager", and public_cleanup's alarm follows the
+  # same convention. env_prefix would insert "-optinist" and break the name
+  # the health lane's EXPECTED_ALARMS asserts.
+  alarm_name          = "${var.environment}-free-manager-errors"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "4"
   datapoints_to_alarm = "3"

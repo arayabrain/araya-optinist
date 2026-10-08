@@ -277,8 +277,9 @@ def migrate_user_to_instance(user_id: str, new_instance_id: str) -> bool:
     the user's next request. The user reaches the new instance when
     their sticky cookie lapses, not because of this write.
 
-    After a successful update, triggers experiment metadata sync on
-    the new instance so the data is in place once they land there.
+    After a successful update, triggers an experiment metadata sync.
+    That request also goes through the ALB and is round-robined, so it
+    does not necessarily land on `new_instance_id`.
 
     Args:
         user_id: User ID to migrate
