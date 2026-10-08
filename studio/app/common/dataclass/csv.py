@@ -39,14 +39,9 @@ class CsvData(BaseData):
         create_directory(self.json_path)
         JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)
 
-        # Prepare record data for chunked storage
-        record_ids = [str(i) for i in range(len(self.data))]
-        # Create DataFrames with explicit "data" column name (similar to TimeSeriesData)
-        record_data = [pd.DataFrame({"data": row}) for row in self.data]
-
-        # Use TimeSeriesChunkHandler to save in chunked format
         TimeSeriesChunkHandler.save_chunked_data(
             dirpath=self.json_path,
-            record_ids=record_ids,
-            record_data=record_data,
+            record_ids=[str(i) for i in range(len(self.data))],
+            columns={"data": self.data},
+            index=range(self.data.shape[1]),
         )

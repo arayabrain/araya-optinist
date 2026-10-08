@@ -22,7 +22,7 @@ import os
 from glob import glob
 from typing import Dict, List
 
-import pandas as pd
+import numpy as np
 
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.json_writer import JsonWriter
@@ -100,12 +100,31 @@ class TimeSeriesChunkHandler:
         chunk_files = glob(chunk_pattern)
         return len(chunk_files) > 0
 
+    @staticmethod
+    def _json_rows(values) -> list:
+        """2D array -> one list per row, NaN/Inf as None (null in JSON)"""
+        values = np.asarray(values)
+        if values.dtype.kind == "f" and not np.isfinite(values).all():
+            values = np.where(np.isfinite(values), values, None)
+        return values.tolist()
+
+    @staticmethod
+    def _write_json(filepath: str, content) -> None:
+        # json.dumps without indent is the C encoder; json.dump is pure Python
+        try:
+            text = json.dumps(content, allow_nan=False)
+        except ValueError:  # NaN/Inf inside an object (e.g. mixed CSV) column
+            text = json.dumps(JsonWriter.sanitize_for_json(content))
+        with open(filepath, "w") as f:
+            f.write(text)
+
     @classmethod
     def save_chunked_data(
         cls,
         dirpath: str,
         record_ids: List[str],
-        record_data: List[pd.DataFrame],
+        columns: Dict[str, np.ndarray],
+        index,
     ) -> None:
         """
         Save timeseries data in chunked format.
@@ -113,52 +132,29 @@ class TimeSeriesChunkHandler:
         Args:
             dirpath: Directory to save chunk files
             record_ids: List of record identifiers (e.g., cell numbers, row indices)
-            record_data: List of DataFrames, one per record
+            columns: Column name -> 2D array with one row per record,
+                e.g. {"data": ..., "std": ...}
+            index: Index shared by every record
         """
-        if len(record_ids) != len(record_data):
-            raise ValueError("record_ids and record_data must have same length")
+        rows = {name: cls._json_rows(values) for name, values in columns.items()}
+        index = np.asarray(index).tolist()
 
         index_map = {}  # Maps record_id to chunk_id
-        chunk_data = {}  # Temporary storage: chunk_id -> optimized chunk structure
+        for start in range(0, len(record_ids), cls.CHUNK_SIZE):
+            chunk_id = start // cls.CHUNK_SIZE
+            records = {}
+            for i, record_id in enumerate(
+                record_ids[start : start + cls.CHUNK_SIZE], start
+            ):
+                index_map[str(record_id)] = chunk_id
+                records[str(record_id)] = {name: rows[name][i] for name in rows}
 
-        for i, (record_id, df) in enumerate(zip(record_ids, record_data)):
-            chunk_id = i // cls.CHUNK_SIZE
-            index_map[str(record_id)] = chunk_id
-
-            # Initialize chunk structure if new
-            if chunk_id not in chunk_data:
-                # Store index and columns at chunk level
-                #  (shared by all records in chunk)
-                chunk_data[chunk_id] = {
-                    "index": df.index.tolist(),
-                    "columns": df.columns.tolist(),
-                    "records": {},
-                }
-
-            # Add only the data portion for this record (not index/columns)
-            # Convert DataFrame columns to compact list format
-            # Example: if df has columns ["data", "std"],
-            #   save as {"data": [v1, v2, ...], "std": [v1, v2, ...]}
-            record_col_data = {}
-            for col in df.columns:
-                record_col_data[col] = df[col].tolist()
-
-            chunk_data[chunk_id]["records"][str(record_id)] = record_col_data
-
-        # Write chunk files
-        for chunk_id, chunk_content in chunk_data.items():
-            chunk_filepath = join_filepath(
-                [dirpath, f"{cls.CHUNK_FILE_PREFIX}{chunk_id}.json"]
+            cls._write_json(
+                join_filepath([dirpath, f"{cls.CHUNK_FILE_PREFIX}{chunk_id}.json"]),
+                {"index": index, "columns": list(rows), "records": records},
             )
-            # Sanitize data to convert NaN/Inf to null for JSON compliance
-            sanitized_chunk = JsonWriter.sanitize_for_json(chunk_content)
-            with open(chunk_filepath, "w") as f:
-                json.dump(sanitized_chunk, f, indent=4)
 
-        # Write index mapping file
-        index_map_path = join_filepath([dirpath, cls.INDEX_MAP_FILENAME])
-        with open(index_map_path, "w") as f:
-            json.dump(index_map, f, indent=4)
+        cls._write_json(join_filepath([dirpath, cls.INDEX_MAP_FILENAME]), index_map)
 
     @classmethod
     def rebuild_index_map(cls, dirpath: str) -> Dict[str, int]:
