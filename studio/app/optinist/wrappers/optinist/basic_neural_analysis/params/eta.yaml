@@ -9,3 +9,4 @@ ETA:
   pre_event: -10
   post_event: 10
   mean_trace_band: 'sem' # ['std', 'sem'], error band across cells for mean_trace
+  sort_by_peak: False

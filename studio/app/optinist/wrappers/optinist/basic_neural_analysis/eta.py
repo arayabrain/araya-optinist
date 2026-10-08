@@ -7,7 +7,10 @@ from studio.app.common.dataclass import HeatMapData, TimeSeriesData
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.optinist.utils import (
+    peak_order,
+    recursive_flatten_params,
+)
 
 logger = AppLogger.get_logger()
 
@@ -216,6 +219,12 @@ def ETA(
     norm_mean = (mean - min_value) / value_range
 
     trace_index = list(range(pre_event, post_event + trigger_len))
+    heatmap_cells = (
+        np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
+    )
+    order = np.arange(len(mean))
+    if params.get("sort_by_peak", False):
+        order = peak_order(norm_mean)
 
     info = {}
     info["mean"] = TimeSeriesData(
@@ -233,9 +242,9 @@ def ETA(
         file_name="mean_trace",
     )
     info["mean_heatmap"] = HeatMapData(
-        norm_mean,
+        norm_mean[order],
         columns=list(np.arange(pre_event, post_event + trigger_len)),
-        index=list(cell_numbers) if iscell is not None else None,
+        index=heatmap_cells[order].tolist(),
         file_name="mean_heatmap",
         meta=PlotMetaData(yaxis_type="category"),
     )
