@@ -246,7 +246,50 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
   - **pre_event** [int, default: -10]: Number of time points before the trigger to include. The sign is ignored; -10 and 10 both mean 10 frames before the onset.
   - **post_event** [int, default: 10]: Number of time points after the end of the trigger to include. May be negative to end the window inside the event, as long as abs(pre_event) + event length + post_event is at least 1.
+  - **sort_by_peak** [bool, default: false]: Order the `mean_heatmap` rows by the time of each cell's peak in the averaged trace, earliest peak in the bottom row (the heatmap draws its first row at the bottom). Ties keep cell order, and a flat cell or one with NaN in its average sorts with the earliest. The sort key is the same average that is plotted, so cells with no response also fall on the diagonal. Row labels keep the original cell numbers; `mean` is not reordered. `covariate_binning` defaults this to true.
   - Events whose window would cross the start or end of the recording are dropped and logged. `num_sample` in the NWB output is the number of events actually averaged.
+
+###### covariate_binning
+
+- **Description:** Bins neural activity by a continuous behavioural covariate, such as track position or distance to a goal, and averages each cell's activity within each bin.
+- **Input:** FluoData, BehaviorData, IsCellData (optional)
+  - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+- **Output:** mean (TimeSeriesData, cells x bins, with std and sem, x axis is the bin centres), mean_heatmap (HeatMapData), nwbfile
+  - mean_heatmap is the mean normalised to 0..1 per cell, one row per cell, labelled with the cell number. Empty bins are left blank.
+  - The NWB output stores mean, std, sem, `bin_centers` and `num_sample`, the number of time samples in each bin.
+- **Parameters:**
+  - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
+  - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
+  - **event_col_index** [int, default: 1]: Index of the behaviour column to bin by.
+  - **n_bins** [int, default: 20]: Number of equal-width bins.
+  - **use_data_range** [bool, default: true]: Bin from the minimum to the maximum of the covariate. When false, bin from `bin_min` to `bin_max`.
+  - **bin_min** [float, default: 0.0]: Lower edge of the first bin, used when `use_data_range` is false.
+  - **bin_max** [float, default: 1.0]: Upper edge of the last bin, used when `use_data_range` is false.
+  - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak, lowest bin in the bottom row, with the same tie and flat-cell rules as `eta`. Only the heatmap is reordered.
+  - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials. A NaN in a cell's fluorescence makes that cell's mean NaN for the bin it falls in, as in ETA.
+
+###### condition_split
+
+- **Description:** Keeps only the time samples where a behaviour column meets a condition, so that a downstream node such as ETA runs on the matching part of the recording only.
+- **Input:** FluoData, BehaviorData
+  - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+- **Output:** neural_data (FluoData), behaviors_data (BehaviorData)
+  - Both outputs keep the orientation of the inputs, so a downstream node uses the same transpose settings.
+- **Parameters:**
+  - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
+  - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
+  - **event_col_index** [int, default: 1]: Index of the behaviour column the condition is tested on.
+  - **condition** ['greater', 'less', 'equal', 'between', default: 'greater']:
+    - 'greater' keeps samples with value > threshold.
+    - 'less' keeps samples with value < threshold.
+    - 'equal' keeps samples with value exactly equal to threshold, for example a trial type or zone ID.
+    - 'between' keeps samples with threshold <= value <= threshold_upper.
+  - **threshold** [float, default: 0.5]: Value the column is compared with.
+  - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
+  - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake (for example 2 for Sosa et al. 2025).
+  - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction
 
