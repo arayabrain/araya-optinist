@@ -87,3 +87,28 @@ def test_NestDictGetter():
     assert "caiman_mc" in output["caiman"]["children"]
 
     assert isinstance(output["caiman"]["children"]["caiman_mc"], Algo)
+
+
+def test_binning_and_split_nodes_expose_their_ports():
+    nodes = NestDictGetter.get_nest_dict(wrapper_dict, "")["optinist"]["children"][
+        "basic_neural_analysis"
+    ]["children"]
+
+    binning, split = nodes["covariate_binning"], nodes["condition_split"]
+    assert [(a.name, a.type, a.isNone) for a in binning.args] == [
+        ("neural_data", "FluoData", False),
+        ("behaviors_data", "BehaviorData", False),
+        ("iscell", "IscellData", True),
+    ]
+    assert [(a.name, a.type) for a in split.args] == [
+        ("neural_data", "FluoData"),
+        ("behaviors_data", "BehaviorData"),
+    ]
+    assert [(r.name, r.type) for r in binning.returns] == [
+        ("mean", "TimeSeriesData"),
+        ("mean_heatmap", "HeatMapData"),
+    ]
+    assert [(r.name, r.type) for r in split.returns] == [
+        ("neural_data", "FluoData"),
+        ("behaviors_data", "BehaviorData"),
+    ]
