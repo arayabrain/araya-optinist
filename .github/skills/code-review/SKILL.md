@@ -28,6 +28,9 @@ API and workflow runs share each instance's memory and disk, so one oversized al
 - Flag unbounded caches, result sets and worker counts. Lock waits, external calls and polling loops need timeouts.
 - `async def` handlers: new blocking file, S3, subprocess or heavy numpy work goes off the event loop.
 
+## End-to-end tests
+- `frontend/e2e/` (Playwright) does not run on PRs, only on a weekly schedule and manual dispatch. A change to a UI selector or flow, or to an API response the suite drives, must update the affected spec in the same PR.
+
 ## Deployment modes
 - `INSTANCE_MODE` picks the tier; `public` skips the workflow routers, so module-level wrapper or snakemake imports in routers it loads break its startup.
 - `IS_STANDALONE` switches single and multi-user; code assuming a DB, Firebase user or subscription must handle standalone, and the reverse.

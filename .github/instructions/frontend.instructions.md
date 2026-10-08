@@ -8,4 +8,3 @@ applyTo: "frontend/src/**"
 - No `any` or unchecked casts that hide a mismatch with a backend schema.
 - Long-running actions (runs, uploads, ROI edits) show progress and surface errors.
 - Do not keep whole image stacks or long time series in Redux or component state; fetch by index or range and release what is off-screen. Watch for Plotly traces built from full-resolution data.
-- A change to a selector or flow that `frontend/e2e/` uses must update the spec in the same PR; no PR check runs the e2e suite.

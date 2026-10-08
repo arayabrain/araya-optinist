@@ -24,6 +24,8 @@ SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".yml", ".yaml", ".toml", ".ini", ".md"
 PATH_PREFIXES = ("studio/", "frontend/", "infrastructure/", ".github/", "docs/")
 FILE_NAME = re.compile(r"^[\w.-]+\.(py|ts|tsx|yml|yaml|md)$")
 SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9]*_[A-Za-z0-9_]*$")
+CAMEL = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$")
+DOTTED = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 
 
 def _tokens(doc: Path) -> list:
@@ -64,9 +66,11 @@ def test_named_paths_files_and_symbols_resolve(doc, corpus):
                 if "*" in pattern
                 else ((ROOT / pattern).exists())
             )
+        elif "/" in token and FILE_NAME.match(token.rsplit("/", 1)[-1]):
+            found = (doc.parent / token).exists()
         elif FILE_NAME.match(token):
             found = token in names
-        elif SYMBOL.match(token):
+        elif SYMBOL.match(token) or CAMEL.match(token) or DOTTED.match(token):
             found = re.search(rf"\b{re.escape(token)}\b", text) is not None
         else:
             continue
