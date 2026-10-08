@@ -1,5 +1,6 @@
 import copy
 import gc
+import inspect
 import json
 import os
 import time
@@ -7,6 +8,7 @@ import traceback
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 from filelock import FileLock
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
@@ -19,6 +21,7 @@ from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_condaenv_filepath
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
+from studio.app.common.dataclass.base import BaseData
 from studio.app.common.schemas.workflow import WorkflowPIDFileData
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
@@ -27,9 +30,42 @@ from studio.app.optinist.core.nwb.nwb_creater import (
     overwrite_nwbfile,
     save_nwb,
 )
+from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.wrappers import wrapper_dict
 
 logger = AppLogger.get_logger()
+
+
+def _cast_behavior_inputs(func, input_info: dict) -> None:
+    """Cast a numeric 1D input at a BehaviorData port to a (time, 1) column."""
+    for name, param in inspect.signature(func).parameters.items():
+        annotation = param.annotation
+        if not (inspect.isclass(annotation) and issubclass(annotation, BehaviorData)):
+            continue
+        value = input_info.get(name)
+        if not isinstance(value, BaseData):
+            continue
+        arr = value.__dict__.get("data")
+        if (
+            isinstance(arr, np.ndarray)
+            and arr.ndim == 1
+            and arr.size > 0
+            and arr.dtype.names is None
+            and (
+                arr.dtype == bool
+                or np.issubdtype(arr.dtype, np.integer)
+                or np.issubdtype(arr.dtype, np.floating)
+            )
+        ):
+            input_info[name] = annotation(arr[:, None].copy())
+            logger.info(
+                "cast %s at port '%s' to %s with shape %s; "
+                "column-index params refer to its single column 0",
+                type(value).__name__,
+                name,
+                annotation.__name__,
+                input_info[name].data.shape,
+            )
 
 
 class Runner:
@@ -194,6 +230,7 @@ class Runner:
     def __execute_function(cls, path, params, nwb_params, output_dir, input_info):
         wrapper = cls.__dict2leaf(wrapper_dict, path.split("/"))
         func = copy.deepcopy(wrapper["function"])
+        _cast_behavior_inputs(func, input_info)
         output_info = func(
             params=params, nwbfile=nwb_params, output_dir=output_dir, **input_info
         )

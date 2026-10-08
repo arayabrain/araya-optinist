@@ -12,6 +12,7 @@ from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.file_writer import hdf5_dataset
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
@@ -948,10 +949,12 @@ async def get_structured_data(
     try:
         if hdf5_path is not None:
             with h5py.File(full_path, "r") as f:
-                dataset = f[hdf5_path]
+                dataset, field = hdf5_dataset(f, hdf5_path)
                 shape = dataset.shape
                 ndim = dataset.ndim
-                if ndim == 3:
+                if field is not None:
+                    data = dataset[field]
+                elif ndim == 3:
                     si = max(0, start_index)
                     ei = min(shape[0], end_index)
                     data = dataset[si:ei]

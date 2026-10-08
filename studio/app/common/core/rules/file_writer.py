@@ -29,6 +29,16 @@ def dataclass_for_rank(ndim: int):
     return FluoData if ndim == 2 else IscellData
 
 
+def hdf5_dataset(f: h5py.File, path: str):
+    """Resolve `group/dataset`, or `group/dataset/field` for one compound column."""
+    if path not in f and "/" in path:
+        dataset_path, field = path.rsplit("/", 1)
+        parent = f.get(dataset_path)
+        if isinstance(parent, h5py.Dataset) and field in (parent.dtype.names or ()):
+            return parent, field
+    return f[path], None
+
+
 class FileWriter:
     @classmethod
     def csv(cls, rule_config: Rule, nodeType):
@@ -69,10 +79,13 @@ class FileWriter:
         nwbfile = rule_config.nwbfile
 
         with h5py.File(rule_config.input, "r") as f:
-            dataset = f[rule_config.hdf5Path]
+            dataset, field = hdf5_dataset(f, rule_config.hdf5Path)
             n_rois = cls._sibling_roi_count(dataset)
             cached = cls._cached_tiff(rule_config, rule_config.hdf5Path)
-            data = dataset[()] if cached is None else None
+            if cached is None:
+                data = dataset[()] if field is None else dataset[field]
+            else:
+                data = None
 
         if cached is not None:
             return cls._image_info(rule_config, nwbfile, ImageData([cached]))

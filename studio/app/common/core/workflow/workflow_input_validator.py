@@ -5,7 +5,7 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 
-from studio.app.common.core.rules.file_writer import dataclass_for_rank
+from studio.app.common.core.rules.file_writer import dataclass_for_rank, hdf5_dataset
 from studio.app.common.core.utils.filepath_creater import (
     InvalidPathError,
     join_filepath,
@@ -145,7 +145,8 @@ def _dataset_shape(workspace_dir: str, cache: dict, source: Node, dataset_path: 
     try:
         if source.type == NodeType.HDF5:
             with h5py.File(local_path, "r") as f:
-                return f[dataset_path].shape
+                ds, field = hdf5_dataset(f, dataset_path)
+                return ds.shape if field is None else ds.shape + ds.dtype[field].shape
         return np.shape(MatGetter.data(local_path, dataset_path))
     except Exception:
         return None

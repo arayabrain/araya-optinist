@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 import h5py
@@ -7,8 +8,11 @@ from fastapi import APIRouter, Depends
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.routers.files import (
+    HDF5_STRUCTURE_VERSION,
+    STRUCTURE_VERSION_KEY,
     download_structure_cache,
     get_hdf5_structure_dict,
+    update_hdf5_structure,
 )
 from studio.app.const import MetadataCacheFile
 from studio.app.dir_path import DIRPATH
@@ -67,6 +71,12 @@ class HDF5Getter:
                     )
                 )
                 cls.recursive_dir_tree(node_list[-1].nodes, path_list[1:], node, path)
+            elif node.dtype.names:
+                fields = cls.compound_fields(node, path)
+                if fields:
+                    node_list.append(
+                        HDF5Node(isDir=True, name=name, path=path, nodes=fields)
+                    )
             else:
                 node_list.append(
                     HDF5Node(
@@ -82,6 +92,30 @@ class HDF5Getter:
                         ),
                     )
                 )
+
+    @staticmethod
+    def compound_fields(node: h5py.Dataset, path: str) -> List[HDF5Node]:
+        """One leaf per numeric column of a table-like dataset, loadable as 1D."""
+        return [
+            HDF5Node(
+                isDir=False,
+                name=field,
+                path=f"{path}/{field}",
+                shape=node.shape,
+                nbytes=node.dtype[field].itemsize * node.size,
+                dataType="array",
+            )
+            for field in node.dtype.names
+            if "/" not in field and _is_plain_number(node.dtype[field])
+        ]
+
+
+def _is_plain_number(dtype: np.dtype) -> bool:
+    return dtype.shape == () and (
+        dtype == bool
+        or np.issubdtype(dtype, np.integer)
+        or np.issubdtype(dtype, np.floating)
+    )
 
 
 def _dict_to_hdf5_node(d: dict) -> HDF5Node:
@@ -113,12 +147,22 @@ async def get_files(
         remote_bucket_name, workspace_id, MetadataCacheFile.HDF5_STRUCTURE
     )
 
-    # Check for cached structure
     structure_dict = get_hdf5_structure_dict(workspace_id)
+    if structure_dict.get(STRUCTURE_VERSION_KEY) != HDF5_STRUCTURE_VERSION:
+        structure_dict = _rebuild_local_structures(workspace_id, structure_dict)
     if file_path in structure_dict:
-        cached = structure_dict[file_path]
-        return [_dict_to_hdf5_node(node) for node in cached]
+        return [_dict_to_hdf5_node(node) for node in structure_dict[file_path]]
 
     # Fall back to extracting from file directly
     full_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_path])
     return HDF5Getter.get(full_path)
+
+
+def _rebuild_local_structures(workspace_id: str, structure_dict: dict) -> dict:
+    """A pre-version cache lists a compound dataset as one leaf; rebuild once."""
+    for name in structure_dict:
+        if name != STRUCTURE_VERSION_KEY and os.path.exists(
+            join_filepath([DIRPATH.INPUT_DIR, workspace_id, name])
+        ):
+            update_hdf5_structure(workspace_id, name)
+    return get_hdf5_structure_dict(workspace_id)

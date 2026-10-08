@@ -305,6 +305,10 @@ def _write_json_atomic(filepath: str, data: dict) -> None:
         raise
 
 
+STRUCTURE_VERSION_KEY = "__version__"
+HDF5_STRUCTURE_VERSION = 2  # 2: compound datasets listed as folders of columns
+
+
 def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
     """
     Extract and cache HDF5 structure for a file.
@@ -330,7 +334,10 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
     _atomic_json_update(
         workspace_id,
         MetadataCacheFile.HDF5_STRUCTURE,
-        {relative_file_path: structure_dict},
+        {
+            relative_file_path: structure_dict,
+            STRUCTURE_VERSION_KEY: HDF5_STRUCTURE_VERSION,
+        },
     )
 
     return structure_dict
