@@ -31,9 +31,12 @@ merge_params:
   merge_thr: 0.85
 
 multisession_params:
-  # Following 2 parameters are optinist specific.
+  # Following 3 parameters are optinist specific.
   n_reg_files: 2 # number of files to be split.
   reg_file_rate: 1.0  # threshold for the cell is detected in how many files
+  session_lengths: []  # frames per session, e.g. [4000, 4161].
+                       # If set, the movie is split at these boundaries
+                       # instead of into n_reg_files equal parts.
   # Following parameters are from CaImAn register_multisession.
   align_flag: True  # align the templates before matching
   max_thr: 0  # max threshold parameter before binarization
@@ -112,13 +115,12 @@ advanced:
     p_ssub: 2
     p_tsub: 2
     memory_fact: 1
-    n_processes: 1
+    n_processes: 1  # CaImAn worker processes; 1 = no worker pool
     in_memory: True
 
   merge_params:
     do_merge: True
     merge_parallel: False
-    max_merge_area: null
 
   quality_evaluation_params:
     SNR_lowest: 0.5

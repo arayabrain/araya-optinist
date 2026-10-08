@@ -428,10 +428,6 @@ nodeDict:
                   type: child
                   value: false
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/merge_parallel
-                max_merge_area:
-                  type: child
-                  value: null
-                  path: advanced/init_params/preprocess_params/patch_params/merge_params/max_merge_area
             quality_evaluation_params:
               type: parent
               children:

@@ -1,4 +1,7 @@
+import type { OptionsObject, SnackbarKey } from "notistack"
+
 import {
+  NodeParamChange,
   ParamDTO,
   ParamChild,
   ParamParent,
@@ -151,4 +154,63 @@ export function formatParamsForDisplay(
   }
 
   return formatted
+}
+
+export function hasOutdatedShape(saved: ParamMap, defaults: ParamMap): boolean {
+  const savedKeys = Object.keys(saved)
+  const unknown = savedKeys.filter((key) => !(key in defaults))
+  if (unknown.length === 0) return false
+  const noOverlap = unknown.length === savedKeys.length
+  const nested = new Set(nestedKeys(defaults))
+  return noOverlap || unknown.some((key) => nested.has(key))
+}
+
+function nestedKeys(map: ParamMap): string[] {
+  return Object.values(map).flatMap((param) =>
+    isParamParent(param)
+      ? [...Object.keys(param.children), ...nestedKeys(param.children)]
+      : [],
+  )
+}
+
+export function reconcileParamMap(
+  saved: ParamMap,
+  defaults: ParamMap,
+): { params: ParamMap; removed: string[] } {
+  const removed: string[] = []
+  const walk = (s: ParamMap, d: ParamMap, prefix: string[]): ParamMap => {
+    const out: ParamMap = {}
+    Object.entries(s).forEach(([key, sParam]) => {
+      const dParam = d[key]
+      if (dParam == null || dParam.type !== sParam.type) {
+        removed.push(prefix.concat(key).join(PATH_SEPARATOR))
+      } else if (isParamParent(sParam) && isParamParent(dParam)) {
+        out[key] = {
+          type: "parent",
+          children: walk(sParam.children, dParam.children, prefix.concat(key)),
+        }
+      } else {
+        out[key] = sParam
+      }
+    })
+    return out
+  }
+  return { params: walk(saved, defaults, []), removed }
+}
+
+export function describeNodeParamChanges(changes: NodeParamChange[]): string {
+  return changes
+    .map(({ name, removed }) => `${name} (removed: ${removed.join(", ")})`)
+    .join(" / ")
+}
+
+export function notifyParamChanges(
+  changes: NodeParamChange[] | undefined,
+  enqueueSnackbar: (message: string, options?: OptionsObject) => SnackbarKey,
+): void {
+  if (changes == null || changes.length === 0) return
+  enqueueSnackbar(
+    `Parameters updated to the current version: ${describeNodeParamChanges(changes)}`,
+    { variant: "info", autoHideDuration: 15000 },
+  )
 }

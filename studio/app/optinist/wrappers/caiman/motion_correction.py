@@ -5,7 +5,11 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import RoiData
-from studio.app.optinist.wrappers.caiman.caiman_utils import CaimanUtils
+from studio.app.optinist.wrappers.caiman.caiman_utils import (
+    CaimanUtils,
+    caiman_cluster,
+    distribute_params_to_groups,
+)
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -15,8 +19,7 @@ def caiman_mc(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(mc_images=ImageData):
     import numpy as np
-    from caiman import load_memmap, save_memmap, stop_server
-    from caiman.cluster import setup_cluster
+    from caiman import load_memmap, save_memmap
     from caiman.motion_correction import MotionCorrect
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -25,7 +28,7 @@ def caiman_mc(
     logger.info(f"start caiman motion_correction: {function_id}")
 
     flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
+    recursive_flatten_params(params or {}, flattened_params)
     params = flattened_params
 
     # Specify a unique CAIMAN_TEMPDIR
@@ -35,37 +38,19 @@ def caiman_mc(
 
     opts = CNMFParams()
 
-    if params is not None:
-        opts.change_params(params_dict=params)
+    if params:
+        opts.change_params(params_dict=distribute_params_to_groups(params, vars(opts)))
 
-    # TODO: Add parameters for node
-    n_processes = 1
-    dview = None
-    # This process launches another process to run the CNMF algorithm,
-    # so this node use at least 2 core.
-    if n_processes == 1:
-        c, dview, n_processes = setup_cluster(
-            backend="single", n_processes=n_processes, single_thread=True
+    with caiman_cluster() as (dview, n_processes):
+        mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
+
+        mc.motion_correct(save_movie=True)
+        border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
+
+        # memory mapping
+        mmap_file_new = save_memmap(
+            mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
         )
-    else:
-        c, dview, n_processes = setup_cluster(
-            backend="multiprocessing", n_processes=n_processes
-        )
-    logger.debug(f"n_processes: {n_processes}")
-
-    mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
-
-    mc.motion_correct(save_movie=True)
-    border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
-
-    # memory mapping
-    mmap_file_new = save_memmap(
-        mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
-    )
-    # In single-thread mode dview is None and there is no cluster to stop;
-    # stop_server() would shell out to a nonexistent `ipcluster` and log errors.
-    if dview is not None:
-        stop_server(dview=dview)
 
     # now load the file
     Yr, dims, T = load_memmap(mmap_file_new)
@@ -80,7 +65,7 @@ def caiman_mc(
 
     xy_trans_data = (
         (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
-        if params["pw_rigid"]
+        if opts.get("motion", "pw_rigid")
         else np.array(mc.shifts_rig)
     )
 

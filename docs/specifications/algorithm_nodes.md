@@ -53,6 +53,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **rf** [int or None, default: None]: Half-size of patch in pixels. If None, no patches are constructed and the whole FOV is processed jointly.
   - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
   - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **n_processes** [int, default: 1, under advanced > patch_params]: CaImAn worker processes. The value is clamped to the CPUs available to the process minus one, so on a 2-CPU instance it always resolves to 1. Memory, not CPU, is the ceiling: each worker holds its own slice of the movie. With `rf: None` (the default) the whole field of view is one patch, so extra workers only parallelise preprocessing and residual computation; set `rf` as well to parallelise the patch-level fit.
   - **advanced** (See [CaImAn documentation](https://caiman.readthedocs.io/en/latest/core_functions.html#))
 
 ###### caiman_cnmfe
@@ -83,6 +84,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Parameters:** Same as caiman_cnmf with the addition of:
   - n_reg_files
   - reg_file_rate
+  - **session_lengths** [list of int, default: empty]: Frames per session. If set, the input movie is split at these boundaries instead of into n_reg_files equal parts (use when sessions have unequal length). The lengths must sum exactly to the number of frames; otherwise the run fails with a message naming both numbers.
   - **align_flag** [bool, default: true]: Align the templates before matching
   - **max_thr** [scalar, default 0]: Max threshold parameter before binarization.
   - **use_opt_flow** [bool, default: true]: Use dense optical flow to align templates

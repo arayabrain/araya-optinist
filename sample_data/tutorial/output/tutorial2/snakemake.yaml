@@ -163,7 +163,6 @@ rules:
         merge_params:
           do_merge: true
           merge_parallel: false
-          max_merge_area: null
         quality_evaluation_params:
           SNR_lowest: 0.5
           cnn_lowest: 0.1

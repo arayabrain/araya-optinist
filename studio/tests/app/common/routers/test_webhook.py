@@ -912,9 +912,9 @@ class TestCheckoutStorageQuotaUpdate:
     ):
         """
         Re-upgrading a user whose quota already equals the target must not
-        attempt a fresh INSERT. MySQL reports 0 affected rows both for "no
-        such row" and for "row matched but value unchanged", so a rowcount
-        check cannot tell them apart and raises a duplicate-key error here.
+        attempt a fresh INSERT. The write is an upsert rather than a rowcount
+        check, so it does not depend on whether the connection reports matched
+        or changed rows.
         """
         from sqlalchemy.dialects import mysql
 

@@ -10,6 +10,7 @@ import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSel
 import { reset } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { importWorkflowConfig } from "store/slice/Workflow/WorkflowActions"
 import { AppDispatch } from "store/store"
+import { notifyParamChanges } from "utils/param/ParamUtils"
 
 export const ImportWorkflowConfigButton = memo(
   function ImportWorkflowConfigButton() {
@@ -31,8 +32,9 @@ export const ImportWorkflowConfigButton = memo(
         formData.append("file", file)
         dispatch(importWorkflowConfig({ formData }))
           .unwrap()
-          .then(() => {
+          .then((result) => {
             enqueueSnackbar("Import success", { variant: "success" })
+            notifyParamChanges(result?.paramChanges, enqueueSnackbar)
             dispatch(reset())
           })
           .catch(() => {
