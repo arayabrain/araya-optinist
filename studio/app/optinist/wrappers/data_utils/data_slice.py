@@ -2,7 +2,9 @@ import numpy as np
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass.base import BaseData
-from studio.app.common.dataclass.heatmap import HeatMapData
+from studio.app.common.dataclass.scatter import ScatterData
+from studio.app.common.dataclass.timeseries import TimeSeriesData
+from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.wrappers.data_utils.data_utils_utils import return_as_data_type
 
@@ -19,10 +21,25 @@ def _option(params, key, options):
 
 
 def _zscore(values, axis):
-    center = np.nanmean(values, axis=axis, keepdims=True)
-    denom = np.nanstd(values, axis=axis, keepdims=True)
+    if np.isnan(values).any():
+        center = np.nanmean(values, axis=axis, keepdims=True)
+        denom = np.nanstd(values, axis=axis, keepdims=True)
+    else:
+        center = values.mean(axis=axis, keepdims=True)
+        denom = values.std(axis=axis, keepdims=True)
     denom = np.where(denom > 0, denom, 1.0)
-    return (values - center) / denom
+    out = values - center
+    out /= denom
+    return out
+
+
+def _time_axis(data):
+    """The axis that is time, by type. FluoData and TimeSeriesData are
+    (rows, time); BehaviorData is time-major and Bar and HeatMap index rows,
+    so they have none."""
+    if isinstance(data, TimeSeriesData) and not isinstance(data, BehaviorData):
+        return data.data.ndim - 1
+    return None
 
 
 def data_slice(
@@ -63,10 +80,11 @@ def data_slice(
 
     Returns:
         dict: A dictionary containing the sliced data and any derived data products.
-              mean_timeseries is only produced for indexed inputs (FluoData,
-              BehaviorData, TimeSeriesData, BarData) whose index dimension is not
-              collapsed by an integer slice spec. HeatMapData carries row labels in
-              index, so it gets no mean_timeseries and no cell_normalization.
+              mean_timeseries and cell_normalization apply only to inputs with a
+              (rows, time) layout, FluoData and TimeSeriesData, whose time axis
+              is not collapsed by an integer slice spec. BehaviorData is
+              time-major, and BarData and HeatMapData index rows, so they get
+              neither; asking for a normalisation on them logs a warning.
     """
     logger = AppLogger.get_logger()
     logger.info("Starting data slicing")
@@ -197,13 +215,17 @@ def data_slice(
         sliced_index = None
         index_dim = None
         eff_index_dim = None
+        time_dim = _time_axis(data)
         if hasattr(data, "index") and data.index is not None:
             original_index = data.index
-            # Find which dimension matches the index length
-            for dim_idx, dim_size in enumerate(original_shape):
-                if dim_size == len(original_index):
-                    index_dim = dim_idx
-                    break
+            if time_dim is not None and len(original_index) == original_shape[time_dim]:
+                index_dim = time_dim
+            else:
+                # Find which dimension matches the index length
+                for dim_idx, dim_size in enumerate(original_shape):
+                    if dim_size == len(original_index):
+                        index_dim = dim_idx
+                        break
 
             if index_dim is not None and isinstance(index_specs[index_dim], int):
                 # Integer spec collapsed the index dimension; no index remains
@@ -243,10 +265,16 @@ def data_slice(
                     np.asarray(cell_numbers)[index_specs[cell_dim]]
                 )
 
-        if cell_normalization == "zscore" and isinstance(data, HeatMapData):
-            logger.warning("cell_normalization is not applied to HeatMapData")
-        elif cell_normalization == "zscore" and eff_index_dim is not None:
-            sliced_data = _zscore(sliced_data, axis=eff_index_dim)
+        eff_time_dim = (
+            eff_index_dim if time_dim is not None and index_dim == time_dim else None
+        )
+        if cell_normalization == "zscore" and eff_time_dim is None:
+            logger.warning(
+                f"cell_normalization is not applied to {type(data).__name__}: "
+                "it has no (rows, time) layout, or the time axis was sliced away"
+            )
+        elif cell_normalization == "zscore":
+            sliced_data = _zscore(sliced_data, axis=eff_time_dim)
             sliced_std = None
             sliced_sem = None
 
@@ -255,17 +283,22 @@ def data_slice(
             f"sliced_{data.file_name}" if hasattr(data, "file_name") else "sliced_data"
         )
 
-        # Get mean timeseries based on the index dimension
+        # Mean over every axis but time
         mean_timeseries = None
-        if eff_index_dim is not None and not isinstance(data, HeatMapData):
-            # Calculate mean over all dimensions except the index dimension
-            other_axes = tuple(i for i in range(sliced_data.ndim) if i != eff_index_dim)
-
-            if other_axes:  # Only if there are other dimensions to average over
+        if eff_time_dim is not None:
+            other_axes = tuple(i for i in range(sliced_data.ndim) if i != eff_time_dim)
+            if other_axes:
                 mean_timeseries = np.mean(sliced_data, axis=other_axes)
             else:
-                # If only one dimension (the index dimension), use the data as is
-                mean_timeseries = sliced_data
+                mean_timeseries = sliced_data.copy()
+        elif mean_normalization != "none":
+            logger.warning(
+                f"mean_normalization is not applied: {type(data).__name__} "
+                "produces no mean_timeseries"
+            )
+
+        if isinstance(data, ScatterData) and sliced_data.ndim < 2:
+            logger.warning("ScatterData sliced below 2D no longer plots as a scatter")
 
         if mean_timeseries is not None and mean_normalization != "none":
             if not np.isfinite(mean_timeseries).any():

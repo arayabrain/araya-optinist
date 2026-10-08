@@ -3,7 +3,7 @@ import inspect
 import numpy as np
 import pytest
 
-from studio.app.optinist.dataclass import BehaviorData, FluoData
+from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.optinist.basic_neural_analysis.eta import ETA
 
 N_TIME, N_CELL = 100, 3
@@ -48,6 +48,22 @@ def test_mean_trace_is_average_across_cells(neural, behavior, output_dir):
         info["mean_trace"].data[0], info["mean"].data.mean(axis=0)
     )
     np.testing.assert_allclose(info["mean_trace"].index, info["mean"].index)
+
+
+def test_mean_trace_averages_only_the_iscell_cells(neural, behavior, output_dir):
+    info = ETA(
+        neural,
+        behavior,
+        output_dir,
+        iscell=IscellData(np.array([1, 0, 1])),
+        params=dict(PARAMS),
+    )
+    all_cells = ETA(neural, behavior, output_dir, params=dict(PARAMS))
+
+    assert info["mean"].data.shape == (2, WINDOW)
+    np.testing.assert_allclose(
+        info["mean_trace"].data[0], all_cells["mean"].data[[0, 2]].mean(axis=0)
+    )
 
 
 def test_mean_trace_band_default_is_sem(neural, behavior, output_dir):

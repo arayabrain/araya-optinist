@@ -246,7 +246,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
   - **pre_event** [int, default: -10]: Number of time points before the trigger to include. The sign is ignored; -10 and 10 both mean 10 frames before the onset.
   - **post_event** [int, default: 10]: Number of time points after the end of the trigger to include. May be negative to end the window inside the event, as long as abs(pre_event) + event length + post_event is at least 1.
-  - **mean_trace_band** ['std', 'sem', default: 'sem']: Error band for the mean_trace output, computed across cells of the per-cell event-triggered means. Note the per-cell mean output's own std/sem are computed across events, not cells.
+  - **mean_trace_band** ['std', 'sem', default: 'sem']: Error band for the mean_trace output, computed across cells of the per-cell event-triggered means. Note the per-cell mean output's own std/sem are computed across events, not cells. The plot's STD toggle shows whichever band is selected, so with `sem` it draws the sem.
   - Events whose window would cross the start or end of the recording are dropped and logged. `num_sample` in the NWB output is the number of events actually averaged.
 
 ###### covariate_binning

@@ -1,9 +1,12 @@
 import numpy as np
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.dataclass.bar import BarData
 from studio.app.common.dataclass.base import BaseData
 from studio.app.common.dataclass.csv import CsvData
+from studio.app.common.dataclass.heatmap import HeatMapData
 from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.scatter import ScatterData
 from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
@@ -266,6 +269,20 @@ def determine_default_params(data1):
             "time_axis": None,  # Safe default (ROI data typically spatial)
             "std_axis": None,  # Compute std along concatenation dimension
             "std_method": "none",  # Compute new spatial statistics
+        }
+    elif isinstance(data1, (BarData, HeatMapData)):
+        return {
+            "axis": 0,  # concat rows
+            "time_axis": 0,  # index labels the rows, so it is joined like a time index
+            "std_axis": None,
+            "std_method": "none",
+        }
+    elif isinstance(data1, ScatterData):
+        return {
+            "axis": 1,  # stored as (2, points), so concat points
+            "time_axis": None,
+            "std_axis": None,
+            "std_method": "none",
         }
     elif isinstance(data1, RoiData):
         return {

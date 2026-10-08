@@ -1,4 +1,5 @@
 import inspect
+import logging
 
 import numpy as np
 import pytest
@@ -10,7 +11,7 @@ from studio.app.common.dataclass import (
     ScatterData,
     TimeSeriesData,
 )
-from studio.app.optinist.dataclass import FluoData
+from studio.app.optinist.dataclass import BehaviorData, FluoData
 from studio.app.optinist.wrappers.data_utils.data_slice import data_slice
 from studio.app.optinist.wrappers.data_utils.data_utils_utils import return_as_data_type
 
@@ -260,6 +261,39 @@ def test_heatmap_skips_cell_normalization(output_dir):
     )
 
     np.testing.assert_allclose(result["sliced_data"].data, hm.data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        BarData(np.array([0.5, 0.3, 0.2]), file_name="explained_variance"),
+        BarData(np.array([[0.9], [0.8], [0.7]]), file_name="score"),
+        BehaviorData(np.random.default_rng(8).random((50, 3)), file_name="b"),
+    ],
+    ids=["bar-row", "bar-column", "behavior"],
+)
+def test_inputs_without_a_rows_time_layout_are_not_normalised(data, output_dir, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    result = data_slice(
+        data, output_dir, params={"slice_dims": [], "cell_normalization": "zscore"}
+    )
+
+    np.testing.assert_allclose(result["sliced_data"].data, data.data)
+    assert "mean_timeseries" not in result
+    assert "cell_normalization is not applied" in caplog.text
+
+
+def test_square_fluo_averages_cells_and_normalises_along_time(output_dir):
+    data = np.random.default_rng(9).random((N_TIME, N_TIME))
+    square = FluoData(data, index=np.arange(N_TIME), file_name="f")
+
+    plain = data_slice(square, output_dir, params={"slice_dims": []})
+    normed = data_slice(
+        square, output_dir, params={"slice_dims": [], "cell_normalization": "zscore"}
+    )
+
+    np.testing.assert_allclose(plain["mean_timeseries"].data[0], data.mean(axis=0))
+    np.testing.assert_allclose(normed["sliced_data"].data.mean(axis=1), 0, atol=1e-12)
 
 
 def test_unsupported_input_type_raises(output_dir):
