@@ -1,0 +1,24 @@
+import { describe, it, expect } from "@jest/globals"
+
+import { stackedTrace } from "components/Workspace/Visualize/Plot/timeSeriesStack"
+
+describe("stackedTrace", () => {
+  const y = [1, 2, 3, 4]
+
+  it("leaves a lone trace in its own units", () => {
+    expect(stackedTrace(y, 0, 5, 1)).toEqual(y)
+  })
+
+  it("z-scores and offsets a trace when several are stacked", () => {
+    const stacked = stackedTrace(y, 2, 1, 3)
+    const mean = stacked.reduce((a, b) => a + b, 0) / stacked.length
+    expect(mean).toBeCloseTo(2)
+    expect(stacked[3] - stacked[0]).toBeCloseTo(3 / Math.sqrt(1.25))
+  })
+
+  it("divides by the span so stacked traces fit between offsets", () => {
+    const narrow = stackedTrace(y, 0, 5, 2)
+    const wide = stackedTrace(y, 0, 1, 2)
+    expect(narrow[3] - narrow[0]).toBeCloseTo((wide[3] - wide[0]) / 5)
+  })
+})
