@@ -212,9 +212,9 @@ def test_cross_edge_drop_warning_has_no_length_clause(tmp_path, caplog):
 PEAK_LAGS = [8, -5, 2]  # cell 0 peaks last, cell 1 first, cell 2 in between
 
 
-def _peaked_fluo():
+def _peaked_fluo(lags=PEAK_LAGS):
     fluo = np.zeros((NUM_CELL, NUM_FRAME))
-    for cell, lag in enumerate(PEAK_LAGS):
+    for cell, lag in enumerate(lags):
         for start in EVENT_STARTS:
             fluo[cell, start + lag] = 1.0
     return fluo
@@ -246,6 +246,27 @@ def test_sort_by_peak_labels_rows_with_iscell_cell_numbers(tmp_path):
     )
 
     assert info["mean_heatmap"].index == [2, 0]
+
+
+def test_sort_by_peak_keeps_cell_order_for_tied_peaks(tmp_path):
+    info = _eta(
+        tmp_path,
+        fluo=_peaked_fluo([2, -5, 2]),
+        params={**PARAMS, "sort_by_peak": True},
+    )
+
+    assert info["mean_heatmap"].index == [1, 0, 2]
+
+
+def test_sort_by_peak_puts_a_flat_cell_first_without_warnings(tmp_path):
+    fluo = _peaked_fluo()
+    fluo[0] = 0.5  # cell 0 would otherwise peak last
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        info = _eta(tmp_path, fluo=fluo, params={**PARAMS, "sort_by_peak": True})
+
+    assert info["mean_heatmap"].index == [0, 1, 2]
 
 
 def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):

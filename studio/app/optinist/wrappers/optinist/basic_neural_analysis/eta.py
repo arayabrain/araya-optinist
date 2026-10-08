@@ -7,7 +7,10 @@ from studio.app.common.dataclass import HeatMapData, TimeSeriesData
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.optinist.utils import (
+    peak_order,
+    recursive_flatten_params,
+)
 
 logger = AppLogger.get_logger()
 
@@ -201,7 +204,7 @@ def ETA(
     )
     order = np.arange(len(mean))
     if params.get("sort_by_peak", False):
-        order = np.argsort(np.argmax(norm_mean, axis=1), kind="stable")
+        order = peak_order(norm_mean)
 
     info = {}
     info["mean"] = TimeSeriesData(
