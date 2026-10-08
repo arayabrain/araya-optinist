@@ -14,7 +14,7 @@ def TSNE(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(projectedNd=ScatterData):
     import numpy as np
     from sklearn.manifold import TSNE
 

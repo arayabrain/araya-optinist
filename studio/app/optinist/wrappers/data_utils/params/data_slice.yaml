@@ -2,3 +2,5 @@
 # One spec per dimension: ':' (all), 'start:stop', 'start:stop:step',
 # 'squeeze', or a non-negative integer index.
 slice_dims: []
+cell_normalization: 'none' # ['none', 'zscore']
+mean_normalization: 'none' # ['none', 'zscore', 'minmax']
