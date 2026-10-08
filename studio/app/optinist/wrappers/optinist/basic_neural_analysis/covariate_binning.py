@@ -6,7 +6,10 @@ from studio.app.common.dataclass import HeatMapData, TimeSeriesData
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.optinist.utils import (
+    peak_order,
+    recursive_flatten_params,
+)
 
 logger = AppLogger.get_logger()
 
@@ -110,8 +113,7 @@ def covariate_binning(
 
     order = np.arange(num_cell)
     if params["sort_by_peak"]:
-        peak = np.argmax(np.nan_to_num(norm_mean, nan=-1.0), axis=1)
-        order = np.argsort(peak, kind="stable")
+        order = peak_order(norm_mean)
 
     nwbfile = {}
     nwbfile[NWBDATASET.POSTPROCESS] = {

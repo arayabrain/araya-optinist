@@ -8,3 +8,4 @@ ETA:
   trigger_threshold: 0.5
   pre_event: -10
   post_event: 10
+  sort_by_peak: False
