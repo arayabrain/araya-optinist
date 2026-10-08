@@ -1,6 +1,9 @@
 import { describe, it, expect } from "@jest/globals"
 
-import { stackedTrace } from "components/Workspace/Visualize/Plot/timeSeriesStack"
+import {
+  stackedTrace,
+  visibleTraceCount,
+} from "components/Workspace/Visualize/Plot/timeSeriesStack"
 
 describe("stackedTrace", () => {
   const y = [1, 2, 3, 4]
@@ -20,5 +23,12 @@ describe("stackedTrace", () => {
     const narrow = stackedTrace(y, 0, 5, 2)
     const wide = stackedTrace(y, 0, 1, 2)
     expect(narrow[3] - narrow[0]).toBeCloseTo((wide[3] - wide[0]) / 5)
+  })
+})
+
+describe("visibleTraceCount", () => {
+  it("counts only selected traces the ROI filter leaves visible", () => {
+    expect(visibleTraceCount(["1", "4"], ["1", "2", "3"])).toBe(1)
+    expect(visibleTraceCount(["1", "2"], ["1", "2", "3"])).toBe(2)
   })
 })

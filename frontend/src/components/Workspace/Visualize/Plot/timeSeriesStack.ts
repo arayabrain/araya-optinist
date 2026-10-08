@@ -13,3 +13,10 @@ export function stackedTrace(
     Math.sqrt(y.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / y.length)
   return y.map((value) => (value - mean) / (std + 1e-10) + index)
 }
+
+export function visibleTraceCount(
+  drawOrderList: string[],
+  dataKeys: string[],
+): number {
+  return drawOrderList.filter((key) => dataKeys.includes(key)).length
+}

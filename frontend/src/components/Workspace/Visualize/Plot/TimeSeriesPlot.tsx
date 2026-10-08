@@ -27,7 +27,10 @@ import {
   errorBarArray,
   frameAxisRange,
 } from "components/Workspace/Visualize/Plot/timeSeriesRange"
-import { stackedTrace } from "components/Workspace/Visualize/Plot/timeSeriesStack"
+import {
+  stackedTrace,
+  visibleTraceCount,
+} from "components/Workspace/Visualize/Plot/timeSeriesStack"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
 import {
@@ -244,6 +247,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   }
 
   const data = useMemo(() => {
+    const traceCount = visibleTraceCount(drawOrderList, dataKeys)
     return Object.fromEntries(
       dataKeys.map((key) => {
         let y = newDataXrange.map((x) => newTimeSeriesData[key]?.[x])
@@ -254,7 +258,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
           : getRoiColor(Number(key))
         if (drawOrderList.includes(key) && !stdBool) {
           const activeIdx: number = drawOrderList.findIndex((v) => v === key)
-          y = stackedTrace(y, activeIdx, span, drawOrderList.length)
+          y = stackedTrace(y, activeIdx, span, traceCount)
         }
 
         return [
