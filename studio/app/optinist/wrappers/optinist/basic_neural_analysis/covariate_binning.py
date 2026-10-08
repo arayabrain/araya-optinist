@@ -24,9 +24,9 @@ def covariate_binning(
 
     Every time sample whose covariate lies in [bin_min, bin_max] is used: bin i
     holds bin_min + i * width <= value < bin_min + (i + 1) * width, and the last
-    bin also holds value == bin_max. Samples outside the range or NaN are
-    excluded. No run, trial or modal-length filtering is applied, so each bin's
-    std and sem are over individual time samples, not trials.
+    bin also holds value == bin_max. Samples outside the range, NaN or infinite
+    are excluded. No run, trial or modal-length filtering is applied, so each
+    bin's std and sem are over individual time samples, not trials.
     """
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start covariate_binning: %s", function_id)
@@ -63,11 +63,13 @@ def covariate_binning(
         X = X[:, cell_numbers]
 
     covariate = np.asarray(Y[:, col], dtype=float)
+    finite = np.isfinite(covariate)
     if params["use_data_range"]:
-        assert np.isfinite(covariate).any(), f"behaviour column {col} has no values"
-        lo, hi = np.nanmin(covariate), np.nanmax(covariate)
+        assert finite.any(), f"behaviour column {col} has no finite values"
+        lo, hi = covariate[finite].min(), covariate[finite].max()
     else:
         lo, hi = float(params["bin_min"]), float(params["bin_max"])
+        assert np.isfinite([lo, hi]).all(), f"bin range must be finite: [{lo}, {hi}]"
     assert hi > lo, f"bin range is empty: min {lo} must be below max {hi}"
 
     edges = np.linspace(lo, hi, n_bins + 1)

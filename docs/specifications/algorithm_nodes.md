@@ -266,7 +266,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **bin_min** [float, default: 0.0]: Lower edge of the first bin, used when `use_data_range` is false.
   - **bin_max** [float, default: 1.0]: Upper edge of the last bin, used when `use_data_range` is false.
   - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak. Only the heatmap is reordered.
-  - Every time sample whose covariate lies in the range is used; samples outside it or NaN are excluded. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials.
+  - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials.
 
 ###### condition_split
 

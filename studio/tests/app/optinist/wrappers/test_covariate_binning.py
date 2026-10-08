@@ -160,6 +160,26 @@ def test_1d_behaviour_is_one_column(tmp_path):
     assert list(_postprocess(info)["num_sample"]) == [NUM_FRAME // 4] * 4
 
 
+def test_data_range_ignores_infinite_samples(tmp_path):
+    covariate = np.array([0.0, 1.0, 2.0, 3.0, 4.0, np.inf, -np.inf, np.nan])
+    fluo = np.arange(len(covariate), dtype=float)[np.newaxis, :]
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(covariate),
+        params={"use_data_range": True},
+    )
+
+    assert list(info["mean"].index) == [0.5, 1.5, 2.5, 3.5]
+    assert list(_postprocess(info)["num_sample"]) == [1, 1, 1, 2]
+
+
+def test_infinite_bin_bound_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="bin range must be finite"):
+        _bin(tmp_path, params={"bin_max": float("inf")})
+
+
 def test_out_of_range_column_fails_with_a_clear_message(tmp_path):
     with pytest.raises(AssertionError, match="event_col_index 2 is out of range"):
         _bin(tmp_path, params={"event_col_index": 2})
