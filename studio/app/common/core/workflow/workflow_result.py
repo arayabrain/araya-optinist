@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 import re
@@ -121,10 +122,10 @@ class WorkflowResult:
                     has_error=True, error_log="No Snakemake process found."
                 )
 
-            # re-run observe node list (reflects workflow error)
-            node_results = await self.__observe_nodes(
-                observe_node_ids, expt_config, workflow_error
-            )
+                # re-run observe node list (reflects workflow error)
+                node_results = await self.__observe_nodes(
+                    observe_node_ids, expt_config, workflow_error
+                )
 
         return node_results
 
@@ -340,9 +341,20 @@ class NodeResult(BaseNodeResult):
         # case) error in node
         elif PickleReader.check_is_error_node_pickle(self.info):
             message = self.error()
+        # case) success already recorded, so its JSON is already saved
+        elif (
+            expt_function.success == NodeRunStatus.SUCCESS.value
+            and expt_function.outputPaths
+        ):
+            message = Message(
+                status=expt_function.success,
+                message=expt_function.message,
+                outputPaths=expt_function.outputPaths,
+            )
         # case) success in node
         else:
-            message = self.success()
+            # Off the event loop: a large output takes minutes to write as JSON
+            message = await asyncio.to_thread(self.success)
 
         # Determine if the node has already been processed
         # *If it has, skip subsequent ExptConfig update process.
