@@ -7,3 +7,4 @@ condition_split:
   condition: 'greater' # ['greater', 'less', 'equal', 'between']
   threshold: 0.5
   threshold_upper: 1.0
+  margin: 0

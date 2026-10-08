@@ -287,6 +287,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - 'between' keeps samples with threshold <= value <= threshold_upper.
   - **threshold** [float, default: 0.5]: Value the column is compared with.
   - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
+  - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake. Sosa 2025 needs 2.
   - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction

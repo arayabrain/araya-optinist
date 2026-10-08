@@ -21,6 +21,9 @@ def condition_split(
     A sample is kept when its value v in column event_col_index satisfies
     'greater' v > threshold, 'less' v < threshold, 'equal' v == threshold
     (exact) or 'between' threshold <= v <= threshold_upper. NaN never matches.
+    With margin > 0, a kept sample within margin samples of a rejected one is
+    dropped too, which trims transitions where the behaviour stream and the
+    imaging frames are not aligned to the sample.
     Kept samples are concatenated in their original order and both outputs keep
     the input orientation. Nothing else is filtered: there is no trial, run or
     modal-length inference, and a downstream window can span the join between
@@ -72,9 +75,17 @@ def condition_split(
             f"condition must be one of greater, less, equal, between, got {condition}"
         )
 
+    margin = int(params.get("margin", 0))
+    assert margin >= 0, f"margin must be >= 0, got {margin}"
+    if margin:
+        near_rejected = (
+            np.convolve((~keep).astype(int), np.ones(2 * margin + 1), mode="same") > 0
+        )
+        keep &= ~near_rejected
+
     assert keep.any(), (
         f"No sample of behaviour column {col} matches condition {condition} "
-        f"with threshold {threshold}"
+        f"with threshold {threshold} and margin {margin}"
     )
     num_segment = np.count_nonzero(np.diff(keep.astype(int), prepend=0) == 1)
     logger.info(

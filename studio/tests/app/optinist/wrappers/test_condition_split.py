@@ -97,6 +97,34 @@ def test_segments_are_logged(tmp_path, caplog):
     assert "kept 3 of 8 samples in 2 segment(s)" in caplog.text
 
 
+def test_margin_drops_kept_samples_next_to_rejected_ones(tmp_path):
+    condition = np.array([5.0, 5.0, 5.0, 5.0, 0.0, 5.0, 5.0, 5.0, 5.0])
+    fluo = _fluo(len(condition))
+
+    for margin, kept in (
+        (0, [0, 1, 2, 3, 5, 6, 7, 8]),
+        (1, [0, 1, 2, 6, 7, 8]),
+        (2, [0, 1, 7, 8]),
+    ):
+        out = _split(
+            tmp_path,
+            fluo=fluo,
+            behavior=_behavior(condition),
+            params={"margin": margin},
+        )
+        np.testing.assert_array_equal(out["neural_data"].data, fluo[:, kept])
+
+
+def test_margin_that_rejects_everything_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="and margin 3"):
+        _split(tmp_path, params={"margin": 3})
+
+
+def test_negative_margin_fails(tmp_path):
+    with pytest.raises(AssertionError, match="margin must be >= 0"):
+        _split(tmp_path, params={"margin": -1})
+
+
 def test_no_match_fails_with_a_clear_message(tmp_path):
     with pytest.raises(AssertionError, match="No sample of behaviour column 1"):
         _split(tmp_path, params={"threshold": 10.0})
