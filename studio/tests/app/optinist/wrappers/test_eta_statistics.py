@@ -209,6 +209,45 @@ def test_cross_edge_drop_warning_has_no_length_clause(tmp_path, caplog):
     assert "modal" not in caplog.text
 
 
+PEAK_LAGS = [8, -5, 2]  # cell 0 peaks last, cell 1 first, cell 2 in between
+
+
+def _peaked_fluo():
+    fluo = np.zeros((NUM_CELL, NUM_FRAME))
+    for cell, lag in enumerate(PEAK_LAGS):
+        for start in EVENT_STARTS:
+            fluo[cell, start + lag] = 1.0
+    return fluo
+
+
+def test_sort_by_peak_orders_heatmap_rows_by_peak_time(tmp_path):
+    info = _eta(tmp_path, fluo=_peaked_fluo(), params={**PARAMS, "sort_by_peak": True})
+
+    heatmap = info["mean_heatmap"]
+    assert heatmap.index == [1, 2, 0]
+    peak_cols = np.argmax(heatmap.data, axis=1)
+    assert list(np.array(heatmap.columns)[peak_cols]) == [-5, 2, 8]
+    assert np.argmax(info["mean"].data, axis=1).tolist() == [18, 5, 12]
+
+
+def test_heatmap_keeps_cell_order_without_sort_by_peak(tmp_path):
+    info = _eta(tmp_path, fluo=_peaked_fluo())  # PARAMS has no sort_by_peak key
+
+    assert info["mean_heatmap"].index == [0, 1, 2]
+    assert np.argmax(info["mean_heatmap"].data, axis=1).tolist() == [18, 5, 12]
+
+
+def test_sort_by_peak_labels_rows_with_iscell_cell_numbers(tmp_path):
+    info = _eta(
+        tmp_path,
+        fluo=_peaked_fluo(),
+        params={**PARAMS, "sort_by_peak": True},
+        iscell=IscellData(np.array([1, 0, 1])),
+    )
+
+    assert info["mean_heatmap"].index == [2, 0]
+
+
 def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):
     caplog.set_level(logging.WARNING, logger="optinist")
     fluo = np.random.default_rng(0).random((5, 50))

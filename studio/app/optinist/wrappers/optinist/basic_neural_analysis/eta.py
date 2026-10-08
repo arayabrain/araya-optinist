@@ -196,6 +196,13 @@ def ETA(
     value_range[value_range == 0] = 1  # a flat cell becomes a zero row, not NaN
     norm_mean = (mean - min_value) / value_range
 
+    heatmap_cells = (
+        np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
+    )
+    order = np.arange(len(mean))
+    if params.get("sort_by_peak", False):
+        order = np.argsort(np.argmax(norm_mean, axis=1), kind="stable")
+
     info = {}
     info["mean"] = TimeSeriesData(
         mean,
@@ -206,9 +213,9 @@ def ETA(
         file_name="mean",
     )
     info["mean_heatmap"] = HeatMapData(
-        norm_mean,
+        norm_mean[order],
         columns=list(np.arange(pre_event, post_event + trigger_len)),
-        index=list(cell_numbers) if iscell is not None else None,
+        index=heatmap_cells[order].tolist(),
         file_name="mean_heatmap",
         meta=PlotMetaData(yaxis_type="category"),
     )

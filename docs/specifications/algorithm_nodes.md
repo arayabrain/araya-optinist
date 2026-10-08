@@ -246,6 +246,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
   - **pre_event** [int, default: -10]: Number of time points before the trigger to include. The sign is ignored; -10 and 10 both mean 10 frames before the onset.
   - **post_event** [int, default: 10]: Number of time points after the end of the trigger to include. May be negative to end the window inside the event, as long as abs(pre_event) + event length + post_event is at least 1.
+  - **sort_by_peak** [bool, default: false]: Order the `mean_heatmap` rows by the time of each cell's peak, earliest first. Row labels keep the original cell numbers; `mean` is not reordered.
   - Events whose window would cross the start or end of the recording are dropped and logged. `num_sample` in the NWB output is the number of events actually averaged.
 
 ##### Dimensionality Reduction
