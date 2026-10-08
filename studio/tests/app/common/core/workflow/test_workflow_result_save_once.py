@@ -1,4 +1,4 @@
-"""A finished node's outputs are saved as JSON once, off the event loop.
+"""A finished node's outputs are saved as JSON once, outside the event loop.
 
 Each `/run/result` poll used to rewrite every pending node's JSON, twice while
 other nodes still ran, inside the async handler, so one large output blocked
@@ -8,7 +8,9 @@ every other request and client retries queued more rewrites behind it.
 import asyncio
 import pickle
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -39,7 +41,7 @@ def finished_node():
     with open(directory / "func1" / "func1.pkl", "wb") as f:
         pickle.dump({"behaviors_data": BehaviorData(np.zeros((3, 10)))}, f)
     Runner.write_pid_file(str(directory), "dummy_func", "dummy_script.py")
-    yield
+    yield directory
     shutil.rmtree(directory.parent)
 
 
@@ -55,13 +57,14 @@ def poll():
 
 @pytest.mark.asyncio
 async def test_repeated_observes_save_a_finished_node_once(finished_node):
-    with patch.object(
-        TimeSeriesData, "save_json", autospec=True, side_effect=save_json
-    ) as save:
-        first = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
-        second = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+    saved = finished_node / "func1" / "behavior"
 
-    assert save.call_count == 1
+    first = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+    assert saved.is_dir()
+    shutil.rmtree(saved)
+    second = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+
+    assert not saved.exists()
     assert second["func1"] == first["func1"]
 
 
@@ -74,6 +77,10 @@ async def test_a_poll_overlapping_a_slow_save_answers_at_once(finished_node):
     with patch.object(
         TimeSeriesData, "save_json", autospec=True, side_effect=slow_save
     ) as save, patch(
+        # In-process, so the mock sees every save
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        ThreadPoolExecutor,
+    ), patch(
         "studio.app.common.routers.run.ExptConfigReader.ensure_synced_async",
         new=AsyncMock(),
     ), patch(
@@ -92,3 +99,24 @@ async def test_a_poll_overlapping_a_slow_save_answers_at_once(finished_node):
         assert "func1" in (await poll()).nodeResults
 
     assert save.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_finalization_waits_for_a_poll_mid_save(finished_node):
+    held = threading.Event()
+    saved_while_held = []
+
+    def poll_mid_save():
+        with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
+            held.set()
+            time.sleep(1.5)
+            saved_while_held.append((finished_node / "func1" / "behavior").exists())
+
+    poller = threading.Thread(target=poll_mid_save)
+    poller.start()
+    held.wait()
+    results = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall()
+    poller.join()
+
+    assert saved_while_held == [False]
+    assert "func1" in results

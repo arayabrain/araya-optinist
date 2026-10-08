@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from filelock import FileLock, Timeout
+from filelock import Timeout
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
@@ -29,11 +29,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
-from studio.app.common.core.utils.filelock_handler import FileLockUtils
-from studio.app.common.core.utils.filepath_creater import (
-    InvalidPathError,
-    join_filepath,
-)
+from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_input_validator import (
@@ -57,7 +53,6 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 from studio.app.const import DATE_FORMAT
-from studio.app.dir_path import DIRPATH
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -276,21 +271,15 @@ async def run_result(
         )
 
         # A poll overlapping one mid-save answers nothing rather than save again
-        observe_lock = FileLock(
-            FileLockUtils.get_lockfile_path(
-                join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, uid])
-            ),
-            blocking=False,
-        )
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
         try:
             observe_lock.acquire()
         except Timeout:
             node_results = {}
         else:
             try:
-                node_results = await WorkflowResult(workspace_id, uid).observe(
-                    nodeDict.pendingNodeIdList
-                )
+                node_results = await workflow_result.observe(nodeDict.pendingNodeIdList)
             finally:
                 observe_lock.release()
         if node_results:
