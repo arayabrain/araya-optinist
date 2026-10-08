@@ -68,8 +68,8 @@ class WorkspaceDataCapacityService:
     ):
         # Concurrent writers (main /run/result task + executor) write the same
         # row. Two safeguards:
-        #   - Core UPDATE with an existence SELECT (not UPDATE rowcount, which is
-        #     0 for a same-value write on MySQL) avoids the ORM stale-data error.
+        #   - Core UPDATE with an existence SELECT, so neither the ORM rowcount
+        #     check nor the connection's FOUND_ROWS setting can fail the write.
         #   - (workspace_id, uid) has no unique constraint, so the check-then-
         #     write is serialized by a MySQL advisory lock, held on a dedicated
         #     lock_db session and released only AFTER the inner write commits.

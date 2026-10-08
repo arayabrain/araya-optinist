@@ -1,10 +1,12 @@
+import asyncio
 import json
 import os
 import shutil
 import tempfile
-from glob import glob
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from pathlib import PurePath
-from typing import Dict, List
+from typing import Callable, Dict, List
 from urllib.parse import urlparse
 
 import requests
@@ -25,6 +27,7 @@ from studio.app.common.core.cloud.storage_tracking import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.remote_storage_controller import (
+    InputFileLock,
     RemoteStorageController,
     RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
@@ -58,11 +61,18 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 logger = AppLogger.get_logger()
 
+# Dedicated pool so slow NAS walks queue behind each other, not other executor work.
+_tree_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="filetree")
+
 
 class DirTreeGetter:
     @classmethod
     def get_tree(
-        cls, workspace_id, file_types: List[str], dirname: str = None
+        cls,
+        workspace_id,
+        file_types: List[str],
+        dirname: str = None,
+        _shape_cache: dict = None,
     ) -> List[TreeNode]:
         nodes: List[TreeNode] = []
 
@@ -74,73 +84,157 @@ class DirTreeGetter:
         if not os.path.exists(absolute_dirpath):
             return nodes
 
-        sorted_listdir = sorted(
-            os.listdir(absolute_dirpath),
-            key=lambda x: (not os.path.isdir(join_filepath([absolute_dirpath, x])), x),
-        )
+        is_image = file_types == ACCEPT_FILE_EXT.TIFF_EXT.value
+        is_root = _shape_cache is None
+        if is_root:
+            _shape_cache = {
+                "known": get_image_shape_dict(workspace_id) if is_image else {},
+                "new": {},
+            }
 
-        IMAGE_SHAPE_DICT = (
-            get_image_shape_dict(workspace_id)
-            if file_types == ACCEPT_FILE_EXT.TIFF_EXT.value
-            else {}
-        )
+        try:
+            sorted_listdir = sorted(
+                os.listdir(absolute_dirpath),
+                key=lambda x: (
+                    not os.path.isdir(join_filepath([absolute_dirpath, x])),
+                    x,
+                ),
+            )
 
-        for node_name in sorted_listdir:
-            if dirname is None:
-                relative_path = node_name
-            else:
-                relative_path = join_filepath([dirname, node_name])
+            for node_name in sorted_listdir:
+                if dirname is None:
+                    relative_path = node_name
+                else:
+                    relative_path = join_filepath([dirname, node_name])
 
-            search_dirpath = join_filepath([absolute_dirpath, node_name])
+                search_dirpath = join_filepath([absolute_dirpath, node_name])
 
-            if os.path.isfile(search_dirpath) and node_name.endswith(tuple(file_types)):
-                shape = IMAGE_SHAPE_DICT.get(relative_path, {}).get("shape")
-                if shape is None and file_types == ACCEPT_FILE_EXT.TIFF_EXT.value:
-                    shape = update_image_shape(workspace_id, relative_path)
-                nodes.append(
-                    TreeNode(
-                        path=relative_path,
-                        name=node_name,
-                        isdir=False,
-                        nodes=[],
-                        shape=shape,
+                if os.path.isfile(search_dirpath) and node_name.endswith(
+                    tuple(file_types)
+                ):
+                    shape = (
+                        cls._cached_shape(search_dirpath, relative_path, _shape_cache)
+                        if is_image
+                        else None
                     )
-                )
-            elif (
-                os.path.isdir(search_dirpath)
-                and len(cls.accept_files(search_dirpath, file_types)) > 0
-            ):
-                nodes.append(
-                    TreeNode(
-                        path=node_name,
-                        name=node_name,
-                        isdir=True,
-                        nodes=cls.get_tree(workspace_id, file_types, relative_path),
+                    nodes.append(
+                        TreeNode(
+                            path=relative_path,
+                            name=node_name,
+                            isdir=False,
+                            nodes=[],
+                            shape=shape,
+                        )
                     )
+                elif os.path.isdir(search_dirpath) and cls.has_accepted_file(
+                    search_dirpath, file_types
+                ):
+                    nodes.append(
+                        TreeNode(
+                            path=node_name,
+                            name=node_name,
+                            isdir=True,
+                            nodes=cls.get_tree(
+                                workspace_id, file_types, relative_path, _shape_cache
+                            ),
+                        )
+                    )
+        finally:
+            if is_root and _shape_cache["new"]:
+                _merge_image_shape_dict(
+                    workspace_id, _shape_cache["known"], _shape_cache["new"]
                 )
 
         return nodes
 
     @classmethod
-    def accept_files(cls, path: str, file_types: List[str]):
-        files_list = []
-        for file_type in file_types:
-            files_list.extend(
-                glob(join_filepath([path, "**", f"*{file_type}"]), recursive=True)
-            )
+    def _cached_shape(cls, filepath: str, relative_path: str, cache: dict):
+        try:
+            st = os.stat(filepath)
+        except OSError:
+            return []
+        entry = cache["known"].get(relative_path)
+        shape = _entry_shape(entry)
+        # Legacy entries carry no mtime/size and are trusted until rewritten.
+        if (
+            shape is not None
+            and entry.get("mtime", st.st_mtime) == st.st_mtime
+            and entry.get("size", st.st_size) == st.st_size
+        ):
+            return shape
+        entry = _shape_entry(filepath, st)
+        cache["new"][relative_path] = entry
+        return entry["shape"]
 
-        return files_list
+    @classmethod
+    def has_accepted_file(cls, path: str, file_types: List[str]) -> bool:
+        # Mirrors glob("**/*ext"): hidden names skipped, directory names match too.
+        exts = tuple(file_types)
+        seen = {os.path.realpath(path)}
+        for root, dirs, files in os.walk(path, followlinks=True):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            if any(
+                name.endswith(exts) for name in files + dirs if not name.startswith(".")
+            ):
+                return True
+            kept = []
+            for d in dirs:
+                real = os.path.realpath(os.path.join(root, d))
+                if real not in seen:
+                    seen.add(real)
+                    kept.append(d)
+            dirs[:] = kept
+        return False
 
 
-def get_image_shape_dict(workspace_id: str):
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
+def get_image_shape_dict(workspace_id: str) -> dict:
+    return _read_json_dict(
+        join_filepath([DIRPATH.INPUT_DIR, workspace_id, MetadataCacheFile.IMAGE_SHAPE])
+    )
+
+
+def _read_json_dict(filepath: str) -> dict:
+    """Missing, unparsable or non-object JSON reads as an empty cache."""
     try:
-        tiff_format_dict = JsonReader.read(
-            join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
-        )
-        return tiff_format_dict
-    except FileNotFoundError:
+        data = JsonReader.read(filepath)
+    except (FileNotFoundError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _entry_shape(entry) -> list | None:
+    shape = entry.get("shape") if isinstance(entry, dict) else None
+    return shape if isinstance(shape, list) else None
+
+
+def _merge_image_shape_dict(workspace_id: str, known: dict, new: dict) -> None:
+    # An entry rewritten while the walk ran is newer than the walk's read of it.
+    def merge(existing: dict) -> None:
+        existing.update(
+            {k: v for k, v in new.items() if existing.get(k) == known.get(k)}
+        )
+
+    try:
+        _locked_json_edit(workspace_id, MetadataCacheFile.IMAGE_SHAPE, merge)
+    except OSError as e:
+        logger.warning(f"image shape cache not written ({workspace_id}): {e}")
+
+
+def read_image_shape(filepath: str) -> list:
+    """Shape of the first series from the TIFF header, without decoding pixels."""
+    try:
+        with tifffile.TiffFile(filepath) as tif:
+            return list(tif.series[0].shape)
+    except Exception:
+        return []
+
+
+def _shape_entry(filepath: str, st: os.stat_result) -> dict:
+    return {
+        "shape": read_image_shape(filepath),
+        "mtime": st.st_mtime,
+        "size": st.st_size,
+    }
 
 
 def update_image_shape(workspace_id: str, relative_file_path: str):
@@ -148,16 +242,15 @@ def update_image_shape(workspace_id: str, relative_file_path: str):
     filepath = join_filepath([dirpath, relative_file_path])
 
     try:
-        img = tifffile.imread(filepath)
-        shape = img.shape
-    except:  # noqa
-        shape = []
+        entry = _shape_entry(filepath, os.stat(filepath))
+    except OSError:
+        return []
 
-    # Save to .image_shape.json with atomic write
-    tiff_format_file = join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
-    _atomic_json_update(tiff_format_file, relative_file_path, {"shape": shape})
+    _atomic_json_update(
+        workspace_id, MetadataCacheFile.IMAGE_SHAPE, {relative_file_path: entry}
+    )
 
-    return shape
+    return entry["shape"]
 
 
 def _structure_node_to_dict(node) -> dict:
@@ -184,30 +277,32 @@ def _structure_node_to_dict(node) -> dict:
     return result
 
 
-def _atomic_json_update(filepath: str, key: str, value) -> None:
-    """Atomically update a JSON file with a new key-value pair.
+def _atomic_json_update(workspace_id: str, filename: str, entries: dict) -> None:
+    """Merge entries into a workspace JSON cache, replacing it atomically."""
+    _locked_json_edit(workspace_id, filename, lambda data: data.update(entries))
 
-    Uses a temporary file and os.replace() to ensure atomic writes,
-    preventing race conditions when multiple processes update the same file.
-    """
-    # Read existing data
+
+def _locked_json_edit(
+    workspace_id: str, filename: str, edit: Callable[[dict], None]
+) -> None:
+    """Read-modify-write a workspace JSON cache under its InputFileLock."""
+    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+    with InputFileLock.acquire_sync(workspace_id, filename):
+        data = _read_json_dict(filepath)
+        edit(data)
+        _write_json_atomic(filepath, data)
+
+
+def _write_json_atomic(filepath: str, data: dict) -> None:
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(filepath), suffix=".tmp")
     try:
-        existing_data = JsonReader.read(filepath)
-    except FileNotFoundError:
-        existing_data = {}
-
-    existing_data[key] = value
-
-    # Write to a temporary file in the same directory, then atomically replace
-    dir_path = os.path.dirname(filepath)
-    with tempfile.NamedTemporaryFile(
-        mode="w", dir=dir_path, suffix=".tmp", delete=False
-    ) as tmp_file:
-        json.dump(existing_data, tmp_file, indent=2)
-        tmp_path = tmp_file.name
-
-    # Atomic replace (POSIX guarantees atomicity for same-filesystem rename)
-    os.replace(tmp_path, filepath)
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, filepath)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
@@ -232,9 +327,11 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
         )
         structure_dict = []
 
-    # Save to .hdf5_structure.json with atomic write
-    structure_file = join_filepath([dirpath, MetadataCacheFile.HDF5_STRUCTURE])
-    _atomic_json_update(structure_file, relative_file_path, structure_dict)
+    _atomic_json_update(
+        workspace_id,
+        MetadataCacheFile.HDF5_STRUCTURE,
+        {relative_file_path: structure_dict},
+    )
 
     return structure_dict
 
@@ -249,8 +346,6 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
     """
     from studio.app.optinist.routers.mat import MatGetter
 
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
-
     try:
         structure = MatGetter.get(relative_file_path, workspace_id)
         structure_dict = [_structure_node_to_dict(node) for node in structure]
@@ -260,9 +355,11 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
         )
         structure_dict = []
 
-    # Save to .mat_structure.json with atomic write
-    structure_file = join_filepath([dirpath, MetadataCacheFile.MAT_STRUCTURE])
-    _atomic_json_update(structure_file, relative_file_path, structure_dict)
+    _atomic_json_update(
+        workspace_id,
+        MetadataCacheFile.MAT_STRUCTURE,
+        {relative_file_path: structure_dict},
+    )
 
     return structure_dict
 
@@ -465,7 +562,7 @@ def _build_tree_from_remote_files(
     # Build nodes for root level remote-only files
     result = []
     for filename, file_info in dir_files.get("", []):
-        shape = image_shape_dict.get(filename, {}).get("shape")
+        shape = _entry_shape(image_shape_dict.get(filename))
         result.append(
             TreeNodeWithSync(
                 path=filename,
@@ -487,20 +584,12 @@ def _build_tree_from_remote_files(
     dependencies=[Depends(is_workspace_available)],
 )
 async def get_files(workspace_id: str, file_type: str = None):
-    if file_type == FILETYPE.IMAGE:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.TIFF_EXT.value)
-    elif file_type == FILETYPE.CSV:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.CSV_EXT.value)
-    elif file_type == FILETYPE.HDF5:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.HDF5_EXT.value)
-    elif file_type == FILETYPE.MICROSCOPE:
-        return DirTreeGetter.get_tree(
-            workspace_id, ACCEPT_FILE_EXT.MICROSCOPE_EXT.value
-        )
-    elif file_type == FILETYPE.MATLAB:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.MATLAB_EXT.value)
-    else:
+    file_types = _get_file_extensions_for_type(file_type)
+    if not file_types:
         return []
+    return await asyncio.get_running_loop().run_in_executor(
+        _tree_executor, DirTreeGetter.get_tree, workspace_id, file_types
+    )
 
 
 @router.get(
@@ -755,16 +844,9 @@ def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
         return
 
     try:
-        existing_data = JsonReader.read(metadata_path)
-        if filename in existing_data:
-            del existing_data[filename]
-            # Write back atomically
-            with tempfile.NamedTemporaryFile(
-                mode="w", dir=dirpath, suffix=".tmp", delete=False
-            ) as tmp_file:
-                json.dump(existing_data, tmp_file, indent=2)
-                tmp_path = tmp_file.name
-            os.replace(tmp_path, metadata_path)
+        _locked_json_edit(
+            workspace_id, metadata_file, lambda data: data.pop(filename, None)
+        )
     except Exception as e:
         logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
 

@@ -15,6 +15,10 @@ from studio.app.common.core.utils.filepath_creater import (
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.wrappers.caiman.caiman_utils import (
+    caiman_cluster,
+    distribute_params_to_groups,
+)
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -244,8 +248,7 @@ def component_outputs(
 def caiman_cnmf(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import local_correlations, stop_server
-    from caiman.cluster import setup_cluster
+    from caiman import local_correlations
     from caiman.source_extraction.cnmf import cnmf, online_cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -256,13 +259,14 @@ def caiman_cnmf(
     util_download_model_files()
 
     flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
+    recursive_flatten_params(params or {}, flattened_params)
     params = flattened_params
 
     Ain = params.pop("Ain", None)
     do_refit = params.pop("do_refit", None)
     roi_thr = params.pop("roi_thr", None)
     use_online = params.pop("use_online", False)
+    requested_n_processes = params.pop("n_processes", 1)
 
     file_path = images.path
     if isinstance(file_path, list):
@@ -279,69 +283,49 @@ def caiman_cnmf(
     nwbfile = kwargs.get("nwbfile", {})
     fr = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
 
-    if params is None:
+    with caiman_cluster(requested_n_processes) as (dview, n_processes):
         ops = CNMFParams()
-    else:
-        ops = CNMFParams(params_dict={**params, "fr": fr})
+        ops.change_params(distribute_params_to_groups({**params, "fr": fr}, vars(ops)))
 
-    if "dview" in locals():
-        stop_server(dview=dview)  # noqa: F821
+        if use_online:
+            ops.change_params(
+                {
+                    "data": {"fnames": [mmap_path]},
+                    # NOTE: These params uses np.inf as default in CaImAn.
+                    # Yaml cannot serialize np.inf, so default value in yaml is None.
+                    "online": {
+                        "max_comp_update_shape": params["max_comp_update_shape"]
+                        or np.inf,
+                        "num_times_comp_updated": params["num_times_comp_updated"]
+                        or np.inf,
+                    },
+                }
+            )
+            cnm = online_cnmf.OnACID(dview=dview, Ain=Ain, params=ops)
+            cnm.fit_online()
+        else:
+            cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
+            cnm = cnm.fit(mmap_images)
 
-    # TODO: Add parameters for node
-    n_processes = 1
-    dview = None
-    # This process launches another process to run the CNMF algorithm,
-    # so this node use at least 2 core.
-    if n_processes == 1:
-        c, dview, n_processes = setup_cluster(
-            backend="single", n_processes=n_processes, single_thread=True
-        )
-    else:
-        c, dview, n_processes = setup_cluster(
-            backend="multiprocessing", n_processes=n_processes
-        )
-    logger.debug(f"n_processes: {n_processes}")
+            if do_refit:
+                cnm = cnm.refit(mmap_images, dview=dview)
 
-    if use_online:
-        ops.change_params(
-            {
-                "fnames": [mmap_path],
-                # NOTE: These params uses np.inf as default in CaImAn.
-                # Yaml cannot serialize np.inf, so default value in yaml is None.
-                "max_comp_update_shape": params["max_comp_update_shape"] or np.inf,
-                "num_times_comp_updated": params["update_num_comps"] or np.inf,
-            }
-        )
-        cnm = online_cnmf.OnACID(dview=dview, Ain=Ain, params=ops)
-        cnm.fit_online()
-    else:
-        cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
-        cnm = cnm.fit(mmap_images)
+        # Check if any components were found
+        n_components = cnm.estimates.A.shape[1] if hasattr(cnm.estimates, "A") else 0
 
-        if do_refit:
-            cnm = cnm.refit(mmap_images, dview=dview)
-
-    # Check if any components were found
-    n_components = cnm.estimates.A.shape[1] if hasattr(cnm.estimates, "A") else 0
-
-    if n_components > 0:
-        # Only evaluate components if we found some
-        cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
-        idx_good = cnm.estimates.idx_components
-        idx_bad = cnm.estimates.idx_components_bad
-        if not isinstance(idx_good, list):
-            idx_good = idx_good.tolist()
-        if not isinstance(idx_bad, list):
-            idx_bad = idx_bad.tolist()
-    else:
-        # No components found
-        idx_good = []
-        idx_bad = []
-
-    # In single-thread mode dview is None and there is no cluster to stop;
-    # stop_server() would shell out to a nonexistent `ipcluster` and log errors.
-    if dview is not None:
-        stop_server(dview=dview)
+        if n_components > 0:
+            # Only evaluate components if we found some
+            cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
+            idx_good = cnm.estimates.idx_components
+            idx_bad = cnm.estimates.idx_components_bad
+            if not isinstance(idx_good, list):
+                idx_good = idx_good.tolist()
+            if not isinstance(idx_bad, list):
+                idx_bad = idx_bad.tolist()
+        else:
+            # No components found
+            idx_good = []
+            idx_bad = []
 
     # contours plot
     Cn = local_correlations(mmap_images.transpose(1, 2, 0))

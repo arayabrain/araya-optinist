@@ -1,5 +1,5 @@
 import gc
-import math
+import operator
 import os
 from typing import Optional
 
@@ -49,12 +49,43 @@ class ImageData(BaseData):
             del data
             gc.collect()
 
-    def split_image(self, output_dir: str, n_files: int = 2):
-        assert n_files > 1, "n_files should be greater than 1"
-
+    def split_image(
+        self, output_dir: str, n_files: int = 2, lengths: Optional[list] = None
+    ):
+        """
+        Split the image along the time axis, either into n_files near-equal
+        parts or at the explicit per-part frame counts given in lengths.
+        """
         image = self.data
         frames = image.shape[0]
-        frames_per_part = math.ceil(frames // n_files)
+
+        if lengths is not None:
+            if len(lengths) < 2:
+                raise ValueError(f"lengths needs at least 2 entries. Got {lengths}.")
+            try:
+                lengths = [operator.index(length) for length in lengths]
+            except TypeError:
+                raise ValueError(f"lengths must be integers. Got {lengths}.") from None
+            if min(lengths) <= 0:
+                raise ValueError(f"lengths must be positive. Got {lengths}.")
+            if sum(lengths) != frames:
+                raise ValueError(
+                    f"sum of lengths ({sum(lengths)}) must equal "
+                    f"total frames ({frames})."
+                )
+        else:
+            try:
+                n_files = operator.index(n_files)
+            except TypeError:
+                raise ValueError(
+                    f"n_files must be an integer. Got {n_files}."
+                ) from None
+            if n_files < 2:
+                raise ValueError(f"n_files should be greater than 1. Got {n_files}.")
+            if frames < n_files:
+                raise ValueError(f"cannot split {frames} frames into {n_files} parts.")
+            base, extra = divmod(frames, n_files)
+            lengths = [base + 1 if i < extra else base for i in range(n_files)]
 
         file_name = self.path[0] if isinstance(self.path, list) else self.path
         name, ext = os.path.splitext(os.path.basename(file_name))
@@ -63,13 +94,12 @@ class ImageData(BaseData):
         _dir = join_filepath([output_dir, "image_split", name])
         create_directory(_dir)
 
-        for n in range(n_files):
+        offset = 0
+        for n, length in enumerate(lengths):
             _path = join_filepath([_dir, f"{name}_{n}{ext}"])
             with tifffile.TiffWriter(_path, bigtiff=True) as tif:
-                if n == n_files - 1:
-                    tif.write(image[n * frames_per_part :])
-                else:
-                    tif.write(image[n * frames_per_part : (n + 1) * frames_per_part])
+                tif.write(image[offset : offset + length])
+            offset += length
             save_paths.append(_path)
 
         return save_paths
