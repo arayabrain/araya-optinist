@@ -103,31 +103,26 @@ These variables control environment-specific behavior:
 
 ### Free-Tier ASG Capacity (`asg_min_size` / `asg_max_size` / `asg_desired_capacity`)
 
-`asg_desired_capacity` applies **only at creation time**: the ASG carries
-`ignore_changes = [desired_capacity]`, because the Free Manager Lambda and the
-CPU/memory scaling alarms both write desired capacity at runtime and Terraform
-must not fight them. `aws_ecs_service.autoscaling` carries the same
-`ignore_changes` on its `desired_count` for the same reason — the Lambda syncs
-it to the ASG, and an apply that reset it to its declared `1` would leave the
-other instances task-less and unhealthy, with no ASG event to trigger a
-resync.
+The ASG carries `ignore_changes = [desired_capacity]`, and
+`aws_ecs_service.autoscaling` the same on its `desired_count`, because the
+Free Manager Lambda and the CPU/memory alarms write both at runtime and
+Terraform must not fight them. An apply that reset the ECS count to its
+declared `1` would leave the other instances task-less and unhealthy.
 
-As a result `asg_min_size` is the knob that actually moves steady-state
-capacity from Terraform — raising it makes the ASG lift desired capacity to the
-new minimum on its own. `asg_max_size` is the real ceiling on free-tier
-capacity: the Lambda clamps its computed target to the group's own
-`MinSize`/`MaxSize`, so neither scaling path can exceed it.
+| Variable | Effect |
+|---|---|
+| `asg_min_size` | The knob that moves steady-state capacity. Raising it makes the ASG lift desired capacity to the new minimum |
+| `asg_max_size` | The real ceiling: the Lambda clamps its target to the group's bounds, so neither scaling path can exceed it |
+| `asg_desired_capacity` | Applied at creation, and re-applied on every `dev_scheduler` start in environments where that is enabled. Otherwise ignored |
 
-**Lowering `min_size` does not lower desired capacity**, since nothing
-re-reads the ignored `desired_capacity`. Set desired capacity explicitly when
-scaling back down.
+**Lowering `min_size` does not lower desired capacity** — nothing re-reads the
+ignored value. Set desired capacity explicitly when scaling back down.
 
-Both bounds are read off the live ASG by the Lambda rather than copied into its
-environment, so they can also be changed directly on the group (console or
-CLI) without a redeploy. Such a change is **not** persistent: `min_size` is not
-under `ignore_changes`, so the next `terraform apply` restores the declared
-value. For the full sequence — sizing, lead time, post-change checks and
-restore — see the pre-provisioning procedure in
+The Lambda reads both bounds off the live ASG rather than from its own
+environment, so they can also be changed on the group (console or CLI) without
+a redeploy. That is not persistent: `min_size` is not under `ignore_changes`,
+so the next apply restores the declared value. For sizing, lead time, checks
+and restore, see the pre-provisioning procedure in
 `FREE_MANAGER_ARCHITECTURE.md`.
 
 ### Database Username (`mysql_user`)

@@ -11,21 +11,8 @@
 - **Experiment sync** automatically syncs experiment metadata after migration
 
 > **Scope note:** this document covers the free tier's *instance count*. How
-> much work a single instance can absorb is a separate concern.
->
-> **Two equally required behaviours.** Capacity can be prepared in advance by
-> raising the ASG minimum, **and** the group is expected to grow with the
-> free-user count and shrink when the capacity is no longer needed. Neither is
-> a substitute for the other. What is verified today is the first; reactive
-> growth and shrink are **not yet verified end to end**, and the gaps below are
-> known and tracked:
->
-> - Scale-in by user count does not happen below the threshold — see
->   [Conservative Scale-Down](#6-conservative-scale-down).
-> - Two components write desired capacity without coordinating — see
->   [Two Triggers on One ASG](#two-triggers-on-one-asg).
-> - Scale-in does not protect a running workflow — see principle 3 under
->   [Key Architectural Principles](#key-architectural-principles).
+> much work a single instance can absorb is a separate concern. Known defects
+> in the current behaviour are tracked in #933 and #934, not here.
 
 ## Key Architectural Principles
 
@@ -48,15 +35,11 @@
    - Database field: `active_workflow_count` tracks running jobs
    - SQL constraint: Migration query includes `WHERE active_workflow_count = 0`
    - Atomic updates: Users with jobs cannot be **reassigned** (SQL-level guarantee)
-   - **It does not cover termination.** The guarantee is about
-     `migrate_user_to_instance()` repointing an assignment record. Nothing stops
-     the ASG terminating the instance a workflow is running on: the group
-     selects `OldestInstance`, `protect_from_scale_in` is `false`, the ECS
-     capacity provider's `managed_termination_protection` is `DISABLED`, and
-     the terminate lifecycle hook is a 300-second pause rather than a drain
-     (nothing completes the action). With sticky sessions the oldest instance
-     is the one carrying the longest-connected users, so a scale-in removes
-     exactly the instance most likely to be busy. Tracked as a known gap
+   - **It does not cover termination.** Nothing stops the ASG terminating the
+     instance a workflow runs on: `termination_policies = ["OldestInstance"]`,
+     `protect_from_scale_in = false`, and the capacity provider's
+     `managed_termination_protection = "DISABLED"`. With sticky sessions the
+     oldest instance holds the longest-connected users (#933)
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
@@ -69,12 +52,10 @@
    - Fire-and-forget: migration succeeds even if sync fails
 
 6. **ASG Configuration as the Single Source of Truth**
-   - The instance floor and ceiling are **not** held in this Lambda's
-     environment; they are read via `describe_auto_scaling_groups` each run
-   - `SetDesiredCapacity` rejects any value outside the group's bounds, and a
-     rejection aborts the invocation, so a target computed against stale
-     configuration would also cost that cycle's rebalancing and metrics
-   - Capacity can therefore be adjusted on the ASG (Terraform, console or CLI)
+   - The instance floor and ceiling are read via
+     `describe_auto_scaling_groups` each run, not held in this Lambda's
+     environment
+   - Capacity is therefore adjusted on the ASG (Terraform, console or CLI)
      without redeploying this function
 
 ## Architecture Overview
@@ -123,9 +104,9 @@ graph TB
 
 ### Two Triggers on One ASG
 
-The free ASG's desired capacity has **two independent writers**. This document
-is mostly about the first; the second is defined in `monitoring.tf` and is easy
-to overlook when reading the Lambda alone.
+The free ASG's desired capacity has **two independent writers**. The second is
+defined in `monitoring.tf` and is easy to overlook when reading the Lambda
+alone.
 
 | | Trigger A — user count | Trigger B — instance load |
 |---|---|---|
@@ -134,23 +115,15 @@ to overlook when reading the Lambda alone.
 | Mechanism | `SetDesiredCapacity` to a computed target | `scale_up` / `scale_down` simple scaling policies, +/-1 |
 | Defined in | `free_manager.tf`, `free_manager.py` | `monitoring.tf`, `compute.tf` |
 
-Three things follow from there being two:
-
-1. **They do not coordinate.** An alarm-driven adjustment survives only until
-   the next scheduled run, which recomputes the target from the user count
-   alone and may undo it. Which component should own desired capacity is an
-   open design question, not a settled model.
-2. **The load metrics are service-level, not host-level.** For an
-   EC2-launch-type service, `CPUUtilization` is utilization of the CPU units
-   *reserved by the task*, averaged across the service. Work that stalls on
-   I/O rather than CPU does not move it; the `high-iowait` alarm notifies but
-   does not scale.
-3. **Nothing else moves the ASG.** The ECS capacity provider's
-   `managed_scaling` is `DISABLED`, and ECS Application Auto Scaling is left
-   commented out in `compute.tf` because it raced against this Lambda.
-
-Both triggers are bounded by the group's `MinSize`/`MaxSize`, so neither can
-drive capacity outside the configured range.
+- **They do not coordinate**, and can undo each other (#934).
+- **The load metrics are service-level.** For an EC2-launch-type service,
+  `CPUUtilization` is utilization of the CPU units *reserved by the task*,
+  averaged across the service. Work that stalls on I/O does not move it; the
+  `high-iowait` alarm notifies but does not scale.
+- **Nothing else moves the ASG.** The capacity provider's `managed_scaling` is
+  `DISABLED`, and ECS Application Auto Scaling is commented out in
+  `compute.tf` because it raced against this Lambda.
+- Both are bounded by the group's `MinSize`/`MaxSize`.
 
 ### Scaling Strategy Matrix
 
@@ -171,12 +144,10 @@ value pulled up to `MinSize` or down to `MaxSize`.
 | 31+ | `ceil(users / 5)` | Scale up, rebalance |
 
 Notes:
-- Scaling triggers at >= 5 active users, but 5 users only needs 1 instance
-  (`ceil(5/5) = 1`). Actual scale-up by user count starts at 6 users.
-- A `MinSize` above the user-count term holds the target there: with
-  `MinSize = 3`, five active users still target 3 instances, not 1.
-- A user-count term above `MaxSize` is capped, not requested. The group's
-  maximum is the real ceiling on free-tier capacity.
+- Scaling is entered at >= 5 active users, but 5 users need only 1 instance, so
+  scale-up by user count starts at 6.
+- `MinSize` above the term holds the target there; a term above `MaxSize` is
+  capped, not requested.
 
 ### Motivation: Sticky Session Overload
 
@@ -195,97 +166,55 @@ synced to new instances after reassignment.
 
 **Traffic distribution is the load balancer's job, not this Lambda's.**
 
-- Free-tier requests reach the free target group through a single shared
-  listener rule (the `Authorization: Bearer *` catch-all). Unlike premium,
-  there are **no per-user routing rules** for free users.
+- Free-tier requests reach the free target group through one shared listener
+  rule (the `Authorization: Bearer *` catch-all). Unlike premium, there are
+  **no per-user routing rules**.
 - The target group sets no `load_balancing_algorithm_type`, so the AWS default
-  **round robin** applies, with `lb_cookie` stickiness. Every healthy instance
-  is in the rotation, registered automatically by the ASG.
+  **round robin** applies, with `lb_cookie` stickiness. Targets are registered
+  both by the ASG and by ECS (`instance:8000`).
 - `migrate_user_to_instance` **only updates `free_user_assignments.instance_id`**.
   It does not change ALB routing, and `UserActivityMiddleware` overwrites that
-  column with whichever instance actually served the user's next request.
+  column with whichever instance actually served the next request.
 
-So the Lambda's rebalancing step is bookkeeping plus the experiment-sync
-trigger. Actual redistribution happens when a session is new, or when its
-sticky cookie lapses.
+So rebalancing is bookkeeping plus the experiment-sync trigger. Redistribution
+happens when a session is new, or when its sticky cookie lapses.
 
-**The cookie's duration is an inactivity window, not a lifetime.** The ALB
-refreshes it on each response, so a client that keeps polling never expires
-it. Two consequences worth knowing:
+**The cookie's duration is an inactivity window, not a lifetime** — the ALB
+refreshes it on each response, so a polling client never expires it. Hence:
 
 - An **already-active user is not moved onto newly added instances.** New
-  sessions, and users who go idle past the cookie duration and return, are
-  the ones that land on new capacity.
-- Capacity is therefore most effective when raised **before** a burst
-  arrives, not during it. Instance boot time applies on top (see
-  `CUSTOM_AMI_ARCHITECTURE.md`).
-
-What raising capacity buys is a larger rotation, which lowers the chance that
-concurrent heavy work shares one instance. It is not a per-instance quota:
-round robin counts requests rather than users, and each ALB node keeps its own
-rotation, so a small number of sessions spreads evenly in expectation rather
-than exactly.
+  sessions, and users who return after going idle, land on new capacity.
+- Raising capacity buys a larger rotation, not a per-instance quota: round
+  robin counts requests rather than users, and each ALB node keeps its own
+  rotation, so a small sample spreads evenly in expectation rather than
+  exactly.
 
 ### Procedure: Pre-provisioning Capacity for an Expected Burst
 
-When a larger-than-usual number of free users is expected at a known time,
-raise the ASG's minimum ahead of it.
+Reactive scaling cannot serve the first wave of a burst — a 5-minute polling
+interval, instance boot, and sticky sessions that keep active users put.
 
-This is not a statement that reactive scaling matters less — both are required.
-It is a statement about **timing**: reactive scaling cannot serve the first
-wave of a burst, because of the 5-minute polling interval, 6-10 minutes of
-instance boot, and sticky sessions that keep already-active users where they
-are. Capacity that must be present *at* a known moment has to be there
-beforehand. Reactive scaling then handles what the estimate did not anticipate.
-
-**1. Size it.** The Lambda's model is one instance per
-`USERS_PER_INSTANCE` (5) *concurrently active* users, where "active" means a
-request within `FREE_IDLE_THRESHOLD_MINUTES`.
-
-- Target minimum = `ceil(expected concurrent users / 5)`.
-- **Raise `asg_max_size` too if the target exceeds it.** The maximum is a
-  silent cap: the Lambda clamps to it and never reports wanting more.
-- `MinSize <= MaxSize` must hold or the update is rejected.
-
-**2. Allow lead time — at least 30 minutes before the audience connects.**
-6-10 minutes of instance boot while `use_custom_ami = false` (about 1 minute
-once the custom AMI is enabled), then task placement and two health checks at
-60-second intervals. Raising capacity *during* a burst does not help users
-whose sticky cookie is already held.
-
-**3. Choose a route.**
-
-| | Terraform (`asg_min_size` in tfvars) | Console / CLI |
-|---|---|---|
-| Takes effect | After an apply | Immediately |
-| Persistence | Durable | **The next `terraform apply` removes the floor** (`min_size` is not under `ignore_changes`) |
-| Use for | A permanent baseline change | A time-boxed window |
-
-An apply during the window does **not** immediately remove the instances —
-`desired_capacity` is ignored, so they stay up and the environment looks fine.
-What it removes is the *floor*. With the minimum back at its declared value,
-the `cpu-low` / `memory-low` alarms can then drain capacity in `-1` steps
-whenever utilisation dips, which during an event it does (users logged in but
-idle). **Seeing the instances still running after an apply is not evidence that
-the window is safe.** Freeze applies for the window, or re-apply the override
-immediately afterwards.
-
-**4. Check the whole chain** once the instances settle. All four numbers must
-agree:
-
-```
-ASG DesiredCapacity == ASG InService == ECS runningCount == healthy free targets
-```
-
-`HEALTH-03` and `HEALTH-05` in the e2e health lane assert exactly this, and
-`free-manager-errors` should read `OK`.
-
-**5. Restoring is not symmetric.** Lowering `min_size` does **not** lower
-desired capacity, because `desired_capacity` is under `ignore_changes` and
-nothing re-reads it. Capacity then drains only by `-1` steps from the
-`cpu-low` / `memory-low` alarms, or by Lambda scale-down, which needs five or
-more active users *and* a gap of two or more. **Set desired capacity
-explicitly when restoring**, or accept a gradual drain and its cost:
+1. **Size it.** Minimum = `ceil(expected concurrent users / 5)`, "concurrent"
+   meaning a request within `FREE_IDLE_THRESHOLD_MINUTES`. **Raise
+   `asg_max_size` first if the target exceeds it** — it is a cap the Lambda
+   clamps to, and `MinSize <= MaxSize` must hold.
+2. **Allow 30 minutes.** Instance boot, then task placement and two health
+   checks at 60-second intervals.
+3. **Choose a route.** `asg_min_size` in tfvars is durable; a console or CLI
+   override takes effect at once but **the next apply removes the floor**
+   (`min_size` is not under `ignore_changes`). So freeze applies for the
+   window, or re-apply the override straight after.
+   - An apply does not remove the instances — `desired_capacity` is ignored,
+     so they stay up. It removes the *floor*, after which `cpu-low` /
+     `memory-low` drain capacity in `-1` steps. **Instances still running
+     after an apply is not evidence the window is safe.**
+4. **Check the chain** once settled. `HEALTH-03` and `HEALTH-05` assert it, and
+   `free-manager-errors` should read `OK`:
+   ```
+   ASG DesiredCapacity == ASG InService == ECS runningCount == healthy targets
+   ```
+5. **Restore explicitly.** Lowering `min_size` does not lower desired
+   capacity, since nothing re-reads the ignored value:
 
 ```bash
 aws autoscaling update-auto-scaling-group --auto-scaling-group-name <asg> \
@@ -703,24 +632,26 @@ WHERE user_id = %s
 
 ### 4. ASG and ECS Out of Sync
 
-**Problem:** Manual ASG scaling or alarm-driven scaling changes ASG capacity
-but not ECS. An instance the ASG launched with no task on it cannot answer
-`/health`, so it is an unhealthy target serving nobody. Terraform does not
-correct this — `desired_count` is under `ignore_changes` — so the Lambda is the
-only thing that does.
+**Problem:** Manual or alarm-driven ASG scaling changes ASG capacity but not
+ECS. An instance the ASG launched with no task on it cannot answer `/health`,
+so it is an unhealthy target serving nobody. Terraform does not correct this —
+`desired_count` is under `ignore_changes` — so the Lambda is the only thing
+that does.
 
-**Solution:** `sync_ecs_to_asg()`, on two paths:
+**Solution:** `sync_ecs_to_asg()`, **raise-only except on a completed
+termination**:
 
-- **Fast path** — `handle_asg_event()`, on each launch/terminate event. The
-  EventBridge rule verifies the event is for the expected ASG before acting.
-- **Backstop** — every scheduled run, before the user threshold is considered.
-  The event path fires once per event and, with
-  `maximum_retry_attempts = 0`, is not retried, so a single transient
-  `UpdateService` failure would otherwise leave the mismatch until some later
-  ASG event. The backstop bounds that window to 5 minutes.
+| Caller | Direction |
+|---|---|
+| `handle_asg_event()`, launch event | raise only |
+| Every scheduled run (backstop for a missed event, which is never retried) | raise only |
+| `handle_asg_event()`, `EC2 Instance Terminate Successful` | may lower |
 
-Both read the ASG's desired capacity and set the ECS desired count to match,
-and do nothing when they already agree.
+Lowering waits for the termination because on scale-in the ASG waits out the
+target group's deregistration delay (300 s) *before* the terminate hook, with
+the container instance still ACTIVE in ECS. Lowering inside that window lets
+ECS stop a task chosen by AZ balance — possibly the survivor's — leaving no
+healthy target. `scale_service()` follows the same rule on decreases.
 
 
 ### 5. Unbalanced Distribution After Migration
@@ -741,23 +672,21 @@ and do nothing when they already agree.
 **Solution:** Only scales down when overprovisioned by >= 2 instances.
 This prevents thrashing when user count hovers near a boundary.
 
-**Two limits of this rule, both current behaviour:**
+**Two limits of this rule:**
 
-1. **It only applies at or above the threshold.** `handle_scheduled_monitoring()`
+1. **It applies only at or above the threshold.** `handle_scheduled_monitoring()`
    enters `scale_and_rebalance()` only when the active user count reaches
-   `FREE_USER_THRESHOLD`. Below that — 0 to 4 users, which is the state after a
-   busy period ends — the Lambda makes no scaling decision at all. **The
-   user-count model never returns the group to its baseline.**
-2. **Shrinking back to baseline is the load alarms' job.** `cpu-low` (<20 %) and
-   `memory-low` (<10 %) drive the `scale_down` policy by `-1` per 300-second
-   cooldown until `MinSize` is reached. That judges "no longer needed" by task
-   CPU and memory *reservation* utilisation rather than by users, takes roughly
-   `5 min x (N - MinSize)` plus the evaluation window, and is invisible from
-   this Lambda's logs and metrics.
+   `FREE_USER_THRESHOLD`. At 0 to 4 users — the state after a busy period ends
+   — the Lambda makes no scaling decision, so the user-count model never
+   returns the group to its baseline. The matrix above shows the user-count
+   term only; its low rows are not reachable through the Lambda.
+2. **Shrinking to baseline is the load alarms' job.** `cpu-low` (<20 %) and
+   `memory-low` (<10 %) drive `scale_down` by `-1` per 300-second cooldown
+   down to `MinSize` — judged by task CPU/memory *reservation* utilisation
+   rather than by users, taking about `5 min x (N - MinSize)`, and invisible
+   from this Lambda's logs.
 
-Which component *should* own scale-in is an open question, tracked as a known
-gap. The scaling matrix above shows the user-count term only; its low rows are
-not reachable through the Lambda for the reason in limit 1.
+Which component should own scale-in is tracked in #934.
 
 
 ---
@@ -777,24 +706,20 @@ not reachable through the Lambda for the reason in limit 1.
 
 ### Alarms
 
-| Alarm | Metric | Condition | Why |
-|---|---|---|---|
-| `free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 in 3 of the last 4 five-minute periods | The Lambda is the only user-count writer of free-tier capacity and runs unattended. A failure leaves capacity where it is and skips that cycle's rebalancing and metric publication. Three failing periods distinguishes a condition the Lambda cannot get past from a self-healing transient; 3 of 4 rather than 3 consecutive, because a period containing no invocation would otherwise reset the count. |
+| Alarm | Metric | Condition |
+|---|---|---|
+| `<env>-free-manager-errors` | `AWS/Lambda` `Errors` | Sum > 0 in 3 of the last 4 five-minute periods |
 
-**The alarm has a precondition in the code.** `AWS/Lambda` `Errors` counts only
-invocations that end in an **unhandled exception**, so the handlers log the
-traceback and then re-raise. A handler that returned an error body instead
-would read as a success to Lambda and leave this alarm permanently blind — the
-same arrangement, and the same reason, as `public_cleanup`. Because EventBridge
-invokes asynchronously, `maximum_retry_attempts = 0` stops Lambda from retrying
-a raised invocation twice and stacking copies of the 15-minute scale-up wait;
-the next scheduled run five minutes later is the retry this function should get.
-`TestHandlerFailsTheInvocation` pins the re-raise.
+**The alarm requires the handlers to re-raise.** `AWS/Lambda` `Errors` counts
+only invocations ending in an unhandled exception, so a handler returning an
+error body would leave it blind -- the same arrangement as `public_cleanup`.
+`maximum_retry_attempts = 0` keeps an async EventBridge invocation from being
+retried over the 15-minute scale-up wait.
 
-Note that the free tier's CPU/memory alarms (`cpu-high`, `cpu-low`,
-`memory-high`, `memory-low`) are **scaling triggers rather than notifications**
--- see [Two Triggers on One ASG](#two-triggers-on-one-asg). An idle
-environment holds a `-low` alarm in ALARM by design.
+The CPU/memory alarms (`cpu-high`, `cpu-low`, `memory-high`, `memory-low`) are
+**scaling triggers rather than notifications** -- see
+[Two Triggers on One ASG](#two-triggers-on-one-asg). An idle environment holds
+a `-low` alarm in ALARM by design.
 
 ### Key Log Events
 
