@@ -104,10 +104,18 @@ These variables control environment-specific behavior:
 ### Free-Tier ASG Capacity (`asg_min_size` / `asg_max_size` / `asg_desired_capacity`)
 
 The ASG carries `ignore_changes = [desired_capacity]`, and
-`aws_ecs_service.autoscaling` the same on its `desired_count`, because the
-Free Manager Lambda and the CPU/memory alarms write both at runtime and
-Terraform must not fight them. An apply that reset the ECS count to its
-declared `1` would leave the other instances task-less and unhealthy.
+`aws_ecs_service.autoscaling` the same on its `desired_count`, because both are
+written at runtime and Terraform must not fight them. The two are written by
+different things:
+
+- **ASG desired capacity** — by the Free Manager Lambda (user count) *and* the
+  CPU/memory alarms (instance load).
+- **ECS desired count** — by the Free Manager Lambda only, which syncs it to
+  the ASG. That is why `sync_ecs_to_asg()` exists: the alarms move the group
+  without telling ECS.
+
+An apply that reset the ECS count to its declared `1` would leave the other
+instances task-less and unhealthy.
 
 | Variable | Effect |
 |---|---|

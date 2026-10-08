@@ -263,7 +263,7 @@ def handle_asg_event(event, context):
                         "message": "ECS synced to ASG",
                         "asg_desired": synced["asg_desired"],
                         "ecs_previous": synced["ecs_previous"],
-                        "ecs_new": synced["asg_desired"],
+                        "ecs_new": synced["ecs_new"],
                     }
                 ),
             }
@@ -357,7 +357,18 @@ def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
     Callers and direction:
 
     - ASG launch event, and every scheduled run: raise only.
-    - ASG terminate event: `allow_decrease=True`.
+    - ASG terminate event: `allow_decrease=True`, which lowers by **one**.
+
+    One per event, not straight to the ASG target: the event is per instance,
+    so a 4 -> 2 scale-in produces two of them. Taking ECS from 4 to 2 on the
+    first would leave the second instance still deregistering while ECS has to
+    stop two tasks, and it chooses which -- possibly a survivor's. One
+    decrement per completed termination keeps the count at the number of
+    instances that have not finished terminating, and the second event
+    converges it.
+
+    A lost event therefore leaves ECS one too high, which costs a pending task
+    rather than a stopped one, and `HEALTH-05` reports the mismatch.
 
     Why decreases wait for the terminate event: on scale-in the ASG
     deregisters the instance and waits out the target group's deregistration
@@ -405,27 +416,34 @@ def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
             "changed": False,
         }
 
-    if asg_desired < ecs_desired and not allow_decrease:
-        print(
-            f"ECS ({ecs_desired}) is above the ASG ({asg_desired}); "
-            f"leaving it to the terminate event rather than choosing a task "
-            f"to stop mid-deregistration"
-        )
-        return {
-            "asg_desired": asg_desired,
-            "ecs_previous": ecs_desired,
-            "changed": False,
-        }
+    target = asg_desired
 
-    print(f"Syncing ECS from {ecs_desired} to {asg_desired}")
+    if asg_desired < ecs_desired:
+        if not allow_decrease:
+            print(
+                f"ECS ({ecs_desired}) is above the ASG ({asg_desired}); "
+                f"leaving it to the terminate event rather than choosing a "
+                f"task to stop mid-deregistration"
+            )
+            return {
+                "asg_desired": asg_desired,
+                "ecs_previous": ecs_desired,
+                "changed": False,
+            }
+
+        # One completed termination, one decrement.
+        target = max(asg_desired, ecs_desired - 1)
+
+    print(f"Syncing ECS from {ecs_desired} to {target}")
     ecs_client.update_service(
-        cluster=cluster_name, service=service_name, desiredCount=asg_desired
+        cluster=cluster_name, service=service_name, desiredCount=target
     )
-    print(f"Successfully synced ECS to {asg_desired}")
+    print(f"Successfully synced ECS to {target}")
 
     return {
         "asg_desired": asg_desired,
         "ecs_previous": ecs_desired,
+        "ecs_new": target,
         "changed": True,
     }
 
@@ -533,7 +551,15 @@ def scale_and_rebalance(
         set_scaling_lock(True)
 
         try:
-            scale_service(cluster_name, service_name, desired_instances)
+            # Passed even on the scale-up branch: the branch is chosen by the
+            # ASG's desired capacity, so an alarm that already lowered the ASG
+            # can leave ECS above the target while this reads as a scale-up.
+            scale_service(
+                cluster_name,
+                service_name,
+                desired_instances,
+                current_ecs_desired=current_ecs_desired,
+            )
             result["scaling_action"] = "scale_up"
 
             # Wait for instances to launch and rebalance with retry logic

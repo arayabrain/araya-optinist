@@ -381,6 +381,25 @@ class TestScaleAndRebalanceUsesAsgBounds:
 
         assert ecs.update_service.call_args[1]["desiredCount"] == 3
 
+    def test_target_between_asg_and_ecs_does_not_lower_ecs(self, mock_env_vars_free):
+        """
+        An alarm has already taken the ASG to 2 while ECS is still at 4, and
+        the user count wants 3. Against the ASG that is a scale-up, so the
+        branch raises the group -- but 3 is still *below* the ECS count, and
+        lowering it here is the unsafe mid-deregistration operation.
+        """
+        asg, ecs = self._run(
+            mock_env_vars_free,
+            users=15,
+            desired=2,
+            minimum=1,
+            maximum=5,
+            ecs_desired=4,
+        )
+
+        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
+        ecs.update_service.assert_not_called()
+
 
 class TestScheduledRunResyncsEcs:
     """
@@ -441,6 +460,73 @@ class TestScheduledRunResyncsEcs:
 
         ecs.update_service.assert_not_called()
         assert json.loads(result["body"])["ecs_resynced"] is False
+
+    @pytest.mark.parametrize(
+        "asg_desired,ecs_desired,expected",
+        [
+            # 4 -> 2 scale-in: one decrement per completed termination, so the
+            # second instance is never still deregistering while ECS has to
+            # choose two tasks to stop.
+            (2, 4, 3),
+            (2, 3, 2),
+            # A single-instance scale-in converges in one event.
+            (1, 2, 1),
+            # Never below the ASG, however late the events arrive.
+            (2, 2, None),
+        ],
+    )
+    def test_terminate_event_lowers_ecs_by_one(
+        self, mock_env_vars_free, asg_desired, ecs_desired, expected
+    ):
+        """The terminate event is per instance, so the decrement is too."""
+        from free_manager import handle_asg_event
+
+        event = {
+            "source": "aws.autoscaling",
+            "detail-type": "EC2 Instance Terminate Successful",
+            "detail": {"AutoScalingGroupName": "test-free-asg"},
+        }
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": ecs_desired}]
+            }
+
+            handle_asg_event(event, MagicMock())
+
+        if expected is None:
+            mock_ecs.update_service.assert_not_called()
+        else:
+            assert mock_ecs.update_service.call_args[1]["desiredCount"] == expected
+
+    def test_launch_event_does_not_lower_ecs(self, mock_env_vars_free):
+        """Only a completed termination may lower it."""
+        from free_manager import handle_asg_event
+
+        event = {
+            "source": "aws.autoscaling",
+            "detail-type": "EC2 Instance Launch Successful",
+            "detail": {"AutoScalingGroupName": "test-free-asg"},
+        }
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": 2}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 4}]
+            }
+
+            handle_asg_event(event, MagicMock())
+
+        mock_ecs.update_service.assert_not_called()
 
     def test_a_resync_failure_does_not_abort_the_run(self, mock_env_vars_free):
         """
