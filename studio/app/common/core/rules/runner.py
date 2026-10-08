@@ -302,20 +302,22 @@ class Runner:
                     single_input_info.update(tmp_value)
                 del tmp_value
 
-            if return_name in single_input_info:
-                # Rename the key of the matching element and store it again
-                #  (for further processing)
-                single_input_info[arg_name] = single_input_info.pop(return_name)
-
-                # Store in return value
-                # (At this stage, expand input_info split by function_id into flat)
-                result_input_info = cls.__deep_merge(
-                    result_input_info, single_input_info
+            if return_name not in single_input_info:
+                source = f"node '{function_id}'" if function_id else "the source node"
+                raise ValueError(
+                    f"Wired output '{return_name}' was not produced by {source}. "
+                    "Either it is conditional on the source's inputs or parameters "
+                    "(e.g. an ROI output that needs an iscell input), or the source "
+                    "result predates this output: re-run the source node."
                 )
 
-                merged_nwb = cls.__deep_merge(
-                    merged_nwb, single_input_info.pop("nwbfile", {})
-                )
+            # Store ONLY the wired output under the target arg name; merging the
+            # whole source pickle lets its unrelated keys shadow other wired args
+            result_input_info[arg_name] = single_input_info.pop(return_name)
+
+            merged_nwb = cls.__deep_merge(
+                merged_nwb, single_input_info.pop("nwbfile", {})
+            )
 
         result_input_info["nwbfile"] = merged_nwb
 

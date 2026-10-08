@@ -14,7 +14,12 @@ def PCA(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(
+    explained_variance=BarData,
+    projectedNd=ScatterData,
+    contribution=BarData,
+    cumsum_contribution=BarData,
+):
     # modules specific to function
     import numpy as np
     from sklearn.decomposition import PCA

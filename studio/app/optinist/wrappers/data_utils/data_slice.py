@@ -2,9 +2,44 @@ import numpy as np
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass.base import BaseData
-from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.scatter import ScatterData
+from studio.app.common.dataclass.timeseries import TimeSeriesData
+from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.wrappers.data_utils.data_utils_utils import return_as_data_type
+
+CELL_NORMALIZATION_OPTIONS = ("none", "zscore")
+MEAN_NORMALIZATION_OPTIONS = ("none", "zscore", "minmax")
+
+
+def _option(params, key, options):
+    value = (params.get(key, "none") if params else "none") or "none"
+    value = str(value).strip().lower()
+    if value not in options:
+        raise ValueError(f"Unknown {key} '{value}'; expected one of {options}")
+    return value
+
+
+def _zscore(values, axis):
+    if np.isnan(values).any():
+        center = np.nanmean(values, axis=axis, keepdims=True)
+        denom = np.nanstd(values, axis=axis, keepdims=True)
+    else:
+        center = values.mean(axis=axis, keepdims=True)
+        denom = values.std(axis=axis, keepdims=True)
+    denom = np.where(denom > 0, denom, 1.0)
+    out = values - center
+    out /= denom
+    return out
+
+
+def _time_axis(data):
+    """The axis that is time, by type. FluoData and TimeSeriesData are
+    (rows, time); BehaviorData is time-major and Bar and HeatMap index rows,
+    so they have none."""
+    if isinstance(data, TimeSeriesData) and not isinstance(data, BehaviorData):
+        return data.data.ndim - 1
+    return None
 
 
 def data_slice(
@@ -12,37 +47,63 @@ def data_slice(
     output_dir: str,
     params: dict = None,
     **kwargs,
-) -> dict(sliced_data=BaseData):
+) -> dict(sliced_data=BaseData, mean_timeseries=FluoData):
     """
     Slices data along specified dimensions.
 
     Parameters:
         data (BaseData): Input data to slice. Can be one of several types:
-                         BehaviorData, CsvData, FluoData, ImageData, or RoiData.
+                         BehaviorData, CsvData, FluoData, ImageData, RoiData,
+                         IscellData, TimeSeriesData, BarData, HeatMapData, or
+                         ScatterData.
         output_dir (str): Directory to save the output data.
         params (dict, optional): Dictionary containing slice specifications:
                                - 'slice_dims': List of slice specs for each dimension.
                                  Each spec can be:
                                  - Null/empty/':'/all: Keep the entire dimension
-                                 - 'start:end': Range slice
-                                 - 'start:step:end': Strided slice
+                                 - 'start:stop': Range slice
+                                 - 'start:stop:step': Strided slice
                                  - 'squeeze': Remove this dimension (must have size 1)
-                                 - integer: Single index to select (removes dimension)
+                                 - non-negative integer: Single index to select
+                                   (removes dimension)
+                                 Unparsable specs, 'squeeze' on a dimension of
+                                 size > 1, and out-of-range integer indices keep
+                                 the entire dimension and log a warning.
+                               - 'cell_normalization': 'none' or 'zscore'. Z-scores
+                                 each row of an indexed input along its time axis
+                                 before the mean is taken, so no single cell
+                                 dominates mean_timeseries. Applied to sliced_data
+                                 too; std and sem are dropped since their units
+                                 no longer match.
+                               - 'mean_normalization': Normalisation applied to the
+                                 mean_timeseries output: 'none', 'zscore', or 'minmax'.
 
     Returns:
         dict: A dictionary containing the sliced data and any derived data products.
+              mean_timeseries and cell_normalization apply only to inputs with a
+              (rows, time) layout, FluoData and TimeSeriesData, whose time axis
+              is not collapsed by an integer slice spec. BehaviorData is
+              time-major, and BarData and HeatMapData index rows, so they get
+              neither; asking for a normalisation on them logs a warning.
     """
     logger = AppLogger.get_logger()
     logger.info("Starting data slicing")
 
     # Get slice specifications from parameters
     slice_dims = params.get("slice_dims", None) if params else None
+    cell_normalization = _option(
+        params, "cell_normalization", CELL_NORMALIZATION_OPTIONS
+    )
+    mean_normalization = _option(
+        params, "mean_normalization", MEAN_NORMALIZATION_OPTIONS
+    )
 
-    if slice_dims is not None:
-        if isinstance(slice_dims, str):
-            slice_dims = [s.strip() for s in slice_dims.split(",")]
-        elif isinstance(slice_dims, list):
-            slice_dims = [s.strip() if isinstance(s, str) else s for s in slice_dims]
+    if slice_dims is None:
+        slice_dims = []
+    elif isinstance(slice_dims, str):
+        slice_dims = [s.strip() for s in slice_dims.split(",")]
+    elif isinstance(slice_dims, list):
+        slice_dims = [s.strip() if isinstance(s, str) else s for s in slice_dims]
 
     try:
         raw_data = data.data
@@ -54,18 +115,6 @@ def data_slice(
         raise ValueError(
             f"Input data doesn't have accessible .data attribute: {str(e)}"
         )
-
-    # Handle case where no slice specs are provided
-    if slice_dims is None:
-        logger.debug("No slice specifications provided, returning original data")
-        output_data = return_as_data_type(data, raw_data, output_dir, "sliced_data")
-        return {"sliced_data": list(output_data.values())[0]}
-
-    # Convert slice_dims to list format if it's a string
-    if isinstance(slice_dims, str):
-        slice_dims = [s.strip() for s in slice_dims.split(",")]
-    elif isinstance(slice_dims, list):
-        slice_dims = [s.strip() if isinstance(s, str) else s for s in slice_dims]
 
     # Make sure we have specs for all dimensions
     if len(slice_dims) < ndim:
@@ -148,28 +197,40 @@ def data_slice(
         sliced_data = raw_data[tuple(index_specs)]
         logger.info(f"Sliced data shape: {sliced_data.shape}")
 
-        # Handle std if available
+        # std and sem follow the data; both are assumed to share its shape
         sliced_std = None
-        if hasattr(data, "std") and data.std is not None:
+        sliced_sem = None
+        if getattr(data, "std", None) is not None:
             try:
-                # Apply the same slicing to std (assumes std has same shape as data)
                 sliced_std = data.std[tuple(index_specs)]
             except Exception as std_err:
                 logger.warning(f"Failed to slice std: {std_err}")
-                sliced_std = None
+        if getattr(data, "sem", None) is not None:
+            try:
+                sliced_sem = data.sem[tuple(index_specs)]
+            except Exception as sem_err:
+                logger.warning(f"Failed to slice sem: {sem_err}")
 
         # Handle index
         sliced_index = None
         index_dim = None
+        eff_index_dim = None
+        time_dim = _time_axis(data)
         if hasattr(data, "index") and data.index is not None:
             original_index = data.index
-            # Find which dimension matches the index length
-            for dim_idx, dim_size in enumerate(original_shape):
-                if dim_size == len(original_index):
-                    index_dim = dim_idx
-                    break
+            if time_dim is not None and len(original_index) == original_shape[time_dim]:
+                index_dim = time_dim
+            else:
+                # Find which dimension matches the index length
+                for dim_idx, dim_size in enumerate(original_shape):
+                    if dim_size == len(original_index):
+                        index_dim = dim_idx
+                        break
 
-            if index_dim is not None:
+            if index_dim is not None and isinstance(index_specs[index_dim], int):
+                # Integer spec collapsed the index dimension; no index remains
+                index_dim = None
+            elif index_dim is not None:
                 try:
                     # Apply the slice for the matching dimension
                     index_slice_spec = index_specs[index_dim]
@@ -182,6 +243,10 @@ def data_slice(
                         if sliced_data.ndim > 1
                         else sliced_data.shape[0]
                     )
+                # Position of the index axis after integer specs removed dimensions
+                eff_index_dim = index_dim - sum(
+                    1 for s in index_specs[:index_dim] if isinstance(s, int)
+                )
             else:
                 # No matching dimension found, create default index
                 sliced_index = np.arange(
@@ -190,43 +255,60 @@ def data_slice(
                     else sliced_data.shape[0]
                 )
 
+        # Row labels follow the non-index axis of a 2D timeseries
+        sliced_cell_numbers = None
+        cell_numbers = getattr(data, "cell_numbers", None)
+        if cell_numbers is not None and ndim == 2 and index_dim is not None:
+            cell_dim = 1 - index_dim
+            if len(cell_numbers) == original_shape[cell_dim]:
+                sliced_cell_numbers = np.atleast_1d(
+                    np.asarray(cell_numbers)[index_specs[cell_dim]]
+                )
+
+        eff_time_dim = (
+            eff_index_dim if time_dim is not None and index_dim == time_dim else None
+        )
+        if cell_normalization == "zscore" and eff_time_dim is None:
+            logger.warning(
+                f"cell_normalization is not applied to {type(data).__name__}: "
+                "it has no (rows, time) layout, or the time axis was sliced away"
+            )
+        elif cell_normalization == "zscore":
+            sliced_data = _zscore(sliced_data, axis=eff_time_dim)
+            sliced_std = None
+            sliced_sem = None
+
         # Create output filename
         file_name = (
             f"sliced_{data.file_name}" if hasattr(data, "file_name") else "sliced_data"
         )
 
-        # Initialize info dictionary
-        info = {}
-
-        # Get mean timeseries based on the index dimension
+        # Mean over every axis but time
         mean_timeseries = None
-        if sliced_index is not None and index_dim is not None:
-            # Calculate mean over all dimensions except the index dimension
-            other_axes = tuple(i for i in range(sliced_data.ndim) if i != index_dim)
-
-            if other_axes:  # Only if there are other dimensions to average over
+        if eff_time_dim is not None:
+            other_axes = tuple(i for i in range(sliced_data.ndim) if i != eff_time_dim)
+            if other_axes:
                 mean_timeseries = np.mean(sliced_data, axis=other_axes)
             else:
-                # If only one dimension (the index dimension), use the data as is
-                mean_timeseries = sliced_data
-
-        if mean_timeseries is not None:
-            # Create a FluoData object for mean timeseries with the sliced index
-            mean_ts_data = FluoData(
-                data=mean_timeseries, file_name="mean_timeseries", index=sliced_index
+                mean_timeseries = sliced_data.copy()
+        elif mean_normalization != "none":
+            logger.warning(
+                f"mean_normalization is not applied: {type(data).__name__} "
+                "produces no mean_timeseries"
             )
-            info["mean_timeseries"] = mean_ts_data
 
-        # Create mean image for multi-dimensional data
-        if sliced_data.ndim >= 3 and index_dim is not None:
-            # For 3D+ data, create a spatial average (average over the time dimension)
-            spatial_axes = tuple(i for i in range(sliced_data.ndim) if i != index_dim)
-            if len(spatial_axes) >= 2:
-                mean_image = np.mean(sliced_data, axis=index_dim)
-                mean_img_data = ImageData(
-                    data=mean_image, output_dir=output_dir, file_name="mean_image"
-                )
-                info["mean_image"] = mean_img_data
+        if isinstance(data, ScatterData) and sliced_data.ndim < 2:
+            logger.warning("ScatterData sliced below 2D no longer plots as a scatter")
+
+        if mean_timeseries is not None and mean_normalization != "none":
+            if not np.isfinite(mean_timeseries).any():
+                logger.warning("mean_timeseries is entirely non-finite; not normalized")
+            elif mean_normalization == "zscore":
+                mean_timeseries = _zscore(mean_timeseries, axis=None)
+            else:  # minmax
+                low = np.nanmin(mean_timeseries)
+                span = np.nanmax(mean_timeseries) - low
+                mean_timeseries = (mean_timeseries - low) / (span if span > 0 else 1.0)
 
         # Create sliced data object using return_as_data_type with kwargs
         output_data = return_as_data_type(
@@ -235,19 +317,18 @@ def data_slice(
             output_dir,
             file_name,
             std=sliced_std,
+            sem=sliced_sem,
             index=sliced_index,
+            cell_numbers=sliced_cell_numbers,
             output_type=None,
         )
-        info.update(output_data)
 
-        main_data_object = list(output_data.values())[0]
         # Build the result dictionary with the main output
-        result = {"sliced_data": main_data_object}
-        # Add any additional outputs
-        if "mean_timeseries" in info:
-            result["mean_timeseries"] = info["mean_timeseries"]
-        if "mean_image" in info:
-            result["mean_image"] = info["mean_image"]
+        result = {"sliced_data": list(output_data.values())[0]}
+        if mean_timeseries is not None:
+            result["mean_timeseries"] = FluoData(
+                data=mean_timeseries, file_name="mean_timeseries", index=sliced_index
+            )
 
         return result
 
