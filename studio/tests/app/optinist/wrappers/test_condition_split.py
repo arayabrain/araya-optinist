@@ -120,6 +120,30 @@ def test_margin_that_rejects_everything_fails_with_a_clear_message(tmp_path):
         _split(tmp_path, params={"margin": 3})
 
 
+def test_margin_wider_than_the_recording_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="and margin 5"):
+        _split(tmp_path, params={"margin": 5})
+
+
+@pytest.mark.parametrize(
+    "condition, kept",
+    [
+        ([0.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.0], [2, 3, 4, 5]),
+        ([5.0, 5.0, 5.0, 0.0, 5.0, 5.0, 5.0, 5.0], [0, 1, 5, 6, 7]),
+    ],
+)
+def test_margin_at_the_recording_edges(tmp_path, condition, kept):
+    # The edges do not count as rejected, so only real rejections widen
+    fluo = _fluo(len(condition))
+    out = _split(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(np.array(condition)),
+        params={"margin": 1},
+    )
+    np.testing.assert_array_equal(out["neural_data"].data, fluo[:, kept])
+
+
 def test_negative_margin_fails(tmp_path):
     with pytest.raises(AssertionError, match="margin must be >= 0"):
         _split(tmp_path, params={"margin": -1})

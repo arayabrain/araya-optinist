@@ -1,3 +1,4 @@
+import json
 import logging
 
 import numpy as np
@@ -127,6 +128,28 @@ def test_heatmap_rows_are_cell_numbers_with_iscell(tmp_path):
     assert info["mean_heatmap"].index == [2, 3, 1]
 
 
+@pytest.mark.parametrize("length", [NUM_CELL - 1, NUM_CELL + 1])
+def test_iscell_of_the_wrong_length_fails_with_a_clear_message(tmp_path, length):
+    with pytest.raises(AssertionError, match=f"iscell has {length} entries"):
+        _bin(tmp_path, iscell=IscellData(np.ones(length)))
+
+
+def test_nan_fluorescence_blanks_only_that_cell_and_bin(tmp_path):
+    fluo = _fluo()
+    fluo[0, 0] = np.nan  # covariate 0.5, so bin 0
+
+    mean = _bin(tmp_path, fluo=fluo)["mean"].data
+
+    assert np.isnan(mean[0, 0])
+    assert np.isfinite(mean[0, 1:]).all() and np.isfinite(mean[1:]).all()
+
+
+def test_bin_centres_carry_no_float_noise(tmp_path):
+    info = _bin(tmp_path, params={"bin_max": 1.2})
+
+    assert info["mean"].index == [0.15, 0.45, 0.75, 1.05]
+
+
 def test_heatmap_is_normalised_per_cell(tmp_path):
     fluo = _fluo()
     fluo[1] = 0.7
@@ -146,6 +169,18 @@ def test_empty_and_single_sample_bins_are_nan_and_logged(tmp_path, caplog):
     assert np.isnan(out["mean"][:, [1, 3]]).all()
     assert np.isnan(out["std"][:, 2]).all() and np.isnan(out["sem"][:, 2]).all()
     assert "2 of 4 bins have no samples: [1, 3]" in caplog.text
+
+
+def test_empty_bins_serialise_as_null_for_the_heatmap(tmp_path):
+    covariate = np.array([0.5, 0.5, 2.5])
+    heatmap = _bin(
+        tmp_path, fluo=np.ones((NUM_CELL, 3)), behavior=_behavior(covariate)
+    )["mean_heatmap"]
+
+    heatmap.save_json(str(tmp_path))
+
+    rows = json.loads(open(heatmap.json_path).read())["data"]
+    assert [row[1] for row in rows] == [None] * NUM_CELL
 
 
 def test_1d_behaviour_is_one_column(tmp_path):

@@ -58,6 +58,10 @@ def covariate_binning(
 
     cell_numbers = np.arange(X.shape[1])
     if iscell is not None:
+        assert len(iscell.data) == X.shape[1], (
+            f"iscell has {len(iscell.data)} entries but neural_data has "
+            f"{X.shape[1]} ROIs"
+        )
         cell_numbers = np.where(iscell.data > 0)[0]
         assert len(cell_numbers) > 0, "iscell marks no ROI as a cell, nothing to bin"
         X = X[:, cell_numbers]
@@ -73,7 +77,7 @@ def covariate_binning(
     assert hi > lo, f"bin range is empty: min {lo} must be below max {hi}"
 
     edges = np.linspace(lo, hi, n_bins + 1)
-    centers = (edges[:-1] + edges[1:]) / 2
+    centers = np.round((edges[:-1] + edges[1:]) / 2, 10)
     in_range = (covariate >= lo) & (covariate <= hi)
     bin_idx = np.digitize(covariate, edges[1:-1])
     assert in_range.any(), f"no sample of behaviour column {col} lies in [{lo}, {hi}]"

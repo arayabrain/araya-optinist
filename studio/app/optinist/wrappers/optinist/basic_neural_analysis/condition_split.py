@@ -78,10 +78,9 @@ def condition_split(
     margin = int(params.get("margin", 0))
     assert margin >= 0, f"margin must be >= 0, got {margin}"
     if margin:
-        near_rejected = (
-            np.convolve((~keep).astype(int), np.ones(2 * margin + 1), mode="same") > 0
-        )
-        keep &= ~near_rejected
+        window = np.ones(2 * margin + 1)
+        near = np.convolve((~keep).astype(int), window)[margin : margin + len(keep)]
+        keep &= near == 0
 
     assert keep.any(), (
         f"No sample of behaviour column {col} matches condition {condition} "

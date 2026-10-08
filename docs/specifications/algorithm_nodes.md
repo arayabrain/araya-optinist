@@ -253,7 +253,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Description:** Bins neural activity by a continuous behavioural covariate, such as track position or distance to a goal, and averages each cell's activity within each bin.
 - **Input:** FluoData, BehaviorData, IsCellData (optional)
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
-  - A 1D behaviour array is treated as a single column, so use `event_col_index: 0` for it.
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
 - **Output:** mean (TimeSeriesData, cells x bins, with std and sem, x axis is the bin centres), mean_heatmap (HeatMapData), nwbfile
   - mean_heatmap is the mean normalised to 0..1 per cell, one row per cell, labelled with the cell number. Empty bins are left blank.
   - The NWB output stores mean, std, sem, `bin_centers` and `num_sample`, the number of time samples in each bin.
@@ -266,14 +266,14 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **bin_min** [float, default: 0.0]: Lower edge of the first bin, used when `use_data_range` is false.
   - **bin_max** [float, default: 1.0]: Upper edge of the last bin, used when `use_data_range` is false.
   - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak. Only the heatmap is reordered.
-  - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials.
+  - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials. A NaN in a cell's fluorescence makes that cell's mean NaN for the bin it falls in, as in ETA.
 
 ###### condition_split
 
 - **Description:** Keeps only the time samples where a behaviour column meets a condition, so that a downstream node such as ETA runs on the matching part of the recording only.
 - **Input:** FluoData, BehaviorData
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
-  - A 1D behaviour array is treated as a single column, so use `event_col_index: 0` for it.
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
 - **Output:** neural_data (FluoData), behaviors_data (BehaviorData)
   - Both outputs keep the orientation of the inputs, so a downstream node uses the same transpose settings.
 - **Parameters:**
@@ -287,7 +287,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - 'between' keeps samples with threshold <= value <= threshold_upper.
   - **threshold** [float, default: 0.5]: Value the column is compared with.
   - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
-  - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake. Sosa 2025 needs 2.
+  - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake (for example 2 for Sosa et al. 2025).
   - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction
