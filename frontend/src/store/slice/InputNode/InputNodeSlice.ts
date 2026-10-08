@@ -82,6 +82,18 @@ const createInitialState = (
 
 const isPath = (p: unknown): p is string => typeof p === "string" && p !== ""
 
+// Only a plain object is merged, and only keys the defaults define
+const mergeKnownParams = <T extends object>(defaults: T, saved: unknown): T => {
+  if (saved == null || typeof saved !== "object" || Array.isArray(saved)) {
+    return defaults
+  }
+  const merged = { ...defaults }
+  for (const key of Object.keys(defaults) as (keyof T)[]) {
+    if (key in saved) merged[key] = (saved as T)[key]
+  }
+  return merged
+}
+
 const normalizeFilePath = (
   path: unknown,
   filePathType: "single" | "array",
@@ -243,10 +255,10 @@ export const inputNodeSlice = createSlice({
                   // fluo/behavior map to csv; merge the yaml param over the defaults
                   const param =
                     baseNode.fileType === FILE_TYPE_SET.CSV
-                      ? {
-                          ...baseNode.param,
-                          ...((node.data.param as CsvInputParamType) ?? {}),
-                        }
+                      ? mergeKnownParams(
+                          baseNode.param as CsvInputParamType,
+                          node.data.param,
+                        )
                       : baseNode.param
 
                   const nodeState: InputNodeType = {

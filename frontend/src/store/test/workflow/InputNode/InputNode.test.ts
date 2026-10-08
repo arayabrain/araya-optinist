@@ -3,6 +3,7 @@ import { expect, describe, test } from "@jest/globals"
 import { REACT_FLOW_NODE_TYPE_KEY } from "config/fileTypes.config"
 import { INITIAL_IMAGE_ELEMENT_ID } from "const/flowchart"
 import { WORKSPACE_TYPE } from "const/Workspace"
+import { FileNodeFactory } from "factories/FileNodeFactory"
 import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
 import { addInputNode } from "store/slice/FlowElement/FlowElementActions"
 import { selectNodeById } from "store/slice/FlowElement/FlowElementSelectors"
@@ -24,6 +25,7 @@ import {
 import {
   fetchWorkflow,
   importWorkflowConfig,
+  reproduceWorkflow,
 } from "store/slice/Workflow/WorkflowActions"
 import { getWorkspace } from "store/slice/Workspace/WorkspaceActions"
 import { store, rootReducer } from "store/store"
@@ -473,6 +475,114 @@ describe("InputNode importWorkflowConfig", () => {
         function: {},
       },
     })
+    expect(
+      selectInputNodeById("csv_empty")(state).selectedFilePath,
+    ).toBeUndefined()
+    expect(selectFilePathIsUndefined(state)).toBe(true)
+  })
+
+  const importNodes = (nodeDict: Record<string, unknown>) =>
+    rootReducer(initialRootState, {
+      type: importWorkflowConfig.fulfilled.type,
+      payload: { nodeDict, edgeDict: {} },
+    })
+
+  test("a blank entry in a path list is dropped", () => {
+    const state = importNodes({
+      image: inputNodePostData("image", FILE_TYPE_SET.IMAGE, {
+        path: ["a.tif", ""],
+      }),
+      csv: inputNodePostData("csv", FILE_TYPE_SET.CSV, { path: ["", "a.csv"] }),
+    })
+
+    expect(selectInputNodeById("image")(state).selectedFilePath).toEqual([
+      "a.tif",
+    ])
+    expect(selectInputNodeById("csv")(state).selectedFilePath).toBe("a.csv")
+  })
+
+  test("a behavior node keeps its path and saved param", () => {
+    const state = importNodes({
+      behavior: inputNodePostData("behavior", FILE_TYPE_SET.BEHAVIOR, {
+        path: "b.csv",
+        param: { setHeader: 0, setIndex: true, transpose: false },
+      }),
+    })
+
+    const node = selectInputNodeById("behavior")(state)
+    expect(node.selectedFilePath).toBe("b.csv")
+    expect(node.param).toEqual({
+      setHeader: 0,
+      setIndex: true,
+      transpose: false,
+    })
+  })
+
+  test("a MATLAB node without matPath keeps the run gate closed", () => {
+    const withoutPath = importNodes({
+      mat: inputNodePostData("mat", FILE_TYPE_SET.MATLAB, { path: "m.mat" }),
+    })
+    const withPath = importNodes({
+      mat: inputNodePostData("mat", FILE_TYPE_SET.MATLAB, {
+        path: "m.mat",
+        matPath: "field1",
+      }),
+    })
+
+    expect(selectFilePathIsUndefined(withoutPath)).toBe(true)
+    expect(selectFilePathIsUndefined(withPath)).toBe(false)
+  })
+
+  test.each([
+    ["a string", "header"],
+    ["an array", [1, 2]],
+  ])("a %s param falls back to the defaults", (_label, param) => {
+    const state = importNodes({
+      csv: inputNodePostData("csv", FILE_TYPE_SET.CSV, {
+        path: "c.csv",
+        param,
+      }),
+    })
+
+    expect(selectInputNodeById("csv")(state).param).toEqual(
+      FileNodeFactory.createInputNode(FILE_TYPE_SET.CSV).param,
+    )
+  })
+
+  test("only the known param keys are restored", () => {
+    const state = importNodes({
+      csv: inputNodePostData("csv", FILE_TYPE_SET.CSV, {
+        path: "c.csv",
+        param: { transpose: true, injected: "x" },
+      }),
+    })
+
+    expect(selectInputNodeById("csv")(state).param).toEqual({
+      ...FileNodeFactory.createInputNode(FILE_TYPE_SET.CSV).param,
+      transpose: true,
+    })
+  })
+
+  test("empty-string path via reproduceWorkflow keeps the run gate closed", () => {
+    const state = rootReducer(initialRootState, {
+      type: reproduceWorkflow.fulfilled.type,
+      meta: { arg: { workspaceId: 1, uid: "u3" } },
+      payload: {
+        nodeDict: {
+          csv_empty: inputNodePostData("csv_empty", FILE_TYPE_SET.CSV, {
+            path: "",
+          }),
+        },
+        edgeDict: {},
+        unique_id: "u3",
+        name: "reproduce",
+        success: "success",
+        started_at: "2026-01-01 00:00:00",
+        finished_at: "2026-01-01 00:00:10",
+        function: {},
+      },
+    })
+
     expect(
       selectInputNodeById("csv_empty")(state).selectedFilePath,
     ).toBeUndefined()

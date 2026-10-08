@@ -29,6 +29,7 @@ export const ImportWorkflowConfigButton = memo(
       event.preventDefault()
       if (event.target.files != null && event.target.files[0] != null) {
         const file = event.target.files[0]
+        // Reset so choosing the same file again still fires onChange
         event.target.value = ""
         const formData = new FormData()
         formData.append("file", file)
@@ -40,7 +41,7 @@ export const ImportWorkflowConfigButton = memo(
             dispatch(reset())
             if (Object.values(payload.nodeDict).some(isInputNodePostData)) {
               enqueueSnackbar(
-                "Make sure the workflow's input files are uploaded to this workspace",
+                "Upload the workflow's input files to this workspace before running",
                 { variant: "info" },
               )
             }
