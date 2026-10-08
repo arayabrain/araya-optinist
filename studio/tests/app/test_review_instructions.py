@@ -24,7 +24,7 @@ SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".yml", ".yaml", ".toml", ".ini", ".md"
 PATH_PREFIXES = ("studio/", "frontend/", "infrastructure/", ".github/", "docs/")
 FILE_NAME = re.compile(r"^[\w.-]+\.(py|ts|tsx|yml|yaml|md)$")
 SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9]*_[A-Za-z0-9_]*$")
-CAMEL = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$")
+CAMEL = re.compile(r"^[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*$")
 DOTTED = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 
 
