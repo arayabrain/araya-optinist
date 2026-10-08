@@ -14,6 +14,7 @@ export function stackedTrace(
   return y.map((value) => (value - mean) / (std + 1e-10) + index)
 }
 
+// drawOrderList keeps selections the ROI filter hides, so count only drawn keys
 export function visibleTraceCount(
   drawOrderList: string[],
   dataKeys: string[],
