@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from filelock import Timeout
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
@@ -269,9 +270,18 @@ async def run_result(
             workspace_id, uid, remote_bucket_name
         )
 
-        node_results = await WorkflowResult(workspace_id, uid).observe(
-            nodeDict.pendingNodeIdList
-        )
+        # A poll overlapping one mid-save answers nothing rather than save again
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
+        try:
+            observe_lock.acquire()
+        except Timeout:
+            node_results = {}
+        else:
+            try:
+                node_results = await workflow_result.observe(nodeDict.pendingNodeIdList)
+            finally:
+                observe_lock.release()
         if node_results:
             background_tasks.add_task(
                 WorkspaceDataCapacityService.update_experiment_data_usage,

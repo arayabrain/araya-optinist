@@ -69,26 +69,20 @@ class TimeSeriesData(BaseData):
         create_directory(self.json_path, delete_dir=True)
         JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)
 
-        # Prepare record data for chunked storage
         record_ids = [str(cell_i) for cell_i in self.cell_numbers]
-        record_data = []
+        columns = {"data": self.data}
+        if self.std is not None:
+            # A 1D std holds one value per record, spread over its time points
+            std = np.asarray(self.std)[: len(self.data)]
+            if std.ndim == 1:
+                std = std[:, np.newaxis]
+            columns["std"] = np.broadcast_to(std, self.data.shape)
 
-        for i, cell_i in enumerate(self.cell_numbers):
-            # Prepare data for this cell
-            data = self.data[i]
-            if self.std is not None:
-                std = self.std[i]
-                df = pd.DataFrame({"data": data, "std": std}, index=self.index)
-            else:
-                df = pd.DataFrame({"data": data}, index=self.index)
-
-            record_data.append(df)
-
-        # Use TimeSeriesChunkHandler to save in chunked format
         TimeSeriesChunkHandler.save_chunked_data(
             dirpath=self.json_path,
             record_ids=record_ids,
-            record_data=record_data,
+            columns=columns,
+            index=self.index,
         )
 
     @property

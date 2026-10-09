@@ -1,21 +1,29 @@
+import asyncio
 import copy
 import os
 import re
 import signal
 import time
 from abc import ABCMeta, abstractmethod
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from glob import glob
 from typing import Dict, List
 
 import yaml
 from fastapi import HTTPException, status
+from filelock import FileLock, Timeout
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    get_client_id_for_subprocess,
+    with_client_id_context,
+)
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -29,6 +37,7 @@ from studio.app.common.core.utils.datetime_utils import (
     get_datetime_for_timezone_formatted,
     parse_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import (
     InvalidPathError,
     join_filepath,
@@ -54,6 +63,8 @@ logger = AppLogger.get_logger()
 
 
 class WorkflowResult:
+    OBSERVE_LOCK_WAIT_SECONDS = 600
+
     def __init__(self, workspace_id: str, unique_id: str):
         self.workspace_id = workspace_id
         self.unique_id = unique_id
@@ -121,23 +132,39 @@ class WorkflowResult:
                     has_error=True, error_log="No Snakemake process found."
                 )
 
-            # re-run observe node list (reflects workflow error)
-            node_results = await self.__observe_nodes(
-                observe_node_ids, expt_config, workflow_error
-            )
+                # re-run observe node list (reflects workflow error)
+                node_results = await self.__observe_nodes(
+                    observe_node_ids, expt_config, workflow_error
+                )
 
         return node_results
+
+    def observe_lock(self, timeout: float = 0) -> FileLock:
+        """Held while observing, so two observers never save the same outputs"""
+        return FileLock(FileLockUtils.get_lockfile_path(self.workflow_dirpath), timeout)
 
     async def observe_overall(self) -> Dict[str, Message]:
         """
         Automatically observe all nodes
         """
-        expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+        # Finalization waits out a poll mid-save rather than save alongside it
+        lock = self.observe_lock(timeout=self.OBSERVE_LOCK_WAIT_SECONDS)
+        try:
+            lock.acquire()
+        except Timeout:
+            logger.warning(
+                f"Observe lock still held after {self.OBSERVE_LOCK_WAIT_SECONDS}s, "
+                f"observing without it: [{self.workspace_id}/{self.unique_id}]"
+            )
+        try:
+            expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
 
-        # Observe all nodes
-        observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
+            # Observe all nodes
+            observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
 
-        return await self.observe(observe_node_ids)
+            return await self.observe(observe_node_ids)
+        finally:
+            lock.release()
 
     async def __observe_nodes(
         self,
@@ -340,9 +367,32 @@ class NodeResult(BaseNodeResult):
         # case) error in node
         elif PickleReader.check_is_error_node_pickle(self.info):
             message = self.error()
+        # case) success already recorded, so its JSON is already saved
+        elif (
+            expt_function.success == NodeRunStatus.SUCCESS.value
+            and expt_function.outputPaths
+        ):
+            message = Message(
+                status=expt_function.success,
+                message=expt_function.message,
+                outputPaths=expt_function.outputPaths,
+            )
         # case) success in node
         else:
-            message = self.success()
+            # A worker process, so a large save holds neither the loop nor its GIL
+            self.info = None  # the worker re-reads it; don't hold two copies
+            with ProcessPoolExecutor(max_workers=1) as executor:
+                message = await asyncio.get_running_loop().run_in_executor(
+                    executor,
+                    partial(
+                        _save_node_outputs,
+                        type(self),
+                        self.workspace_id,
+                        self.unique_id,
+                        self.node_id,
+                        client_id=get_client_id_for_subprocess(),
+                    ),
+                )
 
         # Determine if the node has already been processed
         # *If it has, skip subsequent ExptConfig update process.
@@ -517,6 +567,14 @@ class PostProcessResult(NodeResult):
         workflow_error: WorkflowErrorInfo = None,
     ):
         super().__init__(workspace_id, unique_id, node_id, workflow_error)
+
+
+@with_client_id_context
+def _save_node_outputs(
+    result_cls, workspace_id: str, unique_id: str, node_id: str, client_id=None
+) -> Message:
+    # Re-reads the node pickle rather than receive it through the process pipe
+    return result_cls(workspace_id, unique_id, node_id).success()
 
 
 class WorkflowMonitor:
