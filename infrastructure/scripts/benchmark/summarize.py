@@ -69,6 +69,8 @@ def cgroup_summary(rows, t_start, t_end):
     baseline = to_int(before[-1]["mem_current"]) if before else None
     peak_cur = max((to_int(r["mem_current"]) or 0) for r in during) if during else None
     peak_hw = max((to_int(r["mem_peak"]) or 0) for r in rows)
+    # anon = process memory; file = page cache, reclaimable, so not demand
+    peak_anon = max((to_int(r["anon"]) or 0) for r in rows)
     swap = max((to_int(r["swap_current"]) or 0) for r in rows)
     oom = max((to_int(r["oom_kill"]) or 0) for r in rows)
     first, last = rows[0], rows[-1]
@@ -83,7 +85,9 @@ def cgroup_summary(rows, t_start, t_end):
             "|---|---|",
             f"| API baseline before run (MB) | {mb(baseline)} |",
             f"| Peak memory.current, 1 s samples (MB) | {mb(peak_cur)} |",
-            f"| memory.peak, kernel high-water (MB) | {mb(peak_hw)} |",
+            f"| memory.peak, kernel high-water, incl. page cache (MB) | "
+            f"{mb(peak_hw)} |",
+            f"| **Peak anon — demand, excl. page cache (MB)** | {mb(peak_anon)} |",
             f"| Peak swap (MB) | {mb(swap)} |",
             f"| OOM kills in cgroup | {oom} |",
             # Docker Desktop does not count bind-mount writes; see per-rule figures
