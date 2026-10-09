@@ -8,7 +8,7 @@
 #   run_bench.sh --algo suite2p|caiman --input <host path to tiff> \
 #                --variant U|P --results-dir <dir> [--conc N] [--label R3] \
 #                [--set node.dotted.param=value ...] [--cpus 2 | --cpuset 0-4] \
-#                [--timeout 10800] [--keep-outputs]
+#                [--env KEY=VALUE ...] [--timeout 10800] [--keep-outputs]
 #
 # Variants:  U = no memory limit (demand)   P = production ceiling, no swap
 set -euo pipefail
@@ -33,6 +33,7 @@ PROD_MEMORY="6656m"
 ALGO="" INPUT="" VARIANT="" RESULTS_DIR="" CONC=1 LABEL="" CPUS="2" CPUSET=""
 TIMEOUT=10800 KEEP_OUTPUTS=0
 OVERRIDES=()
+EXTRA_ENV=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --conc) CONC="$2"; shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
     --set) OVERRIDES+=("$2"); shift 2 ;;
+    --env) EXTRA_ENV+=("$2"); shift 2 ;;
     --cpus) CPUS="$2"; CPUSET=""; shift 2 ;;
     --cpuset) CPUSET="$2"; CPUS=""; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
@@ -63,6 +65,8 @@ case "$VARIANT" in
   P) MEM_FLAGS=(--memory="$PROD_MEMORY" --memory-swap="$PROD_MEMORY") ;;
   *) echo "variant must be U or P" >&2; exit 2 ;;
 esac
+ENV_FLAGS=()
+for e in ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}; do ENV_FLAGS+=(-e "$e"); done
 if [[ -n "$CPUSET" ]]; then CPU_FLAGS=(--cpuset-cpus="$CPUSET"); else CPU_FLAGS=(--cpus="$CPUS"); fi
 
 INPUT_DIR_HOST="$(cd "$(dirname "$INPUT")" && pwd)"
@@ -95,6 +99,7 @@ docker run -d --name "$CONTAINER" --platform linux/amd64 \
   -v "$OUT:/bench_out" \
   -e IS_STANDALONE=True -e REMOTE_STORAGE_TYPE=0 -e OPTINIST_BENCHMARK=1 \
   -e OPTINIST_DIR=/app/studio_data -e PYTHONPATH=/app/ -e TZ=UTC \
+  ${ENV_FLAGS[@]+"${ENV_FLAGS[@]}"} \
   -w /app --entrypoint "" "$IMAGE" \
   python main.py --host 0.0.0.0 --port 8000 --workers "$UVICORN_WORKERS" > /dev/null
 
@@ -160,7 +165,8 @@ python3 "$SCRIPT_DIR/write_provenance.py" \
   --uvicorn-workers "$UVICORN_WORKERS" --sample-interval "$SAMPLE_INTERVAL" \
   --probe "interval=${PROBE_INTERVAL}s timeout=${PROBE_TIMEOUT}s" --timeout "$TIMEOUT" \
   --t-runs-start "$T_RUNS_START" --t-runs-end "$T_RUNS_END" \
-  --container-state "$CONTAINER_STATE" ${OVERRIDES[@]+--overrides "${OVERRIDES[@]}"}
+  --container-state "$CONTAINER_STATE" ${OVERRIDES[@]+--overrides "${OVERRIDES[@]}"} \
+  ${EXTRA_ENV[@]+--extra-env "${EXTRA_ENV[@]}"}
 
 kill "$PROBE_PID" 2>/dev/null; wait "$PROBE_PID" 2>/dev/null || true; PROBE_PID=""
 python3 "$SCRIPT_DIR/summarize.py" "$OUT" > "$OUT/summary.md" || echo "summarize failed" >&2

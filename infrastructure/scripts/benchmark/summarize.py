@@ -129,6 +129,8 @@ def main():
         f"{prov['container']['cpu_flags']}) · "
         f"concurrency {prov['concurrency']}"
     )
+    if prov["workflow"].get("benchmark_env"):
+        print(f"- benchmark env: {', '.join(prov['workflow']['benchmark_env'])}")
     if prov["workflow"]["param_overrides"]:
         print(f"- overrides: {', '.join(prov['workflow']['param_overrides'])}")
     print(

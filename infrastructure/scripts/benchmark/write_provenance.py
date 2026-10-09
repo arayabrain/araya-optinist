@@ -53,6 +53,7 @@ def main():
     ]:
         p.add_argument(f"--{name}", default="")
     p.add_argument("--overrides", nargs="*", default=[])
+    p.add_argument("--extra-env", nargs="*", default=[])
     a = p.parse_args()
 
     docker_info = sh("docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}").split()
@@ -71,6 +72,7 @@ def main():
             "algo": a.algo,
             "fixture": f"infrastructure/scripts/benchmark/fixtures/{a.algo}.json",
             "param_overrides": a.overrides,
+            "benchmark_env": a.extra_env,
             "params": "shipped defaults unless overridden (see workflow-N.yaml)",
         },
         "input": {

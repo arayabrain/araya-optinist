@@ -1,3 +1,5 @@
+import os
+
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
@@ -168,7 +170,16 @@ def suite2p_roi(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(images=ImageData(ops["filelist"]).data, im=im),
+        "edit_roi_data": EditRoiData(
+            # Benchmark-only toggle (#893 / #531 sizing): keep the paths, not the
+            # movie. Breaks ROI editing; never set outside the benchmark.
+            images=(
+                ops["filelist"]
+                if os.environ.get("OPTINIST_BENCH_ROI_IMAGES_PATH") == "1"
+                else ImageData(ops["filelist"]).data
+            ),
+            im=im,
+        ),
         "nwbfile": nwbfile,
     }
 
