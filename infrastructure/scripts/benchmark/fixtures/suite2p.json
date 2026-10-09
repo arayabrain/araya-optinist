@@ -1,0 +1,14 @@
+{
+  "name": "bench-suite2p",
+  "description": "suite2p file_convert -> registration -> roi (tutorial1 without the behaviour/eta branch; the #637 pipeline)",
+  "nodes": [
+    {"id": "suite2p_file_convert_bench", "label": "suite2p_file_convert", "path": "suite2p/suite2p_file_convert"},
+    {"id": "suite2p_registration_bench", "label": "suite2p_registration", "path": "suite2p/suite2p_registration"},
+    {"id": "suite2p_roi_bench", "label": "suite2p_roi", "path": "suite2p/suite2p_roi"}
+  ],
+  "edges": [
+    ["input_bench", "image", "ImageData", "suite2p_file_convert_bench", "image", "ImageData"],
+    ["suite2p_file_convert_bench", "ops", "Suite2pData", "suite2p_registration_bench", "ops", "Suite2pData"],
+    ["suite2p_registration_bench", "ops", "Suite2pData", "suite2p_roi_bench", "ops", "Suite2pData"]
+  ]
+}

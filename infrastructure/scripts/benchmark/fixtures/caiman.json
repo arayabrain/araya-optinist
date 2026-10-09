@@ -1,0 +1,12 @@
+{
+  "name": "bench-caiman",
+  "description": "caiman_mc -> caiman_cnmf (tutorial2 without pca)",
+  "nodes": [
+    {"id": "caiman_mc_bench", "label": "caiman_mc", "path": "caiman/caiman_mc"},
+    {"id": "caiman_cnmf_bench", "label": "caiman_cnmf", "path": "caiman/caiman_cnmf"}
+  ],
+  "edges": [
+    ["input_bench", "image", "ImageData", "caiman_mc_bench", "image", "ImageData"],
+    ["caiman_mc_bench", "mc_images", "ImageData", "caiman_cnmf_bench", "images", "ImageData"]
+  ]
+}
