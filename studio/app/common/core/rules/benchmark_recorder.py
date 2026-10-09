@@ -6,7 +6,8 @@ Active only when OPTINIST_BENCHMARK=1. Appends one JSON line per rule to
 run inside the algorithm conda environments.
 
 Peak memory is read from the kernel's high-water mark (ru_maxrss), not sampled,
-so short allocation spikes are not averaged away.
+so short allocation spikes are not averaged away. phase() resets that mark
+(/proc/self/clear_refs) to attribute the peak to named steps within a rule.
 """
 
 import json
@@ -37,6 +38,22 @@ def _process_start_epoch() -> float:
     return btime + start_ticks / os.sysconf("SC_CLK_TCK")
 
 
+def _vm_hwm_kb() -> int:
+    """Peak RSS since the last reset (VmHWM), in KiB."""
+    with open("/proc/self/status") as f:
+        return next(int(ln.split()[1]) for ln in f if ln.startswith("VmHWM"))
+
+
+def _vm_rss_kb() -> int:
+    with open("/proc/self/status") as f:
+        return next(int(ln.split()[1]) for ln in f if ln.startswith("VmRSS"))
+
+
+def _reset_hwm() -> None:
+    with open("/proc/self/clear_refs", "w") as f:
+        f.write("5")
+
+
 def _proc_io() -> dict:
     io = {}
     with open("/proc/self/io") as f:
@@ -48,6 +65,47 @@ def _proc_io() -> dict:
 
 class BenchmarkRecorder:
     _marks = {}
+    _phases = []
+    # Peak RSS seen before any reset, in KiB; resets would otherwise hide it
+    _peak_kb = 0
+    _phase_stack = []
+
+    @classmethod
+    @contextmanager
+    def phase(cls, name: str):
+        """Attribute peak RSS to a named step. Nesting is supported."""
+        if not is_enabled():
+            yield
+            return
+        try:
+            cls._peak_kb = max(cls._peak_kb, _vm_hwm_kb())
+            _reset_hwm()
+        except OSError:
+            yield
+            return
+        frame = {"name": name, "child_peak_kb": 0, "t0": time.time()}
+        cls._phase_stack.append(frame)
+        try:
+            yield
+        finally:
+            cls._phase_stack.pop()
+            hwm = _vm_hwm_kb()
+            peak = max(hwm, frame["child_peak_kb"])
+            cls._peak_kb = max(cls._peak_kb, peak)
+            if cls._phase_stack:
+                parent = cls._phase_stack[-1]
+                parent["child_peak_kb"] = max(parent["child_peak_kb"], peak)
+            cls._phases.append(
+                {
+                    "name": name,
+                    "depth": len(cls._phase_stack),
+                    "peak_rss_mb": round(peak / 1024, 1),
+                    "rss_at_end_mb": round(_vm_rss_kb() / 1024, 1),
+                    "seconds": round(time.time() - frame["t0"], 1),
+                }
+            )
+            # The next step starts from a clean mark; the max so far is kept
+            _reset_hwm()
 
     @classmethod
     def mark(cls, name: str) -> None:
@@ -88,8 +146,11 @@ class BenchmarkRecorder:
                 "status": "error" if error else "ok",
                 "output_exists": os.path.exists(output),
                 "error": error,
-                # ru_maxrss is KiB on Linux
-                "peak_rss_mb": round(self_usage.ru_maxrss / 1024, 1),
+                # ru_maxrss is KiB on Linux; phase() resets may lower it
+                "peak_rss_mb": round(
+                    max(self_usage.ru_maxrss, cls._peak_kb, _vm_hwm_kb()) / 1024, 1
+                ),
+                "phases": cls._phases,
                 "children_peak_rss_mb": round(child_usage.ru_maxrss / 1024, 1),
                 "read_bytes": io.get("read_bytes"),
                 "write_bytes": io.get("write_bytes"),
@@ -99,7 +160,11 @@ class BenchmarkRecorder:
                 "cpu_sys_s": round(self_usage.ru_stime + child_usage.ru_stime, 1),
                 "t_proc_start": round(_process_start_epoch(), 3),
                 "t_main_start": round(t_start, 3),
-                "t_imports_done": cls._marks.get("imports_done"),
+                "t_imports_done": (
+                    round(cls._marks["imports_done"], 3)
+                    if "imports_done" in cls._marks
+                    else None
+                ),
                 "t_end": round(time.time(), 3),
                 "pid": os.getpid(),
                 "host": socket.gethostname(),

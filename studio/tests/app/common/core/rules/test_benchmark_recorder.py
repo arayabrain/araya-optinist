@@ -39,6 +39,9 @@ def read_records(tmp_path):
 @pytest.fixture(autouse=True)
 def reset_marks():
     BenchmarkRecorder._marks = {}
+    BenchmarkRecorder._phases = []
+    BenchmarkRecorder._phase_stack = []
+    BenchmarkRecorder._peak_kb = 0
 
 
 def test_disabled_writes_nothing(tmp_path, monkeypatch):
@@ -94,3 +97,34 @@ def test_recording_failure_does_not_affect_rule(tmp_path, monkeypatch):
 
     with BenchmarkRecorder.record(broken_smk):
         pass  # no exception escapes although the record cannot be written
+
+
+def test_phases_attribute_peaks_and_keep_the_rule_peak(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV_FLAG, "1")
+    smk = make_smk(tmp_path)
+    big = 200 * 1024 * 1024  # 200 MiB
+
+    with BenchmarkRecorder.record(smk):
+        with BenchmarkRecorder.phase("outer"):
+            with BenchmarkRecorder.phase("alloc"):
+                buf = bytearray(big)
+                buf[::4096] = b"x" * len(buf[::4096])  # touch every page
+                del buf
+            with BenchmarkRecorder.phase("idle"):
+                pass
+
+    (record,) = read_records(tmp_path)
+    phases = {p["name"]: p for p in record["phases"]}
+    assert phases["alloc"]["depth"] == 1
+    assert phases["outer"]["depth"] == 0
+    assert phases["alloc"]["peak_rss_mb"] >= phases["idle"]["peak_rss_mb"] + 150
+    # The parent carries its children's peak; resets do not hide the rule peak
+    assert phases["outer"]["peak_rss_mb"] >= phases["alloc"]["peak_rss_mb"]
+    assert record["peak_rss_mb"] >= phases["alloc"]["peak_rss_mb"]
+
+
+def test_phase_is_inert_when_disabled(monkeypatch):
+    monkeypatch.delenv(ENV_FLAG, raising=False)
+    with BenchmarkRecorder.phase("x"):
+        pass
+    assert BenchmarkRecorder._phases == []

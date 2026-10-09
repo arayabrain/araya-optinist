@@ -11,6 +11,7 @@ from filelock import FileLock
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_rule import SmkRule
 from studio.app.common.core.utils.config_handler import ConfigReader
@@ -47,9 +48,12 @@ class Runner:
             cls.write_pid_file(workflow_dirpath, __rule.type, run_script_path)
 
             # Read & construct input_info
-            orig_input_info = cls.__read_input_info(__rule.input)
-            input_info = cls.__align_input_info_content_keys(orig_input_info, __rule)
-            del orig_input_info
+            with BenchmarkRecorder.phase("read_inputs"):
+                orig_input_info = cls.__read_input_info(__rule.input)
+                input_info = cls.__align_input_info_content_keys(
+                    orig_input_info, __rule
+                )
+                del orig_input_info
 
             nwbfile = input_info["nwbfile"]
 
@@ -60,29 +64,33 @@ class Runner:
                     input_info.pop(key)
 
             # Construct output_info
-            output_info = cls.__execute_function(
-                __rule.path,
-                __rule.params,
-                nwbfile.get("input"),
-                os.path.dirname(__rule.output),
-                input_info,
-            )
+            with BenchmarkRecorder.phase("execute_function"):
+                output_info = cls.__execute_function(
+                    __rule.path,
+                    __rule.params,
+                    nwbfile.get("input"),
+                    os.path.dirname(__rule.output),
+                    input_info,
+                )
 
             # Save NWB data of Function(Node)
-            output_info["nwbfile"] = cls.__save_func_nwb(
-                f"{os.path.splitext(__rule.output)[0]}.nwb",
-                __rule.type,
-                nwbfile,
-                output_info,
-            )
+            with BenchmarkRecorder.phase("save_func_nwb"):
+                output_info["nwbfile"] = cls.__save_func_nwb(
+                    f"{os.path.splitext(__rule.output)[0]}.nwb",
+                    __rule.type,
+                    nwbfile,
+                    output_info,
+                )
 
-            PickleWriter.write(staged_pickle_path, output_info)
+            with BenchmarkRecorder.phase("pickle_write"):
+                PickleWriter.write(staged_pickle_path, output_info)
 
             # Save NWB data through Workflow
             if __rule.output in last_output:
                 path = join_filepath(os.path.dirname(os.path.dirname(__rule.output)))
                 path = join_filepath([path, "whole.nwb"])
-                cls.save_all_nwb(path, output_info["nwbfile"])
+                with BenchmarkRecorder.phase("save_all_nwb"):
+                    cls.save_all_nwb(path, output_info["nwbfile"])
 
             os.replace(staged_pickle_path, __rule.output)
 

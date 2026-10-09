@@ -59,6 +59,29 @@ def rules_table(path):
     return "\n".join(out)
 
 
+def phases_tables(path):
+    """Per-step peaks for rules recorded with BenchmarkRecorder.phase()."""
+    out = []
+    for line in open(path):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if not r.get("phases"):
+            continue
+        out += [
+            f"\n**{r['rule']}** — peak {r['peak_rss_mb']:.0f} MB\n",
+            "| Step | Peak RSS (MB) | RSS at end (MB) | Seconds |",
+            "|---|---|---|---|",
+        ]
+        for ph in r["phases"]:
+            indent = "  " * ph.get("depth", 0)
+            out.append(
+                f"| {indent}{ph['name']} | {ph['peak_rss_mb']:.0f} | "
+                f"{ph['rss_at_end_mb']:.0f} | {ph['seconds']:.1f} |"
+            )
+    return "\n".join(out)
+
+
 def cgroup_summary(rows, t_start, t_end):
     if not rows:
         return "No cgroup samples."
@@ -151,6 +174,10 @@ def main():
     for path in sorted(glob.glob(os.path.join(row, "rules-*.jsonl"))):
         print(f"\n## Per rule — {os.path.basename(path)}\n")
         print(rules_table(path))
+        phases = phases_tables(path)
+        if phases:
+            print(f"\n### Steps within rules — {os.path.basename(path)}")
+            print(phases)
     for path in sorted(glob.glob(os.path.join(row, "du-*.txt"))):
         print(f"\n## Output size — {os.path.basename(path)} (KB)\n")
         print("```\n" + open(path).read().rstrip() + "\n```")
