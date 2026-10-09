@@ -67,8 +67,18 @@ ROI detection, not for registration memory.
 | `summary.md` | The above reduced to tables |
 | `run-N.log`, `snakemake-N.log`, `api.log`, `*-N.yaml`, `du-N.txt` | Raw logs, the run's workflow / snakemake / experiment yaml, output size per node |
 
-Container-level write bytes exclude writes to bind mounts on Docker Desktop; use the per-rule
-`write_bytes` and `du-N.txt`.
+## Reading the results
+
+- **Demand is the container's peak `anon`** (process memory, API included), not `memory.peak`:
+  the latter includes page cache, which the kernel reclaims under pressure.
+- **Per-rule RSS overstates caiman**: its memmapped file pages count as RSS but are reclaimable.
+  Use the container's peak `anon` for caiman.
+- **If the container swapped, the figures are lower bounds.** Under variant U the only bound is
+  the Docker VM; when `Peak swap` is non-zero, raise the VM memory and rerun. On Docker Desktop
+  a memory change takes effect only after quitting and restarting Docker Desktop (its Restart
+  menu item is not enough); check with `docker info --format '{{.MemTotal}}'`.
+- Container-level write bytes exclude writes to bind mounts on Docker Desktop; use the per-rule
+  `write_bytes` and `du-N.txt`.
 
 ## How per-rule recording works
 
