@@ -68,7 +68,10 @@ def data_slice(
                                    (removes dimension)
                                  Unparsable specs, 'squeeze' on a dimension of
                                  size > 1, and out-of-range integer indices keep
-                                 the entire dimension and log a warning.
+                                 the entire dimension and log a warning. A slice
+                                 that selects no elements logs a warning, and a
+                                 start:stop:step spec that appears to be in
+                                 start:step:stop order logs a corrected hint.
                                - 'cell_normalization': 'none' or 'zscore'. Z-scores
                                  each row of an indexed input along its time axis
                                  before the mean is taken, so no single cell
@@ -158,32 +161,52 @@ def data_slice(
                 index_specs.append(slice(None))
             continue
 
-        # Parse slice notation (start:end or start:step:end)
+        # Parse slice notation (start:stop or start:stop:step)
         if isinstance(spec, str) and ":" in spec:
+            parts = [p.strip() for p in spec.split(":")]
             try:
-                parts = [p.strip() for p in spec.split(":")]
-
                 if len(parts) == 2:
-                    # Format: start:end
+                    # Format: start:stop
                     start = int(parts[0]) if parts[0] else None
-                    end = int(parts[1]) if parts[1] else None
-                    index_specs.append(slice(start, end))
+                    stop = int(parts[1]) if parts[1] else None
+                    step = None
 
                 elif len(parts) == 3:
                     # Format: start:stop:step
                     start = int(parts[0]) if parts[0] else None
                     stop = int(parts[1]) if parts[1] else None
                     step = int(parts[2]) if parts[2] else None
-                    index_specs.append(slice(start, stop, step))
 
                 else:
                     logger.warning(f"Invalid slice format: {spec}")
                     index_specs.append(slice(None))
+                    continue
 
             except ValueError:
                 logger.warning(f"Could not parse slice spec: {spec}")
                 index_specs.append(slice(None))
+                continue
 
+            parsed = slice(start, stop, step)
+            index_specs.append(parsed)
+
+            dim_size = raw_data.shape[i]
+            # step 0 is left to fail loudly when the slice is applied
+            if step != 0:
+                n_selected = len(range(*parsed.indices(dim_size)))
+                hint = ""
+                if len(parts) == 3 and all(parts) and n_selected <= 1 and stop != 0:
+                    swapped = slice(start, step, stop)
+                    if len(range(*swapped.indices(dim_size))) > max(n_selected, 1):
+                        hint = (
+                            "; the format is start:stop:step - did you mean "
+                            f"'{parts[0]}:{parts[2]}:{parts[1]}'?"
+                        )
+                if (n_selected == 0 and dim_size > 0) or hint:
+                    logger.warning(
+                        f"Slice '{spec}' selects {n_selected} of "
+                        f"{dim_size} elements on axis {i} (0-based){hint}"
+                    )
             continue
 
         # Unrecognized specification
