@@ -76,9 +76,11 @@ resource "aws_lambda_function" "free_manager" {
       ENV_PREFIX = var.environment
 
       # Free tier configuration
-      FREE_USER_THRESHOLD         = "5"  # Trigger scaling at 5 active users
-      FREE_IDLE_THRESHOLD_MINUTES = "5"  # Consider user idle after 5 minutes (reduced from 10)
-      MAX_FREE_INSTANCES          = "10" # Maximum number of free tier instances
+      # The instance count floor/ceiling are not set here: the Lambda reads the
+      # ASG's own MinSize/MaxSize (var.asg_min_size / var.asg_max_size), so the
+      # group's configuration cannot drift from what the Lambda will request.
+      FREE_USER_THRESHOLD         = "5" # Trigger scaling at 5 active users
+      FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
 
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
@@ -221,6 +223,73 @@ resource "aws_cloudwatch_log_group" "free_manager_logs" {
   tags = {
     Name = "Free Manager Logs"
     Type = "Free-CloudWatch"
+  }
+}
+
+# ===========================
+# Async Invoke Config
+# ===========================
+
+# The handler re-raises so failures reach the Errors metric. EventBridge
+# invokes asynchronously, so Lambda would retry a raised invocation twice by
+# default - overlapping the scale-up path's 15-minute wait loop with two more
+# copies of itself. The schedule fires again in 5 minutes, which is the
+# retry this function should get.
+resource "aws_lambda_function_event_invoke_config" "free_manager" {
+  function_name                = aws_lambda_function.free_manager.function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = 300
+}
+
+# ===========================
+# CloudWatch Alarm (Lambda Errors)
+# ===========================
+
+# The Lambda is the only user-count writer of free-tier capacity, and it runs
+# unattended every 5 minutes. A failure leaves capacity where it is and skips
+# that cycle's rebalancing and metric publication, so the Errors metric needs
+# an action of its own rather than dashboard-only visibility.
+#
+# Requires the handler to re-raise: AWS/Lambda Errors counts only invocations
+# that end in an unhandled exception, so a handler returning a 500 body would
+# leave this alarm permanently blind. Same arrangement as public_cleanup.
+#
+# Three failing 5-minute periods: one failed run is a transient (a throttled
+# API call, a cold RDS proxy connection) that the next run clears, whereas a
+# condition the Lambda cannot get past recurs on every run. Only the latter
+# should page.
+#
+# 3 of 4 rather than 3 consecutive: the function publishes a datapoint only
+# when invoked, and under treat_missing_data = notBreaching a period that
+# happens to contain no invocation would reset a consecutive count. The wider
+# window tolerates that at the cost of 5 more minutes to fire.
+resource "aws_cloudwatch_metric_alarm" "free_manager_errors" {
+  # var.environment, not local.env_prefix: the Lambda itself is
+  # "${var.environment}-free-manager", and public_cleanup's alarm follows the
+  # same convention. env_prefix would insert "-optinist" and break the name
+  # the health lane's EXPECTED_ALARMS asserts.
+  alarm_name          = "${var.environment}-free-manager-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "4"
+  datapoints_to_alarm = "3"
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "0"
+  alarm_description   = "Free Manager Lambda errored in 3 of the last 4 five-minute periods; free-tier capacity is no longer being managed"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    FunctionName = aws_lambda_function.free_manager.function_name
+  }
+
+  tags = {
+    Name    = "Free Manager Errors Alarm"
+    Type    = "Free-CloudWatch"
+    Service = "free-tier"
   }
 }
 

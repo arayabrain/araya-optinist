@@ -33,7 +33,10 @@ Required Environment Variables:
 - ASG_NAME: Auto Scaling Group name for free tier instances
 - FREE_USER_THRESHOLD: Number of active users to trigger scaling (default: 5)
 - FREE_IDLE_THRESHOLD_MINUTES: Minutes of inactivity to consider user idle (default: 5)
-- MAX_FREE_INSTANCES: Maximum number of free tier instances (default: 10)
+
+The instance count floor and ceiling are read from the ASG's own
+MinSize/MaxSize, not from configuration held here, so capacity can be
+adjusted on the group without redeploying this function.
 """
 
 import json
@@ -88,6 +91,15 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
     return value
 
 
+# Users one instance is provisioned to serve. Only the instance count scales,
+# so this is the divisor that turns an active user count into a target count.
+#
+# Paired with FREE_USER_THRESHOLD (env, also 5), which gates whether scaling
+# runs at all. Scaling starts at the threshold, but the first scale-up by user
+# count needs USERS_PER_INSTANCE + 1 users, so tuning one without the other
+# moves where scaling begins relative to where it has any effect.
+USERS_PER_INSTANCE = 5
+
 # Initialize AWS clients
 ecs_client: "ECSClient" = boto3.client("ecs")
 autoscaling_client: "AutoScalingClient" = boto3.client("autoscaling")
@@ -127,7 +139,10 @@ def handler(event, context):
         import traceback
 
         traceback.print_exc()
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        # Fail the invocation so the error surfaces on the Lambda Errors metric,
+        # which the free-manager-errors alarm watches. Returning a 500 body
+        # would read as a success to Lambda and leave the alarm blind.
+        raise
 
 
 def handle_scheduled_monitoring(event, context):
@@ -135,6 +150,7 @@ def handle_scheduled_monitoring(event, context):
     Handle periodic monitoring (every 5 minutes).
 
     Responsibilities:
+    - Resync the ECS desired count to the ASG
     - Count active users
     - Scale ASG if needed
     - Rebalance users across instances
@@ -146,7 +162,22 @@ def handle_scheduled_monitoring(event, context):
         activity_threshold_minutes = int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
         )
-        max_instances = int(get_required_env_var("MAX_FREE_INSTANCES", "10"))
+
+        # Backstop for the ASG-event sync, which fires once per launch or
+        # terminate and is not retried. Runs before the user threshold is
+        # considered: a task-less instance has to be corrected whether or not
+        # there is anyone to scale for. Raise-only - see sync_ecs_to_asg().
+        #
+        # Held rather than raised: the count, the metric and the scaling
+        # decision are all still worth doing. Re-raised at the end so the
+        # failure still reaches the Errors metric.
+        ecs_sync: Dict[str, Any] = {"changed": False}
+        sync_error: Exception | None = None
+        try:
+            ecs_sync = sync_ecs_to_asg()
+        except Exception as e:
+            print(f"ECS resync failed, continuing with the rest of the run: {e}")
+            sync_error = e
 
         # Count active free tier users
         active_user_count = count_active_free_users(
@@ -163,10 +194,7 @@ def handle_scheduled_monitoring(event, context):
                 f"User threshold reached ({active_user_count} >= {user_threshold}), "
                 f"initiating scaling and rebalancing"
             )
-            result = scale_and_rebalance(
-                active_user_count=active_user_count,
-                max_instances=max_instances,
-            )
+            result = scale_and_rebalance(active_user_count=active_user_count)
         else:
             print(
                 f"User threshold not reached ({active_user_count} < {user_threshold}), "
@@ -178,6 +206,11 @@ def handle_scheduled_monitoring(event, context):
                 "threshold": user_threshold,
             }
 
+        result["ecs_resynced"] = ecs_sync["changed"]
+
+        if sync_error is not None:
+            raise sync_error
+
         return {"statusCode": 200, "body": json.dumps(result)}
 
     except Exception as e:
@@ -185,7 +218,7 @@ def handle_scheduled_monitoring(event, context):
         import traceback
 
         traceback.print_exc()
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        raise
 
 
 def handle_asg_event(event, context):
@@ -217,60 +250,28 @@ def handle_asg_event(event, context):
                 "body": json.dumps({"message": "Event ignored - different ASG"}),
             }
 
-        # Sync ECS to ASG
-        cluster_name = get_required_env_var("CLUSTER_NAME")
-        service_name = get_required_env_var("FREE_SERVICE_NAME")
+        # Only a completed termination may lower the ECS desired count: by
+        # then the instance is gone, so ECS has no choice of task to make.
+        terminated = event_type == "EC2 Instance Terminate Successful"
+        synced = sync_ecs_to_asg(allow_decrease=terminated)
 
-        # Get ASG desired capacity
-        asg_response = autoscaling_client.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name]
-        )
-
-        if not asg_response["AutoScalingGroups"]:
-            raise ValueError(f"ASG {asg_name} not found")
-
-        asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
-        print(f"ASG desired capacity: {asg_desired}")
-
-        # Get ECS desired count
-        ecs_response = ecs_client.describe_services(
-            cluster=cluster_name, services=[service_name]
-        )
-
-        if not ecs_response["services"]:
-            raise ValueError(f"ECS service {service_name} not found")
-
-        ecs_desired = ecs_response["services"][0]["desiredCount"]
-        print(f"ECS desired count: {ecs_desired}")
-
-        # Sync if different
-        if asg_desired != ecs_desired:
-            print(f"Syncing ECS from {ecs_desired} to {asg_desired}")
-
-            ecs_client.update_service(
-                cluster=cluster_name, service=service_name, desiredCount=asg_desired
-            )
-
-            print(f"Successfully synced ECS to {asg_desired}")
-
+        if synced["changed"]:
             return {
                 "statusCode": 200,
                 "body": json.dumps(
                     {
                         "message": "ECS synced to ASG",
-                        "asg_desired": asg_desired,
-                        "ecs_previous": ecs_desired,
-                        "ecs_new": asg_desired,
+                        "asg_desired": synced["asg_desired"],
+                        "ecs_previous": synced["ecs_previous"],
+                        "ecs_new": synced["ecs_new"],
                     }
                 ),
             }
         else:
-            print(f"Already in sync at {asg_desired}")
-
             return {
                 "statusCode": 200,
                 "body": json.dumps(
-                    {"message": "Already in sync", "capacity": asg_desired}
+                    {"message": "Already in sync", "capacity": synced["asg_desired"]}
                 ),
             }
 
@@ -279,7 +280,7 @@ def handle_asg_event(event, context):
         import traceback
 
         traceback.print_exc()
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        raise
 
 
 def is_scaling_in_progress() -> bool:
@@ -344,16 +345,143 @@ def set_scaling_lock(in_progress: bool) -> None:
         print(f"Warning: Could not set scaling lock: {e}")
 
 
+def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
+    """
+    Point the ECS service's desired count at the ASG's desired capacity.
+
+    The ASG is the source of truth for free-tier capacity. An instance the ASG
+    launched but ECS placed no task on cannot answer /health, so it is an
+    unhealthy target serving nobody. Terraform no longer corrects this
+    (desired_count is ignored there), so this is the only thing that does.
+
+    Callers and direction:
+
+    - ASG launch event, and every scheduled run: raise only.
+    - ASG terminate event: `allow_decrease=True`, which lowers by **one**.
+
+    One per event, not straight to the ASG target: the event is per instance,
+    so a 4 -> 2 scale-in produces two of them. Taking ECS from 4 to 2 on the
+    first would leave the second instance still deregistering while ECS has to
+    stop two tasks, and it chooses which -- possibly a survivor's. One
+    decrement per completed termination keeps the count at the number of
+    instances that have not finished terminating, and the second event
+    converges it.
+
+    A lost event therefore leaves ECS one too high, which costs a pending task
+    rather than a stopped one, and `HEALTH-05` reports the mismatch.
+
+    Why decreases wait for the terminate event: on scale-in the ASG
+    deregisters the instance and waits out the target group's deregistration
+    delay (300 s by default) *before* the terminate hook, and ECS still sees
+    the container instance as ACTIVE throughout. Lowering the desired count in
+    that window lets ECS pick which task to stop by AZ balance -- possibly the
+    survivor's -- leaving no healthy free target until a replacement boots.
+
+    Raising is always safe, and is the only direction a missed sync can need:
+    the state it leaves behind is an instance without a task.
+
+    Args:
+        allow_decrease: Permit lowering the ECS desired count
+
+    Returns:
+        Dictionary with asg_desired, ecs_previous and whether it changed
+    """
+    asg_name = get_required_env_var("ASG_NAME")
+    cluster_name = get_required_env_var("CLUSTER_NAME")
+    service_name = get_required_env_var("FREE_SERVICE_NAME")
+
+    asg_response = autoscaling_client.describe_auto_scaling_groups(
+        AutoScalingGroupNames=[asg_name]
+    )
+    if not asg_response["AutoScalingGroups"]:
+        raise ValueError(f"ASG {asg_name} not found")
+
+    asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
+    print(f"ASG desired capacity: {asg_desired}")
+
+    ecs_response = ecs_client.describe_services(
+        cluster=cluster_name, services=[service_name]
+    )
+    if not ecs_response["services"]:
+        raise ValueError(f"ECS service {service_name} not found")
+
+    ecs_desired = ecs_response["services"][0]["desiredCount"]
+    print(f"ECS desired count: {ecs_desired}")
+
+    if asg_desired == ecs_desired:
+        print(f"Already in sync at {asg_desired}")
+        return {
+            "asg_desired": asg_desired,
+            "ecs_previous": ecs_desired,
+            "changed": False,
+        }
+
+    target = asg_desired
+
+    if asg_desired < ecs_desired:
+        if not allow_decrease:
+            print(
+                f"ECS ({ecs_desired}) is above the ASG ({asg_desired}); "
+                f"leaving it to the terminate event rather than choosing a "
+                f"task to stop mid-deregistration"
+            )
+            return {
+                "asg_desired": asg_desired,
+                "ecs_previous": ecs_desired,
+                "changed": False,
+            }
+
+        # One completed termination, one decrement.
+        target = max(asg_desired, ecs_desired - 1)
+
+    print(f"Syncing ECS from {ecs_desired} to {target}")
+    ecs_client.update_service(
+        cluster=cluster_name, service=service_name, desiredCount=target
+    )
+    print(f"Successfully synced ECS to {target}")
+
+    return {
+        "asg_desired": asg_desired,
+        "ecs_previous": ecs_desired,
+        "ecs_new": target,
+        "changed": True,
+    }
+
+
+def calculate_desired_instances(
+    active_user_count: int,
+    asg_min_size: int,
+    asg_max_size: int,
+) -> int:
+    """
+    Calculate the target instance count for the given active user count.
+
+    One instance per USERS_PER_INSTANCE users, clamped to the ASG's own
+    bounds. The bounds come from the group itself rather than from
+    configuration held here, so the capacity the ASG is configured to allow
+    is the capacity this function can ask for -- `SetDesiredCapacity` rejects
+    anything outside them.
+
+    Args:
+        active_user_count: Current number of active free tier users
+        asg_min_size: ASG MinSize
+        asg_max_size: ASG MaxSize
+
+    Returns:
+        Target instance count, within [asg_min_size, asg_max_size]
+    """
+    by_user_count = (active_user_count + USERS_PER_INSTANCE - 1) // USERS_PER_INSTANCE
+    return min(max(asg_min_size, by_user_count), asg_max_size)
+
+
 def scale_and_rebalance(
     active_user_count: int,
-    max_instances: int,
 ) -> Dict[str, Any]:
     """
     Scale ECS service and rebalance idle users to new instances.
 
     Args:
         active_user_count: Current number of active free tier users
-        max_instances: Maximum number of instances allowed
 
     Returns:
         Dictionary with scaling and rebalancing results
@@ -362,7 +490,6 @@ def scale_and_rebalance(
     print("SCALE AND REBALANCE")
     print("=" * 70)
     print(f"Active users: {active_user_count}")
-    print(f"Max instances: {max_instances}")
 
     # Check if scaling is already in progress
     if is_scaling_in_progress():
@@ -379,17 +506,34 @@ def scale_and_rebalance(
     service_info = get_service_info(cluster_name, service_name)
     current_desired = service_info["desired_count"]
     current_running = service_info["running_count"]
+    current_ecs_desired = service_info["ecs_desired_count"]
+    asg_min_size = service_info["min_size"]
+    asg_max_size = service_info["max_size"]
 
     print("\nCurrent state from get_service_info:")
     print(f"- Desired capacity (ASG): {current_desired}")
     print(f"- Running tasks (ECS): {current_running}")
+    print(f"- ASG bounds: min={asg_min_size}, max={asg_max_size}")
 
-    # Calculate desired instance count
-    # Simple algorithm: 1 instance per 5 users, minimum 1, maximum max_instances
-    desired_instances = min(max(1, (active_user_count + 4) // 5), max_instances)
+    desired_instances = calculate_desired_instances(
+        active_user_count, asg_min_size, asg_max_size
+    )
 
     print(f"\nCalculated desired instances: {desired_instances}")
-    print(f"Formula: min(max(1, ({active_user_count} + 4) // 5), {max_instances})")
+    print(
+        f"Formula: min(max({asg_min_size}, ceil({active_user_count} / "
+        f"{USERS_PER_INSTANCE})), {asg_max_size})"
+    )
+
+    # The cap is otherwise silent: the target is clamped and nothing says the
+    # user count asked for more than the group allows.
+    by_user_count = (active_user_count + USERS_PER_INSTANCE - 1) // USERS_PER_INSTANCE
+    if by_user_count > asg_max_size:
+        print(
+            f"WARNING: {active_user_count} active users want {by_user_count} "
+            f"instances, above MaxSize {asg_max_size}. Capacity is capped; "
+            f"raise asg_max_size to serve them."
+        )
 
     result = {
         "active_users": active_user_count,
@@ -407,7 +551,15 @@ def scale_and_rebalance(
         set_scaling_lock(True)
 
         try:
-            scale_service(cluster_name, service_name, desired_instances)
+            # Passed even on the scale-up branch: the branch is chosen by the
+            # ASG's desired capacity, so an alarm that already lowered the ASG
+            # can leave ECS above the target while this reads as a scale-up.
+            scale_service(
+                cluster_name,
+                service_name,
+                desired_instances,
+                current_ecs_desired=current_ecs_desired,
+            )
             result["scaling_action"] = "scale_up"
 
             # Wait for instances to launch and rebalance with retry logic
@@ -495,7 +647,12 @@ def scale_and_rebalance(
             print(
                 f"Scaling down from {current_desired} to {desired_instances} instances"
             )
-            scale_service(cluster_name, service_name, desired_instances)
+            scale_service(
+                cluster_name,
+                service_name,
+                desired_instances,
+                current_ecs_desired=current_ecs_desired,
+            )
             result["scaling_action"] = "scale_down"
         else:
             print("No scale down - within acceptable range")
@@ -530,14 +687,16 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
     Get current ASG and ECS service information.
 
     For free tier, we check both the ASG desired capacity and ECS service
-    status. The ASG desired capacity is the source of truth for scaling.
+    status. The ASG desired capacity is the source of truth for scaling, and
+    its MinSize/MaxSize are the bounds any new capacity must fall within.
 
     Args:
         cluster_name: ECS cluster name
         service_name: ECS service name
 
     Returns:
-        Dictionary with info (desired_count, running_count, pending_count)
+        Dictionary with info (desired_count, running_count, pending_count,
+        min_size, max_size)
     """
     print("\n" + "=" * 60)
     print("GET SERVICE INFO")
@@ -595,24 +754,36 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
     task_arns = tasks_response.get("taskArns", [])
     print(f"Running tasks: {len(task_arns)}")
 
-    # Return ASG capacity as the desired count (source of truth)
+    # Return ASG capacity and bounds (source of truth for scaling)
     # but also include ECS running/pending counts
     result = {
         "desired_count": asg["DesiredCapacity"],
         "running_count": service["runningCount"],
         "pending_count": service["pendingCount"],
+        "min_size": asg["MinSize"],
+        "max_size": asg["MaxSize"],
+        # ECS's own desired count, distinct from desired_count above (the
+        # ASG's). scale_service() needs it to tell a raise from a lower.
+        "ecs_desired_count": service["desiredCount"],
     }
 
     print("\nReturning:")
     print(f"desired_count (from ASG): {result['desired_count']}")
     print(f"running_count (from ECS): {result['running_count']}")
     print(f"pending_count (from ECS): {result['pending_count']}")
+    print(f"min_size (from ASG): {result['min_size']}")
+    print(f"max_size (from ASG): {result['max_size']}")
     print("=" * 60)
 
     return result
 
 
-def scale_service(cluster_name: str, service_name: str, desired_count: int) -> None:
+def scale_service(
+    cluster_name: str,
+    service_name: str,
+    desired_count: int,
+    current_ecs_desired: int | None = None,
+) -> None:
     """
     Update ASG desired capacity to scale the free tier instances.
 
@@ -626,8 +797,9 @@ def scale_service(cluster_name: str, service_name: str, desired_count: int) -> N
 
     Args:
         cluster_name: ECS cluster name (used for logging only)
-        service_name: ECS service name (used for logging only)
+        service_name: ECS service name
         desired_count: New desired capacity for the ASG
+        current_ecs_desired: Current ECS desired count, to decide direction
     """
     asg_name = get_required_env_var("ASG_NAME")
 
@@ -645,8 +817,16 @@ def scale_service(cluster_name: str, service_name: str, desired_count: int) -> N
             f"Successfully set ASG {asg_name} desired capacity to " f"{desired_count}"
         )
 
-        # Also update ECS service desired count to match
-        # This ensures ECS knows how many tasks should be running
+        # ECS is raised here but never lowered here. On scale-in the terminate
+        # event lowers it, once the instance is gone and ECS has no choice of
+        # task to make - see sync_ecs_to_asg().
+        if current_ecs_desired is not None and desired_count < current_ecs_desired:
+            print(
+                f"Leaving ECS at {current_ecs_desired}; the terminate event "
+                f"lowers it to {desired_count}"
+            )
+            return
+
         ecs_client.update_service(
             cluster=cluster_name, service=service_name, desiredCount=desired_count
         )
