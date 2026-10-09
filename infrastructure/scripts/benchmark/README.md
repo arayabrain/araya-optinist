@@ -80,6 +80,22 @@ ROI detection, not for registration memory.
 - Container-level write bytes exclude writes to bind mounts on Docker Desktop; use the per-rule
   `write_bytes` and `du-N.txt`.
 
+## On AWS (real lane)
+
+`aws/bootstrap.sh` prepares a standalone Amazon Linux 2023 x86_64 instance from user data:
+
+- schedules a self-shutdown;
+- installs Docker;
+- sets up swap for the `replica` role;
+- clones this branch, and pulls the image from ECR;
+- fetches the inputs from S3.
+
+`aws/run_cases.sh demand|replica` then runs the case list and copies each finished row to S3.
+
+- `BENCH_LANE` names the lane in row IDs.
+- Variant `S` reproduces the production container ceiling *with* its swap allowance. It needs host swap, which the replica role provides.
+- On native x86_64 Linux, wall clock is comparable with production, and `provenance.json` records that and the EC2 instance type.
+
 ## How per-rule recording works
 
 `studio/app/common/core/rules/benchmark_recorder.py`, wrapped around each rule script's

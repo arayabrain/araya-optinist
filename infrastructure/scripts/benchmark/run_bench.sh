@@ -6,11 +6,13 @@
 #
 # Usage:
 #   run_bench.sh --algo suite2p|caiman --input <host path to tiff> \
-#                --variant U|P --results-dir <dir> [--conc N] [--label R3] \
+#                --variant U|P|S --results-dir <dir> [--conc N] [--label R3] \
 #                [--set node.dotted.param=value ...] [--cpus 2 | --cpuset 0-4] \
 #                [--env KEY=VALUE ...] [--timeout 10800] [--keep-outputs]
 #
 # Variants:  U = no memory limit (demand)   P = production ceiling, no swap
+#            S = production ceiling plus production swap allowance (needs host swap)
+# BENCH_LANE (default "local") names the lane in the row ID and provenance.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +31,9 @@ IDLE_BEFORE_RUN=30
 
 # Production container ceiling (compute.tf, autoscaling task definition)
 PROD_MEMORY="6656m"
+# Production allows the container this much swap on top (maxSwap)
+PROD_MEMORY_PLUS_SWAP="$((6656 + 32768))m"
+LANE="${BENCH_LANE:-local}"
 
 ALGO="" INPUT="" VARIANT="" RESULTS_DIR="" CONC=1 LABEL="" CPUS="2" CPUSET=""
 TIMEOUT=10800 KEEP_OUTPUTS=0
@@ -63,7 +68,8 @@ docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER" && {
 case "$VARIANT" in
   U) MEM_FLAGS=() ;;
   P) MEM_FLAGS=(--memory="$PROD_MEMORY" --memory-swap="$PROD_MEMORY") ;;
-  *) echo "variant must be U or P" >&2; exit 2 ;;
+  S) MEM_FLAGS=(--memory="$PROD_MEMORY" --memory-swap="$PROD_MEMORY_PLUS_SWAP") ;;
+  *) echo "variant must be U, P or S" >&2; exit 2 ;;
 esac
 ENV_FLAGS=()
 for e in ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}; do ENV_FLAGS+=(-e "$e"); done
@@ -72,7 +78,7 @@ if [[ -n "$CPUSET" ]]; then CPU_FLAGS=(--cpuset-cpus="$CPUSET"); else CPU_FLAGS=
 INPUT_DIR_HOST="$(cd "$(dirname "$INPUT")" && pwd)"
 INPUT_NAME="$(basename "$INPUT")"
 WORKSPACE="bench"
-RUN_ID="$(date +%Y%m%d-%H%M)-local-${ALGO}-${INPUT_NAME%%.*}-${VARIANT}-c${CONC}${LABEL:+-$LABEL}"
+RUN_ID="$(date +%Y%m%d-%H%M)-${LANE}-${ALGO}-${INPUT_NAME%%.*}-${VARIANT}-c${CONC}${LABEL:+-$LABEL}"
 mkdir -p "$RESULTS_DIR" "$DATA_DIR/input/$WORKSPACE"
 OUT="$(cd "$RESULTS_DIR" && pwd)/$RUN_ID"
 mkdir -p "$OUT"

@@ -21,6 +21,77 @@ def sh(*cmd, cwd=None) -> str:
         return ""
 
 
+def host_info() -> dict:
+    """CPU and RAM on macOS (local lane) or Linux (EC2 lane), plus EC2 type."""
+    if platform.system() == "Darwin":
+        cpu = sh("sysctl", "-n", "machdep.cpu.brand_string")
+        ram = int(sh("sysctl", "-n", "hw.memsize") or 0)
+    else:
+        cpu = ""
+        ram = 0
+        with open("/proc/cpuinfo") as f:
+            cpu = next(
+                (ln.split(":", 1)[1].strip() for ln in f if "model name" in ln), ""
+            )
+        with open("/proc/meminfo") as f:
+            kb = next((int(ln.split()[1]) for ln in f if ln.startswith("MemTotal")), 0)
+            ram = kb * 1024
+    machine = platform.machine()
+    if platform.system() == "Darwin" and sh("sysctl", "-n", "hw.optional.arm64") == "1":
+        machine = "arm64"  # this Python may itself run under Rosetta
+    return {
+        "machine": machine,
+        "cpu": cpu,
+        "ram_bytes": ram,
+        "ec2_instance_type": ec2_instance_type(),
+        "emulation": (
+            "none (native x86_64)"
+            if machine in ("x86_64", "AMD64")
+            else "linux/amd64 image on arm64 host"
+        ),
+    }
+
+
+def ec2_instance_type() -> str:
+    """Instance type from IMDSv2, or "" off EC2."""
+    token = sh(
+        "curl",
+        "-s",
+        "-m",
+        "1",
+        "-X",
+        "PUT",
+        "http://169.254.169.254/latest/api/token",
+        "-H",
+        "X-aws-ec2-metadata-token-ttl-seconds: 60",
+    )
+    if not token:
+        return ""
+    return sh(
+        "curl",
+        "-s",
+        "-m",
+        "1",
+        "-H",
+        f"X-aws-ec2-metadata-token: {token}",
+        "http://169.254.169.254/latest/meta-data/instance-type",
+    )
+
+
+def native_x86_linux() -> bool:
+    return platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
+def host_swap_bytes():
+    """Swap visible to Docker's host: /proc/meminfo on Linux, else None."""
+    try:
+        with open("/proc/meminfo") as f:
+            kb = next(int(ln.split()[1]) for ln in f if ln.startswith("SwapTotal"))
+        return kb * 1024
+    except (OSError, StopIteration):
+        return None
+
+
 def input_sha256(path: str) -> str:
     """Identifies the exact input; seconds per GB, recomputed for every row."""
     digest = hashlib.sha256()
@@ -59,7 +130,7 @@ def main():
     docker_info = sh("docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}").split()
     provenance = {
         "run_id": a.run_id,
-        "lane": "local",
+        "lane": os.environ.get("BENCH_LANE", "local"),
         "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git": {
             "sha": sh("git", "rev-parse", "HEAD", cwd=a.repo),
@@ -99,16 +170,14 @@ def main():
         "timing": {
             "t_runs_start": int(a.t_runs_start or 0),
             "t_runs_end": int(a.t_runs_end or 0),
-            "wall_clock_comparable_with_production": False,
+            "wall_clock_comparable_with_production": native_x86_linux(),
         },
-        "conda_envs": "local volume (production: EFS, pre-#95)",
+        "conda_envs": "host volume (production: EFS, pre-#95)",
         "host": {
-            "machine": platform.machine(),
-            "cpu": sh("sysctl", "-n", "machdep.cpu.brand_string"),
-            "ram_bytes": int(sh("sysctl", "-n", "hw.memsize") or 0),
-            "docker_vm_mem_bytes": int(docker_info[0]) if docker_info else None,
-            "docker_vm_cpus": int(docker_info[1]) if len(docker_info) > 1 else None,
-            "emulation": "linux/amd64 image on arm64 host",
+            **host_info(),
+            "docker_mem_bytes": int(docker_info[0]) if docker_info else None,
+            "docker_cpus": int(docker_info[1]) if len(docker_info) > 1 else None,
+            "host_swap_bytes": host_swap_bytes(),
         },
     }
     with open(a.out, "w") as f:
