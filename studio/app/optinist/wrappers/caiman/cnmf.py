@@ -280,10 +280,12 @@ def component_outputs(
         else np.zeros((0, *dims))
     )
 
+    # the pixel order get_roi reads A in, so the NWB masks match the ROI images
+    mask_order = "C" if swap_dim else "F"
     roi_list = []
     for comp in order:
         kargs = {}
-        kargs["image_mask"] = A.T[comp].T.toarray().reshape(dims)
+        kargs["image_mask"] = A[:, comp].toarray().reshape(dims, order=mask_order)
         if accepted_list is not None:
             kargs["accepted"] = comp in accepted_list
         if rejected_list is not None:

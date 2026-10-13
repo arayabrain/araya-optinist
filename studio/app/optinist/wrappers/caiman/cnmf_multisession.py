@@ -170,7 +170,8 @@ def caiman_cnmf_multisession(
     n_cells = spatial_filtered.shape[-1]
     for i in range(n_cells):
         kargs = {}
-        kargs["image_mask"] = spatial_filtered.T[i].T.toarray().reshape(dims)
+        # caiman's Fortran pixel order, as get_roi reads it
+        kargs["image_mask"] = spatial_filtered[:, i].toarray().reshape(dims, order="F")
         roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
