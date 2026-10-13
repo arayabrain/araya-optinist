@@ -761,8 +761,68 @@ class TestScheduledRunComputesATargetAtAnyUserCount:
             handle_scheduled_monitoring({"source": "aws.events"}, context)
 
         mock_scale.assert_called_once_with(
-            active_user_count=active_users, context=context
+            active_user_count=active_users, context=context, scheduled_at=None
         )
+
+    def test_the_event_time_names_the_period(self, mock_env_vars_free):
+        """A scheduled event carries its fire time; floored to the interval
+        it is the run's period, passed on so the datapoint and the history
+        window do not depend on when the run actually got going."""
+        from free_manager import handle_scheduled_monitoring
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=0
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
+        ) as mock_scale:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": 1}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1}]
+            }
+
+            handle_scheduled_monitoring(
+                {"source": "aws.events", "time": "2026-10-13T11:04:47Z"},
+                MagicMock(),
+            )
+
+        assert mock_scale.call_args[1]["scheduled_at"] == datetime(
+            2026, 10, 13, 11, 0, tzinfo=timezone.utc
+        )
+
+
+class TestScheduledPeriod:
+    """scheduled_period: the event's fire time floored to the interval."""
+
+    @pytest.mark.parametrize(
+        "event,expected",
+        [
+            (
+                {"time": "2026-10-13T11:04:47Z"},
+                datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc),
+            ),
+            # Seconds after a boundary: the period that just started.
+            (
+                {"time": "2026-10-13T11:05:02Z"},
+                datetime(2026, 10, 13, 11, 5, tzinfo=timezone.utc),
+            ),
+            ({"source": "aws.events"}, None),
+            ({"time": "not a time"}, None),
+            ({"time": 12345}, None),
+            ("not an event", None),
+        ],
+    )
+    def test_period(self, event, expected):
+        from free_manager import scheduled_period
+
+        assert scheduled_period(event) == expected
 
 
 class TestScaleInChoosesByWorkload:
@@ -1501,6 +1561,63 @@ class TestPublishActiveUserMetric:
             assert metric["MetricName"] == "TargetInstances"
             assert metric["Value"] == 3
 
+    def test_the_period_stamps_the_datapoint(self, mock_env_vars_free):
+        """With a period given, the datapoint carries it as its timestamp,
+        so a run that got going after the boundary still lands in its own
+        period; without one, CloudWatch stamps it with the clock."""
+        from free_manager import publish_target_metric
+
+        period = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            publish_target_metric(2, timestamp=period)
+            stamped = mock_cw.put_metric_data.call_args[1]["MetricData"][0]
+            publish_target_metric(2)
+            unstamped = mock_cw.put_metric_data.call_args[1]["MetricData"][0]
+
+        assert stamped["Timestamp"] == period
+        assert "Timestamp" not in unstamped
+
+    def test_the_period_bounds_the_history_and_stamps_the_target(
+        self, mock_env_vars_free
+    ):
+        """Both reads of the period go through scale_and_rebalance: the
+        datapoint and the history window agree on which period this run is."""
+        from free_manager import scale_and_rebalance
+
+        period = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.is_scaling_in_progress", return_value=False
+        ), patch(
+            "free_manager.load_alarm_holds_capacity", return_value=False
+        ), patch(
+            "free_manager.surplus_of_one_has_persisted", return_value=False
+        ) as mock_history, patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [
+                    {
+                        "DesiredCapacity": 2,
+                        "MinSize": 1,
+                        "MaxSize": 3,
+                        "Instances": [],
+                    }
+                ]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 2, "runningCount": 2, "pendingCount": 0}]
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": []}
+
+            scale_and_rebalance(active_user_count=0, scheduled_at=period)
+
+        mock_target.assert_called_once_with(1, timestamp=period)
+        mock_history.assert_called_once_with(now=period)
+
     def test_target_is_published_even_when_the_lock_is_held(self, mock_env_vars_free):
         """A held lock skips the actions, not the measurement: the target is
         exactly what a reader needs to judge a skipped run."""
@@ -1531,5 +1648,5 @@ class TestPublishActiveUserMetric:
             result = scale_and_rebalance(active_user_count=7)
 
         assert result["status"] == "scaling_in_progress"
-        mock_target.assert_called_once_with(2)
+        mock_target.assert_called_once_with(2, timestamp=None)
         mock_asg.set_desired_capacity.assert_not_called()

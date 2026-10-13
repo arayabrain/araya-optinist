@@ -42,12 +42,11 @@ locals {
   critical_alerts_actions = var.environment == local.production_env_prefix ? [aws_sns_topic.critical_alerts[0].arn] : []
 }
 
-# Free-tier load alarms. These may ADD an instance when the user count
-# under-estimates the load; nothing here removes one. Scale-in belongs to the
-# free-manager Lambda alone, by user count, so that the instance removed is
-# chosen by workload and the two writers cannot undo each other. The former
-# cpu-low / memory-low alarms, which drove a scale-down policy, are gone for
-# that reason.
+# Free-tier load alarms: scale-out only.
+# - cpu-high / memory-high may add an instance the user count under-estimated
+# - no alarm removes one: scale-in is the free-manager Lambda's, by user
+#   count, choosing the instance by workload (one writer, no undoing)
+# - the former cpu-low / memory-low alarms and their scale-down policy are gone
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "${local.env_prefix}-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -380,11 +379,9 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            # TargetInstances is what the user count asks for, published by the
-            # free-manager Lambda on every run. Desired above it for longer
-            # than a run is a scale-in the Lambda could not make safely (a
-            # workflow on every candidate) or capacity a -high alarm added;
-            # desired below it is a scale-out that has not happened.
+            # TargetInstances: the user-count target, published by the Lambda every run.
+            # Desired above it past one run: a scale-in held back (workflow, load alarm);
+            # desired below it: a scale-out that has not happened
             ["OptiNiSt/FreeUsers/${var.environment}", "TargetInstances", { "label" : "Free Tier Target (user count)" }],
             ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Desired" }],
             ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Running" }],

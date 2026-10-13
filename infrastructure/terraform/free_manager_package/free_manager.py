@@ -107,28 +107,24 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
 # which is how the group returns to its baseline after a busy period.
 USERS_PER_INSTANCE = 5
 
-# Scale-out wait, bounded further by the invocation's remaining time (see
-# scale_up_wait_budget). Lifecycle hook ~5 min, EC2 boot ~5 min, ECS task
-# ~7 min, so the full readiness can exceed what one invocation has left; the
-# next scheduled run retries the rebalancing.
+# Scale-out wait ceiling (hook ~5 min + boot ~5 min + task ~7 min), bounded
+# further by the invocation's remaining time: scale_up_wait_budget
 MAX_WAIT_TIME = 1020
 CHECK_INTERVAL = 60
 
-# Left of the invocation when the wait loop must stop, so the lock is cleared
-# by this invocation's own finally rather than by the next run's 15-minute
-# metric window ageing it out.
+# Seconds left when the wait loop must stop, so this invocation's finally
+# clears the lock
 WAIT_MARGIN = 60
 
-# The schedule's interval, which is also the metric period the surplus
-# history is read at: one TargetInstances datapoint per run.
+# Schedule interval = metric period of the surplus history (one
+# TargetInstances datapoint per run)
 SCHEDULE_INTERVAL = 300
 
-# A surplus of exactly one instance is removed once it has lasted this many
-# consecutive runs. A surplus of two or more goes at once.
+# A surplus of 1 goes after this many consecutive runs; 2+ goes at once
 SURPLUS_OF_ONE_RUNS = 3
 
-# No scale-in while a load alarm is in ALARM, nor for this long after it
-# leaves ALARM (see load_alarm_holds_capacity).
+# No scale-in while a load alarm is in ALARM, nor for this long after:
+# load_alarm_holds_capacity
 ALARM_QUIET_PERIOD = 900
 
 # Initialize AWS clients
@@ -218,11 +214,12 @@ def handle_scheduled_monitoring(event, context):
         # Publish metric to CloudWatch
         publish_active_user_metric(active_user_count)
 
-        # Every run computes a target, whatever the count: the user-count
-        # model owns scale-in too, and 0 users have to bring the group back
-        # to its minimum.
+        # Every run computes a target, at any count: 0 users must bring the
+        # group back to MinSize
         result = scale_and_rebalance(
-            active_user_count=active_user_count, context=context
+            active_user_count=active_user_count,
+            context=context,
+            scheduled_at=scheduled_period(event),
         )
 
         result["ecs_resynced"] = ecs_sync["changed"]
@@ -361,7 +358,9 @@ def surplus_of_one_has_persisted(now: datetime | None = None) -> bool:
     published nothing, and the wait starts over.
 
     Args:
-        now: the clock, for tests; defaults to the current time
+        now: the run's period start from scheduled_period(), so the window
+            is the same whether the run fired early or late in its period;
+            None (a direct invocation) uses the clock
 
     Returns:
         True when the SURPLUS_OF_ONE_RUNS completed periods before ``now``
@@ -430,14 +429,13 @@ def surplus_of_one_has_persisted(now: datetime | None = None) -> bool:
     }
     target = series.get("target", {})
     desired = series.get("desired", {})
-    gaps: List[int | None] = [
-        (
-            int(desired[int(t.timestamp())] - target[int(t.timestamp())])
-            if int(t.timestamp()) in target and int(t.timestamp()) in desired
-            else None
-        )
-        for t in expected
-    ]
+    gaps: List[int | None] = []
+    for period in expected:
+        key = int(period.timestamp())
+        if key in target and key in desired:
+            gaps.append(int(desired[key] - target[key]))
+        else:
+            gaps.append(None)
     print(
         f"Surplus history over the {SURPLUS_OF_ONE_RUNS} completed periods before "
         f"{end:%H:%M}Z, newest first (desired - target, None = no datapoint): {gaps}"
@@ -675,9 +673,45 @@ def scale_up_wait_budget(context: Any) -> int:
     return max(0, min(MAX_WAIT_TIME, remaining_seconds - WAIT_MARGIN))
 
 
+def scheduled_period(event: Dict[str, Any]) -> datetime | None:
+    """
+    The period a scheduled run belongs to, from the event's own fire time.
+
+    EventBridge stamps a scheduled event with ``time``, the fire time, and
+    fire times are exactly the schedule interval apart. Floored to the
+    interval, that is the period the run's TargetInstances datapoint is
+    published into and the period the surplus history is read up to -- so
+    which period a run lands in does not depend on delivery delay, a cold
+    start or a slow database connection. The clock alone could put a run
+    that fires seconds before a period boundary on either side of it.
+
+    Args:
+        event: the Lambda event
+
+    Returns:
+        The period start, or None when the event carries no usable ``time``
+        (a direct invocation), in which case callers use the clock
+    """
+    fired = event.get("time") if isinstance(event, dict) else None
+    if not isinstance(fired, str):
+        return None
+    try:
+        fired_at = datetime.fromisoformat(fired.replace("Z", "+00:00"))
+    except ValueError:
+        print(f"Unreadable event time {fired!r}; using the clock")
+        return None
+    if fired_at.tzinfo is None:
+        fired_at = fired_at.replace(tzinfo=timezone.utc)
+    return datetime.fromtimestamp(
+        int(fired_at.timestamp()) // SCHEDULE_INTERVAL * SCHEDULE_INTERVAL,
+        timezone.utc,
+    )
+
+
 def scale_and_rebalance(
     active_user_count: int,
     context: Any = None,
+    scheduled_at: datetime | None = None,
 ) -> Dict[str, Any]:
     """
     Scale the free ASG to the user count and rebalance idle users.
@@ -689,6 +723,8 @@ def scale_and_rebalance(
     Args:
         active_user_count: Current number of active free tier users
         context: Lambda context, for the scale-out wait budget
+        scheduled_at: the run's period start (scheduled_period); None uses
+            the clock
 
     Returns:
         Dictionary with scaling and rebalancing results
@@ -724,9 +760,8 @@ def scale_and_rebalance(
         f"{USERS_PER_INSTANCE})), {asg_max_size})"
     )
 
-    # Published before anything acts on it, lock or not, so the intended
-    # capacity can be read against GroupDesiredCapacity on every run.
-    publish_target_metric(desired_instances)
+    # Published before anything acts on it, lock or not
+    publish_target_metric(desired_instances, timestamp=scheduled_at)
 
     # The cap is otherwise silent: the target is clamped and nothing says the
     # user count asked for more than the group allows.
@@ -848,10 +883,9 @@ def scale_and_rebalance(
             set_scaling_lock(False)
 
     elif desired_instances < current_desired:
-        # Scale down. A surplus of 2 or more goes at once; a surplus of 1
-        # only once it has persisted (see surplus_of_one_has_persisted), so
-        # a user count hovering at a boundary does not thrash. Neither while
-        # a load alarm says the capacity is needed.
+        # Scale down:
+        # - nothing while a load alarm holds capacity
+        # - a surplus of 2+ at once; a surplus of 1 once it has persisted
         surplus = current_desired - desired_instances
         result["scaling_action"] = "none"
         if load_alarm_holds_capacity():
@@ -859,7 +893,7 @@ def scale_and_rebalance(
                 f"No scale down - a load alarm is in ALARM or left it less than "
                 f"{ALARM_QUIET_PERIOD}s ago, the surplus of {surplus} stays"
             )
-        elif surplus >= 2 or surplus_of_one_has_persisted():
+        elif surplus >= 2 or surplus_of_one_has_persisted(now=scheduled_at):
             print(
                 f"Scaling down from {current_desired} to {desired_instances} instances"
             )
@@ -1112,9 +1146,8 @@ def select_instances_to_terminate(
             continue
         candidates.append(inst)
 
-    # One at a time, recounting the zones after each pick: two picks in a
-    # row from the same zone would be the imbalance the zone rule avoids.
-    # InService only, which is what the group's own rebalancing counts.
+    # One pick at a time, zones recounted after each (InService only, as the
+    # group counts them): two picks from one zone is the imbalance to avoid
     remaining = [inst for inst in instances if inst["lifecycle_state"] == "InService"]
     chosen: List[str] = []
     while candidates and len(chosen) < count:
@@ -1168,10 +1201,8 @@ def scale_in(instances: List[Dict[str, Any]], count: int) -> List[str]:
     """
     asg_name = get_required_env_var("ASG_NAME")
 
-    # Both reads raise on a failure. An empty users map would order the
-    # candidates by zone and age alone and could remove an instance with
-    # idle sessions ahead of an empty one; an empty workload map would read
-    # as no workflow anywhere.
+    # Both reads raise on failure: an empty map would read as "no users" /
+    # "no workflow" and misorder the choice
     users_per_instance = get_users_per_instance(
         activity_threshold_minutes=int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
@@ -1182,7 +1213,7 @@ def scale_in(instances: List[Dict[str, Any]], count: int) -> List[str]:
     print(f"Active users per instance: {users_per_instance}")
     print(f"Running workflows per instance: {workload_per_instance}")
 
-    # A copy: launch times are added here, and the caller's view stays as read
+    # Copy: launch times are added here, the caller's list stays as read
     instances = [dict(inst) for inst in instances]
     in_service = [i["id"] for i in instances if i["lifecycle_state"] == "InService"]
     launch_times: Dict[str, float] = {}
@@ -1610,7 +1641,9 @@ def publish_active_user_metric(active_user_count: int) -> None:
         # Don't fail the Lambda if metric publishing fails
 
 
-def publish_target_metric(target_instances: int) -> None:
+def publish_target_metric(
+    target_instances: int, timestamp: datetime | None = None
+) -> None:
     """
     Publish the instance count the user count asks for.
 
@@ -1621,19 +1654,26 @@ def publish_target_metric(target_instances: int) -> None:
 
     Args:
         target_instances: the clamped target from calculate_desired_instances
+        timestamp: the run's period start (scheduled_period), so the
+            datapoint lands in the period the run belongs to whatever the
+            clock says; None lets CloudWatch stamp it with the clock
     """
     try:
+        datapoint: Dict[str, Any] = {
+            "MetricName": "TargetInstances",
+            "Value": target_instances,
+            "Unit": "Count",
+        }
+        if timestamp is not None:
+            datapoint["Timestamp"] = timestamp
         cloudwatch_client.put_metric_data(
             Namespace=f"OptiNiSt/FreeUsers/{os.environ['ENV_PREFIX']}",
-            MetricData=[
-                {
-                    "MetricName": "TargetInstances",
-                    "Value": target_instances,
-                    "Unit": "Count",
-                }
-            ],
+            MetricData=[datapoint],
         )
-        print(f"Published CloudWatch metric: TargetInstances={target_instances}")
+        print(
+            f"Published CloudWatch metric: TargetInstances={target_instances}"
+            + (f" at {timestamp:%H:%M}Z" if timestamp else "")
+        )
     except Exception as e:
         print(f"Failed to publish CloudWatch metric: {e}")
         # Don't fail the Lambda if metric publishing fails

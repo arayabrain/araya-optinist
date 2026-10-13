@@ -95,6 +95,16 @@ class TestFreeManagerLambda:
         for alarm in ("cpu_high", "memory_high"):
             assert f"aws_cloudwatch_metric_alarm.{alarm}.alarm_name" in self.function
 
+    def test_the_schedule_delivers_the_event_with_its_fire_time(self):
+        """The Lambda stamps TargetInstances and bounds the surplus history
+        with the scheduled event's own time. A fixed target input would
+        replace the event and drop it."""
+        tf = read(FREE_MANAGER_TF)
+        target = resource_block(
+            tf, "aws_cloudwatch_event_target", "free_manager_target"
+        )
+        assert "input" not in target.replace("input_", "")
+
     def test_no_user_threshold_gates_the_scaling_decision(self):
         """The target is computed on every run at any user count; a threshold
         would leave the group unable to return to its minimum."""

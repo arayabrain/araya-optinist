@@ -793,10 +793,15 @@ healthy target. `scale_service()` follows the same rule on decreases.
    (`surplus_of_one_has_persisted()`); there is no state of its own. The
    periods are aligned to the schedule interval and the current, incomplete
    one is excluded, so the count does not depend on whether this run's own
-   datapoint is readable yet. A run that failed published nothing, so its
-   period is a hole and the wait starts over. A desired capacity lowered by
-   hand mid-period counts from the next period, one run later. This is how
-   2 → 1 at `MinSize = 1` happens, which no alarm does any more.
+   datapoint is readable yet. Which period a run belongs to is taken from
+   the scheduled event's fire time (`scheduled_period()`), not from the
+   clock: the datapoint is published with that period as its timestamp and
+   the history is read up to it, so a run that fires seconds before a
+   boundary and gets going after it still counts as its own period. A run
+   that failed published nothing, so its period is a hole and the wait
+   starts over. A desired capacity lowered by hand mid-period counts from
+   the next period, one run later. This is how 2 → 1 at `MinSize = 1`
+   happens, which no alarm does any more.
 
 **Neither rule applies while `cpu-high` or `memory-high` is in ALARM, nor
 for 15 minutes after it leaves ALARM** (`load_alarm_holds_capacity()`,
@@ -990,7 +995,7 @@ INTERNAL_API_SECRET             # Secret for internal API authentication
 
 | Lambda | Trigger | Frequency | EventBridge Rule |
 |--------|---------|-----------|------------------|
-| Free Manager | Scheduled monitoring | Every 5 minutes | `subscr-free-manager-schedule` |
+| Free Manager | Scheduled monitoring; the event's own `time` names the run's period | Every 5 minutes | `subscr-free-manager-schedule` |
 | Free Manager | ASG lifecycle events | On ASG events | `subscr-free-manager-asg-events` |
 
 ### Database Schema
@@ -1131,7 +1136,8 @@ aws ecs describe-services \
 | `scale_up_wait_budget()` | Scale-out wait bounded by the invocation's remaining time (pure) |
 | `get_service_info()` | Get ASG capacity, bounds and instances, plus ECS task counts |
 | `scale_service()` | Scale ASG and ECS service out |
-| `surplus_of_one_has_persisted()` | Whether desired has been one above the target for three runs, from `TargetInstances` vs `GroupDesiredCapacity` |
+| `scheduled_period()` | The run's period from the scheduled event's fire time, floored to the interval (pure) |
+| `surplus_of_one_has_persisted()` | Whether desired has been one above the target in the three completed periods before the run, from `TargetInstances` vs `GroupDesiredCapacity` |
 | `load_alarm_holds_capacity()` | Whether `cpu-high` / `memory-high` is in ALARM or left it less than 15 minutes ago; no scale-in while so |
 | `select_instances_to_terminate()` | Choose scale-in victims: no workflow, fewest users, heavier zone, newest (pure) |
 | `scale_in()` | Terminate the chosen instances with the desired capacity decremented |

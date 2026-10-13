@@ -79,14 +79,11 @@ resource "aws_lambda_function" "free_manager" {
       # The instance count floor/ceiling are not set here: the Lambda reads the
       # ASG's own MinSize/MaxSize (var.asg_min_size / var.asg_max_size), so the
       # group's configuration cannot drift from what the Lambda will request.
-      # No user threshold either: the target is computed on every run, at any
-      # user count, so the Lambda owns scale-in as well as scale-out.
+      # No user threshold: the target is computed on every run, at any count.
       FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
 
-      # The alarms that may add an instance. While one is in ALARM, and for
-      # 15 minutes after it clears, the Lambda removes nothing, so an instance
-      # the alarm added is not taken back while the load that asked for it is
-      # still there or has not yet shown on the larger group.
+      # Alarms that add capacity. No scale-in while one is in ALARM, nor for
+      # 15 min after it clears (load_alarm_holds_capacity).
       LOAD_ALARM_NAMES = join(",", [
         aws_cloudwatch_metric_alarm.cpu_high.alarm_name,
         aws_cloudwatch_metric_alarm.memory_high.alarm_name,
@@ -190,10 +187,10 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
         Action   = "autoscaling:DescribeAutoScalingGroups"
         Resource = "*"
       },
-      # ASG Management (scoped to free tier ASG). Scale-in terminates the
-      # instance the Lambda chose, with the desired capacity decremented in
-      # the same call, rather than lowering the capacity and letting the
-      # group's termination policy choose.
+      # ASG Management (scoped to free tier ASG)
+      # - SetDesiredCapacity: scale-out
+      # - TerminateInstanceInAutoScalingGroup: scale-in of the instance the
+      #   Lambda chose, desired capacity decremented in the same call
       {
         Effect = "Allow"
         Action = [
@@ -203,8 +200,8 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
         ]
         Resource = aws_autoscaling_group.main.arn
       },
-      # CloudWatch metrics (requires wildcard). DescribeAlarms reads the
-      # load alarms' state before a scale-in.
+      # CloudWatch metrics (requires wildcard); DescribeAlarms for the
+      # load alarms' state before a scale-in
       {
         Effect = "Allow"
         Action = [
@@ -327,19 +324,14 @@ resource "aws_cloudwatch_event_rule" "free_manager_schedule" {
   }
 }
 
-# CloudWatch Events Target
+# CloudWatch Events Target. No fixed input, on purpose:
+# - the Lambda routes on the native event (source aws.events)
+# - the event's `time` stamps TargetInstances and bounds the surplus history
+# - a fixed input replaces the event and drops `time`
 resource "aws_cloudwatch_event_target" "free_manager_target" {
   rule      = aws_cloudwatch_event_rule.free_manager_schedule.name
   target_id = "FreeManagerTarget"
   arn       = aws_lambda_function.free_manager.arn
-
-  input = jsonencode({
-    source      = "aws.events"
-    detail-type = "Scheduled Event"
-    detail = {
-      action = "monitor"
-    }
-  })
 }
 
 # Lambda Permission for CloudWatch Events
