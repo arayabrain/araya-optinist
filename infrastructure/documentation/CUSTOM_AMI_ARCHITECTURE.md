@@ -723,6 +723,10 @@ aws autoscaling describe-instance-refreshes \
   --auto-scaling-group-name <environment>-optinist-asg --region ap-northeast-1
 ```
 
+**With one instance, the free tier is unavailable for the refresh — roughly 20 minutes.** Below `MinHealthyPercentage 100` a refresh terminates before it launches. The old instance goes first (300 s deregistration, then the group's 300 s terminate hook), then the new one launches (300 s launch hook, boot, ECS registration, 300 s warmup). One instance is production's normal state, so schedule the refresh as a maintenance window.
+
+Do not raise `MinHealthyPercentage` to 100 to avoid the gap. Launch-before-terminate holds the group above its `DesiredCapacity` without changing it, and the Free Manager keeps the ECS desired count at `DesiredCapacity`, so the new instance gets no task, never passes the ELB health check, and the refresh fails after retrying. Terminate-first works because the old task stops and ECS places it on the new instance.
+
 **Lambda-created premium instances** are not replaced either. They continue on the old AMI until terminated. Options:
 - Wait for natural termination (next user login cycle replaces the instance)
 - Manually terminate via Console/CLI — Lambda creates a replacement from the updated launch template on next user assignment

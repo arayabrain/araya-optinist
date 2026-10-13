@@ -311,6 +311,8 @@ resource "aws_autoscaling_group" "main" {
     propagate_at_launch = true
   }
 
+  # Never starts on its own: launch_template uses version = "$Latest". Only
+  # the preferences a refresh would use; see CUSTOM_AMI_ARCHITECTURE.md
   instance_refresh {
     strategy = "Rolling"
     preferences {
