@@ -397,8 +397,11 @@ This procedure enables the custom AMI feature, builds the first AMI via Image Bu
 │    recreated from the updated launch template.           │
 │    terraform apply handles replacement per tier:         │
 │                                                          │
-│    → Free (ASG): instance_refresh triggers rolling       │
-│      replacement automatically                           │
+│    → Free (ASG): NOT replaced by terraform apply.        │
+│      instance_refresh does not start while the ASG       │
+│      uses version = "$Latest". Run a manual              │
+│      start-instance-refresh (see Active Instance         │
+│      Replacement)                                        │
 │    → Premium (Terraform-managed initial instance):       │
 │      force-recreated by Terraform                        │
 │    → Background: force-recreated by Terraform            │
@@ -521,7 +524,8 @@ If the custom AMI causes issues, revert to the stock ECS-optimized AMI:
                          ↓
 ┌──────────────────────────────────────────────────────────┐
 │ Step 3: Replace Running Instances                        │
-│    → Free tier: ASG instance_refresh replaces instances  │
+│    → Free tier: manual start-instance-refresh            │
+│      (see Active Instance Replacement)                   │
 │    → Premium: terminate existing, Lambda creates new     │
 │    → Background: Terraform recreates                     │
 │                                                          │
@@ -699,16 +703,27 @@ The following aspects of the current implementation are provisional and planned 
 
 ### 2. Active Instance Replacement
 
-**Current state:** `terraform apply` triggers instance replacement for most tiers automatically when the AMI changes (see Procedure B Step 6 for full detail):
+**Current state:** `terraform apply` triggers instance replacement for the Terraform-managed instances when the AMI changes (see Procedure B Step 6 for full detail):
 
 | Tier | Replacement Mechanism | Automatic? |
 |------|-----------------------|------------|
-| Free (ASG) | `instance_refresh` rolling replacement | Yes |
+| Free (ASG) | Manual `start-instance-refresh` (below) | **No** |
 | Premium (Terraform-managed initial) | Terraform force-recreates (`create_before_destroy`) | Yes |
 | Background | Terraform force-recreates (`create_before_destroy`) | Yes |
 | Premium (Lambda-created per-user) | Not replaced by `terraform apply` | **No** |
 
-**Lambda-created premium instances** are the only tier not automatically replaced. They continue on the old AMI until terminated. Options:
+**Free (ASG) instances** are not replaced by `terraform apply`. The ASG's `instance_refresh` block does not start a refresh while `launch_template` uses `version = "$Latest"`, because a new template version changes nothing in the ASG's own configuration. Scale-in does not rotate them out either: the group terminates the *newest* instance. After a launch-template change, start a refresh by hand, when no free workflow is running — it replaces each instance, and a workflow on it is interrupted:
+
+```bash
+aws autoscaling start-instance-refresh \
+  --auto-scaling-group-name <environment>-optinist-asg \
+  --preferences '{"MinHealthyPercentage":50,"InstanceWarmup":300}' \
+  --region ap-northeast-1
+aws autoscaling describe-instance-refreshes \
+  --auto-scaling-group-name <environment>-optinist-asg --region ap-northeast-1
+```
+
+**Lambda-created premium instances** are not replaced either. They continue on the old AMI until terminated. Options:
 - Wait for natural termination (next user login cycle replaces the instance)
 - Manually terminate via Console/CLI — Lambda creates a replacement from the updated launch template on next user assignment
 

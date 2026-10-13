@@ -236,7 +236,9 @@ resource "aws_autoscaling_group" "main" {
   force_delete = true
   # Sticky sessions accumulate on long-lived instances; the newest holds only
   # sessions placed since it launched. Workload-blind: a workflow on it is
-  # still stopped
+  # still stopped. Scale-in no longer rotates old instances out, and
+  # instance_refresh does not start under version = "$Latest", so a template
+  # change reaches running instances only via a manual start-instance-refresh
   termination_policies      = ["NewestInstance"]
   wait_for_capacity_timeout = "0"
 
@@ -299,7 +301,10 @@ resource "aws_autoscaling_group" "main" {
 
   # Authorises the ECS service-linked role to complete the
   # ecs-managed-draining-termination-hook (its policy requires this tag to
-  # exist). Without it a scaled-in instance waits out the hook's 3600 s timeout
+  # exist). Without it a scaled-in instance waits out the hook's 3600 s timeout.
+  # ECS adds the tag itself when the capacity provider is attached; declaring
+  # it here stops the next apply removing it. Also required for ECS to delete
+  # the hook if managed_draining is ever turned off
   tag {
     key                 = "AmazonECSManaged"
     value               = "true"
@@ -498,6 +503,7 @@ resource "aws_ecs_capacity_provider" "main" {
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.main.arn
+    managed_draining               = "ENABLED"
     managed_termination_protection = "DISABLED"
 
     managed_scaling {

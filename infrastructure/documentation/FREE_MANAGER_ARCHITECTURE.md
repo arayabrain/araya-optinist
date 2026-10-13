@@ -42,9 +42,13 @@
      `AmazonECSManaged` tag it needs), but it does not save a workflow: the
      free service's `deployment_minimum_healthy_percent = 0` lets ECS stop the
      task without waiting for a replacement
-   - `termination_policies = ["NewestInstance"]` limits who is hit: with sticky
-     sessions the newest instance holds only sessions placed since it launched.
-     It does not look at workload
+   - `termination_policies = ["NewestInstance"]` narrows which users are hit:
+     the sticky cookie is re-issued on every response, so active users stay on
+     the instance they started on, and the newest instance holds only sessions
+     placed since it launched. It does not look at workload
+   - A scaled-in instance is released in about 10 minutes: the target group's
+     300 s deregistration delay, then the group's own logging-only
+     `-terminate-hook`, which nothing completes and which times out at 300 s
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
