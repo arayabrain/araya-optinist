@@ -73,8 +73,8 @@ def _binary_to_tiff(io, ops, output_dir, file_name, batch_size=200):
     """
     Write the registered binary to the TIFF path ImageData would use.
 
-    tifffile.memmap lays the file out as one contiguous series, as imwrite does,
-    so readers see the same shape and pixels; only page-cache memory is used.
+    tifffile writes a frame iterator with a declared shape exactly as it writes
+    the whole array (byte-identical file), so only one batch is held at a time.
     """
     import numpy as np
     import tifffile
@@ -91,12 +91,11 @@ def _binary_to_tiff(io, ops, output_dir, file_name, batch_size=200):
     Ly, Lx = ops["Ly"], ops["Lx"]
     with io.BinaryFile(Ly=Ly, Lx=Lx, read_filename=ops["reg_file"]) as binary:
         nframes = binary.n_frames
-        out = tifffile.memmap(tiff_path, shape=(nframes, Ly, Lx), dtype=np.int16)
-        for indices, frames in binary.iter_frames(
-            batch_size=batch_size, dtype=np.int16
-        ):
-            out[indices[0] : indices[-1] + 1] = frames
-        out.flush()
-        del out
+
+        def frames():
+            for _, batch in binary.iter_frames(batch_size=batch_size, dtype=np.int16):
+                yield from batch
+
+        tifffile.imwrite(tiff_path, frames(), shape=(nframes, Ly, Lx), dtype=np.int16)
 
     return [tiff_path]
