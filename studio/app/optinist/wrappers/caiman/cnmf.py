@@ -113,13 +113,19 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
 
 
 def util_get_image_memmap_from_files(
-    function_id: str, paths, file_path: str, batch_size: int = 200
+    function_id: str, paths, file_path: str, batch_size: int = 1024
 ):
     """
     As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
     filled from the image files batch by batch: the movie is never held in
     memory as a whole, nor a second time while being copied into the memmap.
     The memmap is the same, byte for byte.
+
+    The memmap is pixels x time, so a 4 KiB page holds 1024 consecutive frames
+    of one pixel: batches of about that many frames write each page about
+    once (smaller batches rewrite every page several times and run slower).
+    Each batch is assigned straight from the memory-mapped file, so it is not
+    copied into memory either.
     """
     import imageio
     import tifffile
