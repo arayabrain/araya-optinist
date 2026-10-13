@@ -33,6 +33,8 @@ def data_concat(
         output_dir (str): Directory to save the output data.
         params (dict, optional): Dictionary containing concatenation specifications:
                     - 'axis': Axis along which to concatenate
+                        1 on 1D inputs stacks them as columns of one
+                        (time, columns) behaviour table
                     - 'output_type': Optional output type specification
                         (behaviors_data, neural_data, timeseries_data, image_data,
                         iscell_data, roi_data, bar_data, heatmap_data, scatter_data)
@@ -115,6 +117,16 @@ def data_concat(
             f"Data1 shape: {data1_array.shape}, Data2 shape: {data2_array.shape}"
         )
 
+        # axis 1 on 1D inputs stacks them as columns of one behaviour table
+        stacked_1d = axis == 1 and (data1_array.ndim == 1 or data2_array.ndim == 1)
+        if stacked_1d:
+            if data1_array.ndim == 1 and not output_type:
+                output_type = "behaviors_data"
+            data1_array, data2_array = (
+                a[:, np.newaxis] if a.ndim == 1 else a
+                for a in (data1_array, data2_array)
+            )
+
         # Validate axis parameter
         if axis >= data1_array.ndim or axis < -data1_array.ndim:
             raise ValueError(
@@ -171,6 +183,15 @@ def data_concat(
             concatenated_index = data1.index
         elif hasattr(data2, "index") and data2.index is not None:
             concatenated_index = data2.index
+
+        # TimeSeriesData's index labels axis 1, so drop one a column stack outgrew
+        if (
+            concatenated_index is not None
+            and concatenated_array.ndim == 2
+            and (stacked_1d or isinstance(data1, TimeSeriesData))
+            and len(concatenated_index) != concatenated_array.shape[1]
+        ):
+            concatenated_index = None
 
         # Handle std based on std_method
         concatenated_std = None

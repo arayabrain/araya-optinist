@@ -9,6 +9,7 @@ from studio.app.common.dataclass import (
     ScatterData,
     TimeSeriesData,
 )
+from studio.app.optinist.dataclass import BehaviorData, IscellData
 from studio.app.optinist.wrappers.data_utils.data_concat import data_concat
 
 RNG = np.random.default_rng(0)
@@ -57,3 +58,30 @@ def test_scatter_points_are_appended_and_saved(output_dir):
 
     assert type(out) is ScatterData
     np.testing.assert_allclose(out.data, ScatterData(np.vstack([p1, p2])).data)
+
+
+def test_axis_1_stacks_1d_inputs_as_behaviour_columns(output_dir):
+    position, speed, trial = RNG.random(6), RNG.random(6), np.arange(6.0)
+
+    two = data_concat(
+        IscellData(position), IscellData(speed), output_dir, params={"axis": 1}
+    )["concatenated_data"]
+    three = _concat(two, IscellData(trial), output_dir)
+    three_first = data_concat(IscellData(trial), two, output_dir, params={"axis": 1})[
+        "concatenated_data"
+    ]
+    three_first.save_json(output_dir)
+
+    assert type(two) is BehaviorData and type(three) is BehaviorData
+    np.testing.assert_array_equal(three.data, np.column_stack([position, speed, trial]))
+    assert three.output_path.data_shape == [6, 3]
+    np.testing.assert_array_equal(three_first.data[:, 0], trial)
+    assert three_first.output_path.data_shape == [6, 3]
+
+
+def test_1d_inputs_on_axis_0_are_still_appended(output_dir):
+    out = data_concat(
+        IscellData(np.ones(6)), IscellData(np.zeros(6)), output_dir, params={}
+    )["concatenated_data"]
+
+    assert type(out) is IscellData and out.data.shape == (12,)

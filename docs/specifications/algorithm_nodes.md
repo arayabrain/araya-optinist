@@ -292,6 +292,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **threshold** [float, default: 0.5]: Value the column is compared with.
   - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
   - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake (for example 2 for Sosa et al. 2025).
+  - **modulo** [float, default: 0]: When greater than 0, the condition is tested on the remainder of the column divided by this value instead of the column itself. With a trial-number column, `modulo: 2` and `equal` with `threshold: 1` keeps the odd-numbered trials and `threshold: 0` the even ones, which is how a cross-validated sort (order from one half, display the other) is built without a parity column. For a column that is not exactly integer, test the remainder with 'between' (0.5 to 1.5 for odd) rather than 'equal'. A column that codes the inter-trial interval as 0 or -1 puts those samples into one half, so split off `trial > 0` with a 'greater' node first.
   - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction
