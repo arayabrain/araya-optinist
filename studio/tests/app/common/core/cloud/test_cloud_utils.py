@@ -1559,7 +1559,7 @@ def test_effective_quota_db_error_fails_open_to_raw():
 
 def _call_create_file(user_id, filename="test.tiff"):
     """Invoke create_file for the given user. workspace_id/filename and the
-    background_tasks/file/remote_bucket_name args are inert for the gate: it
+    background_tasks/file/remote_bucket_name/db args are inert for the gate: it
     reads only current_user.id and raises before touching the rest."""
     from studio.app.common.routers.files import create_file
 
@@ -1571,6 +1571,7 @@ def _call_create_file(user_id, filename="test.tiff"):
             file=Mock(),
             current_user=Mock(id=user_id),
             remote_bucket_name="",
+            db=Mock(),
         )
     )
 

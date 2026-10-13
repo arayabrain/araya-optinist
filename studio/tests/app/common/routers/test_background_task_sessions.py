@@ -20,12 +20,14 @@ example `s = get_session()`.
 import ast
 import asyncio
 import inspect
+import re
+import textwrap
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
@@ -95,23 +97,23 @@ ROUTER_MODULES = [
 ]
 
 # Endpoints that depend on get_db and queue long work: each releases the
-# request session before it returns.
+# request session before it returns. Keyed by (router module, endpoint).
 RELEASING_ENDPOINTS = {
-    "run",
-    "run_id",
-    "download_file",
-    "sync_visualization_files",
-    "sync_user_experiments",
+    ("run", "run"),
+    ("run", "run_id"),
+    ("files", "create_file"),
+    ("files", "download_file"),
+    ("outputs", "sync_visualization_files"),
+    ("internal", "sync_user_experiments"),
 }
 
 # Endpoints that depend on get_db but queue only short work, so holding the
 # session until teardown costs no more than the request itself.
 SHORT_TASK_ENDPOINTS = {
-    "sync_input_file": "uploads the input's metadata JSON",
-    "create_file": "workspace usage (folder size) and the storage cache",
-    "delete_file": "workspace usage (folder size)",
-    "run_result": "experiment usage (folder size)",
-    "apply_filter": "experiment usage (folder size)",
+    ("files", "sync_input_file"): "uploads the input's metadata JSON",
+    ("files", "delete_file"): "workspace usage (folder size)",
+    ("run", "run_result"): "experiment usage (folder size)",
+    ("run", "apply_filter"): "experiment usage (folder size)",
 }
 
 
@@ -223,11 +225,16 @@ def _takes_background_tasks(dependant) -> bool:
     )
 
 
+def _module_routers(module):
+    return [v for v in vars(module).values() if isinstance(v, APIRouter)]
+
+
 def _get_db_routes_with_background_tasks():
     return {
-        route.name: route
+        (module.__name__.rsplit(".", 1)[-1], route.name): route
         for module in ROUTER_MODULES
-        for route in module.router.routes
+        for router in _module_routers(module)
+        for route in router.routes
         if isinstance(route, APIRoute)
         and _takes_background_tasks(route.dependant)
         and _depends_on(route.dependant, get_db)
@@ -246,10 +253,20 @@ def test_every_get_db_endpoint_with_background_tasks_is_classified():
     )
 
 
-@pytest.mark.parametrize("name", sorted(RELEASING_ENDPOINTS))
-def test_releasing_endpoints_call_release_request_session(name):
-    route = _get_db_routes_with_background_tasks()[name]
-    assert "release_request_session(db)" in inspect.getsource(route.endpoint)
+def _calls(func, name) -> bool:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    return any(
+        isinstance(node, ast.Call) and getattr(node.func, "id", None) == name
+        for node in ast.walk(tree)
+    )
+
+
+@pytest.mark.parametrize("key", sorted(RELEASING_ENDPOINTS), ids=".".join)
+def test_releasing_endpoints_call_release_request_session(key):
+    """A label check: the endpoint contains the call. Whether the call happens
+    on each path is pinned by the release tests below."""
+    route = _get_db_routes_with_background_tasks()[key]
+    assert _calls(route.endpoint, "release_request_session")
 
 
 def test_router_module_list_is_complete():
@@ -257,7 +274,7 @@ def test_router_module_list_is_complete():
     on_disk = {
         p.resolve()
         for p in APP_DIR.glob("*/routers/*.py")
-        if p.name != "__init__.py" and "router = APIRouter(" in p.read_text()
+        if p.name != "__init__.py" and re.search(r"=\s*APIRouter\(", p.read_text())
     }
     assert on_disk - listed == set(), f"add to ROUTER_MODULES: {on_disk - listed}"
 
@@ -406,6 +423,23 @@ def test_download_file_releases_the_request_session():
     assert db not in task.args
 
 
+def test_download_file_releases_the_request_session_on_failure():
+    db = Mock()
+    background_tasks = BackgroundTasks()
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(
+            files.download_file(
+                workspace_id="1",
+                file=DownloadFileRequest(url="https://example.com/data.exe"),
+                background_tasks=background_tasks,
+                db=db,
+            )
+        )
+    assert raised.value.status_code == 400
+    db.close.assert_called_once()
+    assert background_tasks.tasks == []
+
+
 @contextmanager
 def _sync_visualization_stubs(reader_raises=None):
     reader = MagicMock()
@@ -473,6 +507,80 @@ def test_sync_user_experiments_releases_the_request_session():
     assert db not in task.args
 
 
+def test_sync_user_experiments_queues_nothing_for_an_unknown_user():
+    """The 404 path queues no work, so the session is left to teardown."""
+    db = Mock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    background_tasks = BackgroundTasks()
+    with patch.dict(internal._rate_limit_cache, clear=True):
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(
+                internal.sync_user_experiments(
+                    user_id=1, background_tasks=background_tasks, db=db, _=None
+                )
+            )
+    assert raised.value.status_code == 404
+    assert background_tasks.tasks == []
+
+
+def _queued_usage_updates(background_tasks):
+    return [
+        task.args
+        for task in background_tasks.tasks
+        if task.func is files._update_workspace_data_usage
+    ]
+
+
+def _call_create_file(db, background_tasks, over_quota=False):
+    with patch.object(
+        files,
+        "get_current_user_storage_usage",
+        new=AsyncMock(return_value=2 if over_quota else 0),
+    ), patch.object(files, "get_user_storage_usage"), patch.object(
+        files, "get_effective_quota_bytes", return_value=1 if over_quota else 0
+    ), patch.object(
+        files, "create_directory"
+    ), patch(
+        "studio.app.common.routers.files.open", create=True
+    ), patch.object(
+        files, "shutil"
+    ), patch.object(
+        files.WorkspaceDataCapacityService, "is_available", return_value=True
+    ), patch.object(
+        files.RemoteStorageController, "is_available", return_value=False
+    ):
+        return asyncio.run(
+            files.create_file(
+                workspace_id="1",
+                filename="data.csv",
+                background_tasks=background_tasks,
+                file=Mock(),
+                current_user=Mock(id=1),
+                remote_bucket_name="bucket",
+                db=db,
+            )
+        )
+
+
+def test_create_file_releases_the_request_session():
+    db = Mock()
+    background_tasks = BackgroundTasks()
+    assert _call_create_file(db, background_tasks) == {"file_path": "data.csv"}
+    db.close.assert_called_once()
+    # Both tasks are still queued: the usage update and the live storage refresh
+    assert _queued_usage_updates(background_tasks) == [("1",)]
+    assert len(background_tasks.tasks) == 2
+    assert all(db not in task.args for task in background_tasks.tasks)
+
+
+def test_create_file_releases_the_request_session_on_failure():
+    db = Mock()
+    with pytest.raises(HTTPException) as raised:
+        _call_create_file(db, BackgroundTasks(), over_quota=True)
+    assert raised.value.status_code == 403
+    db.close.assert_called_once()
+
+
 # --------------------------------------------------------------------------
 # Background usage updates open their own session
 # --------------------------------------------------------------------------
@@ -496,44 +604,6 @@ def test_download_updates_usage_in_its_own_session(tmp_path):
     ) as update:
         files.download(response, "data.csv", "1")
     update.assert_called_once_with(own_session, "1", auto_commit=False)
-
-
-def _queued_usage_updates(background_tasks):
-    return [
-        task.args
-        for task in background_tasks.tasks
-        if task.func is files._update_workspace_data_usage
-    ]
-
-
-def test_create_file_queues_the_usage_update():
-    background_tasks = BackgroundTasks()
-    with patch.object(
-        files, "get_current_user_storage_usage", new=AsyncMock(return_value=0)
-    ), patch.object(files, "get_user_storage_usage"), patch.object(
-        files, "get_effective_quota_bytes", return_value=0
-    ), patch.object(
-        files, "create_directory"
-    ), patch(
-        "studio.app.common.routers.files.open", create=True
-    ), patch.object(
-        files, "shutil"
-    ), patch.object(
-        files.WorkspaceDataCapacityService, "is_available", return_value=True
-    ), patch.object(
-        files.RemoteStorageController, "is_available", return_value=False
-    ):
-        asyncio.run(
-            files.create_file(
-                workspace_id="1",
-                filename="data.csv",
-                background_tasks=background_tasks,
-                file=Mock(),
-                current_user=Mock(id=1),
-                remote_bucket_name="bucket",
-            )
-        )
-    assert _queued_usage_updates(background_tasks) == [("1",)]
 
 
 def test_delete_file_queues_the_usage_update():

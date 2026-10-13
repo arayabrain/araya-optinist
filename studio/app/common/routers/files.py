@@ -727,6 +727,7 @@ async def create_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
     try:
         # Check storage quota before allowing file upload
@@ -815,6 +816,11 @@ async def create_file(
             status_code=500,
             detail=f"Failed to upload file: {str(e)}",
         )
+
+    finally:
+        # The live storage refresh lists every S3 object of the user; do not
+        # hold the guards' connection while it runs
+        release_request_session(db)
 
 
 DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
