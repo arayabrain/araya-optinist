@@ -414,7 +414,7 @@ When an alarm fires, follow the procedure for that alarm category.
 | `subscr-optinist-cpu-high` | ECS CPU > 60% (2 periods) | Auto-triggers scale-up. Monitor if scaling resolves the issue. If sustained at max capacity, consider increasing ASG max. |
 | `subscr-optinist-memory-high` | ECS Memory > 80% (3 periods) | Auto-triggers scale-up. If sustained, check for memory leaks in application logs. |
 
-There is no scale-down alarm. The free-manager Lambda removes capacity by user count, choosing an instance with no running workflow, and removes nothing while a `-high` alarm is in ALARM; an instance a `-high` alarm added goes 15 minutes after the alarm clears, if the user count does not need it.
+There is no scale-down alarm. The free-manager Lambda removes capacity by user count, choosing an instance with no running workflow, and removes nothing while a `-high` alarm is in ALARM or for 15 minutes after it clears; an instance a `-high` alarm added goes on the first run after that, if the user count does not need it.
 
 ### EC2 Alarms
 

@@ -143,9 +143,9 @@ Lambda. A second writer, in `monitoring.tf`, may still **raise** it.
   in one place it is driven by the same signal as scale-out, it returns the
   group to `MinSize` in one run, and the instance removed is chosen by
   workload. An instance a `-high` alarm added is removed the same way once
-  the alarm has cleared and the user count has not needed it for 15 minutes
-  (see [Conservative Scale-Down](#6-conservative-scale-down)); while the
-  alarm is in ALARM this Lambda removes nothing.
+  the alarm has been out of ALARM for 15 minutes and the user count does
+  not need it (see [Conservative Scale-Down](#6-conservative-scale-down));
+  until then this Lambda removes nothing.
 - **The load metrics are service-level.** For an EC2-launch-type service,
   `CPUUtilization` is utilization of the CPU units *reserved by the task*,
   averaged across the service. Work that stalls on I/O does not move it; the
@@ -186,7 +186,8 @@ Notes:
 - `MinSize` above the term holds the target there; a term above `MaxSize` is
   capped, not requested.
 - A surplus of 2 or more is removed at once; a surplus of 1 once it has shown
-  in three completed periods; nothing while a `-high` alarm is in ALARM — see
+  in three completed periods; nothing while a `-high` alarm is in ALARM or
+  left it less than 15 minutes ago — see
   [Conservative Scale-Down](#6-conservative-scale-down).
 
 ### Motivation: Sticky Session Overload
@@ -469,7 +470,7 @@ context bounds the scale-out wait
 users. Handles three scenarios: scale out (with instance wait
 loop), scale in through `scale_in()` — a surplus of 2 or more at
 once, a surplus of 1 once `surplus_of_one_has_persisted()`, and
-neither while `load_alarm_in_alarm()` — and rebalance-only when
+neither while `load_alarm_holds_capacity()` — and rebalance-only when
 distribution is imbalanced. Publishes `TargetInstances` before
 acting, lock or not.
 **Input:** `active_user_count`, `context`
@@ -797,14 +798,24 @@ healthy target. `scale_service()` follows the same rule on decreases.
    hand mid-period counts from the next period, one run later. This is how
    2 → 1 at `MinSize = 1` happens, which no alarm does any more.
 
-**Neither rule applies while `cpu-high` or `memory-high` is in ALARM**
-(`load_alarm_in_alarm()`): the alarm says the load needs the capacity,
-and an instance it added is not taken back while the load that asked for
-it is still there. This holds for a user-count surplus too — 0 users and a
-surplus of 2 stay up while one heavy workflow keeps `memory-high` in ALARM
-on the service average — by design: the alarm is the only signal that
-knows about load. Once the alarm clears, the surplus goes by the rules
-above.
+**Neither rule applies while `cpu-high` or `memory-high` is in ALARM, nor
+for 15 minutes after it leaves ALARM** (`load_alarm_holds_capacity()`,
+from the alarm's `StateTransitionedTimestamp`): the alarm says the load
+needs the capacity, and an instance it added is not taken back while the
+load that asked for it is still there. The quiet period is there because
+the surplus history keeps accumulating through the ALARM stretch — without
+it the instance would go on the first run after OK, and a sustained load
+that needs more than one instance but less than two would cycle between
+the alarm adding one and this Lambda removing it every 25 minutes or so.
+With it, the load has 15 minutes to show on the larger group; if it does,
+the alarm fires again and the instance stays, and if it does not, the
+instance goes on the first run after the quiet period. This holds for a
+user-count surplus too — 0 users and a surplus of 2 stay up while one heavy
+workflow keeps `memory-high` in ALARM on the service average — by design:
+the alarm is the only signal that knows about load. There is still no
+hysteresis band on load itself, as the deleted `-low` alarms used to
+provide crudely; the quiet period lengthens a cycle, it does not rule one
+out.
 
 
 ---
@@ -958,7 +969,7 @@ ASG_NAME                        # Auto Scaling Group name
 
 # Scaling Configuration
 FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (production: 5)
-LOAD_ALARM_NAMES                # cpu-high,memory-high: no scale-in while one is in ALARM
+LOAD_ALARM_NAMES                # cpu-high,memory-high: no scale-in while one is in ALARM or for 15 min after
 
 # The instance count floor and ceiling are deliberately NOT here. They are
 # read from the ASG's MinSize/MaxSize (var.asg_min_size / var.asg_max_size)
@@ -1121,7 +1132,7 @@ aws ecs describe-services \
 | `get_service_info()` | Get ASG capacity, bounds and instances, plus ECS task counts |
 | `scale_service()` | Scale ASG and ECS service out |
 | `surplus_of_one_has_persisted()` | Whether desired has been one above the target for three runs, from `TargetInstances` vs `GroupDesiredCapacity` |
-| `load_alarm_in_alarm()` | Whether `cpu-high` / `memory-high` is in ALARM; no scale-in while it is |
+| `load_alarm_holds_capacity()` | Whether `cpu-high` / `memory-high` is in ALARM or left it less than 15 minutes ago; no scale-in while so |
 | `select_instances_to_terminate()` | Choose scale-in victims: no workflow, fewest users, heavier zone, newest (pure) |
 | `scale_in()` | Terminate the chosen instances with the desired capacity decremented |
 | `rebalance_idle_users_multi()` | Multi-instance rebalancing algorithm |

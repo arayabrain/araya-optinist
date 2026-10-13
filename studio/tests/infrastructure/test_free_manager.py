@@ -321,7 +321,7 @@ class TestScaleAndRebalanceUsesAsgBounds:
         ), patch(
             "free_manager.surplus_of_one_has_persisted", return_value=persisted
         ), patch(
-            "free_manager.load_alarm_in_alarm", return_value=alarm
+            "free_manager.load_alarm_holds_capacity", return_value=alarm
         ), patch(
             "free_manager.rebalance_idle_users_multi", return_value=[]
         ), patch(
@@ -1063,8 +1063,9 @@ class TestScaleInTerminates:
 class TestSurplusOfOne:
     """
     surplus_of_one_has_persisted reads TargetInstances against
-    GroupDesiredCapacity, period by period; load_alarm_in_alarm reads the
-    -high alarms' state. Both raise rather than guess when the read fails.
+    GroupDesiredCapacity, period by period; load_alarm_holds_capacity reads
+    the -high alarms' state and when it last changed. Both raise rather than
+    guess when the read fails.
     """
 
     # The run is at 09:03:20, so the current period is 09:00-09:05 and the
@@ -1185,51 +1186,66 @@ class TestSurplusOfOne:
             with pytest.raises(Exception, match="throttled"):
                 surplus_of_one_has_persisted()
 
+    # (state, minutes since the state changed) per alarm. An alarm in ALARM
+    # holds capacity whatever its age; an alarm out of ALARM holds it for
+    # ALARM_QUIET_PERIOD (15 min) after the transition, so the instance it
+    # added is not taken back on the first run after OK.
     @pytest.mark.parametrize(
         "states,expected",
         [
-            ({"cpu-high": "ALARM", "memory-high": "OK"}, True),
-            ({"cpu-high": "OK", "memory-high": "OK"}, False),
-            ({"cpu-high": "INSUFFICIENT_DATA", "memory-high": "OK"}, False),
+            ({"cpu-high": ("ALARM", 60), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("ALARM", 1), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", 60), "memory-high": ("OK", 60)}, False),
+            ({"cpu-high": ("OK", 5), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", 14), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", 15), "memory-high": ("OK", 60)}, False),
+            ({"cpu-high": ("INSUFFICIENT_DATA", 60), "memory-high": ("OK", 60)}, False),
+            ({"cpu-high": ("INSUFFICIENT_DATA", 2), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", None), "memory-high": ("OK", None)}, False),
         ],
     )
-    def test_load_alarm_state(self, mock_env_vars_free, states, expected):
-        from free_manager import load_alarm_in_alarm
+    def test_load_alarm_state_and_age(self, mock_env_vars_free, states, expected):
+        from free_manager import load_alarm_holds_capacity
+
+        now = datetime(2026, 10, 13, 9, 3, 20, tzinfo=timezone.utc)
+        alarms = []
+        for name, (state, minutes_ago) in states.items():
+            alarm = {"AlarmName": f"test-optinist-{name}", "StateValue": state}
+            if minutes_ago is not None:
+                alarm["StateTransitionedTimestamp"] = now - timedelta(
+                    minutes=minutes_ago
+                )
+            alarms.append(alarm)
 
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.cloudwatch_client"
         ) as mock_cw:
-            mock_cw.describe_alarms.return_value = {
-                "MetricAlarms": [
-                    {"AlarmName": f"test-optinist-{name}", "StateValue": state}
-                    for name, state in states.items()
-                ]
-            }
-            assert load_alarm_in_alarm() is expected
+            mock_cw.describe_alarms.return_value = {"MetricAlarms": alarms}
+            assert load_alarm_holds_capacity(now=now) is expected
             assert mock_cw.describe_alarms.call_args[1]["AlarmNames"] == [
                 "test-optinist-cpu-high",
                 "test-optinist-memory-high",
             ]
 
     def test_no_alarm_names_means_no_read(self, mock_env_vars_free):
-        from free_manager import load_alarm_in_alarm
+        from free_manager import load_alarm_holds_capacity
 
         env = {**mock_env_vars_free, "LOAD_ALARM_NAMES": ""}
         with patch.dict("os.environ", env), patch(
             "free_manager.cloudwatch_client"
         ) as mock_cw:
-            assert load_alarm_in_alarm() is False
+            assert load_alarm_holds_capacity() is False
             mock_cw.describe_alarms.assert_not_called()
 
     def test_unreadable_alarms_raise(self, mock_env_vars_free):
-        from free_manager import load_alarm_in_alarm
+        from free_manager import load_alarm_holds_capacity
 
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.cloudwatch_client"
         ) as mock_cw:
             mock_cw.describe_alarms.side_effect = Exception("AccessDenied")
             with pytest.raises(Exception, match="AccessDenied"):
-                load_alarm_in_alarm()
+                load_alarm_holds_capacity()
 
 
 class TestScaleUpWaitBudget:

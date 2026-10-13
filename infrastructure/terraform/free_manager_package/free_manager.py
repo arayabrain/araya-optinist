@@ -39,7 +39,8 @@ Required Environment Variables:
 - ASG_NAME: Auto Scaling Group name for free tier instances
 - FREE_IDLE_THRESHOLD_MINUTES: Minutes of inactivity to consider user idle (default: 5)
 - LOAD_ALARM_NAMES: comma-separated CloudWatch alarms that add capacity
-    (cpu-high, memory-high); no scale-in while one is in ALARM
+    (cpu-high, memory-high); no scale-in while one is in ALARM or for 15
+    minutes after it clears
 
 The instance count floor and ceiling are read from the ASG's own
 MinSize/MaxSize, not from configuration held here, so capacity can be
@@ -125,6 +126,10 @@ SCHEDULE_INTERVAL = 300
 # A surplus of exactly one instance is removed once it has lasted this many
 # consecutive runs. A surplus of two or more goes at once.
 SURPLUS_OF_ONE_RUNS = 3
+
+# No scale-in while a load alarm is in ALARM, nor for this long after it
+# leaves ALARM (see load_alarm_holds_capacity).
+ALARM_QUIET_PERIOD = 900
 
 # Initialize AWS clients
 ecs_client: "ECSClient" = boto3.client("ecs")
@@ -440,17 +445,27 @@ def surplus_of_one_has_persisted(now: datetime | None = None) -> bool:
     return all(g is not None and g >= 1 for g in gaps)
 
 
-def load_alarm_in_alarm() -> bool:
+def load_alarm_holds_capacity(now: datetime | None = None) -> bool:
     """
-    Whether a load alarm that adds capacity is in ALARM right now.
+    Whether a load alarm that adds capacity is in ALARM, or left it less
+    than ALARM_QUIET_PERIOD ago.
 
     The cpu-high / memory-high alarms may add an instance the user count
     did not ask for. While one of them says the load needs it, this
-    function does not take it away; the surplus is removed once the alarm
-    clears, by the usual rules.
+    function does not take it away. Nor for a quiet period after it
+    clears: the surplus history has been accumulating all through the
+    ALARM stretch, so without the quiet period the instance would go on
+    the first run after OK, and a load that needs more than one instance
+    but less than two would cycle between the alarm adding and this
+    function removing. The quiet period gives the load time to show on
+    the larger group before the user count takes the instance back.
+
+    Args:
+        now: the clock, for tests; defaults to the current time
 
     Returns:
-        True if any alarm named in LOAD_ALARM_NAMES has StateValue ALARM
+        True if any alarm named in LOAD_ALARM_NAMES is in ALARM or changed
+        state less than ALARM_QUIET_PERIOD ago
 
     Raises:
         Exception: if the alarms cannot be read. Not caught -- see
@@ -459,15 +474,24 @@ def load_alarm_in_alarm() -> bool:
     names = [n for n in os.environ.get("LOAD_ALARM_NAMES", "").split(",") if n]
     if not names:
         return False
+    now = now or datetime.now(timezone.utc)
     response = cloudwatch_client.describe_alarms(AlarmNames=names)
-    firing = [
-        a["AlarmName"]
-        for a in response.get("MetricAlarms", [])
-        if a.get("StateValue") == "ALARM"
-    ]
-    if firing:
-        print(f"Load alarm(s) in ALARM: {firing}")
-    return bool(firing)
+    holding = []
+    for alarm in response.get("MetricAlarms", []):
+        if alarm.get("StateValue") == "ALARM":
+            holding.append(f"{alarm['AlarmName']} (ALARM)")
+            continue
+        changed = alarm.get("StateTransitionedTimestamp")
+        if changed is None:
+            continue
+        since = (now - changed).total_seconds()
+        if since < ALARM_QUIET_PERIOD:
+            holding.append(
+                f"{alarm['AlarmName']} ({alarm.get('StateValue')} for {int(since)}s)"
+            )
+    if holding:
+        print(f"Load alarm(s) holding capacity: {holding}")
+    return bool(holding)
 
 
 def set_scaling_lock(in_progress: bool) -> None:
@@ -830,10 +854,10 @@ def scale_and_rebalance(
         # a load alarm says the capacity is needed.
         surplus = current_desired - desired_instances
         result["scaling_action"] = "none"
-        if load_alarm_in_alarm():
+        if load_alarm_holds_capacity():
             print(
-                f"No scale down - a load alarm is in ALARM, the surplus of "
-                f"{surplus} stays until it clears"
+                f"No scale down - a load alarm is in ALARM or left it less than "
+                f"{ALARM_QUIET_PERIOD}s ago, the surplus of {surplus} stays"
             )
         elif surplus >= 2 or surplus_of_one_has_persisted():
             print(

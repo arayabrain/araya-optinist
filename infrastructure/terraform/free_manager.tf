@@ -83,9 +83,10 @@ resource "aws_lambda_function" "free_manager" {
       # user count, so the Lambda owns scale-in as well as scale-out.
       FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
 
-      # The alarms that may add an instance. While one is in ALARM the Lambda
-      # removes nothing, so an instance the alarm added is not taken back
-      # while the load that asked for it is still there.
+      # The alarms that may add an instance. While one is in ALARM, and for
+      # 15 minutes after it clears, the Lambda removes nothing, so an instance
+      # the alarm added is not taken back while the load that asked for it is
+      # still there or has not yet shown on the larger group.
       LOAD_ALARM_NAMES = join(",", [
         aws_cloudwatch_metric_alarm.cpu_high.alarm_name,
         aws_cloudwatch_metric_alarm.memory_high.alarm_name,
