@@ -79,13 +79,12 @@ export function getInitialRunResult(runPostData: RunPostData) {
 export function convertToRunResult(dto: RunResultDTO) {
   const result: RunResult = {}
   Object.entries(dto).forEach(([nodeId, nodeResultDto]) => {
-    const outputPath = nodeResultDto.outputPaths
-    if (nodeResultDto.status === "success" && outputPath != null) {
+    if (nodeResultDto.status === "success") {
       result[nodeId] = {
         status: NODE_RESULT_STATUS.SUCCESS,
         message: nodeResultDto.message,
         name: nodeResultDto.name,
-        outputPaths: convertToOutputPath(outputPath),
+        outputPaths: convertToOutputPath(nodeResultDto.outputPaths ?? {}),
       }
     } else if (nodeResultDto.status === "running") {
       result[nodeId] = {
