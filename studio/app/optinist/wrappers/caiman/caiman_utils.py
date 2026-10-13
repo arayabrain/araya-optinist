@@ -37,6 +37,56 @@ def distribute_params_to_groups(flat_params: dict, groups: dict) -> dict:
     return pathed
 
 
+def save_memmap_c_order(
+    filenames: list, base_name: str, border_to_0: int = 0, batch_size: int = 200
+) -> str:
+    """
+    caiman.save_memmap(filenames, base_name=..., order="C", border_to_0=...) for
+    the single motion-corrected file caiman_mc passes, written batch_size frames
+    at a time instead of loading the whole movie (and three full-size copies of
+    it: the transposed copy and two additions) into memory.
+
+    Same file, same bytes: each value is (x + float32(0.0001)) + float32(0), as
+    save_memmap computes it, laid out pixels x time in C order. Anything else
+    (several files, border_to_0 > 0) is passed to caiman.save_memmap unchanged.
+    """
+    import numpy as np
+    from caiman import save_memmap
+    from caiman.mmapping import load_memmap, prepare_shape
+    from caiman.paths import fn_relocated, generate_fname_tot
+
+    if len(filenames) != 1 or border_to_0 > 0 or not str(filenames[0]).endswith(
+        ".mmap"
+    ):
+        return save_memmap(
+            filenames, base_name=base_name, order="C", border_to_0=border_to_0
+        )
+
+    source, dims, T = load_memmap(filenames[0])  # pixels x time, F order
+    fname_tot = generate_fname_tot(base_name, dims, "C")
+    fname_tot = fn_relocated(os.path.join(os.path.split(filenames[0])[0], fname_tot))
+    out = np.memmap(
+        fname_tot,
+        mode="w+",
+        dtype=np.float32,
+        shape=prepare_shape((int(np.prod(dims)), T)),
+        order="C",
+    )
+    for t in range(0, T, batch_size):
+        block = np.asarray(source[:, t : t + batch_size], dtype=np.float32)
+        out[:, t : t + batch_size] = block + np.float32(0.0001) + np.float32(0.0)
+    out.flush()
+    del out, source
+
+    fname_new = fn_relocated(f"{fname_tot}_frames_{T}.mmap")
+    try:
+        os.unlink(fname_new)
+    except OSError:
+        pass
+    os.rename(fname_tot, fname_new)
+    return fname_new
+
+
 def _available_cpus() -> int:
     if hasattr(os, "sched_getaffinity"):
         return len(os.sched_getaffinity(0))

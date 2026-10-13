@@ -113,6 +113,54 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     return mmap_images, dims, mmap_path
 
 
+def util_get_image_memmap_from_file(
+    function_id: str, image: ImageData, file_path: str, batch_size: int = 200
+):
+    """
+    As util_get_image_memmap, but filled from the image files batch by batch,
+    so the movie is never held in memory as a whole (or twice, with the copy).
+    """
+    import imageio
+    import tifffile
+    from caiman.mmapping import prepare_shape
+    from caiman.paths import memmap_frames_filename
+
+    order = "C"
+    shape = image.shape  # from the TIFF headers
+    T, dims = shape[0], tuple(shape[1:])
+    shape_mov = (np.prod(dims), T)
+
+    dir_path = join_filepath(file_path.split("/")[:-1])
+    file_basename = file_path.split("/")[-1]
+    mmap_basename = f"{file_basename}.{function_id}"
+    fname_tot = memmap_frames_filename(mmap_basename, dims, T, order)
+    mmap_path = join_filepath([dir_path, fname_tot])
+
+    mmap = np.memmap(
+        mmap_path,
+        mode="w+",
+        dtype=np.float32,
+        shape=prepare_shape(shape_mov),
+        order=order,
+    )
+    mmap_images = np.reshape(mmap.T, [T] + list(dims), order="F")
+
+    paths = image.path if isinstance(image.path, list) else [image.path]
+    t = 0
+    for path in paths:
+        try:
+            source = tifffile.memmap(path, mode="r")
+        except Exception:
+            source = np.asarray(imageio.volread(path))
+        for i in range(0, len(source), batch_size):
+            batch = source[i : i + batch_size]
+            mmap_images[t : t + len(batch)] = batch
+            t += len(batch)
+        del source
+    assert t == T, f"read {t} frames, expected {T}"
+    return mmap_images, dims, mmap_path
+
+
 def util_cleanup_image_memmap(mmap_paths: list):
     for mmap_path in mmap_paths:
         if mmap_path.endswith(".mmap") and os.path.isfile(mmap_path):
@@ -275,11 +323,11 @@ def caiman_cnmf(
 
     # ROI editing reads traces from the input movie lazily, via this reference
     images_ref = images
-    with BenchmarkRecorder.phase("cnmf.load_images"):
-        images = images.data
     mmap_paths = []
     with BenchmarkRecorder.phase("cnmf.memmap_copy"):
-        mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
+        mmap_images, dims, mmap_path = util_get_image_memmap_from_file(
+            function_id, images, file_path
+        )
     mmap_paths.append(mmap_path)
 
     del images

@@ -7,6 +7,7 @@ from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import RoiData
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
+    save_memmap_c_order,
     CaimanUtils,
     caiman_cluster,
     distribute_params_to_groups,
@@ -20,7 +21,7 @@ def caiman_mc(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(mc_images=ImageData):
     import numpy as np
-    from caiman import load_memmap, save_memmap
+    from caiman import load_memmap
     from caiman.motion_correction import MotionCorrect
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -51,22 +52,20 @@ def caiman_mc(
 
         # memory mapping
         with BenchmarkRecorder.phase("mc.save_memmap"):
-            mmap_file_new = save_memmap(
-                mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
+            mmap_file_new = save_memmap_c_order(
+                mc.mmap_file, base_name=function_id, border_to_0=border_to_0
             )
 
     # now load the file
     Yr, dims, T = load_memmap(mmap_file_new)
 
-    with BenchmarkRecorder.phase("mc.materialize"):
-        images = np.array(Yr.T.reshape((T,) + dims, order="F"))
-
-    # Release variables associated with memmap files when they are no longer needed.
-    # *Avoid lock errors when cleaning memmap files.
-    del Yr, dims, T
+    # The corrected movie stays memory-mapped: this view of the pixels x time
+    # file has the layout the full in-memory copy (np.array of it) used to have,
+    # so the mean below is the same arithmetic on the same values
+    movie = Yr.T.reshape((T,) + dims, order="F")
 
     with BenchmarkRecorder.phase("mc.process_images"):
-        meanImg, rois = __process_images(images)
+        meanImg, rois = __process_images(movie)
 
     xy_trans_data = (
         (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
@@ -75,7 +74,15 @@ def caiman_mc(
     )
 
     with BenchmarkRecorder.phase("mc.write_tiff"):
-        mc_images = ImageData(images, output_dir=output_dir, file_name="mc_images")
+        mc_images = ImageData(
+            movie_to_tiff(movie, output_dir, "mc_images"),
+            output_dir=output_dir,
+            file_name="mc_images",
+        )
+
+    # Release variables associated with memmap files when they are no longer needed.
+    # *Avoid lock errors when cleaning memmap files.
+    del movie, Yr, dims, T
 
     nwbfile = {}
     nwbfile[NWBDATASET.MOTION_CORRECTION] = {
@@ -107,6 +114,33 @@ def caiman_mc(
         logger.warning(e)
 
     return info
+
+
+def movie_to_tiff(movie, output_dir, file_name, batch_size=200):
+    """
+    Write a (T, Ly, Lx) array-like to the TIFF path ImageData would use,
+    batch_size frames at a time. tifffile writes a frame iterator with a
+    declared shape exactly as it writes the whole array (a byte-identical
+    file), so a memory-mapped movie is never copied into memory as a whole.
+    """
+    import numpy as np
+    import tifffile
+
+    from studio.app.common.core.utils.filepath_creater import (
+        create_directory,
+        join_filepath,
+    )
+
+    tiff_dir = join_filepath([output_dir, "tiff", file_name])
+    create_directory(tiff_dir)
+    tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
+
+    def frames():
+        for i in range(0, movie.shape[0], batch_size):
+            yield from np.ascontiguousarray(movie[i : i + batch_size])
+
+    tifffile.imwrite(tiff_path, frames(), shape=movie.shape, dtype=movie.dtype)
+    return [tiff_path]
 
 
 def __process_images(images):
