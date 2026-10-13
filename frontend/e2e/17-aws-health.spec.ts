@@ -66,6 +66,7 @@ const EXPECTED_ALARMS = [
   `${ENV}-background-cpu-high`,
   `${ENV}-background-memory-high`,
   `${ENV}-background-task-stopped`,
+  `${ENV}-free-manager-errors`,
   `${ENV}-optinist-alb-5xx-errors`,
   `${ENV}-optinist-cpu-high`,
   `${ENV}-optinist-cpu-low`,
@@ -503,6 +504,23 @@ test.describe("Compute and routing", () => {
         group.desired,
       )
     }
+
+    // Free tier: one task per instance (distinctInstance), ECS synced to the
+    // ASG by the free-manager Lambda on launch/terminate events. A missed sync
+    // leaves a task-less instance - HEALTH-03 sees the unhealthy target, this
+    // sees the cause.
+    // Strict, like the inService == desired check above: mid-scale-out an
+    // instance is InService before its task is placed, so the lane assumes a
+    // settled environment.
+    const free = groups.find((g) => g.name === `${ENV}-optinist-asg`)!
+    const freeTasks = awsJson<number>(
+      `ecs describe-services --cluster ${CLUSTER} ` +
+        `--services ${ENV}-optinist-cloud-service ` +
+        `--query 'services[0].runningCount'`,
+    )
+    expect(freeTasks, `free ECS tasks vs ${free.name} in-service`).toBe(
+      free.inService,
+    )
   })
 })
 
