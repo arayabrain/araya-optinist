@@ -34,6 +34,10 @@ def caiman_cnmf_multisession(
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info(f"start caiman_cnmf_multisession: {function_id}")
 
+    # ROI editing reads new traces from the input movie, opened lazily at
+    # commit time, so EditRoiData keeps this reference rather than a copy
+    images_ref = images
+
     # NOTE: evaluate_components requires cnn_model files in caiman_data directory.
     util_download_model_files()
 
@@ -224,7 +228,7 @@ def caiman_cnmf_multisession(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, cell_ims),
+        "edit_roi_data": EditRoiData(images_ref, cell_ims),
         "nwbfile": nwbfile,
     }
 
