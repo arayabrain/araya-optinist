@@ -13,6 +13,8 @@ from studio.app.optinist.wrappers.caiman.caiman_utils import (
     distribute_params_to_groups,
 )
 from studio.app.optinist.wrappers.caiman.cnmf import (
+    correlation_image,
+    edit_roi_dtype,
     get_roi,
     util_cleanup_image_memmap,
     util_download_model_files,
@@ -26,7 +28,7 @@ logger = AppLogger.get_logger()
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import load, local_correlations
+    from caiman import load
     from caiman.base.rois import register_multisession
     from caiman.source_extraction.cnmf import cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
@@ -198,17 +200,8 @@ def caiman_cnmf_multisession(
         }
     }
 
-    # get mean image
-    file_path = images.path
-    if isinstance(file_path, list):
-        file_path = file_path[0]
     images = images.data
-    mmap_images, dims, mmap_path = util_get_image_memmap(
-        function_id, images.data, file_path
-    )
-    mmap_paths.append(mmap_path)
-
-    Cn = local_correlations(mmap_images.transpose(1, 2, 0))
+    Cn = correlation_image(images)
     Cn[np.isnan(Cn)] = 0
 
     info = {
@@ -224,7 +217,9 @@ def caiman_cnmf_multisession(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, cell_ims),
+        "edit_roi_data": EditRoiData(
+            images.astype(edit_roi_dtype(images.dtype), copy=False), cell_ims
+        ),
         "nwbfile": nwbfile,
     }
 
