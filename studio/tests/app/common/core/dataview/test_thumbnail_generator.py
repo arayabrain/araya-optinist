@@ -33,6 +33,37 @@ class TestRenderArrayAsThumbnail:
         img = imageio.imread(output_path)
         assert max(img.shape[:2]) <= 256
 
+    def test_thin_matrix_keeps_at_least_one_pixel(self, output_path):
+        # 107k frames x 16 cells used to resize to a 0-pixel-wide PNG
+        arr = np.random.rand(107000, 16).astype(np.float32)
+        ThumbnailGenerator._render_array_as_thumbnail(arr, output_path, max_size=512)
+        img = imageio.imread(output_path)
+        assert img.shape == (512, 1)
+
+    def test_sparse_events_are_not_flattened_to_grey(self, output_path):
+        arr = np.zeros((64, 64), dtype=np.float32)
+        arr[10, 10] = 5.0
+        ThumbnailGenerator._render_array_as_thumbnail(arr, output_path)
+        img = imageio.imread(output_path)
+        assert img.max() == 255 and img.min() == 0
+
+    def test_matrix_without_aspect_fills_a_square(self, output_path):
+        arr = np.random.rand(19818, 349).astype(np.float32)
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=256, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert img.shape == (256, 256)
+
+    def test_sparse_matrix_keeps_its_events_when_downsampled(self, output_path):
+        arr = np.zeros((20000, 300), dtype=np.float32)
+        arr[::1000, ::50] = 1.0  # 20 x 6 events, invisible to nearest-neighbour
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert (img == 255).sum() >= 100
+
 
 class TestGenerateHdf5Thumbnail:
     def test_3d_dataset(self, tmp_path, output_path):
