@@ -114,7 +114,7 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
 
 
 def util_get_image_memmap_from_file(
-    function_id: str, image: ImageData, file_path: str, batch_size: int = 200
+    function_id: str, image: ImageData, file_path: str, batch_size: int = 1024
 ):
     """
     As util_get_image_memmap, but filled from the image files batch by batch,
