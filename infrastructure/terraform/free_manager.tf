@@ -83,6 +83,14 @@ resource "aws_lambda_function" "free_manager" {
       # user count, so the Lambda owns scale-in as well as scale-out.
       FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
 
+      # The alarms that may add an instance. While one is in ALARM the Lambda
+      # removes nothing, so an instance the alarm added is not taken back
+      # while the load that asked for it is still there.
+      LOAD_ALARM_NAMES = join(",", [
+        aws_cloudwatch_metric_alarm.cpu_high.alarm_name,
+        aws_cloudwatch_metric_alarm.memory_high.alarm_name,
+      ])
+
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
       INTERNAL_API_SECRET = random_password.internal_api_secret.result
@@ -194,13 +202,15 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
         ]
         Resource = aws_autoscaling_group.main.arn
       },
-      # CloudWatch metrics (requires wildcard)
+      # CloudWatch metrics (requires wildcard). DescribeAlarms reads the
+      # load alarms' state before a scale-in.
       {
         Effect = "Allow"
         Action = [
           "cloudwatch:PutMetricData",
           "cloudwatch:GetMetricData",
-          "cloudwatch:GetMetricStatistics"
+          "cloudwatch:GetMetricStatistics",
+          "cloudwatch:DescribeAlarms"
         ]
         Resource = "*"
       },

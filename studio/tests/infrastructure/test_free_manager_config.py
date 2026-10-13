@@ -78,6 +78,15 @@ class TestFreeManagerLambda:
         assert "autoscaling:TerminateInstanceInAutoScalingGroup" in actions
         assert "autoscaling:SetDesiredCapacity" in actions
 
+    def test_scale_in_may_read_the_load_alarms(self):
+        """No scale-in while cpu-high / memory-high is in ALARM: the Lambda
+        needs their names and the right to read their state."""
+        assert "cloudwatch:DescribeAlarms" in self.policy
+        names = attribute(self.function, "LOAD_ALARM_NAMES")
+        assert names.startswith("join(")
+        for alarm in ("cpu_high", "memory_high"):
+            assert f"aws_cloudwatch_metric_alarm.{alarm}.alarm_name" in self.function
+
     def test_no_user_threshold_gates_the_scaling_decision(self):
         """The target is computed on every run at any user count; a threshold
         would leave the group unable to return to its minimum."""

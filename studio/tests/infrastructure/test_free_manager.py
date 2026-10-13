@@ -275,6 +275,8 @@ class TestScaleAndRebalanceUsesAsgBounds:
         ecs_desired=None,
         context=None,
         ready=None,
+        persisted=False,
+        alarm=False,
     ):
         """
         Drive scale_and_rebalance against mocked AWS clients, returning both.
@@ -283,7 +285,9 @@ class TestScaleAndRebalanceUsesAsgBounds:
         would hide whether the bounds are actually read off the group, which is
         the behaviour under test. The group reports ``desired`` InService
         instances, i-0 upwards, all in one zone and with no workflow, so a
-        scale-in has as many safe candidates as it needs.
+        scale-in has as many safe candidates as it needs. The surplus history
+        and the load alarms are stubbed (``persisted``, ``alarm``); their
+        own reads are tested in TestSurplusOfOne.
         """
         from free_manager import scale_and_rebalance
 
@@ -313,6 +317,10 @@ class TestScaleAndRebalanceUsesAsgBounds:
             "free_manager.get_users_per_instance", return_value={}
         ), patch(
             "free_manager.get_workload_per_instance", return_value={}
+        ), patch(
+            "free_manager.surplus_of_one_has_persisted", return_value=persisted
+        ), patch(
+            "free_manager.load_alarm_in_alarm", return_value=alarm
         ), patch(
             "free_manager.rebalance_idle_users_multi", return_value=[]
         ), patch(
@@ -406,12 +414,34 @@ class TestScaleAndRebalanceUsesAsgBounds:
         asg.set_desired_capacity.assert_called_once()
         assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
 
-    def test_scale_down_hysteresis_is_retained(self, mock_env_vars_free):
-        """A gap of 1 is left alone, as before: 6 users want 2, desired is 3."""
+    def test_a_fresh_surplus_of_one_is_left_alone(self, mock_env_vars_free):
+        """6 users want 2, desired is 3: the boundary case waits until it
+        has persisted."""
         asg, _ = self._run(mock_env_vars_free, users=6, desired=3, minimum=1, maximum=5)
 
         asg.set_desired_capacity.assert_not_called()
         asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+        assert asg.result["scaling_action"] == "none"
+
+    def test_a_persisted_surplus_of_one_goes(self, mock_env_vars_free):
+        """The same shape three runs later: one instance is removed. This is
+        the 2 -> 1 return at MinSize = 1 that no alarm makes any more."""
+        asg, _ = self._run(
+            mock_env_vars_free, users=0, desired=2, minimum=1, maximum=5, persisted=True
+        )
+
+        assert len(self._terminated(asg)) == 1
+        assert asg.result["scaling_action"] == "scale_down"
+
+    def test_no_scale_in_while_a_load_alarm_is_firing(self, mock_env_vars_free):
+        """A surplus of 2 with cpu-high in ALARM: the alarm says the capacity
+        is needed, so nothing is removed until it clears."""
+        asg, _ = self._run(
+            mock_env_vars_free, users=0, desired=3, minimum=1, maximum=5, alarm=True
+        )
+
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+        assert asg.result["scaling_action"] == "none"
 
     def test_zero_users_return_the_group_to_its_minimum(self, mock_env_vars_free):
         """
@@ -925,6 +955,147 @@ class TestScaleInTerminates:
                 workload=Exception("Can't connect to MySQL server"),
                 count=1,
             )
+
+
+class TestSurplusOfOne:
+    """
+    surplus_of_one_has_persisted reads TargetInstances against
+    GroupDesiredCapacity, period by period; load_alarm_in_alarm reads the
+    -high alarms' state. Both raise rather than guess when the read fails.
+    """
+
+    @staticmethod
+    def _history(mock_env_vars_free, targets, desireds):
+        """targets/desireds: value per period, newest first; None = no datapoint."""
+        from free_manager import surplus_of_one_has_persisted
+
+        base = datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)
+        stamps = [base.replace(minute=55 - 5 * i) for i in range(len(targets))]
+
+        def series(values):
+            pairs = [(t, v) for t, v in zip(stamps, values) if v is not None]
+            return {
+                "Timestamps": [t for t, _ in pairs],
+                "Values": [float(v) for _, v in pairs],
+            }
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.get_metric_data.return_value = {
+                "MetricDataResults": [
+                    {"Id": "target", **series(targets)},
+                    {"Id": "desired", **series(desireds)},
+                ]
+            }
+            persisted = surplus_of_one_has_persisted()
+            return persisted, mock_cw
+
+    def test_three_periods_of_surplus_count(self, mock_env_vars_free):
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1, 1], desireds=[2, 2, 2]
+        )
+        assert persisted is True
+
+    def test_two_periods_do_not(self, mock_env_vars_free):
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1], desireds=[2, 2]
+        )
+        assert persisted is False
+
+    def test_a_period_without_surplus_breaks_the_run(self, mock_env_vars_free):
+        """Newest first: the middle period had desired == target."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 2, 1], desireds=[2, 2, 2]
+        )
+        assert persisted is False
+
+    def test_only_the_latest_periods_are_read(self, mock_env_vars_free):
+        """An older period without surplus does not matter once three newer
+        ones have it."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1, 1, 3], desireds=[2, 2, 2, 3]
+        )
+        assert persisted is True
+
+    def test_a_period_missing_from_either_series_is_skipped(self, mock_env_vars_free):
+        """A failed run publishes no target: that period counts for nothing,
+        so the history is one short."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, None, 1], desireds=[2, 2, 2]
+        )
+        assert persisted is False
+
+    def test_reads_the_most_demanding_target_and_the_lowest_desired(
+        self, mock_env_vars_free
+    ):
+        _, mock_cw = self._history(mock_env_vars_free, targets=[], desireds=[])
+        queries = {
+            q["Id"]: q["MetricStat"]
+            for q in mock_cw.get_metric_data.call_args[1]["MetricDataQueries"]
+        }
+        assert queries["target"]["Stat"] == "Maximum"
+        assert queries["target"]["Metric"]["MetricName"] == "TargetInstances"
+        assert queries["desired"]["Stat"] == "Minimum"
+        assert queries["desired"]["Metric"]["Dimensions"] == [
+            {"Name": "AutoScalingGroupName", "Value": "test-free-asg"}
+        ]
+
+    def test_an_unreadable_history_raises(self, mock_env_vars_free):
+        from free_manager import surplus_of_one_has_persisted
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.get_metric_data.side_effect = Exception("throttled")
+            with pytest.raises(Exception, match="throttled"):
+                surplus_of_one_has_persisted()
+
+    @pytest.mark.parametrize(
+        "states,expected",
+        [
+            ({"cpu-high": "ALARM", "memory-high": "OK"}, True),
+            ({"cpu-high": "OK", "memory-high": "OK"}, False),
+            ({"cpu-high": "INSUFFICIENT_DATA", "memory-high": "OK"}, False),
+        ],
+    )
+    def test_load_alarm_state(self, mock_env_vars_free, states, expected):
+        from free_manager import load_alarm_in_alarm
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.describe_alarms.return_value = {
+                "MetricAlarms": [
+                    {"AlarmName": f"test-optinist-{name}", "StateValue": state}
+                    for name, state in states.items()
+                ]
+            }
+            assert load_alarm_in_alarm() is expected
+            assert mock_cw.describe_alarms.call_args[1]["AlarmNames"] == [
+                "test-optinist-cpu-high",
+                "test-optinist-memory-high",
+            ]
+
+    def test_no_alarm_names_means_no_read(self, mock_env_vars_free):
+        from free_manager import load_alarm_in_alarm
+
+        env = {**mock_env_vars_free, "LOAD_ALARM_NAMES": ""}
+        with patch.dict("os.environ", env), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            assert load_alarm_in_alarm() is False
+            mock_cw.describe_alarms.assert_not_called()
+
+    def test_unreadable_alarms_raise(self, mock_env_vars_free):
+        from free_manager import load_alarm_in_alarm
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.describe_alarms.side_effect = Exception("AccessDenied")
+            with pytest.raises(Exception, match="AccessDenied"):
+                load_alarm_in_alarm()
 
 
 class TestScaleUpWaitBudget:

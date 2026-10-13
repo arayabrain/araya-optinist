@@ -113,6 +113,7 @@ MOCK_ENV_VARS_FREE = {
     "FREE_SERVICE_NAME": "subscr-optinist-cloud-service",
     "ASG_NAME": "test-free-asg",
     "FREE_IDLE_THRESHOLD_MINUTES": "10",
+    "LOAD_ALARM_NAMES": "test-optinist-cpu-high,test-optinist-memory-high",
 }
 
 MOCK_ENV_VARS_COMMON = {

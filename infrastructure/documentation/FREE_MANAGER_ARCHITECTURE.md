@@ -142,7 +142,9 @@ Lambda. A second writer, in `monitoring.tf`, may still **raise** it.
   in one place it is driven by the same signal as scale-out, it returns the
   group to `MinSize` in one run, and the instance removed is chosen by
   workload. An instance a `-high` alarm added is removed the same way once
-  the user count no longer needs it.
+  the alarm has cleared and the user count has not needed it for 15 minutes
+  (see [Conservative Scale-Down](#6-conservative-scale-down)); while the
+  alarm is in ALARM this Lambda removes nothing.
 - **The load metrics are service-level.** For an EC2-launch-type service,
   `CPUUtilization` is utilization of the CPU units *reserved by the task*,
   averaged across the service. Work that stalls on I/O does not move it; the
@@ -182,7 +184,8 @@ Notes:
   leave.
 - `MinSize` above the term holds the target there; a term above `MaxSize` is
   capped, not requested.
-- Scale-in needs the target to be 2 or more below the desired capacity — see
+- A surplus of 2 or more is removed at once; a surplus of 1 once it has lasted
+  three runs; nothing while a `-high` alarm is in ALARM — see
   [Conservative Scale-Down](#6-conservative-scale-down).
 
 ### Motivation: Sticky Session Overload
@@ -461,10 +464,11 @@ context bounds the scale-out wait
 **File:** `infrastructure/terraform/free_manager_package/free_manager.py`
 **Purpose:** Scale the ASG to the user count and rebalance idle
 users. Handles three scenarios: scale out (with instance wait
-loop), scale in when overprovisioned by >= 2 (through
-`scale_in()`), and rebalance-only when distribution is
-imbalanced. Publishes `TargetInstances` before acting, lock or
-not.
+loop), scale in through `scale_in()` — a surplus of 2 or more at
+once, a surplus of 1 once `surplus_of_one_has_persisted()`, and
+neither while `load_alarm_in_alarm()` — and rebalance-only when
+distribution is imbalanced. Publishes `TargetInstances` before
+acting, lock or not.
 **Input:** `active_user_count`, `context`
 **Output:** Dict with scaling action, terminated instances,
 migrated users, and balance status. Uses CloudWatch metric lock
@@ -771,19 +775,26 @@ healthy target. `scale_service()` follows the same rule on decreases.
 
 **Problem:** Frequent scale up/down oscillation wastes resources.
 
-**Solution:** Only scales down when overprovisioned by >= 2 instances.
-This prevents thrashing when user count hovers near a boundary.
+**Solution:** two rules, evaluated on every run at any user count.
 
-The decision is made on every run, at any user count, and this Lambda is
-the only thing that removes an instance (there is no scale-down alarm), so
-a busy period's capacity comes back to `MinSize` in one run — all surplus
-instances at once, each chosen by workload — rather than one per alarm
-cooldown.
+1. **A surplus of 2 or more goes at once**, all of it, each instance chosen
+   by workload. A busy period's capacity comes back to `MinSize` in one
+   run rather than one instance per alarm cooldown.
+2. **A surplus of exactly 1 goes once it has lasted 3 consecutive runs**
+   (15 minutes). This is the boundary case — 5 users against 6 — and
+   removing it at once would thrash. The history is read from the
+   `TargetInstances` metric this Lambda publishes, against the group's
+   `GroupDesiredCapacity`, period by period (`surplus_of_one_has_persisted()`);
+   there is no state of its own. A run that failed published nothing, so
+   its period counts for nothing and the wait starts over. This is how
+   2 → 1 at `MinSize = 1` happens, which no alarm does any more.
 
-**What the rule leaves up:** a surplus of exactly one instance. With
-`MinSize = 1`, a group at 2 and no users stays at 2; so does a group at
-`MinSize + 1` after a `-high` alarm added one. Lowering `min_size` does not
-change that, since the gap is measured against the target, not the floor.
+**Neither rule applies while `cpu-high` or `memory-high` is in ALARM**
+(`load_alarm_in_alarm()`): the alarm says the load needs the capacity,
+and an instance it added is not taken back while the load that asked for
+it is still there. Once the alarm clears, the surplus goes by the rules
+above — a `-high` instance is a surplus of 1, so 15 minutes after the
+alarm clears.
 
 
 ---
@@ -937,6 +948,7 @@ ASG_NAME                        # Auto Scaling Group name
 
 # Scaling Configuration
 FREE_IDLE_THRESHOLD_MINUTES     # Activity threshold minutes (production: 5)
+LOAD_ALARM_NAMES                # cpu-high,memory-high: no scale-in while one is in ALARM
 
 # The instance count floor and ceiling are deliberately NOT here. They are
 # read from the ASG's MinSize/MaxSize (var.asg_min_size / var.asg_max_size)
@@ -1098,6 +1110,8 @@ aws ecs describe-services \
 | `scale_up_wait_budget()` | Scale-out wait bounded by the invocation's remaining time (pure) |
 | `get_service_info()` | Get ASG capacity, bounds and instances, plus ECS task counts |
 | `scale_service()` | Scale ASG and ECS service out |
+| `surplus_of_one_has_persisted()` | Whether desired has been one above the target for three runs, from `TargetInstances` vs `GroupDesiredCapacity` |
+| `load_alarm_in_alarm()` | Whether `cpu-high` / `memory-high` is in ALARM; no scale-in while it is |
 | `select_instances_to_terminate()` | Choose scale-in victims: no workflow, fewest users, heavier zone, newest (pure) |
 | `scale_in()` | Terminate the chosen instances with the desired capacity decremented |
 | `rebalance_idle_users_multi()` | Multi-instance rebalancing algorithm |

@@ -37,6 +37,8 @@ Required Environment Variables:
     (e.g., subscr-optinist-cloud-service)
 - ASG_NAME: Auto Scaling Group name for free tier instances
 - FREE_IDLE_THRESHOLD_MINUTES: Minutes of inactivity to consider user idle (default: 5)
+- LOAD_ALARM_NAMES: comma-separated CloudWatch alarms that add capacity
+    (cpu-high, memory-high); no scale-in while one is in ALARM
 
 The instance count floor and ceiling are read from the ASG's own
 MinSize/MaxSize, not from configuration held here, so capacity can be
@@ -114,6 +116,14 @@ CHECK_INTERVAL = 60
 # by this invocation's own finally rather than by the next run's 15-minute
 # metric window ageing it out.
 WAIT_MARGIN = 60
+
+# The schedule's interval, which is also the metric period the surplus
+# history is read at: one TargetInstances datapoint per run.
+SCHEDULE_INTERVAL = 300
+
+# A surplus of exactly one instance is removed once it has lasted this many
+# consecutive runs. A surplus of two or more goes at once.
+SURPLUS_OF_ONE_RUNS = 3
 
 # Initialize AWS clients
 ecs_client: "ECSClient" = boto3.client("ecs")
@@ -323,6 +333,117 @@ def is_scaling_in_progress() -> bool:
     except Exception as e:
         print(f"Warning: Could not check scaling lock: {e}")
         return False  # Fail open - allow scaling if check fails
+
+
+def surplus_of_one_has_persisted() -> bool:
+    """
+    Whether the group has been one instance above the target for the last
+    SURPLUS_OF_ONE_RUNS scheduled runs.
+
+    A surplus of one is the boundary case -- 5 users against 6 -- and
+    removing it at once would thrash. Instead it goes when it has lasted
+    three consecutive runs. The history is the TargetInstances metric this
+    function publishes on every run, read against the group's own
+    GroupDesiredCapacity, period by period: no state of its own.
+
+    Returns:
+        True when the latest SURPLUS_OF_ONE_RUNS periods all show the
+        desired capacity at least one above the target. Fewer periods on
+        record (a failed run publishes nothing) reads as not persisted.
+
+    Raises:
+        Exception: if the metrics cannot be read. Not caught -- an
+            unreadable history must not be taken for either answer.
+    """
+    env_prefix = os.environ["ENV_PREFIX"]
+    asg_name = get_required_env_var("ASG_NAME")
+    now = datetime.now(timezone.utc)
+    response = cloudwatch_client.get_metric_data(
+        MetricDataQueries=[
+            {
+                "Id": "target",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": f"OptiNiSt/FreeUsers/{env_prefix}",
+                        "MetricName": "TargetInstances",
+                    },
+                    "Period": SCHEDULE_INTERVAL,
+                    # The highest target a period asked for: the surplus is
+                    # measured against the most demanding run in it.
+                    "Stat": "Maximum",
+                },
+                "ReturnData": True,
+            },
+            {
+                "Id": "desired",
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": "AWS/AutoScaling",
+                        "MetricName": "GroupDesiredCapacity",
+                        "Dimensions": [
+                            {"Name": "AutoScalingGroupName", "Value": asg_name}
+                        ],
+                    },
+                    "Period": SCHEDULE_INTERVAL,
+                    # The lowest desired capacity in the period: a scale-in
+                    # already under way counts against the surplus.
+                    "Stat": "Minimum",
+                },
+                "ReturnData": True,
+            },
+        ],
+        # One extra interval, so the current partial period does not cost a
+        # whole run of history.
+        StartTime=now
+        - timedelta(seconds=SCHEDULE_INTERVAL * (SURPLUS_OF_ONE_RUNS + 1)),
+        EndTime=now,
+        ScanBy="TimestampDescending",
+    )
+
+    series = {
+        r["Id"]: dict(zip(r.get("Timestamps", []), r.get("Values", [])))
+        for r in response["MetricDataResults"]
+    }
+    common = sorted(
+        set(series.get("target", {})) & set(series.get("desired", {})), reverse=True
+    )
+    recent = common[:SURPLUS_OF_ONE_RUNS]
+    gaps = [series["desired"][t] - series["target"][t] for t in recent]
+    print(
+        f"Surplus history, newest first (desired - target): "
+        f"{[int(g) for g in gaps]} over {len(recent)} of {SURPLUS_OF_ONE_RUNS} periods"
+    )
+    return len(recent) == SURPLUS_OF_ONE_RUNS and all(g >= 1 for g in gaps)
+
+
+def load_alarm_in_alarm() -> bool:
+    """
+    Whether a load alarm that adds capacity is in ALARM right now.
+
+    The cpu-high / memory-high alarms may add an instance the user count
+    did not ask for. While one of them says the load needs it, this
+    function does not take it away; the surplus is removed once the alarm
+    clears, by the usual rules.
+
+    Returns:
+        True if any alarm named in LOAD_ALARM_NAMES has StateValue ALARM
+
+    Raises:
+        Exception: if the alarms cannot be read. Not caught -- see
+            surplus_of_one_has_persisted().
+    """
+    names = [n for n in os.environ.get("LOAD_ALARM_NAMES", "").split(",") if n]
+    if not names:
+        return False
+    response = cloudwatch_client.describe_alarms(AlarmNames=names)
+    firing = [
+        a["AlarmName"]
+        for a in response.get("MetricAlarms", [])
+        if a.get("StateValue") == "ALARM"
+    ]
+    if firing:
+        print(f"Load alarm(s) in ALARM: {firing}")
+    return bool(firing)
 
 
 def set_scaling_lock(in_progress: bool) -> None:
@@ -679,19 +800,27 @@ def scale_and_rebalance(
             set_scaling_lock(False)
 
     elif desired_instances < current_desired:
-        # Scale down (conservative - only if significantly overprovisioned)
-        if current_desired - desired_instances >= 2:
+        # Scale down. A surplus of 2 or more goes at once; a surplus of 1
+        # only once it has persisted (see surplus_of_one_has_persisted), so
+        # a user count hovering at a boundary does not thrash. Neither while
+        # a load alarm says the capacity is needed.
+        surplus = current_desired - desired_instances
+        result["scaling_action"] = "none"
+        if load_alarm_in_alarm():
+            print(
+                f"No scale down - a load alarm is in ALARM, the surplus of "
+                f"{surplus} stays until it clears"
+            )
+        elif surplus >= 2 or surplus_of_one_has_persisted():
             print(
                 f"Scaling down from {current_desired} to {desired_instances} instances"
             )
-            terminated = scale_in(
-                service_info["instances"], current_desired - desired_instances
-            )
+            terminated = scale_in(service_info["instances"], surplus)
             result["terminated_instances"] = terminated
-            result["scaling_action"] = "scale_down" if terminated else "none"
+            if terminated:
+                result["scaling_action"] = "scale_down"
         else:
-            print("No scale down - within acceptable range")
-            result["scaling_action"] = "none"
+            print("No scale down - a surplus of 1 that has not persisted yet")
     else:
         # No scaling needed, but check if rebalancing needed
         print("No scaling needed, checking if rebalancing is beneficial")
