@@ -85,3 +85,12 @@ def test_1d_inputs_on_axis_0_are_still_appended(output_dir):
     )["concatenated_data"]
 
     assert type(out) is IscellData and out.data.shape == (12,)
+
+
+def test_behaviour_column_concat_rebuilds_the_index(output_dir):
+    a = BehaviorData(RNG.random((6, 2)), file_name="a")
+    b = BehaviorData(RNG.random((6, 1)), file_name="b")
+
+    out = _concat(a, b, output_dir)
+
+    assert out.data.shape == (6, 3) and list(out.index) == [0, 1, 2]
