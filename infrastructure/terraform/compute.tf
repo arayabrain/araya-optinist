@@ -1126,6 +1126,15 @@ resource "aws_ecs_service" "autoscaling" {
 
   health_check_grace_period_seconds = 900
 
+  # desired_count above is the creation value only. At runtime the
+  # free-manager Lambda owns it, syncing it to the ASG's desired capacity, so
+  # Terraform must not pull it back to 1 - that would leave the extra
+  # instances task-less and unhealthy, with no ASG event to trigger a resync.
+  # Mirrors ignore_changes on aws_autoscaling_group.main.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+
   tags = {
     Name = "${local.env_prefix}-cloud-service"
   }
