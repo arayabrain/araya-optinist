@@ -2,6 +2,7 @@ import os
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
@@ -31,7 +32,8 @@ def suite2p_registration(
     ops = {**default_ops(), **ops, **params}
 
     # register binary
-    ops = registration.register_binary(ops, refImg=refImg)
+    with BenchmarkRecorder.phase("reg.register_binary"):
+        ops = registration.register_binary(ops, refImg=refImg)
 
     # Benchmark-only toggles (#893 / #531 sizing): OPTINIST_BENCH_* env vars.
     # Unset in normal runs, so behaviour is unchanged.
@@ -43,15 +45,17 @@ def suite2p_registration(
         and ops.get("do_regmetrics", True)
         and ops["nframes"] >= 1500
     ):
-        ops = registration.get_pc_metrics(ops)
+        with BenchmarkRecorder.phase("reg.pc_metrics"):
+            ops = registration.get_pc_metrics(ops)
 
     # Copy the registered binary into mc_images.tif batch by batch, instead of
     # reading the whole movie into memory (and, before, copying it once more)
-    mc_images = ImageData(
-        _binary_to_tiff(io, ops, output_dir, "mc_images"),
-        output_dir=output_dir,
-        file_name="mc_images",
-    )
+    with BenchmarkRecorder.phase("reg.mc_images"):
+        mc_images = ImageData(
+            _binary_to_tiff(io, ops, output_dir, "mc_images"),
+            output_dir=output_dir,
+            file_name="mc_images",
+        )
 
     info = {
         "refImg": ImageData(ops["refImg"], output_dir=output_dir, file_name="refImg"),
