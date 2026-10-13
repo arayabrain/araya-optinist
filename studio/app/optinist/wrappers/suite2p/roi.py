@@ -5,6 +5,8 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
+from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.optinist.dataclass.roi import RoiStack
 from studio.app.optinist.dataclass import (
     EditRoiData,
     FluoData,
@@ -21,7 +23,7 @@ def suite2p_roi(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData, fluorescence=FluoData, iscell=IscellData):
     import numpy as np
-    from suite2p import ROI, classification, default_ops, detection, extraction
+    from suite2p import classification, default_ops, detection, extraction
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_roi: %s", function_id)
@@ -97,21 +99,21 @@ def suite2p_roi(
                         for i, s in enumerate(stat):
                             im[i, s["ypix"], s["xpix"]] = i
                     else:
-                        arrays = []
+                        # The same stack (NaN outside ROI i, i inside it), written
+                        # to disk one ROI at a time and referenced, not held
+                        stack, stack_path = RoiStack.create(
+                            join_filepath([output_dir, "roi_mask_stack.npy"]),
+                            (len(stat), ops["Ly"], ops["Lx"]),
+                        )
                         for i, s in enumerate(stat):
-                            array = ROI(
-                                ypix=s["ypix"],
-                                xpix=s["xpix"],
-                                lam=s["lam"],
-                                med=s["med"],
-                                do_crop=False,
-                            ).to_array(Ly=ops["Ly"], Lx=ops["Lx"])
-                            array *= i + 1
-                            arrays.append(array)
-
-                        im = np.stack(arrays)
-                        im[im == 0] = np.nan
-                        im -= 1
+                            stack[i, s["ypix"], s["xpix"]] = i
+                        stack.flush()
+                        del stack
+                        im = RoiStack.open(stack_path)
+                        # nanmax over the stack, computed from the pixel lists
+                        roi_label_images = _roi_label_images(
+                            np, stat, iscell, ops["Ly"], ops["Lx"]
+                        )
                 logger.info("suite2p_roi: %d ROIs, mask stack %s", len(stat), im.shape)
             else:
                 logger.info("No ROIs detected in the data.")

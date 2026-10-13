@@ -86,3 +86,68 @@ def test_commit_traces_match_between_array_and_reference(movie_ref, tmp_path, mo
     np.testing.assert_array_equal(
         from_array["fluorescence"].data, from_ref["fluorescence"].data
     )
+
+
+def _stack_on_disk(tmp_path, n=4):
+    from studio.app.optinist.dataclass.roi import RoiStack
+
+    stack, path = RoiStack.create(str(tmp_path / "roi_mask_stack.npy"), (n, LY, LX))
+    expected = np.full((n, LY, LX), np.nan)
+    for i in range(n):
+        stack[i, i, : i + 1] = i
+        expected[i, i, : i + 1] = i
+    stack.flush()
+    del stack
+    return RoiStack.open(path), expected
+
+
+def test_roi_stack_pickles_as_a_reference(tmp_path):
+    import pickle
+
+    im, expected = _stack_on_disk(tmp_path)
+    blob = pickle.dumps({"im": im})
+    assert len(blob) < 1000  # the path, not n x Ly x Lx x 8 bytes
+    back = pickle.loads(blob)["im"]
+    np.testing.assert_array_equal(back, expected)
+    assert not back.flags.writeable
+
+
+def test_anything_derived_from_the_stack_pickles_its_data(tmp_path):
+    import pickle
+
+    im, expected = _stack_on_disk(tmp_path)
+    head = im[:2]  # a view, as EditROI's cancel path takes
+    subset = im[[0, 3]]  # a fancy-indexed copy
+    grown = np.vstack((im, expected[:1]))  # what EditROI.add does
+    for derived, want in [
+        (head, expected[:2]),
+        (subset, expected[[0, 3]]),
+        (grown, np.vstack((expected, expected[:1]))),
+    ]:
+        back = pickle.loads(pickle.dumps(derived))
+        assert type(back) is np.ndarray
+        np.testing.assert_array_equal(back, want)
+    # Reductions come back as plain arrays too
+    assert type(np.nanmax(im, axis=0)) is np.ndarray
+
+
+def test_suite2p_label_images_equal_nanmax_over_the_stack(tmp_path):
+    from studio.app.optinist.wrappers.suite2p.roi import _roi_label_images
+
+    rng = np.random.default_rng(1)
+    stat = []
+    for _ in range(12):  # overlapping ROIs, as suite2p can return
+        y0, x0 = rng.integers(0, LY - 2), rng.integers(0, LX - 2)
+        yy, xx = np.mgrid[y0 : y0 + 3, x0 : x0 + 3]
+        stat.append({"ypix": yy.ravel(), "xpix": xx.ravel()})
+    iscell = rng.integers(0, 2, len(stat))
+    stack = np.full((len(stat), LY, LX), np.nan)
+    for i, s in enumerate(stat):
+        stack[i, s["ypix"], s["xpix"]] = i
+    labels = _roi_label_images(np, stat, iscell, LY, LX)
+    with np.errstate(invalid="ignore"), pytest.warns(RuntimeWarning):
+        np.testing.assert_array_equal(labels["all"], np.nanmax(stack, axis=0))
+    with pytest.warns(RuntimeWarning):
+        np.testing.assert_array_equal(
+            labels["cell"], np.nanmax(stack[iscell != 0], axis=0)
+        )

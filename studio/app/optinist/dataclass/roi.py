@@ -58,6 +58,52 @@ class RoiData(BaseData):
         return OutputPath(path=self.json_path, type=OutputType.ROI)
 
 
+class RoiStack(np.memmap):
+    """
+    The per-ROI mask stack (n_roi x Ly x Lx), kept in a .npy file next to the
+    node's outputs rather than in memory and in the node pickle.
+
+    It behaves as a read-only array. Pickling the whole stack stores only its
+    path, so the node pickle, the API's result polling and post-processing no
+    longer carry ~n_roi x Ly x Lx x 8 bytes. Anything derived from it (a slice,
+    a fancy-indexed subset, an arithmetic result) is a normal array as far as
+    pickling goes, and is serialised with its data exactly as before.
+    """
+
+    @classmethod
+    def create(cls, path: str, shape: tuple, fill=np.nan, dtype=np.float64):
+        out = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
+        for i in range(shape[0]):  # one frame at a time keeps memory flat
+            out[i] = fill
+        out.flush()
+        return out, path
+
+    @classmethod
+    def open(cls, path: str):
+        obj = np.load(path, mmap_mode="r").view(cls)
+        obj._stack_path = path
+        obj._whole_file = True
+        return obj
+
+    def __array_finalize__(self, obj):
+        super().__array_finalize__(obj)
+        # Views, subsets and results are not the file: they pickle their data
+        self._stack_path = getattr(obj, "_stack_path", None)
+        self._whole_file = False
+
+    def __array_wrap__(self, arr, context=None, *args, **kwargs):
+        # Ufunc and reduction results are new data, not the file: plain arrays
+        arr = super().__array_wrap__(arr, context, *args, **kwargs)
+        if isinstance(arr, RoiStack) and not np.shares_memory(arr, self):
+            return arr.view(np.ndarray)
+        return arr
+
+    def __reduce__(self):
+        if getattr(self, "_whole_file", False) and self._stack_path:
+            return (RoiStack.open, (self._stack_path,))
+        return np.array(self, subok=False).__reduce__()
+
+
 def open_edit_images(images):
     """
     The movie an ROI commit reads new traces from, as an array-like.
