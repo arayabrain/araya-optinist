@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from functools import lru_cache
 
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlmodel import create_engine
 
 from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
@@ -56,3 +56,19 @@ def get_db(use_cache: bool = True):
         yield db
     finally:
         db.close()
+
+
+def release_request_session(db: Session) -> None:
+    """
+    Return a get_db session's connection to the pool before background tasks run.
+
+    - FastAPI 0.104 tears get_db down only after the request's background tasks
+      finish, so a long task keeps the connection checked out until it is
+      dropped on idle timeout, and teardown then fails on the dead connection.
+    - Call it in a finally block of any endpoint that queues long background
+      work. The session stays usable; the next query checks out a new
+      connection.
+    - Background tasks never receive this session; they open their own
+      session_scope().
+    """
+    db.close()
