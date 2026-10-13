@@ -67,6 +67,7 @@ class TestFreeAsgScaleIn:
         tf = read(COMPUTE_TF)
         self.asg = resource_block(tf, "aws_autoscaling_group", "main")
         self.capacity_provider = resource_block(tf, "aws_ecs_capacity_provider", "main")
+        self.service = resource_block(tf, "aws_ecs_service", "autoscaling")
 
     def test_asg_carries_the_amazon_ecs_managed_tag(self):
         """The ECS service-linked role may complete the managed-draining hook
@@ -86,3 +87,11 @@ class TestFreeAsgScaleIn:
         sessions, so ``OldestInstance`` removes the most established users."""
         policies = string_list(attribute(self.asg, "termination_policies"))
         assert policies == ["NewestInstance"]
+
+    def test_free_service_lets_a_drain_stop_its_task_at_once(self):
+        """Managed draining completes its hook only once the draining instance
+        has no tasks. At 0 the task stops without waiting for a replacement;
+        raised, the replacement has nowhere to go (one task per instance, and
+        the free task fills one), so the hook waits out its 3600 s timeout
+        again. Raising this needs that solved first."""
+        assert attribute(self.service, "deployment_minimum_healthy_percent") == "0"
