@@ -14,7 +14,7 @@ def correlation(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(corr=HeatMapData):
     import numpy as np
 
     function_id = ExptOutputPathIds(output_dir).function_id

@@ -6,6 +6,7 @@ import { useSnackbar } from "notistack"
 import { UploadFile } from "@mui/icons-material"
 import { IconButton, Tooltip } from "@mui/material"
 
+import { isInputNodePostData } from "api/run/RunUtils"
 import { selectPipelineIsStartedSuccess } from "store/slice/Pipeline/PipelineSelectors"
 import { reset } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { importWorkflowConfig } from "store/slice/Workflow/WorkflowActions"
@@ -28,14 +29,22 @@ export const ImportWorkflowConfigButton = memo(
       event.preventDefault()
       if (event.target.files != null && event.target.files[0] != null) {
         const file = event.target.files[0]
+        // Reset so choosing the same file again still fires onChange
+        event.target.value = ""
         const formData = new FormData()
         formData.append("file", file)
         dispatch(importWorkflowConfig({ formData }))
           .unwrap()
-          .then((result) => {
+          .then((payload) => {
             enqueueSnackbar("Import success", { variant: "success" })
-            notifyParamChanges(result?.paramChanges, enqueueSnackbar)
+            notifyParamChanges(payload?.paramChanges, enqueueSnackbar)
             dispatch(reset())
+            if (Object.values(payload.nodeDict).some(isInputNodePostData)) {
+              enqueueSnackbar(
+                "Upload the workflow's input files to this workspace before running",
+                { variant: "info" },
+              )
+            }
           })
           .catch(() => {
             enqueueSnackbar("Invalid yaml file", { variant: "error" })

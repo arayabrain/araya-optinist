@@ -1,0 +1,11 @@
+I/O:
+  transpose_x: True
+  transpose_y: False
+  event_col_index: 1
+
+covariate_binning:
+  n_bins: 20
+  use_data_range: True
+  bin_min: 0.0
+  bin_max: 1.0
+  sort_by_peak: True
