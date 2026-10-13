@@ -103,7 +103,7 @@ class TestFreeManagerLambda:
         target = resource_block(
             tf, "aws_cloudwatch_event_target", "free_manager_target"
         )
-        assert "input" not in target.replace("input_", "")
+        assert not re.search(r"^\s*input\s*=", target, re.MULTILINE)
 
     def test_no_user_threshold_gates_the_scaling_decision(self):
         """The target is computed on every run at any user count; a threshold
