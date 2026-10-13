@@ -28,8 +28,13 @@ def test_same_file_as_caiman_save_memmap(tmp_path):
     # A batch size that does not divide the frame count
     actual = save_memmap_c_order([source], base_name="b", border_to_0=0, batch_size=7)
 
-    assert os.path.basename(actual)[1:] == os.path.basename(expected)[1:]
-    assert open(actual, "rb").read() == open(expected, "rb").read()
+    try:
+        assert os.path.basename(actual)[1:] == os.path.basename(expected)[1:]
+        assert open(actual, "rb").read() == open(expected, "rb").read()
+    finally:
+        # caiman writes C-order memmaps to its temp directory
+        for path in (expected, actual):
+            os.remove(path)
 
 
 def test_other_cases_go_to_caiman(tmp_path, monkeypatch):
