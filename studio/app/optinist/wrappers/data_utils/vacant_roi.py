@@ -81,7 +81,8 @@ def vacant_roi(
         "non_cell_roi": RoiData(
             empty_roi, output_dir=output_dir, file_name="non_cell_roi"
         ),
-        "edit_roi_data": EditRoiData(images=mc_images.data, im=im),
+        # A reference to the movie; ROI editing opens it lazily
+        "edit_roi_data": EditRoiData(images=mc_images, im=im),
         "nwbfile": nwbfile,
     }
 
