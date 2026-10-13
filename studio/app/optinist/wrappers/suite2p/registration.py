@@ -35,17 +35,54 @@ def suite2p_registration(
     if ops.get("do_regmetrics", True) and ops["nframes"] >= 1500:
         ops = registration.get_pc_metrics(ops)
 
-    mv = io.BinaryFile(
-        Lx=ops["Lx"], Ly=ops["Ly"], read_filename=ops["reg_file"]
-    ).data.copy()
+    # Copy the registered binary into mc_images.tif batch by batch, instead of
+    # reading the whole movie into memory and then copying it once more
+    mc_images = ImageData(
+        binary_to_tiff(io, ops, output_dir, "mc_images"),
+        output_dir=output_dir,
+        file_name="mc_images",
+    )
 
     info = {
         "refImg": ImageData(ops["refImg"], output_dir=output_dir, file_name="refImg"),
         "meanImgE": ImageData(
             ops["meanImgE"], output_dir=output_dir, file_name="meanImgE"
         ),
-        "mc_images": ImageData(mv, output_dir=output_dir, file_name="mc_images"),
+        "mc_images": mc_images,
         "ops": Suite2pData(ops, file_name="ops"),
     }
 
     return info
+
+
+def binary_to_tiff(io, ops, output_dir, file_name, batch_size=200):
+    """
+    Write the registered binary to the TIFF path ImageData would use.
+
+    tifffile writes a frame iterator with a declared shape exactly as it writes
+    the whole array (a byte-identical file), so only one batch is in memory.
+    `io` is suite2p.io, passed in because suite2p is imported lazily here.
+    """
+    import numpy as np
+    import tifffile
+
+    from studio.app.common.core.utils.filepath_creater import (
+        create_directory,
+        join_filepath,
+    )
+
+    tiff_dir = join_filepath([output_dir, "tiff", file_name])
+    create_directory(tiff_dir)
+    tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
+
+    Ly, Lx = ops["Ly"], ops["Lx"]
+    with io.BinaryFile(Ly=Ly, Lx=Lx, read_filename=ops["reg_file"]) as binary:
+        nframes = binary.n_frames
+
+        def frames():
+            for _, batch in binary.iter_frames(batch_size=batch_size, dtype=np.int16):
+                yield from batch
+
+        tifffile.imwrite(tiff_path, frames(), shape=(nframes, Ly, Lx), dtype=np.int16)
+
+    return [tiff_path]
