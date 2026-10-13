@@ -112,6 +112,65 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     return mmap_images, dims, mmap_path
 
 
+def util_get_image_memmap_from_files(
+    function_id: str, paths, file_path: str, batch_size: int = 200
+):
+    """
+    As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
+    filled from the image files batch by batch: the movie is never held in
+    memory as a whole, nor a second time while being copied into the memmap.
+    The memmap is the same, byte for byte.
+    """
+    import imageio
+    import tifffile
+    from caiman.mmapping import prepare_shape
+    from caiman.paths import memmap_frames_filename
+
+    paths = paths if isinstance(paths, list) else [paths]
+
+    def open_frames(path):
+        try:
+            return tifffile.memmap(path, mode="r")
+        except Exception:
+            return np.asarray(imageio.volread(path))
+
+    shapes = []
+    for path in paths:
+        try:
+            with tifffile.TiffFile(path) as tif:
+                shapes.append(tuple(int(n) for n in tif.series[0].shape))
+        except Exception:
+            shapes.append(open_frames(path).shape)
+    T, dims = sum(s[0] for s in shapes), shapes[0][1:]
+
+    order = "C"
+    shape_mov = (np.prod(dims), T)
+    dir_path = join_filepath(file_path.split("/")[:-1])
+    file_basename = file_path.split("/")[-1]
+    mmap_basename = f"{file_basename}.{function_id}"
+    fname_tot = memmap_frames_filename(mmap_basename, dims, T, order)
+    mmap_path = join_filepath([dir_path, fname_tot])
+
+    mmap = np.memmap(
+        mmap_path,
+        mode="w+",
+        dtype=np.float32,
+        shape=prepare_shape(shape_mov),
+        order=order,
+    )
+    mmap_images = np.reshape(mmap.T, [T] + list(dims), order="F")
+
+    t = 0
+    for path in paths:
+        source = open_frames(path)
+        for i in range(0, len(source), batch_size):
+            batch = source[i : i + batch_size]
+            mmap_images[t : t + len(batch)] = batch
+            t += len(batch)
+        del source
+    return mmap_images, dims, mmap_path
+
+
 def util_cleanup_image_memmap(mmap_paths: list):
     for mmap_path in mmap_paths:
         if mmap_path.endswith(".mmap") and os.path.isfile(mmap_path):
@@ -272,9 +331,10 @@ def caiman_cnmf(
     if isinstance(file_path, list):
         file_path = file_path[0]
 
-    images = images.data
     mmap_paths = []
-    mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
+    mmap_images, dims, mmap_path = util_get_image_memmap_from_files(
+        function_id, images.path, file_path
+    )
     mmap_paths.append(mmap_path)
 
     del images
