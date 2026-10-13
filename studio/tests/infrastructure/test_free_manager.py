@@ -3,7 +3,8 @@
 import itertools
 import json
 import os
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -265,18 +266,31 @@ class TestScaleAndRebalanceUsesAsgBounds:
     """
 
     @staticmethod
-    def _run(mock_env_vars_free, users, desired, minimum, maximum, ecs_desired=None):
+    def _run(
+        mock_env_vars_free,
+        users,
+        desired,
+        minimum,
+        maximum,
+        ecs_desired=None,
+        context=None,
+        ready=None,
+    ):
         """
         Drive scale_and_rebalance against mocked AWS clients, returning both.
 
         The clients are the mock boundary, not get_service_info: mocking that
         would hide whether the bounds are actually read off the group, which is
-        the behaviour under test.
+        the behaviour under test. The group reports ``desired`` InService
+        instances, i-0 upwards, all in one zone and with no workflow, so a
+        scale-in has as many safe candidates as it needs.
         """
         from free_manager import scale_and_rebalance
 
         ecs_desired = desired if ecs_desired is None else ecs_desired
-        ready = [f"i-{n}" for n in range(max(maximum, desired))]
+        if ready is None:
+            ready = [f"i-{n}" for n in range(max(maximum, desired))]
+        in_group = [f"i-{n}" for n in range(desired)]
 
         # The scale-up branch polls on a wall-clock loop bounded by
         # max_wait_time. Advance time.time() per call so a clamp regression
@@ -286,13 +300,19 @@ class TestScaleAndRebalanceUsesAsgBounds:
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.ec2_client"
+        ) as mock_ec2, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
             "free_manager.is_scaling_in_progress", return_value=False
         ), patch(
             "free_manager.set_scaling_lock"
-        ), patch(
+        ) as mock_lock, patch(
             "free_manager.get_available_instance_ids", return_value=ready
         ), patch(
             "free_manager.get_users_per_instance", return_value={}
+        ), patch(
+            "free_manager.get_workload_per_instance", return_value={}
         ), patch(
             "free_manager.rebalance_idle_users_multi", return_value=[]
         ), patch(
@@ -308,7 +328,16 @@ class TestScaleAndRebalanceUsesAsgBounds:
                         "DesiredCapacity": desired,
                         "MinSize": minimum,
                         "MaxSize": maximum,
-                        "Instances": [],
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "LifecycleState": "InService",
+                                "HealthStatus": "Healthy",
+                                "AvailabilityZone": "ap-northeast-1a",
+                                "ProtectedFromScaleIn": False,
+                            }
+                            for instance_id in in_group
+                        ],
                     }
                 ]
             }
@@ -322,15 +351,40 @@ class TestScaleAndRebalanceUsesAsgBounds:
                 ]
             }
             mock_ecs.list_tasks.return_value = {"taskArns": ready}
-            scale_and_rebalance(active_user_count=users)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "LaunchTime": datetime(
+                                    2026, 10, 13, 0, n, tzinfo=timezone.utc
+                                ),
+                            }
+                            for n, instance_id in enumerate(in_group)
+                        ]
+                    }
+                ]
+            }
+            result = scale_and_rebalance(active_user_count=users, context=context)
+            mock_asg.result = result
+            mock_asg.lock = mock_lock
             return mock_asg, mock_ecs
 
+    @staticmethod
+    def _terminated(asg):
+        return [
+            c[1]["InstanceId"]
+            for c in asg.terminate_instance_in_auto_scaling_group.call_args_list
+        ]
+
     def test_floor_is_the_asg_minimum_on_scale_down(self, mock_env_vars_free):
-        """users=5 alone wants 1; the minimum of 3 is requested instead."""
+        """users=5 alone wants 1; the minimum of 3 is the target instead, so
+        two of the five are removed, not four."""
         asg, _ = self._run(mock_env_vars_free, users=5, desired=5, minimum=3, maximum=5)
 
-        asg.set_desired_capacity.assert_called_once()
-        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
+        assert len(self._terminated(asg)) == 2
+        asg.set_desired_capacity.assert_not_called()
 
     def test_no_call_when_the_minimum_already_holds_capacity(self, mock_env_vars_free):
         """
@@ -341,6 +395,7 @@ class TestScaleAndRebalanceUsesAsgBounds:
         asg, _ = self._run(mock_env_vars_free, users=5, desired=3, minimum=3, maximum=3)
 
         asg.set_desired_capacity.assert_not_called()
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
 
     def test_ceiling_is_the_asg_maximum_on_scale_up(self, mock_env_vars_free):
         """users=50 alone wants 10; the maximum of 3 is requested instead."""
@@ -356,22 +411,72 @@ class TestScaleAndRebalanceUsesAsgBounds:
         asg, _ = self._run(mock_env_vars_free, users=6, desired=3, minimum=1, maximum=5)
 
         asg.set_desired_capacity.assert_not_called()
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
 
-    def test_scale_down_lowers_the_asg_but_leaves_ecs_to_the_terminate_event(
+    def test_zero_users_return_the_group_to_its_minimum(self, mock_env_vars_free):
+        """
+        The state after a busy period: nobody left, desired still 3. The
+        target is MinSize and the two surplus instances go in one run, which
+        the threshold gate used to prevent.
+        """
+        asg, _ = self._run(mock_env_vars_free, users=0, desired=3, minimum=1, maximum=5)
+
+        assert len(self._terminated(asg)) == 2
+        assert asg.result["scaling_action"] == "scale_down"
+
+    def test_scale_down_terminates_chosen_instances_and_leaves_ecs_to_the_event(
         self, mock_env_vars_free
     ):
         """
         7 users want 2 against a desired of 4, so the gap of 2 clears
-        hysteresis. The ASG is lowered; ECS is **not**, because the instance is
-        still deregistering and ECS would pick a task to stop by AZ balance,
-        possibly the survivor's.
+        hysteresis. Two instances are terminated with the desired capacity
+        decremented in the same call -- the group never lowers the capacity
+        itself and so never chooses. ECS is **not** lowered: the terminate
+        event does that once each instance is gone.
         """
         asg, ecs = self._run(
             mock_env_vars_free, users=7, desired=4, minimum=1, maximum=10
         )
 
-        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 2
+        assert len(self._terminated(asg)) == 2
+        for c in asg.terminate_instance_in_auto_scaling_group.call_args_list:
+            assert c[1]["ShouldDecrementDesiredCapacity"] is True
+        asg.set_desired_capacity.assert_not_called()
         ecs.update_service.assert_not_called()
+
+    def test_scale_in_takes_no_lock_and_scale_up_still_does(self, mock_env_vars_free):
+        """The terminate requests return at once; only the scale-out wait
+        holds the lock."""
+        asg, _ = self._run(mock_env_vars_free, users=0, desired=3, minimum=1, maximum=5)
+        asg.lock.assert_not_called()
+
+        asg, _ = self._run(mock_env_vars_free, users=6, desired=1, minimum=1, maximum=5)
+        assert asg.lock.call_args_list == [call(True), call(False)]
+
+    def test_scale_up_wait_is_bounded_by_the_remaining_invocation_time(
+        self, mock_env_vars_free
+    ):
+        """
+        With 4 minutes left, the loop gets 3 and stops after one check (the
+        mocked clock advances 2 minutes per read); the lock is cleared by this
+        invocation's finally. Unbounded, the loop would outlive the function
+        and the kill would skip the finally.
+        """
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 240_000
+
+        asg, _ = self._run(
+            mock_env_vars_free,
+            users=6,
+            desired=1,
+            minimum=1,
+            maximum=5,
+            context=context,
+            ready=["i-0"],
+        )
+
+        assert asg.result["rebalancing_attempts"] == 1
+        assert asg.lock.call_args_list[-1] == call(False)
 
     def test_scale_up_does_raise_ecs(self, mock_env_vars_free):
         """Raising is safe and still happens inline, unlike lowering."""
@@ -561,28 +666,29 @@ class TestScheduledRunResyncsEcs:
         assert json.loads(result["body"])["ecs_resynced"] is False
 
 
-class TestScheduledRunBelowThreshold:
+class TestScheduledRunComputesATargetAtAnyUserCount:
     """
-    Current specification, pinned so that changing it is deliberate: the
-    scaling path is not entered below FREE_USER_THRESHOLD, so the Lambda
-    neither grows nor shrinks the group there. Shrinking back to baseline
-    after a quiet period is the load alarms' job today.
+    The user-count model owns both directions, so every scheduled run makes
+    a scaling decision. The old threshold gate skipped it below 5 users,
+    which left the group unable to return to its baseline after a busy
+    period.
     """
 
-    def test_scale_and_rebalance_is_not_called(self, mock_env_vars_free):
-        """4 active users against a threshold of 5: no scaling decision."""
+    @pytest.mark.parametrize("active_users", [0, 4])
+    def test_scale_and_rebalance_is_called(self, mock_env_vars_free, active_users):
         from free_manager import handle_scheduled_monitoring
 
+        context = MagicMock()
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
             "free_manager.cloudwatch_client"
         ), patch(
-            "free_manager.count_active_free_users", return_value=4
+            "free_manager.count_active_free_users", return_value=active_users
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
-            "free_manager.scale_and_rebalance"
+            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
         ) as mock_scale:
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [{"DesiredCapacity": 3}]
@@ -591,10 +697,262 @@ class TestScheduledRunBelowThreshold:
                 "services": [{"desiredCount": 3}]
             }
 
-            result = handle_scheduled_monitoring({"source": "aws.events"}, MagicMock())
+            handle_scheduled_monitoring({"source": "aws.events"}, context)
 
-        mock_scale.assert_not_called()
-        assert json.loads(result["body"])["status"] == "no_action_needed"
+        mock_scale.assert_called_once_with(
+            active_user_count=active_users, context=context
+        )
+
+
+class TestScaleInChoosesByWorkload:
+    """
+    select_instances_to_terminate, as a pure function. The order is: never
+    an instance with a running workflow; then the fewest active users; then
+    the zone with the most instances; then the newest.
+    """
+
+    @staticmethod
+    def _inst(instance_id, az="1a", launch=0, state="InService", protected=False):
+        return {
+            "id": instance_id,
+            "az": az,
+            "launch_time": launch,
+            "lifecycle_state": state,
+            "protected": protected,
+        }
+
+    def test_a_running_workflow_is_never_chosen(self):
+        """i-b has the fewest users but a workflow; i-a (2 users) goes
+        instead, and the second slot stays unfilled rather than take i-b."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users_per_instance={"i-a": 2, "i-b": 0, "i-c": 3},
+            workload_per_instance={"i-b": 1},
+            count=2,
+        )
+
+        assert chosen == ["i-a", "i-c"]
+
+    def test_shortfall_is_left_for_a_later_run(self):
+        """Every candidate but one is busy: one id, not two."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users_per_instance={},
+            workload_per_instance={"i-b": 2, "i-c": 1},
+            count=2,
+        )
+
+        assert chosen == ["i-a"]
+
+    def test_fewest_active_users_first(self):
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users_per_instance={"i-a": 3, "i-b": 1, "i-c": 2},
+            workload_per_instance={},
+            count=2,
+        )
+
+        assert chosen == ["i-b", "i-c"]
+
+    def test_the_heavier_zone_breaks_a_tie(self):
+        """Two in 1a, one in 1c, no users anywhere: removing from 1a keeps
+        the zones balanced, so the group has no reason to rebalance."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-c1", az="1c"),
+                self._inst("i-a1", az="1a"),
+                self._inst("i-a2", az="1a"),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=1,
+        )
+
+        assert chosen[0] in {"i-a1", "i-a2"}
+
+    def test_two_picks_alternate_zones(self):
+        """Two in each zone, remove two: one from each, never both from
+        one zone, which would leave 2/0 and trigger a rebalance."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-a1", az="1a", launch=1),
+                self._inst("i-a2", az="1a", launch=2),
+                self._inst("i-c1", az="1c", launch=3),
+                self._inst("i-c2", az="1c", launch=4),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=2,
+        )
+
+        assert len(chosen) == 2
+        assert {c[2] for c in chosen} == {"a", "c"}
+
+    def test_the_newest_breaks_a_tie_within_a_zone(self):
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-old", launch=100), self._inst("i-new", launch=200)],
+            users_per_instance={},
+            workload_per_instance={},
+            count=1,
+        )
+
+        assert chosen == ["i-new"]
+
+    def test_only_in_service_unprotected_instances_are_candidates(self):
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-wait", state="Terminating:Wait"),
+                self._inst("i-pending", state="Pending"),
+                self._inst("i-protected", protected=True),
+                self._inst("i-ok"),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=3,
+        )
+
+        assert chosen == ["i-ok"]
+
+
+class TestScaleInTerminates:
+    """scale_in against the mocked clients: one TerminateInstanceInAutoScalingGroup
+    per chosen instance, decrementing the desired capacity."""
+
+    @staticmethod
+    def _run(mock_env_vars_free, instances, users, workload, count, side_effect=None):
+        from free_manager import scale_in
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ec2_client") as mock_ec2, patch(
+            "free_manager.get_users_per_instance", return_value=users
+        ), patch(
+            "free_manager.get_workload_per_instance", side_effect=workload
+        ):
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": inst["id"],
+                                "LaunchTime": datetime(
+                                    2026, 10, 13, 0, n, tzinfo=timezone.utc
+                                ),
+                            }
+                            for n, inst in enumerate(instances)
+                        ]
+                    }
+                ]
+            }
+            if side_effect is not None:
+                mock_asg.terminate_instance_in_auto_scaling_group.side_effect = (
+                    side_effect
+                )
+            terminated = scale_in(instances, count)
+            return mock_asg, terminated
+
+    @staticmethod
+    def _inst(instance_id):
+        return {
+            "id": instance_id,
+            "az": "1a",
+            "lifecycle_state": "InService",
+            "protected": False,
+        }
+
+    def test_terminates_each_chosen_instance_with_a_decrement(self, mock_env_vars_free):
+        asg, terminated = self._run(
+            mock_env_vars_free,
+            instances=[self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users={"i-a": 2},
+            workload=lambda: {},
+            count=2,
+        )
+
+        assert set(terminated) == {"i-b", "i-c"}
+        assert asg.terminate_instance_in_auto_scaling_group.call_count == 2
+        for c in asg.terminate_instance_in_auto_scaling_group.call_args_list:
+            assert c[1]["ShouldDecrementDesiredCapacity"] is True
+
+    def test_a_refused_termination_is_skipped_not_fatal(self, mock_env_vars_free):
+        """ScalingActivityInProgress on the first: the second still goes, the
+        first is reported as not terminated and waits for the next run."""
+        asg, terminated = self._run(
+            mock_env_vars_free,
+            instances=[self._inst("i-a"), self._inst("i-b")],
+            users={},
+            workload=lambda: {},
+            count=2,
+            side_effect=[Exception("ScalingActivityInProgress"), {}],
+        )
+
+        assert len(terminated) == 1
+        assert asg.terminate_instance_in_auto_scaling_group.call_count == 2
+
+    def test_nothing_safe_means_no_call(self, mock_env_vars_free):
+        asg, terminated = self._run(
+            mock_env_vars_free,
+            instances=[self._inst("i-a"), self._inst("i-b")],
+            users={},
+            workload=lambda: {"i-a": 1, "i-b": 1},
+            count=1,
+        )
+
+        assert terminated == []
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+
+    def test_an_unreadable_workload_aborts_the_scale_in(self, mock_env_vars_free):
+        """A database failure must not read as "no workflow anywhere"."""
+        with pytest.raises(Exception, match="MySQL"):
+            self._run(
+                mock_env_vars_free,
+                instances=[self._inst("i-a"), self._inst("i-b")],
+                users={},
+                workload=Exception("Can't connect to MySQL server"),
+                count=1,
+            )
+
+
+class TestScaleUpWaitBudget:
+    """scale_up_wait_budget: the remaining time less the margin, capped at
+    MAX_WAIT_TIME, and never negative."""
+
+    @pytest.mark.parametrize(
+        "remaining_ms,expected",
+        [
+            (900_000, 840),
+            (1_500_000, 1020),
+            (120_000, 60),
+            (30_000, 0),
+        ],
+    )
+    def test_budget(self, remaining_ms, expected):
+        from free_manager import scale_up_wait_budget
+
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = remaining_ms
+
+        assert scale_up_wait_budget(context) == expected
+
+    def test_no_context_falls_back_to_the_constant(self):
+        from free_manager import MAX_WAIT_TIME, scale_up_wait_budget
+
+        assert scale_up_wait_budget(None) == MAX_WAIT_TIME
+        assert scale_up_wait_budget({}) == MAX_WAIT_TIME
 
 
 class TestDatabaseFailureReachesTheAlarm:
@@ -672,7 +1030,7 @@ class TestHandlerFailsTheInvocation:
         ), patch(
             "free_manager.ec2_client"
         ), patch(
-            "free_manager.count_active_free_users", return_value=5
+            "free_manager.count_active_free_users", return_value=6
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
@@ -683,19 +1041,19 @@ class TestHandlerFailsTheInvocation:
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [
                     {
-                        "DesiredCapacity": 5,
-                        "MinSize": 3,
-                        "MaxSize": 5,
+                        "DesiredCapacity": 1,
+                        "MinSize": 1,
+                        "MaxSize": 3,
                         "Instances": [],
                     }
                 ]
             }
             mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 5, "runningCount": 5, "pendingCount": 0}]
+                "services": [{"desiredCount": 1, "runningCount": 1, "pendingCount": 0}]
             }
             mock_ecs.list_tasks.return_value = {"taskArns": []}
             mock_asg.set_desired_capacity.side_effect = Exception(
-                "ValidationError: desired capacity below MinSize"
+                "ValidationError: desired capacity above MaxSize"
             )
 
             with pytest.raises(Exception, match="ValidationError"):
@@ -804,3 +1162,53 @@ class TestPublishActiveUserMetric:
             metric = call_kwargs["MetricData"][0]
             assert metric["MetricName"] == "ActiveLogins"
             assert metric["Value"] == 42
+
+    def test_publishes_the_target_next_to_active_logins(self, mock_env_vars_free):
+        """Same namespace as ActiveLogins, so the two plot together against
+        the group's GroupDesiredCapacity."""
+        env_prefix = mock_env_vars_free["ENV_PREFIX"]
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            from free_manager import publish_target_metric
+
+            publish_target_metric(3)
+
+            call_kwargs = mock_cw.put_metric_data.call_args[1]
+            assert call_kwargs["Namespace"] == f"OptiNiSt/FreeUsers/{env_prefix}"
+            metric = call_kwargs["MetricData"][0]
+            assert metric["MetricName"] == "TargetInstances"
+            assert metric["Value"] == 3
+
+    def test_target_is_published_even_when_the_lock_is_held(self, mock_env_vars_free):
+        """A held lock skips the actions, not the measurement: the target is
+        exactly what a reader needs to judge a skipped run."""
+        from free_manager import scale_and_rebalance
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.is_scaling_in_progress", return_value=True
+        ), patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [
+                    {
+                        "DesiredCapacity": 1,
+                        "MinSize": 1,
+                        "MaxSize": 3,
+                        "Instances": [],
+                    }
+                ]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1, "runningCount": 1, "pendingCount": 0}]
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": []}
+
+            result = scale_and_rebalance(active_user_count=7)
+
+        assert result["status"] == "scaling_in_progress"
+        mock_target.assert_called_once_with(2)
+        mock_asg.set_desired_capacity.assert_not_called()

@@ -216,6 +216,38 @@ def get_users_per_instance(activity_threshold_minutes: int = 10) -> Dict[str, in
         return {}
 
 
+def get_workload_per_instance() -> Dict[str, int]:
+    """
+    Get the number of running workflows per instance.
+
+    Every assignment row counts, not only those inside the activity window:
+    a user who started a long workflow and closed the browser has no recent
+    request, but the workflow is still running on their instance.
+
+    Returns:
+        Dictionary mapping instance_id -> running workflow count, for
+        instances with at least one
+
+    Raises:
+        Exception: on any database failure. Not caught -- an empty result
+            here reads as "no workflow anywhere", and the caller would then
+            terminate an instance it cannot see into. Raising aborts the
+            scale-in and reaches the Lambda Errors metric instead.
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            query = """
+                SELECT instance_id, SUM(active_workflow_count) as workflow_count
+                FROM free_user_assignments
+                WHERE active_workflow_count > 0
+                GROUP BY instance_id
+            """
+            cursor.execute(query)
+            results = cursor.fetchall()
+
+            return {row["instance_id"]: int(row["workflow_count"]) for row in results}
+
+
 def trigger_experiment_sync(user_id: int) -> bool:
     """
     Trigger experiment metadata sync for user on their new instance.

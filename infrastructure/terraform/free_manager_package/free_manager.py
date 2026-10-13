@@ -3,13 +3,18 @@ Free Manager Lambda Function
 
 PRIMARY RESPONSIBILITIES:
 - Monitor active free tier user count
-- Proactively scale ECS service when user threshold reached
+- Own the free ASG's capacity in both directions by user count: scale out
+  when the count asks for more instances, scale in when it asks for fewer
+- Choose which instance a scale-in removes: never one running a workflow,
+  then the one with the fewest active users
 - Actively rebalance idle users across ALL instances (multi-instance algorithm)
-- Wait for new instances to become ready (up to 10 minutes with retry)
+- Wait for new instances to become ready, within the invocation's remaining time
 - Preserve users with running workflows on their current instance
 
 ARCHITECTURE NOTES:
-- This Lambda handles proactive scaling and load rebalancing for free tier users
+- This Lambda is the only writer that lowers the free ASG's desired capacity.
+  The cpu-high / memory-high alarms may still add an instance; nothing else
+  removes one
 - Triggered by CloudWatch Events (every 5 minutes)
 - Works in conjunction with ALB sticky sessions (5 minutes)
 - Users migrate to new instances within 5 minutes after rebalancing
@@ -31,7 +36,6 @@ Required Environment Variables:
 - FREE_SERVICE_NAME: ECS service name for free tier
     (e.g., subscr-optinist-cloud-service)
 - ASG_NAME: Auto Scaling Group name for free tier instances
-- FREE_USER_THRESHOLD: Number of active users to trigger scaling (default: 5)
 - FREE_IDLE_THRESHOLD_MINUTES: Minutes of inactivity to consider user idle (default: 5)
 
 The instance count floor and ceiling are read from the ASG's own
@@ -42,6 +46,7 @@ adjusted on the group without redeploying this function.
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
@@ -63,6 +68,7 @@ from free_user_utils import (  # noqa: E402
     count_active_free_users,
     get_idle_users_for_instance,
     get_users_per_instance,
+    get_workload_per_instance,
     is_distribution_balanced,
     migrate_user_to_instance,
 )
@@ -93,12 +99,21 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
 
 # Users one instance is provisioned to serve. Only the instance count scales,
 # so this is the divisor that turns an active user count into a target count.
-#
-# Paired with FREE_USER_THRESHOLD (env, also 5), which gates whether scaling
-# runs at all. Scaling starts at the threshold, but the first scale-up by user
-# count needs USERS_PER_INSTANCE + 1 users, so tuning one without the other
-# moves where scaling begins relative to where it has any effect.
+# Evaluated on every scheduled run at any user count: 0 users ask for MinSize,
+# which is how the group returns to its baseline after a busy period.
 USERS_PER_INSTANCE = 5
+
+# Scale-out wait, bounded further by the invocation's remaining time (see
+# scale_up_wait_budget). Lifecycle hook ~5 min, EC2 boot ~5 min, ECS task
+# ~7 min, so the full readiness can exceed what one invocation has left; the
+# next scheduled run retries the rebalancing.
+MAX_WAIT_TIME = 1020
+CHECK_INTERVAL = 60
+
+# Left of the invocation when the wait loop must stop, so the lock is cleared
+# by this invocation's own finally rather than by the next run's 15-minute
+# metric window ageing it out.
+WAIT_MARGIN = 60
 
 # Initialize AWS clients
 ecs_client: "ECSClient" = boto3.client("ecs")
@@ -158,15 +173,14 @@ def handle_scheduled_monitoring(event, context):
     """
     try:
         # Get configuration
-        user_threshold = int(get_required_env_var("FREE_USER_THRESHOLD", "5"))
         activity_threshold_minutes = int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
         )
 
         # Backstop for the ASG-event sync, which fires once per launch or
-        # terminate and is not retried. Runs before the user threshold is
-        # considered: a task-less instance has to be corrected whether or not
-        # there is anyone to scale for. Raise-only - see sync_ecs_to_asg().
+        # terminate and is not retried. Runs first: a task-less instance has
+        # to be corrected whether or not there is anyone to scale for.
+        # Raise-only - see sync_ecs_to_asg().
         #
         # Held rather than raised: the count, the metric and the scaling
         # decision are all still worth doing. Re-raised at the end so the
@@ -188,23 +202,12 @@ def handle_scheduled_monitoring(event, context):
         # Publish metric to CloudWatch
         publish_active_user_metric(active_user_count)
 
-        # Determine if scaling needed
-        if active_user_count >= user_threshold:
-            print(
-                f"User threshold reached ({active_user_count} >= {user_threshold}), "
-                f"initiating scaling and rebalancing"
-            )
-            result = scale_and_rebalance(active_user_count=active_user_count)
-        else:
-            print(
-                f"User threshold not reached ({active_user_count} < {user_threshold}), "
-                f"no scaling needed"
-            )
-            result = {
-                "status": "no_action_needed",
-                "active_users": active_user_count,
-                "threshold": user_threshold,
-            }
+        # Every run computes a target, whatever the count: the user-count
+        # model owns scale-in too, and 0 users have to bring the group back
+        # to its minimum.
+        result = scale_and_rebalance(
+            active_user_count=active_user_count, context=context
+        )
 
         result["ecs_resynced"] = ecs_sync["changed"]
 
@@ -474,14 +477,49 @@ def calculate_desired_instances(
     return min(max(asg_min_size, by_user_count), asg_max_size)
 
 
+def scale_up_wait_budget(context: Any) -> int:
+    """
+    Seconds the scale-out wait loop may run in this invocation.
+
+    MAX_WAIT_TIME alone exceeds the function's 900 s timeout. A loop bounded
+    only by it is killed by the platform on a slow launch, and a killed
+    invocation never runs the finally that clears the scaling lock, so the
+    lock strands for its whole 15-minute metric window. Bounding by the
+    remaining time, less a margin for the clean-up, keeps the finally
+    reachable.
+
+    Args:
+        context: Lambda context; anything without
+            get_remaining_time_in_millis() (local runs) falls back to the
+            constant
+
+    Returns:
+        Wait budget in seconds, at least 0
+    """
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(remaining):
+        return MAX_WAIT_TIME
+    try:
+        remaining_seconds = int(remaining()) // 1000
+    except (TypeError, ValueError):
+        return MAX_WAIT_TIME
+    return max(0, min(MAX_WAIT_TIME, remaining_seconds - WAIT_MARGIN))
+
+
 def scale_and_rebalance(
     active_user_count: int,
+    context: Any = None,
 ) -> Dict[str, Any]:
     """
-    Scale ECS service and rebalance idle users to new instances.
+    Scale the free ASG to the user count and rebalance idle users.
+
+    Both directions. Scale-out raises the ASG and ECS and waits for the new
+    instances; scale-in terminates instances this function chooses, so a
+    running workflow is never the one removed.
 
     Args:
         active_user_count: Current number of active free tier users
+        context: Lambda context, for the scale-out wait budget
 
     Returns:
         Dictionary with scaling and rebalancing results
@@ -490,14 +528,6 @@ def scale_and_rebalance(
     print("SCALE AND REBALANCE")
     print("=" * 70)
     print(f"Active users: {active_user_count}")
-
-    # Check if scaling is already in progress
-    if is_scaling_in_progress():
-        return {
-            "status": "scaling_in_progress",
-            "message": "Another scaling operation is in progress, skipping",
-            "active_users": active_user_count,
-        }
 
     cluster_name = get_required_env_var("CLUSTER_NAME")
     service_name = get_required_env_var("FREE_SERVICE_NAME")
@@ -525,6 +555,10 @@ def scale_and_rebalance(
         f"{USERS_PER_INSTANCE})), {asg_max_size})"
     )
 
+    # Published before anything acts on it, lock or not, so the intended
+    # capacity can be read against GroupDesiredCapacity on every run.
+    publish_target_metric(desired_instances)
+
     # The cap is otherwise silent: the target is clamped and nothing says the
     # user count asked for more than the group allows.
     by_user_count = (active_user_count + USERS_PER_INSTANCE - 1) // USERS_PER_INSTANCE
@@ -534,6 +568,15 @@ def scale_and_rebalance(
             f"instances, above MaxSize {asg_max_size}. Capacity is capped; "
             f"raise asg_max_size to serve them."
         )
+
+    # Check if scaling is already in progress
+    if is_scaling_in_progress():
+        return {
+            "status": "scaling_in_progress",
+            "message": "Another scaling operation is in progress, skipping",
+            "active_users": active_user_count,
+            "desired_instances": desired_instances,
+        }
 
     result = {
         "active_users": active_user_count,
@@ -563,20 +606,15 @@ def scale_and_rebalance(
             result["scaling_action"] = "scale_up"
 
             # Wait for instances to launch and rebalance with retry logic
-            # Lifecycle hook: ~5 minutes, EC2 instances:
-            # ~5 minutes, ECS tasks: ~7 minutes
-            # Total: ~17 minutes for full operational readiness
-            # We'll retry for up to 17 minutes to allow for variability
-            import time
-
-            max_wait_time = 1020  # 17 minutes in seconds
-            check_interval = 60  # Check every 60 seconds
+            max_wait_time = scale_up_wait_budget(context)
+            check_interval = CHECK_INTERVAL
             start_time = time.time()
             attempt = 0
 
             print(
                 f"\nWaiting for new instances to launch and become ECS-ready "
-                f"(up to {max_wait_time // 60} minutes, includes lifecycle hooks)"
+                f"(up to {max_wait_time}s this invocation, includes lifecycle "
+                f"hooks)"
             )
 
             rebalanced = []
@@ -626,8 +664,7 @@ def scale_and_rebalance(
                     time.sleep(check_interval)
                 else:
                     print(
-                        f"\nTimeout reached "
-                        f"({max_wait_time}s / {max_wait_time // 60} min). "
+                        f"\nWait budget reached ({max_wait_time}s). "
                         f"Rebalancing will be retried on next Lambda run (every 5 min)."
                     )
                     break
@@ -647,13 +684,11 @@ def scale_and_rebalance(
             print(
                 f"Scaling down from {current_desired} to {desired_instances} instances"
             )
-            scale_service(
-                cluster_name,
-                service_name,
-                desired_instances,
-                current_ecs_desired=current_ecs_desired,
+            terminated = scale_in(
+                service_info["instances"], current_desired - desired_instances
             )
-            result["scaling_action"] = "scale_down"
+            result["terminated_instances"] = terminated
+            result["scaling_action"] = "scale_down" if terminated else "none"
         else:
             print("No scale down - within acceptable range")
             result["scaling_action"] = "none"
@@ -682,7 +717,7 @@ def scale_and_rebalance(
     return result
 
 
-def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
+def get_service_info(cluster_name: str, service_name: str) -> Dict[str, Any]:
     """
     Get current ASG and ECS service information.
 
@@ -756,7 +791,7 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
 
     # Return ASG capacity and bounds (source of truth for scaling)
     # but also include ECS running/pending counts
-    result = {
+    result: Dict[str, Any] = {
         "desired_count": asg["DesiredCapacity"],
         "running_count": service["runningCount"],
         "pending_count": service["pendingCount"],
@@ -765,6 +800,16 @@ def get_service_info(cluster_name: str, service_name: str) -> Dict[str, int]:
         # ECS's own desired count, distinct from desired_count above (the
         # ASG's). scale_service() needs it to tell a raise from a lower.
         "ecs_desired_count": service["desiredCount"],
+        # The group's own view of its instances, for scale-in to choose from.
+        "instances": [
+            {
+                "id": inst["InstanceId"],
+                "az": inst.get("AvailabilityZone", ""),
+                "lifecycle_state": inst["LifecycleState"],
+                "protected": inst.get("ProtectedFromScaleIn", False),
+            }
+            for inst in asg["Instances"]
+        ],
     }
 
     print("\nReturning:")
@@ -785,7 +830,7 @@ def scale_service(
     current_ecs_desired: int | None = None,
 ) -> None:
     """
-    Update ASG desired capacity to scale the free tier instances.
+    Update ASG desired capacity to scale the free tier instances out.
 
     Unlike premium tier which uses individual EC2 instances, free tier
     uses an Auto Scaling Group (ASG) with ECS. We need to scale the ASG
@@ -794,6 +839,10 @@ def scale_service(
     This is manual ASG management to avoid the runaway scaling issue that
     occurs with ECS managed scaling (where instance startup CPU spikes
     trigger additional scaling events).
+
+    Scale-in does not come through here: lowering the desired capacity
+    leaves the choice of instance to the group's termination policy, which
+    cannot see workloads. See scale_in().
 
     Args:
         cluster_name: ECS cluster name (used for logging only)
@@ -839,6 +888,147 @@ def scale_service(
     except Exception as e:
         print(f"Error scaling ASG: {e}")
         raise
+
+
+def select_instances_to_terminate(
+    instances: List[Dict[str, Any]],
+    users_per_instance: Dict[str, int],
+    workload_per_instance: Dict[str, int],
+    count: int,
+) -> List[str]:
+    """
+    Choose which instances a scale-in removes.
+
+    Excluded outright: any instance with a running workflow, and any that is
+    not InService or is protected. If fewer than ``count`` remain, the
+    remainder is left for a later run rather than taken from the excluded
+    ones -- a running workflow is never interrupted to shed capacity.
+
+    Order among the rest:
+
+    1. fewest active users -- an instance with none loses nobody's session;
+    2. the availability zone holding the most of the group's instances --
+       a decrement that unbalances the zones invites the group to
+       rebalance, which terminates an instance of its own choosing;
+    3. the most recently launched -- sticky sessions accumulate on
+       long-lived instances, as the group's own NewestInstance policy
+       assumes.
+
+    Args:
+        instances: get_service_info()["instances"], each with ``id``,
+            ``az``, ``lifecycle_state``, ``protected`` and ``launch_time``
+        users_per_instance: active users keyed by instance id
+        workload_per_instance: running workflows keyed by instance id
+        count: how many to choose
+
+    Returns:
+        Instance ids in termination order, at most ``count``
+    """
+    candidates = []
+    for inst in instances:
+        if inst["lifecycle_state"] != "InService" or inst.get("protected"):
+            print(f"- {inst['id']}: {inst['lifecycle_state']}, not a candidate")
+            continue
+        workflows = workload_per_instance.get(inst["id"], 0)
+        if workflows > 0:
+            print(f"- {inst['id']}: {workflows} running workflow(s), kept")
+            continue
+        candidates.append(inst)
+
+    # One at a time, recounting the zones after each pick: two picks in a
+    # row from the same zone would be the imbalance the zone rule avoids.
+    remaining = list(instances)
+    chosen: List[str] = []
+    while candidates and len(chosen) < count:
+        az_counts: Dict[str, int] = {}
+        for inst in remaining:
+            az_counts[inst["az"]] = az_counts.get(inst["az"], 0) + 1
+
+        candidates.sort(
+            key=lambda inst: (
+                users_per_instance.get(inst["id"], 0),
+                -az_counts.get(inst["az"], 0),
+                -(inst.get("launch_time") or 0),
+            )
+        )
+        pick = candidates.pop(0)
+        remaining = [inst for inst in remaining if inst["id"] != pick["id"]]
+        chosen.append(pick["id"])
+        print(
+            f"- {pick['id']}: {users_per_instance.get(pick['id'], 0)} active "
+            f"user(s), {pick['az']}, selected"
+        )
+
+    if len(chosen) < count:
+        print(
+            f"Only {len(chosen)} of {count} instance(s) can be removed safely; "
+            f"the rest waits for workflows to finish"
+        )
+    return chosen
+
+
+def scale_in(instances: List[Dict[str, Any]], count: int) -> List[str]:
+    """
+    Remove ``count`` instances from the free ASG, chosen by workload.
+
+    Each is terminated with TerminateInstanceInAutoScalingGroup and
+    ShouldDecrementDesiredCapacity, so the desired capacity follows the
+    terminations one by one and the group never picks an instance itself.
+    ECS is not lowered here: the terminate event does that once the
+    instance is gone (sync_ecs_to_asg), as for any other termination.
+
+    A termination the API refuses (a scaling activity already in progress,
+    say) is skipped and logged; the next run recomputes the target and
+    tries again.
+
+    Args:
+        instances: get_service_info()["instances"]
+        count: how many to remove
+
+    Returns:
+        Instance ids whose termination was accepted
+    """
+    asg_name = get_required_env_var("ASG_NAME")
+
+    users_per_instance = get_users_per_instance(
+        activity_threshold_minutes=int(
+            get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
+        )
+    )
+    workload_per_instance = get_workload_per_instance()
+    print(f"Active users per instance: {users_per_instance}")
+    print(f"Running workflows per instance: {workload_per_instance}")
+
+    in_service = [i["id"] for i in instances if i["lifecycle_state"] == "InService"]
+    launch_times: Dict[str, float] = {}
+    if in_service:
+        ec2_response = ec2_client.describe_instances(InstanceIds=in_service)
+        for reservation in ec2_response["Reservations"]:
+            for ec2_instance in reservation["Instances"]:
+                launch_times[ec2_instance["InstanceId"]] = ec2_instance[
+                    "LaunchTime"
+                ].timestamp()
+    for inst in instances:
+        inst["launch_time"] = launch_times.get(inst["id"])
+
+    chosen = select_instances_to_terminate(
+        instances, users_per_instance, workload_per_instance, count
+    )
+
+    terminated = []
+    for instance_id in chosen:
+        try:
+            autoscaling_client.terminate_instance_in_auto_scaling_group(
+                InstanceId=instance_id, ShouldDecrementDesiredCapacity=True
+            )
+            print(f"Terminating {instance_id} in {asg_name}, desired capacity -1")
+            terminated.append(instance_id)
+        except Exception as e:
+            print(
+                f"Could not terminate {instance_id}, leaving it for the next run: {e}"
+            )
+
+    return terminated
 
 
 def rebalance_idle_users_multi(available_instances: List[str]) -> List[str]:
@@ -1230,6 +1420,35 @@ def publish_active_user_metric(active_user_count: int) -> None:
             ],
         )
         print(f"Published CloudWatch metric: ActiveLogins={active_user_count}")
+    except Exception as e:
+        print(f"Failed to publish CloudWatch metric: {e}")
+        # Don't fail the Lambda if metric publishing fails
+
+
+def publish_target_metric(target_instances: int) -> None:
+    """
+    Publish the instance count the user count asks for.
+
+    Next to ActiveLogins, so it can be plotted against the group's own
+    GroupDesiredCapacity and GroupInServiceInstances: a gap that persists is
+    a missed scale-in (above) or a scale-in this function could not make
+    safely, or capacity an alarm added (below).
+
+    Args:
+        target_instances: the clamped target from calculate_desired_instances
+    """
+    try:
+        cloudwatch_client.put_metric_data(
+            Namespace=f"OptiNiSt/FreeUsers/{os.environ['ENV_PREFIX']}",
+            MetricData=[
+                {
+                    "MetricName": "TargetInstances",
+                    "Value": target_instances,
+                    "Unit": "Count",
+                }
+            ],
+        )
+        print(f"Published CloudWatch metric: TargetInstances={target_instances}")
     except Exception as e:
         print(f"Failed to publish CloudWatch metric: {e}")
         # Don't fail the Lambda if metric publishing fails

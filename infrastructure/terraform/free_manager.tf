@@ -79,7 +79,8 @@ resource "aws_lambda_function" "free_manager" {
       # The instance count floor/ceiling are not set here: the Lambda reads the
       # ASG's own MinSize/MaxSize (var.asg_min_size / var.asg_max_size), so the
       # group's configuration cannot drift from what the Lambda will request.
-      FREE_USER_THRESHOLD         = "5" # Trigger scaling at 5 active users
+      # No user threshold either: the target is computed on every run, at any
+      # user count, so the Lambda owns scale-in as well as scale-out.
       FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
 
       # Internal API configuration for experiment sync after migration
@@ -180,12 +181,16 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
         Action   = "autoscaling:DescribeAutoScalingGroups"
         Resource = "*"
       },
-      # ASG Management (scoped to free tier ASG)
+      # ASG Management (scoped to free tier ASG). Scale-in terminates the
+      # instance the Lambda chose, with the desired capacity decremented in
+      # the same call, rather than lowering the capacity and letting the
+      # group's termination policy choose.
       {
         Effect = "Allow"
         Action = [
           "autoscaling:SetDesiredCapacity",
-          "autoscaling:UpdateAutoScalingGroup"
+          "autoscaling:UpdateAutoScalingGroup",
+          "autoscaling:TerminateInstanceInAutoScalingGroup"
         ]
         Resource = aws_autoscaling_group.main.arn
       },
