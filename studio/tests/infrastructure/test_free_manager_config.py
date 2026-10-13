@@ -11,6 +11,47 @@ import pytest
 from terraform_source import TERRAFORM_DIR, attribute, read, resource_block
 
 FREE_MANAGER_TF = TERRAFORM_DIR / "free_manager.tf"
+MONITORING_TF = TERRAFORM_DIR / "monitoring.tf"
+COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
+
+
+class TestOnlyTheFreeManagerRemovesCapacity:
+    """No second writer lowers the free ASG. The load alarms may still add an
+    instance; the former cpu-low / memory-low alarms and the scale-down
+    policy they drove must stay gone, or the group would again pick an
+    instance to terminate blind to running workflows."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.monitoring = read(MONITORING_TF)
+        self.compute = read(COMPUTE_TF)
+
+    def test_no_scale_down_policy(self):
+        policies = re.findall(
+            r'resource\s+"aws_autoscaling_policy"\s+"([^"]+)"', self.compute
+        )
+        assert policies == ["scale_up"]
+
+    def test_no_low_alarms_on_the_free_service(self):
+        alarms = re.findall(r'alarm_name\s*=\s*"([^"]+)"', self.monitoring)
+        assert not [a for a in alarms if a.endswith(("-cpu-low", "-memory-low"))]
+        assert "scale_down" not in self.monitoring
+
+    @pytest.mark.parametrize("alarm", ["cpu_high", "memory_high"])
+    def test_high_alarms_still_add_capacity(self, alarm):
+        block = resource_block(self.monitoring, "aws_cloudwatch_metric_alarm", alarm)
+        assert (
+            attribute(block, "alarm_actions") == "[aws_autoscaling_policy.scale_up.arn]"
+        )
+
+    def test_dashboard_plots_the_target_against_the_group(self):
+        """TargetInstances next to GroupDesiredCapacity is the only place
+        the two can be compared; without it a missed scale-in is invisible."""
+        title = self.monitoring.find('"Autoscaling: Free Tier Capacity Management"')
+        assert title > 0, "capacity widget not found"
+        widget = self.monitoring[self.monitoring.rfind("metrics = [", 0, title) : title]
+        assert '"TargetInstances"' in widget
+        assert '"GroupDesiredCapacity"' in widget
 
 
 class TestFreeManagerLambda:

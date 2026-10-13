@@ -345,18 +345,14 @@ resource "aws_autoscaling_group" "main" {
   }
 }
 
-# Auto Scaling Policies
+# Auto Scaling Policies. Scale-out only: the cpu-high / memory-high alarms in
+# monitoring.tf may add an instance the user count did not ask for. There is
+# no scale-down policy -- the free-manager Lambda is the only thing that
+# removes an instance, and it chooses which one by workload. A policy here
+# would let the group choose instead, blind to running workflows
 resource "aws_autoscaling_policy" "scale_up" {
   name                   = "${local.env_prefix}-scale-up"
   scaling_adjustment     = 1
-  adjustment_type        = "ChangeInCapacity"
-  cooldown               = 300
-  autoscaling_group_name = aws_autoscaling_group.main.name
-}
-
-resource "aws_autoscaling_policy" "scale_down" {
-  name                   = "${local.env_prefix}-scale-down"
-  scaling_adjustment     = -1
   adjustment_type        = "ChangeInCapacity"
   cooldown               = 300
   autoscaling_group_name = aws_autoscaling_group.main.name

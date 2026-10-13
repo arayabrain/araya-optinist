@@ -69,7 +69,6 @@ const EXPECTED_ALARMS = [
   `${ENV}-free-manager-errors`,
   `${ENV}-optinist-alb-5xx-errors`,
   `${ENV}-optinist-cpu-high`,
-  `${ENV}-optinist-cpu-low`,
   `${ENV}-optinist-ebs-queue-length-high`,
   `${ENV}-optinist-efs-burst-credits-low`,
   `${ENV}-optinist-efs-throughput-high`,
@@ -78,7 +77,6 @@ const EXPECTED_ALARMS = [
   `${ENV}-optinist-high-iowait`,
   `${ENV}-optinist-load-average-high`,
   `${ENV}-optinist-memory-high`,
-  `${ENV}-optinist-memory-low`,
   `${ENV}-optinist-public-tg-response-time-high`,
   `${ENV}-optinist-public-tg-unhealthy-hosts`,
   `${ENV}-optinist-rds-connections-high`,
@@ -93,19 +91,12 @@ const EXPECTED_ALARMS = [
 // nothing, so it says nothing about whether the environment is serving.
 const COST_ALARM = `${ENV}-monthly-cost-high`
 
-// An idle environment holds its scale-in trigger in ALARM by design: that is
-// what tells the ASG to give an instance back. Recognise it by what it does
-// rather than by its name, so a new scale-in alarm needs no edit here - and so
-// a "-low" alarm that grew a real action stops being waved through.
-function isScaleInTrigger(alarm: { name: string; actions: string[] }): boolean {
-  return (
-    alarm.actions.length > 0 &&
-    alarm.actions.every((a) =>
-      /^arn:aws:autoscaling:.*:scalingPolicy:/.test(a),
-    ) &&
-    /-low$/.test(alarm.name)
-  )
-}
+// No alarm is waved through for being a scale-in trigger: the free tier has
+// none. Scale-in is the free-manager Lambda's, by user count, and the former
+// cpu-low / memory-low alarms that sat in ALARM on an idle environment by
+// design are gone with the scale-down policy they drove. An alarm in ALARM
+// with an Auto Scaling policy as its action is now a -high alarm adding
+// capacity, which HEALTH-11 should report like any other.
 
 // An alarm's own metric, over the window it evaluates. Only ever called for an
 // alarm already in ALARM, so the happy path pays nothing.
@@ -342,12 +333,14 @@ test.describe("Compute and routing", () => {
           `--query 'tasks[].{group:group,reason:stoppedReason}'`,
       )
       // A scale-down or a deployment replaces tasks by design; an OOM kill, a
-      // failed container or an essential-container exit does not.
+      // failed container or an essential-container exit does not. A free-tier
+      // scale-in drains its instance (ECS managed draining), so "container
+      // instance is in DRAINING state" is that routine stop, not a fault.
       for (const task of details) {
         expect(
           task.reason || "",
           `${task.group} stopped for a non-routine reason`,
-        ).toMatch(/scal|deployment|Scaling|user|service/i)
+        ).toMatch(/scal|deployment|Scaling|user|service|drain/i)
       }
     }
   })
@@ -718,7 +711,7 @@ test.describe("Alarms, logs and metrics", () => {
     ).toBeGreaterThan(EXPECTED_ALARMS.length - 1)
     const inAlarm = alarms
       .filter((a) => a.state === "ALARM")
-      .filter((a) => a.name !== COST_ALARM && !isScaleInTrigger(a))
+      .filter((a) => a.name !== COST_ALARM)
     // An alarm whose metric has already recovered is reported, not failed: with
     // two evaluation periods the state trails the metric by minutes, so a run
     // that lands in that gap was describing the clock. The scheduled 08:00 JST

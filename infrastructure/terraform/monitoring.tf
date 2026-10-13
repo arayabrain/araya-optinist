@@ -42,6 +42,12 @@ locals {
   critical_alerts_actions = var.environment == local.production_env_prefix ? [aws_sns_topic.critical_alerts[0].arn] : []
 }
 
+# Free-tier load alarms. These may ADD an instance when the user count
+# under-estimates the load; nothing here removes one. Scale-in belongs to the
+# free-manager Lambda alone, by user count, so that the instance removed is
+# chosen by workload and the two writers cannot undo each other. The former
+# cpu-low / memory-low alarms, which drove a scale-down policy, are gone for
+# that reason.
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "${local.env_prefix}-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -70,40 +76,6 @@ resource "aws_cloudwatch_metric_alarm" "memory_high" {
   threshold           = "80"
   alarm_description   = "This metric monitors memory utilization"
   alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
-  dimensions = {
-    ServiceName = aws_ecs_service.autoscaling.name
-    ClusterName = aws_ecs_cluster.main.name
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "cpu_low" {
-  alarm_name          = "${local.env_prefix}-cpu-low"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "2"
-  metric_name         = "CPUUtilization"
-  namespace           = "AWS/ECS"
-  period              = "120"
-  statistic           = "Average"
-  threshold           = "20"
-  alarm_description   = "This metric monitors low cpu utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_down.arn] # Enabled: dual CPU+memory scaling
-  dimensions = {
-    ServiceName = aws_ecs_service.autoscaling.name
-    ClusterName = aws_ecs_cluster.main.name
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "memory_low" {
-  alarm_name          = "${local.env_prefix}-memory-low"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "3"
-  metric_name         = "MemoryUtilization"
-  namespace           = "AWS/ECS"
-  period              = "120"
-  statistic           = "Average"
-  threshold           = "10"
-  alarm_description   = "This metric monitors memory utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]
   dimensions = {
     ServiceName = aws_ecs_service.autoscaling.name
     ClusterName = aws_ecs_cluster.main.name
@@ -408,6 +380,12 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
+            # TargetInstances is what the user count asks for, published by the
+            # free-manager Lambda on every run. Desired above it for longer
+            # than a run is a scale-in the Lambda could not make safely (a
+            # workflow on every candidate) or capacity a -high alarm added;
+            # desired below it is a scale-out that has not happened.
+            ["OptiNiSt/FreeUsers/${var.environment}", "TargetInstances", { "label" : "Free Tier Target (user count)" }],
             ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Desired" }],
             ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Running" }],
             ["AWS/AutoScaling", "GroupMinSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Min" }],
@@ -769,8 +747,6 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 4
         properties = {
           title = "Alarm Status Overview"
-          # cpu_low excluded: it only drives scale-down (no SNS), so it sits in
-          # ALARM whenever the ASG is idle by design — a permanent false red here.
           alarms = concat([
             # Background Service Alarms
             aws_cloudwatch_metric_alarm.background_task_stopped.arn,
@@ -783,7 +759,6 @@ resource "aws_cloudwatch_dashboard" "main" {
             # Autoscaling Alarms
             aws_cloudwatch_metric_alarm.cpu_high.arn,
             aws_cloudwatch_metric_alarm.memory_high.arn,
-            aws_cloudwatch_metric_alarm.memory_low.arn,
             aws_cloudwatch_metric_alarm.load_average_high.arn,
             aws_cloudwatch_metric_alarm.high_iowait.arn,
             aws_cloudwatch_metric_alarm.ebs_queue_length_high.arn,
