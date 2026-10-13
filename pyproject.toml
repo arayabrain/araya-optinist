@@ -51,7 +51,7 @@ exclude = [
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = "0.104.*"  # NOTE: pinned until a newer release passes the test suite
+fastapi = "0.104.*"  # NOTE: pinned until an upgrade (with pydantic 1.x, starlette, fastapi_pagination) passes the tests
 uvicorn = "0.24.*"
 numpy = "1.24.3"
 pandas = "1.5.3"
