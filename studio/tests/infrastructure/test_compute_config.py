@@ -1,7 +1,9 @@
-"""EFS mount path regression tests for compute.tf.
+"""Configuration regression tests for compute.tf.
 
-Ensures the snakemake volume containerPath is correct and
-consistent across all ECS task definitions.
+- EFS: the snakemake volume containerPath is correct and consistent across
+  all ECS task definitions.
+- Free-tier ASG scale-in: ECS managed draining can complete its lifecycle
+  hook, and the termination policy spares long-held sticky sessions.
 """
 
 import re
@@ -57,3 +59,48 @@ class TestEFSMountPaths:
         assert all(
             p == EXPECTED_MOUNT_PATH for p in paths
         ), f"Mount path mismatch: {paths}"
+
+
+def _resource_block(tf: str, resource_type: str, name: str) -> str:
+    """Return the source of one ``resource "<type>" "<name>"`` block."""
+    match = re.search(
+        r'resource\s+"%s"\s+"%s"\s*\{.*?(?=^(?:resource|data|output|locals)\s|\Z)'
+        % (re.escape(resource_type), re.escape(name)),
+        tf,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, f'resource "{resource_type}" "{name}" not found'
+    return match.group()
+
+
+class TestFreeAsgScaleIn:
+    """The free-tier ASG's scale-in configuration."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        tf = COMPUTE_TF.read_text()
+        self.asg = _resource_block(tf, "aws_autoscaling_group", "main")
+        self.capacity_provider = _resource_block(
+            tf, "aws_ecs_capacity_provider", "main"
+        )
+
+    def test_asg_carries_the_amazon_ecs_managed_tag(self):
+        """The ECS service-linked role may complete the managed-draining hook
+        only on a group carrying this tag; without it every scale-in waits
+        out the hook's 3600 s timeout."""
+        tags = re.findall(r'tag\s*\{\s*key\s*=\s*"([^"]+)"', self.asg)
+        assert "AmazonECSManaged" in tags
+
+    def test_capacity_provider_keeps_managed_draining_on(self):
+        """The tag exists for the draining hook; disabling draining removes
+        the hook and leaves the tag without purpose."""
+        assert not re.search(
+            r'managed_draining\s*=\s*"DISABLED"', self.capacity_provider
+        )
+
+    def test_asg_terminates_the_newest_instance_first(self):
+        """With sticky sessions the oldest instance holds the longest-held
+        sessions, so ``OldestInstance`` removes the most established users."""
+        match = re.search(r"^\s*termination_policies\s*=\s*(.+)$", self.asg, re.M)
+        assert match, "termination_policies not found"
+        assert match.group(1).strip() == '["NewestInstance"]'

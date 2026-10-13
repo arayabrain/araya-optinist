@@ -233,8 +233,11 @@ resource "aws_autoscaling_group" "main" {
     version = "$Latest"
   }
 
-  force_delete              = true
-  termination_policies      = ["OldestInstance"]
+  force_delete = true
+  # Sticky sessions accumulate on long-lived instances; the newest holds only
+  # sessions placed since it launched. Workload-blind: a workflow on it is
+  # still stopped
+  termination_policies      = ["NewestInstance"]
   wait_for_capacity_timeout = "0"
 
   # Enable instance scale-in protection
@@ -291,6 +294,15 @@ resource "aws_autoscaling_group" "main" {
   tag {
     key                 = "Project"
     value               = "optinist-cloud"
+    propagate_at_launch = true
+  }
+
+  # Authorises the ECS service-linked role to complete the
+  # ecs-managed-draining-termination-hook (its policy requires this tag to
+  # exist). Without it a scaled-in instance waits out the hook's 3600 s timeout
+  tag {
+    key                 = "AmazonECSManaged"
+    value               = "true"
     propagate_at_launch = true
   }
 

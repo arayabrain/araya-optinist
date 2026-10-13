@@ -36,10 +36,15 @@
    - SQL constraint: Migration query includes `WHERE active_workflow_count = 0`
    - Atomic updates: Users with jobs cannot be **reassigned** (SQL-level guarantee)
    - **It does not cover termination.** Nothing stops the ASG terminating the
-     instance a workflow runs on: `termination_policies = ["OldestInstance"]`,
-     `protect_from_scale_in = false`, and the capacity provider's
-     `managed_termination_protection = "DISABLED"`. With sticky sessions the
-     oldest instance holds the longest-connected users (#933)
+     instance a workflow runs on: `protect_from_scale_in = false`, and the
+     capacity provider's `managed_termination_protection = "DISABLED"` (#933)
+   - ECS managed draining runs on scale-in (the group carries the
+     `AmazonECSManaged` tag it needs), but it does not save a workflow: the
+     free service's `deployment_minimum_healthy_percent = 0` lets ECS stop the
+     task without waiting for a replacement
+   - `termination_policies = ["NewestInstance"]` limits who is hit: with sticky
+     sessions the newest instance holds only sessions placed since it launched.
+     It does not look at workload
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
