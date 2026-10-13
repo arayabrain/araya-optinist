@@ -166,7 +166,9 @@ class Runner:
     @classmethod
     def __save_func_nwb(cls, save_path, name, nwbfile, output_info):
         if "nwbfile" in output_info:
-            nwbfile[name] = output_info["nwbfile"]
+            nwbfile[name] = cls.__deep_merge(
+                nwbfile.get(name, {}), output_info["nwbfile"]
+            )
             save_nwb(
                 save_path,
                 nwbfile["input"],
