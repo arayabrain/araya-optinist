@@ -113,6 +113,20 @@ def test_sort_by_peak_reorders_only_the_heatmap(tmp_path):
     np.testing.assert_array_equal(np.argmax(info["mean"].data, axis=1), peak_bins)
 
 
+def test_sort_by_peak_ignores_an_empty_bin(tmp_path):
+    covariate = np.tile([1.5, 2.5, 3.5], 40)  # bin 0 stays empty, so NaN
+    fluo = np.stack([(covariate == 3.5) * 1.0, (covariate == 1.5) * 1.0])
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(covariate),
+        params={"sort_by_peak": True},
+    )
+
+    assert info["mean_heatmap"].index == [1, 0]
+
+
 def test_heatmap_rows_are_cell_numbers_with_iscell(tmp_path):
     covariate = _covariate()
     fluo = np.stack([(covariate == c) * 1.0 for c in [3.5, 2.5, 0.5, 1.5]])

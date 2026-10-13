@@ -11,7 +11,7 @@ def roi_from_hdf5(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs
-) -> dict(iscell=IscellData):
+) -> dict(iscell=IscellData, all_roi=RoiData, non_cell_roi=RoiData, cell_roi=RoiData):
     if iscell is not None:
         iscell_data = iscell.data
         return {
