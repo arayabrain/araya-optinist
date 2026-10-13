@@ -2,6 +2,7 @@ import os
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import RoiData
@@ -44,24 +45,28 @@ def caiman_mc(
     with caiman_cluster() as (dview, n_processes):
         mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
 
-        mc.motion_correct(save_movie=True)
+        with BenchmarkRecorder.phase("mc.motion_correct"):
+            mc.motion_correct(save_movie=True)
         border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
 
         # memory mapping
-        mmap_file_new = save_memmap(
-            mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
-        )
+        with BenchmarkRecorder.phase("mc.save_memmap"):
+            mmap_file_new = save_memmap(
+                mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
+            )
 
     # now load the file
     Yr, dims, T = load_memmap(mmap_file_new)
 
-    images = np.array(Yr.T.reshape((T,) + dims, order="F"))
+    with BenchmarkRecorder.phase("mc.materialize"):
+        images = np.array(Yr.T.reshape((T,) + dims, order="F"))
 
     # Release variables associated with memmap files when they are no longer needed.
     # *Avoid lock errors when cleaning memmap files.
     del Yr, dims, T
 
-    meanImg, rois = __process_images(images)
+    with BenchmarkRecorder.phase("mc.process_images"):
+        meanImg, rois = __process_images(images)
 
     xy_trans_data = (
         (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
@@ -69,7 +74,8 @@ def caiman_mc(
         else np.array(mc.shifts_rig)
     )
 
-    mc_images = ImageData(images, output_dir=output_dir, file_name="mc_images")
+    with BenchmarkRecorder.phase("mc.write_tiff"):
+        mc_images = ImageData(images, output_dir=output_dir, file_name="mc_images")
 
     nwbfile = {}
     nwbfile[NWBDATASET.MOTION_CORRECTION] = {

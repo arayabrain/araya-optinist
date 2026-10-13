@@ -8,6 +8,7 @@ from urllib3.util.retry import Retry
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
@@ -274,9 +275,11 @@ def caiman_cnmf(
 
     # ROI editing reads traces from the input movie lazily, via this reference
     images_ref = images
-    images = images.data
+    with BenchmarkRecorder.phase("cnmf.load_images"):
+        images = images.data
     mmap_paths = []
-    mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
+    with BenchmarkRecorder.phase("cnmf.memmap_copy"):
+        mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
     mmap_paths.append(mmap_path)
 
     del images
@@ -307,7 +310,8 @@ def caiman_cnmf(
             cnm.fit_online()
         else:
             cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
-            cnm = cnm.fit(mmap_images)
+            with BenchmarkRecorder.phase("cnmf.fit"):
+                cnm = cnm.fit(mmap_images)
 
             if do_refit:
                 cnm = cnm.refit(mmap_images, dview=dview)
@@ -317,7 +321,8 @@ def caiman_cnmf(
 
         if n_components > 0:
             # Only evaluate components if we found some
-            cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
+            with BenchmarkRecorder.phase("cnmf.evaluate"):
+                cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
             idx_good = cnm.estimates.idx_components
             idx_bad = cnm.estimates.idx_components_bad
             if not isinstance(idx_good, list):
