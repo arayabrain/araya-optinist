@@ -157,7 +157,7 @@ The script checks all three ECS services (free tier, premium, background) and re
 
 The script reports ASG scaling events, autoscaling alarm transitions, and current ASG capacity for the past 7 days.
 
-The 4 autoscaling alarms (`cpu-high`, `cpu-low`, `memory-high`, `memory-low`) do not send email notifications since they self-heal via ASG scaling. **This report section is the primary visibility for autoscaling behavior.**
+The 2 autoscaling alarms (`cpu-high`, `memory-high`) do not send email notifications since they self-heal via ASG scaling. They only add capacity; scale-in is the free-manager Lambda's, by user count, and shows in its log and in the `TargetInstances` metric on the dashboard. **This report section is the primary visibility for autoscaling behavior.**
 
 **What to look for:**
 - Frequent scaling events may indicate the ASG is undersized or workload is spiky
@@ -412,9 +412,9 @@ When an alarm fires, follow the procedure for that alarm category.
 | Alarm | Threshold | Action |
 |---|---|---|
 | `subscr-optinist-cpu-high` | ECS CPU > 60% (2 periods) | Auto-triggers scale-up. Monitor if scaling resolves the issue. If sustained at max capacity, consider increasing ASG max. |
-| `subscr-optinist-cpu-low` | ECS CPU < 20% (2 periods) | Auto-triggers scale-down. Informational only. |
 | `subscr-optinist-memory-high` | ECS Memory > 80% (3 periods) | Auto-triggers scale-up. If sustained, check for memory leaks in application logs. |
-| `subscr-optinist-memory-low` | ECS Memory < 10% (3 periods) | Auto-triggers scale-down. Informational only. |
+
+There is no scale-down alarm. The free-manager Lambda removes capacity by user count, choosing an instance with no running workflow; an instance a `-high` alarm added is removed the same way once the user count no longer needs it.
 
 ### EC2 Alarms
 
@@ -514,8 +514,8 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 
 | Alarm | Why no email |
 |---|---|
-| `subscr-optinist-cpu-high` / `cpu-low` | Triggers ASG scale up/down automatically |
-| `subscr-optinist-memory-high` / `memory-low` | Triggers ASG scale up/down automatically |
+| `subscr-optinist-cpu-high` | Triggers ASG scale-up automatically |
+| `subscr-optinist-memory-high` | Triggers ASG scale-up automatically |
 
 ---
 
