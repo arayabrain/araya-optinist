@@ -3,6 +3,7 @@ import numpy as np
 from studio.app.common.dataclass.image import ImageData
 from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi.utils import set_nwbfile
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import open_edit_images
 
 
 def commit_edit(
@@ -16,6 +17,7 @@ def commit_edit(
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
     fluorescence = fluorescence.data
+    images = open_edit_images(images)
     num_cell = data.im.shape[0]
 
     if fluorescence.size > 0:

@@ -272,6 +272,8 @@ def caiman_cnmf(
     if isinstance(file_path, list):
         file_path = file_path[0]
 
+    # ROI editing reads traces from the input movie lazily, via this reference
+    images_ref = images
     images = images.data
     mmap_paths = []
     mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
@@ -409,7 +411,7 @@ def caiman_cnmf(
             output_dir=output_dir,
             file_name="non_cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, im),
+        "edit_roi_data": EditRoiData(images_ref, im),
         "nwbfile": nwbfile,
     }
 

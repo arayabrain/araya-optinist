@@ -36,7 +36,6 @@ def suite2p_registration(
     # Benchmark-only toggles (#893 / #531 sizing): OPTINIST_BENCH_* env vars.
     # Unset in normal runs, so behaviour is unchanged.
     skip_pc_metrics = os.environ.get("OPTINIST_BENCH_SKIP_PC_METRICS") == "1"
-    stream_mc_images = os.environ.get("OPTINIST_BENCH_STREAM_MC_IMAGES") == "1"
 
     # compute metrics for registration
     if (
@@ -46,17 +45,13 @@ def suite2p_registration(
     ):
         ops = registration.get_pc_metrics(ops)
 
-    if stream_mc_images:
-        mc_images = ImageData(
-            _write_binary_as_tiff(io, ops, output_dir, "mc_images"),
-            output_dir=output_dir,
-            file_name="mc_images",
-        )
-    else:
-        mv = io.BinaryFile(
-            Lx=ops["Lx"], Ly=ops["Ly"], read_filename=ops["reg_file"]
-        ).data.copy()
-        mc_images = ImageData(mv, output_dir=output_dir, file_name="mc_images")
+    # Copy the registered binary into mc_images.tif batch by batch, instead of
+    # reading the whole movie into memory (and, before, copying it once more)
+    mc_images = ImageData(
+        _binary_to_tiff(io, ops, output_dir, "mc_images"),
+        output_dir=output_dir,
+        file_name="mc_images",
+    )
 
     info = {
         "refImg": ImageData(ops["refImg"], output_dir=output_dir, file_name="refImg"),
@@ -70,8 +65,13 @@ def suite2p_registration(
     return info
 
 
-def _write_binary_as_tiff(io, ops, output_dir, file_name, batch_size=500):
-    """Write the registered binary to the path ImageData would use, in batches."""
+def _binary_to_tiff(io, ops, output_dir, file_name, batch_size=200):
+    """
+    Write the registered binary to the TIFF path ImageData would use.
+
+    tifffile.memmap lays the file out as one contiguous series, as imwrite does,
+    so readers see the same shape and pixels; only page-cache memory is used.
+    """
     import numpy as np
     import tifffile
 
@@ -84,11 +84,15 @@ def _write_binary_as_tiff(io, ops, output_dir, file_name, batch_size=500):
     create_directory(tiff_dir)
     tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
 
-    with io.BinaryFile(
-        Lx=ops["Lx"], Ly=ops["Ly"], read_filename=ops["reg_file"]
-    ) as binary, tifffile.TiffWriter(tiff_path, bigtiff=True) as writer:
-        for _, frames in binary.iter_frames(batch_size=batch_size, dtype=np.int16):
-            for frame in frames:
-                writer.write(frame, contiguous=True)
+    Ly, Lx = ops["Ly"], ops["Lx"]
+    with io.BinaryFile(Ly=Ly, Lx=Lx, read_filename=ops["reg_file"]) as binary:
+        nframes = binary.n_frames
+        out = tifffile.memmap(tiff_path, shape=(nframes, Ly, Lx), dtype=np.int16)
+        for indices, frames in binary.iter_frames(
+            batch_size=batch_size, dtype=np.int16
+        ):
+            out[indices[0] : indices[-1] + 1] = frames
+        out.flush()
+        del out
 
     return [tiff_path]

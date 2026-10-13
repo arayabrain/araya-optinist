@@ -202,6 +202,8 @@ def caiman_cnmf_multisession(
     file_path = images.path
     if isinstance(file_path, list):
         file_path = file_path[0]
+    # ROI editing reads traces from the input movie lazily, via this reference
+    images_ref = images
     images = images.data
     mmap_images, dims, mmap_path = util_get_image_memmap(
         function_id, images.data, file_path
@@ -224,7 +226,7 @@ def caiman_cnmf_multisession(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, cell_ims),
+        "edit_roi_data": EditRoiData(images_ref, cell_ims),
         "nwbfile": nwbfile,
     }
 

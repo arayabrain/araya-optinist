@@ -58,6 +58,27 @@ class RoiData(BaseData):
         return OutputPath(path=self.json_path, type=OutputType.ROI)
 
 
+def open_edit_images(images):
+    """
+    The movie an ROI commit reads new traces from, as an array-like.
+
+    EditRoiData now carries a reference (ImageData) rather than the frames, so
+    the node pickle no longer holds a copy of the movie. The reference is opened
+    here, when a commit needs it: memory-mapped when the TIFF allows it, so only
+    the pixels a mask selects are read, otherwise read in full as before.
+    Pickles written before the change still hold an array, returned unchanged.
+    """
+    if not isinstance(images, ImageData):
+        return images
+    paths = images.path if isinstance(images.path, list) else [images.path]
+    if len(paths) == 1:
+        try:
+            return tifffile.memmap(paths[0], mode="r")
+        except Exception:
+            pass
+    return images.data
+
+
 class EditRoiData(BaseData):
     def __init__(self, images, im):
         self.images: ImageData = images

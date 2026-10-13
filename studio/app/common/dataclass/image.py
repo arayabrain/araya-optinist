@@ -19,6 +19,12 @@ from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
 
 
+def _tiff_shape(path: str) -> tuple:
+    """Shape imageio.volread would return for a TIFF, from its headers only."""
+    with tifffile.TiffFile(path) as tif:
+        return tuple(int(n) for n in tif.series[0].shape)
+
+
 class ImageData(BaseData):
     def __init__(
         self,
@@ -111,15 +117,43 @@ class ImageData(BaseData):
         else:
             return np.array(imageio.volread(self.path))
 
+    @property
+    def shape(self) -> tuple:
+        """
+        Shape of `data`, read from the TIFF headers rather than the pixels.
+
+        `data` reads every frame from disk on each access, so asking it for
+        `ndim` or `len` costs a full read of the stack. Falls back to that read
+        when the headers cannot be parsed or the files do not stack cleanly.
+        """
+        paths = self.path if isinstance(self.path, list) else [self.path]
+        try:
+            shapes = [_tiff_shape(p) for p in paths]
+        except Exception:
+            return self.data.shape
+        if len(shapes) == 1:
+            return shapes[0]
+        first = shapes[0]
+        if len(first) == 0 or any(
+            len(s) != len(first) or s[1:] != first[1:] for s in shapes
+        ):
+            return self.data.shape
+        return (sum(s[0] for s in shapes),) + first[1:]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
     def save_json(self, json_dir):
-        if self.data.ndim < 3:
+        if self.ndim < 3:
             self.json_path = join_filepath([json_dir, f"{self.file_name}.json"])
             JsonWriter.write_as_split(self.json_path, create_images_list(self.data))
             JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)
 
     @property
     def output_path(self) -> OutputPath:
-        if self.data.ndim >= 3:
+        shape = self.shape
+        if len(shape) >= 3:
             # self.path will be a list if self.data got into else statement on __init__
             if isinstance(self.path, list) and isinstance(self.path[0], str):
                 _path = self.path[0]
@@ -128,7 +162,7 @@ class ImageData(BaseData):
             return OutputPath(
                 path=_path,
                 type=OutputType.IMAGE,
-                max_index=len(self.data),
+                max_index=shape[0],
             )
         else:
             return OutputPath(
