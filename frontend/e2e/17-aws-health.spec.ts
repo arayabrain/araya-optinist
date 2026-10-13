@@ -334,13 +334,16 @@ test.describe("Compute and routing", () => {
       )
       // A scale-down or a deployment replaces tasks by design; an OOM kill, a
       // failed container or an essential-container exit does not. A free-tier
-      // scale-in drains its instance (ECS managed draining), so "container
-      // instance is in DRAINING state" is that routine stop, not a fault.
+      // scale-in drains its instance (ECS managed draining), so the exact
+      // ECS reason for that, "container instance is in DRAINING state", is a
+      // routine stop too. A manual drain or an instance refresh produces the
+      // same reason, so this cannot tell them apart; the lane only asks
+      // whether the stop was a fault.
       for (const task of details) {
         expect(
           task.reason || "",
           `${task.group} stopped for a non-routine reason`,
-        ).toMatch(/scal|deployment|Scaling|user|service|drain/i)
+        ).toMatch(/scal|deployment|Scaling|user|service|in DRAINING state/i)
       }
     }
   })

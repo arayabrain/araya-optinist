@@ -3,7 +3,7 @@
 import itertools
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -277,6 +277,7 @@ class TestScaleAndRebalanceUsesAsgBounds:
         ready=None,
         persisted=False,
         alarm=False,
+        extra_instances=(),
     ):
         """
         Drive scale_and_rebalance against mocked AWS clients, returning both.
@@ -345,7 +346,8 @@ class TestScaleAndRebalanceUsesAsgBounds:
                                 "ProtectedFromScaleIn": False,
                             }
                             for instance_id in in_group
-                        ],
+                        ]
+                        + list(extra_instances),
                     }
                 ]
             }
@@ -432,6 +434,35 @@ class TestScaleAndRebalanceUsesAsgBounds:
 
         assert len(self._terminated(asg)) == 1
         assert asg.result["scaling_action"] == "scale_down"
+
+    def test_surplus_is_measured_on_desired_capacity_not_on_instances(
+        self, mock_env_vars_free
+    ):
+        """
+        After a first termination the group still lists three instances, one
+        of them Terminating:Wait, against a desired capacity of 2. The surplus
+        is 1 against the target of 1, not 2: counting instances would remove
+        one too many.
+        """
+        terminating = {
+            "InstanceId": "i-going",
+            "LifecycleState": "Terminating:Wait",
+            "HealthStatus": "Healthy",
+            "AvailabilityZone": "ap-northeast-1c",
+            "ProtectedFromScaleIn": False,
+        }
+        asg, _ = self._run(
+            mock_env_vars_free,
+            users=0,
+            desired=2,
+            minimum=1,
+            maximum=5,
+            persisted=True,
+            extra_instances=[terminating],
+        )
+
+        assert len(self._terminated(asg)) == 1
+        assert "i-going" not in self._terminated(asg)
 
     def test_no_scale_in_while_a_load_alarm_is_firing(self, mock_env_vars_free):
         """A surplus of 2 with cpu-high in ALARM: the alarm says the capacity
@@ -828,6 +859,24 @@ class TestScaleInChoosesByWorkload:
         assert len(chosen) == 2
         assert {c[2] for c in chosen} == {"a", "c"}
 
+    def test_zones_are_counted_over_in_service_instances_only(self):
+        """A Terminating instance in 1c does not make 1c the heavier zone:
+        with one InService in each, the newest (i-a, launched later) goes."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-a", az="1a", launch=2),
+                self._inst("i-c", az="1c", launch=1),
+                self._inst("i-c-going", az="1c", launch=3, state="Terminating:Wait"),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=1,
+        )
+
+        assert chosen == ["i-a"]
+
     def test_the_newest_breaks_a_tie_within_a_zone(self):
         from free_manager import select_instances_to_terminate
 
@@ -956,6 +1005,60 @@ class TestScaleInTerminates:
                 count=1,
             )
 
+    def test_an_unreadable_user_count_aborts_the_scale_in(self, mock_env_vars_free):
+        """
+        The users read is asked to raise rather than return {}: an empty map
+        would order the candidates by zone and age alone and could remove an
+        instance with idle sessions ahead of an empty one.
+        """
+        from free_manager import scale_in
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch(
+            "free_manager.get_users_per_instance",
+            side_effect=Exception("Lost connection to MySQL server"),
+        ) as mock_users, patch(
+            "free_manager.get_workload_per_instance", return_value={}
+        ):
+            with pytest.raises(Exception, match="MySQL"):
+                scale_in([self._inst("i-a"), self._inst("i-b")], 1)
+
+        assert mock_users.call_args[1]["raise_on_error"] is True
+        mock_asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+
+    def test_unreadable_launch_times_abort_the_scale_in(self, mock_env_vars_free):
+        """EC2 refusing describe_instances fails the run; nothing is
+        terminated on a partial picture."""
+        from free_manager import scale_in
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ec2_client") as mock_ec2, patch(
+            "free_manager.get_users_per_instance", return_value={}
+        ), patch(
+            "free_manager.get_workload_per_instance", return_value={}
+        ):
+            mock_ec2.describe_instances.side_effect = Exception("throttled")
+            with pytest.raises(Exception, match="throttled"):
+                scale_in([self._inst("i-a"), self._inst("i-b")], 1)
+
+        mock_asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+
+    def test_the_callers_instance_list_is_not_modified(self, mock_env_vars_free):
+        instances = [self._inst("i-a"), self._inst("i-b")]
+        before = [dict(i) for i in instances]
+
+        self._run(
+            mock_env_vars_free,
+            instances=instances,
+            users={},
+            workload=lambda: {},
+            count=1,
+        )
+
+        assert instances == before
+
 
 class TestSurplusOfOne:
     """
@@ -964,34 +1067,49 @@ class TestSurplusOfOne:
     -high alarms' state. Both raise rather than guess when the read fails.
     """
 
-    @staticmethod
-    def _history(mock_env_vars_free, targets, desireds):
-        """targets/desireds: value per period, newest first; None = no datapoint."""
+    # The run is at 09:03:20, so the current period is 09:00-09:05 and the
+    # three completed periods before it start at 08:55, 08:50 and 08:45.
+    NOW = datetime(2026, 10, 13, 9, 3, 20, tzinfo=timezone.utc)
+    PERIOD_START = datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def _history(cls, mock_env_vars_free, targets, desireds, current=None):
+        """
+        targets/desireds: one value per completed period, newest first (08:55,
+        08:50, 08:45, 08:40, ...); None = no datapoint. ``current`` adds a
+        (target, desired) datapoint in the incomplete 09:00 period, as
+        CloudWatch may already serve this run's own publication.
+        """
         from free_manager import surplus_of_one_has_persisted
 
-        base = datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)
-        stamps = [base.replace(minute=55 - 5 * i) for i in range(len(targets))]
+        stamps = [
+            cls.PERIOD_START - timedelta(minutes=5 * (i + 1))
+            for i in range(len(targets))
+        ]
 
-        def series(values):
+        def series(values, current_value):
             pairs = [(t, v) for t, v in zip(stamps, values) if v is not None]
+            if current_value is not None:
+                pairs.insert(0, (cls.PERIOD_START, current_value))
             return {
                 "Timestamps": [t for t, _ in pairs],
                 "Values": [float(v) for _, v in pairs],
             }
 
+        current = current or (None, None)
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.cloudwatch_client"
         ) as mock_cw:
             mock_cw.get_metric_data.return_value = {
                 "MetricDataResults": [
-                    {"Id": "target", **series(targets)},
-                    {"Id": "desired", **series(desireds)},
+                    {"Id": "target", **series(targets, current[0])},
+                    {"Id": "desired", **series(desireds, current[1])},
                 ]
             }
-            persisted = surplus_of_one_has_persisted()
+            persisted = surplus_of_one_has_persisted(now=cls.NOW)
             return persisted, mock_cw
 
-    def test_three_periods_of_surplus_count(self, mock_env_vars_free):
+    def test_three_completed_periods_of_surplus_count(self, mock_env_vars_free):
         persisted, _ = self._history(
             mock_env_vars_free, targets=[1, 1, 1], desireds=[2, 2, 2]
         )
@@ -1000,6 +1118,14 @@ class TestSurplusOfOne:
     def test_two_periods_do_not(self, mock_env_vars_free):
         persisted, _ = self._history(
             mock_env_vars_free, targets=[1, 1], desireds=[2, 2]
+        )
+        assert persisted is False
+
+    def test_the_current_period_is_not_counted(self, mock_env_vars_free):
+        """Two completed periods plus this run's own datapoint: not three.
+        Whether the fresh point is readable yet must not change the answer."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1], desireds=[2, 2], current=(1, 2)
         )
         assert persisted is False
 
@@ -1018,13 +1144,21 @@ class TestSurplusOfOne:
         )
         assert persisted is True
 
-    def test_a_period_missing_from_either_series_is_skipped(self, mock_env_vars_free):
-        """A failed run publishes no target: that period counts for nothing,
-        so the history is one short."""
+    def test_a_hole_restarts_the_wait(self, mock_env_vars_free):
+        """A failed run publishes no target. Three surplus periods around a
+        hole are not three consecutive ones."""
         persisted, _ = self._history(
-            mock_env_vars_free, targets=[1, None, 1], desireds=[2, 2, 2]
+            mock_env_vars_free, targets=[1, None, 1, 1], desireds=[2, 2, 2, 2]
         )
         assert persisted is False
+
+    def test_the_query_covers_exactly_the_completed_periods(self, mock_env_vars_free):
+        """Bounds on period multiples, so CloudWatch cuts the periods there;
+        the end is the current period's start, so it is never read."""
+        _, mock_cw = self._history(mock_env_vars_free, targets=[], desireds=[])
+        kwargs = mock_cw.get_metric_data.call_args[1]
+        assert kwargs["EndTime"] == self.PERIOD_START
+        assert kwargs["StartTime"] == self.PERIOD_START - timedelta(minutes=15)
 
     def test_reads_the_most_demanding_target_and_the_lowest_desired(
         self, mock_env_vars_free

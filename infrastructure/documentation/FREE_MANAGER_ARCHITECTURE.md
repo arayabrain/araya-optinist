@@ -44,10 +44,11 @@
      candidates, the surplus stays up until the workflows finish
    - **Other terminations are not covered.** Nothing stops the ASG itself
      terminating a busy instance on a health-check replacement, an
-     availability-zone rebalance or a manual `--desired-capacity`:
-     `protect_from_scale_in = false`, and the capacity provider's
-     `managed_termination_protection = "DISABLED"`. Those paths are rare now
-     that no alarm and no procedure lowers the desired capacity by hand
+     availability-zone rebalance, or a manual `--desired-capacity` or a
+     `--max-size` lowered below it: `protect_from_scale_in = false`, and the
+     capacity provider's `managed_termination_protection = "DISABLED"`.
+     Those paths are rare now that no alarm and no procedure lowers the
+     desired capacity by hand
    - ECS managed draining runs on every termination (the group carries the
      `AmazonECSManaged` tag it needs), but it does not save a workflow: the
      free service's `deployment_minimum_healthy_percent = 0` lets ECS stop the
@@ -170,7 +171,7 @@ value pulled up to `MinSize` or down to `MaxSize`.
 
 | Active Users | User-count term | Action |
 |-------------|------------------|--------|
-| 0-5 | 1 | 1 instance; scale in to it (or to `MinSize`) when 2 or more above |
+| 0-5 | 1 | 1 instance (with `MinSize` ≥ 1); scale in to it by the rules below |
 | 6-10 | 2 | Scale to 2, rebalance |
 | 11-15 | 3 | Scale to 3, rebalance |
 | 16-20 | 4 | Scale to 4, rebalance |
@@ -184,8 +185,8 @@ Notes:
   leave.
 - `MinSize` above the term holds the target there; a term above `MaxSize` is
   capped, not requested.
-- A surplus of 2 or more is removed at once; a surplus of 1 once it has lasted
-  three runs; nothing while a `-high` alarm is in ALARM — see
+- A surplus of 2 or more is removed at once; a surplus of 1 once it has shown
+  in three completed periods; nothing while a `-high` alarm is in ALARM — see
   [Conservative Scale-Down](#6-conservative-scale-down).
 
 ### Motivation: Sticky Session Overload
@@ -255,18 +256,20 @@ interval, instance boot, and sticky sessions that keep active users put.
 5. **Restore the floor only.** Lower `min_size` and leave the desired
    capacity alone: the next scheduled run computes the target from the user
    count and removes the surplus, choosing instances with no running
-   workflow. Lowering `--desired-capacity` by hand would have the group
-   choose instead, blind to workloads.
+   workflow. Lowering `--desired-capacity` by hand, or `--max-size` below
+   it, would have the group choose instead, blind to workloads.
 
 ```bash
 aws autoscaling update-auto-scaling-group --auto-scaling-group-name <asg> \
   --min-size <original> --region <region>
 ```
 
-   Expect the group at `<original>` within about 15 minutes: one run (up to
-   5 minutes) plus the ~10-minute termination. If it stays above, read the
-   Lambda's log — a workflow on every candidate holds the instance until it
-   finishes.
+   Expect the group at `<original>` within about 15 minutes when the surplus
+   is 2 or more: one run (up to 5 minutes) plus the ~10-minute termination.
+   A surplus of exactly 1 waits for three completed periods first, so about
+   20 minutes more. If it stays above, read the Lambda's log — a workflow
+   on every candidate holds the instance until it finishes, and a `-high`
+   alarm in ALARM holds everything.
 
 ### Flow Diagrams
 
@@ -780,21 +783,28 @@ healthy target. `scale_service()` follows the same rule on decreases.
 1. **A surplus of 2 or more goes at once**, all of it, each instance chosen
    by workload. A busy period's capacity comes back to `MinSize` in one
    run rather than one instance per alarm cooldown.
-2. **A surplus of exactly 1 goes once it has lasted 3 consecutive runs**
-   (15 minutes). This is the boundary case — 5 users against 6 — and
-   removing it at once would thrash. The history is read from the
-   `TargetInstances` metric this Lambda publishes, against the group's
-   `GroupDesiredCapacity`, period by period (`surplus_of_one_has_persisted()`);
-   there is no state of its own. A run that failed published nothing, so
-   its period counts for nothing and the wait starts over. This is how
+2. **A surplus of exactly 1 goes once it has shown in the 3 completed
+   5-minute periods before the run** — on the fourth run that sees it,
+   about 15 minutes after the first. This is the boundary case — 5 users
+   against 6 — and removing it at once would thrash. The history is read
+   from the `TargetInstances` metric this Lambda publishes, against the
+   group's `GroupDesiredCapacity`, period by period
+   (`surplus_of_one_has_persisted()`); there is no state of its own. The
+   periods are aligned to the schedule interval and the current, incomplete
+   one is excluded, so the count does not depend on whether this run's own
+   datapoint is readable yet. A run that failed published nothing, so its
+   period is a hole and the wait starts over. A desired capacity lowered by
+   hand mid-period counts from the next period, one run later. This is how
    2 → 1 at `MinSize = 1` happens, which no alarm does any more.
 
 **Neither rule applies while `cpu-high` or `memory-high` is in ALARM**
 (`load_alarm_in_alarm()`): the alarm says the load needs the capacity,
 and an instance it added is not taken back while the load that asked for
-it is still there. Once the alarm clears, the surplus goes by the rules
-above — a `-high` instance is a surplus of 1, so 15 minutes after the
-alarm clears.
+it is still there. This holds for a user-count surplus too — 0 users and a
+surplus of 2 stay up while one heavy workflow keeps `memory-high` in ALARM
+on the service average — by design: the alarm is the only signal that
+knows about load. Once the alarm clears, the surplus goes by the rules
+above.
 
 
 ---

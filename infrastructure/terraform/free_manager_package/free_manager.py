@@ -23,7 +23,8 @@ ARCHITECTURE NOTES:
 IMPROVEMENTS IN THIS VERSION:
 - Multi-instance rebalancing: Distributes users evenly across
     ALL instances, not just most/least
-- Retry logic: Waits up to 10 minutes for new instances to launch before rebalancing
+- Retry logic: Waits for new instances to launch before rebalancing, for as
+    long as the invocation has left (scale_up_wait_budget)
 - Effectiveness checking: Verifies distribution is balanced after rebalancing
 - Idle threshold: Reduced to 5 minutes (from 10) for faster migration eligibility
 
@@ -335,21 +336,31 @@ def is_scaling_in_progress() -> bool:
         return False  # Fail open - allow scaling if check fails
 
 
-def surplus_of_one_has_persisted() -> bool:
+def surplus_of_one_has_persisted(now: datetime | None = None) -> bool:
     """
     Whether the group has been one instance above the target for the last
-    SURPLUS_OF_ONE_RUNS scheduled runs.
+    SURPLUS_OF_ONE_RUNS completed periods.
 
     A surplus of one is the boundary case -- 5 users against 6 -- and
     removing it at once would thrash. Instead it goes when it has lasted
-    three consecutive runs. The history is the TargetInstances metric this
-    function publishes on every run, read against the group's own
-    GroupDesiredCapacity, period by period: no state of its own.
+    three consecutive completed periods. The history is the TargetInstances
+    metric this function publishes on every run, read against the group's
+    own GroupDesiredCapacity, period by period: no state of its own.
+
+    The periods are the schedule interval, aligned to multiples of it (the
+    query's bounds are, and CloudWatch cuts its periods from the start
+    bound), and the current, incomplete period is excluded: this run's own
+    datapoint is seconds old and may or may not be readable yet, and
+    counting it would make the wait 10 or 15 minutes by chance. Each of the
+    three periods must be present in both series -- a run that failed
+    published nothing, and the wait starts over.
+
+    Args:
+        now: the clock, for tests; defaults to the current time
 
     Returns:
-        True when the latest SURPLUS_OF_ONE_RUNS periods all show the
-        desired capacity at least one above the target. Fewer periods on
-        record (a failed run publishes nothing) reads as not persisted.
+        True when the SURPLUS_OF_ONE_RUNS completed periods before ``now``
+        all show the desired capacity at least one above the target
 
     Raises:
         Exception: if the metrics cannot be read. Not caught -- an
@@ -357,7 +368,15 @@ def surplus_of_one_has_persisted() -> bool:
     """
     env_prefix = os.environ["ENV_PREFIX"]
     asg_name = get_required_env_var("ASG_NAME")
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    end = datetime.fromtimestamp(
+        int(now.timestamp()) // SCHEDULE_INTERVAL * SCHEDULE_INTERVAL, timezone.utc
+    )
+    start = end - timedelta(seconds=SCHEDULE_INTERVAL * SURPLUS_OF_ONE_RUNS)
+    expected = [
+        end - timedelta(seconds=SCHEDULE_INTERVAL * k)
+        for k in range(1, SURPLUS_OF_ONE_RUNS + 1)
+    ]
     response = cloudwatch_client.get_metric_data(
         MetricDataQueries=[
             {
@@ -392,28 +411,33 @@ def surplus_of_one_has_persisted() -> bool:
                 "ReturnData": True,
             },
         ],
-        # One extra interval, so the current partial period does not cost a
-        # whole run of history.
-        StartTime=now
-        - timedelta(seconds=SCHEDULE_INTERVAL * (SURPLUS_OF_ONE_RUNS + 1)),
-        EndTime=now,
+        StartTime=start,
+        EndTime=end,
         ScanBy="TimestampDescending",
     )
 
     series = {
-        r["Id"]: dict(zip(r.get("Timestamps", []), r.get("Values", [])))
+        r["Id"]: {
+            int(t.timestamp()): v
+            for t, v in zip(r.get("Timestamps", []), r.get("Values", []))
+        }
         for r in response["MetricDataResults"]
     }
-    common = sorted(
-        set(series.get("target", {})) & set(series.get("desired", {})), reverse=True
-    )
-    recent = common[:SURPLUS_OF_ONE_RUNS]
-    gaps = [series["desired"][t] - series["target"][t] for t in recent]
+    target = series.get("target", {})
+    desired = series.get("desired", {})
+    gaps: List[int | None] = [
+        (
+            int(desired[int(t.timestamp())] - target[int(t.timestamp())])
+            if int(t.timestamp()) in target and int(t.timestamp()) in desired
+            else None
+        )
+        for t in expected
+    ]
     print(
-        f"Surplus history, newest first (desired - target): "
-        f"{[int(g) for g in gaps]} over {len(recent)} of {SURPLUS_OF_ONE_RUNS} periods"
+        f"Surplus history over the {SURPLUS_OF_ONE_RUNS} completed periods before "
+        f"{end:%H:%M}Z, newest first (desired - target, None = no datapoint): {gaps}"
     )
-    return len(recent) == SURPLUS_OF_ONE_RUNS and all(g >= 1 for g in gaps)
+    return all(g is not None and g >= 1 for g in gaps)
 
 
 def load_alarm_in_alarm() -> bool:
@@ -1066,7 +1090,8 @@ def select_instances_to_terminate(
 
     # One at a time, recounting the zones after each pick: two picks in a
     # row from the same zone would be the imbalance the zone rule avoids.
-    remaining = list(instances)
+    # InService only, which is what the group's own rebalancing counts.
+    remaining = [inst for inst in instances if inst["lifecycle_state"] == "InService"]
     chosen: List[str] = []
     while candidates and len(chosen) < count:
         az_counts: Dict[str, int] = {}
@@ -1119,15 +1144,22 @@ def scale_in(instances: List[Dict[str, Any]], count: int) -> List[str]:
     """
     asg_name = get_required_env_var("ASG_NAME")
 
+    # Both reads raise on a failure. An empty users map would order the
+    # candidates by zone and age alone and could remove an instance with
+    # idle sessions ahead of an empty one; an empty workload map would read
+    # as no workflow anywhere.
     users_per_instance = get_users_per_instance(
         activity_threshold_minutes=int(
             get_required_env_var("FREE_IDLE_THRESHOLD_MINUTES", "10")
-        )
+        ),
+        raise_on_error=True,
     )
     workload_per_instance = get_workload_per_instance()
     print(f"Active users per instance: {users_per_instance}")
     print(f"Running workflows per instance: {workload_per_instance}")
 
+    # A copy: launch times are added here, and the caller's view stays as read
+    instances = [dict(inst) for inst in instances]
     in_service = [i["id"] for i in instances if i["lifecycle_state"] == "InService"]
     launch_times: Dict[str, float] = {}
     if in_service:

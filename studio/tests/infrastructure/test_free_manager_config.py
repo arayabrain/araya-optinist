@@ -44,6 +44,14 @@ class TestOnlyTheFreeManagerRemovesCapacity:
             attribute(block, "alarm_actions") == "[aws_autoscaling_policy.scale_up.arn]"
         )
 
+    def test_the_group_publishes_its_desired_capacity(self):
+        """surplus_of_one_has_persisted reads GroupDesiredCapacity; without
+        it in enabled_metrics a surplus of one would silently never go."""
+        asg = resource_block(self.compute, "aws_autoscaling_group", "main")
+        metrics = re.search(r"enabled_metrics\s*=\s*\[(.*?)\]", asg, re.DOTALL)
+        assert metrics, "enabled_metrics not found"
+        assert '"GroupDesiredCapacity"' in metrics.group(1)
+
     def test_dashboard_plots_the_target_against_the_group(self):
         """TargetInstances next to GroupDesiredCapacity is the only place
         the two can be compared; without it a missed scale-in is invisible."""

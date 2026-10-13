@@ -111,9 +111,10 @@ desired_instances = min(max(asg_min_size, ceil(active_users / 5)), asg_max_size)
 The Lambda is the only thing that removes a free instance (the `cpu-high` /
 `memory-high` alarms may add one; there is no scale-down alarm). A surplus
 of 2 or more over the target is removed at once; a surplus of 1 once it has
-lasted 3 consecutive runs (read from `TargetInstances` against the group's
-`GroupDesiredCapacity`); nothing while a `-high` alarm is in ALARM
-(`LOAD_ALARM_NAMES`). Then:
+shown in the 3 completed 5-minute periods before the run (read from
+`TargetInstances` against the group's `GroupDesiredCapacity`; a failed run
+leaves a hole and the wait starts over); nothing while a `-high` alarm is in
+ALARM (`LOAD_ALARM_NAMES`). Then:
 
 1. Candidates are the group's `InService`, unprotected instances with **no
    running workflow** (`SUM(active_workflow_count)` per instance, over every
