@@ -1144,6 +1144,16 @@ resource "aws_ecs_service" "autoscaling" {
     type = "distinctInstance" # Force different instances
   }
 
+  # Same tier pin as the premium, public and background services. The
+  # capacity provider strategy already confines placement to the free
+  # group's instances; this keeps a free task off another tier's instance
+  # even if one has the headroom, so a drain's replacement task can only
+  # land on a free instance
+  placement_constraints {
+    type       = "memberOf"
+    expression = "attribute:tier == free"
+  }
+
   health_check_grace_period_seconds = 900
 
   # desired_count above is the creation value only. At runtime the

@@ -95,3 +95,16 @@ class TestFreeAsgScaleIn:
         the free task fills one), so the hook waits out its 3600 s timeout
         again. Raising this needs that solved first."""
         assert attribute(self.service, "deployment_minimum_healthy_percent") == "0"
+
+    def test_free_service_is_pinned_to_free_instances(self):
+        """The other tiers' services pin themselves with ``memberOf`` on the
+        ``tier`` attribute. Without the same pin a free replacement task
+        placed during a drain could land on another tier's instance with
+        spare capacity, leaving ECS to choose which of two free tasks to
+        stop when the count comes down."""
+        constraints = re.findall(
+            r'placement_constraints\s*\{\s*type\s*=\s*"memberOf"\s*'
+            r'expression\s*=\s*"([^"]+)"',
+            self.service,
+        )
+        assert constraints == ["attribute:tier == free"]
