@@ -94,3 +94,15 @@ def test_behaviour_column_concat_rebuilds_the_index(output_dir):
     out = _concat(a, b, output_dir)
 
     assert out.data.shape == (6, 3) and list(out.index) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("cls", [BarData, HeatMapData])
+def test_row_labels_survive_a_1d_column_stack(cls, output_dir):
+    table = cls(RNG.random((3, 4)), index=[10, 11, 12], file_name="t")
+
+    out = data_concat(table, IscellData(RNG.random(3)), output_dir, params={"axis": 1})[
+        "concatenated_data"
+    ]
+
+    assert type(out) is cls and out.data.shape == (3, 5)
+    assert list(out.index) == [10, 11, 12]

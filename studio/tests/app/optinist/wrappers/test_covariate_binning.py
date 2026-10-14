@@ -185,6 +185,12 @@ def test_order_from_missing_a_cell_fails_with_a_clear_message(tmp_path):
         _bin(tmp_path, order_from=reference)
 
 
+def test_order_from_that_is_not_a_heatmap_fails_with_a_clear_message(tmp_path):
+    # A 2D HDF5 dataset loads as FluoData and the validator lets it reach this port
+    with pytest.raises(AssertionError, match="must be a heatmap, got FluoData"):
+        _bin(tmp_path, order_from=FluoData(np.zeros((3, 4))))
+
+
 def test_order_from_without_row_labels_fails_with_a_clear_message(tmp_path):
     with pytest.raises(AssertionError, match="no row labels"):
         _bin(tmp_path, order_from=HeatMapData(np.zeros((3, 4))))

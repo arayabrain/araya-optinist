@@ -184,15 +184,6 @@ def data_concat(
         elif hasattr(data2, "index") and data2.index is not None:
             concatenated_index = data2.index
 
-        # TimeSeriesData's index labels axis 1, so drop one a column stack outgrew
-        if (
-            concatenated_index is not None
-            and concatenated_array.ndim == 2
-            and (stacked_1d or isinstance(data1, TimeSeriesData))
-            and len(concatenated_index) != concatenated_array.shape[1]
-        ):
-            concatenated_index = None
-
         # Handle std based on std_method
         concatenated_std = None
 
@@ -248,6 +239,14 @@ def data_concat(
         )
 
         data_object = list(output_data.values())[0]
+        # TimeSeriesData's index labels axis 1, so rebuild one a column stack outgrew
+        if (
+            isinstance(data_object, TimeSeriesData)
+            and data_object.data.ndim == 2
+            and len(data_object.index) != data_object.data.shape[1]
+        ):
+            data_object.index = np.arange(data_object.data.shape[1])
+            concatenated_index = None
         result = {"concatenated_data": data_object}
         if concatenated_std is not None:
             result["concatenated_std"] = TimeSeriesData(
