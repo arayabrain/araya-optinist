@@ -345,18 +345,13 @@ resource "aws_autoscaling_group" "main" {
   }
 }
 
-# Auto Scaling Policies
+# Auto Scaling Policies: scale-out only.
+# - scale_up is driven by cpu-high / memory-high (monitoring.tf)
+# - no scale-down policy: the free-manager Lambda removes instances, chosen
+#   by workload; a policy would let the group choose, blind to workflows
 resource "aws_autoscaling_policy" "scale_up" {
   name                   = "${local.env_prefix}-scale-up"
   scaling_adjustment     = 1
-  adjustment_type        = "ChangeInCapacity"
-  cooldown               = 300
-  autoscaling_group_name = aws_autoscaling_group.main.name
-}
-
-resource "aws_autoscaling_policy" "scale_down" {
-  name                   = "${local.env_prefix}-scale-down"
-  scaling_adjustment     = -1
   adjustment_type        = "ChangeInCapacity"
   cooldown               = 300
   autoscaling_group_name = aws_autoscaling_group.main.name
@@ -1142,6 +1137,14 @@ resource "aws_ecs_service" "autoscaling" {
 
   placement_constraints {
     type = "distinctInstance" # Force different instances
+  }
+
+  # Tier pin, as on the premium, public and background services: a drain's
+  # replacement task can only land on a free instance, headroom elsewhere
+  # or not (the capacity provider strategy confines placement today)
+  placement_constraints {
+    type       = "memberOf"
+    expression = "attribute:tier == free"
   }
 
   health_check_grace_period_seconds = 900
