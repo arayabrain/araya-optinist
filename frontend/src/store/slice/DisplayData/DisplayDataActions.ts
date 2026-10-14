@@ -100,8 +100,8 @@ export const getTimeSeriesInitData = createAsyncThunk<
       // One point per record, so refetch the records another item holds in full,
       // including any a by-id request filled while this one was in flight
       for (;;) {
-        const held =
-          thunkAPI.getState().displayData.timeSeries[path]?.data ?? {}
+        const entry = thunkAPI.getState().displayData.timeSeries[path]
+        const held = entry?.data ?? {}
         const reload = Object.keys(data).filter(
           (key) =>
             !tried.has(key) &&
@@ -115,12 +115,13 @@ export const getTimeSeriesInitData = createAsyncThunk<
         records.forEach((record, i) => {
           const key = reload[i]
           tried.add(key)
-          // a failed refetch keeps its one point rather than failing the init
-          if (record.status === "rejected") return
-          data[key] = record.value.data[key]
-          if (record.value.std[key] !== undefined) {
-            std[key] = record.value.std[key]
-          }
+          // a failed refetch keeps the series already held rather than a blank
+          const source =
+            record.status === "fulfilled"
+              ? record.value
+              : { data: held, std: entry?.std ?? {} }
+          data[key] = source.data[key]
+          if (source.std[key] !== undefined) std[key] = source.std[key]
         })
       }
       return { ...response, data, std }

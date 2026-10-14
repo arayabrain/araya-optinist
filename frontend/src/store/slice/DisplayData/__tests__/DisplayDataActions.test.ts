@@ -108,7 +108,7 @@ describe("getTimeSeriesInitData", () => {
     )
   })
 
-  it("keeps the one point of a record whose refetch fails", async () => {
+  it("keeps the series already held when its refetch fails", async () => {
     jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue(initWithStubs)
     jest
       .mocked(getTimeSeriesDataByIdApi)
@@ -123,6 +123,6 @@ describe("getTimeSeriesInitData", () => {
     const entry = store.getState().displayData.timeSeries[path]
     expect(entry.error).toBeNull()
     expect(entry.data["0"]).toEqual(record(1))
-    expect(entry.data["1"]).toEqual({ "0": 1 })
+    expect(entry.data["1"]).toEqual(record(4))
   })
 })
