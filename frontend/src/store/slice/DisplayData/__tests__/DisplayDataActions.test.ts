@@ -227,4 +227,29 @@ describe("getTimeSeriesDataByIdOnce", () => {
     expect(entry.byId).toEqual({ "1": "fulfilled" })
     expect(entry.error).toBeNull()
   })
+
+  it("requests no record by id while an all-data request is in flight", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": { "0": 1, "1": 2 }, "1": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValue({ data: { "1": { "0": 0, "1": 1 } }, xrange, std: {} })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    store.dispatch({
+      type: getTimeSeriesAllData.pending.type,
+      meta: { arg: { path } },
+    })
+
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+
+    expect(getTimeSeriesDataByIdApi).not.toHaveBeenCalled()
+    expect(store.getState().displayData.timeSeries[path].byId).toEqual({
+      "0": "fulfilled",
+      "1": "pending",
+    })
+  })
 })

@@ -172,6 +172,14 @@ export const displayDataSlice = createSlice({
           state.timeSeries[path].fulfilled = false
           state.timeSeries[path].error = null
         }
+        // every record is on its way, so no by-id request duplicates one
+        const entry = state.timeSeries[path]
+        entry.byId = Object.fromEntries(
+          Object.keys(entry.data).map((key) => [
+            key,
+            entry.byId?.[key] === "fulfilled" ? "fulfilled" : "pending",
+          ]),
+        )
       })
       .addCase(getTimeSeriesAllData.rejected, (state, action) => {
         const { path } = action.meta.arg
