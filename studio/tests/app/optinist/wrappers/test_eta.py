@@ -199,8 +199,9 @@ def test_skipped_pairs_are_logged_with_iscell_cell_numbers(neural, output_dir, c
 
     _eta(x, output_dir, iscell=IscellData(np.array([1, 0, 1])))
 
-    assert "1 event-cell pairs skipped for a constant baseline, cells [2]" in (
-        caplog.text
+    assert (
+        "1 event-cell pairs skipped for a constant or non-finite baseline, cells [2]"
+        in caplog.text
     )
     assert "NaN samples" not in caplog.text
 
@@ -218,6 +219,23 @@ def test_input_nan_is_excluded_per_time_point(neural, output_dir, caplog):
     np.testing.assert_allclose(info["mean"].data, expected)
     assert "NaN samples in 1 event windows are excluded per time point" in caplog.text
     assert "skipped" not in caplog.text
+
+
+def test_time_point_with_no_event_left_blanks_only_that_heatmap_cell(
+    neural, output_dir
+):
+    x = neural.data.copy()
+    x[[s + 1 for s in STARTS], 0] = np.nan  # window position 5 in every event
+
+    info = _eta(x, output_dir)
+
+    row = info["mean"].data[0]
+    heat = info["mean_heatmap"].data[0]
+    assert np.isnan(row[5]) and np.isnan(heat[5])
+    finite = np.delete(row, 5)
+    np.testing.assert_allclose(
+        np.delete(heat, 5), (finite - finite.min()) / np.ptp(finite)
+    )
 
 
 def test_cell_with_no_event_left_is_nan_without_warnings(neural, output_dir, caplog):

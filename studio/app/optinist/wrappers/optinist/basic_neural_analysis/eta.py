@@ -234,7 +234,8 @@ def ETA(
         )
         if skip.any():
             logger.warning(
-                "ETA: %d event-cell pairs skipped for a constant baseline, cells %s",
+                "ETA: %d event-cell pairs skipped for a constant or non-finite "
+                "baseline, cells %s",
                 int(skip.sum()),
                 cells[skip.any(axis=0)].tolist(),
             )
@@ -284,8 +285,10 @@ def ETA(
             "mean_trace_band": overall_band,
         }
     }
-    min_value = np.min(mean, axis=1, keepdims=True)
-    value_range = np.max(mean, axis=1, keepdims=True) - min_value
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # an all-NaN row stays NaN
+        min_value = np.nanmin(mean, axis=1, keepdims=True)
+        value_range = np.nanmax(mean, axis=1, keepdims=True) - min_value
     value_range[value_range == 0] = 1  # a flat cell becomes a zero row, not NaN
     norm_mean = (mean - min_value) / value_range
 
