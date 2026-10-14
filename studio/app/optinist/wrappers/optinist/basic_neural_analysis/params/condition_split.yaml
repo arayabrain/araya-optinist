@@ -1,0 +1,10 @@
+I/O:
+  transpose_x: True
+  transpose_y: False
+  event_col_index: 1
+
+condition_split:
+  condition: 'greater' # ['greater', 'less', 'equal', 'between']
+  threshold: 0.5
+  threshold_upper: 1.0
+  margin: 0

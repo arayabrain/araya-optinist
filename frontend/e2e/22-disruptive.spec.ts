@@ -1,3 +1,5 @@
+import { execSync } from "child_process"
+
 import { test, expect, request, Page } from "@playwright/test"
 
 import {
@@ -57,6 +59,47 @@ function scaleService(service: string, desired: number): void {
   awsJson(
     `ecs update-service --cluster ${CLUSTER} --service ${service} ` +
       `--desired-count ${desired} --region ${AWS_REGION}`,
+  )
+}
+
+// The free-manager Lambda resyncs the free ECS service up to the ASG's desired
+// capacity on every scheduled run, so it would undo a deliberate scale to zero
+// within 5 minutes. The tests that take the tier to zero park the schedule for
+// their duration - the same thing dev_scheduler does when it manipulates
+// free-tier capacity. OUT-02 does not, since it only rolls the public tier and
+// can run for the better part of an hour.
+const FREE_MANAGER_SCHEDULE = "development-free-manager-schedule"
+
+// Only re-enable what this lane disabled, and only the tests that take the
+// free service to zero need it parked at all. dev_scheduler disables this rule
+// overnight, so enabling one it had parked would be a side effect of ours.
+// `disable-rule` succeeds on an already-disabled rule, so the prior state has
+// to be read rather than inferred from the call succeeding.
+let scheduleParkedByUs = false
+
+function parkFreeManagerSchedule(): void {
+  const state = awsJson<string>(
+    `events describe-rule --name ${FREE_MANAGER_SCHEDULE} --query State`,
+  )
+  if (state !== "ENABLED") {
+    console.log(`${FREE_MANAGER_SCHEDULE} is already ${state}; leaving it`)
+    return
+  }
+  execSync(
+    `aws events disable-rule --name ${FREE_MANAGER_SCHEDULE} ` +
+      `--region ${AWS_REGION}`,
+    { stdio: "pipe", timeout: 60_000 },
+  )
+  scheduleParkedByUs = true
+}
+
+function unparkFreeManagerSchedule(): void {
+  if (!scheduleParkedByUs) return
+  scheduleParkedByUs = false
+  execSync(
+    `aws events enable-rule --name ${FREE_MANAGER_SCHEDULE} ` +
+      `--region ${AWS_REGION}`,
+    { stdio: "pipe", timeout: 60_000 },
   )
 }
 
@@ -168,11 +211,19 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
 
   // A Playwright timeout aborts the test body without running its finally, so
   // the in-test restore is not the last line of defence it looks like. Back to
-  // one task: every test here refuses to start below that.
+  // one task, and the schedule back on: every test here refuses to start below
+  // that. The unpark is in a finally so a failure restoring one resource
+  // cannot strand the other.
   test.afterEach(async () => {
-    if (describeService(FREE_SERVICE).desiredCount === 0) {
-      scaleService(FREE_SERVICE, 1)
-      console.log(`restored ${FREE_SERVICE} to 1 task after an aborted outage`)
+    try {
+      if (describeService(FREE_SERVICE).desiredCount === 0) {
+        scaleService(FREE_SERVICE, 1)
+        console.log(
+          `restored ${FREE_SERVICE} to 1 task after an aborted outage`,
+        )
+      }
+    } finally {
+      unparkFreeManagerSchedule()
     }
   })
 
@@ -193,6 +244,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
     const anon = await request.newContext()
     const start = Date.now()
     try {
+      parkFreeManagerSchedule()
       scaleService(FREE_SERVICE, 0)
       await pollService(FREE_SERVICE, (s) => s.runningCount === 0, "0 tasks")
 
@@ -472,6 +524,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       ).toBeGreaterThan(0)
       const anon = await request.newContext()
       try {
+        parkFreeManagerSchedule()
         scaleService(FREE_SERVICE, 0)
         await pollService(FREE_SERVICE, (s) => s.runningCount === 0, "0 tasks")
 

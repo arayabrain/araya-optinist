@@ -1,9 +1,12 @@
 import numpy as np
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.dataclass.bar import BarData
 from studio.app.common.dataclass.base import BaseData
 from studio.app.common.dataclass.csv import CsvData
+from studio.app.common.dataclass.heatmap import HeatMapData
 from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.scatter import ScatterData
 from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
@@ -31,7 +34,8 @@ def data_concat(
         params (dict, optional): Dictionary containing concatenation specifications:
                     - 'axis': Axis along which to concatenate
                     - 'output_type': Optional output type specification
-                        (behaviors_data, neural_data, image_data, iscell_data, roi_data)
+                        (behaviors_data, neural_data, timeseries_data, image_data,
+                        iscell_data, roi_data, bar_data, heatmap_data, scatter_data)
                         If not specified, will be inferred from data1 type
                     - 'time_axis': Specified or determined by data type
                     - 'std_method': How to handle standard deviation:
@@ -265,6 +269,20 @@ def determine_default_params(data1):
             "time_axis": None,  # Safe default (ROI data typically spatial)
             "std_axis": None,  # Compute std along concatenation dimension
             "std_method": "none",  # Compute new spatial statistics
+        }
+    elif isinstance(data1, (BarData, HeatMapData)):
+        return {
+            "axis": 0,  # concat rows
+            "time_axis": 0,  # index labels the rows, so it is joined like a time index
+            "std_axis": None,
+            "std_method": "none",
+        }
+    elif isinstance(data1, ScatterData):
+        return {
+            "axis": 1,  # stored as (2, points), so concat points
+            "time_axis": None,
+            "std_axis": None,
+            "std_method": "none",
         }
     elif isinstance(data1, RoiData):
         return {

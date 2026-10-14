@@ -234,7 +234,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Description:** Calculates the average neural response around specific events in behavioral data.
 - **Input:** FluoData, BehaviorData, IsCellData (optional)
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
-- **Output:** mean (TimeSeriesData), mean_heatmap (HeatMapData), nwbfile
+- **Output:** mean (TimeSeriesData), mean_trace (TimeSeriesData: average across cells with an error band), mean_heatmap (HeatMapData), nwbfile
 - **Parameters:**
   - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
   - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
@@ -246,7 +246,51 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
   - **pre_event** [int, default: -10]: Number of time points before the trigger to include. The sign is ignored; -10 and 10 both mean 10 frames before the onset.
   - **post_event** [int, default: 10]: Number of time points after the end of the trigger to include. May be negative to end the window inside the event, as long as abs(pre_event) + event length + post_event is at least 1.
+  - **mean_trace_band** ['std', 'sem', default: 'sem']: Error band for the mean_trace output, computed across cells of the per-cell event-triggered means. Note the per-cell mean output's own std/sem are computed across events, not cells. The plot's STD toggle shows whichever band is selected, so with `sem` it draws the sem.
+  - **sort_by_peak** [bool, default: false]: Order the `mean_heatmap` rows by the time of each cell's peak in the averaged trace, earliest peak in the bottom row (the heatmap draws its first row at the bottom). Ties keep cell order, and a flat cell or one with NaN in its average sorts with the earliest. The sort key is the same average that is plotted, so cells with no response also fall on the diagonal. Row labels keep the original cell numbers; `mean` is not reordered. `covariate_binning` defaults this to true.
   - Events whose window would cross the start or end of the recording are dropped and logged. `num_sample` in the NWB output is the number of events actually averaged.
+
+###### covariate_binning
+
+- **Description:** Bins neural activity by a continuous behavioural covariate, such as track position or distance to a goal, and averages each cell's activity within each bin.
+- **Input:** FluoData, BehaviorData, IsCellData (optional)
+  - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+- **Output:** mean (TimeSeriesData, cells x bins, with std and sem, x axis is the bin centres), mean_heatmap (HeatMapData), nwbfile
+  - mean_heatmap is the mean normalised to 0..1 per cell, one row per cell, labelled with the cell number. Empty bins are left blank.
+  - The NWB output stores mean, std, sem, `bin_centers` and `num_sample`, the number of time samples in each bin.
+- **Parameters:**
+  - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
+  - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
+  - **event_col_index** [int, default: 1]: Index of the behaviour column to bin by.
+  - **n_bins** [int, default: 20]: Number of equal-width bins.
+  - **use_data_range** [bool, default: true]: Bin from the minimum to the maximum of the covariate. When false, bin from `bin_min` to `bin_max`.
+  - **bin_min** [float, default: 0.0]: Lower edge of the first bin, used when `use_data_range` is false.
+  - **bin_max** [float, default: 1.0]: Upper edge of the last bin, used when `use_data_range` is false.
+  - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak, lowest bin in the bottom row, with the same tie and flat-cell rules as `eta`. Only the heatmap is reordered.
+  - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials. A NaN in a cell's fluorescence makes that cell's mean NaN for the bin it falls in, as in ETA.
+
+###### condition_split
+
+- **Description:** Keeps only the time samples where a behaviour column meets a condition, so that a downstream node such as ETA runs on the matching part of the recording only.
+- **Input:** FluoData, BehaviorData
+  - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+- **Output:** neural_data (FluoData), behaviors_data (BehaviorData)
+  - Both outputs keep the orientation of the inputs, so a downstream node uses the same transpose settings.
+- **Parameters:**
+  - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
+  - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
+  - **event_col_index** [int, default: 1]: Index of the behaviour column the condition is tested on.
+  - **condition** ['greater', 'less', 'equal', 'between', default: 'greater']:
+    - 'greater' keeps samples with value > threshold.
+    - 'less' keeps samples with value < threshold.
+    - 'equal' keeps samples with value exactly equal to threshold, for example a trial type or zone ID.
+    - 'between' keeps samples with threshold <= value <= threshold_upper.
+  - **threshold** [float, default: 0.5]: Value the column is compared with.
+  - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
+  - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake (for example 2 for Sosa et al. 2025).
+  - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction
 
@@ -549,6 +593,23 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 #### OptiNiSt (Utils)
 
+###### data_slice
+
+- **Description:** Slices data along specified dimensions, e.g. to trim or downsample a time series so its length matches another node's input.
+- **Input:** BehaviorData, CsvData, FluoData, ImageData, RoiData, IscellData, TimeSeriesData, BarData, HeatMapData, or ScatterData
+- **Output:** sliced_data, the same type as the input (CsvData is returned as BehaviorData). For FluoData and TimeSeriesData inputs a mean_timeseries plot (the mean over every axis but time) is also produced.
+- **Parameters:**
+  - **slice_dims** [list of str, default: empty]: One slice spec per dimension, in the input's axis order: FluoData (cells, time); BehaviorData and CsvData (time, columns); ImageData (frames, y, x). Each spec can be:
+    - `:` or `all`: keep the entire dimension
+    - `start:stop`: range slice (Python semantics, `stop` excluded)
+    - `start:stop:step`: strided slice, e.g. `0:8152:2` keeps every 2nd sample of the first 8152
+    - `squeeze`: remove a dimension of size 1
+    - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time).
+  - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell of a FluoData input and downsample time, or `0:8152:2, :` for BehaviorData.
+  - Unparsable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
+  - **cell_normalization** [str, default: `none`]: `none` or `zscore`. Z-scores each row of a FluoData or TimeSeriesData input along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Other inputs, and slices that remove the time axis, are left unchanged with a warning. NaN samples stay NaN and a constant row becomes zeros.
+  - **mean_normalization** [str, default: `none`]: `none`, `zscore` or `minmax`. Applied only to the mean_timeseries output. A NaN sample stays NaN, a constant trace becomes zeros, and an entirely non-finite trace is left unchanged with a warning.
+
 ###### microscope_to_img
 
 - **Description:** Data type conversion: Converts microscope data to image data.
@@ -581,7 +642,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
-- **Output:** IscellData
+- **Output:** all_roi (RoiData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
 
 ###### roi_fluo_from_hdf5
 
@@ -597,7 +658,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - fluorescence
       - processing/ophys/suite2p_roi_UNIQUE-ID/Fluorescence/data
       - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
-- **Output:** IscellData, FluoData
+- **Output:** all_roi (RoiData), fluorescence (FluoData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
 - **Parameters:**
   - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 

@@ -7,7 +7,10 @@ from studio.app.common.dataclass import HeatMapData, TimeSeriesData
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.optinist.utils import (
+    peak_order,
+    recursive_flatten_params,
+)
 
 logger = AppLogger.get_logger()
 
@@ -85,13 +88,20 @@ def ETA(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict(mean=TimeSeriesData):
+) -> dict(mean=TimeSeriesData, mean_trace=TimeSeriesData, mean_heatmap=HeatMapData):
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start ETA: %s", function_id)
 
     flattened_params = {}
     recursive_flatten_params(params, flattened_params)
     params = flattened_params
+
+    mean_trace_band = params.get("mean_trace_band", "sem") or "sem"
+    mean_trace_band = str(mean_trace_band).strip().lower()
+    if mean_trace_band not in ("std", "sem"):
+        raise ValueError(
+            f"Unknown mean_trace_band '{mean_trace_band}'; expected 'std' or 'sem'"
+        )
 
     neural_data = neural_data.data
     behaviors_data = behaviors_data.data
@@ -182,6 +192,16 @@ def ETA(
     std = std.transpose()
     sem = sem.transpose()
 
+    # Overall mean across cells with its error band (std or sem across cells)
+    overall_mean = np.mean(mean, axis=0)
+    if mean.shape[0] < 2:
+        logger.warning("mean_trace error band is undefined for a single cell")
+        overall_band = np.full_like(overall_mean, np.nan)
+    else:
+        overall_band = np.std(mean, axis=0, ddof=1)
+        if mean_trace_band == "sem":
+            overall_band = overall_band / np.sqrt(mean.shape[0])
+
     nwbfile = {}
     nwbfile[NWBDATASET.POSTPROCESS] = {
         function_id: {
@@ -189,6 +209,8 @@ def ETA(
             "std": std,
             "sem": sem,
             "num_sample": [num_event],
+            "mean_trace": overall_mean,
+            "mean_trace_band": overall_band,
         }
     }
     min_value = np.min(mean, axis=1, keepdims=True)
@@ -196,19 +218,33 @@ def ETA(
     value_range[value_range == 0] = 1  # a flat cell becomes a zero row, not NaN
     norm_mean = (mean - min_value) / value_range
 
+    trace_index = list(range(pre_event, post_event + trigger_len))
+    heatmap_cells = (
+        np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
+    )
+    order = np.arange(len(mean))
+    if params.get("sort_by_peak", False):
+        order = peak_order(norm_mean)
+
     info = {}
     info["mean"] = TimeSeriesData(
         mean,
         std=std,
         sem=sem,
-        index=list(range(pre_event, post_event + trigger_len)),
+        index=trace_index,
         cell_numbers=cell_numbers if iscell is not None else None,
         file_name="mean",
     )
+    info["mean_trace"] = TimeSeriesData(
+        overall_mean[np.newaxis],
+        std=overall_band[np.newaxis],
+        index=trace_index,
+        file_name="mean_trace",
+    )
     info["mean_heatmap"] = HeatMapData(
-        norm_mean,
+        norm_mean[order],
         columns=list(np.arange(pre_event, post_event + trigger_len)),
-        index=list(cell_numbers) if iscell is not None else None,
+        index=heatmap_cells[order].tolist(),
         file_name="mean_heatmap",
         meta=PlotMetaData(yaxis_type="category"),
     )

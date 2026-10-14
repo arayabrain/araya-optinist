@@ -35,17 +35,22 @@ def _saved(heatmap: HeatMapData, json_dir):
     return JsonReader.read_as_output(heatmap.json_path)
 
 
-def _eta(output_dir, iscell=None):
+EVENT_STARTS = range(20, 180, 30)
+
+
+def _eta(output_dir, iscell=None, sort_by_peak=False, fluo=None):
     rng = np.random.default_rng(0)
     behavior = np.zeros((200, 2))
-    for start in range(20, 180, 30):
+    for start in EVENT_STARTS:
         behavior[start : start + 3, 1] = 1.0
     return ETA(
-        FluoData(rng.random((len(ISCELL), 200)), file_name="f"),
+        FluoData(
+            rng.random((len(ISCELL), 200)) if fluo is None else fluo, file_name="f"
+        ),
         BehaviorData(behavior, file_name="b"),
         output_dir,
         iscell=iscell,
-        params=dict(ETA_PARAMS),
+        params={**ETA_PARAMS, "sort_by_peak": sort_by_peak},
     )
 
 
@@ -64,6 +69,18 @@ def test_eta_heatmap_rows_are_roi_numbers_with_iscell(output_dir, tmp_path):
     assert out.index == [int(k) for k in info["mean"].cell_numbers]
     assert out.meta.yaxis_type == "category"
     assert out.meta.xaxis_type is None
+
+
+def test_sorted_eta_heatmap_saves_its_row_labels(output_dir, tmp_path):
+    fluo = np.zeros((len(ISCELL), 200))
+    for cell, lag in zip(CELLS, [4, 0, -3]):  # cell 4 peaks first, cell 1 last
+        for start in EVENT_STARTS:
+            fluo[cell, start + lag] = 1.0
+    info = _eta(output_dir, IscellData(ISCELL), sort_by_peak=True, fluo=fluo)
+    out = _saved(info["mean_heatmap"], str(tmp_path))
+
+    assert out.index == [4, 3, 1]
+    assert out.meta.yaxis_type == "category"
 
 
 def test_eta_heatmap_rows_without_iscell_are_all_rois(output_dir, tmp_path):

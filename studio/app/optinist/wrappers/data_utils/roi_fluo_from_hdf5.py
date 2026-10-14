@@ -14,7 +14,13 @@ def roi_fluo_from_hdf5(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(
+    iscell=IscellData,
+    all_roi=RoiData,
+    non_cell_roi=RoiData,
+    cell_roi=RoiData,
+    fluorescence=FluoData,
+):
     """
     Processes ROI and fluorescence data, aligning them, and adds enriched metadata.
 

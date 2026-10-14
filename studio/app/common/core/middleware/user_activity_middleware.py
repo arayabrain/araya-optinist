@@ -426,13 +426,16 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         with session_scope() as session:
             now = get_current_datetime()
 
-            # UPDATE first (common path); instance_id is refreshed to the
-            # serving instance. The ``logged_out_at IS NULL`` guard stops a
-            # stray still-authenticated request (in-flight call after logout, a
-            # second tab) from resurrecting a logged-out assignment — a
-            # cross-process guard, unlike the short-lived in-memory logout map.
-            # (instance_id write-ownership rework: separate follow-up.)
-            from sqlalchemy import select
+            # UPDATE first (common path).
+            # - instance_id follows the serving instance, except while a
+            #   workflow runs: then it stays on the host the workflow runs on
+            #   (pinned by increment_workflow_count), which the free scale-in
+            #   reads to spare that host
+            # - the ``logged_out_at IS NULL`` guard stops a stray
+            #   still-authenticated request (in-flight call after logout, a
+            #   second tab) from resurrecting a logged-out assignment — a
+            #   cross-process guard, unlike the short-lived in-memory logout map
+            from sqlalchemy import case, select
 
             stmt = (
                 update(FreeUserAssignment)
@@ -440,7 +443,13 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                 .where(FreeUserAssignment.logged_out_at.is_(None))
                 .values(
                     last_activity=now,
-                    instance_id=instance_id,
+                    instance_id=case(
+                        (
+                            FreeUserAssignment.active_workflow_count > 0,
+                            FreeUserAssignment.instance_id,
+                        ),
+                        else_=instance_id,
+                    ),
                 )
             )
             result = session.execute(stmt)
