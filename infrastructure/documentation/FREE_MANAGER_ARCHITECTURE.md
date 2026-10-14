@@ -42,6 +42,12 @@
      Lambda sums `active_workflow_count` per instance over every assignment
      row and excludes any instance above 0; if that leaves too few safe
      candidates, the surplus stays up until the workflows finish
+   - **A count that never decrements holds its instance** (an OOM kill, an
+     agent crash, a task stopped mid-workflow) until the Common User
+     Manager's sweep resets it: every 10 minutes, for a user inactive for
+     2 hours whose workflow started over 4 hours ago. So a surplus can be
+     held for about 4 hours, visible as `TargetInstances` below desired on
+     the dashboard and a `kept` line in the log
    - **Other terminations are not covered.** Nothing stops the ASG itself
      terminating a busy instance on a health-check replacement, an
      availability-zone rebalance, or a manual `--desired-capacity` or a
@@ -238,7 +244,9 @@ interval, instance boot, and sticky sessions that keep active users put.
 1. **Size it.** Minimum = `ceil(expected concurrent users / 5)`, "concurrent"
    meaning a request within `FREE_IDLE_THRESHOLD_MINUTES`. **Raise
    `asg_max_size` first if the target exceeds it** — it is a cap the Lambda
-   clamps to, and `MinSize <= MaxSize` must hold.
+   clamps to, and `MinSize <= MaxSize` must hold. **Raise the minimum, never
+   `desired` alone:** a desired capacity above the user-count target is a
+   surplus, and the Lambda removes a surplus of 2 or more on its next run.
 2. **Allow 30 minutes.** Instance boot, then task placement and two health
    checks at 60-second intervals.
 3. **Choose a route.** `asg_min_size` in tfvars is durable; a console or CLI
@@ -254,11 +262,14 @@ interval, instance boot, and sticky sessions that keep active users put.
    ```
    ASG DesiredCapacity == ASG InService == ECS runningCount == healthy targets
    ```
-5. **Restore the floor only.** Lower `min_size` and leave the desired
-   capacity alone: the next scheduled run computes the target from the user
-   count and removes the surplus, choosing instances with no running
-   workflow. Lowering `--desired-capacity` by hand, or `--max-size` below
-   it, would have the group choose instead, blind to workloads.
+5. **Restore the floor first, the ceiling last.** Lower `min_size` and leave
+   the desired capacity alone: the next scheduled run computes the target
+   from the user count and removes the surplus, choosing instances with no
+   running workflow. Lowering `--desired-capacity` by hand would have the
+   group choose instead, blind to workloads — and so would lowering
+   `--max-size` below the current desired, since `UpdateAutoScalingGroup`
+   then sets desired to the new maximum. If `asg_max_size` was raised for
+   the event, lower it only once desired is at or below the old value.
 
 ```bash
 aws autoscaling update-auto-scaling-group --auto-scaling-group-name <asg> \
@@ -798,7 +809,8 @@ healthy target. `scale_service()` follows the same rule on decreases.
 
 1. **A surplus of 2 or more goes at once**, all of it, each instance chosen
    by workload. A busy period's capacity comes back to `MinSize` in one
-   run rather than one instance per alarm cooldown.
+   run rather than one instance per alarm cooldown. The corollary: capacity
+   is held by raising `MinSize`, never by raising `desired` alone.
 2. **A surplus of exactly 1 goes once it has shown in the 3 completed
    5-minute periods before the run** — on the fourth run that sees it,
    about 15 minutes after the first. This is the boundary case — 5 users
@@ -819,8 +831,11 @@ healthy target. `scale_service()` follows the same rule on decreases.
    happens, which no alarm does any more.
 
 **Neither rule applies while `cpu-high` or `memory-high` is in ALARM, nor
-for 15 minutes after it leaves ALARM** (`load_alarm_holds_capacity()`,
-from the alarm's `StateTransitionedTimestamp`): the alarm says the load
+for 15 minutes after the alarm's last state change** (`load_alarm_holds_capacity()`,
+from the alarm's `StateTransitionedTimestamp`; leaving ALARM is the case
+that matters, but any transition starts the quiet period, including
+`INSUFFICIENT_DATA` → `OK` when the metrics return after a development
+start): the alarm says the load
 needs the capacity, and an instance it added is not taken back while the
 load that asked for it is still there. The quiet period is there because
 the surplus history keeps accumulating through the ALARM stretch — without

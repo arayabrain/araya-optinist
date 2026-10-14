@@ -83,7 +83,7 @@ Manages autoscaling and load balancing for free tier users. Monitors active user
 - `FREE_SERVICE_NAME` - ECS service name (e.g., subscr-optinist-cloud-service)
 - `ASG_NAME` - Auto Scaling Group name
 - `FREE_IDLE_THRESHOLD_MINUTES` - Idle threshold (default: 5)
-- `LOAD_ALARM_NAMES` - the `-high` alarms; no scale-in while one is in ALARM or for 15 minutes after it clears
+- `LOAD_ALARM_NAMES` - the `-high` alarms; no scale-in while one is in ALARM or for 15 minutes after its last state change
 
 The instance count floor and ceiling are not environment variables: they are
 read from the ASG's own `MinSize`/`MaxSize` on every run. There is no user
@@ -115,7 +115,7 @@ of 2 or more over the target is removed at once; a surplus of 1 once it has
 shown in the 3 completed 5-minute periods before the run (read from
 `TargetInstances` against the group's `GroupDesiredCapacity`; a failed run
 leaves a hole and the wait starts over); nothing while a `-high` alarm is in
-ALARM or left it less than 15 minutes ago (`LOAD_ALARM_NAMES`). Then:
+ALARM or changed state less than 15 minutes ago (`LOAD_ALARM_NAMES`). Then:
 
 1. Candidates are the group's `InService`, unprotected instances with **no
    running workflow** (`SUM(active_workflow_count)` per instance, over every
