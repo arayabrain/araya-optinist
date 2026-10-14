@@ -92,25 +92,37 @@ export const getTimeSeriesInitData = createAsyncThunk<
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesInitData`,
   async ({ path, isFull }, thunkAPI) => {
-    const cached = thunkAPI.getState().displayData.timeSeries[path]?.data ?? {}
     try {
       const response = await getTimeSeriesInitDataApi(path, isFull)
-      // One point per record, so refetch the records another item loaded in full
-      const reload = Object.keys(response.data).filter(
-        (key) =>
-          Object.keys(cached[key] ?? {}).length > 1 &&
-          Object.keys(response.data[key]).length === 1,
-      )
-      const records = await Promise.all(
-        reload.map((index) => getTimeSeriesDataByIdApi(path, index, isFull)),
-      )
       const data = { ...response.data }
       const std = { ...response.std }
-      records.forEach((record, i) => {
-        const key = reload[i]
-        data[key] = record.data[key]
-        if (record.std[key] !== undefined) std[key] = record.std[key]
-      })
+      const tried = new Set<string>()
+      // One point per record, so refetch the records another item holds in full,
+      // including any a by-id request filled while this one was in flight
+      for (;;) {
+        const held =
+          thunkAPI.getState().displayData.timeSeries[path]?.data ?? {}
+        const reload = Object.keys(data).filter(
+          (key) =>
+            !tried.has(key) &&
+            Object.keys(held[key] ?? {}).length > 1 &&
+            Object.keys(data[key]).length === 1,
+        )
+        if (reload.length === 0) break
+        const records = await Promise.allSettled(
+          reload.map((index) => getTimeSeriesDataByIdApi(path, index, isFull)),
+        )
+        records.forEach((record, i) => {
+          const key = reload[i]
+          tried.add(key)
+          // a failed refetch keeps its one point rather than failing the init
+          if (record.status === "rejected") return
+          data[key] = record.value.data[key]
+          if (record.value.std[key] !== undefined) {
+            std[key] = record.value.std[key]
+          }
+        })
+      }
       return { ...response, data, std }
     } catch (e) {
       return thunkAPI.rejectWithValue(e)

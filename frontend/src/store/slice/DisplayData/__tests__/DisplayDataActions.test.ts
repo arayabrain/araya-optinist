@@ -78,4 +78,51 @@ describe("getTimeSeriesInitData", () => {
       [path, "1", undefined],
     ])
   })
+
+  const initWithStubs = {
+    data: { "0": record(1), "1": { "0": 1 } },
+    xrange,
+    std: {},
+  }
+
+  it("refetches a record a by-id request filled while the init was in flight", async () => {
+    let resolveInit: (value: unknown) => void = () => undefined
+    jest
+      .mocked(getTimeSeriesInitDataApi)
+      .mockResolvedValueOnce(initWithStubs)
+      .mockReturnValueOnce(new Promise((r) => (resolveInit = r)) as never)
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockResolvedValueOnce({ data: { "1": record(5) }, xrange, std: {} })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+
+    const init = store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+    resolveInit(initWithStubs)
+    await init
+
+    expect(store.getState().displayData.timeSeries[path].data["1"]).toEqual(
+      record(5),
+    )
+  })
+
+  it("keeps the one point of a record whose refetch fails", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue(initWithStubs)
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockRejectedValueOnce(new Error("503"))
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.error).toBeNull()
+    expect(entry.data["0"]).toEqual(record(1))
+    expect(entry.data["1"]).toEqual({ "0": 1 })
+  })
 })
