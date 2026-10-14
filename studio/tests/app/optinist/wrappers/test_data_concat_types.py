@@ -9,7 +9,7 @@ from studio.app.common.dataclass import (
     ScatterData,
     TimeSeriesData,
 )
-from studio.app.optinist.dataclass import BehaviorData, IscellData
+from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.data_utils.data_concat import data_concat
 
 RNG = np.random.default_rng(0)
@@ -106,3 +106,32 @@ def test_row_labels_survive_a_1d_column_stack(cls, output_dir):
 
     assert type(out) is cls and out.data.shape == (3, 5)
     assert list(out.index) == [10, 11, 12]
+
+
+def test_heatmap_column_stack_with_computed_std_saves(output_dir):
+    table = HeatMapData(RNG.random((3, 4)), index=[10, 11, 12], file_name="t")
+
+    result = data_concat(
+        table,
+        IscellData(RNG.random(3)),
+        output_dir,
+        params={"axis": 1, "std_method": "compute"},
+    )
+
+    for out in result.values():
+        out.save_json(output_dir)
+    assert list(result["concatenated_data"].index) == [10, 11, 12]
+
+
+def test_fluo_column_stack_as_a_heatmap_relabels_its_rows(output_dir):
+    fluo = FluoData(RNG.random((3, 4)), file_name="f")
+
+    out = data_concat(
+        fluo,
+        IscellData(RNG.random(3)),
+        output_dir,
+        params={"axis": 1, "output_type": "heatmap_data"},
+    )["concatenated_data"]
+
+    out.save_json(output_dir)
+    assert type(out) is HeatMapData and list(out.index) == [0, 1, 2]

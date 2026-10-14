@@ -239,18 +239,23 @@ def data_concat(
         )
 
         data_object = list(output_data.values())[0]
-        # TimeSeriesData's index labels axis 1, so rebuild one a column stack outgrew
+        # TimeSeriesData's index labels axis 1, a heatmap's or bar's labels axis 0,
+        # so rebuild one the concat no longer fits
+        is_timeseries = isinstance(data_object, TimeSeriesData)
         if (
-            isinstance(data_object, TimeSeriesData)
+            isinstance(data_object, (TimeSeriesData, HeatMapData, BarData))
             and data_object.data.ndim == 2
-            and len(data_object.index) != data_object.data.shape[1]
+            and data_object.index is not None
         ):
-            data_object.index = np.arange(data_object.data.shape[1])
-            concatenated_index = None
+            labelled = data_object.data.shape[1 if is_timeseries else 0]
+            if len(data_object.index) != labelled:
+                data_object.index = np.arange(labelled)
         result = {"concatenated_data": data_object}
         if concatenated_std is not None:
             result["concatenated_std"] = TimeSeriesData(
-                concatenated_std, index=concatenated_index, file_name="concatenated_std"
+                concatenated_std,
+                index=data_object.index if is_timeseries else None,
+                file_name="concatenated_std",
             )
         return result
 
