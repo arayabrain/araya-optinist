@@ -238,6 +238,21 @@ def test_time_point_with_no_event_left_blanks_only_that_heatmap_cell(
     )
 
 
+def test_raw_average_nan_blanks_only_that_heatmap_cell(neural, behavior, output_dir):
+    x = neural.data.copy()
+    x[STARTS[1] + 1, 0] = np.nan  # event 1, cell 0, window position 3
+
+    info = ETA(FluoData(x, file_name="f"), behavior, output_dir, params=dict(PARAMS))
+
+    row = info["mean"].data[0]
+    heat = info["mean_heatmap"].data[0]
+    assert np.isnan(row[3]) and np.isnan(heat[3])
+    finite = np.delete(row, 3)
+    np.testing.assert_allclose(
+        np.delete(heat, 3), (finite - finite.min()) / np.ptp(finite)
+    )
+
+
 def test_cell_with_no_event_left_is_nan_without_warnings(neural, output_dir, caplog):
     caplog.set_level(logging.WARNING, logger="optinist")
     x = neural.data.copy()
