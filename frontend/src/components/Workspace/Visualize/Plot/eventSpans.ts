@@ -66,7 +66,12 @@ export function buildShadeShapes(
   let capped = false
   keys.forEach((key, position) => {
     const record = data[key]
-    if (!record || !isLoaded(key)) return
+    if (!record) return
+    if (shapes.length >= SHADE_TOTAL_CAP) {
+      capped = true // no room left, and a full plot stops loading this record
+      return
+    }
+    if (!isLoaded(key)) return
     let cached = spanCache.get(record)
     if (cached?.xrange !== xrange) {
       if (x == null) x = xrange.map(Number)

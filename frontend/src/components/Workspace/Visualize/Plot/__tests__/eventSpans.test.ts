@@ -142,6 +142,29 @@ describe("buildShadeShapes", () => {
     expect(result.full).toBe(true)
   })
 
+  it("flags a record left out once the total is used up exactly", () => {
+    const longX = Array.from({ length: 1000 }, (_, i) => String(i))
+    const fivehundred = Object.fromEntries(
+      longX.map((x, i) => [x, (i + 1) % 2]),
+    )
+    const keys = ["1", "2", "3", "4", "5"]
+    const records = Object.fromEntries(keys.map((k) => [k, fivehundred]))
+    const loaded = (key: string) => key !== "5"
+
+    const result = buildShadeShapes(
+      longX,
+      records,
+      keys,
+      1,
+      SHADE_COLORS,
+      loaded,
+    )
+
+    expect(result.shapes).toHaveLength(2000)
+    expect(result.full).toBe(true)
+    expect(result.capped).toBe(true)
+  })
+
   it("leaves room for more records when only one record hits its own cap", () => {
     const longX = Array.from({ length: 1200 }, (_, i) => String(i))
     const busy = Object.fromEntries(longX.map((x, i) => [x, i % 2]))
