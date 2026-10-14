@@ -103,22 +103,25 @@ describe("getTimeSeriesDataByIdOnce", () => {
     })
     jest
       .mocked(getTimeSeriesDataByIdApi)
-      .mockRejectedValueOnce(new Error("504"))
       .mockResolvedValueOnce({
         data: { "2": { "0": 0, "1": 1 } },
         xrange,
         std: {},
       })
+      .mockRejectedValueOnce(new Error("504"))
     const store = configureStore({ reducer: { displayData: reducer } })
     await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
 
-    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+    // the failure lands last, so nothing after it could clear a plot-wide error
     store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "2" }))
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
     await new Promise(process.nextTick)
     store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
 
     const entry = store.getState().displayData.timeSeries[path]
     expect(entry.xrange).toEqual(xrange)
+    expect(entry.error).toBeNull()
+    expect(entry.fulfilled).toBe(true)
     expect(entry.data).toEqual({ "1": { "0": 0 }, "2": { "0": 0, "1": 1 } })
     expect(entry.byId).toEqual({ "1": "rejected", "2": "fulfilled" })
     expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)

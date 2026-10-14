@@ -107,10 +107,9 @@ export const displayDataSlice = createSlice({
         const { path, index } = action.meta.arg
         const entry = state.timeSeries[path]
         if (entry && !isNoRoisFound(action.error.message)) {
-          // one record failed, so keep the records the other requests loaded
+          // one record failed: mark that record, leave the plot and the others
           entry.pending = false
-          entry.fulfilled = false
-          entry.error = action.error.message ?? "rejected"
+          entry.fulfilled = true
           entry.byId = { ...entry.byId, [index]: "rejected" }
         } else if (isNoRoisFound(action.error.message)) {
           state.timeSeries[path] = {
