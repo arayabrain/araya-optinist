@@ -326,7 +326,9 @@ resource "aws_autoscaling_group" "main" {
   # - initial_lifecycle_hook is ForceNew and never refreshed from AWS, so the
   #   hooks a group was created with stay in state; removing the blocks alone
   #   would replace the group. ignore_changes keeps it in place
-  # - existing groups: delete the retired hooks with delete-lifecycle-hook
+  # - existing groups: delete the retired hooks with delete-lifecycle-hook,
+  #   with the Launch process suspended and every instance InService;
+  #   deleting a launch hook abandons a launch waiting on it
   # - new groups: created without them
   # - a block added here is ignored on existing groups; declare a hook with
   #   aws_autoscaling_lifecycle_hook instead
