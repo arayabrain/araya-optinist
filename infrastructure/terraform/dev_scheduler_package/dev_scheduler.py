@@ -439,17 +439,19 @@ def stop_environment(stop_mode="destroy"):
             )
         )
 
-    # 3c. Wait for the 3. services' tasks to stop while NAT is still up (see
+    # 3c. Wait for the step 3 services' tasks to stop while NAT is still up (see
     #     TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the stop
     #     carries on, and the drain then waits for NAT as before.
     #     - Not the public service: its ASG has no capacity provider, so no
     #       managed-draining hook holds its instances
-    #     - Skipped when NAT is down (verify-stop, weekend manual stop): the
-    #       agent cannot report, so the counts would never change
+    #     - Skipped when NAT is known to be down (verify-stop, weekend manual
+    #       stop): the agent cannot report, so the counts would never change.
+    #       Run on "unknown": a wasted wait costs at most TASK_STOP_WAIT_SECONDS,
+    #       a skipped one with NAT up costs the overnight hold
     #     - A service whose update failed still wants its task; the stop
     #       already fails on that error, so it is not waited for
     if ecs_services:
-        if nat_state == "running":
+        if nat_state in ("running", "unknown"):
             scaled_down = [
                 s
                 for s in ecs_services
@@ -860,6 +862,11 @@ def update_ecs_services(cluster_name, service_names, desired_count):
     return results
 
 
+def _running_pending(remaining):
+    """Format {service: (running, pending)} as "svc=1/0 ..."."""
+    return " ".join(f"{n}={r}/{p}" for n, (r, p) in remaining.items())
+
+
 def wait_for_service_tasks_stopped(cluster_name, service_names):
     """Poll until the services report no running or pending tasks.
 
@@ -882,11 +889,13 @@ def wait_for_service_tasks_stopped(cluster_name, service_names):
         except Exception as e:
             print(f"describe_services failed while waiting for tasks: {e}")
             remaining = {"describe_services": ("?", "?")}
-        if not remaining:
+        if remaining:
+            print(f"ECS services: waiting - {_running_pending(remaining)}")
+        else:
             print("ECS services: all tasks stopped")
             return "stopped"
         if time.monotonic() >= deadline:
-            detail = " ".join(f"{n}={r}/{p}" for n, (r, p) in remaining.items())
+            detail = _running_pending(remaining)
             print(f"ECS services: tasks still running after wait - {detail}")
             return f"timeout: {detail}"
         time.sleep(TASK_STOP_POLL_INTERVAL)

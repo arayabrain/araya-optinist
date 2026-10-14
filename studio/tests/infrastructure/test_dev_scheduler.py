@@ -1125,6 +1125,10 @@ class TestStopEnvironment:
         clients["ec2"].describe_instances.side_effect = RuntimeError("throttled")
         module.stop_environment()
         helpers["cleanup_dynamic_premium_instances"].assert_not_called()
+        # The opposite trade-off for the task wait: a wasted wait costs at
+        # most TASK_STOP_WAIT_SECONDS, a skipped one with NAT up costs the
+        # free instance's overnight hold. So "unknown" still waits.
+        helpers["wait_for_service_tasks_stopped"].assert_called_once()
 
     def test_verify_stop_with_already_deleting_completes_cleanly(self, patched):
         """A verify-stop that finds RDS already in 'deleting' state must
