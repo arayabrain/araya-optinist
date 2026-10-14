@@ -353,15 +353,11 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         ]
       },
       # On stop, list the services' tasks before scaling down, then wait for
-      # them to reach STOPPED before NAT goes (same scoping as premium_manager)
+      # them to reach STOPPED before NAT goes. Both scoped to this cluster:
+      # production shares the account
       {
         Effect   = "Allow"
-        Action   = "ecs:ListTasks"
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = "ecs:DescribeTasks"
+        Action   = ["ecs:ListTasks", "ecs:DescribeTasks"]
         Resource = "*"
         Condition = {
           ArnEquals = {
