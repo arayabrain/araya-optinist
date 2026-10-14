@@ -63,10 +63,8 @@ export const selectingImageArea = createAsyncThunk<
       const roiFilePath = imageItem.roiItem.filePath
       if (roiFilePath != null) {
         const roiData = selectRoiData(roiFilePath)(thunkAPI.getState())
-        const clamp = (v: number, max: number) =>
-          Math.min(Math.max(Math.round(v), 0), max)
-        const [x1, x2] = x.map((v) => clamp(v, (roiData[0]?.length ?? 0) - 1))
-        const [y1, y2] = y.map((v) => clamp(v, roiData.length - 1))
+        const [x1, x2] = x.map(Math.round)
+        const [y1, y2] = y.map(Math.round)
         for (let x = x1; x <= x2; x++) {
           for (let y = y1; y <= y2; y++) {
             const z = roiData[y]?.[x]
