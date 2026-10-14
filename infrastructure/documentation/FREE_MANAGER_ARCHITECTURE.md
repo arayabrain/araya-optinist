@@ -46,9 +46,12 @@
      the sticky cookie is re-issued on every response, so active users stay on
      the instance they started on, and the newest instance holds only sessions
      placed since it launched. It does not look at workload
-   - A scaled-in instance is released in about 10 minutes: the target group's
-     300 s deregistration delay, then the group's own logging-only
-     `-terminate-hook`, which nothing completes and which times out at 300 s
+   - A scaled-in instance is released in about 8 minutes: the target group's
+     300 s deregistration delay, then ECS's draining hook, which ECS completes
+     a few minutes after the task has stopped. The group declares no lifecycle
+     hook of its own; its former logging-only launch and terminate hooks held
+     every launch, and every termination whose drain finished sooner, for a
+     300 s timeout
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
@@ -618,7 +621,7 @@ below zero, avoiding race conditions.
 
 ### 2. Instances Not Ready in Time
 
-**Problem:** New instances take 6-8 minutes to launch (lifecycle hooks ~5 min, EC2 boot ~5 min, ECS tasks ~7 min).
+**Problem:** New instances take several minutes to launch (EC2 boot, ECS registration, task start).
 
 **Solution:** Retry logic with timeout. The scale_and_rebalance() function
 retries every 60 seconds. Code sets max_wait_time = 1020s (17 min) but

@@ -120,10 +120,9 @@ Users with active workflows are **never migrated** during rebalancing:
 ## Instance Readiness
 
 Waits up to 17 minutes for new instances to become operational:
-- **Lifecycle Hook**: ~5 minutes
-- **EC2 Launch**: ~5 minutes  
+- **EC2 Launch**: ~5 minutes
 - **ECS Task Start**: ~7 minutes
-- **Total**: ~17 minutes for full readiness
+- **Ceiling**: 17 minutes, with headroom; the ASG declares no launch hook
 
 Retries every 60 seconds until instances are ready or timeout.
 

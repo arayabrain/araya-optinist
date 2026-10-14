@@ -563,10 +563,8 @@ def scale_and_rebalance(
             result["scaling_action"] = "scale_up"
 
             # Wait for instances to launch and rebalance with retry logic
-            # Lifecycle hook: ~5 minutes, EC2 instances:
-            # ~5 minutes, ECS tasks: ~7 minutes
-            # Total: ~17 minutes for full operational readiness
-            # We'll retry for up to 17 minutes to allow for variability
+            # EC2 instances: ~5 minutes, ECS tasks: ~7 minutes
+            # Ceiling: 17 minutes, with headroom (no launch hook on the ASG)
             import time
 
             max_wait_time = 1020  # 17 minutes in seconds
@@ -576,7 +574,7 @@ def scale_and_rebalance(
 
             print(
                 f"\nWaiting for new instances to launch and become ECS-ready "
-                f"(up to {max_wait_time // 60} minutes, includes lifecycle hooks)"
+                f"(up to {max_wait_time // 60} minutes)"
             )
 
             rebalanced = []
