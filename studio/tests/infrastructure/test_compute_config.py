@@ -97,6 +97,19 @@ class TestFreeAsgScaleIn:
         again. Raising this needs that solved first."""
         assert attribute(self.service, "deployment_minimum_healthy_percent") == "0"
 
+    def test_free_service_is_pinned_to_free_instances(self):
+        """The other tiers' services pin themselves with ``memberOf`` on the
+        ``tier`` attribute. Without the same pin a free replacement task
+        placed during a drain could land on another tier's instance with
+        spare capacity, leaving ECS to choose which of two free tasks to
+        stop when the count comes down."""
+        constraints = re.findall(
+            r'placement_constraints\s*\{\s*type\s*=\s*"memberOf"\s*'
+            r'expression\s*=\s*"([^"]+)"',
+            self.service,
+        )
+        assert constraints == ["attribute:tier == free"]
+
     def test_asg_declares_no_initial_lifecycle_hook(self):
         """A hook nothing completes holds every launch in ``Pending:Wait`` and
         every termination in ``Terminating:Wait`` for its full timeout. The
