@@ -12,13 +12,16 @@ the two halves.
 """
 
 import re
-from pathlib import Path
 
 import pytest
 from premium_manager import MAX_PREMIUM_PRIORITY, get_next_available_priority
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-TERRAFORM_DIR = PROJECT_ROOT / "infrastructure" / "terraform"
+from terraform_source import (
+    NEXT_TOP_LEVEL_BLOCK,
+    TERRAFORM_DIR,
+    attribute,
+    read,
+    resource_block,
+)
 
 PUBLIC_ALB_RULES_TF = TERRAFORM_DIR / "public_alb_rules.tf"
 PUBLIC_SERVICE_TF = TERRAFORM_DIR / "public_service.tf"
@@ -82,27 +85,6 @@ EXPECTED_ALB_ROUTING = {
 }
 
 
-def _read(path: Path) -> str:
-    assert path.exists(), f"terraform source not found at {path}"
-    return path.read_text()
-
-
-def _resource_block(tf: str, resource_type: str, name: str) -> str:
-    """Return the source of one ``resource "<type>" "<name>"`` block.
-
-    Terminates at the next top-level ``resource`` / ``data`` / ``output``
-    declaration, matching the technique in ``test_compute_config.py``.
-    """
-    match = re.search(
-        r'resource\s+"%s"\s+"%s"\s*\{.*?(?=^(?:resource|data|output|locals)\s|\Z)'
-        % (re.escape(resource_type), re.escape(name)),
-        tf,
-        re.DOTALL | re.MULTILINE,
-    )
-    assert match, f'resource "{resource_type}" "{name}" not found'
-    return match.group()
-
-
 def _variable_default(tf: str, name: str) -> str:
     """Return the ``default`` of one ``variable "<name>"`` block."""
     block = re.search(
@@ -116,7 +98,7 @@ def _variable_default(tf: str, name: str) -> str:
 
 def _terraform_rule_priorities() -> dict:
     """Parse the ``local.alb_priority`` map from public_alb_rules.tf."""
-    tf = _read(PUBLIC_ALB_RULES_TF)
+    tf = read(PUBLIC_ALB_RULES_TF)
     block = re.search(r"alb_priority\s*=\s*\{(.*?)\n\s*\}", tf, re.DOTALL)
     assert block, "local.alb_priority map not found in public_alb_rules.tf"
     priorities = {
@@ -138,9 +120,9 @@ def _listener_rule_blocks() -> dict:
     blocks = {}
     for path in sorted(TERRAFORM_DIR.glob("*.tf")):
         for match in re.finditer(
-            r'resource\s+"aws_lb_listener_rule"\s+"(\w+)"\s*\{'
-            r".*?(?=^(?:resource|data|output|locals)\s|\Z)",
-            _read(path),
+            r'resource\s+"aws_lb_listener_rule"\s+"(\w+)"\s*\{.*?'
+            + NEXT_TOP_LEVEL_BLOCK,
+            read(path),
             re.DOTALL | re.MULTILINE,
         ):
             blocks[match.group(1)] = match.group()
@@ -182,16 +164,6 @@ def _nested_block(source: str, name: str) -> str:
     return match.group(1)
 
 
-def _attribute(source: str, name: str) -> str:
-    """Return one ``<name> = <value>`` right-hand side, anchored at line start
-    so ``healthy_threshold`` cannot match inside ``unhealthy_threshold``."""
-    match = re.search(
-        r"^\s*%s\s*=\s*(.+?)\s*(?:#.*)?$" % re.escape(name), source, re.MULTILINE
-    )
-    assert match, f"attribute {name} not found"
-    return match.group(1)
-
-
 class TestAlbPriorityBandsAreDisjoint:
     """Premium ALB rules cannot collide with the static terraform rules.
 
@@ -224,7 +196,7 @@ class TestAlbPriorityBandsAreDisjoint:
     def test_every_declared_priority_is_referenced_by_a_rule(self):
         """An orphaned entry in the map is a rule someone deleted without
         freeing its number, which silently shrinks the usable band."""
-        tf = _read(PUBLIC_ALB_RULES_TF)
+        tf = read(PUBLIC_ALB_RULES_TF)
         referenced = set(re.findall(r"local\.alb_priority\.(\w+)", tf))
         declared = set(_terraform_rule_priorities())
         assert declared == referenced, (
@@ -285,15 +257,15 @@ class TestAlbListenerDefaultAction:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        listener = _resource_block(
-            _read(COMPUTE_TF), "aws_lb_listener", "autoscaling_https"
+        listener = resource_block(
+            read(COMPUTE_TF), "aws_lb_listener", "autoscaling_https"
         )
         self.default_action = _nested_block(listener, "default_action")
 
     def test_default_action_forwards_to_the_public_target_group(self):
-        assert _attribute(self.default_action, "type") == '"forward"'
+        assert attribute(self.default_action, "type") == '"forward"'
         assert (
-            _attribute(self.default_action, "target_group_arn")
+            attribute(self.default_action, "target_group_arn")
             == "aws_lb_target_group.public.arn"
         )
 
@@ -344,14 +316,14 @@ class TestAlbRuleRouting:
         header = _nested_block(
             self.blocks["visualizations_public_header"], "http_header"
         )
-        assert _attribute(header, "http_header_name") == '"DATAVIEW_PUBLIC_REQUEST"'
-        assert _attribute(header, "values") == '["true"]'
+        assert attribute(header, "http_header_name") == '"DATAVIEW_PUBLIC_REQUEST"'
+        assert attribute(header, "values") == '["true"]'
 
     def test_the_bearer_catch_all_matches_on_the_authorization_header(self):
         block = self.blocks["authenticated_to_free"]
         header = _nested_block(block, "http_header")
-        assert _attribute(header, "http_header_name") == '"Authorization"'
-        assert _attribute(header, "values") == '["Bearer *"]'
+        assert attribute(header, "http_header_name") == '"Authorization"'
+        assert attribute(header, "values") == '["Bearer *"]'
 
 
 class TestAnonymousRegistrationPath:
@@ -388,27 +360,27 @@ class TestPublicTargetGroupHealthCheck:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        target_group = _resource_block(
-            _read(PUBLIC_SERVICE_TF), "aws_lb_target_group", "public"
+        target_group = resource_block(
+            read(PUBLIC_SERVICE_TF), "aws_lb_target_group", "public"
         )
         self.health_check = _nested_block(target_group, "health_check")
 
     def test_health_check_is_enabled(self):
-        assert _attribute(self.health_check, "enabled") == "true"
+        assert attribute(self.health_check, "enabled") == "true"
 
     def test_health_check_path_and_matcher(self):
-        assert _attribute(self.health_check, "path") == '"/health"'
-        assert _attribute(self.health_check, "matcher") == '"200"'
-        assert _attribute(self.health_check, "protocol") == '"HTTP"'
-        assert _attribute(self.health_check, "port") == '"traffic-port"'
+        assert attribute(self.health_check, "path") == '"/health"'
+        assert attribute(self.health_check, "matcher") == '"200"'
+        assert attribute(self.health_check, "protocol") == '"HTTP"'
+        assert attribute(self.health_check, "port") == '"traffic-port"'
 
     def test_health_check_interval_and_timeout(self):
-        assert int(_attribute(self.health_check, "interval")) == 30
-        assert int(_attribute(self.health_check, "timeout")) == 5
+        assert int(attribute(self.health_check, "interval")) == 30
+        assert int(attribute(self.health_check, "timeout")) == 5
 
     def test_health_check_thresholds(self):
-        assert int(_attribute(self.health_check, "healthy_threshold")) == 2
-        assert int(_attribute(self.health_check, "unhealthy_threshold")) == 3
+        assert int(attribute(self.health_check, "healthy_threshold")) == 2
+        assert int(attribute(self.health_check, "unhealthy_threshold")) == 3
 
 
 class TestPublishedDataSurvivesTaskReplacement:
@@ -423,15 +395,15 @@ class TestPublishedDataSurvivesTaskReplacement:
     def test_efs_creation_token_is_pinned(self):
         """The creation token is the filesystem's identity - changing it makes
         terraform replace the volume and drop every published experiment."""
-        file_system = _resource_block(
-            _read(INFRASTRUCTURE_TF), "aws_efs_file_system", "published_data"
+        file_system = resource_block(
+            read(INFRASTRUCTURE_TF), "aws_efs_file_system", "published_data"
         )
-        token = _attribute(file_system, "creation_token")
+        token = attribute(file_system, "creation_token")
         assert token == '"${local.env_prefix}-public-published-data"'
 
     def test_published_data_volume_mounts_at_the_output_directory(self):
-        task = _resource_block(
-            _read(PUBLIC_SERVICE_TF), "aws_ecs_task_definition", "public"
+        task = resource_block(
+            read(PUBLIC_SERVICE_TF), "aws_ecs_task_definition", "public"
         )
         match = re.search(
             r'sourceVolume\s*=\s*"%s"\s*\n\s*containerPath\s*=\s*"([^"]+)"'
@@ -442,8 +414,8 @@ class TestPublishedDataSurvivesTaskReplacement:
         assert match.group(1) == "/app/studio_data/output"
 
     def test_that_volume_resolves_to_the_published_data_access_point(self):
-        task = _resource_block(
-            _read(PUBLIC_SERVICE_TF), "aws_ecs_task_definition", "public"
+        task = resource_block(
+            read(PUBLIC_SERVICE_TF), "aws_ecs_task_definition", "public"
         )
         match = re.search(
             r'volume\s*\{\s*name\s*=\s*"%s".*?'
@@ -456,10 +428,10 @@ class TestPublishedDataSurvivesTaskReplacement:
         assert match.group(1) == "published_data"
 
     def test_target_group_drains_for_600_seconds(self):
-        target_group = _resource_block(
-            _read(PUBLIC_SERVICE_TF), "aws_lb_target_group", "public"
+        target_group = resource_block(
+            read(PUBLIC_SERVICE_TF), "aws_lb_target_group", "public"
         )
-        assert int(_attribute(target_group, "deregistration_delay")) == 600
+        assert int(attribute(target_group, "deregistration_delay")) == 600
 
 
 class TestPublicUnhealthyHostsAlarm:
@@ -472,8 +444,8 @@ class TestPublicUnhealthyHostsAlarm:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        self.alarm = _resource_block(
-            _read(MONITORING_TF), "aws_cloudwatch_metric_alarm", "tg_unhealthy_hosts"
+        self.alarm = resource_block(
+            read(MONITORING_TF), "aws_cloudwatch_metric_alarm", "tg_unhealthy_hosts"
         )
 
     def test_a_public_key_watches_the_public_target_group(self):
@@ -487,25 +459,23 @@ class TestPublicUnhealthyHostsAlarm:
         assert match.group(1) == "public"
 
     def test_alarm_name_is_keyed_per_target_group(self):
-        name = _attribute(self.alarm, "alarm_name")
+        name = attribute(self.alarm, "alarm_name")
         assert name == '"${local.env_prefix}-${each.key}-tg-unhealthy-hosts"'
 
     def test_alarm_watches_unhealthy_host_count(self):
-        assert _attribute(self.alarm, "metric_name") == '"UnHealthyHostCount"'
-        assert _attribute(self.alarm, "namespace") == '"AWS/ApplicationELB"'
-        assert _attribute(self.alarm, "statistic") == '"Maximum"'
+        assert attribute(self.alarm, "metric_name") == '"UnHealthyHostCount"'
+        assert attribute(self.alarm, "namespace") == '"AWS/ApplicationELB"'
+        assert attribute(self.alarm, "statistic") == '"Maximum"'
 
     def test_alarm_period_and_thresholds(self):
-        assert int(_attribute(self.alarm, "period").strip('"')) == 60
-        assert int(_attribute(self.alarm, "evaluation_periods").strip('"')) == 2
-        assert int(_attribute(self.alarm, "threshold").strip('"')) == 0
-        assert _attribute(self.alarm, "comparison_operator") == '"GreaterThanThreshold"'
+        assert int(attribute(self.alarm, "period").strip('"')) == 60
+        assert int(attribute(self.alarm, "evaluation_periods").strip('"')) == 2
+        assert int(attribute(self.alarm, "threshold").strip('"')) == 0
+        assert attribute(self.alarm, "comparison_operator") == '"GreaterThanThreshold"'
 
     def test_breach_and_recovery_are_both_wired(self):
-        assert (
-            _attribute(self.alarm, "alarm_actions") == "local.critical_alerts_actions"
-        )
-        assert _attribute(self.alarm, "ok_actions") == "local.critical_alerts_actions"
+        assert attribute(self.alarm, "alarm_actions") == "local.critical_alerts_actions"
+        assert attribute(self.alarm, "ok_actions") == "local.critical_alerts_actions"
 
 
 class TestPublicServicePlacement:
@@ -518,14 +488,14 @@ class TestPublicServicePlacement:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        service = _resource_block(_read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
+        service = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
         self.constraint = _nested_block(service, "placement_constraints")
 
     def test_placement_constraint_is_a_member_of_expression(self):
-        assert _attribute(self.constraint, "type") == '"memberOf"'
+        assert attribute(self.constraint, "type") == '"memberOf"'
 
     def test_placement_constraint_selects_the_public_tier_attribute(self):
-        assert _attribute(self.constraint, "expression") == '"attribute:tier == public"'
+        assert attribute(self.constraint, "expression") == '"attribute:tier == public"'
 
 
 class TestPublishedDataEfsLifecycle:
@@ -536,8 +506,8 @@ class TestPublishedDataEfsLifecycle:
     """
 
     def test_published_data_transitions_to_ia_after_7_days(self):
-        block = _resource_block(
-            _read(INFRASTRUCTURE_TF), "aws_efs_file_system", "published_data"
+        block = resource_block(
+            read(INFRASTRUCTURE_TF), "aws_efs_file_system", "published_data"
         )
         match = re.search(
             r"lifecycle_policy\s*\{[^}]*?transition_to_ia\s*=\s*\"([^\"]+)\"", block
@@ -555,8 +525,8 @@ class TestPublicCleanupSchedule:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        self.tf = _read(PUBLIC_CLEANUP_TF)
-        self.rule = _resource_block(
+        self.tf = read(PUBLIC_CLEANUP_TF)
+        self.rule = resource_block(
             self.tf, "aws_cloudwatch_event_rule", "public_cleanup_schedule"
         )
 
@@ -585,7 +555,7 @@ class TestPublicCleanupSchedule:
     def test_rule_name_is_environment_scoped(self):
         """A name without the environment prefix collides across environments,
         and the target and lambda permission both resolve it by name."""
-        assert _attribute(self.rule, "name") == (
+        assert attribute(self.rule, "name") == (
             '"${var.environment}-public-cleanup-schedule"'
         )
 
@@ -596,12 +566,12 @@ class TestPublicCleanupSchedule:
         )
 
     def test_schedule_targets_the_cleanup_lambda_and_may_invoke_it(self):
-        target = _resource_block(
+        target = resource_block(
             self.tf, "aws_cloudwatch_event_target", "public_cleanup_target"
         )
         assert "aws_lambda_function.public_cleanup.arn" in target
 
-        permission = _resource_block(
+        permission = resource_block(
             self.tf, "aws_lambda_permission", "allow_cloudwatch_public_cleanup"
         )
         assert "aws_lambda_function.public_cleanup.function_name" in permission
@@ -616,8 +586,8 @@ class TestPublicLogGroup:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        self.tf = _read(PUBLIC_SERVICE_TF)
-        self.log_group = _resource_block(
+        self.tf = read(PUBLIC_SERVICE_TF)
+        self.log_group = resource_block(
             self.tf, "aws_cloudwatch_log_group", "public_optinist"
         )
 
@@ -633,7 +603,7 @@ class TestPublicLogGroup:
 
     def test_public_task_logs_into_that_group(self):
         """A correct log group nothing writes to is the same as no log group."""
-        task = _resource_block(self.tf, "aws_ecs_task_definition", "public")
+        task = resource_block(self.tf, "aws_ecs_task_definition", "public")
         match = re.search(r'"awslogs-group"\s*=\s*([^\n]+?)\s*$', task, re.MULTILINE)
         assert match, "public task definition has no awslogs-group"
         assert match.group(1) == "aws_cloudwatch_log_group.public_optinist.name"
@@ -649,10 +619,10 @@ class TestPublicAsgCapacity:
 
     @pytest.fixture(autouse=True)
     def _load(self):
-        self.asg = _resource_block(
-            _read(PUBLIC_SERVICE_TF), "aws_autoscaling_group", "public"
+        self.asg = resource_block(
+            read(PUBLIC_SERVICE_TF), "aws_autoscaling_group", "public"
         )
-        main_tf = _read(MAIN_TF)
+        main_tf = read(MAIN_TF)
         self.min_size = int(_variable_default(main_tf, "public_asg_min_size"))
         self.max_size = int(_variable_default(main_tf, "public_asg_max_size"))
         self.desired = int(_variable_default(main_tf, "public_asg_desired_capacity"))
@@ -675,20 +645,20 @@ class TestPublicAsgCapacity:
     def test_asg_replaces_instances_the_load_balancer_reports_unhealthy(self):
         """``EC2`` health checks only see the instance, not the container, so a
         task that stops serving would never be replaced."""
-        assert _attribute(self.asg, "health_check_type") == '"ELB"'
+        assert attribute(self.asg, "health_check_type") == '"ELB"'
 
     def test_asg_grace_period_covers_a_cold_boot(self):
         """The ECR pull plus container start plus startup S3 warm runs past
         five minutes; a shorter grace kills instances mid-boot in a loop."""
-        assert int(_attribute(self.asg, "health_check_grace_period")) == 900
+        assert int(attribute(self.asg, "health_check_grace_period")) == 900
 
     def test_asg_terminates_the_oldest_instance_first(self):
-        assert _attribute(self.asg, "termination_policies") == '["OldestInstance"]'
+        assert attribute(self.asg, "termination_policies") == '["OldestInstance"]'
 
     def test_ecs_desired_count_tracks_the_asg(self):
         """One task per instance. If these desync, instances run no container
         and the target group reports them unhealthy."""
-        service = _resource_block(_read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
+        service = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
         assert re.search(
             r"desired_count\s*=\s*var\.public_asg_desired_capacity", service
         )

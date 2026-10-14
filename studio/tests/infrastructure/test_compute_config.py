@@ -1,17 +1,17 @@
-"""EFS mount path regression tests for compute.tf.
+"""Configuration regression tests for compute.tf.
 
-Ensures the snakemake volume containerPath is correct and
-consistent across all ECS task definitions.
+- EFS: the snakemake volume containerPath is correct and consistent across
+  all ECS task definitions.
+- Free-tier ASG scale-in: ECS managed draining can complete its lifecycle
+  hook, and the termination policy spares long-held sticky sessions.
 """
 
 import re
-from pathlib import Path
 
 import pytest
+from terraform_source import TERRAFORM_DIR, attribute, read, resource_block, string_list
 
-# Locate compute.tf relative to the project root
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-COMPUTE_TF = PROJECT_ROOT / "infrastructure" / "terraform" / "compute.tf"
+COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 
 EXPECTED_MOUNT_PATH = "/app/.snakemake"
 
@@ -57,3 +57,54 @@ class TestEFSMountPaths:
         assert all(
             p == EXPECTED_MOUNT_PATH for p in paths
         ), f"Mount path mismatch: {paths}"
+
+
+class TestFreeAsgScaleIn:
+    """The free-tier ASG's scale-in configuration."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        tf = read(COMPUTE_TF)
+        self.asg = resource_block(tf, "aws_autoscaling_group", "main")
+        self.capacity_provider = resource_block(tf, "aws_ecs_capacity_provider", "main")
+        self.service = resource_block(tf, "aws_ecs_service", "autoscaling")
+
+    def test_asg_carries_the_amazon_ecs_managed_tag(self):
+        """The ECS service-linked role may complete the managed-draining hook
+        only on a group carrying this tag; without it every scale-in waits
+        out the hook's 3600 s timeout. ECS adds the tag itself, and an apply
+        that does not declare it removes it."""
+        tags = re.findall(r'tag\s*\{\s*key\s*=\s*"([^"]+)"', self.asg)
+        assert "AmazonECSManaged" in tags
+
+    def test_capacity_provider_enables_managed_draining(self):
+        """Declared rather than left to the API default, so the hook the tag
+        exists for cannot disappear unnoticed."""
+        assert attribute(self.capacity_provider, "managed_draining") == '"ENABLED"'
+
+    def test_asg_terminates_the_newest_instance_first(self):
+        """With sticky sessions the oldest instance holds the longest-held
+        sessions, so ``OldestInstance`` removes the most established users."""
+        policies = string_list(attribute(self.asg, "termination_policies"))
+        assert policies == ["NewestInstance"]
+
+    def test_free_service_lets_a_drain_stop_its_task_at_once(self):
+        """Managed draining completes its hook only once the draining instance
+        has no tasks. At 0 the task stops without waiting for a replacement;
+        raised, the replacement has nowhere to go (one task per instance, and
+        the free task fills one), so the hook waits out its 3600 s timeout
+        again. Raising this needs that solved first."""
+        assert attribute(self.service, "deployment_minimum_healthy_percent") == "0"
+
+    def test_free_service_is_pinned_to_free_instances(self):
+        """The other tiers' services pin themselves with ``memberOf`` on the
+        ``tier`` attribute. Without the same pin a free replacement task
+        placed during a drain could land on another tier's instance with
+        spare capacity, leaving ECS to choose which of two free tasks to
+        stop when the count comes down."""
+        constraints = re.findall(
+            r'placement_constraints\s*\{\s*type\s*=\s*"memberOf"\s*'
+            r'expression\s*=\s*"([^"]+)"',
+            self.service,
+        )
+        assert constraints == ["attribute:tier == free"]
