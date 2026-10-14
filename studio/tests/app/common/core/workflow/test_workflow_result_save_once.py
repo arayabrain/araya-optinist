@@ -69,6 +69,24 @@ async def test_repeated_observes_save_a_finished_node_once(finished_node):
 
 
 @pytest.mark.asyncio
+async def test_a_finished_node_without_outputs_is_saved_once(finished_node):
+    with open(finished_node / "func1" / "func1.pkl", "wb") as f:
+        pickle.dump({}, f)
+    executor = Mock(wraps=ThreadPoolExecutor)
+
+    with patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        executor,
+    ):
+        first = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+        second = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+
+    assert first["func1"].outputPaths == {}
+    assert second["func1"] == first["func1"]
+    assert executor.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_a_poll_overlapping_a_slow_save_answers_at_once(finished_node):
     def slow_save(self, json_dir):
         time.sleep(1)

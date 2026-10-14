@@ -370,7 +370,7 @@ class NodeResult(BaseNodeResult):
         # case) success already recorded, so its JSON is already saved
         elif (
             expt_function.success == NodeRunStatus.SUCCESS.value
-            and expt_function.outputPaths
+            and expt_function.outputPaths is not None
         ):
             message = Message(
                 status=expt_function.success,
