@@ -63,6 +63,8 @@ def _dff(values, axis, method, window, percentile, sigma):
     """(x - F0) / |F0| per row along axis; F0 near 0 gives NaN."""
     logger = AppLogger.get_logger()
     dtype = np.result_type(values.dtype, np.float32)
+    if values.size == 0:
+        return np.asarray(values, dtype=dtype)
     x = np.moveaxis(np.asarray(values, dtype=dtype), axis, -1)
     rows = x.reshape(-1, x.shape[-1])
     n_time = rows.shape[-1]
@@ -409,7 +411,7 @@ def data_slice(
         mean_timeseries = None
         if eff_time_dim is not None:
             other_axes = tuple(i for i in range(sliced_data.ndim) if i != eff_time_dim)
-            if other_axes and cell_normalization == "dff":
+            if other_axes and cell_normalization == "dff" and sliced_data.size:
                 rows = np.moveaxis(sliced_data, eff_time_dim, -1)
                 rows = rows.reshape(-1, rows.shape[-1])
                 empty = np.isnan(rows).all(axis=-1)

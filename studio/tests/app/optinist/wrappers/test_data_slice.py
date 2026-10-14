@@ -336,6 +336,27 @@ def test_dff_maximin_nonfinite_row_matches_away_from_the_gap(bad, output_dir):
 
 
 @pytest.mark.parametrize(
+    "params",
+    [{}, {"f0_window_frames": 3}, {"f0_method": "maximin", "f0_window_frames": 3}],
+)
+def test_dff_on_an_empty_time_slice_returns_it_empty(params, fluo, output_dir, caplog):
+    with caplog.at_level("WARNING"):
+        result = data_slice(
+            fluo,
+            output_dir,
+            params={
+                "slice_dims": [":", "10:20"],
+                "cell_normalization": "dff",
+                **params,
+            },
+        )
+
+    assert result["sliced_data"].data.size == 0
+    assert "selects 0 of 8" in caplog.text
+    assert "all-NaN" not in caplog.text
+
+
+@pytest.mark.parametrize(
     "params, match",
     [
         ({"f0_method": "median"}, "f0_method"),
