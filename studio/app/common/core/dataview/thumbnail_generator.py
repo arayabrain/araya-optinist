@@ -128,11 +128,16 @@ class ThumbnailGenerator:
         else:
             new_h, new_w = h, w
         if not keep_aspect and (h > new_h or w > new_w):
-            # Block maximum, so sparse events survive the downsampling
+            # Block extreme farthest from the background, so sparse events of
+            # either sign survive the downsampling
             ys = (np.arange(min(new_h, h)) * h / min(new_h, h)).astype(int)
             xs = (np.arange(min(new_w, w)) * w / min(new_w, w)).astype(int)
-            img_normalized = np.maximum.reduceat(img_normalized, ys, axis=0)
-            img_normalized = np.maximum.reduceat(img_normalized, xs, axis=1)
+            hi = np.maximum.reduceat(np.maximum.reduceat(img_normalized, ys), xs, 1)
+            lo = np.minimum.reduceat(np.minimum.reduceat(img_normalized, ys), xs, 1)
+            background = int(np.median(img_normalized))
+            img_normalized = np.where(
+                hi.astype(int) - background >= background - lo.astype(int), hi, lo
+            )
             h, w = img_normalized.shape
         if (new_h, new_w) != (h, w):
             # Simple resize using slicing (nearest neighbor)
