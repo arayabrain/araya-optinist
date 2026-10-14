@@ -276,6 +276,7 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                dff=self.output_info.get("dff"),
             )
 
         iscell = info["iscell"].data

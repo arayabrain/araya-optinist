@@ -228,7 +228,8 @@ def component_outputs(
     """im, iscell, the NWB ROI table and fluorescence in one shared row order.
 
     Row i of every output is component order[i], accepted components first, so
-    the ROI editor and the analyses can index fluorescence by im row.
+    the ROI editor and the analyses can index fluorescence by im row. order is
+    returned last for the outputs computed elsewhere.
     """
     order = list(idx_good) + list(idx_bad)
     n_components = len(order)
@@ -298,12 +299,72 @@ def component_outputs(
         else np.zeros((0, n_frames))
     )
 
-    return im, iscell, roi_list, fluorescence, non_cell_roi, n_rois, n_noncell_rois
+    return (
+        im,
+        iscell,
+        roi_list,
+        fluorescence,
+        non_cell_roi,
+        n_rois,
+        n_noncell_rois,
+        order,
+    )
+
+
+def dff_frames_window(value):
+    """frames_window for detrend_df_f: None (whole recording) or an integer >= 2."""
+    if value is None:
+        return None
+    try:
+        window = int(value)
+    except (TypeError, ValueError):
+        window = None
+    if isinstance(value, bool) or window is None or window != value or window < 2:
+        raise ValueError(
+            f"frames_window must be null or an integer of at least 2, got {value!r}"
+        )
+    return window
+
+
+def caiman_dff(estimates, rows, n_frames, frames_window):
+    """CaImAn's detrend_df_f of estimates as float32, rows in the given order.
+
+    A CaImAn failure gives NaN rows with a warning instead of failing the node.
+    """
+    if len(rows) == 0:
+        return np.zeros((0, n_frames), dtype=np.float32)
+    from caiman.source_extraction.cnmf.utilities import detrend_df_f
+
+    b, f = estimates.b, estimates.f
+    b0 = getattr(estimates, "b0", None)
+    if (b is None or f is None or np.shape(b)[-1] == 0) and b0 is not None:
+        # ring model: the static background b0 only, its W fluctuations left out
+        b, f = np.reshape(b0, (-1, 1)), np.ones((1, n_frames))
+    elif b is None or f is None:
+        logger.warning(
+            "CaImAn estimates have no background (b, f or b0); dff is "
+            "detrended only, F - F0, not divided by a baseline"
+        )
+    try:
+        dff = detrend_df_f(
+            estimates.A,
+            b,
+            estimates.C,
+            f,
+            YrA=estimates.YrA,
+            frames_window=frames_window,
+            flag_auto=True,
+            use_fast=False,
+        )
+    except Exception:
+        logger.warning("CaImAn detrend_df_f failed, dff is all NaN", exc_info=True)
+        return np.full((len(rows), n_frames), np.nan, dtype=np.float32)
+    return np.asarray(dff, dtype=np.float32)[rows]
 
 
 def caiman_cnmf(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, iscell=IscellData):
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
     from caiman.source_extraction.cnmf import cnmf, online_cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -322,6 +383,7 @@ def caiman_cnmf(
     roi_thr = params.pop("roi_thr", None)
     use_online = params.pop("use_online", False)
     requested_n_processes = params.pop("n_processes", 1)
+    frames_window = dff_frames_window(params.pop("frames_window", 500))
 
     file_path = images.path
     if isinstance(file_path, list):
@@ -398,6 +460,7 @@ def caiman_cnmf(
         non_cell_roi,
         n_rois,
         n_noncell_rois,
+        order,
     ) = component_outputs(
         getattr(cnm.estimates, "A", None),
         getattr(cnm.estimates, "C", None),
@@ -411,6 +474,7 @@ def caiman_cnmf(
         getattr(cnm.estimates, "rejected_list", None),
         mmap_images.shape[0],
     )
+    dff = caiman_dff(cnm.estimates, order, fluorescence.shape[1], frames_window)
 
     # NWB additions
     nwbfile = {}
@@ -449,6 +513,7 @@ def caiman_cnmf(
             file_name="images",
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+        "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
             np.nanmax(im, axis=0) if len(im) > 0 else empty_roi.copy(),

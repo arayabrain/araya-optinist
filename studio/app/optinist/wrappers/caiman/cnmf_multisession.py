@@ -13,7 +13,9 @@ from studio.app.optinist.wrappers.caiman.caiman_utils import (
     distribute_params_to_groups,
 )
 from studio.app.optinist.wrappers.caiman.cnmf import (
+    caiman_dff,
     correlation_image,
+    dff_frames_window,
     edit_roi_dtype,
     get_roi,
     util_cleanup_image_memmap,
@@ -27,7 +29,7 @@ logger = AppLogger.get_logger()
 
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, iscell=IscellData):
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
     from caiman import load
     from caiman.base.rois import register_multisession
     from caiman.source_extraction.cnmf import cnmf
@@ -46,6 +48,7 @@ def caiman_cnmf_multisession(
     Ain = params.pop("Ain", None)
     roi_thr = params.pop("roi_thr", None)
     requested_n_processes = params.pop("n_processes", 1)
+    frames_window = dff_frames_window(params.pop("frames_window", 500))
 
     # mulisiession params
     session_lengths = params.pop("session_lengths", None)
@@ -151,6 +154,19 @@ def caiman_cnmf_multisession(
         ]
     )
 
+    dff = np.concatenate(
+        [
+            caiman_dff(
+                cnm.estimates,
+                assignments_filtered[:, j],
+                cnm.estimates.C.shape[1],
+                frames_window,
+            )
+            for j, cnm in enumerate(cnm_list)
+        ],
+        axis=1,
+    )
+
     # contours plot
     thr_method = "nrg"
     swap_dim = False
@@ -212,6 +228,7 @@ def caiman_cnmf_multisession(
             file_name="images",
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+        "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "cell_roi": RoiData(
             np.nanmax(cell_ims[iscell != 0], axis=0),

@@ -45,6 +45,7 @@ class WorkflowNodeDataFilter:
         self.cell_roi_filepath = join_filepath([self.node_dirpath, "cell_roi.json"])
         self.tiff_dirpath = join_filepath([self.node_dirpath, "tiff"])
         self.fluorescence_dirpath = join_filepath([self.node_dirpath, "fluorescence"])
+        self.dff_dirpath = join_filepath([self.node_dirpath, "dff"])
 
         # original output data path
         self.original_pkl_filepath = self.pkl_filepath + ORIGINAL_DATA_EXT
@@ -53,6 +54,7 @@ class WorkflowNodeDataFilter:
         self.original_fluorescence_dirpath = (
             self.fluorescence_dirpath + ORIGINAL_DATA_EXT
         )
+        self.original_dff_dirpath = self.dff_dirpath + ORIGINAL_DATA_EXT
 
     def _check_data_filter(self):
         exp_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
@@ -121,6 +123,10 @@ class WorkflowNodeDataFilter:
             self.original_fluorescence_dirpath,
             dirs_exist_ok=True,
         )
+        if os.path.isdir(self.dff_dirpath):
+            shutil.copytree(
+                self.dff_dirpath, self.original_dff_dirpath, dirs_exist_ok=True
+            )
 
     def _recover_original_data(self):
         logger = AppLogger.get_logger()
@@ -163,6 +169,10 @@ class WorkflowNodeDataFilter:
 
         shutil.rmtree(self.fluorescence_dirpath)
         os.rename(self.original_fluorescence_dirpath, self.fluorescence_dirpath)
+
+        if os.path.isdir(self.original_dff_dirpath):
+            shutil.rmtree(self.dff_dirpath, ignore_errors=True)
+            os.rename(self.original_dff_dirpath, self.dff_dirpath)
 
     def _save_json(self, output_info, node_dirpath):
         for k, v in output_info.items():
@@ -304,7 +314,8 @@ class WorkflowNodeDataFilter:
 
         if dff is not None:
             info["dff"] = FluoData(dff, file_name="dff")
-        else:
+        # lccd_detect keeps its own all_roi and its always-empty non_cell_roi
+        if "lccd" not in type:
             info["all_roi"] = RoiData(
                 np.nanmax(im, axis=0, initial=np.nan),
                 output_dir=output_dir,

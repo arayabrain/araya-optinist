@@ -121,3 +121,6 @@ advanced:
     use_cnn: False  # the CNN is trained on 2p data
     use_ecc: False
     max_ecc: 3
+
+  dff_params:  # dff output, from CaImAn detrend_df_f
+    frames_window: 500  # running baseline window in frames, >= 2; null = whole recording

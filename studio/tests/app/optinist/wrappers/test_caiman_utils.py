@@ -74,13 +74,22 @@ REAL_GROUPS = {
     )["groups"].items()
 }
 PARAMS_DIR = Path(caiman_utils.__file__).parent / "params"
+CNMF_KEYS = {
+    "Ain",
+    "do_refit",
+    "roi_thr",
+    "use_online",
+    "n_processes",
+    "frames_window",
+}
 WRAPPER_KEYS = {
-    "caiman_cnmf.yaml": {"Ain", "do_refit", "roi_thr", "use_online", "n_processes"},
-    "caiman_cnmfe.yaml": {"Ain", "do_refit", "roi_thr", "use_online", "n_processes"},
+    "caiman_cnmf.yaml": CNMF_KEYS,
+    "caiman_cnmfe.yaml": CNMF_KEYS,
     "cnmf_multisession.yaml": {
         "Ain",
         "roi_thr",
         "n_processes",
+        "frames_window",
         "session_lengths",
         "n_reg_files",
         "reg_file_rate",
