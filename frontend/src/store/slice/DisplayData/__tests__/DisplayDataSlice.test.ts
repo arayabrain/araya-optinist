@@ -4,6 +4,8 @@ import {
   getRoiData,
   getImageData,
   getCsvData,
+  getTimeSeriesDataById,
+  getTimeSeriesInitData,
 } from "store/slice/DisplayData/DisplayDataActions"
 import reducer from "store/slice/DisplayData/DisplayDataSlice"
 
@@ -572,6 +574,49 @@ describe("DisplayDataSlice", () => {
       expect(state.image["/test/image.tiff"].fulfilled).toBe(true)
       expect(state.image["/test/image.tiff"].error).toBe(null)
       expect(state.image["/test/image.tiff"].data).toHaveLength(1)
+    })
+  })
+
+  describe("getTimeSeriesInitData.fulfilled", () => {
+    const path = "/test/path"
+    const xrange = ["0", "1", "2"]
+    const stub = { "0": 1 }
+    const initPayload = {
+      data: { "0": { "0": 1, "1": 2, "2": 3 }, "1": stub, "2": stub },
+      xrange,
+      std: {},
+    }
+    const initAction = (itemId: number) => ({
+      type: getTimeSeriesInitData.fulfilled.type,
+      meta: { arg: { path, itemId } },
+      payload: initPayload,
+    })
+
+    it("keeps records fetched by id when a second item initialises the same path", () => {
+      let state = reducer(initialState, {
+        type: getTimeSeriesInitData.pending.type,
+        meta: { arg: { path, itemId: 0 } },
+      })
+      state = reducer(state, initAction(0))
+      state = reducer(state, {
+        type: getTimeSeriesDataById.fulfilled.type,
+        meta: { arg: { path, index: "1" } },
+        payload: {
+          data: { "1": { "0": 4, "1": 5, "2": 6 } },
+          xrange,
+          std: {},
+        },
+      })
+
+      state = reducer(state, initAction(1))
+
+      expect(state.timeSeries[path].data["1"]).toEqual({
+        "0": 4,
+        "1": 5,
+        "2": 6,
+      })
+      expect(state.timeSeries[path].data["2"]).toEqual(stub)
+      expect(state.timeSeries[path].fulfilled).toBe(true)
     })
   })
 })
