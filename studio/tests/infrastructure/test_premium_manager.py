@@ -6327,11 +6327,11 @@ class TestFinalizeExpiredPendingReleases:
 class TestTerminateAgedStoppedInstances:
     """terminate_aged_stopped_instances terminates only what EC2 reports stopped.
 
-    Candidates come from database rows marked stopped, which can be stale: on
-    development, the dev scheduler started a standby, its row still said
-    stopped, the empty StateTransitionReason sent the age check to the
-    standby_created_at fallback, and the running Terraform-managed base
-    instance was terminated.
+    Standby rows' instance_state can be stale: on development, the dev
+    scheduler started a standby, its row still said stopped, the empty
+    StateTransitionReason sent the age check to the standby_created_at
+    fallback, and the running Terraform-managed base instance was terminated.
+    EC2 decides, and the row is corrected to it both ways.
     """
 
     NOW = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -6339,18 +6339,24 @@ class TestTerminateAgedStoppedInstances:
     RECENT = NOW - timedelta(hours=1)
 
     @staticmethod
-    def _row(instance_id, standby_created_at):
+    def _row(instance_id, standby_created_at, instance_state=InstanceState.STOPPED):
         return MockRow(
-            {"instance_id": instance_id, "standby_created_at": standby_created_at}
+            {
+                "instance_id": instance_id,
+                "instance_state": instance_state,
+                "standby_created_at": standby_created_at,
+            }
         )
 
     @staticmethod
-    def _instance(instance_id, state=InstanceState.STOPPED, reason=""):
+    def _instance(
+        instance_id, state=InstanceState.STOPPED, reason="", name="test-premium-standby"
+    ):
         return {
             "InstanceId": instance_id,
             "State": {"Name": state},
             "StateTransitionReason": reason,
-            "Tags": [{"Key": "Name", "Value": "test-premium-standby"}],
+            "Tags": [{"Key": "Name", "Value": name}],
         }
 
     @staticmethod
@@ -6436,11 +6442,43 @@ class TestTerminateAgedStoppedInstances:
         assert terminated == []
         assert self._updates(cursor) == []
 
+    def test_running_row_of_a_stopped_instance_is_corrected_and_aged(
+        self, mock_env_vars_premium
+    ):
+        """The other direction: a timed-out start_standby_instance() leaves a
+        'running' row, and nothing else writes it back. Corrected to stopped,
+        it ages like any other standby."""
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-stale-running", self.AGED, InstanceState.RUNNING)],
+            [self._instance("i-stale-running", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == ["i-stale-running"]
+        assert [params for _, params in self._updates(cursor)] == [
+            (InstanceState.STOPPED, "i-stale-running")
+        ]
+
+    def test_row_matching_ec2_is_not_rewritten(self, mock_env_vars_premium):
+        _, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [
+                self._row("i-stopped", self.RECENT),
+                self._row("i-running", self.RECENT, InstanceState.RUNNING),
+            ],
+            [
+                self._instance("i-stopped"),
+                self._instance("i-running", state=InstanceState.RUNNING),
+            ],
+        )
+
+        assert self._updates(cursor) == []
+
     def test_base_instance_is_never_terminated(self, mock_env_vars_premium):
-        """PREMIUM_INSTANCE_IDS are Terraform-managed: excluded before EC2 is
-        asked, even when stopped and aged."""
+        """PREMIUM_INSTANCE_IDS are Terraform-managed: never terminated, even
+        when stopped and aged."""
         base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
-        terminated, _, ec2 = self._run(
+        terminated, _, _ = self._run(
             mock_env_vars_premium,
             [self._row(base_id, self.AGED), self._row("i-dynamic", self.AGED)],
             [
@@ -6450,17 +6488,21 @@ class TestTerminateAgedStoppedInstances:
         )
 
         assert terminated == ["i-dynamic"]
-        filters = ec2.describe_instances.call_args.kwargs["Filters"]
-        assert filters == [{"Name": "instance-id", "Values": ["i-dynamic"]}]
 
-    def test_only_base_instances_skips_the_ec2_query(self, mock_env_vars_premium):
+    def test_base_instance_row_is_still_corrected(self, mock_env_vars_premium):
+        """On development the dev scheduler starts the base instance every
+        morning; its row follows EC2 even though it is never aged."""
         base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
-        terminated, _, ec2 = self._run(
-            mock_env_vars_premium, [self._row(base_id, self.AGED)], []
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row(base_id, self.AGED)],
+            [self._instance(base_id, state=InstanceState.RUNNING)],
         )
 
         assert terminated == []
-        ec2.describe_instances.assert_not_called()
+        assert [params for _, params in self._updates(cursor)] == [
+            (InstanceState.RUNNING, base_id)
+        ]
 
     def test_stopped_with_empty_reason_falls_back_to_standby_created_at(
         self, mock_env_vars_premium
@@ -6496,6 +6538,27 @@ class TestTerminateAgedStoppedInstances:
         )
 
         assert terminated == ["i-aged"]
+
+    def test_other_environment_instance_is_untouched_and_not_reported_missing(
+        self, mock_env_vars_premium, capsys
+    ):
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-foreign", self.AGED, InstanceState.RUNNING)],
+            [
+                self._instance(
+                    "i-foreign",
+                    reason=self._stopped_reason(self.AGED),
+                    name="prod-premium-standby",
+                )
+            ],
+        )
+
+        assert terminated == []
+        assert self._updates(cursor) == []
+        out = capsys.readouterr().out
+        assert "does not match environment prefix" in out
+        assert "not found in EC2" not in out
 
 
 class TestBaseInstanceNeverTerminatedAsStandby:
@@ -6560,3 +6623,43 @@ class TestBaseInstanceNeverTerminatedAsStandby:
             assert cleanup_excess_standby_instances(1) == 1
 
         mock_terminate.assert_called_once_with("i-dynamic-old")
+
+    def test_excess_trim_with_only_base_candidates_trims_nothing(
+        self, mock_env_vars_premium
+    ):
+        base_ids = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_available_standby_instances",
+            return_value=[{"instance_id": i} for i in base_ids],
+        ), patch("premium_manager.terminate_standby_instance") as mock_terminate:
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(2) == 0
+
+        mock_terminate.assert_not_called()
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_without_base_ids_a_standby_is_terminated_normally(
+        self, mock_env_vars_premium, value
+    ):
+        """A Lambda without PREMIUM_INSTANCE_IDS (or with it empty) has no
+        base instances to protect - it must not refuse or fail."""
+        import os
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            if value is None:
+                os.environ.pop("PREMIUM_INSTANCE_IDS")
+            else:
+                os.environ["PREMIUM_INSTANCE_IDS"] = value
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import _base_instance_ids, terminate_standby_instance
+
+            assert _base_instance_ids() == set()
+            assert terminate_standby_instance("i-test1") is True
+
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-test1"])

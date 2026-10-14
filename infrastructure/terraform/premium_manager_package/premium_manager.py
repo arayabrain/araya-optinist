@@ -41,7 +41,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import boto3
 import pymysql
@@ -1777,18 +1777,7 @@ def start_standby_instance(instance_id: str):
             return False
 
         # The only row for this instance now is its standby placeholder
-        # (is_standby = 1); scope the update to it so a stray regular
-        # assignment row for the same instance can never be touched.
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """UPDATE premium_user_assignments
-                       SET instance_state = %s,
-                           last_state_check = NOW()
-                       WHERE instance_id = %s AND is_standby = 1""",
-                    (InstanceState.RUNNING, instance_id),
-                )
-                connection.commit()  # Commit the state update
+        _set_standby_state(instance_id, InstanceState.RUNNING)
 
         print(f"Standby instance {instance_id} started successfully")
         return True
@@ -5147,7 +5136,7 @@ def convert_running_instance_to_standby(instance_id: str):
         return False
 
 
-def _base_instance_ids() -> set:
+def _base_instance_ids() -> Set[str]:
     """Terraform-managed base premium instances (PREMIUM_INSTANCE_IDS).
 
     They stay in Terraform state and in the dev scheduler's start/stop list,
@@ -5202,34 +5191,36 @@ def _parse_stop_time(state_transition_reason: str):
     return None
 
 
-def _mark_standby_running(instance_id: str):
-    """Set a standby row's instance_state to running (best-effort)."""
-    try:
-        with get_db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """UPDATE premium_user_assignments
-                       SET instance_state = %s,
-                           last_state_check = NOW()
-                       WHERE instance_id = %s AND is_standby = 1""",
-                    (InstanceState.RUNNING, instance_id),
-                )
-                connection.commit()
-        print(f"Corrected standby {instance_id} instance_state to running")
-    except Exception as e:
-        print(f"Error correcting standby state for {instance_id}: {str(e)}")
+def _set_standby_state(instance_id: str, state: str):
+    """Set the instance_state of an instance's standby row.
+
+    Scoped to is_standby = 1, so a regular assignment row for the same
+    instance is never touched.
+    """
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE premium_user_assignments
+                   SET instance_state = %s,
+                       last_state_check = NOW()
+                   WHERE instance_id = %s AND is_standby = 1""",
+                (state, instance_id),
+            )
+            connection.commit()
 
 
 def terminate_aged_stopped_instances():
     """Terminate standby instances that have been stopped longer than
     PREMIUM_STOPPED_MAX_AGE_HOURS.
 
-    Candidates come from the database, but only an instance EC2 reports as
-    stopped is eligible:
-    - Terraform-managed base instances (PREMIUM_INSTANCE_IDS) are never
-      terminated, whatever their database row says
-    - An instance started outside premium manager (e.g. the dev scheduler) is
-      skipped, and its row corrected to running
+    Every active standby row is checked against EC2, and EC2 decides:
+    - A row whose instance_state differs from a running/stopped EC2 state is
+      corrected first. Rows go stale both ways (the dev scheduler starts
+      instances without touching them; a timed-out start_standby_instance()
+      never writes running), and a row left 'running' would never age
+    - Only an instance EC2 reports as stopped is aged
+    - Terraform-managed base instances (PREMIUM_INSTANCE_IDS) have their row
+      corrected but are never terminated
     - An instance missing from EC2 is skipped; cleanup_failed_standby_instances()
       removes its row
 
@@ -5247,33 +5238,22 @@ def terminate_aged_stopped_instances():
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        # Get stopped standby instances with fallback timestamp from the database
+        # Every active standby, whatever its row says: EC2 decides the state
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """SELECT instance_id, standby_created_at
+                    """SELECT instance_id, instance_state, standby_created_at
                        FROM premium_user_assignments
-                       WHERE is_standby = 1 AND status = 'active'
-                         AND instance_state = 'stopped'"""
+                       WHERE is_standby = 1 AND status = 'active'"""
                 )
                 standby_rows = cursor.fetchall()
 
         if not standby_rows:
-            print("No stopped standby instances to check")
+            print("No standby instances to check")
             return 0
 
-        instance_ids = []
-        for row in standby_rows:
-            if row["instance_id"] in base_instance_ids:
-                print(
-                    f"Skipping instance {row['instance_id']}: "
-                    f"Terraform-managed base instance"
-                )
-            else:
-                instance_ids.append(row["instance_id"])
-        if not instance_ids:
-            print("No stopped standby instances to check")
-            return 0
+        instance_ids = [row["instance_id"] for row in standby_rows]
+        db_state = {row["instance_id"]: row["instance_state"] for row in standby_rows}
         db_fallback = {
             row["instance_id"]: row["standby_created_at"] for row in standby_rows
         }
@@ -5306,17 +5286,34 @@ def terminate_aged_stopped_instances():
                     )
                     continue
 
-                # The row's 'stopped' can be stale: a running instance has an
-                # empty StateTransitionReason, so the fallback below would
-                # date it from standby_created_at and terminate it.
                 ec2_state = instance["State"]["Name"]
+                if ec2_state in (
+                    InstanceState.RUNNING,
+                    InstanceState.STOPPED,
+                ) and ec2_state != db_state.get(instance_id):
+                    try:
+                        _set_standby_state(instance_id, ec2_state)
+                        print(
+                            f"Corrected standby {instance_id} instance_state "
+                            f"'{db_state.get(instance_id)}' -> '{ec2_state}'"
+                        )
+                    except Exception as e:
+                        print(f"Error correcting standby {instance_id}: {str(e)}")
+
+                if instance_id in base_instance_ids:
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"Terraform-managed base instance"
+                    )
+                    continue
+
+                # A running instance has an empty StateTransitionReason, so
+                # the fallback below would date it from standby_created_at.
                 if ec2_state != InstanceState.STOPPED:
                     print(
                         f"Skipping instance {instance_id}: "
                         f"EC2 state is '{ec2_state}', not stopped"
                     )
-                    if ec2_state == InstanceState.RUNNING:
-                        _mark_standby_running(instance_id)
                     continue
 
                 reason = instance.get("StateTransitionReason", "")
@@ -5375,7 +5372,7 @@ def terminate_standby_instance(instance_id: str):
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        print(f"Terminating excess standby instance {instance_id}")
+        print(f"Terminating standby instance {instance_id}")
 
         # Terminate the instance
         ec2.terminate_instances(InstanceIds=[instance_id])
