@@ -135,3 +135,18 @@ def test_fluo_column_stack_as_a_heatmap_relabels_its_rows(output_dir):
 
     out.save_json(output_dir)
     assert type(out) is HeatMapData and list(out.index) == [0, 1, 2]
+
+
+def test_1d_column_stack_computes_std_per_column(output_dir):
+    position, speed = RNG.random(6), RNG.random(6)
+
+    result = data_concat(
+        IscellData(position),
+        IscellData(speed),
+        output_dir,
+        params={"axis": 1, "std_method": "compute"},
+    )
+
+    std = result["concatenated_std"].data
+    assert std.shape == (6, 2)
+    np.testing.assert_allclose(std[0], [np.std(position), np.std(speed)])

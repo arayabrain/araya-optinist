@@ -213,6 +213,20 @@ def test_heatmap_normalization_mean_divides_by_the_cell_mean(tmp_path, caplog):
     assert "blanking 2 cells: [1, 3]" in caplog.text
 
 
+def test_heatmap_normalization_mean_uses_only_in_range_samples(tmp_path):
+    covariate = np.tile([0.5, 1.5, 2.5, 3.5, 10.0, 10.0], NUM_FRAME // 6)
+    fluo = np.where(covariate > 4, 100.0, covariate)[np.newaxis]
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(covariate),
+        params={"heatmap_normalization": "mean"},
+    )
+
+    np.testing.assert_allclose(info["mean_heatmap"].data[0], [0.25, 0.75, 1.25, 1.75])
+
+
 @pytest.mark.parametrize("normalization", ["minmax", "mean", "none", None])
 def test_row_order_does_not_depend_on_heatmap_normalization(tmp_path, normalization):
     info = _bin(

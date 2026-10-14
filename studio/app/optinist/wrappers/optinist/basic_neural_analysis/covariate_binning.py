@@ -146,7 +146,10 @@ def covariate_binning(
     norm_mean = (mean - min_value) / value_range
 
     if normalization == "mean":
-        cell_mean = np.nanmean(X[in_range], axis=0)
+        # masked sum and count, so the binned samples are not copied out of X
+        counted = in_range[:, None] & ~np.isnan(X)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cell_mean = np.sum(X, axis=0, where=counted) / counted.sum(axis=0)
         undefined = ~(cell_mean > 0)
         if undefined.any():
             logger.warning(

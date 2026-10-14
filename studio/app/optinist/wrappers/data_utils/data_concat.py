@@ -122,6 +122,8 @@ def data_concat(
         if stacked_1d:
             if data1_array.ndim == 1 and not output_type:
                 output_type = "behaviors_data"
+                if time_axis is None:
+                    time_axis = 0  # the behaviour table is time-major
             data1_array, data2_array = (
                 a[:, np.newaxis] if a.ndim == 1 else a
                 for a in (data1_array, data2_array)
