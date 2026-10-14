@@ -567,16 +567,31 @@ class TestScaleAndRebalanceUsesAsgBounds:
         ecs.update_service.assert_not_called()
 
 
+def _group(desired, in_group):
+    """An ASG describe with ``in_group`` instances listed (any lifecycle state)."""
+    return {
+        "AutoScalingGroups": [
+            {
+                "DesiredCapacity": desired,
+                "Instances": [
+                    {"InstanceId": f"i-{n}", "LifecycleState": "InService"}
+                    for n in range(in_group)
+                ],
+            }
+        ]
+    }
+
+
 class TestScheduledRunResyncsEcs:
     """
     The ASG-event sync fires once per event and is not retried, so the
     scheduled run repeats it as a backstop. It must run before the user
-    threshold is considered: a task-less instance needs correcting whether or
+    count is considered: a task-less instance needs correcting whether or
     not there is anyone to scale for.
     """
 
     @staticmethod
-    def _run(mock_env_vars_free, active_users, asg_desired, ecs_desired):
+    def _run(mock_env_vars_free, active_users, asg_desired, ecs_desired, in_group):
         from free_manager import handle_scheduled_monitoring
 
         with patch.dict("os.environ", mock_env_vars_free), patch(
@@ -591,9 +606,9 @@ class TestScheduledRunResyncsEcs:
             "free_manager.scale_and_rebalance",
             return_value={"scaling_action": "none", "desired_instances": 1},
         ):
-            mock_asg.describe_auto_scaling_groups.return_value = {
-                "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
-            }
+            mock_asg.describe_auto_scaling_groups.return_value = _group(
+                asg_desired, in_group
+            )
             mock_ecs.describe_services.return_value = {
                 "services": [{"desiredCount": ecs_desired}]
             }
@@ -604,7 +619,7 @@ class TestScheduledRunResyncsEcs:
     def test_resyncs_below_the_user_threshold(self, mock_env_vars_free):
         """No active users, ASG 3 and ECS 1: still corrected."""
         ecs, result = self._run(
-            mock_env_vars_free, active_users=0, asg_desired=3, ecs_desired=1
+            mock_env_vars_free, active_users=0, asg_desired=3, ecs_desired=1, in_group=3
         )
 
         ecs.update_service.assert_called_once_with(
@@ -614,38 +629,59 @@ class TestScheduledRunResyncsEcs:
         )
         assert json.loads(result["body"])["ecs_resynced"] is True
 
-    def test_does_not_lower_ecs(self, mock_env_vars_free):
+    def test_does_not_lower_ecs_while_the_instance_is_still_in_the_group(
+        self, mock_env_vars_free
+    ):
         """
-        ASG 1 against ECS 2 is left alone. Lowering here would land inside the
+        ASG 1 against ECS 2 with two instances still listed (one of them
+        deregistering) is left alone. Lowering here would land inside the
         target group's deregistration window, where ECS picks which task to
         stop by AZ balance -- possibly the survivor's, leaving no healthy
-        target. The terminate event lowers it instead.
+        target.
         """
         ecs, result = self._run(
-            mock_env_vars_free, active_users=0, asg_desired=1, ecs_desired=2
+            mock_env_vars_free, active_users=0, asg_desired=1, ecs_desired=2, in_group=2
         )
 
         ecs.update_service.assert_not_called()
         assert json.loads(result["body"])["ecs_resynced"] is False
 
+    def test_lowers_ecs_once_the_instance_has_left_the_group(self, mock_env_vars_free):
+        """
+        ASG 1, ECS 2, one instance in the group: the terminated instance is
+        gone and its task with it, so the scheduled run brings ECS down. This
+        is the repair for a terminate event that was lost or that raced
+        another (see the terminate-event cases below).
+        """
+        ecs, result = self._run(
+            mock_env_vars_free, active_users=0, asg_desired=1, ecs_desired=2, in_group=1
+        )
+
+        assert ecs.update_service.call_args[1]["desiredCount"] == 1
+        assert json.loads(result["body"])["ecs_resynced"] is True
+
     @pytest.mark.parametrize(
-        "asg_desired,ecs_desired,expected",
+        "asg_desired,ecs_desired,in_group,expected",
         [
-            # 4 -> 2 scale-in: one decrement per completed termination, so the
-            # second instance is never still deregistering while ECS has to
-            # choose two tasks to stop.
-            (2, 4, 3),
-            (2, 3, 2),
+            # 4 -> 2 scale-in, first event: one instance has left, one is still
+            # terminating and counts, so ECS goes to 3, not 2.
+            (2, 4, 3, 3),
+            # The same scale-in, both terminations completed within a second
+            # and both events handled concurrently: each reads 4 and both see
+            # two instances left, so both write 2. Idempotent, where "ECS - 1"
+            # per event would have left ECS at 3 for good.
+            (2, 4, 2, 2),
             # A single-instance scale-in converges in one event.
-            (1, 2, 1),
+            (1, 2, 1, 1),
             # Never below the ASG, however late the events arrive.
-            (2, 2, None),
+            (2, 2, 2, None),
+            # An instance that is still terminating holds its place.
+            (1, 3, 2, 2),
         ],
     )
-    def test_terminate_event_lowers_ecs_by_one(
-        self, mock_env_vars_free, asg_desired, ecs_desired, expected
+    def test_terminate_event_lowers_ecs_to_the_instances_still_in_the_group(
+        self, mock_env_vars_free, asg_desired, ecs_desired, in_group, expected
     ):
-        """The terminate event is per instance, so the decrement is too."""
         from free_manager import handle_asg_event
 
         event = {
@@ -657,9 +693,9 @@ class TestScheduledRunResyncsEcs:
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
-            mock_asg.describe_auto_scaling_groups.return_value = {
-                "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
-            }
+            mock_asg.describe_auto_scaling_groups.return_value = _group(
+                asg_desired, in_group
+            )
             mock_ecs.describe_services.return_value = {
                 "services": [{"desiredCount": ecs_desired}]
             }
@@ -671,8 +707,11 @@ class TestScheduledRunResyncsEcs:
         else:
             assert mock_ecs.update_service.call_args[1]["desiredCount"] == expected
 
-    def test_launch_event_does_not_lower_ecs(self, mock_env_vars_free):
-        """Only a completed termination may lower it."""
+    def test_launch_event_lowers_nothing_while_the_instances_are_in_the_group(
+        self, mock_env_vars_free
+    ):
+        """ASG 2, ECS 4, four instances still listed (two terminating): the
+        launch event changes nothing, the terminations have not completed."""
         from free_manager import handle_asg_event
 
         event = {
@@ -684,9 +723,7 @@ class TestScheduledRunResyncsEcs:
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
-            mock_asg.describe_auto_scaling_groups.return_value = {
-                "AutoScalingGroups": [{"DesiredCapacity": 2}]
-            }
+            mock_asg.describe_auto_scaling_groups.return_value = _group(2, 4)
             mock_ecs.describe_services.return_value = {
                 "services": [{"desiredCount": 4}]
             }
@@ -725,7 +762,7 @@ class TestScheduledRunResyncsEcs:
     def test_no_call_when_already_in_sync(self, mock_env_vars_free):
         """Matching counts leave the service alone."""
         ecs, result = self._run(
-            mock_env_vars_free, active_users=0, asg_desired=2, ecs_desired=2
+            mock_env_vars_free, active_users=0, asg_desired=2, ecs_desired=2, in_group=2
         )
 
         ecs.update_service.assert_not_called()
