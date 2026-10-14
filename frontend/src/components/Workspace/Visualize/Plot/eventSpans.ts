@@ -10,14 +10,14 @@ export const SHADE_RECORD_CAP = 500
 export const SHADE_TOTAL_CAP = 2000
 export const SHADE_FETCH_LIMIT = 4
 
-// Source records to request next: in draw order, a few at a time, none once capped
+// Source records to request next: in draw order, a few at a time, none once full
 export function nextShadeKeys(
   keys: string[],
   data: { [key: string]: unknown },
   status: { [key: string]: string } | undefined,
-  capped: boolean,
+  full: boolean,
 ): string[] {
-  if (capped) return []
+  if (full) return []
   const inFlight = keys.filter((key) => status?.[key] === "pending").length
   return keys
     .filter((key) => key in data && status?.[key] == null)
@@ -93,5 +93,6 @@ export function buildShadeShapes(
       }),
     )
   })
-  return { shapes, capped }
+  // capped: some events were left out; full: no room for another record
+  return { shapes, capped, full: shapes.length >= SHADE_TOTAL_CAP }
 }

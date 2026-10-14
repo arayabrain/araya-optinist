@@ -355,11 +355,11 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
 
   useEffect(() => {
     if (shadePath == null) return
-    nextShadeKeys(shadeKeys ?? [], shadeData, shadeById, shade.capped).forEach(
+    nextShadeKeys(shadeKeys ?? [], shadeData, shadeById, shade.full).forEach(
       (key) =>
         dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key })),
     )
-  }, [dispatch, shadePath, shadeKeys, shadeData, shadeById, shade.capped])
+  }, [dispatch, shadePath, shadeKeys, shadeData, shadeById, shade.full])
 
   const layout = useMemo(
     () => ({

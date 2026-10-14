@@ -121,8 +121,10 @@ export const displayDataSlice = createSlice({
           }
           return
         }
-        // one record failed, so keep the others; only a user's request errors
         entry.pending = false
+        // a newer response already loaded it
+        if (entry.byId?.[index] === "fulfilled") return
+        // one record failed, so keep the others; only a user's request errors
         entry.byId = { ...entry.byId, [index]: "rejected" }
         if (background) {
           entry.fulfilled = true

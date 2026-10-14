@@ -191,4 +191,40 @@ describe("getTimeSeriesDataByIdOnce", () => {
 
     expect(state.timeSeries[path]).toBeUndefined()
   })
+
+  it("drops a late success for an entry deleted meanwhile", () => {
+    const state = reducer(undefined, {
+      type: getTimeSeriesDataById.fulfilled.type,
+      meta: { arg: { path, index: "1" } },
+      payload: { data: { "1": { "0": 0 } }, xrange, std: {} },
+    })
+
+    expect(state.timeSeries[path]).toBeUndefined()
+  })
+
+  it("keeps a record loaded by a newer response when an older request fails", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "1": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    const arg = { path, index: "1" }
+    store.dispatch({
+      type: getTimeSeriesDataById.fulfilled.type,
+      meta: { arg },
+      payload: { data: { "1": { "0": 0, "1": 1 } }, xrange, std: {} },
+    })
+
+    store.dispatch({
+      type: getTimeSeriesDataById.rejected.type,
+      meta: { arg },
+      error: { message: "504" },
+    })
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.byId).toEqual({ "1": "fulfilled" })
+    expect(entry.error).toBeNull()
+  })
 })

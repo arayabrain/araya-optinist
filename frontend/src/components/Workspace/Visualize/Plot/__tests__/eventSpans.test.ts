@@ -83,6 +83,7 @@ describe("buildShadeShapes", () => {
           },
         ],
         capped: false,
+        full: false,
       },
     )
   })
@@ -138,6 +139,25 @@ describe("buildShadeShapes", () => {
     const result = buildShadeShapes(longX, many, keys, 1, SHADE_COLORS, all)
     expect(result.shapes).toHaveLength(2000)
     expect(result.capped).toBe(true)
+    expect(result.full).toBe(true)
+  })
+
+  it("leaves room for more records when only one record hits its own cap", () => {
+    const longX = Array.from({ length: 1200 }, (_, i) => String(i))
+    const busy = Object.fromEntries(longX.map((x, i) => [x, i % 2]))
+
+    const result = buildShadeShapes(
+      longX,
+      { k: busy },
+      ["k"],
+      1,
+      SHADE_COLORS,
+      all,
+    )
+
+    expect(result.shapes).toHaveLength(500)
+    expect(result.capped).toBe(true)
+    expect(result.full).toBe(false)
   })
 })
 
