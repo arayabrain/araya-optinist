@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
@@ -22,6 +23,12 @@ import {
 } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContext"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import {
+  buildShadeShapes,
+  SHADE_COLORS,
+  SHADE_RECORD_CAP,
+  SHADE_TOTAL_CAP,
+} from "components/Workspace/Visualize/Plot/eventSpans"
 import { buildAnnotations } from "components/Workspace/Visualize/Plot/timeSeriesAnnotations"
 import {
   errorBarArray,
@@ -65,9 +72,11 @@ import {
   selectVisualizeSaveFilename,
   selectVisualizeSaveFormat,
   selectImageItemRangeUnit,
+  selectTimeSeriesShadeSourceItem,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { AppDispatch } from "store/store"
+import { AppDispatch, RootState } from "store/store"
+import { arrayEqualityFn } from "utils/EqualityUtils"
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
   const { itemId, filePath: path } = useContext(DisplayDataContext)
@@ -300,6 +309,72 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     [data, drawOrderList, newDataXrange],
   )
 
+  const shadeSource = useSelector(selectTimeSeriesShadeSourceItem(itemId))
+  const shadePath = shadeSource?.filePath ?? null
+  const shadeKeys = shadeSource?.drawOrderList
+  const shadeData = useSelector(
+    selectTimeSeriesData(shadePath),
+    timeSeriesDataEqualityFn,
+  )
+  const shadeXrange = useSelector(
+    selectTimeSeriesXrange(shadePath),
+    arrayEqualityFn,
+  )
+
+  const shadeIsPending = useSelector(
+    (state: RootState) =>
+      shadePath != null && selectTimeSeriesDataIsPending(shadePath)(state),
+  )
+  const [loadedShadeKeys, setLoadedShadeKeys] = useState(
+    () => new Set<string>(),
+  )
+  const requestedShadeKeys = useRef(new Set<string>())
+
+  const isShadeLoaded = useCallback(
+    (key: string) =>
+      loadedShadeKeys.has(`${shadePath}:${key}`) ||
+      Object.keys(shadeData[key] ?? {}).length >= shadeXrange.length,
+    [loadedShadeKeys, shadePath, shadeData, shadeXrange],
+  )
+
+  const missingShadeKeys = useMemo(
+    () =>
+      (shadeKeys ?? []).filter(
+        (key) => key in shadeData && !isShadeLoaded(key),
+      ),
+    [shadeKeys, shadeData, isShadeLoaded],
+  )
+
+  useEffect(() => {
+    if (shadePath == null || shadeIsPending) return
+    missingShadeKeys.forEach((key) => {
+      const requestId = `${shadePath}:${key}`
+      if (requestedShadeKeys.current.has(requestId)) return
+      requestedShadeKeys.current.add(requestId)
+      dispatch(getTimeSeriesDataById({ path: shadePath, index: key })).then(
+        (action) => {
+          requestedShadeKeys.current.delete(requestId)
+          if (getTimeSeriesDataById.fulfilled.match(action)) {
+            setLoadedShadeKeys((prev) => new Set(prev).add(requestId))
+          }
+        },
+      )
+    })
+  }, [dispatch, shadePath, shadeIsPending, missingShadeKeys])
+
+  const shade = useMemo(
+    () =>
+      buildShadeShapes(
+        shadeXrange,
+        shadeData,
+        shadeKeys ?? [],
+        rangeUnit === "time" ? frameRate : 1,
+        SHADE_COLORS,
+        isShadeLoaded,
+      ),
+    [shadeXrange, shadeData, shadeKeys, rangeUnit, frameRate, isShadeLoaded],
+  )
+
   const layout = useMemo(
     () => ({
       title: {
@@ -352,9 +427,11 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
         zeroline: zeroline,
       },
       annotations: annotations,
+      shapes: shade.shapes,
       showlegend: true,
     }),
     [
+      shade.shapes,
       meta,
       xrange,
       showgrid,
@@ -424,12 +501,20 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   }
 
   return (
-    <PlotlyChart
-      data={Object.values(data)}
-      layout={layout}
-      config={config}
-      onLegendClick={onLegendClick}
-    />
+    <>
+      <PlotlyChart
+        data={Object.values(data)}
+        layout={layout}
+        config={config}
+        onLegendClick={onLegendClick}
+      />
+      {shade.capped && (
+        <Typography variant="caption" color="text.secondary">
+          Too many events: shading shows at most {SHADE_RECORD_CAP} per trace
+          and {SHADE_TOTAL_CAP} in total.
+        </Typography>
+      )}
+    </>
   )
 })
 
