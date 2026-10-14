@@ -434,6 +434,14 @@ then falls back to IMDSv2 metadata service (with IMDSv1 fallback).
 The result is cached at startup. Returns "local" in development
 (skips DB update).
 
+**`instance_id` while a workflow runs:** the activity UPDATE moves
+`instance_id` to the serving instance only while
+`active_workflow_count` is 0. With a workflow running the column keeps
+naming the host the workflow runs on (pinned by
+`increment_workflow_count()`), so a request served elsewhere — a second
+tab, a new session after the sticky cookie lapsed — does not make the
+free scale-in treat that host as free of work.
+
 ### 2. Free Manager Lambda
 
 **File:** `infrastructure/terraform/free_manager_package/free_manager.py`
@@ -471,14 +479,16 @@ users. Handles three scenarios: scale out (with instance wait
 loop), scale in through `scale_in()` — a surplus of 2 or more at
 once, a surplus of 1 once `surplus_of_one_has_persisted()`, and
 neither while `load_alarm_holds_capacity()` — and rebalance-only when
-distribution is imbalanced. Publishes `TargetInstances` before
-acting, lock or not.
-**Input:** `active_user_count`, `context`
+distribution is imbalanced. Returns the target as
+`desired_instances` on every path, the lock-held one included;
+`handle_scheduled_monitoring()` publishes it once the whole run
+has succeeded.
+**Input:** `active_user_count`, `context`, `scheduled_at`
 **Output:** Dict with scaling action, terminated instances,
 migrated users, and balance status. Uses CloudWatch metric lock
 to prevent concurrent scale-outs.
 **Calls:** `get_service_info()` -> `calculate_desired_instances()`
--> `publish_target_metric()` -> `is_scaling_in_progress()` ->
+-> `is_scaling_in_progress()` ->
 `scale_service()` or `scale_in()` -> `get_available_instance_ids()`
 -> `rebalance_idle_users_multi()` -> `is_distribution_balanced()`
 
@@ -682,7 +692,10 @@ in distribution calculations.
 **Purpose:** Increment `active_workflow_count` when a workflow
 starts. Determines user tier (free/premium), then updates the
 appropriate assignment table. Falls back to alternative table
-if primary does not have a record.
+if primary does not have a record. For the free tier the same
+UPDATE pins `instance_id` to the host the workflow runs on — the
+first workflow sets it, a later one does not move it — because
+the free scale-in reads that column to spare the host.
 **Input:** `user_id`
 **Output:** None (side effect: count incremented in DB)
 
@@ -713,8 +726,10 @@ below zero, avoiding race conditions.
   invocation's remaining time (`scale_up_wait_budget()`). A loop the
   platform killed would leave the lock set for its whole 15-minute window,
   during which every run skips scaling
-- The target is published before the lock is checked, so a skipped run
-  still reports what it wanted
+- A lock-held run still returns its target, and the handler publishes it
+  like any other successful run, so a skipped run still reports what it
+  wanted. Publishing happens last: a run that fails anywhere leaves no
+  datapoint, which the surplus history reads as a hole
 
 ### 2. Instances Not Ready in Time
 
@@ -834,7 +849,7 @@ out.
 | Metric Name | Description | Unit | Namespace |
 |-------------|-------------|------|-----------|
 | `ActiveLogins` | Users with activity in last 5 minutes | Count | OptiNiSt/FreeUsers |
-| `TargetInstances` | Instance count the user count asks for, clamped to the ASG's bounds; published before the lock is checked | Count | OptiNiSt/FreeUsers |
+| `TargetInstances` | Instance count the user count asks for, clamped to the ASG's bounds; published at the end of every successful run (lock-held runs included), stamped with the run's period | Count | OptiNiSt/FreeUsers |
 | `ScalingInProgress` | Lock to prevent concurrent scale-outs | None (0 or 1) | OptiNiSt/FreeManager |
 
 **Dashboard:** `subscr-optinist-monitoring` (integrated with premium tier

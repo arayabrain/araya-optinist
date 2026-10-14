@@ -234,6 +234,11 @@ def get_workload_per_instance() -> Dict[str, int]:
     a user who started a long workflow and closed the browser has no recent
     request, but the workflow is still running on their instance.
 
+    ``instance_id`` names the host the workflow runs on: the app pins the
+    row to that host when the workflow starts and does not move it while
+    ``active_workflow_count`` is above 0, so a request served elsewhere in
+    the meantime does not unprotect the host.
+
     Returns:
         Dictionary mapping instance_id -> running workflow count, for
         instances with at least one

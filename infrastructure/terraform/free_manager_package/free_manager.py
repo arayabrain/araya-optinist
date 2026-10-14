@@ -216,16 +216,21 @@ def handle_scheduled_monitoring(event, context):
 
         # Every run computes a target, at any count: 0 users must bring the
         # group back to MinSize
+        scheduled_at = scheduled_period(event)
         result = scale_and_rebalance(
             active_user_count=active_user_count,
             context=context,
-            scheduled_at=scheduled_period(event),
+            scheduled_at=scheduled_at,
         )
 
         result["ecs_resynced"] = ecs_sync["changed"]
 
         if sync_error is not None:
             raise sync_error
+
+        # Published last, by a run that got this far only: a failed run
+        # leaves no datapoint, which the surplus history reads as a hole
+        publish_target_metric(result["desired_instances"], timestamp=scheduled_at)
 
         return {"statusCode": 200, "body": json.dumps(result)}
 
@@ -720,6 +725,10 @@ def scale_and_rebalance(
     instances; scale-in terminates instances this function chooses, so a
     running workflow is never the one removed.
 
+    The target is returned as ``desired_instances`` on every path, the
+    lock-held one included; the caller publishes it once the run has
+    succeeded.
+
     Args:
         active_user_count: Current number of active free tier users
         context: Lambda context, for the scale-out wait budget
@@ -759,9 +768,6 @@ def scale_and_rebalance(
         f"Formula: min(max({asg_min_size}, ceil({active_user_count} / "
         f"{USERS_PER_INSTANCE})), {asg_max_size})"
     )
-
-    # Published before anything acts on it, lock or not
-    publish_target_metric(desired_instances, timestamp=scheduled_at)
 
     # The cap is otherwise silent: the target is clamped and nothing says the
     # user count asked for more than the group allows.
@@ -1651,6 +1657,10 @@ def publish_target_metric(
     GroupDesiredCapacity and GroupInServiceInstances: a gap that persists is
     a missed scale-in (above) or a scale-in this function could not make
     safely, or capacity an alarm added (below).
+
+    Called at the end of a successful scheduled run only. The surplus
+    history counts a period with no datapoint as a hole, so a run that
+    failed must not have published.
 
     Args:
         target_instances: the clamped target from calculate_desired_instances

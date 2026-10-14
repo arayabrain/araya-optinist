@@ -588,7 +588,8 @@ class TestScheduledRunResyncsEcs:
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
-            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
+            "free_manager.scale_and_rebalance",
+            return_value={"scaling_action": "none", "desired_instances": 1},
         ):
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
@@ -709,13 +710,17 @@ class TestScheduledRunResyncsEcs:
             "free_manager.count_active_free_users", return_value=0
         ), patch(
             "free_manager.publish_active_user_metric"
-        ) as mock_metric:
+        ) as mock_metric, patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
             mock_asg.describe_auto_scaling_groups.side_effect = Exception("throttled")
 
             with pytest.raises(Exception, match="throttled"):
                 handle_scheduled_monitoring({"source": "aws.events"}, MagicMock())
 
         mock_metric.assert_called_once_with(0)
+        # The run failed, so its period must read as a hole in the surplus history
+        mock_target.assert_not_called()
 
     def test_no_call_when_already_in_sync(self, mock_env_vars_free):
         """Matching counts leave the service alone."""
@@ -749,7 +754,8 @@ class TestScheduledRunComputesATargetAtAnyUserCount:
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
-            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
+            "free_manager.scale_and_rebalance",
+            return_value={"scaling_action": "none", "desired_instances": 1},
         ) as mock_scale:
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [{"DesiredCapacity": 3}]
@@ -779,7 +785,8 @@ class TestScheduledRunComputesATargetAtAnyUserCount:
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
-            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
+            "free_manager.scale_and_rebalance",
+            return_value={"scaling_action": "none", "desired_instances": 1},
         ) as mock_scale:
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [{"DesiredCapacity": 1}]
@@ -1579,11 +1586,12 @@ class TestPublishActiveUserMetric:
         assert stamped["Timestamp"] == period
         assert "Timestamp" not in unstamped
 
-    def test_the_period_bounds_the_history_and_stamps_the_target(
+    def test_the_period_bounds_the_history_and_nothing_is_published_inside(
         self, mock_env_vars_free
     ):
-        """Both reads of the period go through scale_and_rebalance: the
-        datapoint and the history window agree on which period this run is."""
+        """scale_and_rebalance reads the history up to the run's period and
+        leaves publishing to the handler, which does it only once the whole
+        run has succeeded."""
         from free_manager import scale_and_rebalance
 
         period = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
@@ -1613,23 +1621,23 @@ class TestPublishActiveUserMetric:
             }
             mock_ecs.list_tasks.return_value = {"taskArns": []}
 
-            scale_and_rebalance(active_user_count=0, scheduled_at=period)
+            result = scale_and_rebalance(active_user_count=0, scheduled_at=period)
 
-        mock_target.assert_called_once_with(1, timestamp=period)
+        assert result["desired_instances"] == 1
         mock_history.assert_called_once_with(now=period)
+        mock_target.assert_not_called()
 
-    def test_target_is_published_even_when_the_lock_is_held(self, mock_env_vars_free):
+    def test_the_lock_held_path_still_reports_its_target(self, mock_env_vars_free):
         """A held lock skips the actions, not the measurement: the target is
-        exactly what a reader needs to judge a skipped run."""
+        exactly what a reader needs to judge a skipped run, so the result
+        carries it for the handler to publish."""
         from free_manager import scale_and_rebalance
 
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
             "free_manager.is_scaling_in_progress", return_value=True
-        ), patch(
-            "free_manager.publish_target_metric"
-        ) as mock_target:
+        ):
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [
                     {
@@ -1648,5 +1656,94 @@ class TestPublishActiveUserMetric:
             result = scale_and_rebalance(active_user_count=7)
 
         assert result["status"] == "scaling_in_progress"
-        mock_target.assert_called_once_with(2, timestamp=None)
+        assert result["desired_instances"] == 2
         mock_asg.set_desired_capacity.assert_not_called()
+
+
+class TestTargetIsPublishedBySuccessfulRunsOnly:
+    """
+    The surplus history reads a period with no TargetInstances datapoint as
+    a hole, and the stated rule is that a failed run leaves one. So the
+    handler publishes last, after everything that can fail, the deferred
+    ECS-sync error included.
+    """
+
+    PERIOD = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+    EVENT = {"source": "aws.events", "time": "2026-10-13T11:04:47Z"}
+
+    @staticmethod
+    def _handler(mock_env_vars_free, scale_result=None, scale_error=None, asg=None):
+        from free_manager import handle_scheduled_monitoring
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=0
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.scale_and_rebalance",
+            return_value=scale_result,
+            side_effect=scale_error,
+        ), patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
+            if asg is None:
+                mock_asg.describe_auto_scaling_groups.return_value = {
+                    "AutoScalingGroups": [{"DesiredCapacity": 1}]
+                }
+            else:
+                mock_asg.describe_auto_scaling_groups.side_effect = asg
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1}]
+            }
+            try:
+                handle_scheduled_monitoring(
+                    TestTargetIsPublishedBySuccessfulRunsOnly.EVENT, MagicMock()
+                )
+            except Exception as e:  # noqa: BLE001 - the test asserts on it
+                return mock_target, e
+            return mock_target, None
+
+    def test_a_successful_run_publishes_the_target_with_its_period(
+        self, mock_env_vars_free
+    ):
+        target, error = self._handler(
+            mock_env_vars_free,
+            scale_result={"scaling_action": "none", "desired_instances": 2},
+        )
+
+        assert error is None
+        target.assert_called_once_with(2, timestamp=self.PERIOD)
+
+    def test_a_lock_held_run_is_a_successful_run(self, mock_env_vars_free):
+        target, error = self._handler(
+            mock_env_vars_free,
+            scale_result={"status": "scaling_in_progress", "desired_instances": 2},
+        )
+
+        assert error is None
+        target.assert_called_once_with(2, timestamp=self.PERIOD)
+
+    def test_a_run_that_fails_in_scaling_publishes_nothing(self, mock_env_vars_free):
+        """An unreadable alarm or workload raises out of scale_and_rebalance."""
+        target, error = self._handler(
+            mock_env_vars_free, scale_error=Exception("AccessDenied")
+        )
+
+        assert error is not None
+        target.assert_not_called()
+
+    def test_a_run_whose_ecs_resync_failed_publishes_nothing(self, mock_env_vars_free):
+        """The resync failure is held until the end and re-raised; the run
+        failed, so its period must read as a hole."""
+        target, error = self._handler(
+            mock_env_vars_free,
+            scale_result={"scaling_action": "none", "desired_instances": 1},
+            asg=Exception("throttled"),
+        )
+
+        assert error is not None and "throttled" in str(error)
+        target.assert_not_called()

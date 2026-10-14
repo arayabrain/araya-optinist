@@ -103,8 +103,9 @@ desired_instances = min(max(asg_min_size, ceil(active_users / 5)), asg_max_size)
   anything outside them, so the group's configuration is the single source of
   truth and capacity can be adjusted without redeploying this function.
 - **Published**: the target goes out as `TargetInstances` (next to
-  `ActiveLogins`) on every run, so it can be read against the group's
-  `GroupDesiredCapacity`.
+  `ActiveLogins`) at the end of every successful run, stamped with the run's
+  period, so it can be read against the group's `GroupDesiredCapacity`. A
+  failed run publishes nothing.
 
 ### Scale-in
 
