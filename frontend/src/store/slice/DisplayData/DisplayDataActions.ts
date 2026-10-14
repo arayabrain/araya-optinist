@@ -1,6 +1,6 @@
 import { AxiosError } from "axios"
 
-import { createAsyncThunk } from "@reduxjs/toolkit"
+import { AnyAction, ThunkAction, createAsyncThunk } from "@reduxjs/toolkit"
 
 import {
   TimeSeriesData,
@@ -43,10 +43,10 @@ import {
 } from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
+  DisplayData,
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
-import { AppThunk } from "store/store"
 
 export interface RejectPayload {
   message: string
@@ -122,7 +122,10 @@ export const getTimeSeriesDataById = createAsyncThunk<
 
 // Skips a record another plot already requested or loaded
 export const getTimeSeriesDataByIdOnce =
-  (arg: { path: string; index: string }): AppThunk =>
+  (arg: {
+    path: string
+    index: string
+  }): ThunkAction<void, { displayData: DisplayData }, unknown, AnyAction> =>
   (dispatch, getState) => {
     if (
       getState().displayData.timeSeries[arg.path]?.byId?.[arg.index] == null

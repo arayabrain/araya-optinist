@@ -104,8 +104,15 @@ export const displayDataSlice = createSlice({
         entry.byId = { ...entry.byId, [index]: "pending" }
       })
       .addCase(getTimeSeriesDataById.rejected, (state, action) => {
-        const { path } = action.meta.arg
-        if (isNoRoisFound(action.error.message)) {
+        const { path, index } = action.meta.arg
+        const entry = state.timeSeries[path]
+        if (entry && !isNoRoisFound(action.error.message)) {
+          // one record failed, so keep the records the other requests loaded
+          entry.pending = false
+          entry.fulfilled = false
+          entry.error = action.error.message ?? "rejected"
+          entry.byId = { ...entry.byId, [index]: "rejected" }
+        } else if (isNoRoisFound(action.error.message)) {
           state.timeSeries[path] = {
             type: "timeSeries",
             xrange: [],
@@ -254,7 +261,12 @@ export const displayDataSlice = createSlice({
         state.timeSeries[path].meta = action.payload.meta
         state.timeSeries[path].data = action.payload.data
         state.timeSeries[path].std = action.payload.std
-        state.timeSeries[path].byId = {}
+        const full = action.payload.xrange.length
+        state.timeSeries[path].byId = Object.fromEntries(
+          Object.entries(action.payload.data)
+            .filter(([, record]) => Object.keys(record).length >= full)
+            .map(([key]) => [key, "fulfilled"]),
+        )
       })
       .addCase(getHeatMapData.pending, (state, action) => {
         const { path } = action.meta.arg

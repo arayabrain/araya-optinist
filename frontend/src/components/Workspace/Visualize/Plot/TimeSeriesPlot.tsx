@@ -497,6 +497,7 @@ function timeSeriesDataEqualityFn(
   a: TimeSeriesData | undefined,
   b: TimeSeriesData | undefined,
 ) {
+  if (a === b) return true
   if (a != null && b != null) {
     const aArray = Object.entries(a)
     const bArray = Object.entries(b)
@@ -521,6 +522,7 @@ function nestEqualityFun(
     [key: number]: number
   },
 ) {
+  if (a === b) return true
   const aArray = Object.entries(a)
   const bArray = Object.entries(b)
   return (

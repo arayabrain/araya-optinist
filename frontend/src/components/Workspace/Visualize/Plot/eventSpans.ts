@@ -35,7 +35,7 @@ export function eventSpans(
 // Records are immutable, so one record's spans hold while its x axis is unchanged
 const spanCache = new WeakMap<
   object,
-  { xrange: string[]; scale: number; result: ReturnType<typeof eventSpans> }
+  { xrange: string[]; result: ReturnType<typeof eventSpans> }
 >()
 
 export function buildShadeShapes(
@@ -53,10 +53,10 @@ export function buildShadeShapes(
     const record = data[key]
     if (!record || !isLoaded(key)) return
     let cached = spanCache.get(record)
-    if (cached?.xrange !== xrange || cached.scale !== scale) {
-      if (x == null) x = xrange.map((v) => Number(v) / scale)
+    if (cached?.xrange !== xrange) {
+      if (x == null) x = xrange.map(Number)
       const y = xrange.map((v) => Number(record[v]))
-      cached = { xrange, scale, result: eventSpans(x, y) }
+      cached = { xrange, result: eventSpans(x, y) }
       spanCache.set(record, cached)
     }
     const { spans } = cached.result
@@ -70,8 +70,8 @@ export function buildShadeShapes(
         yref: "paper",
         y0: 0,
         y1: 1,
-        x0,
-        x1,
+        x0: x0 / scale,
+        x1: x1 / scale,
         layer: "below",
         line: { width: 0 },
         fillcolor,

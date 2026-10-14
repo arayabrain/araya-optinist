@@ -140,7 +140,7 @@ describe("buildShadeShapes", () => {
 })
 
 describe("buildShadeShapes span cache", () => {
-  it("reads a record once while the record and its x axis are unchanged", () => {
+  it("reads a record once for any scale while the record and its x axis are unchanged", () => {
     const xrange = ["0", "1", "2"]
     let reads = 0
     const record: Record<string, number> = {}
@@ -169,7 +169,8 @@ describe("buildShadeShapes span cache", () => {
     expect(readsAfterFirst).toBe(3)
     expect(reads).toBe(3)
     expect(second).toEqual(first)
-    build(xrange, 10)
-    expect(reads).toBe(6)
+    const scaled = build(xrange, 10)
+    expect(reads).toBe(3)
+    expect(scaled.shapes).toMatchObject([{ x0: 0.1, x1: 0.2 }])
   })
 })

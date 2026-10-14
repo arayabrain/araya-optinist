@@ -5,11 +5,13 @@ import { configureStore } from "@reduxjs/toolkit"
 
 import {
   getStatusRoi,
+  getTimeSeriesAllDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesInitDataApi,
 } from "api/visualizations/Outputs"
 import {
   getStatus,
+  getTimeSeriesAllData,
   getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
 } from "store/slice/DisplayData/DisplayDataActions"
@@ -71,5 +73,54 @@ describe("getTimeSeriesDataByIdOnce", () => {
 
     await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
     expect(byId()).toEqual({})
+  })
+
+  it("marks the records an init or all-data response holds in full", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": { "0": 1, "1": 2 }, "3": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    jest.mocked(getTimeSeriesAllDataApi).mockResolvedValue({
+      data: { "0": { "0": 1, "1": 2 }, "3": { "0": 0, "1": 1 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    const byId = () => store.getState().displayData.timeSeries[path].byId
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    expect(byId()).toEqual({ "0": "fulfilled" })
+    await store.dispatch(getTimeSeriesAllData({ path }))
+    expect(byId()).toEqual({ "0": "fulfilled", "3": "fulfilled" })
+  })
+
+  it("keeps the other records when one request fails and does not retry it", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "1": { "0": 0 }, "2": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockRejectedValueOnce(new Error("504"))
+      .mockResolvedValueOnce({
+        data: { "2": { "0": 0, "1": 1 } },
+        xrange,
+        std: {},
+      })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "2" }))
+    await new Promise(process.nextTick)
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.xrange).toEqual(xrange)
+    expect(entry.data).toEqual({ "1": { "0": 0 }, "2": { "0": 0, "1": 1 } })
+    expect(entry.byId).toEqual({ "1": "rejected", "2": "fulfilled" })
+    expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)
   })
 })
