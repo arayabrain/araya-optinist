@@ -200,6 +200,17 @@ def test_dff_percentile_sliding_window_pads_with_edge(q, output_dir):
     np.testing.assert_allclose(result["sliced_data"].data[0], (x[0] - f0) / f0)
 
 
+def test_dff_sigma_longer_than_trace_is_clamped(output_dir, caplog):
+    fluo = FluoData(np.random.default_rng(16).random((2, 40)) + 1.0, file_name="f")
+    maximin = {"f0_method": "maximin", "f0_window_frames": 5}
+    at_length = _dff(fluo, output_dir, f0_sigma_frames=40, **maximin)
+    with caplog.at_level("WARNING"):
+        huge = _dff(fluo, output_dir, f0_sigma_frames=1e8, **maximin)
+
+    np.testing.assert_allclose(huge["sliced_data"].data, at_length["sliced_data"].data)
+    assert "f0_sigma_frames 1e+08 > trace length 40; using 40" in caplog.text
+
+
 def test_dff_window_longer_than_trace_is_clamped(output_dir, caplog):
     x = np.random.default_rng(15).random((2, 40)) + 1.0
     fluo = FluoData(x, file_name="f")

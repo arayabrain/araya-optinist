@@ -77,6 +77,12 @@ def _dff(values, axis, method, window, percentile, sigma):
             f"f0_window_frames {window} >= trace length {n_time}; using {n_time}"
         )
         window = n_time
+    # SciPy sizes the Gaussian kernel from sigma before clipping it to the trace
+    if method == "maximin" and sigma > n_time:
+        logger.warning(
+            f"f0_sigma_frames {sigma:g} > trace length {n_time}; using {n_time}"
+        )
+        sigma = float(n_time)
     finite = np.isfinite(rows)
 
     if method == "maximin":
