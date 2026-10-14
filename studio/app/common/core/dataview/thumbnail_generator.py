@@ -105,11 +105,13 @@ class ThumbnailGenerator:
 
         # Normalize to uint8
         img_float = img.astype(np.float32)
-        # 1st to 99th percentile, so a few bright pixels do not crush the rest to black
-        img_min, img_max = np.nanpercentile(img_float, [1, 99])
-        if img_max <= img_min:
-            # Sparse data: the percentiles collapse, use the full range
-            img_min, img_max = np.nanmin(img_float), np.nanmax(img_float)
+        img_min, img_max = np.nanmin(img_float), np.nanmax(img_float)
+        if not keep_aspect:
+            # A matrix: 1st to 99th percentile, so a few large values do not crush
+            # the rest to black; sparse data collapses the percentiles, keep the range
+            low, high = np.nanpercentile(img_float, [1, 99])
+            if high > low:
+                img_min, img_max = low, high
         if img_max > img_min:
             img_normalized = (
                 np.clip((img_float - img_min) / (img_max - img_min), 0, 1) * 255

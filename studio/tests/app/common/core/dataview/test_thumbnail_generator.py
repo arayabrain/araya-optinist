@@ -33,6 +33,19 @@ class TestRenderArrayAsThumbnail:
         img = imageio.imread(output_path)
         assert max(img.shape[:2]) <= 256
 
+    @pytest.mark.parametrize("keep_aspect, dim", [(True, 2), (False, 255)])
+    def test_only_matrices_are_scaled_by_percentile(
+        self, output_path, keep_aspect, dim
+    ):
+        arr = np.ones((64, 64), dtype=np.float32)
+        arr[:, 0] = 0.0
+        arr[0, 1] = 100.0
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=64, keep_aspect=keep_aspect
+        )
+        img = imageio.imread(output_path)
+        assert img[10, 10] == dim
+
     def test_thin_matrix_keeps_at_least_one_pixel(self, output_path):
         # A tall, 2-wide matrix used to resize to a 0-pixel-wide PNG
         arr = np.random.rand(1025, 2).astype(np.float32)
