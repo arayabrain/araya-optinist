@@ -3,9 +3,14 @@ it into a BehaviorData port used to die on `Y[:, col]` at run time. The Runner
 now casts such inputs to a (time, 1) BehaviorData column; everything already
 working (behavior CSV, the fluo_from_hdf5 hop, iscell ports) stays untouched.
 """
+import inspect
+from pathlib import Path
+
 import h5py
 import numpy as np
 import pytest
+import yaml
+from scipy.io import savemat
 
 from studio.app.common.core.rules.file_writer import FileWriter
 from studio.app.common.core.rules.runner import Runner, _cast_behavior_inputs
@@ -13,6 +18,7 @@ from studio.app.common.core.snakemake.smk import Rule
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.data_utils.fluo_from_hdf5 import fluo_from_hdf5
 from studio.app.optinist.wrappers.optinist.basic_neural_analysis.eta import ETA
+from studio.app.wrappers import wrapper_dict
 
 N_TIME = 50
 
@@ -47,6 +53,40 @@ def test_1d_iscell_at_behavior_port_becomes_time_column():
     assert np.array_equal(cast.data[:, 0], _square_wave())
     assert not np.shares_memory(cast.data, behavior.data)
     assert info["neural_data"] is neural
+
+
+def _behavior_consumers(tree=wrapper_dict):
+    for value in tree.values():
+        if "function" in value:
+            func = value["function"]
+            params = inspect.signature(func).parameters.values()
+            if any(p.annotation is BehaviorData for p in params):
+                yield func
+        else:
+            yield from _behavior_consumers(value)
+
+
+BEHAVIOR_CONSUMERS = list(_behavior_consumers())
+
+
+def test_every_known_behavior_consumer_is_discovered():
+    names = {f.__name__ for f in BEHAVIOR_CONSUMERS}
+    assert {"ETA", "CCA", "GLM", "LDA", "SVM", "dpca_fit"} <= names
+
+
+@pytest.mark.parametrize("func", BEHAVIOR_CONSUMERS, ids=lambda f: f.__name__)
+def test_every_behavior_consumer_port_is_cast(func):
+    port = next(
+        name
+        for name, p in inspect.signature(func).parameters.items()
+        if p.annotation is BehaviorData
+    )
+    info = {port: IscellData(_square_wave())}
+
+    _cast_behavior_inputs(func, info)
+
+    assert isinstance(info[port], BehaviorData)
+    assert info[port].data.shape == (N_TIME, 1)
 
 
 def test_iscell_port_is_not_touched():
@@ -141,6 +181,33 @@ def test_eta_runs_on_a_compound_table_column(tmp_path):
     assert result["mean"].data.shape[0] == 3
 
 
+def test_eta_runs_on_a_1d_mat_vector(tmp_path):
+    mat = tmp_path / "in.mat"
+    savemat(mat, {"lick": _square_wave()})
+    output = tmp_path / "output" / "default" / "uid" / "input_x" / "input_x.pkl"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rule = Rule(
+        input=str(mat),
+        return_arg="input_x",
+        params={},
+        output=str(output),
+        type="matlab",
+        nwbfile={"image_series": {}},
+        matPath="lick",
+    )
+    info = {
+        "behaviors_data": FileWriter.mat(rule)["input_x"],
+        "neural_data": FluoData(np.random.default_rng(0).random((3, N_TIME))),
+    }
+    assert isinstance(info["behaviors_data"], IscellData)
+
+    _cast_behavior_inputs(ETA, info)
+    result = ETA(**info, output_dir="w1/u1/eta-1", params=dict(ETA_PARAMS))
+
+    assert info["behaviors_data"].data.shape == (N_TIME, 1)
+    assert result["mean"].data.shape[0] == 3
+
+
 def test_runner_execute_function_applies_the_cast(tmp_path):
     info = _eta_inputs(tmp_path)
 
@@ -154,6 +221,27 @@ def test_runner_execute_function_applies_the_cast(tmp_path):
 
     assert isinstance(info["behaviors_data"], BehaviorData)
     assert result["mean"].data.shape[0] == 3
+
+
+PARAMS_DIR = Path(ETA.__code__.co_filename).parent / "params"
+
+
+@pytest.mark.parametrize("name", ["eta", "covariate_binning", "condition_split"])
+def test_numpy_consumers_run_on_the_cast_column_0(tmp_path, name):
+    params = yaml.safe_load((PARAMS_DIR / f"{name}.yaml").read_text())
+    params["I/O"]["event_col_index"] = 0
+    info = _eta_inputs(tmp_path)
+
+    result = Runner._Runner__execute_function(
+        path=f"optinist/basic_neural_analysis/{name}",
+        params=params,
+        nwb_params=None,
+        output_dir=f"w1/u1/{name}-1",
+        input_info=info,
+    )
+
+    assert info["behaviors_data"].data.shape == (N_TIME, 1)
+    assert result
 
 
 def test_eta_col_index_1_on_cast_column_fails_with_out_of_bounds(tmp_path):

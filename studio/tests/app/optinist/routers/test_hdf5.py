@@ -10,6 +10,7 @@ import pytest
 from studio.app.common.routers.files import (
     STRUCTURE_VERSION_KEY,
     _structure_node_to_dict,
+    update_hdf5_structure,
 )
 from studio.app.const import MetadataCacheFile
 from studio.app.dir_path import DIRPATH
@@ -74,6 +75,16 @@ def test_compound_dataset_without_loadable_columns_is_not_listed(tmp_path):
     assert [n.name for n in output[0].nodes] == ["data"]
 
 
+def test_2d_compound_dataset_stays_a_single_leaf(tmp_path):
+    with h5py.File(tmp_path / "t.h5", "w") as f:
+        f["g/table"] = np.zeros((5, 2), dtype=TABLE_DTYPE)
+
+    table_node = HDF5Getter.get(str(tmp_path / "t.h5"))[0].nodes[0]
+
+    assert table_node.isDir is False
+    assert table_node.path == "g/table"
+
+
 def test_compound_tree_survives_the_cache_round_trip(tmp_path):
     output = HDF5Getter.get(str(_table_file(tmp_path / "t.h5")))
 
@@ -107,10 +118,16 @@ def _old_cache(ws, *file_names):
     return cache
 
 
-def test_pre_version_cache_is_rebuilt_once_for_every_local_file(client, workspace):
+def _read_cache(ws):
+    with open(f"{DIRPATH.INPUT_DIR}/{ws}/{MetadataCacheFile.HDF5_STRUCTURE}") as f:
+        return json.load(f)
+
+
+def test_pre_version_entry_is_read_from_its_local_file(client, workspace):
     _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/t.h5")
-    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/u.h5")
-    cache = _old_cache(workspace, "t.h5", "u.h5", "remote.h5")
+    cache = _old_cache(workspace, "t.h5", "remote.h5")
+    with open(cache) as f:
+        before = f.read()
 
     data = client.get(f"/hdf5/t.h5?workspace_id={workspace}").json()
 
@@ -118,10 +135,49 @@ def test_pre_version_cache_is_rebuilt_once_for_every_local_file(client, workspac
     assert table_node["isDir"] is True
     assert [n["name"] for n in table_node["nodes"]] == ["time", "lick", "moving"]
     with open(cache) as f:
-        rebuilt = json.load(f)
-    assert rebuilt[STRUCTURE_VERSION_KEY] == 2
-    assert rebuilt["u.h5"][0]["nodes"][0]["isDir"] is True
-    assert rebuilt["remote.h5"][0]["nodes"][0]["isDir"] is False
+        assert f.read() == before
+
+
+def test_current_entry_is_served_from_the_cache(client, workspace):
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/t.h5")
+    cache = _old_cache(workspace, "t.h5")
+    with open(cache) as f:
+        entries = json.load(f)
+    entries[STRUCTURE_VERSION_KEY] = {"t.h5": 2}
+    with open(cache, "w") as f:
+        json.dump(entries, f)
+
+    data = client.get(f"/hdf5/t.h5?workspace_id={workspace}").json()
+
+    assert data[0]["nodes"][0]["isDir"] is False
+
+
+def test_updating_another_file_does_not_mark_an_old_entry_current(client, workspace):
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/old.h5")
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/new.h5")
+    _old_cache(workspace, "old.h5")
+
+    update_hdf5_structure(workspace, "new.h5")
+    data = client.get(f"/hdf5/old.h5?workspace_id={workspace}").json()
+
+    assert data[0]["nodes"][0]["isDir"] is True
+    assert _read_cache(workspace)[STRUCTURE_VERSION_KEY] == {"new.h5": 2}
+
+
+def test_whole_cache_int_version_is_replaced_by_the_per_file_map(client, workspace):
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/t.h5")
+    cache = _old_cache(workspace, "t.h5")
+    with open(cache) as f:
+        entries = json.load(f)
+    entries[STRUCTURE_VERSION_KEY] = 2
+    with open(cache, "w") as f:
+        json.dump(entries, f)
+
+    data = client.get(f"/hdf5/t.h5?workspace_id={workspace}").json()
+    update_hdf5_structure(workspace, "t.h5")
+
+    assert data[0]["nodes"][0]["isDir"] is True
+    assert _read_cache(workspace)[STRUCTURE_VERSION_KEY] == {"t.h5": 2}
 
 
 def test_pre_version_cache_is_served_as_is_for_a_remote_only_file(client, workspace):

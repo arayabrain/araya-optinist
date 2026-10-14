@@ -22,6 +22,7 @@ from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_condaenv_filepath
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
 from studio.app.common.dataclass.base import BaseData
+from studio.app.common.dataclass.utils import is_plain_number
 from studio.app.common.schemas.workflow import WorkflowPIDFileData
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
@@ -37,7 +38,10 @@ logger = AppLogger.get_logger()
 
 
 def _cast_behavior_inputs(func, input_info: dict) -> None:
-    """Cast a numeric 1D input at a BehaviorData port to a (time, 1) column."""
+    """Cast a numeric 1D input at a BehaviorData port to a (time, 1) column.
+
+    Only a bare `BehaviorData` annotation matches; `Optional[BehaviorData]` is skipped.
+    """
     for name, param in inspect.signature(func).parameters.items():
         annotation = param.annotation
         if not (inspect.isclass(annotation) and issubclass(annotation, BehaviorData)):
@@ -50,12 +54,7 @@ def _cast_behavior_inputs(func, input_info: dict) -> None:
             isinstance(arr, np.ndarray)
             and arr.ndim == 1
             and arr.size > 0
-            and arr.dtype.names is None
-            and (
-                arr.dtype == bool
-                or np.issubdtype(arr.dtype, np.integer)
-                or np.issubdtype(arr.dtype, np.floating)
-            )
+            and is_plain_number(arr.dtype)
         ):
             input_info[name] = annotation(arr[:, None].copy())
             logger.info(

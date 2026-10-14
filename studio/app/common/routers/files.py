@@ -305,6 +305,7 @@ def _write_json_atomic(filepath: str, data: dict) -> None:
         raise
 
 
+# Maps each file to its entry's format version; cache iterators must skip this key
 STRUCTURE_VERSION_KEY = "__version__"
 HDF5_STRUCTURE_VERSION = 2  # 2: compound datasets listed as folders of columns
 
@@ -331,14 +332,15 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
         )
         structure_dict = []
 
-    _atomic_json_update(
-        workspace_id,
-        MetadataCacheFile.HDF5_STRUCTURE,
-        {
-            relative_file_path: structure_dict,
-            STRUCTURE_VERSION_KEY: HDF5_STRUCTURE_VERSION,
-        },
-    )
+    def merge(data: dict) -> None:
+        data[relative_file_path] = structure_dict
+        versions = data.get(STRUCTURE_VERSION_KEY)
+        data[STRUCTURE_VERSION_KEY] = {
+            **(versions if isinstance(versions, dict) else {}),
+            relative_file_path: HDF5_STRUCTURE_VERSION,
+        }
+
+    _locked_json_edit(workspace_id, MetadataCacheFile.HDF5_STRUCTURE, merge)
 
     return structure_dict
 
