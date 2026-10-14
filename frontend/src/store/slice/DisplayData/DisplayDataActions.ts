@@ -43,6 +43,7 @@ import {
 } from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
+  DisplayData,
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
@@ -86,13 +87,31 @@ export const getTimeSeriesInitData = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; itemId: number; isFull?: boolean }
+  { path: string; itemId: number; isFull?: boolean },
+  { state: { displayData: DisplayData } }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesInitData`,
   async ({ path, isFull }, thunkAPI) => {
+    const cached = thunkAPI.getState().displayData.timeSeries[path]?.data ?? {}
     try {
       const response = await getTimeSeriesInitDataApi(path, isFull)
-      return response
+      // One point per record, so refetch the records another item loaded in full
+      const reload = Object.keys(response.data).filter(
+        (key) =>
+          Object.keys(cached[key] ?? {}).length > 1 &&
+          Object.keys(response.data[key]).length === 1,
+      )
+      const records = await Promise.all(
+        reload.map((index) => getTimeSeriesDataByIdApi(path, index, isFull)),
+      )
+      const data = { ...response.data }
+      const std = { ...response.std }
+      records.forEach((record, i) => {
+        const key = reload[i]
+        data[key] = record.data[key]
+        if (record.std[key] !== undefined) std[key] = record.std[key]
+      })
+      return { ...response, data, std }
     } catch (e) {
       return thunkAPI.rejectWithValue(e)
     }

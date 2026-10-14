@@ -1,6 +1,5 @@
 import { createSlice, isAnyOf } from "@reduxjs/toolkit"
 
-import { TimeSeriesData } from "api/visualizations/Outputs"
 import {
   getCsvData,
   getHeatMapData,
@@ -239,15 +238,14 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getTimeSeriesInitData.fulfilled, (state, action) => {
         const { path } = action.meta.arg
-        const entry = state.timeSeries[path]
-        entry.pending = false
-        entry.fulfilled = true
-        entry.error = null
+        state.timeSeries[path].pending = false
+        state.timeSeries[path].fulfilled = true
+        state.timeSeries[path].error = null
 
-        entry.xrange = action.payload.xrange
-        entry.meta = action.payload.meta
-        entry.data = keepFetchedRecords(entry.data, action.payload.data)
-        entry.std = keepFetchedRecords(entry.std, action.payload.std)
+        state.timeSeries[path].xrange = action.payload.xrange
+        state.timeSeries[path].meta = action.payload.meta
+        state.timeSeries[path].data = action.payload.data
+        state.timeSeries[path].std = action.payload.std
       })
       .addCase(getHeatMapData.pending, (state, action) => {
         const { path } = action.meta.arg
@@ -745,21 +743,6 @@ export const displayDataSlice = createSlice({
       )
   },
 })
-
-// The init response holds one point per record; a record already fetched by id keeps its full series
-function keepFetchedRecords(
-  existing: TimeSeriesData,
-  incoming: TimeSeriesData,
-): TimeSeriesData {
-  return Object.fromEntries(
-    Object.entries(incoming).map(([key, record]) => [
-      key,
-      Object.keys(existing[key] ?? {}).length > Object.keys(record).length
-        ? existing[key]
-        : record,
-    ]),
-  )
-}
 
 function deleteDisplayDataFn(
   state: DisplayData,
