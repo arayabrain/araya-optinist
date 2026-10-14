@@ -3,7 +3,8 @@
 - EFS: the snakemake volume containerPath is correct and consistent across
   all ECS task definitions.
 - Free-tier ASG scale-in: ECS managed draining can complete its lifecycle
-  hook, and the termination policy spares long-held sticky sessions.
+  hook, the termination policy spares long-held sticky sessions, and no
+  logging-only hook delays a launch or a termination.
 """
 
 import re
@@ -95,3 +96,17 @@ class TestFreeAsgScaleIn:
         the free task fills one), so the hook waits out its 3600 s timeout
         again. Raising this needs that solved first."""
         assert attribute(self.service, "deployment_minimum_healthy_percent") == "0"
+
+    def test_asg_declares_no_initial_lifecycle_hook(self):
+        """A hook nothing completes holds every launch in ``Pending:Wait`` and
+        every termination in ``Terminating:Wait`` for its full timeout. The
+        only hook the group needs is the one ECS installs for draining."""
+        assert not re.search(r"^\s*initial_lifecycle_hook\s*\{", self.asg, re.MULTILINE)
+
+    def test_asg_ignores_changes_to_initial_lifecycle_hook(self):
+        """``initial_lifecycle_hook`` is ForceNew and never read back from
+        AWS, so the hooks a group was created with stay in state; without
+        this the removed blocks replace the group."""
+        ignored = attribute(self.asg, "ignore_changes")
+        assert re.fullmatch(r"\[.*\]", ignored), f"not a list: {ignored}"
+        assert "initial_lifecycle_hook" in re.findall(r"\w+", ignored)

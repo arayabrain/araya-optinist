@@ -321,27 +321,19 @@ resource "aws_autoscaling_group" "main" {
     }
   }
 
+  # No initial_lifecycle_hook: the group's only hook is ECS's
+  # ecs-managed-draining-termination-hook, which ECS installs and completes.
+  # - initial_lifecycle_hook is ForceNew and never refreshed from AWS, so the
+  #   hooks a group was created with stay in state; removing the blocks alone
+  #   would replace the group. ignore_changes keeps it in place
+  # - existing groups: delete the retired hooks with delete-lifecycle-hook
+  # - new groups: created without them
   lifecycle {
-    ignore_changes = [desired_capacity]
+    ignore_changes = [desired_capacity, initial_lifecycle_hook]
   }
 
   timeouts {
     delete = "30m"
-  }
-
-  # Lifecycle hooks for logging
-  initial_lifecycle_hook {
-    name                 = "${local.env_prefix}-launch-hook"
-    default_result       = "CONTINUE"
-    heartbeat_timeout    = 300
-    lifecycle_transition = "autoscaling:EC2_INSTANCE_LAUNCHING"
-  }
-
-  initial_lifecycle_hook {
-    name                 = "${local.env_prefix}-terminate-hook"
-    default_result       = "CONTINUE"
-    heartbeat_timeout    = 300
-    lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
   }
 }
 
