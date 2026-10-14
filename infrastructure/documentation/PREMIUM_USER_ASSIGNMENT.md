@@ -670,7 +670,7 @@ adopts instances that have no existing row at all.
 |---|---|---|---|---|---|
 | **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | On-demand (user `/assign`) | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (the inline DELETE/INSERT lives in the Tier 3 block of `assign_premium_user()`) | `start_instances` (via `start_standby_instance()`) |
 | **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | On-demand (migration) | DELETE the `is_standby=1` row (inline DELETE inside `try_reserve_instance_for_migration()`), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
-| **Terminated (aged)** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | Every 15 min (monitor); age > `PREMIUM_STOPPED_MAX_AGE_HOURS` | DELETE the row | `terminate_instances` |
+| **Terminated (aged)** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | Every 15 min (monitor); age > `PREMIUM_STOPPED_MAX_AGE_HOURS`, EC2 state `stopped`, not a base instance (`PREMIUM_INSTANCE_IDS`) | DELETE the row (a row found `running` in EC2 is corrected instead) | `terminate_instances` |
 | **Terminated (excess)** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first** | Every 15 min (monitor) | DELETE the row | `terminate_instances` |
 | **Cleaned up** | `cleanup_failed_standby_instances()` | Scheduled monitor, first standby step | Every 15 min (monitor) | DELETE the row | None (EC2 already gone from AWS; this is pure DB orphan cleanup) |
 | **Cleared** | `ensure_standby_pool_capacity()` [**Cleanup Lambda**] | Hourly cleanup schedule, when `standby_stopped > target_stopped` | Hourly (Cleanup Lambda) | UPDATE `is_standby = 0` on the oldest excess rows (ordered by `last_activity DESC` keep-the-newest) | None (row becomes a normal stopped-instance row; Manager will reclaim via scale-down) |
@@ -731,7 +731,9 @@ touchpoints run in this order:
 3. `register_orphaned_stopped_instances()` -- adopts any AWS-stopped
    premium instance that has no row at all.
 4. `terminate_aged_stopped_instances()` -- enforces
-   `PREMIUM_STOPPED_MAX_AGE_HOURS`.
+   `PREMIUM_STOPPED_MAX_AGE_HOURS` on standbys EC2 reports as stopped.
+   A row's `instance_state` can be stale (the dev scheduler starts
+   instances without touching it), so the EC2 state decides.
 5. If `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`, call
    `cleanup_excess_standby_instances(excess)` -- oldest-first trim.
 
@@ -744,7 +746,7 @@ the non-standby steps) is enumerated in
 | Env var | Code default | Terraform default | Effect |
 |---|---|---|---|
 | `PREMIUM_STANDBY_POOL_SIZE` | `1` | `1` | Target count of stopped standby EC2s. `create_and_stop_standby_instance()` refuses to add more once this is hit; `cleanup_excess_standby_instances()` trims the oldest above it. Increasing this improves assignment latency for bursts at the cost of steady-state EBS storage. |
-| `PREMIUM_STOPPED_MAX_AGE_HOURS` | `4` | `4` | How long an individual stopped standby EC2 may live before `terminate_aged_stopped_instances()` terminates it. Bounds EBS accumulation and forces periodic launch-template refresh. The age source is the EC2 `StateTransitionReason` timestamp, falling back to `standby_created_at` if not parseable. |
+| `PREMIUM_STOPPED_MAX_AGE_HOURS` | `4` | `4` | How long an individual stopped standby EC2 may live before `terminate_aged_stopped_instances()` terminates it. Bounds EBS accumulation and forces periodic launch-template refresh. The age source is the EC2 `StateTransitionReason` timestamp, falling back to `standby_created_at` if not parseable. Only instances EC2 reports as `stopped` are aged: a running instance has an empty `StateTransitionReason`, so the fallback would otherwise date it from `standby_created_at`. Base instances (`PREMIUM_INSTANCE_IDS`) are never terminated. |
 | `PREMIUM_EXTRA_CAPACITY` | `2` | `1` | Used by `calculate_max_capacity()` for scale-up ceiling; **not** a standby-pool knob despite the adjacent name. Included here only to disambiguate against `PREMIUM_STANDBY_POOL_SIZE`. |
 
 Terraform overrides take precedence over the code defaults at deploy time;
