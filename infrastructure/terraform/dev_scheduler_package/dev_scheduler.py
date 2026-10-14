@@ -111,6 +111,13 @@ TRANSIENT_RDS_STATUSES = {
 PROXY_REGISTER_POLL_SECONDS = 90
 PROXY_REGISTER_POLL_INTERVAL = 10
 
+# On stop, wait this long for the scaled-down services' tasks to stop before
+# terminating the free ASG and stopping NAT. The ECS agent reports a stopped
+# task only through NAT (no ECS VPC endpoints); a task still RUNNING to ECS
+# keeps the managed-draining hook renewed until NAT is back next morning.
+TASK_STOP_WAIT_SECONDS = 180
+TASK_STOP_POLL_INTERVAL = 10
+
 rds = boto3.client("rds")
 ec2 = boto3.client("ec2")
 ecs = boto3.client("ecs")
@@ -426,6 +433,14 @@ def stop_environment(stop_mode="destroy"):
             update_ecs_services(
                 os.environ["CLUSTER_NAME"], [public_service], desired_count=0
             )
+        )
+
+    # 3c. Wait for those tasks to stop while NAT is still up (see
+    #     TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the stop
+    #     carries on, and the drain then waits for NAT as before.
+    if ecs_services:
+        results["ecs_tasks_stopped"] = wait_for_service_tasks_stopped(
+            os.environ["CLUSTER_NAME"], ecs_services
         )
 
     # 4. Scale down ASG (terminates free tier instances)
@@ -822,6 +837,35 @@ def update_ecs_services(cluster_name, service_names, desired_count):
             print(f"ECS service {service_name}: error - {e}")
             results[f"ecs_{service_name}"] = f"error: {e}"
     return results
+
+
+def wait_for_service_tasks_stopped(cluster_name, service_names):
+    """Poll until the services report no running or pending tasks.
+
+    Returns "stopped", or "timeout: <service>=<running>/<pending> ..." after
+    TASK_STOP_WAIT_SECONDS. Never "error..." — the caller treats a timeout as
+    a warning so the rest of the stop still runs.
+    """
+    deadline = time.monotonic() + TASK_STOP_WAIT_SECONDS
+    while True:
+        try:
+            resp = ecs.describe_services(cluster=cluster_name, services=service_names)
+            remaining = {
+                s["serviceName"]: (s["runningCount"], s["pendingCount"])
+                for s in resp["services"]
+                if s["runningCount"] or s["pendingCount"]
+            }
+        except Exception as e:
+            print(f"describe_services failed while waiting for tasks: {e}")
+            remaining = {"describe_services": ("?", "?")}
+        if not remaining:
+            print("ECS services: all tasks stopped")
+            return "stopped"
+        if time.monotonic() >= deadline:
+            detail = " ".join(f"{n}={r}/{p}" for n, (r, p) in remaining.items())
+            print(f"ECS services: tasks still running after wait - {detail}")
+            return f"timeout: {detail}"
+        time.sleep(TASK_STOP_POLL_INTERVAL)
 
 
 def cleanup_dynamic_premium_instances():

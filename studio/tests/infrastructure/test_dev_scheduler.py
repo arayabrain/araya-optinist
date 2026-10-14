@@ -319,6 +319,63 @@ class TestStartInstance:
         assert result.startswith("error:")
 
 
+def _services(**counts):
+    """describe_services response: name=(running, pending)."""
+    return {
+        "services": [
+            {"serviceName": n, "runningCount": r, "pendingCount": p}
+            for n, (r, p) in counts.items()
+        ]
+    }
+
+
+class TestWaitForServiceTasksStopped:
+    @pytest.fixture
+    def clock(self, ds, monkeypatch):
+        """Fake monotonic clock that advances one poll interval per sleep."""
+        module, _ = ds
+        now = [0.0]
+        monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(
+            module.time,
+            "sleep",
+            lambda s: now.__setitem__(0, now[0] + s),
+        )
+        return now
+
+    def test_returns_at_once_when_nothing_runs(self, ds, clock):
+        module, clients = ds
+        clients["ecs"].describe_services.return_value = _services(a=(0, 0), b=(0, 0))
+        assert module.wait_for_service_tasks_stopped("c", ["a", "b"]) == "stopped"
+        assert clients["ecs"].describe_services.call_count == 1
+
+    def test_polls_until_tasks_stop(self, ds, clock):
+        module, clients = ds
+        clients["ecs"].describe_services.side_effect = [
+            _services(a=(1, 0), b=(0, 0)),
+            _services(a=(0, 1), b=(0, 0)),
+            _services(a=(0, 0), b=(0, 0)),
+        ]
+        assert module.wait_for_service_tasks_stopped("c", ["a", "b"]) == "stopped"
+        assert clients["ecs"].describe_services.call_count == 3
+
+    def test_times_out_with_a_warning_not_an_error(self, ds, clock):
+        """``stop_environment`` raises on any result starting with "error";
+        a slow task must not fail the whole stop."""
+        module, clients = ds
+        clients["ecs"].describe_services.return_value = _services(a=(1, 0), b=(0, 0))
+        result = module.wait_for_service_tasks_stopped("c", ["a", "b"])
+        assert result == "timeout: a=1/0"
+        assert clock[0] >= module.TASK_STOP_WAIT_SECONDS
+
+    def test_describe_failure_keeps_waiting_then_times_out(self, ds, clock):
+        module, clients = ds
+        clients["ecs"].describe_services.side_effect = RuntimeError("throttled")
+        result = module.wait_for_service_tasks_stopped("c", ["a"])
+        assert result.startswith("timeout:")
+        assert not result.startswith("error")
+
+
 class TestStopInstance:
     def test_stops_when_running(self, ds):
         module, clients = ds
@@ -915,6 +972,7 @@ class TestStopEnvironment:
             "update_ecs_services": MagicMock(
                 return_value={"ecs_svc-a": "desired_count=0"}
             ),
+            "wait_for_service_tasks_stopped": MagicMock(return_value="stopped"),
             "scale_asg": MagicMock(return_value="min=0,desired=0"),
             "stop_instance": MagicMock(return_value="stopping"),
             "destroy_rds": MagicMock(return_value="deleting"),
@@ -925,6 +983,42 @@ class TestStopEnvironment:
             mock.__name__ = name  # with_retry logs fn.__name__ on retries
             monkeypatch.setattr(module, name, mock)
         return module, clients, helpers
+
+    def test_waits_for_tasks_before_terminating_free_asg_and_stopping_nat(
+        self, patched
+    ):
+        """The task must be reported stopped while NAT is still up; otherwise
+        ECS keeps the managed-draining hook renewed until NAT returns."""
+        module, _, helpers = patched
+        calls = []
+        helpers["update_ecs_services"].side_effect = lambda *a, **k: (
+            calls.append("ecs_desired_0") or {"ecs_svc-a": "desired_count=0"}
+        )
+        helpers["wait_for_service_tasks_stopped"].side_effect = lambda *a, **k: (
+            calls.append("wait") or "stopped"
+        )
+        helpers["scale_asg"].side_effect = lambda *a, **k: (
+            calls.append(f"asg:{a[0]}") or "min=0,desired=0"
+        )
+        helpers["stop_instance"].side_effect = lambda *a, **k: (
+            calls.append(f"stop:{a[0]}") or "stopping"
+        )
+        module.stop_environment(stop_mode="stop")
+        wait = calls.index("wait")
+        assert calls.index("ecs_desired_0") < wait
+        assert wait < calls.index("asg:test-asg")
+        assert wait < calls.index("stop:i-nat")
+        helpers["wait_for_service_tasks_stopped"].assert_called_once_with(
+            "test-cluster", ["svc-a", "svc-b"]
+        )
+
+    def test_task_wait_timeout_does_not_fail_the_stop(self, patched):
+        module, _, helpers = patched
+        helpers["wait_for_service_tasks_stopped"].return_value = "timeout: svc-a=1/0"
+        result = module.stop_environment(stop_mode="stop")
+        assert result["statusCode"] == 200
+        assert result["results"]["ecs_tasks_stopped"] == "timeout: svc-a=1/0"
+        helpers["scale_asg"].assert_any_call("test-asg", min_size=0, desired=0)
 
     def test_skipped_when_override_active(self, patched):
         module, _, helpers = patched

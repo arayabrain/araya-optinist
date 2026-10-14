@@ -341,10 +341,11 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         Action   = "lambda:InvokeFunction"
         Resource = aws_lambda_function.premium_manager.arn
       },
-      # ECS service scaling (set desired_count 0 on stop, 1 on start)
+      # ECS service scaling (set desired_count 0 on stop, 1 on start), and
+      # reading the counts back to wait for tasks to stop before NAT goes
       {
         Effect = "Allow"
-        Action = "ecs:UpdateService"
+        Action = ["ecs:UpdateService", "ecs:DescribeServices"]
         Resource = [
           aws_ecs_service.autoscaling.id,
           aws_ecs_service.premium.id,
