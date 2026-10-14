@@ -271,10 +271,10 @@ def handle_asg_event(event, context):
                 "body": json.dumps({"message": "Event ignored - different ASG"}),
             }
 
-        # Only a completed termination may lower the ECS desired count: by
-        # then the instance is gone, so ECS has no choice of task to make.
-        terminated = event_type == "EC2 Instance Terminate Successful"
-        synced = sync_ecs_to_asg(allow_decrease=terminated)
+        # Every event syncs the same way: ECS follows the ASG up, and down to
+        # the instances still in the group (a completed termination has left
+        # it, so the count is one lower).
+        synced = sync_ecs_to_asg()
 
         if synced["changed"]:
             return {
@@ -520,43 +520,40 @@ def set_scaling_lock(in_progress: bool) -> None:
         print(f"Warning: Could not set scaling lock: {e}")
 
 
-def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
+def sync_ecs_to_asg() -> Dict[str, Any]:
     """
-    Point the ECS service's desired count at the ASG's desired capacity.
+    Point the ECS service's desired count at the ASG.
 
     The ASG is the source of truth for free-tier capacity. An instance the ASG
     launched but ECS placed no task on cannot answer /health, so it is an
     unhealthy target serving nobody. Terraform no longer corrects this
     (desired_count is ignored there), so this is the only thing that does.
 
-    Callers and direction:
+    Direction, the same on every call (launch and terminate events, every
+    scheduled run):
 
-    - ASG launch event, and every scheduled run: raise only.
-    - ASG terminate event: `allow_decrease=True`, which lowers by **one**.
+    - raise to the ASG's desired capacity when ECS is below it;
+    - lower to the number of instances still in the group, counting every
+      lifecycle state, and never below the ASG's desired capacity.
 
-    One per event, not straight to the ASG target: the event is per instance,
-    so a 4 -> 2 scale-in produces two of them. Taking ECS from 4 to 2 on the
-    first would leave the second instance still deregistering while ECS has to
-    stop two tasks, and it chooses which -- possibly a survivor's. One
-    decrement per completed termination keeps the count at the number of
-    instances that have not finished terminating, and the second event
-    converges it.
+    The floor is the instance count, not "one less per terminate event". The
+    events of a multi-instance scale-in complete within the same second and
+    are handled concurrently; two handlers that each read 4 and write 3 leave
+    ECS one too high for good. Counting what is still in the group is
+    idempotent, so the last handler, and any later scheduled run, converge it.
 
-    A lost event therefore leaves ECS one too high, which costs a pending task
-    rather than a stopped one, and `HEALTH-05` reports the mismatch.
-
-    Why decreases wait for the terminate event: on scale-in the ASG
-    deregisters the instance and waits out the target group's deregistration
-    delay (300 s by default) *before* the terminate hook, and ECS still sees
-    the container instance as ACTIVE throughout. Lowering the desired count in
-    that window lets ECS pick which task to stop by AZ balance -- possibly the
-    survivor's -- leaving no healthy free target until a replacement boots.
+    Why the floor counts instances that are still terminating: on scale-in
+    the ASG deregisters the instance and waits out the target group's
+    deregistration delay (300 s by default) *before* the terminate hook, and
+    ECS still sees the container instance as ACTIVE throughout. Lowering the
+    desired count while it is in the group would let ECS pick which task to
+    stop by AZ balance -- possibly a survivor's -- leaving no healthy free
+    target until a replacement boots. Once the instance has left the group,
+    its task is already gone, so lowering to the remaining count stops nothing.
 
     Raising is always safe, and is the only direction a missed sync can need:
-    the state it leaves behind is an instance without a task.
-
-    Args:
-        allow_decrease: Permit lowering the ECS desired count
+    the state it leaves behind is an instance without a task. A missed lower
+    costs a pending task until the next scheduled run.
 
     Returns:
         Dictionary with asg_desired, ecs_previous and whether it changed
@@ -571,8 +568,10 @@ def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
     if not asg_response["AutoScalingGroups"]:
         raise ValueError(f"ASG {asg_name} not found")
 
-    asg_desired = asg_response["AutoScalingGroups"][0]["DesiredCapacity"]
-    print(f"ASG desired capacity: {asg_desired}")
+    asg = asg_response["AutoScalingGroups"][0]
+    asg_desired = asg["DesiredCapacity"]
+    in_group = len(asg.get("Instances", []))
+    print(f"ASG desired capacity: {asg_desired}, instances in the group: {in_group}")
 
     ecs_response = ecs_client.describe_services(
         cluster=cluster_name, services=[service_name]
@@ -594,20 +593,21 @@ def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
     target = asg_desired
 
     if asg_desired < ecs_desired:
-        if not allow_decrease:
+        # Lower to what is still in the group, never below the ASG target.
+        floor = max(asg_desired, in_group)
+        if ecs_desired <= floor:
             print(
-                f"ECS ({ecs_desired}) is above the ASG ({asg_desired}); "
-                f"leaving it to the terminate event rather than choosing a "
-                f"task to stop mid-deregistration"
+                f"ECS ({ecs_desired}) is above the ASG ({asg_desired}) but not "
+                f"above the {in_group} instance(s) still in the group; leaving "
+                f"it until they have left rather than choosing a task to stop "
+                f"mid-deregistration"
             )
             return {
                 "asg_desired": asg_desired,
                 "ecs_previous": ecs_desired,
                 "changed": False,
             }
-
-        # One completed termination, one decrement.
-        target = max(asg_desired, ecs_desired - 1)
+        target = floor
 
     print(f"Syncing ECS from {ecs_desired} to {target}")
     ecs_client.update_service(

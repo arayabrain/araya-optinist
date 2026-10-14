@@ -529,8 +529,9 @@ instance itself; a refused call is logged and retried next run.
 -> `select_instances_to_terminate()` ->
 `autoscaling_client.terminate_instance_in_auto_scaling_group()`
 
-ECS is not lowered here. The terminate event lowers it by one
-once the instance is gone, as for any other termination.
+ECS is not lowered here. The terminate events lower it to the
+instances still in the group, as for any other termination
+(Edge Case 4).
 
 #### scale_up_wait_budget()
 
@@ -774,20 +775,32 @@ so it is an unhealthy target serving nobody. Terraform does not correct this —
 `desired_count` is under `ignore_changes` — so the Lambda is the only thing
 that does.
 
-**Solution:** `sync_ecs_to_asg()`, **raise-only except on a completed
-termination**:
+**Solution:** `sync_ecs_to_asg()`, the same rule on every call — launch and
+terminate events, and every scheduled run as the backstop for a missed event
+(never retried):
 
-| Caller | Direction |
-|---|---|
-| `handle_asg_event()`, launch event | raise only |
-| Every scheduled run (backstop for a missed event, which is never retried) | raise only |
-| `handle_asg_event()`, `EC2 Instance Terminate Successful` | may lower |
+```
+ECS desired = max(ASG desired, instances still in the group, any lifecycle state)
+```
 
-Lowering waits for the termination because on scale-in the ASG waits out the
-target group's deregistration delay (300 s) *before* the terminate hook, with
-the container instance still ACTIVE in ECS. Lowering inside that window lets
-ECS stop a task chosen by AZ balance — possibly the survivor's — leaving no
-healthy target. `scale_service()` follows the same rule on decreases.
+- **Raise** to the ASG's desired capacity when ECS is below it.
+- **Lower** only to the number of instances still in the group, never below
+  the ASG's desired capacity.
+
+Why the floor counts instances that are still terminating: on scale-in the
+ASG waits out the target group's deregistration delay (300 s) *before* the
+terminate hook, with the container instance still ACTIVE in ECS. Lowering
+while it is in the group would let ECS stop a task chosen by AZ balance —
+possibly the survivor's — leaving no healthy target. Once the instance has
+left the group its task is already gone, so lowering to the remaining count
+stops nothing.
+
+Why a count and not "one less per terminate event": the terminations of a
+multi-instance scale-in complete within the same second and their events are
+handled concurrently. Two handlers that each read 4 and write 3 leave ECS one
+too high for good (observed on development, 2026-10-14, after a 4 → 1
+scale-in). The count is idempotent, so the last handler, or the next scheduled
+run, converges it. `scale_service()` never lowers ECS at all.
 
 
 ### 5. Unbalanced Distribution After Migration
