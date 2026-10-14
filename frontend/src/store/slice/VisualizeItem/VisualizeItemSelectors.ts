@@ -680,3 +680,13 @@ export const selectImageItemShowRoiLabels =
       throw new Error("invalid VisualaizeItemType")
     }
   }
+
+export const selectImageItemRoiOutline =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isImageItem(item)) {
+      return item.roiOutline
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }

@@ -56,8 +56,6 @@ export const selectingImageArea = createAsyncThunk<
   `${VISUALIZE_ITEM_SLICE_NAME}/selectingImageArea`,
   ({ itemId, range, callback }, thunkAPI) => {
     const { x, y } = range
-    const [x1, x2] = x.map(Math.round)
-    const [y1, y2] = y.map(Math.round)
     const selectedZList: string[] = []
     const items = selectVisualizeItems(thunkAPI.getState())
     const imageItem = items[itemId]
@@ -65,9 +63,13 @@ export const selectingImageArea = createAsyncThunk<
       const roiFilePath = imageItem.roiItem.filePath
       if (roiFilePath != null) {
         const roiData = selectRoiData(roiFilePath)(thunkAPI.getState())
+        const clamp = (v: number, max: number) =>
+          Math.min(Math.max(Math.round(v), 0), max)
+        const [x1, x2] = x.map((v) => clamp(v, (roiData[0]?.length ?? 0) - 1))
+        const [y1, y2] = y.map((v) => clamp(v, roiData.length - 1))
         for (let x = x1; x <= x2; x++) {
           for (let y = y1; y <= y2; y++) {
-            const z = roiData[y][x]
+            const z = roiData[y]?.[x]
             if (z != null) {
               const zNum = String(z) // indexとidのずれを回避
               if (!selectedZList.includes(zNum)) {
