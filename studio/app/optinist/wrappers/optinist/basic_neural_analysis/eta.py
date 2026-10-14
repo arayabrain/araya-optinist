@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from scipy.stats import mode
 
@@ -81,6 +83,29 @@ def calc_trigger_average(neural_data, trigger_idx, trigger_len, pre_event, post_
     return event_trigger_data
 
 
+def baseline_zscore(event_trigger_data, onset, baseline_window):
+    base = event_trigger_data[:, onset - baseline_window : onset]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(base, axis=1, keepdims=True)
+        sd = np.nanstd(base, axis=1, keepdims=True)
+        scale = np.nanmax(np.abs(base), axis=1, keepdims=True)
+    # skipped: baseline constant to 1e-6 of its scale, or no finite sample
+    skip = ~(sd > 1e-6 * np.maximum(scale, np.finfo(float).tiny))
+    sd[skip] = np.nan
+    return (event_trigger_data - mean) / sd, skip[:, 0]
+
+
+def nan_stats(data):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return (
+            np.nanmean(data, axis=0),
+            np.nanstd(data, axis=0, ddof=1),
+            np.sum(~np.isnan(data), axis=0),
+        )
+
+
 def ETA(
     neural_data: FluoData,
     behaviors_data: BehaviorData,
@@ -135,6 +160,16 @@ def ETA(
     pre_event = -abs(params["pre_event"])
     post_event = params["post_event"]
 
+    baseline_window = params.get("baseline_window") or 0
+    if baseline_window != int(baseline_window):
+        raise ValueError(f"baseline_window {baseline_window} must be a whole number")
+    baseline_window = int(baseline_window)
+    if baseline_window == 1 or not 0 <= baseline_window <= abs(pre_event):
+        raise ValueError(
+            f"baseline_window {baseline_window} must be 0 (off) or between 2 and "
+            f"abs(pre_event) {abs(pre_event)}: the baseline is the pre-onset frames"
+        )
+
     # calculate Triggers
     trigger_idxs, trigger_len, num_detected = calc_trigger(
         Y, params["trigger_type"], params["trigger_threshold"]
@@ -150,6 +185,11 @@ def ETA(
         f"Empty window: abs(pre_event) {abs(pre_event)} + trigger_len {trigger_len}"
         f" + post_event {post_event} must be > 0"
     )
+    if baseline_window and trigger_len + post_event < 0:
+        raise ValueError(
+            f"baseline_window needs the window to reach the onset: trigger_len "
+            f"{trigger_len} + post_event {post_event} must be >= 0"
+        )
 
     # calculate Triggered average
     event_trigger_data = calc_trigger_average(
@@ -179,28 +219,59 @@ def ETA(
         )
     assert num_event > 0, f"All {num_detected} triggers were dropped, see the log"
 
-    # (cell_number, event_time_lambda)
-    mean = np.mean(event_trigger_data, axis=0)
-    # Sample std; undefined with one event rather than a false zero
-    std = (
-        np.std(event_trigger_data, axis=0, ddof=1)
-        if num_event > 1
-        else np.full(mean.shape, np.nan)
-    )
-    sem = std / np.sqrt(num_event)
+    if baseline_window:
+        cells = (
+            np.asarray(cell_numbers) if iscell is not None else np.arange(X.shape[1])
+        )
+        nan_windows = int(np.isnan(event_trigger_data).any(axis=(1, 2)).sum())
+        if nan_windows:
+            logger.warning(
+                "ETA: NaN samples in %d event windows are excluded per time point",
+                nan_windows,
+            )
+        event_trigger_data, skip = baseline_zscore(
+            event_trigger_data, abs(pre_event), baseline_window
+        )
+        if skip.any():
+            logger.warning(
+                "ETA: %d event-cell pairs skipped for a constant baseline, cells %s",
+                int(skip.sum()),
+                cells[skip.any(axis=0)].tolist(),
+            )
+        mean, std, n_event = nan_stats(event_trigger_data)
+        empty = (n_event == 0).all(axis=0)
+        if empty.any():
+            logger.warning(
+                "ETA: cells %s have no event left and are NaN", cells[empty].tolist()
+            )
+        sem = std / np.sqrt(n_event)
+    else:
+        # (cell_number, event_time_lambda)
+        mean = np.mean(event_trigger_data, axis=0)
+        # Sample std; undefined with one event rather than a false zero
+        std = (
+            np.std(event_trigger_data, axis=0, ddof=1)
+            if num_event > 1
+            else np.full(mean.shape, np.nan)
+        )
+        sem = std / np.sqrt(num_event)
     mean = mean.transpose()
     std = std.transpose()
     sem = sem.transpose()
 
     # Overall mean across cells with its error band (std or sem across cells)
-    overall_mean = np.mean(mean, axis=0)
+    if baseline_window:
+        overall_mean, overall_std, n_cell = nan_stats(mean)
+    else:
+        overall_mean = np.mean(mean, axis=0)
+        n_cell = mean.shape[0]
     if mean.shape[0] < 2:
         logger.warning("mean_trace error band is undefined for a single cell")
         overall_band = np.full_like(overall_mean, np.nan)
     else:
-        overall_band = np.std(mean, axis=0, ddof=1)
+        overall_band = overall_std if baseline_window else np.std(mean, axis=0, ddof=1)
         if mean_trace_band == "sem":
-            overall_band = overall_band / np.sqrt(mean.shape[0])
+            overall_band = overall_band / np.sqrt(n_cell)
 
     nwbfile = {}
     nwbfile[NWBDATASET.POSTPROCESS] = {
