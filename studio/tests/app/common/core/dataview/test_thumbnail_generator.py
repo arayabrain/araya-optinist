@@ -64,6 +64,14 @@ class TestRenderArrayAsThumbnail:
         img = imageio.imread(output_path)
         assert (img == 255).sum() >= 100
 
+    def test_dense_noise_is_not_speckled_by_the_downsampling(self, output_path):
+        arr = np.random.default_rng(0).random((2000, 300)).astype(np.float32)
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert (img <= 10).mean() < 0.01
+
     def test_sparse_negative_events_survive_the_downsampling(self, output_path):
         arr = np.zeros((2000, 300), dtype=np.float32)
         arr[::100, ::50] = -1.0

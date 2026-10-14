@@ -128,16 +128,14 @@ class ThumbnailGenerator:
         else:
             new_h, new_w = h, w
         if not keep_aspect and (h > new_h or w > new_w):
-            # Block extreme farthest from the background, so sparse events of
-            # either sign survive the downsampling
+            # Pool toward the extreme farther from the median, so sparse events
+            # of either sign survive the downsampling and dense data stays even
             ys = (np.arange(min(new_h, h)) * h / min(new_h, h)).astype(int)
             xs = (np.arange(min(new_w, w)) * w / min(new_w, w)).astype(int)
-            hi = np.maximum.reduceat(np.maximum.reduceat(img_normalized, ys), xs, 1)
-            lo = np.minimum.reduceat(np.minimum.reduceat(img_normalized, ys), xs, 1)
-            background = int(np.median(img_normalized))
-            img_normalized = np.where(
-                hi.astype(int) - background >= background - lo.astype(int), hi, lo
-            )
+            counts = np.cumsum(np.bincount(img_normalized.ravel(), minlength=256))
+            low, median, high = np.searchsorted(counts, [1, counts[-1] / 2, counts[-1]])
+            pool = np.minimum if median - low > high - median else np.maximum
+            img_normalized = pool.reduceat(pool.reduceat(img_normalized, ys), xs, 1)
             h, w = img_normalized.shape
         if (new_h, new_w) != (h, w):
             # Simple resize using slicing (nearest neighbor)
