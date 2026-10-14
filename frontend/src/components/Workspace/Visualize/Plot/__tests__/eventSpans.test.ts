@@ -3,7 +3,9 @@ import { describe, it, expect } from "@jest/globals"
 import {
   buildShadeShapes,
   eventSpans,
+  nextShadeKeys,
   SHADE_COLORS,
+  SHADE_FETCH_LIMIT,
 } from "components/Workspace/Visualize/Plot/eventSpans"
 
 const X = [0, 1, 2, 3, 4, 5]
@@ -172,5 +174,31 @@ describe("buildShadeShapes span cache", () => {
     const scaled = build(xrange, 10)
     expect(reads).toBe(3)
     expect(scaled.shapes).toMatchObject([{ x0: 0.1, x1: 0.2 }])
+  })
+})
+
+describe("nextShadeKeys", () => {
+  const keys = ["1", "2", "3", "4", "5", "6"]
+  const data = Object.fromEntries(keys.map((key) => [key, {}]))
+
+  it("requests the first records in draw order, a few at a time", () => {
+    expect(nextShadeKeys(keys, data, {}, false)).toEqual(
+      keys.slice(0, SHADE_FETCH_LIMIT),
+    )
+  })
+
+  it("counts records already in flight and skips any requested before", () => {
+    const status = { "1": "pending", "2": "fulfilled", "3": "rejected" }
+    expect(nextShadeKeys(keys, data, status, false)).toEqual(
+      ["4", "5", "6"].slice(0, SHADE_FETCH_LIMIT - 1),
+    )
+  })
+
+  it("skips records the source has no data for", () => {
+    expect(nextShadeKeys(["9", "1"], data, {}, false)).toEqual(["1"])
+  })
+
+  it("requests nothing once the shapes are capped", () => {
+    expect(nextShadeKeys(keys, data, {}, true)).toEqual([])
   })
 })

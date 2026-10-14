@@ -24,6 +24,7 @@ import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContex
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import {
   buildShadeShapes,
+  nextShadeKeys,
   SHADE_COLORS,
   SHADE_RECORD_CAP,
   SHADE_TOTAL_CAP,
@@ -335,15 +336,6 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
       dispatch(retryRejectedTimeSeries({ path: shadePath }))
   }, [dispatch, shadePath])
 
-  useEffect(() => {
-    if (shadePath == null) return
-    ;(shadeKeys ?? []).forEach((key) => {
-      if (key in shadeData && !isShadeLoaded(key)) {
-        dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key }))
-      }
-    })
-  }, [dispatch, shadePath, shadeKeys, shadeData, isShadeLoaded])
-
   const failedShadeCount = (shadeKeys ?? []).filter(
     (key) => shadeById?.[key] === "rejected",
   ).length
@@ -360,6 +352,14 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
       ),
     [shadeXrange, shadeData, shadeKeys, rangeUnit, frameRate, isShadeLoaded],
   )
+
+  useEffect(() => {
+    if (shadePath == null) return
+    nextShadeKeys(shadeKeys ?? [], shadeData, shadeById, shade.capped).forEach(
+      (key) =>
+        dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key })),
+    )
+  }, [dispatch, shadePath, shadeKeys, shadeData, shadeById, shade.capped])
 
   const layout = useMemo(
     () => ({

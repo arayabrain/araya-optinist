@@ -107,17 +107,8 @@ export const displayDataSlice = createSlice({
       .addCase(getTimeSeriesDataById.rejected, (state, action) => {
         const { path, index, background } = action.meta.arg
         const entry = state.timeSeries[path]
-        if (entry && !isNoRoisFound(action.error.message)) {
-          // one record failed, so keep the others; only a user's request errors
-          entry.pending = false
-          entry.byId = { ...entry.byId, [index]: "rejected" }
-          if (background) {
-            entry.fulfilled = true
-          } else {
-            entry.fulfilled = false
-            entry.error = action.error.message ?? "rejected"
-          }
-        } else if (isNoRoisFound(action.error.message)) {
+        if (!entry) return
+        if (isNoRoisFound(action.error.message)) {
           state.timeSeries[path] = {
             type: "timeSeries",
             xrange: [],
@@ -128,16 +119,16 @@ export const displayDataSlice = createSlice({
             error: null, // Not an error state
             meta: { title: "0 ROIs found" }, // User-facing message
           }
+          return
+        }
+        // one record failed, so keep the others; only a user's request errors
+        entry.pending = false
+        entry.byId = { ...entry.byId, [index]: "rejected" }
+        if (background) {
+          entry.fulfilled = true
         } else {
-          state.timeSeries[path] = {
-            type: "timeSeries",
-            xrange: [],
-            data: {},
-            std: {},
-            pending: false,
-            fulfilled: false,
-            error: action.error.message ?? "rejected",
-          }
+          entry.fulfilled = false
+          entry.error = action.error.message ?? "rejected"
         }
       })
       .addCase(getTimeSeriesDataById.fulfilled, (state, action) => {

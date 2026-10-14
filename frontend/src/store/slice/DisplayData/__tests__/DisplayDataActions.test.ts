@@ -181,4 +181,14 @@ describe("getTimeSeriesDataByIdOnce", () => {
     })
     expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)
   })
+
+  it("does not recreate an entry deleted while its request was in flight", () => {
+    const state = reducer(undefined, {
+      type: getTimeSeriesDataById.rejected.type,
+      meta: { arg: { path, index: "1" } },
+      error: { message: "504" },
+    })
+
+    expect(state.timeSeries[path]).toBeUndefined()
+  })
 })

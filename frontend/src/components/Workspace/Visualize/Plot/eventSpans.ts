@@ -8,6 +8,21 @@ export const SHADE_COLORS = [
 
 export const SHADE_RECORD_CAP = 500
 export const SHADE_TOTAL_CAP = 2000
+export const SHADE_FETCH_LIMIT = 4
+
+// Source records to request next: in draw order, a few at a time, none once capped
+export function nextShadeKeys(
+  keys: string[],
+  data: { [key: string]: unknown },
+  status: { [key: string]: string } | undefined,
+  capped: boolean,
+): string[] {
+  if (capped) return []
+  const inFlight = keys.filter((key) => status?.[key] === "pending").length
+  return keys
+    .filter((key) => key in data && status?.[key] == null)
+    .slice(0, Math.max(0, SHADE_FETCH_LIMIT - inFlight))
+}
 
 export function eventSpans(
   x: number[],
