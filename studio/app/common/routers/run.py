@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
@@ -49,6 +50,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
+from studio.app.common.db.database import get_db, release_request_session
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 from studio.app.const import DATE_FORMAT
@@ -105,6 +107,7 @@ async def run(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
     try:
         await _check_storage_quota(current_user.id)
@@ -168,6 +171,10 @@ async def run(
             detail="Failed to run workflow.",
         )
 
+    finally:
+        # The run outlives the request; do not hold the guards' connection
+        release_request_session(db)
+
 
 @router.post(
     "/{workspace_id}/{uid}",
@@ -181,6 +188,7 @@ async def run_id(
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     try:
         await _check_storage_quota(current_user.id)
@@ -248,6 +256,10 @@ async def run_id(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to run workflow.",
             )
+
+    finally:
+        # The run outlives the request; do not hold the guards' connection
+        release_request_session(db)
 
 
 @router.post(
