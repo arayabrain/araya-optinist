@@ -372,7 +372,7 @@ def sync_ecs_to_asg(allow_decrease: bool = False) -> Dict[str, Any]:
 
     Why decreases wait for the terminate event: on scale-in the ASG
     deregisters the instance and waits out the target group's deregistration
-    delay (300 s by default) *before* the terminate hook, and ECS still sees
+    delay (300 s by default) *before* ECS's draining hook, and ECS still sees
     the container instance as ACTIVE throughout. Lowering the desired count in
     that window lets ECS pick which task to stop by AZ balance -- possibly the
     survivor's -- leaving no healthy free target until a replacement boots.

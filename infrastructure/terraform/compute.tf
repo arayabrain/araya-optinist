@@ -328,6 +328,8 @@ resource "aws_autoscaling_group" "main" {
   #   would replace the group. ignore_changes keeps it in place
   # - existing groups: delete the retired hooks with delete-lifecycle-hook
   # - new groups: created without them
+  # - a block added here is ignored on existing groups; declare a hook with
+  #   aws_autoscaling_lifecycle_hook instead
   lifecycle {
     ignore_changes = [desired_capacity, initial_lifecycle_hook]
   }

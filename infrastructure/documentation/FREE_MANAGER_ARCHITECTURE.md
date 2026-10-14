@@ -46,7 +46,7 @@
      the sticky cookie is re-issued on every response, so active users stay on
      the instance they started on, and the newest instance holds only sessions
      placed since it launched. It does not look at workload
-   - A scaled-in instance is released in about 8 minutes: the target group's
+   - A scaled-in instance is released in about 9 minutes: the target group's
      300 s deregistration delay, then ECS's draining hook, which ECS completes
      a few minutes after the task has stopped. The group declares no lifecycle
      hook of its own; its former logging-only launch and terminate hooks held
@@ -655,12 +655,16 @@ termination**:
 
 | Caller | Direction |
 |---|---|
-| `handle_asg_event()`, launch event | raise only |
+| `handle_asg_event()`, `EC2 Instance Launch Successful` (the instance is `InService`) | raise only |
 | Every scheduled run (backstop for a missed event, which is never retried) | raise only |
 | `handle_asg_event()`, `EC2 Instance Terminate Successful` | may lower |
 
+Launch Successful is the first launch-side event: the group declares no
+launch hook, so no `EC2 Instance-launch Lifecycle Action` is sent, and the
+task is placed after `InService` rather than during a hook wait.
+
 Lowering waits for the termination because on scale-in the ASG waits out the
-target group's deregistration delay (300 s) *before* the terminate hook, with
+target group's deregistration delay (300 s) *before* ECS's draining hook, with
 the container instance still ACTIVE in ECS. Lowering inside that window lets
 ECS stop a task chosen by AZ balance — possibly the survivor's — leaving no
 healthy target. `scale_service()` follows the same rule on decreases.

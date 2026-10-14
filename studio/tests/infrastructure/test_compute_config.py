@@ -100,7 +100,11 @@ class TestFreeAsgScaleIn:
     def test_asg_declares_no_initial_lifecycle_hook(self):
         """A hook nothing completes holds every launch in ``Pending:Wait`` and
         every termination in ``Terminating:Wait`` for its full timeout. The
-        only hook the group needs is the one ECS installs for draining."""
+        only hook the group needs is the one ECS installs for draining.
+
+        Also guards the ``ignore_changes`` carve-out: a block added here would
+        be silently ignored on existing groups. A hook belongs in an
+        ``aws_autoscaling_lifecycle_hook`` resource."""
         assert not re.search(r"^\s*initial_lifecycle_hook\s*\{", self.asg, re.MULTILINE)
 
     def test_asg_ignores_changes_to_initial_lifecycle_hook(self):

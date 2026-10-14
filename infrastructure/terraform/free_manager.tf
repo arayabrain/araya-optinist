@@ -350,7 +350,10 @@ resource "aws_cloudwatch_event_rule" "free_manager_asg_events" {
       "EC2 Instance Launch Successful",
       "EC2 Instance Terminate Successful",
       "EC2 Instance Launch Unsuccessful",
+      # Inert: the group declares no launch hook, so its first launch-side
+      # event is Launch Successful (InService). Kept for a hook added later
       "EC2 Instance-launch Lifecycle Action",
+      # Sent by ECS's draining hook
       "EC2 Instance-terminate Lifecycle Action"
     ]
     detail = {
