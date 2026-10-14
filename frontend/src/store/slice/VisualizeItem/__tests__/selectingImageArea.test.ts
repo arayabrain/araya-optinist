@@ -43,4 +43,10 @@ describe("selectingImageArea", () => {
     expect(await select([-2, 0.4], [-2, 0.4])).toEqual(["1"])
     expect(await select([1.6, 9], [-9, 9])).toEqual(["2"])
   })
+
+  it("walks only the field however far a zoomed-out box reaches", async () => {
+    const started = Date.now()
+    expect(await select([-3000, 3000], [-3000, 3000])).toEqual(["1", "2"])
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
 })
