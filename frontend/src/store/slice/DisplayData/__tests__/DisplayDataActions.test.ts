@@ -12,8 +12,10 @@ import {
 import {
   getStatus,
   getTimeSeriesAllData,
+  getTimeSeriesDataById,
   getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  retryRejectedTimeSeries,
 } from "store/slice/DisplayData/DisplayDataActions"
 import reducer from "store/slice/DisplayData/DisplayDataSlice"
 
@@ -124,6 +126,59 @@ describe("getTimeSeriesDataByIdOnce", () => {
     expect(entry.fulfilled).toBe(true)
     expect(entry.data).toEqual({ "1": { "0": 0 }, "2": { "0": 0, "1": 1 } })
     expect(entry.byId).toEqual({ "1": "rejected", "2": "fulfilled" })
+    expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)
+  })
+
+  it("shows the error of a failed request the user made, keeping the records", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "1": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockRejectedValueOnce(new Error("404"))
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.error).not.toBeNull()
+    expect(entry.data).toEqual({ "1": { "0": 0 } })
+    expect(entry.byId).toEqual({ "1": "rejected" })
+  })
+
+  it("requests a failed record once more after a retry, and only that one", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": { "0": 1, "1": 2 }, "1": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockRejectedValueOnce(new Error("504"))
+      .mockResolvedValueOnce({
+        data: { "1": { "0": 0, "1": 1 } },
+        xrange,
+        std: {},
+      })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+    await new Promise(process.nextTick)
+
+    store.dispatch(retryRejectedTimeSeries({ path }))
+    expect(store.getState().displayData.timeSeries[path].byId).toEqual({
+      "0": "fulfilled",
+    })
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+    await new Promise(process.nextTick)
+
+    expect(store.getState().displayData.timeSeries[path].byId).toEqual({
+      "0": "fulfilled",
+      "1": "fulfilled",
+    })
     expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)
   })
 })

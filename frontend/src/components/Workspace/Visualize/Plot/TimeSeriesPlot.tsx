@@ -43,6 +43,7 @@ import {
   getTimeSeriesDataById,
   getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  retryRejectedTimeSeries,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectRoiUniqueList,
@@ -328,6 +329,12 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     [shadeById],
   )
 
+  // one more try for records that failed, each time the box links a source
+  useEffect(() => {
+    if (shadePath != null)
+      dispatch(retryRejectedTimeSeries({ path: shadePath }))
+  }, [dispatch, shadePath])
+
   useEffect(() => {
     if (shadePath == null) return
     ;(shadeKeys ?? []).forEach((key) => {
@@ -336,6 +343,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
       }
     })
   }, [dispatch, shadePath, shadeKeys, shadeData, isShadeLoaded])
+
+  const failedShadeCount = (shadeKeys ?? []).filter(
+    (key) => shadeById?.[key] === "rejected",
+  ).length
 
   const shade = useMemo(
     () =>
@@ -487,6 +498,12 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
         <Typography variant="caption" color="text.secondary">
           Too many events: shading shows at most {SHADE_RECORD_CAP} per trace
           and {SHADE_TOTAL_CAP} in total.
+        </Typography>
+      )}
+      {failedShadeCount > 0 && (
+        <Typography variant="caption" color="error">
+          Shading could not load {failedShadeCount} trace(s) from the linked
+          box; relink it to try again.
         </Typography>
       )}
     </>

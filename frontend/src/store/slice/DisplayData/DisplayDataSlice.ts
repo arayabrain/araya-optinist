@@ -11,6 +11,7 @@ import {
   getBarData,
   getHTMLData,
   getTimeSeriesInitData,
+  retryRejectedTimeSeries,
   getHistogramData,
   getLineData,
   getPieData,
@@ -104,13 +105,18 @@ export const displayDataSlice = createSlice({
         entry.byId = { ...entry.byId, [index]: "pending" }
       })
       .addCase(getTimeSeriesDataById.rejected, (state, action) => {
-        const { path, index } = action.meta.arg
+        const { path, index, background } = action.meta.arg
         const entry = state.timeSeries[path]
         if (entry && !isNoRoisFound(action.error.message)) {
-          // one record failed: mark that record, leave the plot and the others
+          // one record failed, so keep the others; only a user's request errors
           entry.pending = false
-          entry.fulfilled = true
           entry.byId = { ...entry.byId, [index]: "rejected" }
+          if (background) {
+            entry.fulfilled = true
+          } else {
+            entry.fulfilled = false
+            entry.error = action.error.message ?? "rejected"
+          }
         } else if (isNoRoisFound(action.error.message)) {
           state.timeSeries[path] = {
             type: "timeSeries",
@@ -148,6 +154,13 @@ export const displayDataSlice = createSlice({
         }
         const entry = state.timeSeries[path]
         entry.byId = { ...entry.byId, [index]: "fulfilled" }
+      })
+      .addCase(retryRejectedTimeSeries, (state, action) => {
+        const entry = state.timeSeries[action.payload.path]
+        if (entry?.byId == null) return
+        entry.byId = Object.fromEntries(
+          Object.entries(entry.byId).filter(([, s]) => s !== "rejected"),
+        )
       })
       .addCase(getTimeSeriesAllData.pending, (state, action) => {
         const { path } = action.meta.arg

@@ -1,6 +1,11 @@
 import { AxiosError } from "axios"
 
-import { AnyAction, ThunkAction, createAsyncThunk } from "@reduxjs/toolkit"
+import {
+  AnyAction,
+  ThunkAction,
+  createAction,
+  createAsyncThunk,
+} from "@reduxjs/toolkit"
 
 import {
   TimeSeriesData,
@@ -107,7 +112,8 @@ export const getTimeSeriesDataById = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; index: string; isFull?: boolean }
+  // background: a request the user did not make, whose failure leaves the plot up
+  { path: string; index: string; isFull?: boolean; background?: boolean }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesDataById`,
   async ({ path, index, isFull }, thunkAPI) => {
@@ -130,9 +136,14 @@ export const getTimeSeriesDataByIdOnce =
     if (
       getState().displayData.timeSeries[arg.path]?.byId?.[arg.index] == null
     ) {
-      dispatch(getTimeSeriesDataById(arg))
+      dispatch(getTimeSeriesDataById({ ...arg, background: true }))
     }
   }
+
+// Forgets the records whose request failed, so they are requested once more
+export const retryRejectedTimeSeries = createAction<{ path: string }>(
+  `${DISPLAY_DATA_SLICE_NAME}/retryRejectedTimeSeries`,
+)
 
 export const getTimeSeriesAllData = createAsyncThunk<
   {
