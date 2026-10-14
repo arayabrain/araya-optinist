@@ -6496,3 +6496,67 @@ class TestTerminateAgedStoppedInstances:
         )
 
         assert terminated == ["i-aged"]
+
+
+class TestBaseInstanceNeverTerminatedAsStandby:
+    """A base instance (PREMIUM_INSTANCE_IDS) can be a standby - premium manager
+    stops it as idle like any other - but terminating it leaves Terraform state
+    and the dev scheduler pointing at an instance that no longer exists."""
+
+    def test_terminate_standby_instance_refuses_a_base_instance(
+        self, mock_env_vars_premium
+    ):
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_standby_instance
+
+            assert terminate_standby_instance(base_id) is False
+
+        ec2.terminate_instances.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_terminate_standby_instance_terminates_a_dynamic_instance(
+        self, mock_env_vars_premium
+    ):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_standby_instance
+
+            assert terminate_standby_instance("i-dynamic") is True
+
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+    def test_excess_trim_skips_a_base_instance_even_when_oldest(
+        self, mock_env_vars_premium
+    ):
+        """Oldest-first would pick the base instance every run; it is left out
+        of the candidates, so the next-oldest dynamic standby is trimmed."""
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        standbys = [
+            {"instance_id": base_id},
+            {"instance_id": "i-dynamic-old"},
+            {"instance_id": "i-dynamic-new"},
+        ]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_available_standby_instances", return_value=standbys
+        ), patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(1) == 1
+
+        mock_terminate.assert_called_once_with("i-dynamic-old")

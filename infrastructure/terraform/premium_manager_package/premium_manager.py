@@ -5147,13 +5147,31 @@ def convert_running_instance_to_standby(instance_id: str):
         return False
 
 
+def _base_instance_ids() -> set:
+    """Terraform-managed base premium instances (PREMIUM_INSTANCE_IDS).
+
+    They stay in Terraform state and in the dev scheduler's start/stop list,
+    so premium manager must never terminate one, even while it is a standby.
+    """
+    return {i for i in os.environ.get("PREMIUM_INSTANCE_IDS", "").split(",") if i}
+
+
 def cleanup_excess_standby_instances(excess_count: int):
-    """Remove excess standby instances (terminate oldest ones)"""
+    """Remove excess standby instances (terminate oldest ones).
+
+    Base instances are not candidates: one counted as a standby still
+    occupies a pool slot, and a dynamic standby is trimmed instead.
+    """
     removed_count = 0
 
     try:
         # Get all standby instances ordered by creation time (oldest first)
-        standby_instances = get_available_standby_instances()
+        base_instance_ids = _base_instance_ids()
+        standby_instances = [
+            s
+            for s in get_available_standby_instances()
+            if s["instance_id"] not in base_instance_ids
+        ]
 
         # Terminate the oldest excess instances
         for i in range(min(excess_count, len(standby_instances))):
@@ -5225,9 +5243,7 @@ def terminate_aged_stopped_instances():
     timestamp but serves as a conservative fallback.
     """
     max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
-    base_instance_ids = {
-        i for i in os.environ.get("PREMIUM_INSTANCE_IDS", "").split(",") if i
-    }
+    base_instance_ids = _base_instance_ids()
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
@@ -5348,7 +5364,14 @@ def terminate_aged_stopped_instances():
 
 
 def terminate_standby_instance(instance_id: str):
-    """Terminate a standby instance and clean up database entry"""
+    """Terminate a standby instance and clean up database entry.
+
+    Refuses a base instance (PREMIUM_INSTANCE_IDS) whatever the caller chose.
+    """
+    if instance_id in _base_instance_ids():
+        print(f"Refusing to terminate {instance_id}: Terraform-managed base instance")
+        return False
+
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:

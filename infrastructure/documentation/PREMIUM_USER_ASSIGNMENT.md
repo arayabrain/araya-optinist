@@ -671,7 +671,7 @@ adopts instances that have no existing row at all.
 | **Assigned** (Tier 3 happy path) | inline SQL inside `assign_premium_user()` Tier 3 | User `/assign` picks this standby | On-demand (user `/assign`) | DELETE the `is_standby=1` row, then INSERT a new `is_standby=0` user row (the inline DELETE/INSERT lives in the Tier 3 block of `assign_premium_user()`) | `start_instances` (via `start_standby_instance()`) |
 | **Migrated** (displaces a standby for migration) | DELETE inside `try_reserve_instance_for_migration()` | `process_shared_instance_optimization()` picks this instance to relocate a shared / autoscaling-pool user | On-demand (migration) | DELETE the `is_standby=1` row (inline DELETE inside `try_reserve_instance_for_migration()`), reservation row is inserted separately | `start_instances` (via `start_standby_instance()` from the migration path) |
 | **Terminated (aged)** | `terminate_aged_stopped_instances()` → `terminate_standby_instance()` | Scheduled monitor, hourly-style check | Every 15 min (monitor); age > `PREMIUM_STOPPED_MAX_AGE_HOURS`, EC2 state `stopped`, not a base instance (`PREMIUM_INSTANCE_IDS`) | DELETE the row (a row found `running` in EC2 is corrected instead) | `terminate_instances` |
-| **Terminated (excess)** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first** | Every 15 min (monitor) | DELETE the row | `terminate_instances` |
+| **Terminated (excess)** | `cleanup_excess_standby_instances()` → `terminate_standby_instance()` | Scheduled monitor when `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`; selects **oldest `standby_created_at` first**, never a base instance (`PREMIUM_INSTANCE_IDS`) | Every 15 min (monitor) | DELETE the row | `terminate_instances` |
 | **Cleaned up** | `cleanup_failed_standby_instances()` | Scheduled monitor, first standby step | Every 15 min (monitor) | DELETE the row | None (EC2 already gone from AWS; this is pure DB orphan cleanup) |
 | **Cleared** | `ensure_standby_pool_capacity()` [**Cleanup Lambda**] | Hourly cleanup schedule, when `standby_stopped > target_stopped` | Hourly (Cleanup Lambda) | UPDATE `is_standby = 0` on the oldest excess rows (ordered by `last_activity DESC` keep-the-newest) | None (row becomes a normal stopped-instance row; Manager will reclaim via scale-down) |
 
@@ -736,6 +736,11 @@ touchpoints run in this order:
    instances without touching it), so the EC2 state decides.
 5. If `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`, call
    `cleanup_excess_standby_instances(excess)` -- oldest-first trim.
+
+A base instance (`PREMIUM_INSTANCE_IDS`) can be a standby -- step 2 stops
+it as idle like any other -- but neither step 4 nor step 5 terminates it,
+and `terminate_standby_instance()` refuses one from any caller. It stays
+in Terraform state and in the dev scheduler's start/stop list.
 
 The full 12-step sequence of `handle_scheduled_monitoring()` (including
 the non-standby steps) is enumerated in
