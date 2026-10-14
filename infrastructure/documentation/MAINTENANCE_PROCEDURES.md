@@ -79,6 +79,7 @@ The infrastructure lead has Terraform access and handles infrastructure-level ch
 | **Weekly** | Full weekly health check | On-call maintainer | Run `weekly-maintenance.sh` |
 | **Monthly** | Full monthly review | On-call maintainer + Infrastructure lead | Run `monthly-maintenance.sh` |
 | **Monthly** | Post monthly summary | On-call maintainer | Fill in rotation summary in monthly report |
+| **Monthly** | Refresh the NAT instance AMI | Infrastructure lead | Manual (see [NAT Instance AMI Refresh](#nat-instance-ami-refresh)) |
 | **Quarterly** | Rotate AWS secrets | Infrastructure lead | Manual (see [Quarterly Checks](#quarterly-checks)) |
 | **Quarterly** | Review and update ASG capacity settings | Infrastructure lead | Manual |
 | **Quarterly** | Review RDS storage growth | Infrastructure lead | Manual |
@@ -823,6 +824,7 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 - Review GitHub security alerts (Dependabot)
 - Run `pip audit` on Python dependencies
 - Run `npm audit` on frontend dependencies
+- Refresh the NAT instance AMI if a newer one exists ([NAT Instance AMI Refresh](#nat-instance-ami-refresh))
 
 ### Quarterly
 
@@ -836,6 +838,88 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 
 - Apply critical security patches immediately (hotfix procedure in DEPLOYMENT_PROCEDURE.md)
 - Respond to AWS security advisories
+
+### NAT Instance AMI Refresh
+
+The NAT instances (`aws_instance.nat`, and `aws_instance.nat2` when `enable_second_nat` is set) ignore
+changes to `ami` and `user_data`. A newer Amazon Linux 2023 image, or an edit to the NAT `user_data`,
+never appears in a plan: the instance is patched only when it is replaced on purpose, with this procedure.
+
+**Why it is deliberate.** Replacing a NAT instance takes private-subnet internet egress down for two to five
+minutes: SSM sessions, Firebase authentication and any external API call fail meanwhile. The replacement
+must also be applied together with its dependents — the Elastic IP and both private route tables — or they
+keep pointing at the destroyed instance. A `-target` apply never includes them, so **never replace a NAT
+instance in a targeted apply**.
+
+**1. Check whether a refresh is due.** Compare the running image with the newest matching one:
+
+```bash
+ENV_PREFIX=subscr-optinist   # development: <environment>-optinist
+
+aws ec2 describe-instances --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
+            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,ImageId]' \
+  --output table
+
+# The same filter as data.aws_ami.nat_instance
+aws ec2 describe-images --region ap-northeast-1 --owners amazon \
+  --filters 'Name=name,Values=al2023-ami-2023.*-x86_64' \
+            'Name=virtualization-type,Values=hvm' 'Name=architecture,Values=x86_64' \
+  --query 'sort_by(Images,&CreationDate)[-1].[ImageId,Name,CreationDate]' \
+  --output table
+```
+
+If every NAT instance already runs the newest image, and the NAT `user_data` has not changed since it
+launched, there is nothing to do.
+
+**2. Choose the window.** Production: a low-traffic time, announced like any other maintenance.
+Development: during the dev scheduler's daytime hours, while the NAT is running.
+
+**3. Plan the replacement as a full plan**, without `-target`, and save it:
+
+```bash
+cd infrastructure/terraform
+terraform plan -var-file=environments/<ENV>.tfvars \
+  -replace=aws_instance.nat \
+  -out=nat-refresh.tfplan
+# With enable_second_nat = true, also pass: -replace='aws_instance.nat2[0]'
+```
+
+The plan must contain all of these together:
+
+| Resource | Expected change |
+|---|---|
+| `aws_instance.nat` (and `aws_instance.nat2[0]`) | Replaced, on the newest AMI |
+| `aws_eip.nat_instance` (and `aws_eip.nat_instance2[0]`) | Updated in place: `instance` |
+| `aws_route_table.private1`, `aws_route_table.private2` | Updated in place: the route's `network_interface_id` |
+| Development only: `aws_lambda_function.dev_scheduler[0]`, `aws_iam_role_policy.dev_scheduler_permissions[0]` | Updated in place: the NAT instance id |
+
+Anything else in the plan is unrelated drift: resolve it, or accept it deliberately, before applying.
+
+**4. Apply the saved plan:**
+
+```bash
+terraform apply nat-refresh.tfplan
+```
+
+**5. Verify.** Re-run the step 1 query: the new instance runs the newest image. Then confirm that both
+private routes reach it and the Elastic IP follows it:
+
+```bash
+aws ec2 describe-route-tables --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-cloud-rtb-private*" \
+  --query 'RouteTables[].[Tags[?Key==`Name`]|[0].Value,Routes[?DestinationCidrBlock==`0.0.0.0/0`]|[0].[NetworkInterfaceId,State]]' \
+  --output table
+
+aws ec2 describe-addresses --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
+  --query 'Addresses[].[Tags[?Key==`Name`]|[0].Value,InstanceId,PublicIp]' \
+  --output table
+```
+
+Each route is `active` (not `blackhole`) on the new instance's interface, and each Elastic IP is
+associated with a new instance. A second `terraform plan` shows no change for the NAT resources.
 
 ---
 

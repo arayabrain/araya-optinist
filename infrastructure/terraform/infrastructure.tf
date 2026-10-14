@@ -71,7 +71,6 @@ resource "aws_subnet" "private2" {
 locals {
   nat_user_data = <<-EOF
     #!/bin/bash
-    yum update -y
     # The iptables binary is not preinstalled on the AL2023 base AMI
     yum install -y iptables-nft
 
@@ -115,6 +114,9 @@ locals {
     systemctl daemon-reload
     systemctl enable nat-iptables.service
     systemctl start nat-iptables.service
+
+    # After the NAT is forwarding, so the update is off the egress critical path
+    yum update -y
   EOF
 }
 
@@ -133,6 +135,16 @@ resource "aws_instance" "nat" {
   }
 
   user_data = local.nat_user_data
+
+  # Launch-time inputs only take effect on a deliberate replacement
+  # (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh):
+  # - ami: most_recent moves with every upstream rebuild; replacing on it would
+  #   put an egress outage into whichever apply runs next, targeted ones included
+  # - user_data: a change stops and starts the instance in place, and runs only
+  #   on first boot anyway
+  lifecycle {
+    ignore_changes = [ami, user_data]
+  }
 
   tags = {
     Name = "${local.env_prefix}-nat-instance"
@@ -156,6 +168,11 @@ resource "aws_instance" "nat2" {
   }
 
   user_data = local.nat_user_data
+
+  # Same as aws_instance.nat
+  lifecycle {
+    ignore_changes = [ami, user_data]
+  }
 
   tags = {
     Name = "${local.env_prefix}-nat-instance-2"
