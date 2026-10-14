@@ -52,8 +52,12 @@ def _dff_params(params):
         or not 0 <= percentile <= 100
     ):
         raise ValueError(f"f0_percentile must be within 0..100, got {percentile!r}")
-    if isinstance(sigma, bool) or not isinstance(sigma, Real) or not sigma > 0:
-        raise ValueError(f"f0_sigma_frames must be > 0, got {sigma!r}")
+    if (
+        isinstance(sigma, bool)
+        or not isinstance(sigma, Real)
+        or not 0 < sigma < float("inf")
+    ):
+        raise ValueError(f"f0_sigma_frames must be finite and > 0, got {sigma!r}")
     if method == "maximin" and window == 0:
         raise ValueError("maximin needs f0_window_frames > 0")
     return method, int(window), float(percentile), float(sigma)

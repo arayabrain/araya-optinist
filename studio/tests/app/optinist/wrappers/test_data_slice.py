@@ -365,6 +365,7 @@ def test_dff_on_an_empty_time_slice_returns_it_empty(params, fluo, output_dir, c
         ({"f0_window_frames": 2.5}, "f0_window_frames"),
         ({"f0_percentile": 101}, "f0_percentile"),
         ({"f0_sigma_frames": 0}, "f0_sigma_frames"),
+        ({"f0_sigma_frames": float("inf")}, "f0_sigma_frames"),
     ],
     ids=[
         "unknown-method",
@@ -373,6 +374,7 @@ def test_dff_on_an_empty_time_slice_returns_it_empty(params, fluo, output_dir, c
         "float",
         "pct>100",
         "sigma-0",
+        "sigma-inf",
     ],
 )
 def test_dff_invalid_params_raise(params, match, fluo, output_dir):
