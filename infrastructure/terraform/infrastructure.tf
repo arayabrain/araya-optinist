@@ -121,7 +121,7 @@ locals {
 }
 
 resource "aws_instance" "nat" {
-  ami                    = data.aws_ami.nat_instance.id
+  ami                    = data.aws_ssm_parameter.nat_instance_ami.insecure_value
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public1.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
@@ -138,7 +138,7 @@ resource "aws_instance" "nat" {
 
   # Launch-time inputs only take effect on a deliberate replacement
   # (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh):
-  # - ami: most_recent moves with every upstream rebuild; replacing on it would
+  # - ami: the parameter moves with every upstream rebuild; replacing on it would
   #   put an egress outage into whichever apply runs next, targeted ones included
   # - user_data: a change stops and starts the instance in place, and runs only
   #   on first boot anyway
@@ -154,7 +154,7 @@ resource "aws_instance" "nat" {
 # Second NAT Instance in AZ 1c (optional, for HA)
 resource "aws_instance" "nat2" {
   count                  = var.enable_second_nat ? 1 : 0
-  ami                    = data.aws_ami.nat_instance.id
+  ami                    = data.aws_ssm_parameter.nat_instance_ami.insecure_value
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public2.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
@@ -200,25 +200,12 @@ resource "aws_eip" "nat_instance2" {
   }
 }
 
-# NAT Instance AMI
-data "aws_ami" "nat_instance" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
+# NAT Instance AMI: the latest AL2023 image on the default kernel line.
+# A name filter with most_recent matches every kernel variant, so "newest"
+# would move between kernel lines. insecure_value: the public parameter is
+# not secret, and value would hide the AMI id in plans.
+data "aws_ssm_parameter" "nat_instance_ami" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 data "aws_network_interface" "nat" {
