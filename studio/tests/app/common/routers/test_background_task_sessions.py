@@ -16,6 +16,13 @@ Limits of the static guard: it finds a session passed to add_task by name,
 inside a partial or lambda, or as an attribute (self.db). It does not find a
 session bound to an unannotated name other than `db` or `session`, for
 example `s = get_session()`.
+
+Limits of the classification: it keys on BackgroundTasks, so it does not see
+the other hold of the same shape. The 0.104 teardown also waits for the
+response body, so a get_db endpoint returning a FileResponse (the NWB, output
+and config downloads) holds its connection for the whole file send. It also
+pins endpoint names, not durations: an endpoint listed as short-task that later
+queues long work stays green until someone re-checks the list.
 """
 import ast
 import asyncio
@@ -108,7 +115,8 @@ RELEASING_ENDPOINTS = {
 }
 
 # Endpoints that depend on get_db but queue only short work, so holding the
-# session until teardown costs no more than the request itself.
+# session until teardown costs no more than the request itself. The list pins
+# names, not durations: re-check an entry when its background work changes.
 SHORT_TASK_ENDPOINTS = {
     ("files", "sync_input_file"): "uploads the input's metadata JSON",
     ("files", "delete_file"): "workspace usage (folder size)",

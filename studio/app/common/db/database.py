@@ -68,6 +68,9 @@ def release_request_session(db: Session) -> None:
     - Call it in a finally block of any endpoint that queues long background
       work. The session stays usable; the next query checks out a new
       connection.
+    - It detaches every object loaded through the session. Loaded attributes
+      stay readable, but a lazy load (e.g. a relationship) after the call
+      raises DetachedInstanceError: read what is needed before releasing.
     - Background tasks never receive this session; they open their own
       session_scope().
     """
