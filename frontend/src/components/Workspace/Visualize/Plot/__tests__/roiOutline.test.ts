@@ -57,6 +57,18 @@ describe("outlineRoi", () => {
     ])
   })
 
+  it("treats a negative background value as no ROI", () => {
+    expect(
+      outlineRoi([
+        [-1, -1, -1],
+        [-1, 2, -1],
+      ]),
+    ).toEqual([
+      [_, _, _],
+      [_, 2, _],
+    ])
+  })
+
   it("leaves an all-null field all null", () => {
     const roi = [
       [_, _, _],

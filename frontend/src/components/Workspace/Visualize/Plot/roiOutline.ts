@@ -3,6 +3,7 @@ export function outlineRoi(roi: (number | null)[][]): (number | null)[][] {
   return roi.map((row, y) =>
     row.map((id, x) =>
       id != null &&
+      id >= 0 &&
       (at(y - 1, x) !== id ||
         at(y + 1, x) !== id ||
         at(y, x - 1) !== id ||
