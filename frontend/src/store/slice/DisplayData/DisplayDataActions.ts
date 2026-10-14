@@ -46,6 +46,7 @@ import {
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
+import { AppThunk } from "store/store"
 
 export interface RejectPayload {
   message: string
@@ -118,6 +119,17 @@ export const getTimeSeriesDataById = createAsyncThunk<
     }
   },
 )
+
+// Skips a record another plot already requested or loaded
+export const getTimeSeriesDataByIdOnce =
+  (arg: { path: string; index: string }): AppThunk =>
+  (dispatch, getState) => {
+    if (
+      getState().displayData.timeSeries[arg.path]?.byId?.[arg.index] == null
+    ) {
+      dispatch(getTimeSeriesDataById(arg))
+    }
+  }
 
 export const getTimeSeriesAllData = createAsyncThunk<
   {

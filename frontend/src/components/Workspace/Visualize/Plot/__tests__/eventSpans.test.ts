@@ -138,3 +138,38 @@ describe("buildShadeShapes", () => {
     expect(result.capped).toBe(true)
   })
 })
+
+describe("buildShadeShapes span cache", () => {
+  it("reads a record once while the record and its x axis are unchanged", () => {
+    const xrange = ["0", "1", "2"]
+    let reads = 0
+    const record: Record<string, number> = {}
+    ;[0, 1, 0].forEach((value, i) =>
+      Object.defineProperty(record, String(i), {
+        get: () => {
+          reads += 1
+          return value
+        },
+      }),
+    )
+    const build = (axis: string[], scale = 1) =>
+      buildShadeShapes(
+        axis,
+        { k: record },
+        ["k"],
+        scale,
+        SHADE_COLORS,
+        () => true,
+      )
+
+    const first = build(xrange)
+    const readsAfterFirst = reads
+    const second = build(xrange)
+
+    expect(readsAfterFirst).toBe(3)
+    expect(reads).toBe(3)
+    expect(second).toEqual(first)
+    build(xrange, 10)
+    expect(reads).toBe(6)
+  })
+})

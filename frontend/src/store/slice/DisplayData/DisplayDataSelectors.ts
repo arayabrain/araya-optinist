@@ -21,6 +21,10 @@ export const selectTimeSeriesData = (filePath: string | null) =>
     (data) => data || {},
   )
 
+export const selectTimeSeriesById =
+  (filePath: string | null) => (state: RootState) =>
+    filePath ? selectDisplayData(state).timeSeries[filePath]?.byId : undefined
+
 export const selectTimesSeriesMeta = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).timeSeries[filePath].meta
 

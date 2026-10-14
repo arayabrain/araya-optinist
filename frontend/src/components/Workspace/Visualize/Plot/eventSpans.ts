@@ -32,6 +32,12 @@ export function eventSpans(
   return { spans, capped: false }
 }
 
+// Records are immutable, so one record's spans hold while its x axis is unchanged
+const spanCache = new WeakMap<
+  object,
+  { xrange: string[]; scale: number; result: ReturnType<typeof eventSpans> }
+>()
+
 export function buildShadeShapes(
   xrange: string[],
   data: { [key: string]: { [x: string]: number } },
@@ -40,22 +46,24 @@ export function buildShadeShapes(
   colors: string[],
   isLoaded: (key: string) => boolean,
 ) {
-  const x = xrange.map((v) => Number(v) / scale)
+  let x: number[] | undefined
   const shapes: object[] = []
   let capped = false
   keys.forEach((key, position) => {
     const record = data[key]
     if (!record || !isLoaded(key)) return
-    const cap = Math.min(SHADE_RECORD_CAP, SHADE_TOTAL_CAP - shapes.length)
-    const result = eventSpans(
-      x,
-      xrange.map((v) => Number(record[v])),
-      0.5,
-      cap,
-    )
-    capped = capped || result.capped
+    let cached = spanCache.get(record)
+    if (cached?.xrange !== xrange || cached.scale !== scale) {
+      if (x == null) x = xrange.map((v) => Number(v) / scale)
+      const y = xrange.map((v) => Number(record[v]))
+      cached = { xrange, scale, result: eventSpans(x, y) }
+      spanCache.set(record, cached)
+    }
+    const { spans } = cached.result
+    const room = SHADE_TOTAL_CAP - shapes.length
+    capped = capped || cached.result.capped || spans.length > room
     const fillcolor = colors[position % colors.length]
-    result.spans.forEach(([x0, x1]) =>
+    spans.slice(0, room).forEach(([x0, x1]) =>
       shapes.push({
         type: "rect",
         xref: "x",

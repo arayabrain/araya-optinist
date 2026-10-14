@@ -5,7 +5,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
@@ -42,10 +41,12 @@ import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
 import {
   getTimeSeriesDataById,
+  getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectRoiUniqueList,
+  selectTimeSeriesById,
   selectTimeSeriesData,
   selectTimeSeriesDataError,
   selectTimeSeriesDataIsFulfilled,
@@ -75,7 +76,7 @@ import {
   selectTimeSeriesShadeSourceItem,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { AppDispatch, RootState } from "store/store"
+import { AppDispatch } from "store/store"
 import { arrayEqualityFn } from "utils/EqualityUtils"
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
@@ -321,46 +322,20 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     arrayEqualityFn,
   )
 
-  const shadeIsPending = useSelector(
-    (state: RootState) =>
-      shadePath != null && selectTimeSeriesDataIsPending(shadePath)(state),
-  )
-  const [loadedShadeKeys, setLoadedShadeKeys] = useState(
-    () => new Set<string>(),
-  )
-  const requestedShadeKeys = useRef(new Set<string>())
-
+  const shadeById = useSelector(selectTimeSeriesById(shadePath))
   const isShadeLoaded = useCallback(
-    (key: string) =>
-      loadedShadeKeys.has(`${shadePath}:${key}`) ||
-      Object.keys(shadeData[key] ?? {}).length >= shadeXrange.length,
-    [loadedShadeKeys, shadePath, shadeData, shadeXrange],
-  )
-
-  const missingShadeKeys = useMemo(
-    () =>
-      (shadeKeys ?? []).filter(
-        (key) => key in shadeData && !isShadeLoaded(key),
-      ),
-    [shadeKeys, shadeData, isShadeLoaded],
+    (key: string) => shadeById?.[key] === "fulfilled",
+    [shadeById],
   )
 
   useEffect(() => {
-    if (shadePath == null || shadeIsPending) return
-    missingShadeKeys.forEach((key) => {
-      const requestId = `${shadePath}:${key}`
-      if (requestedShadeKeys.current.has(requestId)) return
-      requestedShadeKeys.current.add(requestId)
-      dispatch(getTimeSeriesDataById({ path: shadePath, index: key })).then(
-        (action) => {
-          requestedShadeKeys.current.delete(requestId)
-          if (getTimeSeriesDataById.fulfilled.match(action)) {
-            setLoadedShadeKeys((prev) => new Set(prev).add(requestId))
-          }
-        },
-      )
+    if (shadePath == null) return
+    ;(shadeKeys ?? []).forEach((key) => {
+      if (key in shadeData && !isShadeLoaded(key)) {
+        dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key }))
+      }
     })
-  }, [dispatch, shadePath, shadeIsPending, missingShadeKeys])
+  }, [dispatch, shadePath, shadeKeys, shadeData, isShadeLoaded])
 
   const shade = useMemo(
     () =>

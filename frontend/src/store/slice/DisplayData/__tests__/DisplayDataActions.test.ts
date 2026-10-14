@@ -3,8 +3,16 @@ import { AxiosError, AxiosHeaders } from "axios"
 import { describe, expect, it, jest } from "@jest/globals"
 import { configureStore } from "@reduxjs/toolkit"
 
-import { getStatusRoi } from "api/visualizations/Outputs"
-import { getStatus } from "store/slice/DisplayData/DisplayDataActions"
+import {
+  getStatusRoi,
+  getTimeSeriesDataByIdApi,
+  getTimeSeriesInitDataApi,
+} from "api/visualizations/Outputs"
+import {
+  getStatus,
+  getTimeSeriesDataByIdOnce,
+  getTimeSeriesInitData,
+} from "store/slice/DisplayData/DisplayDataActions"
 import reducer from "store/slice/DisplayData/DisplayDataSlice"
 
 jest.mock("api/visualizations/Outputs")
@@ -31,5 +39,37 @@ describe("getStatus", () => {
       message: "Remote data is temporary locked. [1/uid]",
     })
     expect(store.getState().displayData.loading).toBe(false)
+  })
+})
+
+describe("getTimeSeriesDataByIdOnce", () => {
+  const path = "/p"
+  const xrange = ["0", "1"]
+
+  it("requests a record once however many plots ask for it", async () => {
+    let resolve: (value: unknown) => void = () => undefined
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockReturnValue(new Promise((r) => (resolve = r)) as never)
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "3": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    const byId = () => store.getState().displayData.timeSeries[path].byId
+
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "3" }))
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "3" }))
+    expect(byId()).toEqual({ "3": "pending" })
+    resolve({ data: { "3": { "0": 0, "1": 1 } }, xrange, std: {} })
+    await new Promise(process.nextTick)
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "3" }))
+
+    expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(1)
+    expect(byId()).toEqual({ "3": "fulfilled" })
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    expect(byId()).toEqual({})
   })
 })

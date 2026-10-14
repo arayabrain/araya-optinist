@@ -84,7 +84,7 @@ export const displayDataSlice = createSlice({
         }
       })
       .addCase(getTimeSeriesDataById.pending, (state, action) => {
-        const { path } = action.meta.arg
+        const { path, index } = action.meta.arg
         if (!Object.prototype.hasOwnProperty.call(state.timeSeries, path)) {
           state.timeSeries[path] = {
             type: "timeSeries",
@@ -100,6 +100,8 @@ export const displayDataSlice = createSlice({
           state.timeSeries[path].fulfilled = false
           state.timeSeries[path].error = null
         }
+        const entry = state.timeSeries[path]
+        entry.byId = { ...entry.byId, [index]: "pending" }
       })
       .addCase(getTimeSeriesDataById.rejected, (state, action) => {
         const { path } = action.meta.arg
@@ -138,6 +140,8 @@ export const displayDataSlice = createSlice({
         if (action.payload.std[index] !== undefined) {
           state.timeSeries[path].std[index] = action.payload.std[index]
         }
+        const entry = state.timeSeries[path]
+        entry.byId = { ...entry.byId, [index]: "fulfilled" }
       })
       .addCase(getTimeSeriesAllData.pending, (state, action) => {
         const { path } = action.meta.arg
@@ -193,6 +197,9 @@ export const displayDataSlice = createSlice({
         if (action.payload.std !== undefined) {
           state.timeSeries[path].std = action.payload.std
         }
+        state.timeSeries[path].byId = Object.fromEntries(
+          Object.keys(action.payload.data).map((key) => [key, "fulfilled"]),
+        )
       })
       .addCase(getTimeSeriesInitData.pending, (state, action) => {
         const { path } = action.meta.arg
@@ -247,6 +254,7 @@ export const displayDataSlice = createSlice({
         state.timeSeries[path].meta = action.payload.meta
         state.timeSeries[path].data = action.payload.data
         state.timeSeries[path].std = action.payload.std
+        state.timeSeries[path].byId = {}
       })
       .addCase(getHeatMapData.pending, (state, action) => {
         const { path } = action.meta.arg
