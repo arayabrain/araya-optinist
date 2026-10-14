@@ -9,6 +9,7 @@ import pytest
 
 from studio.app.common.routers.files import (
     STRUCTURE_VERSION_KEY,
+    _remove_from_metadata_cache,
     _structure_node_to_dict,
     update_hdf5_structure,
 )
@@ -83,6 +84,16 @@ def test_2d_compound_dataset_stays_a_single_leaf(tmp_path):
 
     assert table_node.isDir is False
     assert table_node.path == "g/table"
+
+
+def test_null_dataspace_dataset_is_skipped(tmp_path):
+    with h5py.File(tmp_path / "t.h5", "w") as f:
+        f["g/empty"] = h5py.Empty("f")
+        f["g/data"] = np.zeros(5)
+
+    output = HDF5Getter.get(str(tmp_path / "t.h5"))
+
+    assert [n.name for n in output[0].nodes] == ["data"]
 
 
 def test_compound_tree_survives_the_cache_round_trip(tmp_path):
@@ -162,6 +173,49 @@ def test_updating_another_file_does_not_mark_an_old_entry_current(client, worksp
 
     assert data[0]["nodes"][0]["isDir"] is True
     assert _read_cache(workspace)[STRUCTURE_VERSION_KEY] == {"new.h5": 2}
+
+
+def test_folder_left_empty_comes_back_from_the_cache_as_a_folder(client, workspace):
+    with h5py.File(f"{DIRPATH.INPUT_DIR}/{workspace}/t.h5", "w") as f:
+        f["meta/labels"] = np.zeros(5, dtype=[("name", "S4")])
+        f["data"] = np.zeros(5)
+    update_hdf5_structure(workspace, "t.h5")
+
+    data = client.get(f"/hdf5/t.h5?workspace_id={workspace}").json()
+
+    meta = next(n for n in data if n["name"] == "meta")
+    assert meta["isDir"] is True and meta["nodes"] == []
+
+
+def test_each_update_keeps_the_other_files_stamps(workspace):
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/a.h5")
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/b.h5")
+
+    update_hdf5_structure(workspace, "a.h5")
+    update_hdf5_structure(workspace, "b.h5")
+
+    assert _read_cache(workspace)[STRUCTURE_VERSION_KEY] == {"a.h5": 2, "b.h5": 2}
+
+
+def test_failed_extraction_is_not_stamped_current(workspace):
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/a.h5")
+    update_hdf5_structure(workspace, "a.h5")
+    with open(f"{DIRPATH.INPUT_DIR}/{workspace}/a.h5", "w") as f:
+        f.write("not hdf5")
+
+    update_hdf5_structure(workspace, "a.h5")
+
+    cache = _read_cache(workspace)
+    assert cache["a.h5"] == [] and cache[STRUCTURE_VERSION_KEY] == {}
+
+
+def test_removing_a_file_removes_its_stamp(workspace):
+    _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/a.h5")
+    update_hdf5_structure(workspace, "a.h5")
+
+    _remove_from_metadata_cache(workspace, "a.h5")
+
+    assert _read_cache(workspace) == {STRUCTURE_VERSION_KEY: {}}
 
 
 def test_whole_cache_int_version_is_replaced_by_the_per_file_map(client, workspace):

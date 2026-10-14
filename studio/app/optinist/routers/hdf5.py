@@ -32,7 +32,7 @@ class HDF5Getter:
     @classmethod
     def get_ds_dictionaries(cls, path: str, node: h5py.Dataset):
         if isinstance(node, h5py.Dataset):
-            if len(node.shape) != 0:
+            if node.shape:  # skips scalar and null-dataspace datasets
                 cls.recursive_dir_tree(cls.hdf5_list, path.split("/"), node, "")
 
     @classmethod
@@ -111,7 +111,9 @@ def _dict_to_hdf5_node(d: dict) -> HDF5Node:
         isDir=d["isDir"],
         name=d["name"],
         path=d["path"],
-        nodes=[_dict_to_hdf5_node(n) for n in d.get("nodes", [])] or None,
+        nodes=(
+            [_dict_to_hdf5_node(n) for n in d.get("nodes", [])] if d["isDir"] else None
+        ),
         shape=tuple(d["shape"]) if d.get("shape") else None,
         nbytes=d.get("nbytes"),
         dataType=d.get("dataType"),

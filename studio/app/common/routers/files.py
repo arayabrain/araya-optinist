@@ -326,19 +326,23 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
     try:
         structure = HDF5Getter.get(filepath)
         structure_dict = [_structure_node_to_dict(node) for node in structure]
+        extracted = True
     except Exception as e:
         logger.warning(
             f"Failed to extract HDF5 structure for {relative_file_path}: {e}"
         )
         structure_dict = []
+        extracted = False
 
     def merge(data: dict) -> None:
         data[relative_file_path] = structure_dict
         versions = data.get(STRUCTURE_VERSION_KEY)
-        data[STRUCTURE_VERSION_KEY] = {
-            **(versions if isinstance(versions, dict) else {}),
-            relative_file_path: HDF5_STRUCTURE_VERSION,
-        }
+        versions = dict(versions) if isinstance(versions, dict) else {}
+        # an unstamped entry is read from the file again on the next open
+        versions.pop(relative_file_path, None)
+        if extracted:
+            versions[relative_file_path] = HDF5_STRUCTURE_VERSION
+        data[STRUCTURE_VERSION_KEY] = versions
 
     _locked_json_edit(workspace_id, MetadataCacheFile.HDF5_STRUCTURE, merge)
 
@@ -853,9 +857,14 @@ def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
         return
 
     try:
-        _locked_json_edit(
-            workspace_id, metadata_file, lambda data: data.pop(filename, None)
-        )
+
+        def remove(data: dict) -> None:
+            data.pop(filename, None)
+            versions = data.get(STRUCTURE_VERSION_KEY)
+            if isinstance(versions, dict):
+                versions.pop(filename, None)
+
+        _locked_json_edit(workspace_id, metadata_file, remove)
     except Exception as e:
         logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
 

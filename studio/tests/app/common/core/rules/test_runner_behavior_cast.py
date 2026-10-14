@@ -75,7 +75,7 @@ def test_every_known_behavior_consumer_is_discovered():
 
 
 @pytest.mark.parametrize("func", BEHAVIOR_CONSUMERS, ids=lambda f: f.__name__)
-def test_every_behavior_consumer_port_is_cast(func):
+def test_every_behavior_consumer_annotation_is_matched(func):
     port = next(
         name
         for name, p in inspect.signature(func).parameters.items()
@@ -226,8 +226,15 @@ def test_runner_execute_function_applies_the_cast(tmp_path):
 PARAMS_DIR = Path(ETA.__code__.co_filename).parent / "params"
 
 
-@pytest.mark.parametrize("name", ["eta", "covariate_binning", "condition_split"])
-def test_numpy_consumers_run_on_the_cast_column_0(tmp_path, name):
+@pytest.mark.parametrize(
+    "name, output",
+    [
+        ("eta", "mean"),
+        ("covariate_binning", "mean"),
+        ("condition_split", "neural_data"),
+    ],
+)
+def test_numpy_consumers_run_on_the_cast_column_0(tmp_path, name, output):
     params = yaml.safe_load((PARAMS_DIR / f"{name}.yaml").read_text())
     params["I/O"]["event_col_index"] = 0
     info = _eta_inputs(tmp_path)
@@ -241,7 +248,7 @@ def test_numpy_consumers_run_on_the_cast_column_0(tmp_path, name):
     )
 
     assert info["behaviors_data"].data.shape == (N_TIME, 1)
-    assert result
+    assert result[output].data.shape[0] == 3
 
 
 def test_eta_col_index_1_on_cast_column_fails_with_out_of_bounds(tmp_path):
