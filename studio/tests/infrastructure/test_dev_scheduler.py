@@ -6,10 +6,12 @@ the test. No real AWS calls are ever made.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from terraform_source import TERRAFORM_DIR, read, resource_block
 
 # Env vars dev_scheduler reads. Set as a module-level dict so every fixture
 # patch starts from the same baseline; individual tests override as needed.
@@ -367,6 +369,28 @@ class TestWaitForServiceTasksStopped:
         result = module.wait_for_service_tasks_stopped("c", ["a", "b"])
         assert result == "timeout: a=1/0"
         assert clock[0] >= module.TASK_STOP_WAIT_SECONDS
+
+    def test_logs_missing_services_reported_as_failures(self, ds, clock, capsys):
+        """A missing service is in "failures", not "services"; it cannot be
+        waited for, but the log must show it."""
+        module, clients = ds
+        resp = _services(a=(0, 0))
+        resp["failures"] = [{"arn": "arn:svc/b", "reason": "MISSING"}]
+        clients["ecs"].describe_services.return_value = resp
+        assert module.wait_for_service_tasks_stopped("c", ["a", "b"]) == "stopped"
+        assert "MISSING" in capsys.readouterr().out
+
+    def test_wait_outlasts_the_free_target_groups_deregistration_delay(self, ds):
+        """ECS stops a load-balanced task only after its target group's
+        deregistration delay; the wait must cover that plus the container
+        stop (~110 s measured), or it times out on every scheduled stop."""
+        module, _ = ds
+        tg = resource_block(
+            read(TERRAFORM_DIR / "compute.tf"), "aws_lb_target_group", "autoscaling"
+        )
+        declared = re.search(r"^\s*deregistration_delay\s*=\s*(\d+)", tg, re.M)
+        delay = int(declared.group(1)) if declared else 300  # ALB default
+        assert module.TASK_STOP_WAIT_SECONDS >= delay + 120
 
     def test_describe_failure_keeps_waiting_then_times_out(self, ds, clock):
         module, clients = ds
@@ -1019,6 +1043,37 @@ class TestStopEnvironment:
         assert result["statusCode"] == 200
         assert result["results"]["ecs_tasks_stopped"] == "timeout: svc-a=1/0"
         helpers["scale_asg"].assert_any_call("test-asg", min_size=0, desired=0)
+
+    def test_task_wait_skipped_when_nat_down(self, patched):
+        """With NAT down the agent cannot report, so the counts never change;
+        the verify-stop and a weekend manual stop must not sit out the wait."""
+        module, clients, helpers = patched
+        clients["ec2"].describe_instances.return_value = _ec2_response("stopped")
+        result = module.stop_environment(stop_mode="stop")
+        helpers["wait_for_service_tasks_stopped"].assert_not_called()
+        assert result["results"]["ecs_tasks_stopped"] == "skipped_nat_down"
+
+    def test_task_wait_skipped_without_ecs_services(self, patched, monkeypatch):
+        module, _, helpers = patched
+        monkeypatch.setenv("ECS_SERVICE_NAMES", "[]")
+        result = module.stop_environment(stop_mode="stop")
+        helpers["wait_for_service_tasks_stopped"].assert_not_called()
+        assert "ecs_tasks_stopped" not in result["results"]
+
+    def test_task_wait_excludes_services_whose_update_failed(self, patched):
+        """Its desired count is still 1, so waiting would only run out the
+        timeout before the stop fails on the error anyway."""
+        module, _, helpers = patched
+        helpers["update_ecs_services"].side_effect = None
+        helpers["update_ecs_services"].return_value = {
+            "ecs_svc-a": "error: throttled",
+            "ecs_svc-b": "desired_count=0",
+        }
+        with pytest.raises(RuntimeError):
+            module.stop_environment(stop_mode="stop")
+        helpers["wait_for_service_tasks_stopped"].assert_called_once_with(
+            "test-cluster", ["svc-b"]
+        )
 
     def test_skipped_when_override_active(self, patched):
         module, _, helpers = patched

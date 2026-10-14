@@ -115,7 +115,11 @@ PROXY_REGISTER_POLL_INTERVAL = 10
 # terminating the free ASG and stopping NAT. The ECS agent reports a stopped
 # task only through NAT (no ECS VPC endpoints); a task still RUNNING to ECS
 # keeps the managed-draining hook renewed until NAT is back next morning.
-TASK_STOP_WAIT_SECONDS = 180
+# How much: ECS stops a load-balanced task only after its target group's
+# deregistration delay (the free target group declares none: the ALB default
+# 300 s), then the container stop (~110 s in #940's Test B), plus slack.
+# Pinned against compute.tf by test_dev_scheduler.py.
+TASK_STOP_WAIT_SECONDS = 480
 TASK_STOP_POLL_INTERVAL = 10
 
 rds = boto3.client("rds")
@@ -435,13 +439,30 @@ def stop_environment(stop_mode="destroy"):
             )
         )
 
-    # 3c. Wait for those tasks to stop while NAT is still up (see
+    # 3c. Wait for the 3. services' tasks to stop while NAT is still up (see
     #     TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the stop
     #     carries on, and the drain then waits for NAT as before.
+    #     - Not the public service: its ASG has no capacity provider, so no
+    #       managed-draining hook holds its instances
+    #     - Skipped when NAT is down (verify-stop, weekend manual stop): the
+    #       agent cannot report, so the counts would never change
+    #     - A service whose update failed still wants its task; the stop
+    #       already fails on that error, so it is not waited for
     if ecs_services:
-        results["ecs_tasks_stopped"] = wait_for_service_tasks_stopped(
-            os.environ["CLUSTER_NAME"], ecs_services
-        )
+        if nat_state == "running":
+            scaled_down = [
+                s
+                for s in ecs_services
+                if not str(results.get(f"ecs_{s}", "")).startswith("error")
+            ]
+            results["ecs_tasks_stopped"] = (
+                wait_for_service_tasks_stopped(os.environ["CLUSTER_NAME"], scaled_down)
+                if scaled_down
+                else "skipped_no_service_scaled_down"
+            )
+        else:
+            print(f"NAT is {nat_state} — skipping the wait for ECS tasks to stop")
+            results["ecs_tasks_stopped"] = "skipped_nat_down"
 
     # 4. Scale down ASG (terminates free tier instances)
     results["asg"] = with_retry(
@@ -850,6 +871,9 @@ def wait_for_service_tasks_stopped(cluster_name, service_names):
     while True:
         try:
             resp = ecs.describe_services(cluster=cluster_name, services=service_names)
+            if resp.get("failures"):
+                # A missing service is reported here, not in "services"
+                print(f"describe_services failures: {resp['failures']}")
             remaining = {
                 s["serviceName"]: (s["runningCount"], s["pendingCount"])
                 for s in resp["services"]

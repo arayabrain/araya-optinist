@@ -49,6 +49,10 @@
    - A scaled-in instance is released in about 10 minutes: the target group's
      300 s deregistration delay, then the group's own logging-only
      `-terminate-hook`, which nothing completes and which times out at 300 s
+   - That depends on the instance's ECS agent reaching ECS, through NAT (there
+     are no ECS VPC endpoints). If it cannot report its task stopped, ECS keeps
+     renewing the draining hook, and the instance is held until connectivity
+     returns or the hook's 48-hour limit — not the hook's one-hour timeout
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
