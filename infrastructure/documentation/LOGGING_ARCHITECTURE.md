@@ -682,8 +682,6 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 |------------------------------------|---------------------------|--------------|------------------------|
 | `subscr-optinist-cpu-high`         | CPUUtilization            | > 60%        | AWS/ECS                |
 | `subscr-optinist-memory-high`      | MemoryUtilization         | > 80%        | AWS/ECS                |
-| `subscr-optinist-cpu-low`          | CPUUtilization            | < 20%        | AWS/ECS                |
-| `subscr-optinist-memory-low`       | MemoryUtilization         | < 10%        | AWS/ECS                |
 | `subscr-optinist-load-average-high`| CPUUtilization            | > 80%        | AWS/EC2                |
 | `subscr-optinist-high-iowait`      | cpu_usage_iowait          | > 30%        | CWAgent                |
 | `subscr-optinist-ebs-queue-length-high` | diskio_iops_in_progress | > 8 (2/3 min) | CWAgent              |
