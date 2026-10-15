@@ -121,7 +121,7 @@ locals {
 }
 
 resource "aws_instance" "nat" {
-  ami                    = data.aws_ssm_parameter.nat_instance_ami.insecure_value
+  ami                    = var.nat_ami_id
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public1.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
@@ -136,14 +136,13 @@ resource "aws_instance" "nat" {
 
   user_data = local.nat_user_data
 
-  # Launch-time inputs only take effect on a deliberate replacement
-  # (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh):
-  # - ami: the parameter moves with every upstream rebuild; replacing on it would
-  #   put an egress outage into whichever apply runs next, targeted ones included
-  # - user_data: a change stops and starts the instance in place, and runs only
-  #   on first boot anyway
+  # The AMI changes only when var.nat_ami_id is bumped, and the bump is applied
+  # with a full apply, never a targeted one (MAINTENANCE_PROCEDURES.md, NAT
+  # Instance AMI Refresh). user_data is ignored: a change stops and starts the
+  # instance in place, and runs only on first boot anyway; it takes effect at
+  # the next replacement
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [user_data]
   }
 
   tags = {
@@ -154,7 +153,7 @@ resource "aws_instance" "nat" {
 # Second NAT Instance in AZ 1c (optional, for HA)
 resource "aws_instance" "nat2" {
   count                  = var.enable_second_nat ? 1 : 0
-  ami                    = data.aws_ssm_parameter.nat_instance_ami.insecure_value
+  ami                    = var.nat_ami_id
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public2.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
@@ -171,7 +170,7 @@ resource "aws_instance" "nat2" {
 
   # Same as aws_instance.nat
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [user_data]
   }
 
   tags = {
@@ -200,12 +199,46 @@ resource "aws_eip" "nat_instance2" {
   }
 }
 
-# NAT Instance AMI: the latest AL2023 image on the default kernel line.
-# A name filter with most_recent matches every kernel variant, so "newest"
-# would move between kernel lines. insecure_value: the public parameter is
-# not secret, and value would hide the AMI id in plans.
-data "aws_ssm_parameter" "nat_instance_ami" {
+# The latest AL2023 image on the default kernel line, for nat_ami_freshness.
+# insecure_value: the public parameter is not secret, and value would hide
+# the AMI id in the check's message.
+data "aws_ssm_parameter" "nat_ami_latest" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+}
+
+data "aws_ami" "nat_ami_latest" {
+  owners = ["amazon"]
+
+  filter {
+    name   = "image-id"
+    values = [data.aws_ssm_parameter.nat_ami_latest.insecure_value]
+  }
+}
+
+# Warns on every plan and apply when the pinned NAT AMI is over 30 days older
+# than the latest image. Compared with the latest image, not today's date, so
+# a quiet month upstream does not fire it. A failed assertion, or a failed
+# lookup of the scoped data source, is a warning, never an error. A check block
+# allows one scoped data source, so the lookup that can fail goes here: Amazon
+# deprecates old images, and include_deprecated keeps them findable.
+check "nat_ami_freshness" {
+  data "aws_ami" "pinned" {
+    owners             = ["amazon"]
+    include_deprecated = true
+
+    filter {
+      name   = "image-id"
+      values = [var.nat_ami_id]
+    }
+  }
+
+  assert {
+    condition = timecmp(
+      timeadd(data.aws_ami.pinned.creation_date, "720h"),
+      data.aws_ami.nat_ami_latest.creation_date
+    ) >= 0
+    error_message = "NAT AMI ${var.nat_ami_id} is over 30 days behind ${data.aws_ami.nat_ami_latest.id}. Bump nat_ami_id on development, full-apply, then promote to production (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh)."
+  }
 }
 
 data "aws_network_interface" "nat" {

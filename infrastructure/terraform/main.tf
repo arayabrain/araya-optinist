@@ -308,6 +308,16 @@ variable "enable_second_nat" {
   default     = true
 }
 
+variable "nat_ami_id" {
+  description = "Pinned AMI for the NAT instances (AL2023, default kernel line). Changing it replaces them: bump on development with a full apply, then promote to production in its own apply. See MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh"
+  type        = string
+
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]+$", var.nat_ami_id))
+    error_message = "nat_ami_id must be an AMI id (ami-...)."
+  }
+}
+
 variable "monthly_budget_usd" {
   description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
   type        = number

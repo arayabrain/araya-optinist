@@ -84,6 +84,12 @@ asg_max_size = 3
 # image_builder.tf (local.custom_ami_version), not here.
 use_custom_ami = false
 
+# NAT instance AMI, pinned. Only an id development has already run: promote it
+# from development.tfvars in its own apply, not inside a release apply, since
+# the change replaces the NAT instances. Record each promotion on the tracking
+# issue. See MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh.
+nat_ami_id = "<AMI_ID>"
+
 # Test user configuration
 test_users = []
 

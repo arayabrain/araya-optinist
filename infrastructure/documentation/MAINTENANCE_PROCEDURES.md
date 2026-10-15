@@ -79,7 +79,7 @@ The infrastructure lead has Terraform access and handles infrastructure-level ch
 | **Weekly** | Full weekly health check | On-call maintainer | Run `weekly-maintenance.sh` |
 | **Monthly** | Full monthly review | On-call maintainer + Infrastructure lead | Run `monthly-maintenance.sh` |
 | **Monthly** | Post monthly summary | On-call maintainer | Fill in rotation summary in monthly report |
-| **Monthly** | Refresh the NAT instance AMI if a newer one exists | Infrastructure lead | Manual (see [NAT Instance AMI Refresh](#nat-instance-ami-refresh)) |
+| **Monthly** | Refresh the NAT instance AMI if a newer one exists (development, then production) | Infrastructure lead | Manual (see [NAT Instance AMI Refresh](#nat-instance-ami-refresh)) |
 | **Quarterly** | Rotate AWS secrets | Infrastructure lead | Manual (see [Quarterly Checks](#quarterly-checks)) |
 | **Quarterly** | Review and update ASG capacity settings | Infrastructure lead | Manual |
 | **Quarterly** | Review RDS storage growth | Infrastructure lead | Manual |
@@ -824,7 +824,7 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 - Review GitHub security alerts (Dependabot)
 - Run `pip audit` on Python dependencies
 - Run `npm audit` on frontend dependencies
-- Refresh the NAT instance AMI if a newer one exists ([NAT Instance AMI Refresh](#nat-instance-ami-refresh))
+- Refresh the NAT instance AMI if a newer one exists (development, then production; [NAT Instance AMI Refresh](#nat-instance-ami-refresh))
 
 ### Quarterly
 
@@ -841,10 +841,14 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 
 ### NAT Instance AMI Refresh
 
-The NAT instances (`aws_instance.nat`, and `aws_instance.nat2` when `enable_second_nat` is set) ignore
-changes to `ami` and `user_data`. A newer Amazon Linux 2023 image on the default kernel line, or an edit
-to the NAT `user_data`, never appears in a plan: the instance is patched only when it is replaced on
-purpose, with this procedure.
+The NAT instances (`aws_instance.nat`, and `aws_instance.nat2` when `enable_second_nat` is set) run the
+AMI pinned in `nat_ami_id`, set in each environment's tfvars in the deployment checkout (tfvars are not in
+git). A newer image is taken by bumping the pin; Terraform then plans the replacement. AL2023 locks
+`dnf` to the release its image was built from, so the patch level of a NAT instance is the image it was
+launched from: refreshing means a newer image, not an update on the running instance.
+
+`user_data` is ignored (a change would stop and start the instance in place, and runs only on first
+boot), so an edit to the NAT `user_data` takes effect at the next replacement.
 
 **Why it is deliberate.** Replacing a NAT instance takes private-subnet internet egress down for two to five
 minutes: SSM sessions, Firebase authentication and any external API call fail meanwhile. The replacement
@@ -852,8 +856,22 @@ must also be applied together with its dependents — the Elastic IP and both pr
 keep pointing at the destroyed instance. A `-target` apply never includes them, so **never replace a NAT
 instance in a targeted apply**.
 
-**1. Check whether a refresh is due.** Compare each NAT instance's image with the latest one, and its
-`user_data` with the configuration about to be applied:
+**Rules.**
+
+- **Development first.** Production gets only an id development has already run.
+- **Full-apply a bump straight away**, on the environment bumped. Until it is applied, any targeted apply
+  that reaches the NAT through a dependency (the dev scheduler Lambda, for one) pulls the replacement in
+  without the Elastic IP and the routes.
+- **Production in its own apply**, not inside a release apply: a release apply that also replaces the NAT
+  mixes an egress gap into an apply that is about something else. It can follow the release in the same
+  window, announced as an egress gap.
+- **Record each bump** on the tracking issue: date, environment, old id, new id. tfvars have no history of
+  their own.
+
+**1. Check whether a refresh is due.** Every plan and apply warns when the pin is over 30 days older than
+the latest AL2023 image on the default kernel line (`check "nat_ami_freshness"`; a warning, never an
+error). To check by hand, compare each NAT instance's image with the latest one, and its `user_data`
+with the configuration about to be applied:
 
 ```bash
 ENV_PREFIX=subscr-optinist   # development: <environment>-optinist
@@ -864,8 +882,7 @@ aws ec2 describe-instances --region ap-northeast-1 \
   --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,ImageId]' \
   --output table
 
-# The parameter data.aws_ssm_parameter.nat_instance_ami reads: the latest AL2023 image on the
-# default kernel line
+# The latest AL2023 image on the default kernel line (what the check compares the pin with)
 aws ssm get-parameter --region ap-northeast-1 \
   --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --query 'Parameter.[Value,LastModifiedDate]' --output table
@@ -889,23 +906,24 @@ do.
 **2. Choose the window.** Production: a low-traffic time, announced like any other maintenance.
 Development: during the dev scheduler's daytime hours, while the NAT is running.
 
-**3. Plan the replacement as a full plan**, without `-target`, and save it:
+**3. Bump the pin and plan as a full plan**, without `-target`, and save it. In the deployment checkout,
+set `nat_ami_id` in `infrastructure/terraform/environments/<ENV>.tfvars`: on development, the latest id
+from step 1; on production, the id in `development.tfvars`. If only the `user_data` changed and the id
+stays, replace instead with `-replace=aws_instance.nat` (and `-replace='aws_instance.nat2[0]'` with
+`enable_second_nat = true`).
 
 ```bash
 cd infrastructure/terraform
 # Outside the tree: a saved plan holds every variable value
 PLAN=$(mktemp "${TMPDIR:-/tmp}/tfplan-nat-refresh.XXXXXX")
-terraform plan -var-file=environments/<ENV>.tfvars \
-  -replace=aws_instance.nat \
-  -out="$PLAN"
-# With enable_second_nat = true, also pass: -replace='aws_instance.nat2[0]'
+terraform plan -var-file=environments/<ENV>.tfvars -out="$PLAN"
 ```
 
 The plan must contain all of these together:
 
 | Resource | Expected change |
 |---|---|
-| `aws_instance.nat` (and `aws_instance.nat2[0]`) | Replaced: `ami` to the step 1 image, and `user_data` if it changed |
+| `aws_instance.nat` (and `aws_instance.nat2[0]`) | Replaced: `ami` to the new `nat_ami_id`, and `user_data` if it changed |
 | `aws_eip.nat_instance` (and `aws_eip.nat_instance2[0]`) | Updated in place: `instance` |
 | `aws_route_table.private1`, `aws_route_table.private2` | Updated in place: the route's `network_interface_id` |
 | Development only: `aws_lambda_function.dev_scheduler[0]`, `aws_iam_role_policy.dev_scheduler_permissions[0]` | Updated in place: the NAT instance id |
@@ -919,8 +937,8 @@ terraform apply "$PLAN"
 rm -f "$PLAN"
 ```
 
-**5. Verify.** Re-run the step 1 instance query: the new instance runs the latest image. Then confirm that
-both private routes reach it and the Elastic IP follows it:
+**5. Verify and record.** Re-run the step 1 instance query: the new instance runs the pinned image. Then
+confirm that both private routes reach it and the Elastic IP follows it:
 
 ```bash
 aws ec2 describe-route-tables --region ap-northeast-1 \
@@ -935,7 +953,8 @@ aws ec2 describe-addresses --region ap-northeast-1 \
 ```
 
 Each route is `active` (not `blackhole`) on the new instance's interface, and each Elastic IP is
-associated with a new instance. A second `terraform plan` shows no change for the NAT resources.
+associated with a new instance. A second `terraform plan` shows no change for the NAT resources. Record
+the bump on the tracking issue (date, environment, old id, new id).
 
 ---
 
