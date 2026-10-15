@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 import pytest
+from filelock import Timeout
 
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.workflow.workflow import NodeItem
@@ -117,6 +118,48 @@ async def test_a_poll_overlapping_a_slow_save_answers_at_once(finished_node):
         assert "func1" in (await poll()).nodeResults
 
     assert save.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_poll_frees_the_loop_and_holds_its_lock(finished_node):
+    started, finish = threading.Event(), threading.Event()
+
+    def slow_save(self, json_dir):
+        started.set()
+        finish.wait(3)
+        save_json(self, json_dir)
+
+    with patch.object(
+        TimeSeriesData, "save_json", autospec=True, side_effect=slow_save
+    ), patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        ThreadPoolExecutor,
+    ), patch(
+        "studio.app.common.routers.run.ExptConfigReader.ensure_synced_async",
+        new=AsyncMock(),
+    ), patch(
+        "studio.app.common.routers.run.ExperimentRecordService.is_available",
+        return_value=False,
+    ):
+        task = asyncio.create_task(poll())
+        try:
+            assert await asyncio.to_thread(started.wait, 10)
+
+            for _ in range(2):
+                task.cancel()
+                began = time.monotonic()
+                await asyncio.sleep(0.1)
+                assert time.monotonic() - began < 0.5
+                assert not task.done()
+                with pytest.raises(Timeout):
+                    WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock().acquire()
+        finally:
+            finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
+        assert (finished_node / "func1" / "behavior").is_dir()
 
 
 @pytest.mark.asyncio

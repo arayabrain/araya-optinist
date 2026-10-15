@@ -382,16 +382,18 @@ class NodeResult(BaseNodeResult):
             # A worker process, so a large save holds neither the loop nor its GIL
             self.info = None  # the worker re-reads it; don't hold two copies
             with ProcessPoolExecutor(max_workers=1) as executor:
-                message = await asyncio.get_running_loop().run_in_executor(
-                    executor,
-                    partial(
-                        _save_node_outputs,
-                        type(self),
-                        self.workspace_id,
-                        self.unique_id,
-                        self.node_id,
-                        client_id=get_client_id_for_subprocess(),
-                    ),
+                message = await _await_despite_cancel(
+                    asyncio.get_running_loop().run_in_executor(
+                        executor,
+                        partial(
+                            _save_node_outputs,
+                            type(self),
+                            self.workspace_id,
+                            self.unique_id,
+                            self.node_id,
+                            client_id=get_client_id_for_subprocess(),
+                        ),
+                    )
                 )
 
         # Determine if the node has already been processed
@@ -567,6 +569,19 @@ class PostProcessResult(NodeResult):
         workflow_error: WorkflowErrorInfo = None,
     ):
         super().__init__(workspace_id, unique_id, node_id, workflow_error)
+
+
+async def _await_despite_cancel(future: asyncio.Future) -> Message:
+    """Wait out the save when cancelled, so the caller's lock outlives the worker"""
+    cancelled = None
+    while not future.done():
+        try:
+            await asyncio.wait({future})
+        except asyncio.CancelledError as e:
+            cancelled = e
+    if cancelled:
+        raise cancelled
+    return future.result()
 
 
 @with_client_id_context
