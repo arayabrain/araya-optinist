@@ -30,6 +30,13 @@ def get_cached_engine():
 
 
 def get_session(use_cache: bool = True):
+    """
+    Session on the process's cached engine, or on a new one.
+
+    - use_cache=False builds an engine that the caller owns: closing the
+      session does not dispose it, so call session.get_bind().dispose().
+    - session_scope(use_cache=False) does not dispose it either.
+    """
     engine = get_cached_engine() if use_cache else get_new_engine()
     SessionLocal = sessionmaker(
         autocommit=False, autoflush=False, expire_on_commit=False, bind=engine
