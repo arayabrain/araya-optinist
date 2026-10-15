@@ -26,10 +26,23 @@ RDS Proxy target once the database is available) and to enable the delayed scali
 | Background service instance | `start_instances` | `stop_instances` |
 | Premium instances | `start_instances` | `stop_instances` |
 | Free tier ASG | Set min=1, desired=1 | Set min=0, desired=0 |
+| Public tier ASG | Restore min/desired from tfvars | Set min=0, desired=0 |
+| ECS services (free, premium, background) | `desired_count=1` | `desired_count=0`, then wait for their tasks to stop |
+| Public ECS service | `desired_count` from tfvars | `desired_count=0` |
 | Lambda schedules (5 rules) | Enable | Disable |
 | CloudWatch alarm actions | Enable | Disable |
 
 The **ALB stays running** at all times (cannot be stopped; fixed cost ~$16-22/month).
+
+### The stop waits for ECS tasks before stopping NAT
+
+The stop sets the ECS services to 0 and then waits — up to 8 minutes, typically 6-7 — for their
+tasks to stop, before it terminates the free tier ASG and stops NAT. The free task stops only after
+its target group's 300 s deregistration delay, and the ECS agent can report it stopped only through
+NAT (there are no ECS VPC endpoints). Stopping NAT first leaves the task `RUNNING` as far as ECS
+knows, and ECS managed draining then holds the free instance in `Terminating:Wait` until NAT is back
+the next morning. A wait that times out is logged in the stop results (`ecs_tasks_stopped`) and the
+stop carries on.
 
 ### Important: RDS is destroyed during off-hours
 

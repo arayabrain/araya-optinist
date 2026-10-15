@@ -70,6 +70,10 @@
      hook of its own; its former logging-only launch and terminate hooks held
      every launch, and every termination whose drain finished sooner, for a
      300 s timeout
+   - That depends on the instance's ECS agent reaching ECS, through NAT (there
+     are no ECS VPC endpoints). If it cannot report its task stopped, ECS keeps
+     renewing the draining hook, and the instance is held until connectivity
+     returns or the hook's 48-hour limit — not the hook's one-hour timeout
 
 4. **Sticky Session Compatibility**
    - Works with ALB sticky sessions (5-minute cookies)
