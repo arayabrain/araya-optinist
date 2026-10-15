@@ -43,20 +43,22 @@ def test_get_db_takes_no_parameters():
 def test_no_operation_exposes_use_cache():
     # Without operations on get_db the schema check below would pass vacuously.
     assert any(
-        isinstance(route, APIRoute) and _depends_on(route.dependant, get_db)
+        isinstance(route, APIRoute)
+        and route.include_in_schema
+        and _depends_on(route.dependant, get_db)
         for route in app.routes
     )
     assert _operations_exposing(app.openapi(), "use_cache") == []
 
 
 def test_a_request_sending_use_cache_is_served_on_the_cached_engine():
+    cached = MagicMock(name="cached_engine")
     probe = FastAPI()
 
     @probe.get("/probe")
     def endpoint(db=Depends(get_db)):
         return {"bound_to_cached": db.get_bind() is cached}
 
-    cached = MagicMock(name="cached_engine")
     with patch(f"{MODULE}.get_cached_engine", return_value=cached), patch(
         f"{MODULE}.get_new_engine"
     ) as get_new:
