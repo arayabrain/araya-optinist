@@ -852,8 +852,8 @@ must also be applied together with its dependents — the Elastic IP and both pr
 keep pointing at the destroyed instance. A `-target` apply never includes them, so **never replace a NAT
 instance in a targeted apply**.
 
-**1. Check whether a refresh is due.** Compare the running image with the latest one, and the launch time
-with the last change to the NAT `user_data`:
+**1. Check whether a refresh is due.** Compare each NAT instance's image with the latest one, and its
+`user_data` with the configuration about to be applied:
 
 ```bash
 ENV_PREFIX=subscr-optinist   # development: <environment>-optinist
@@ -861,7 +861,7 @@ ENV_PREFIX=subscr-optinist   # development: <environment>-optinist
 aws ec2 describe-instances --region ap-northeast-1 \
   --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
             "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,ImageId,LaunchTime]' \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,ImageId]' \
   --output table
 
 # The parameter data.aws_ssm_parameter.nat_instance_ami reads: the latest AL2023 image on the
@@ -870,13 +870,21 @@ aws ssm get-parameter --region ap-northeast-1 \
   --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --query 'Parameter.[Value,LastModifiedDate]' --output table
 
-# Last change to the NAT user_data, on the branch about to be applied
-git log -1 -s --format='%cI %h %s' \
-  -L '/nat_user_data = <<-EOF/,/^  EOF/:infrastructure/terraform/infrastructure.tf'
+# The user_data an instance launched with, against local.nat_user_data on the checked-out
+# branch (run from the repository root, once per instance id above). No output: identical
+NAT_ID=<instance id>
+diff <(aws ec2 describe-instance-attribute --region ap-northeast-1 --instance-id "$NAT_ID" \
+         --attribute userData --query UserData.Value --output text | base64 --decode) \
+     <(awk '/nat_user_data = <<-EOF/{f=1;next} /^  EOF$/{f=0} f' \
+         infrastructure/terraform/infrastructure.tf | sed 's/^    //')
 ```
 
-If every NAT instance already runs the latest image, and launched after the last `user_data` change,
-there is nothing to do.
+The `user_data` comparison is what shows whether a `user_data` change is pending. The launch time does
+not: a stop and start resets it (development's NAT restarts every day), but `user_data` runs only on
+first boot.
+
+If every NAT instance already runs the latest image, and its `user_data` matches, there is nothing to
+do.
 
 **2. Choose the window.** Production: a low-traffic time, announced like any other maintenance.
 Development: during the dev scheduler's daytime hours, while the NAT is running.
@@ -886,7 +894,7 @@ Development: during the dev scheduler's daytime hours, while the NAT is running.
 ```bash
 cd infrastructure/terraform
 # Outside the tree: a saved plan holds every variable value
-PLAN=$(mktemp -t tfplan-nat-refresh)
+PLAN=$(mktemp "${TMPDIR:-/tmp}/tfplan-nat-refresh.XXXXXX")
 terraform plan -var-file=environments/<ENV>.tfvars \
   -replace=aws_instance.nat \
   -out="$PLAN"
