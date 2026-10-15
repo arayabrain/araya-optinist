@@ -25,6 +25,7 @@ import {
   InputNodeType,
   INPUT_NODE_SLICE_NAME,
   MatlabInputNode,
+  StructuredInputParamType,
   WORKSPACE_TYPE_KEY,
 } from "store/slice/InputNode/InputNodeType"
 import {
@@ -124,6 +125,19 @@ export const inputNodeSlice = createSlice({
       const { nodeId, param } = action.payload
       const inputNode = state[nodeId]
       if (isCsvInputNode(inputNode)) {
+        inputNode.param = param
+      }
+    },
+    setStructuredInputNodeParam(
+      state,
+      action: PayloadAction<{
+        nodeId: string
+        param: StructuredInputParamType
+      }>,
+    ) {
+      const { nodeId, param } = action.payload
+      const inputNode = state[nodeId]
+      if (isHDF5InputNode(inputNode) || isMatlabInputNode(inputNode)) {
         inputNode.param = param
       }
     },
@@ -252,14 +266,11 @@ export const inputNodeSlice = createSlice({
                     node.data.fileType,
                   )
 
-                  // fluo/behavior map to csv; merge the yaml param over the defaults
-                  const param =
-                    baseNode.fileType === FILE_TYPE_SET.CSV
-                      ? mergeKnownParams(
-                          baseNode.param as CsvInputParamType,
-                          node.data.param,
-                        )
-                      : baseNode.param
+                  // merge the yaml param over the defaults
+                  const param = mergeKnownParams(
+                    baseNode.param as object,
+                    node.data.param,
+                  )
 
                   const nodeState: InputNodeType = {
                     ...baseNode,
@@ -312,6 +323,7 @@ export const inputNodeSlice = createSlice({
 
 export const {
   setCsvInputNodeParam,
+  setStructuredInputNodeParam,
   setInputNodeMatlabPath,
   setInputNodeHDF5Path,
 } = inputNodeSlice.actions

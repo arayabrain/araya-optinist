@@ -1,7 +1,10 @@
 import os
 import shutil
 
+import numpy as np
+
 from studio.app.dir_path import DIRPATH
+from studio.app.optinist.dataclass import BehaviorData
 
 # Test data source is always in the repo at studio/test_data/
 # Use ROOT_DIR to find it regardless of where DATA_DIR is configured
@@ -84,6 +87,21 @@ def test_alltimedata(client):
 
     for value in data["data"].values():
         assert len(value) == 1000
+
+
+def test_behaviour_output_previews_one_trace_per_column(client):
+    table = np.column_stack([np.linspace(0, 1, 50), np.arange(50) % 2])
+    node_dir = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/behaviour_node"
+    BehaviorData(table, file_name="behaviors_data").save_json(node_dir)
+    dirpath = f"{node_dir}/behaviors_data"
+
+    init = client.get(f"/api/visualizations/inittimedata/{dirpath}").json()
+    second = client.get(f"/api/visualizations/timedata/{dirpath}/?index=1").json()
+
+    assert sorted(init["data"]) == ["0", "1"]
+    assert len(init["xrange"]) == 50 and len(init["data"]["0"]) == 50
+    assert len(init["data"]["1"]) == 1
+    assert [second["data"]["1"][str(t)] for t in range(50)] == list(table[:, 1])
 
 
 # Test data for image test

@@ -1,9 +1,12 @@
 import inspect
 import logging
 
+import h5py
 import numpy as np
 import pytest
 
+from studio.app.common.core.rules.file_writer import FileWriter
+from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.dataclass import (
     BarData,
     HeatMapData,
@@ -306,3 +309,30 @@ def test_declared_outputs_are_returned(fluo, output_dir):
     declared = set(inspect.signature(data_slice).return_annotation.keys())
     result = data_slice(fluo, output_dir, params={"slice_dims": []})
     assert declared <= set(result.keys())
+
+
+def test_behaviour_from_the_hdf5_loader_slices_time_on_axis_0(tmp_path, output_dir):
+    table = np.random.default_rng(10).random((N_TIME, 3))
+    h5 = tmp_path / "in.h5"
+    with h5py.File(h5, "w") as f:
+        f["g/data"] = table.T
+    loaded = FileWriter.hdf5(
+        Rule(
+            input=str(h5),
+            return_arg="input_x",
+            params={"transpose": True, "dataType": "behavior"},
+            output=str(tmp_path / "input_x.pkl"),
+            type="hdf5",
+            nwbfile={"image_series": {}},
+            hdf5Path="g/data",
+        )
+    )["input_x"]
+
+    out = data_slice(loaded, output_dir, params={"slice_dims": ["5:15", "0:2"]})
+
+    sliced = out["sliced_data"]
+    assert type(sliced) is BehaviorData and "mean_timeseries" not in out
+    np.testing.assert_array_equal(sliced.data, table[5:15, 0:2])
+    assert list(sliced.index) == list(range(5, 15))
+    sliced.save_json(output_dir)
+    assert sliced.output_path.data_shape == [2, 10]
