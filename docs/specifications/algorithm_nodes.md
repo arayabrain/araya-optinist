@@ -119,7 +119,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **Registration**
 
-    - **batch_size** [int, default: 100]: How many frames to register at a time. Registration's peak memory grows with it: about 1 GB plus 25 MB per frame at 512 x 512, in proportion to the frame area. Results do not depend on it, except at batch edges when smooth_sigma_time > 0.
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Registration's peak memory grows with it: about 1 GB plus 25 MB per frame at 512 x 512, in proportion to the frame area. Results do not depend on it. When smooth_sigma_time > 0, registration uses suite2p_file_convert's batch_size instead, because temporal smoothing runs within each batch and its edges change the shifts.
     - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
     - **smooth_sigma_time**: [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Might need this to be set to 1 or 2 for low SNR data.
