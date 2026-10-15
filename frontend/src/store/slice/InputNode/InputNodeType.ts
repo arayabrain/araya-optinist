@@ -41,8 +41,13 @@ export interface CsvInputNode
   selectedFilePath?: string
 }
 
+export type StructuredInputParamType = {
+  transpose: boolean
+  dataType: "auto" | "behavior"
+}
+
 export interface MatlabInputNode
-  extends InputNodeBaseType<"matlab", Record<never, never>> {
+  extends InputNodeBaseType<"matlab", StructuredInputParamType> {
   selectedFilePath?: string
   matPath?: string
 }
@@ -53,7 +58,7 @@ export interface ImageInputNode
 }
 
 export interface HDF5InputNode
-  extends InputNodeBaseType<"hdf5", Record<never, never>> {
+  extends InputNodeBaseType<"hdf5", StructuredInputParamType> {
   selectedFilePath?: string
   hdf5Path?: string
 }

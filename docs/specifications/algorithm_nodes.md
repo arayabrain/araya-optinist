@@ -279,7 +279,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
   - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
 - **Output:** neural_data (FluoData), behaviors_data (BehaviorData)
-  - Both outputs keep the orientation of the inputs, so a downstream node uses the same transpose settings.
+  - neural_data keeps the orientation of its input; behaviors_data is always (time, columns), so a downstream node reads it with `transpose_y: false`.
 - **Parameters:**
   - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
   - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
