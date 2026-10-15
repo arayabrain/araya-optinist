@@ -72,12 +72,14 @@ class TimeSeriesData(BaseData):
         # Prepare record data for chunked storage
         record_ids = [str(cell_i) for cell_i in self.cell_numbers]
         record_data = []
+        rows = self._records(self.data)
+        stds = None if self.std is None else self._records(self.std)
 
         for i, cell_i in enumerate(self.cell_numbers):
             # Prepare data for this cell
-            data = self.data[i]
-            if self.std is not None:
-                std = self.std[i]
+            data = rows[i]
+            if stds is not None:
+                std = stds[i]
                 df = pd.DataFrame({"data": data, "std": std}, index=self.index)
             else:
                 df = pd.DataFrame({"data": data}, index=self.index)
@@ -91,11 +93,16 @@ class TimeSeriesData(BaseData):
             record_data=record_data,
         )
 
+    def _records(self, array):
+        """The (records, time) view of `array` that the preview saves."""
+        return array
+
     @property
     def output_path(self) -> OutputPath:
+        rows = self._records(self.data)
         return OutputPath(
             path=self.json_path,
             type=OutputType.TIMESERIES,
-            max_index=len(self.data),
-            data_shape=list(self.data.shape),
+            max_index=len(rows),
+            data_shape=list(rows.shape),
         )
