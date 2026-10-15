@@ -518,6 +518,24 @@ test.describe("Compute and routing", () => {
       free.inService,
     )
   })
+
+  test("HEALTH-30 - the free ASG carries no lifecycle hook but ECS's draining hook", () => {
+    skipUnlessDeployed("950")
+
+    // Terraform ignores initial_lifecycle_hook on this group, so a retired hook
+    // left in AWS plans clean; this is what notices it.
+    // - a launch hook holds every scale-out in Pending:Wait for its timeout
+    // - a terminate hook holds every scale-in for its timeout
+    // - ECS installs and completes ecs-managed-draining-termination-hook
+    const hooks = awsJson<string[]>(
+      `autoscaling describe-lifecycle-hooks ` +
+        `--auto-scaling-group-name ${ENV}-optinist-asg ` +
+        `--query 'LifecycleHooks[].LifecycleHookName'`,
+    )
+    expect(hooks.sort(), `${ENV}-optinist-asg lifecycle hooks`).toEqual([
+      "ecs-managed-draining-termination-hook",
+    ])
+  })
 })
 
 test.describe("Storage and database", () => {
