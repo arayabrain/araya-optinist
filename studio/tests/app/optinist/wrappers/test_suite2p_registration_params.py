@@ -79,6 +79,7 @@ def test_input_without_batch_size_passes_suite2p_default_on(output_dir, suite2p_
     params = read_default_params("suite2p_registration")
     info = suite2p_registration(_input_ops(batch_size=None), output_dir, params=params)
 
+    assert suite2p_stub["register_batch_size"] == params["Registration"]["batch_size"]
     assert info["ops"].data["batch_size"] == 500
 
 
@@ -90,6 +91,7 @@ def test_temporal_smoothing_registers_with_the_input_batch_size(
     info = suite2p_registration(_input_ops(), output_dir, params=params)
 
     assert suite2p_stub["register_batch_size"] == INPUT_BATCH_SIZE
+    assert info["ops"].data["reg_batch_size"] == INPUT_BATCH_SIZE
     assert info["ops"].data["batch_size"] == INPUT_BATCH_SIZE
 
 
@@ -131,6 +133,7 @@ def test_params_without_these_keys_and_smoothing_use_the_input_batch_size(
 ):
     params = _params_without_new_keys()
     params["Registration"]["smooth_sigma_time"] = 2
-    suite2p_registration(_input_ops(), output_dir, params=params)
+    info = suite2p_registration(_input_ops(), output_dir, params=params)
 
     assert suite2p_stub["register_batch_size"] == INPUT_BATCH_SIZE
+    assert info["ops"].data["reg_batch_size"] == INPUT_BATCH_SIZE
