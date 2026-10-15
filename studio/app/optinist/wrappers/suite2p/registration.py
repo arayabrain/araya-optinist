@@ -26,14 +26,20 @@ def suite2p_registration(
     if len(refImg.shape) == 3:
         refImg = refImg[0]
 
+    # This node's batch_size sizes registration only (its peak memory grows
+    # with it); downstream nodes keep the batch_size they were given.
+    input_batch_size = ops.get("batch_size")
     ops = {**default_ops(), **ops, **params}
 
     # register binary
     ops = registration.register_binary(ops, refImg=refImg)
 
-    # compute metrics for registration
+    # compute metrics for registration (QC only; off by default)
     if ops.get("do_regmetrics", True) and ops["nframes"] >= 1500:
         ops = registration.get_pc_metrics(ops)
+
+    if input_batch_size is not None:
+        ops["batch_size"] = input_batch_size
 
     mv = io.BinaryFile(
         Lx=ops["Lx"], Ly=ops["Ly"], read_filename=ops["reg_file"]

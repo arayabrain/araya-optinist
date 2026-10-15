@@ -101,7 +101,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Output:** Suite2pData
 - **Parameters:**
   - force sktiff [boolean, default: False] Specifies whether or not to use scikit-image for reading in tiffs
-  - batch_size [int, default: 500]: How many frames to register simultaneously in each batch. This depends on memory constraints it will be faster to run if the batch is larger, but it will require more RAM.
+  - batch_size [int, default: 500]: How many frames are converted at a time. It is carried to suite2p_roi, which reads frames in batches of this size for detection and extraction. Registration uses its own batch_size (see suite2p_registration).
 
 ###### suite2p_registration
 
@@ -119,6 +119,8 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **Registration**
 
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Registration's peak memory grows with it: about 1 GB plus 25 MB per frame at 512 x 512, in proportion to the frame area. Results do not depend on it, except at batch edges when smooth_sigma_time > 0.
+    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
     - **smooth_sigma_time**: [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Might need this to be set to 1 or 2 for low SNR data.
     - **maxregshift** [float, default: 0.1]: Maximum shift as a fraction of the frame size. If the frame is Ly pixels x Lx pixels, then the maximum pixel shift in pixels will be max(Ly,Lx) \* ops[‘maxregshift’].

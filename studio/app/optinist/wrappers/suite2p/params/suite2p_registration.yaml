@@ -5,6 +5,8 @@ I/O:
   frames_include: -1
 
 Registration:
+  batch_size: 100
+  do_regmetrics: False
   smooth_sigma: 1.15
   smooth_sigma_time: 0
   maxregshift: 0.1
