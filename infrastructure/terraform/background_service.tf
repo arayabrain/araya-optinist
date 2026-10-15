@@ -85,8 +85,12 @@ resource "aws_instance" "background" {
     Tier    = "background"
   }
 
+  # user_data comes from the launch template and is read back as computed.
+  # Undeclared here, the plan would remove it on every run; the provider
+  # applies that by stopping and starting the instance.
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 }
 

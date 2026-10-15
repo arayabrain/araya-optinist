@@ -586,9 +586,10 @@ resource "aws_instance" "premium" {
     command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }
 
-
+  # Same as aws_instance.background: the launch template owns user_data
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 }
 
