@@ -72,6 +72,17 @@ def test_registers_with_its_own_batch_size_and_passes_the_input_one_on(
     assert info["ops"].data["batch_size"] == INPUT_BATCH_SIZE
 
 
+def test_temporal_smoothing_registers_with_the_input_batch_size(
+    output_dir, suite2p_stub
+):
+    params = copy.deepcopy(read_default_params("suite2p_registration"))
+    params["Registration"]["smooth_sigma_time"] = 2
+    info = suite2p_registration(_input_ops(), output_dir, params=params)
+
+    assert suite2p_stub["register_batch_size"] == INPUT_BATCH_SIZE
+    assert info["ops"].data["batch_size"] == INPUT_BATCH_SIZE
+
+
 def test_pc_metrics_are_off_by_default(output_dir, suite2p_stub):
     params = read_default_params("suite2p_registration")
     suite2p_registration(_input_ops(), output_dir, params=params)

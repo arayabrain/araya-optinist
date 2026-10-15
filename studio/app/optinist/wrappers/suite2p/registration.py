@@ -31,6 +31,16 @@ def suite2p_registration(
     input_batch_size = ops.get("batch_size")
     ops = {**default_ops(), **ops, **params}
 
+    # smooth_sigma_time > 0 smooths over the frames of each batch, so the batch
+    # edges shape the shifts: register with the incoming batch_size then
+    if ops.get("smooth_sigma_time", 0) > 0 and input_batch_size is not None:
+        logger.info(
+            "smooth_sigma_time > 0: registering in batches of %s frames, not %s",
+            input_batch_size,
+            ops["batch_size"],
+        )
+        ops["batch_size"] = input_batch_size
+
     # register binary
     ops = registration.register_binary(ops, refImg=refImg)
 
