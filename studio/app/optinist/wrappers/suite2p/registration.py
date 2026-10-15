@@ -22,10 +22,11 @@ def suite2p_registration(
 
     # A node saved without these keys (its parameter panel cannot add them)
     # takes this node's shipped defaults
+    shipped_yaml = read_default_params("suite2p_registration")
+    if not shipped_yaml:
+        raise FileNotFoundError("suite2p_registration.yaml not found")
     shipped_params = {}
-    recursive_flatten_params(
-        read_default_params("suite2p_registration"), shipped_params
-    )
+    recursive_flatten_params(shipped_yaml, shipped_params)
     for key in ("batch_size", "do_regmetrics"):
         params.setdefault(key, shipped_params[key])
 
