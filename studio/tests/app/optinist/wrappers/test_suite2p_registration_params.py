@@ -40,7 +40,7 @@ def suite2p_stub(monkeypatch):
             self.data = np.zeros((6, Ly, Lx), np.int16)
 
     fake = types.ModuleType("suite2p")
-    fake.default_ops = lambda: {"batch_size": 500}
+    fake.default_ops = lambda: {"batch_size": 500, "do_regmetrics": True}
     fake.io = types.SimpleNamespace(BinaryFile=BinaryFile)
     fake.registration = types.SimpleNamespace(
         register_binary=register_binary, get_pc_metrics=get_pc_metrics
@@ -49,27 +49,37 @@ def suite2p_stub(monkeypatch):
     return calls
 
 
-def _input_ops(nframes=2000):
-    return Suite2pData(
-        {
-            "meanImg": np.ones((H, W), np.float32),
-            "batch_size": INPUT_BATCH_SIZE,
-            "nframes": nframes,
-            "Ly": H,
-            "Lx": W,
-            "reg_file": "data.bin",
-        }
-    )
+def _input_ops(nframes=2000, batch_size=INPUT_BATCH_SIZE):
+    ops = {
+        "meanImg": np.ones((H, W), np.float32),
+        "nframes": nframes,
+        "Ly": H,
+        "Lx": W,
+        "reg_file": "data.bin",
+    }
+    if batch_size is not None:
+        ops["batch_size"] = batch_size
+    return Suite2pData(ops)
 
 
 def test_registers_with_its_own_batch_size_and_passes_the_input_one_on(
     output_dir, suite2p_stub
 ):
     params = read_default_params("suite2p_registration")
+    node_batch_size = params["Registration"]["batch_size"]
     info = suite2p_registration(_input_ops(), output_dir, params=params)
 
-    assert suite2p_stub["register_batch_size"] == 100
+    assert node_batch_size != INPUT_BATCH_SIZE
+    assert suite2p_stub["register_batch_size"] == node_batch_size
+    assert info["ops"].data["reg_batch_size"] == node_batch_size
     assert info["ops"].data["batch_size"] == INPUT_BATCH_SIZE
+
+
+def test_input_without_batch_size_passes_suite2p_default_on(output_dir, suite2p_stub):
+    params = read_default_params("suite2p_registration")
+    info = suite2p_registration(_input_ops(batch_size=None), output_dir, params=params)
+
+    assert info["ops"].data["batch_size"] == 500
 
 
 def test_temporal_smoothing_registers_with_the_input_batch_size(
@@ -98,14 +108,29 @@ def test_pc_metrics_run_when_enabled(output_dir, suite2p_stub):
     assert suite2p_stub["pc_metrics"] == 1
 
 
-def test_params_saved_before_these_keys_keep_the_former_behaviour(
-    output_dir, suite2p_stub
-):
+def _params_without_new_keys():
     params = copy.deepcopy(read_default_params("suite2p_registration"))
     del params["Registration"]["batch_size"]
     del params["Registration"]["do_regmetrics"]
-    info = suite2p_registration(_input_ops(), output_dir, params=params)
+    return params
+
+
+def test_params_without_these_keys_take_the_shipped_defaults(output_dir, suite2p_stub):
+    shipped = read_default_params("suite2p_registration")["Registration"]
+    info = suite2p_registration(
+        _input_ops(), output_dir, params=_params_without_new_keys()
+    )
+
+    assert suite2p_stub["register_batch_size"] == shipped["batch_size"]
+    assert suite2p_stub["pc_metrics"] == (1 if shipped["do_regmetrics"] else 0)
+    assert info["ops"].data["batch_size"] == INPUT_BATCH_SIZE
+
+
+def test_params_without_these_keys_and_smoothing_use_the_input_batch_size(
+    output_dir, suite2p_stub
+):
+    params = _params_without_new_keys()
+    params["Registration"]["smooth_sigma_time"] = 2
+    suite2p_registration(_input_ops(), output_dir, params=params)
 
     assert suite2p_stub["register_batch_size"] == INPUT_BATCH_SIZE
-    assert suite2p_stub["pc_metrics"] == 1
-    assert info["ops"].data["batch_size"] == INPUT_BATCH_SIZE
