@@ -439,7 +439,7 @@ The `handler()` function routes events based on type:
 |---|---|---|
 | `{"action": "migrate_shared_users"}` | `_handle_migrate_shared_users()` | Async migration under MySQL `GET_LOCK` |
 | `{"action": "fix_shared_flags"}` | `fix_incorrect_is_shared_flags()` | One-time data cleanup |
-| `{"action": "cleanup_all_dynamic"}` | `cleanup_all_dynamic_instances()` | Tear down all dynamically-provisioned premium instances (dev scheduler before environment stop) |
+| `{"action": "cleanup_all_dynamic"}` | `cleanup_all_dynamic_instances()` | Tear down all dynamically-provisioned premium instances (dev scheduler before environment stop). Base instances are preserved: the event's `base_instance_ids` plus `PREMIUM_INSTANCE_IDS` |
 | CloudWatch Scheduled Event | `handle_scheduled_monitoring()` | 15-min monitoring cycle |
 | `GET` (API Gateway) | `get_premium_user_status()` | Status check |
 | `POST action=assign` | `assign_premium_user()` | User assignment |

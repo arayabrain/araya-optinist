@@ -6331,7 +6331,8 @@ class TestTerminateAgedStoppedInstances:
     scheduler started a standby, its row still said stopped, the empty
     StateTransitionReason sent the age check to the standby_created_at
     fallback, and the running Terraform-managed base instance was terminated.
-    EC2 decides, and the row is corrected to it both ways.
+    EC2 decides; the sweep neither reads nor writes instance_state (premium
+    cleanup's reconcile_instance_states() corrects it).
     """
 
     NOW = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -6416,7 +6417,7 @@ class TestTerminateAgedStoppedInstances:
         self, mock_env_vars_premium
     ):
         """The incident: running, empty StateTransitionReason, aged
-        standby_created_at. Skipped, and the row corrected to running."""
+        standby_created_at. Skipped, and the row left to premium cleanup."""
         terminated, cursor, _ = self._run(
             mock_env_vars_premium,
             [self._row("i-started", self.AGED)],
@@ -6424,30 +6425,23 @@ class TestTerminateAgedStoppedInstances:
         )
 
         assert terminated == []
-        updates = self._updates(cursor)
-        assert len(updates) == 1
-        assert "SET instance_state = %s" in updates[0][0]
-        assert "WHERE instance_id = %s AND is_standby = 1" in updates[0][0]
-        assert updates[0][1] == (InstanceState.RUNNING, "i-started")
+        assert self._updates(cursor) == []
 
-    def test_transitional_state_is_skipped_without_correcting_the_row(
-        self, mock_env_vars_premium
-    ):
-        terminated, cursor, _ = self._run(
+    def test_transitional_state_is_skipped(self, mock_env_vars_premium):
+        terminated, _, _ = self._run(
             mock_env_vars_premium,
             [self._row("i-pending", self.AGED)],
             [self._instance("i-pending", state=InstanceState.PENDING)],
         )
 
         assert terminated == []
-        assert self._updates(cursor) == []
 
-    def test_running_row_of_a_stopped_instance_is_corrected_and_aged(
+    def test_stale_running_row_of_a_stopped_instance_is_aged(
         self, mock_env_vars_premium
     ):
         """The other direction: a timed-out start_standby_instance() leaves a
-        'running' row, and nothing else writes it back. Corrected to stopped,
-        it ages like any other standby."""
+        'running' row. The row's state is not read, so the instance ages like
+        any other stopped standby."""
         terminated, cursor, _ = self._run(
             mock_env_vars_premium,
             [self._row("i-stale-running", self.AGED, InstanceState.RUNNING)],
@@ -6455,23 +6449,6 @@ class TestTerminateAgedStoppedInstances:
         )
 
         assert terminated == ["i-stale-running"]
-        assert [params for _, params in self._updates(cursor)] == [
-            (InstanceState.STOPPED, "i-stale-running")
-        ]
-
-    def test_row_matching_ec2_is_not_rewritten(self, mock_env_vars_premium):
-        _, cursor, _ = self._run(
-            mock_env_vars_premium,
-            [
-                self._row("i-stopped", self.RECENT),
-                self._row("i-running", self.RECENT, InstanceState.RUNNING),
-            ],
-            [
-                self._instance("i-stopped"),
-                self._instance("i-running", state=InstanceState.RUNNING),
-            ],
-        )
-
         assert self._updates(cursor) == []
 
     def test_base_instance_is_never_terminated(self, mock_env_vars_premium):
@@ -6488,21 +6465,6 @@ class TestTerminateAgedStoppedInstances:
         )
 
         assert terminated == ["i-dynamic"]
-
-    def test_base_instance_row_is_still_corrected(self, mock_env_vars_premium):
-        """On development the dev scheduler starts the base instance every
-        morning; its row follows EC2 even though it is never aged."""
-        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
-        terminated, cursor, _ = self._run(
-            mock_env_vars_premium,
-            [self._row(base_id, self.AGED)],
-            [self._instance(base_id, state=InstanceState.RUNNING)],
-        )
-
-        assert terminated == []
-        assert [params for _, params in self._updates(cursor)] == [
-            (InstanceState.RUNNING, base_id)
-        ]
 
     def test_stopped_with_empty_reason_falls_back_to_standby_created_at(
         self, mock_env_vars_premium
@@ -6663,3 +6625,101 @@ class TestBaseInstanceNeverTerminatedAsStandby:
             assert terminate_standby_instance("i-test1") is True
 
         ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-test1"])
+
+    def test_cleanup_all_dynamic_preserves_base_ids_missing_from_the_event(
+        self, mock_env_vars_premium
+    ):
+        """The handler defaults base_instance_ids to [] when the event omits
+        it; PREMIUM_INSTANCE_IDS is preserved regardless."""
+        base_ids = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")
+        instances = [{"InstanceId": i} for i in [*base_ids, "i-dynamic"]]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": instances}]
+            }
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_all_dynamic_instances
+
+            result = cleanup_all_dynamic_instances(base_instance_ids=[])
+
+        assert result["terminated"] == ["i-dynamic"]
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+
+class TestGetAvailableStandbyInstances:
+    """get_available_standby_instances returns only standbys EC2 reports stopped.
+
+    Its list feeds the excess trim and Tier 3 assignment, so an unchecked
+    database list - which can include a running standby mid-assignment - must
+    never come back from it.
+    """
+
+    @staticmethod
+    def _get(mock_env_vars_premium, rows, describe):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock(fetchall_values=[rows])
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import get_available_standby_instances
+
+            return get_available_standby_instances(), ec2
+
+    @staticmethod
+    def _rows(*instance_ids):
+        return [
+            MockRow({"instance_id": i, "standby_created_at": None})
+            for i in instance_ids
+        ]
+
+    def test_returns_only_stopped_and_skips_a_missing_id(self, mock_env_vars_premium):
+        def describe(Filters):
+            # i-gone is left out, as an instance-id filter does
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": "i-stopped", "State": {"Name": "stopped"}},
+                            {"InstanceId": "i-running", "State": {"Name": "running"}},
+                        ]
+                    }
+                ]
+            }
+
+        standbys, ec2 = self._get(
+            mock_env_vars_premium,
+            self._rows("i-stopped", "i-running", "i-gone"),
+            describe,
+        )
+
+        assert [s["instance_id"] for s in standbys] == ["i-stopped"]
+        assert ec2.describe_instances.call_args.kwargs["Filters"] == [
+            {
+                "Name": "instance-id",
+                "Values": ["i-stopped", "i-running", "i-gone"],
+            }
+        ]
+
+    def test_ec2_error_returns_no_standbys(self, mock_env_vars_premium):
+        """Fails closed: on a throttle or any other error, nothing is offered
+        for trimming or assignment."""
+        from botocore.exceptions import ClientError
+
+        def describe(Filters):
+            raise ClientError(
+                {"Error": {"Code": "RequestLimitExceeded"}}, "DescribeInstances"
+            )
+
+        standbys, _ = self._get(
+            mock_env_vars_premium, self._rows("i-stopped", "i-running"), describe
+        )
+
+        assert standbys == []
