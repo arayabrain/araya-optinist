@@ -136,16 +136,19 @@ class TimeSeriesChunkHandler:
                 e.g. {"data": ..., "std": ...}
             index: Index shared by every record
         """
-        rows = {name: cls._json_rows(values) for name, values in columns.items()}
         index = np.asarray(index).tolist()
 
         index_map = {}  # Maps record_id to chunk_id
         for start in range(0, len(record_ids), cls.CHUNK_SIZE):
+            stop = start + cls.CHUNK_SIZE
             chunk_id = start // cls.CHUNK_SIZE
+            # Per chunk: Python lists take ~4x the array's memory
+            rows = {
+                name: cls._json_rows(values[start:stop])
+                for name, values in columns.items()
+            }
             records = {}
-            for i, record_id in enumerate(
-                record_ids[start : start + cls.CHUNK_SIZE], start
-            ):
+            for i, record_id in enumerate(record_ids[start:stop]):
                 index_map[str(record_id)] = chunk_id
                 records[str(record_id)] = {name: rows[name][i] for name in rows}
 

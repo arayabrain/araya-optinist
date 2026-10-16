@@ -33,6 +33,17 @@ def test_records_across_chunks_keep_nan_and_a_per_record_std(tmp_path):
     }
 
 
+def test_rows_are_converted_one_chunk_at_a_time(tmp_path):
+    data = TimeSeriesData(np.zeros((3, 4)), std=np.ones((3, 4)))
+    with patch.object(Handler, "CHUNK_SIZE", 2), patch.object(
+        Handler, "_json_rows", side_effect=Handler._json_rows
+    ) as json_rows:
+        data.save_json(str(tmp_path))
+
+    assert [len(call.args[0]) for call in json_rows.call_args_list] == [2, 2, 1, 1]
+    assert len(Handler.load_all_records(str(tmp_path / "timeseries"))) == 3
+
+
 def test_an_empty_series_with_a_2d_std_saves_no_records(tmp_path):
     TimeSeriesData(np.empty((0, 10)), std=np.empty((0, 10))).save_json(str(tmp_path))
 
