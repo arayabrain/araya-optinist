@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from studio.app.optinist.wrappers.caiman.cnmf import caiman_dff, dff_frames_window
+from studio.app.optinist.wrappers.caiman.cnmf_multisession import session_dff
 
 PIXELS = 4
 FRAMES = 6
@@ -73,12 +74,15 @@ def test_the_ring_model_static_background_is_the_denominator(detrend, b, f):
     np.testing.assert_array_equal(call["f"], np.ones((1, FRAMES)))
 
 
-def test_no_background_at_all_is_logged_as_detrended_only(detrend, caplog):
+@pytest.mark.parametrize(
+    "b, f", [(None, None), (np.zeros((PIXELS, 0)), np.zeros((0, FRAMES)))]
+)
+def test_no_background_at_all_is_logged_as_detrended_only(detrend, caplog, b, f):
     caplog.set_level(logging.WARNING, logger="optinist")
 
-    caiman_dff(estimates(b=None, f=None), [0], FRAMES, 500)
+    caiman_dff(estimates(b=b, f=f), [0], FRAMES, 500)
 
-    assert detrend.calls[0]["b"] is None
+    assert detrend.calls[0]["b"] is None and detrend.calls[0]["f"] is None
     assert "detrended only" in caplog.text
 
 
@@ -89,6 +93,19 @@ def test_rows_follow_the_fluorescence_order_as_float32(detrend):
 
     assert dff.dtype == np.float32
     np.testing.assert_array_equal(dff, (C + 0.5)[order])
+
+
+def test_a_session_with_no_match_gives_nan_not_another_cell(detrend):
+    sessions = [estimates(), estimates(C=C + 100.0)]
+    # register_multisession's NaN: union cell 0 is not in session 1
+    assignments = np.array([[2, np.nan], [0, 1]])
+
+    dff = session_dff(sessions, assignments, 500)
+
+    assert dff.shape == (2, 2 * FRAMES) and dff.dtype == np.float32
+    np.testing.assert_array_equal(dff[:, :FRAMES], (C + 0.5)[[2, 0]])
+    assert np.isnan(dff[0, FRAMES:]).all()
+    np.testing.assert_array_equal(dff[1, FRAMES:], C[1] + 100.5)
 
 
 def test_zero_components_give_an_empty_row_block(detrend):

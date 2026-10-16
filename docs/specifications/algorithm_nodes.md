@@ -96,7 +96,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **thresh_cost** [scalar, default: 0.7]: Maximum distance considered.
   - **max_dist** [scalar, default: 10]: Maximum distance between centroids.
   - **enclosed_thr** [float or none, default: None]: If not None, set distance to at most the specified value when ground truth is a subset of inferred.
-  - **dff** (output): as in caiman_cnmf, computed per session with frames_window and concatenated in time like fluorescence, so each session has its own baseline. With `nb: 0` the denominator uses each session's static ring background `b0` (not its `W` fluctuations). Not written to the NWB file.
+  - **dff** (output): as in caiman_cnmf, computed per session with frames_window and concatenated in time like fluorescence, so each session has its own baseline. A union cell with no match in a session (possible with reg_file_rate below 1) has NaN dff for that session. With `nb: 0` the denominator uses each session's static ring background `b0` (not its `W` fluctuations). Not written to the NWB file.
 
 ##### [Suite2p](https://suite2p.readthedocs.io/en/latest/)
 

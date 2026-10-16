@@ -336,11 +336,14 @@ def caiman_dff(estimates, rows, n_frames, frames_window):
     from caiman.source_extraction.cnmf.utilities import detrend_df_f
 
     b, f = estimates.b, estimates.f
+    if b is None or f is None or np.shape(b)[-1] == 0:
+        # detrend_df_f only takes None as no background; zero-width divides by F0
+        b = f = None
     b0 = getattr(estimates, "b0", None)
-    if (b is None or f is None or np.shape(b)[-1] == 0) and b0 is not None:
+    if b is None and b0 is not None:
         # ring model: the static background b0 only, its W fluctuations left out
         b, f = np.reshape(b0, (-1, 1)), np.ones((1, n_frames))
-    elif b is None or f is None:
+    elif b is None:
         logger.warning(
             "CaImAn estimates have no background (b, f or b0); dff is "
             "detrended only, F - F0, not divided by a baseline"
