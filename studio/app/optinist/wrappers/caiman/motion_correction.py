@@ -9,6 +9,7 @@ from studio.app.optinist.wrappers.caiman.caiman_utils import (
     CaimanUtils,
     caiman_cluster,
     distribute_params_to_groups,
+    save_memmap_c_order,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
@@ -19,7 +20,7 @@ def caiman_mc(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(mc_images=ImageData):
     import numpy as np
-    from caiman import load_memmap, save_memmap
+    from caiman import load_memmap
     from caiman.motion_correction import MotionCorrect
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -48,8 +49,8 @@ def caiman_mc(
         border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
 
         # memory mapping
-        mmap_file_new = save_memmap(
-            mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
+        mmap_file_new = save_memmap_c_order(
+            mc.mmap_file, base_name=function_id, border_to_0=border_to_0
         )
 
     # now load the file
