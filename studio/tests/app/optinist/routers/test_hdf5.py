@@ -209,6 +209,37 @@ def test_failed_extraction_is_not_stamped_current(workspace):
     assert cache["a.h5"] == [] and cache[STRUCTURE_VERSION_KEY] == {}
 
 
+def _not_hdf5(path):
+    with open(path, "w") as f:
+        f.write("not hdf5")
+
+
+def _bad_object_header(path):
+    with h5py.File(path, "w") as f:
+        f["g/data"] = np.zeros(5)
+        addr = h5py.h5o.get_info(f["g/data"].id).addr
+    with open(path, "r+b") as f:
+        f.seek(addr)
+        f.write(b"\xff")
+
+
+def _non_utf8_group_name(path):
+    with h5py.File(path, "w") as f:
+        f[b"g\xe9/data"] = np.zeros(5)
+
+
+@pytest.mark.parametrize(
+    "write_bad_file", [_not_hdf5, _bad_object_header, _non_utf8_group_name]
+)
+def test_unreadable_local_file_gets_its_failed_entry(client, workspace, write_bad_file):
+    write_bad_file(f"{DIRPATH.INPUT_DIR}/{workspace}/bad.h5")
+    update_hdf5_structure(workspace, "bad.h5")
+
+    response = client.get(f"/hdf5/bad.h5?workspace_id={workspace}")
+
+    assert response.status_code == 200 and response.json() == []
+
+
 def test_removing_a_file_removes_its_stamp(workspace):
     _table_file(f"{DIRPATH.INPUT_DIR}/{workspace}/a.h5")
     update_hdf5_structure(workspace, "a.h5")

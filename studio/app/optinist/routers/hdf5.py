@@ -5,6 +5,7 @@ import h5py
 from fastapi import APIRouter, Depends
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.dataclass.utils import is_plain_number
 from studio.app.common.routers.files import (
@@ -18,6 +19,8 @@ from studio.app.dir_path import DIRPATH
 from studio.app.optinist.schemas.hdf5 import HDF5Node
 
 router = APIRouter()
+
+logger = AppLogger.get_logger()
 
 
 class HDF5Getter:
@@ -147,4 +150,10 @@ async def get_files(
         return [_dict_to_hdf5_node(node) for node in structure_dict[file_path]]
 
     # Fall back to extracting from file directly
-    return HDF5Getter.get(full_path)
+    try:
+        return HDF5Getter.get(full_path)
+    except Exception as e:
+        if file_path not in structure_dict:
+            raise
+        logger.warning(f"Failed to read HDF5 structure for {file_path}: {e}")
+        return [_dict_to_hdf5_node(node) for node in structure_dict[file_path]]
