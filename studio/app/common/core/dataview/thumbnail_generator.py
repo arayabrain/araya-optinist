@@ -82,7 +82,11 @@ class ThumbnailGenerator:
 
     @classmethod
     def _render_array_as_thumbnail(
-        cls, frame: np.ndarray, output_path: str, max_size: int = 512
+        cls,
+        frame: np.ndarray,
+        output_path: str,
+        max_size: int = 512,
+        keep_aspect: bool = True,
     ) -> None:
         """
         Normalize a 2D numeric array to uint8, resize, and save as PNG.
@@ -91,6 +95,8 @@ class ThumbnailGenerator:
             frame: 2D numpy array (grayscale image or heatmap)
             output_path: Path to save PNG thumbnail
             max_size: Maximum dimension for thumbnail (default 512px)
+            keep_aspect: False for matrices whose axes are not spatial
+                (time x cells), which are stretched to a square
         """
         img = frame
         # Handle multi-channel images (take first channel or average)
@@ -99,20 +105,41 @@ class ThumbnailGenerator:
 
         # Normalize to uint8
         img_float = img.astype(np.float32)
-        img_min, img_max = img_float.min(), img_float.max()
+        img_min, img_max = np.nanmin(img_float), np.nanmax(img_float)
+        if not keep_aspect:
+            # A matrix: 1st to 99th percentile, so a few large values do not crush
+            # the rest to black; sparse data collapses the percentiles, keep the range
+            low, high = np.nanpercentile(img_float, [1, 99])
+            if high > low:
+                img_min, img_max = low, high
         if img_max > img_min:
-            img_normalized = ((img_float - img_min) / (img_max - img_min) * 255).astype(
-                np.uint8
-            )
+            img_normalized = (
+                np.clip((img_float - img_min) / (img_max - img_min), 0, 1) * 255
+            ).astype(np.uint8)
         else:
             # Uniform image: set to mid-gray (128) for visibility
             img_normalized = np.full_like(img, 128, dtype=np.uint8)
 
-        # Resize if larger than max_size while preserving aspect ratio
+        # Resize to max_size, a full square when keep_aspect is False
         h, w = img_normalized.shape[:2]
-        if max(h, w) > max_size:
+        if not keep_aspect:
+            new_h = new_w = max_size
+        elif max(h, w) > max_size:
             scale = max_size / max(h, w)
-            new_h, new_w = int(h * scale), int(w * scale)
+            new_h, new_w = max(1, int(h * scale)), max(1, int(w * scale))
+        else:
+            new_h, new_w = h, w
+        if not keep_aspect and (h > new_h or w > new_w):
+            # Pool toward the extreme farther from the median, so sparse events
+            # of either sign survive the downsampling and dense data stays even
+            ys = (np.arange(min(new_h, h)) * h / min(new_h, h)).astype(int)
+            xs = (np.arange(min(new_w, w)) * w / min(new_w, w)).astype(int)
+            counts = np.cumsum(np.bincount(img_normalized.ravel(), minlength=256))
+            low, median, high = np.searchsorted(counts, [1, counts[-1] / 2, counts[-1]])
+            pool = np.minimum if median - low > high - median else np.maximum
+            img_normalized = pool.reduceat(pool.reduceat(img_normalized, ys), xs, 1)
+            h, w = img_normalized.shape
+        if (new_h, new_w) != (h, w):
             # Simple resize using slicing (nearest neighbor)
             y_indices = (np.arange(new_h) * h / new_h).astype(int)
             x_indices = (np.arange(new_w) * w / new_w).astype(int)
@@ -177,7 +204,9 @@ class ThumbnailGenerator:
                     f"HDF5 dataset '{hdf5_path}' in '{file_path}' has "
                     f"unsupported dimensionality: {ndim}"
                 )
-        cls._render_array_as_thumbnail(np.asarray(frame), output_path, max_size)
+        cls._render_array_as_thumbnail(
+            np.asarray(frame), output_path, max_size, keep_aspect=ndim >= 3
+        )
 
     @classmethod
     def generate_mat_thumbnail(
@@ -219,7 +248,9 @@ class ThumbnailGenerator:
                 f"MAT dataset '{mat_path}' in '{file_path}' has "
                 f"unsupported dimensionality: {ndim}"
             )
-        cls._render_array_as_thumbnail(frame, output_path, max_size)
+        cls._render_array_as_thumbnail(
+            frame, output_path, max_size, keep_aspect=ndim >= 3
+        )
 
     @classmethod
     def generate_roi_thumbnail(
