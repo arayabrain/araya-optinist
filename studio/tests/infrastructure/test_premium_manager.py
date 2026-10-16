@@ -6364,8 +6364,12 @@ class TestTerminateAgedStoppedInstances:
     def _stopped_reason(stopped_at):
         return f"User initiated ({stopped_at:%Y-%m-%d %H:%M:%S} GMT)"
 
-    def _run(self, mock_env_vars_premium, rows, instances):
-        """Run the sweep; returns (terminated ids, cursor, ec2)."""
+    def _run(self, mock_env_vars_premium, rows, instances, unrequested=()):
+        """Run the sweep; returns (terminated ids, cursor, ec2).
+
+        `unrequested` instances are returned whatever the filter asks for,
+        as a malformed or empty filter could make EC2 do.
+        """
         from botocore.exceptions import ClientError
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -6391,8 +6395,11 @@ class TestTerminateAgedStoppedInstances:
                     ids = InstanceIds
                 else:
                     (id_filter,) = Filters
+                    assert id_filter["Name"] == "instance-id"
+                    assert id_filter["Values"]
                     ids = id_filter["Values"]
                 matched = [i for i in instances if i["InstanceId"] in ids]
+                matched += list(unrequested)
                 return {"Reservations": [{"Instances": matched}] if matched else []}
 
             ec2.describe_instances.side_effect = describe_instances
@@ -6400,7 +6407,7 @@ class TestTerminateAgedStoppedInstances:
 
             from premium_manager import terminate_aged_stopped_instances
 
-            terminate_aged_stopped_instances()
+            self.result = terminate_aged_stopped_instances()
 
         terminated = [c[0][0] for c in mock_terminate.call_args_list]
         return terminated, cursor, ec2
@@ -6427,14 +6434,82 @@ class TestTerminateAgedStoppedInstances:
         assert terminated == []
         assert self._updates(cursor) == []
 
-    def test_transitional_state_is_skipped(self, mock_env_vars_premium):
+    @pytest.mark.parametrize(
+        "state",
+        [
+            InstanceState.PENDING,
+            InstanceState.STOPPING,
+            InstanceState.SHUTTING_DOWN,
+            InstanceState.TERMINATED,
+        ],
+    )
+    def test_state_other_than_stopped_is_skipped(self, mock_env_vars_premium, state):
         terminated, _, _ = self._run(
             mock_env_vars_premium,
-            [self._row("i-pending", self.AGED)],
-            [self._instance("i-pending", state=InstanceState.PENDING)],
+            [self._row("i-other", self.AGED)],
+            [
+                self._instance(
+                    "i-other", state=state, reason=self._stopped_reason(self.AGED)
+                )
+            ],
         )
 
         assert terminated == []
+
+    def test_instance_ec2_returns_unasked_is_never_terminated(
+        self, mock_env_vars_premium
+    ):
+        """The loop acts only on ids it asked for: a malformed or empty filter
+        could return every instance, and on development the NAT and
+        background instances also stop every night with this env's prefix."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-standby", self.AGED)],
+            [self._instance("i-standby", reason=self._stopped_reason(self.AGED))],
+            unrequested=[
+                self._instance(
+                    "i-nat", reason=self._stopped_reason(self.AGED), name="test-nat"
+                )
+            ],
+        )
+
+        assert terminated == ["i-standby"]
+
+    def test_ec2_error_terminates_nothing(self, mock_env_vars_premium):
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance"
+        ) as mock_terminate:
+            mock_pymysql.return_value = setup_db_mock(
+                fetchall_values=[[self._row("i-standby", self.AGED)]]
+            )
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = ClientError(
+                {"Error": {"Code": "RequestLimitExceeded"}}, "DescribeInstances"
+            )
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_aged_stopped_instances
+
+            assert terminate_aged_stopped_instances() == 0
+
+        mock_terminate.assert_not_called()
+
+    def test_bad_max_age_value_does_not_raise(self, mock_env_vars_premium):
+        """A bad PREMIUM_STOPPED_MAX_AGE_HOURS must not raise out of the
+        monitor's step and skip the steps after it."""
+        env = {**mock_env_vars_premium, "PREMIUM_STOPPED_MAX_AGE_HOURS": "four"}
+        terminated, _, _ = self._run(
+            env,
+            [self._row("i-standby", self.AGED)],
+            [self._instance("i-standby", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == []
+        assert self.result == 0
 
     def test_stale_running_row_of_a_stopped_instance_is_aged(
         self, mock_env_vars_premium
@@ -6649,6 +6724,74 @@ class TestBaseInstanceNeverTerminatedAsStandby:
 
         assert result["terminated"] == ["i-dynamic"]
         ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+    def test_cleanup_all_dynamic_preserves_ids_only_in_the_event(
+        self, mock_env_vars_premium
+    ):
+        instances = [{"InstanceId": i} for i in ["i-event-base", "i-dynamic"]]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": instances}]
+            }
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_all_dynamic_instances
+
+            result = cleanup_all_dynamic_instances(base_instance_ids=["i-event-base"])
+
+        assert result["terminated"] == ["i-dynamic"]
+
+    @pytest.mark.parametrize(
+        "value", ["i-a,i-b", "i-a, i-b", " i-a ,i-b ", "i-a,i-b,", ",i-a,,i-b"]
+    )
+    def test_base_ids_parsing_tolerates_spaces_and_empty_items(
+        self, mock_env_vars_premium, value
+    ):
+        env = {**mock_env_vars_premium, "PREMIUM_INSTANCE_IDS": value}
+        with patch.dict("os.environ", env):
+            from premium_manager import _base_instance_ids
+
+            assert _base_instance_ids() == {"i-a", "i-b"}
+
+    def test_excess_trim_never_terminates_a_running_standby(
+        self, mock_env_vars_premium
+    ):
+        """End to end through get_available_standby_instances(): a dynamic
+        standby that EC2 reports running (e.g. mid Tier 3 assignment) is not
+        a candidate, even when it is the oldest."""
+        rows = [
+            MockRow({"instance_id": "i-running-old", "standby_created_at": None}),
+            MockRow({"instance_id": "i-stopped-new", "standby_created_at": None}),
+        ]
+        reservations = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-running-old", "State": {"Name": "running"}},
+                        {"InstanceId": "i-stopped-new", "State": {"Name": "stopped"}},
+                    ]
+                }
+            ]
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            mock_pymysql.return_value = setup_db_mock(fetchall_values=[rows])
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = reservations
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(1) == 1
+
+        mock_terminate.assert_called_once_with("i-stopped-new")
 
 
 class TestGetAvailableStandbyInstances:

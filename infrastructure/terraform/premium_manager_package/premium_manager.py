@@ -5159,8 +5159,13 @@ def _base_instance_ids() -> Set[str]:
 
     They stay in Terraform state and in the dev scheduler's start/stop list,
     so premium manager must never terminate one, even while it is a standby.
+    An unset or empty variable protects nothing, so it is logged.
     """
-    return {i for i in os.environ.get("PREMIUM_INSTANCE_IDS", "").split(",") if i}
+    raw = os.environ.get("PREMIUM_INSTANCE_IDS", "")
+    ids = {i.strip() for i in raw.split(",") if i.strip()}
+    if not ids:
+        print("WARNING: PREMIUM_INSTANCE_IDS is empty; no base instance is protected")
+    return ids
 
 
 def cleanup_excess_standby_instances(excess_count: int):
@@ -5232,11 +5237,11 @@ def terminate_aged_stopped_instances():
     convert_running_instance_to_standby(). It is not a precise "stopped at"
     timestamp but serves as a conservative fallback.
     """
-    max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
-    base_instance_ids = _base_instance_ids()
-    ec2: "EC2Client" = boto3.client("ec2")
-
     try:
+        max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
+        base_instance_ids = _base_instance_ids()
+        ec2: "EC2Client" = boto3.client("ec2")
+
         # Every active standby, whatever its row says: EC2 decides the state
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -5251,14 +5256,21 @@ def terminate_aged_stopped_instances():
             print("No standby instances to check")
             return 0
 
-        instance_ids = [row["instance_id"] for row in standby_rows]
+        instance_ids = [
+            row["instance_id"] for row in standby_rows if row["instance_id"]
+        ]
+        if not instance_ids:
+            print("No standby instances to check")
+            return 0
         db_fallback = {
             row["instance_id"]: row["standby_created_at"] for row in standby_rows
         }
 
         # Query EC2 for actual state and stop time (StateTransitionReason).
         # An instance-id filter, not InstanceIds: one id missing from EC2
-        # must not fail the call for the rest.
+        # must not fail the call for the rest. The filter must never be empty,
+        # and the loop acts only on ids it asked for. No pagination: standby
+        # counts are far below EC2's per-filter value limit.
         response = ec2.describe_instances(
             Filters=[{"Name": "instance-id", "Values": instance_ids}]
         )
@@ -5271,6 +5283,9 @@ def terminate_aged_stopped_instances():
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
                 instance_id = instance["InstanceId"]
+                if instance_id not in db_fallback:
+                    print(f"Skipping instance {instance_id}: not a requested standby")
+                    continue
                 found_ids.add(instance_id)
 
                 # Defense-in-depth: verify instance belongs to this environment
@@ -5385,8 +5400,9 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
     Terminate all dynamic premium instances and clean up their DB entries.
     Called by the dev scheduler before stopping the environment.
 
-    Dynamic instances are those with tag Service: premium-tier that are NOT
-    in the base_instance_ids list (Terraform-managed base instances).
+    Dynamic instances are those with tag Service: premium-tier that are
+    neither in base_instance_ids nor in PREMIUM_INSTANCE_IDS (the
+    Terraform-managed base instances).
 
     Args:
         base_instance_ids: List of Terraform-managed instance IDs to preserve

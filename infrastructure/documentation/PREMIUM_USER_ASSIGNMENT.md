@@ -723,11 +723,11 @@ standby-specific code path.
 Within `handle_scheduled_monitoring()` (the 15-minute loop), the standby
 touchpoints run in this order:
 
-1. `cleanup_failed_standby_instances()` -- prunes orphan DB rows first so
-   later steps see an accurate picture.
-2. `scale_down_if_possible()` -- may call
+1. `scale_down_if_possible()` -- may call
    `convert_idle_instances_to_standby_immediate()` on currently-idle
    running instances.
+2. `cleanup_failed_standby_instances()` -- prunes orphan DB rows so the
+   later steps see an accurate picture.
 3. `register_orphaned_stopped_instances()` -- adopts any AWS-stopped
    premium instance that has no row at all.
 4. `terminate_aged_stopped_instances()` -- enforces
@@ -739,8 +739,10 @@ touchpoints run in this order:
 5. If `get_standby_count() > PREMIUM_STANDBY_POOL_SIZE`, call
    `cleanup_excess_standby_instances(excess)` -- oldest-first trim.
 
-A base instance (`PREMIUM_INSTANCE_IDS`) can be a standby -- step 2 stops
-it as idle like any other -- but neither step 4 nor step 5 terminates it,
+A base instance (`PREMIUM_INSTANCE_IDS`) can be a standby. Step 1 converts
+it when it is idle, and step 3 adopts it whenever it is stopped -- by its
+Terraform provisioner after creation, by the dev scheduler at night, or by
+`cleanup_orphaned_ec2_instances()`. Neither step 4 nor step 5 terminates it,
 and `terminate_standby_instance()` refuses one from any caller. It stays
 in Terraform state and in the dev scheduler's start/stop list.
 
@@ -1319,7 +1321,7 @@ Shared instance optimization complete: 1 users migrated
 | `ALB_LISTENER_ARN` | ALB HTTPS listener for routing rules | Required |
 | `ALB_DNS_NAME` | ALB DNS name (for experiment sync) | Required |
 | `AUTOSCALING_TARGET_GROUP_ARN` | Shared pool target group | Required |
-| `PREMIUM_INSTANCE_IDS` | Comma-separated base EC2 instance IDs | Required |
+| `PREMIUM_INSTANCE_IDS` | Comma-separated base EC2 instance IDs; premium manager never terminates them. Unset or empty protects nothing (logged as a warning) | Required |
 | `PREMIUM_LAUNCH_TEMPLATE_ID` | EC2 launch template for dynamic premium instances | Required |
 | `PREMIUM_INSTANCE_TYPE` | EC2 instance type for dynamically-created premium instances | Required |
 | `PREMIUM_STANDBY_POOL_SIZE` | Desired standby pool size | `1` |
