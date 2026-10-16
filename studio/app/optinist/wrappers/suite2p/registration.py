@@ -55,14 +55,26 @@ def suite2p_registration(
     return info
 
 
-def binary_to_tiff(io, ops, output_dir, file_name, batch_size=200):
+# tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
+BIGTIFF_BYTES = 2**32 - 2**25
+# frames per read, bounded in bytes: suite2p's BinaryFile.read holds the raw
+# buffer and its astype copy at once
+BATCH_BYTES = 64 << 20
+
+
+def binary_to_tiff(io, ops, output_dir, file_name, batch_size=None):
     """
     Write the registered binary to the TIFF path ImageData would use.
 
-    tifffile writes a frame iterator with a declared shape exactly as it writes
-    the whole array (a byte-identical file), so only one batch is in memory.
+    Byte-identical to writing the whole array (develop-main's ImageData(mv)),
+    with one batch in memory. tifffile picks BigTIFF from `data.nbytes`, which a
+    frame iterator does not have, so the choice is made here the same way.
+    The file is written beside the final path and moved there when complete,
+    so a failed write leaves no partial mc_images.tif.
     `io` is suite2p.io, passed in because suite2p is imported lazily here.
     """
+    import os
+
     import numpy as np
     import tifffile
 
@@ -74,15 +86,34 @@ def binary_to_tiff(io, ops, output_dir, file_name, batch_size=200):
     tiff_dir = join_filepath([output_dir, "tiff", file_name])
     create_directory(tiff_dir)
     tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
+    tmp_path = f"{tiff_path}.partial"
 
     Ly, Lx = ops["Ly"], ops["Lx"]
-    with io.BinaryFile(Ly=Ly, Lx=Lx, read_filename=ops["reg_file"]) as binary:
-        nframes = binary.n_frames
+    frame_bytes = Ly * Lx * np.dtype(np.int16).itemsize
+    if batch_size is None:
+        batch_size = max(1, BATCH_BYTES // frame_bytes)
 
-        def frames():
-            for _, batch in binary.iter_frames(batch_size=batch_size, dtype=np.int16):
-                yield from batch
+    try:
+        with io.BinaryFile(Ly=Ly, Lx=Lx, read_filename=ops["reg_file"]) as binary:
+            nframes = binary.n_frames
 
-        tifffile.imwrite(tiff_path, frames(), shape=(nframes, Ly, Lx), dtype=np.int16)
+            def frames():
+                for _, batch in binary.iter_frames(
+                    batch_size=batch_size, dtype=np.int16
+                ):
+                    yield from batch
+
+            tifffile.imwrite(
+                tmp_path,
+                frames(),
+                shape=(nframes, Ly, Lx),
+                dtype=np.int16,
+                bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
+            )
+        os.replace(tmp_path, tiff_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
     return [tiff_path]
