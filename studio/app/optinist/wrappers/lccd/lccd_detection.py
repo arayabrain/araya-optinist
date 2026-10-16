@@ -5,6 +5,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import edit_images
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -121,8 +122,9 @@ def lccd_detect(
         "non_cell_roi": RoiData(
             empty_roi, output_dir=output_dir, file_name="non_cell_roi"
         ),
-        # A reference to the movie; ROI editing opens it lazily
-        "edit_roi_data": EditRoiData(images=mc_images, im=im),
+        # A reference to the movie when it lives in this experiment; ROI
+        # editing opens it lazily
+        "edit_roi_data": EditRoiData(images=edit_images(mc_images, output_dir), im=im),
         "nwbfile": nwbfile,
     }
 
