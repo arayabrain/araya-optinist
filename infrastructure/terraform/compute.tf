@@ -586,7 +586,8 @@ resource "aws_instance" "premium" {
     command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }
 
-  # Same as aws_instance.background: the launch template owns user_data
+  # Same as aws_instance.background: the launch template owns user_data, and
+  # applying its removal would clear the bootstrap and start a stopped standby
   lifecycle {
     create_before_destroy = true
     ignore_changes        = [user_data]
