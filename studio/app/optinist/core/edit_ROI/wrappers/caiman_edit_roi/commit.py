@@ -35,10 +35,11 @@ def commit_edit(
     added = iscell == CellType.TEMP_ADD
     iscell[iscell == CellType.TEMP_DELETE] = CellType.NON_ROI
     for i in range(num_committed, num_cell):
-        # The movie CaImAn works on is float32: cast the selected pixels so a
+        # The movie CaImAn works on is float32: average in float32 so a
         # reference to a uint16 input gives the same means as CaImAn's copy did
-        pixels = np.asarray(images[:, ~np.isnan(data.im[i])], dtype=np.float32)
-        new_fluorescences[i] = np.mean(pixels, axis=1)
+        new_fluorescences[i] = np.mean(
+            images[:, ~np.isnan(data.im[i])], axis=1, dtype=np.float32
+        )
         if added[i]:
             iscell[i] = CellType.ROI
 
