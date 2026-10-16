@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import os
 
@@ -117,15 +118,15 @@ def util_get_image_memmap_from_files(
 ):
     """
     As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
-    filled from the image files batch by batch: the movie is never held in
-    memory as a whole, nor a second time while being copied into the memmap.
-    The memmap is the same, byte for byte.
+    filled from the image files batch by batch, with the same values: the movie
+    is not held in memory as a whole, nor a second time while being copied into
+    the memmap. A file is memory-mapped when its pixels are contiguous, else
+    decoded a batch of pages at a time when each page is one frame (compressed
+    stacks), and read in full only otherwise.
 
     The memmap is pixels x time, so a 4 KiB page holds 1024 consecutive frames
     of one pixel: batches of about that many frames write each page about
     once (smaller batches rewrite every page several times and run slower).
-    Each batch is assigned straight from the memory-mapped file, so it is not
-    copied into memory either.
     """
     import imageio
     import tifffile
@@ -134,20 +135,51 @@ def util_get_image_memmap_from_files(
 
     paths = paths if isinstance(paths, list) else [paths]
 
-    def open_frames(path):
-        try:
-            return tifffile.memmap(path, mode="r")
-        except Exception:
-            return np.asarray(imageio.volread(path))
-
-    shapes = []
-    for path in paths:
+    def header_shape(path):
         try:
             with tifffile.TiffFile(path) as tif:
-                shapes.append(tuple(int(n) for n in tif.series[0].shape))
+                return tuple(int(n) for n in tif.series[0].shape)
         except Exception:
-            shapes.append(open_frames(path).shape)
+            return np.asarray(imageio.volread(path)).shape
+
+    def frame_batches(path, frames):
+        try:
+            source = tifffile.memmap(path, mode="r")
+        except ValueError:  # compressed or scattered pixels, or not a TIFF
+            source = None
+        if source is not None:
+            for i in range(0, len(source), batch_size):
+                yield source[i : i + batch_size]
+            return
+        try:
+            with tifffile.TiffFile(path) as tif:
+                series = tif.series[0]
+                if len(series.pages) == frames:  # one page per frame
+                    for i in range(0, frames, batch_size):
+                        pages = range(i, min(i + batch_size, frames))
+                        yield tif.asarray(key=pages, series=0).reshape(
+                            (len(pages),) + series.shape[1:]
+                        )
+                    return
+        except tifffile.TiffFileError:
+            pass
+        logger.info("%s is read in full to fill the memmap", os.path.basename(path))
+        yield np.asarray(imageio.volread(path))
+
+    shapes = [header_shape(path) for path in paths]
     T, dims = sum(s[0] for s in shapes), shapes[0][1:]
+
+    # The per-file assignment below would broadcast a mismatched frame shape
+    # (a 2D file, or a (T, 1, X) one) where concatenating the files raises
+    for path, shape in zip(paths, shapes):
+        name = os.path.basename(path)
+        if len(shape) < 3:
+            raise ValueError(f"{name}: shape {shape} is not a stack of frames")
+        if shape[1:] != dims:
+            raise ValueError(
+                f"{name}: frame shape {shape[1:]} differs from {dims}, "
+                f"the frame shape of {os.path.basename(paths[0])}"
+            )
 
     order = "C"
     shape_mov = (np.prod(dims), T)
@@ -166,14 +198,29 @@ def util_get_image_memmap_from_files(
     )
     mmap_images = np.reshape(mmap.T, [T] + list(dims), order="F")
 
-    t = 0
-    for path in paths:
-        source = open_frames(path)
-        for i in range(0, len(source), batch_size):
-            batch = source[i : i + batch_size]
-            mmap_images[t : t + len(batch)] = batch
-            t += len(batch)
-        del source
+    try:
+        t = 0
+        for path, shape in zip(paths, shapes):
+            end = t + shape[0]
+            for batch in frame_batches(path, shape[0]):
+                if batch.shape[1:] != dims or t + len(batch) > end:
+                    raise ValueError(
+                        f"{os.path.basename(path)}: read as frames of "
+                        f"{batch.shape[1:]}, but its headers give {shape}"
+                    )
+                mmap_images[t : t + len(batch)] = batch
+                t += len(batch)
+            if t != end:
+                raise ValueError(
+                    f"{os.path.basename(path)}: read {shape[0] - (end - t)} "
+                    f"frames, but its headers give {shape[0]}"
+                )
+    except BaseException:
+        # no half-filled memmap left for the run to use; a failure to remove it
+        # must not hide why the fill failed
+        with contextlib.suppress(OSError):
+            os.remove(mmap_path)
+        raise
     return mmap_images, dims, mmap_path
 
 
