@@ -13,7 +13,9 @@ from studio.app.optinist.wrappers.caiman.caiman_utils import (
     distribute_params_to_groups,
 )
 from studio.app.optinist.wrappers.caiman.cnmf import (
+    caiman_dff,
     correlation_image,
+    dff_frames_window,
     edit_roi_dtype,
     get_roi,
     util_cleanup_image_memmap,
@@ -25,9 +27,23 @@ from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 logger = AppLogger.get_logger()
 
 
+def session_dff(session_estimates, assignments, frames_window):
+    """dff per union cell, sessions joined in time; NaN where assignments is NaN."""
+    blocks = []
+    for j, estimates in enumerate(session_estimates):
+        n_frames = estimates.C.shape[1]
+        matched = ~np.isnan(assignments[:, j])
+        block = np.full((len(assignments), n_frames), np.nan, dtype=np.float32)
+        block[matched] = caiman_dff(
+            estimates, assignments[matched, j].astype(int), n_frames, frames_window
+        )
+        blocks.append(block)
+    return np.concatenate(blocks, axis=1)
+
+
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, iscell=IscellData):
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
     from caiman import load
     from caiman.base.rois import register_multisession
     from caiman.source_extraction.cnmf import cnmf
@@ -46,6 +62,7 @@ def caiman_cnmf_multisession(
     Ain = params.pop("Ain", None)
     roi_thr = params.pop("roi_thr", None)
     requested_n_processes = params.pop("n_processes", 1)
+    frames_window = dff_frames_window(params.pop("frames_window", 500))
 
     # mulisiession params
     session_lengths = params.pop("session_lengths", None)
@@ -124,12 +141,8 @@ def caiman_cnmf_multisession(
     )
 
     reg_files = int(len(split_image_paths) * reg_file_rate)
-    assignments_filtered = np.array(
-        np.nan_to_num(
-            assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files],
-        ),
-        dtype=int,
-    )
+    kept = assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files]
+    assignments_filtered = np.array(np.nan_to_num(kept), dtype=int)
     if assignments_filtered.shape[0] == 0:
         raise Exception(
             f"No same cells found in {reg_files} or more "
@@ -150,6 +163,8 @@ def caiman_cnmf_multisession(
             for i in range(assignments_filtered.shape[0])
         ]
     )
+
+    dff = session_dff([cnm.estimates for cnm in cnm_list], kept, frames_window)
 
     # contours plot
     thr_method = "nrg"
@@ -212,6 +227,7 @@ def caiman_cnmf_multisession(
             file_name="images",
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+        "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "cell_roi": RoiData(
             np.nanmax(cell_ims[iscell != 0], axis=0),

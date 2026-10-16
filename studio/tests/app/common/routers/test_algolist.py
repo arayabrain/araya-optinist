@@ -49,6 +49,9 @@ def _collect_algos(nest_dict, algos):
         ("optinist/neural_decoding/svm", ["score"]),
         ("optinist/neural_decoding/lda", ["score"]),
         ("optinist/neural_decoding/glm", ["actual_predicted", "params"]),
+        ("caiman/caiman_cnmf", ["fluorescence", "dff", "iscell"]),
+        ("caiman/caiman_cnmfe", ["fluorescence", "dff", "iscell"]),
+        ("caiman/cnmf_multisession", ["fluorescence", "dff", "iscell"]),
     ],
 )
 def test_declared_returns(path, expected_returns):
@@ -112,3 +115,10 @@ def test_binning_and_split_nodes_expose_their_ports():
         ("neural_data", "FluoData"),
         ("behaviors_data", "BehaviorData"),
     ]
+
+
+def test_caiman_dff_is_a_fluo_port():
+    caiman = NestDictGetter.get_nest_dict(wrapper_dict, "")["caiman"]["children"]
+    for name in ("caiman_cnmf", "caiman_cnmfe", "cnmf_multisession"):
+        returns = {r.name: r.type for r in caiman[name].returns}
+        assert returns["dff"] == "FluoData", name

@@ -1,3 +1,6 @@
+import sys
+import types
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -38,7 +41,16 @@ def test_every_output_row_is_the_same_component(monkeypatch):
     C = np.arange(3)[:, None] * 10.0 + np.arange(FRAMES)
     idx_good, idx_bad = [2, 0], [1]  # deliberately not a prefix
 
-    im, iscell, roi_list, F, non_cell_roi, n_rois, n_noncell = cnmf.component_outputs(
+    (
+        im,
+        iscell,
+        roi_list,
+        F,
+        non_cell_roi,
+        n_rois,
+        n_noncell,
+        order,
+    ) = cnmf.component_outputs(
         A,
         C,
         idx_good,
@@ -63,6 +75,30 @@ def test_every_output_row_is_the_same_component(monkeypatch):
     assert roi_list[0]["accepted"] and roi_list[2]["rejected"]
     assert (n_rois, n_noncell) == (2, 1)
     assert np.nanmax(non_cell_roi) == 2
+    assert order == idx_good + idx_bad
+
+
+def test_dff_rows_are_the_fluorescence_rows(monkeypatch):
+    # caiman_cnmf orders dff with the order component_outputs returns
+    monkeypatch.setattr(cnmf, "get_roi", labelled_masks)
+    utilities = types.ModuleType("caiman.source_extraction.cnmf.utilities")
+    utilities.detrend_df_f = lambda A, b, C, f, **kwargs: C * 2.0
+    for name in ("caiman", "caiman.source_extraction", "caiman.source_extraction.cnmf"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, utilities.__name__, utilities)
+    A = sp.csc_matrix(np.eye(PIXELS)[:, :3])
+    C = np.arange(3)[:, None] * 10.0 + np.arange(FRAMES)
+    estimates = types.SimpleNamespace(
+        A=A, b=np.ones((PIXELS, 1)), C=C, f=np.ones((1, FRAMES)), YrA=None
+    )
+
+    *_, F, _, _, _, order = cnmf.component_outputs(
+        A, C, [2, 0], [1], DIMS, 0.9, "nrg", False, n_frames=FRAMES
+    )
+    dff = cnmf.caiman_dff(estimates, order, F.shape[1], 500)
+
+    np.testing.assert_array_equal(F, C[[2, 0, 1]])
+    np.testing.assert_array_equal(dff, 2.0 * F)
 
 
 def test_nwb_mask_puts_each_pixel_where_the_movie_has_it(monkeypatch):
@@ -82,7 +118,16 @@ def test_nwb_mask_puts_each_pixel_where_the_movie_has_it(monkeypatch):
 
 
 def test_no_components_gives_empty_outputs_with_the_time_axis_kept():
-    im, iscell, roi_list, F, non_cell_roi, n_rois, n_noncell = cnmf.component_outputs(
+    (
+        im,
+        iscell,
+        roi_list,
+        F,
+        non_cell_roi,
+        n_rois,
+        n_noncell,
+        order,
+    ) = cnmf.component_outputs(
         None, None, [], [], DIMS, 0.9, "nrg", False, n_frames=FRAMES
     )
 
