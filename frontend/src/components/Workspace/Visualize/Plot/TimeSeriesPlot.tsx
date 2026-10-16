@@ -22,6 +22,13 @@ import {
 } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContext"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import {
+  buildShadeShapes,
+  nextShadeKeys,
+  SHADE_COLORS,
+  SHADE_RECORD_CAP,
+  SHADE_TOTAL_CAP,
+} from "components/Workspace/Visualize/Plot/eventSpans"
 import { buildAnnotations } from "components/Workspace/Visualize/Plot/timeSeriesAnnotations"
 import {
   errorBarArray,
@@ -35,10 +42,13 @@ import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
 import {
   getTimeSeriesDataById,
+  getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  retryRejectedTimeSeries,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectRoiUniqueList,
+  selectTimeSeriesById,
   selectTimeSeriesData,
   selectTimeSeriesDataError,
   selectTimeSeriesDataIsFulfilled,
@@ -65,9 +75,11 @@ import {
   selectVisualizeSaveFilename,
   selectVisualizeSaveFormat,
   selectImageItemRangeUnit,
+  selectTimeSeriesShadeSourceItem,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch } from "store/store"
+import { arrayEqualityFn } from "utils/EqualityUtils"
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
   const { itemId, filePath: path } = useContext(DisplayDataContext)
@@ -300,6 +312,55 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     [data, drawOrderList, newDataXrange],
   )
 
+  const shadeSource = useSelector(selectTimeSeriesShadeSourceItem(itemId))
+  const shadePath = shadeSource?.filePath ?? null
+  const shadeKeys = shadeSource?.drawOrderList
+  const shadeData = useSelector(
+    selectTimeSeriesData(shadePath),
+    timeSeriesDataEqualityFn,
+  )
+  const shadeXrange = useSelector(
+    selectTimeSeriesXrange(shadePath),
+    arrayEqualityFn,
+  )
+
+  const shadeById = useSelector(selectTimeSeriesById(shadePath))
+  const isShadeLoaded = useCallback(
+    (key: string) => shadeById?.[key] === "fulfilled",
+    [shadeById],
+  )
+
+  // one more try for records that failed, each time the box links a source
+  useEffect(() => {
+    if (shadePath != null)
+      dispatch(retryRejectedTimeSeries({ path: shadePath }))
+  }, [dispatch, shadePath])
+
+  const failedShadeCount = (shadeKeys ?? []).filter(
+    (key) => shadeById?.[key] === "rejected",
+  ).length
+
+  const shade = useMemo(
+    () =>
+      buildShadeShapes(
+        shadeXrange,
+        shadeData,
+        shadeKeys ?? [],
+        rangeUnit === "time" ? frameRate : 1,
+        SHADE_COLORS,
+        isShadeLoaded,
+      ),
+    [shadeXrange, shadeData, shadeKeys, rangeUnit, frameRate, isShadeLoaded],
+  )
+
+  useEffect(() => {
+    if (shadePath == null) return
+    nextShadeKeys(shadeKeys ?? [], shadeData, shadeById, shade.full).forEach(
+      (key) =>
+        dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key })),
+    )
+  }, [dispatch, shadePath, shadeKeys, shadeData, shadeById, shade.full])
+
   const layout = useMemo(
     () => ({
       title: {
@@ -352,9 +413,11 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
         zeroline: zeroline,
       },
       annotations: annotations,
+      shapes: shade.shapes,
       showlegend: true,
     }),
     [
+      shade.shapes,
       meta,
       xrange,
       showgrid,
@@ -424,12 +487,26 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   }
 
   return (
-    <PlotlyChart
-      data={Object.values(data)}
-      layout={layout}
-      config={config}
-      onLegendClick={onLegendClick}
-    />
+    <>
+      <PlotlyChart
+        data={Object.values(data)}
+        layout={layout}
+        config={config}
+        onLegendClick={onLegendClick}
+      />
+      {shade.capped && (
+        <Typography variant="caption" color="text.secondary">
+          Too many events: shading shows at most {SHADE_RECORD_CAP} per trace
+          and {SHADE_TOTAL_CAP} in total.
+        </Typography>
+      )}
+      {failedShadeCount > 0 && (
+        <Typography variant="caption" color="error">
+          Shading could not load {failedShadeCount} trace(s) from the linked
+          box; relink it to try again.
+        </Typography>
+      )}
+    </>
   )
 })
 
@@ -437,6 +514,7 @@ function timeSeriesDataEqualityFn(
   a: TimeSeriesData | undefined,
   b: TimeSeriesData | undefined,
 ) {
+  if (a === b) return true
   if (a != null && b != null) {
     const aArray = Object.entries(a)
     const bArray = Object.entries(b)
@@ -461,6 +539,7 @@ function nestEqualityFun(
     [key: number]: number
   },
 ) {
+  if (a === b) return true
   const aArray = Object.entries(a)
   const bArray = Object.entries(b)
   return (
