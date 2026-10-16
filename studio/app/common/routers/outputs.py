@@ -6,12 +6,14 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
 from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.file_writer import hdf5_dataset
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
@@ -35,6 +37,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
+from studio.app.common.db.database import get_db, release_request_session
 from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
@@ -244,6 +247,22 @@ async def sync_visualization_files(
     unique_id: str,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
+    db: Session = Depends(get_db),
+) -> bool:
+    try:
+        return await _sync_visualization_files(
+            workspace_id, unique_id, background_tasks, remote_bucket_name
+        )
+    finally:
+        # The full sync outlives the request; do not hold the guards' connection
+        release_request_session(db)
+
+
+async def _sync_visualization_files(
+    workspace_id: str,
+    unique_id: str,
+    background_tasks: BackgroundTasks,
+    remote_bucket_name: str,
 ) -> bool:
     """
     Lazy-load visualization files from remote storage.
@@ -948,10 +967,12 @@ async def get_structured_data(
     try:
         if hdf5_path is not None:
             with h5py.File(full_path, "r") as f:
-                dataset = f[hdf5_path]
+                dataset, field = hdf5_dataset(f, hdf5_path)
                 shape = dataset.shape
                 ndim = dataset.ndim
-                if ndim == 3:
+                if field is not None:
+                    data = dataset[field]
+                elif ndim == 3:
                     si = max(0, start_index)
                     ei = min(shape[0], end_index)
                     data = dataset[si:ei]
