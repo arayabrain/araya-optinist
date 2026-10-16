@@ -3,7 +3,8 @@
 import itertools
 import json
 import os
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -265,18 +266,36 @@ class TestScaleAndRebalanceUsesAsgBounds:
     """
 
     @staticmethod
-    def _run(mock_env_vars_free, users, desired, minimum, maximum, ecs_desired=None):
+    def _run(
+        mock_env_vars_free,
+        users,
+        desired,
+        minimum,
+        maximum,
+        ecs_desired=None,
+        context=None,
+        ready=None,
+        persisted=False,
+        alarm=False,
+        extra_instances=(),
+    ):
         """
         Drive scale_and_rebalance against mocked AWS clients, returning both.
 
         The clients are the mock boundary, not get_service_info: mocking that
         would hide whether the bounds are actually read off the group, which is
-        the behaviour under test.
+        the behaviour under test. The group reports ``desired`` InService
+        instances, i-0 upwards, all in one zone and with no workflow, so a
+        scale-in has as many safe candidates as it needs. The surplus history
+        and the load alarms are stubbed (``persisted``, ``alarm``); their
+        own reads are tested in TestSurplusOfOne.
         """
         from free_manager import scale_and_rebalance
 
         ecs_desired = desired if ecs_desired is None else ecs_desired
-        ready = [f"i-{n}" for n in range(max(maximum, desired))]
+        if ready is None:
+            ready = [f"i-{n}" for n in range(max(maximum, desired))]
+        in_group = [f"i-{n}" for n in range(desired)]
 
         # The scale-up branch polls on a wall-clock loop bounded by
         # max_wait_time. Advance time.time() per call so a clamp regression
@@ -286,13 +305,23 @@ class TestScaleAndRebalanceUsesAsgBounds:
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.ec2_client"
+        ) as mock_ec2, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
             "free_manager.is_scaling_in_progress", return_value=False
         ), patch(
             "free_manager.set_scaling_lock"
-        ), patch(
+        ) as mock_lock, patch(
             "free_manager.get_available_instance_ids", return_value=ready
         ), patch(
             "free_manager.get_users_per_instance", return_value={}
+        ), patch(
+            "free_manager.get_workload_per_instance", return_value={}
+        ), patch(
+            "free_manager.surplus_of_one_has_persisted", return_value=persisted
+        ), patch(
+            "free_manager.load_alarm_holds_capacity", return_value=alarm
         ), patch(
             "free_manager.rebalance_idle_users_multi", return_value=[]
         ), patch(
@@ -308,7 +337,17 @@ class TestScaleAndRebalanceUsesAsgBounds:
                         "DesiredCapacity": desired,
                         "MinSize": minimum,
                         "MaxSize": maximum,
-                        "Instances": [],
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "LifecycleState": "InService",
+                                "HealthStatus": "Healthy",
+                                "AvailabilityZone": "ap-northeast-1a",
+                                "ProtectedFromScaleIn": False,
+                            }
+                            for instance_id in in_group
+                        ]
+                        + list(extra_instances),
                     }
                 ]
             }
@@ -322,15 +361,40 @@ class TestScaleAndRebalanceUsesAsgBounds:
                 ]
             }
             mock_ecs.list_tasks.return_value = {"taskArns": ready}
-            scale_and_rebalance(active_user_count=users)
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "LaunchTime": datetime(
+                                    2026, 10, 13, 0, n, tzinfo=timezone.utc
+                                ),
+                            }
+                            for n, instance_id in enumerate(in_group)
+                        ]
+                    }
+                ]
+            }
+            result = scale_and_rebalance(active_user_count=users, context=context)
+            mock_asg.result = result
+            mock_asg.lock = mock_lock
             return mock_asg, mock_ecs
 
+    @staticmethod
+    def _terminated(asg):
+        return [
+            c[1]["InstanceId"]
+            for c in asg.terminate_instance_in_auto_scaling_group.call_args_list
+        ]
+
     def test_floor_is_the_asg_minimum_on_scale_down(self, mock_env_vars_free):
-        """users=5 alone wants 1; the minimum of 3 is requested instead."""
+        """users=5 alone wants 1; the minimum of 3 is the target instead, so
+        two of the five are removed, not four."""
         asg, _ = self._run(mock_env_vars_free, users=5, desired=5, minimum=3, maximum=5)
 
-        asg.set_desired_capacity.assert_called_once()
-        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
+        assert len(self._terminated(asg)) == 2
+        asg.set_desired_capacity.assert_not_called()
 
     def test_no_call_when_the_minimum_already_holds_capacity(self, mock_env_vars_free):
         """
@@ -341,6 +405,7 @@ class TestScaleAndRebalanceUsesAsgBounds:
         asg, _ = self._run(mock_env_vars_free, users=5, desired=3, minimum=3, maximum=3)
 
         asg.set_desired_capacity.assert_not_called()
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
 
     def test_ceiling_is_the_asg_maximum_on_scale_up(self, mock_env_vars_free):
         """users=50 alone wants 10; the maximum of 3 is requested instead."""
@@ -351,27 +416,128 @@ class TestScaleAndRebalanceUsesAsgBounds:
         asg.set_desired_capacity.assert_called_once()
         assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 3
 
-    def test_scale_down_hysteresis_is_retained(self, mock_env_vars_free):
-        """A gap of 1 is left alone, as before: 6 users want 2, desired is 3."""
+    def test_a_fresh_surplus_of_one_is_left_alone(self, mock_env_vars_free):
+        """6 users want 2, desired is 3: the boundary case waits until it
+        has persisted."""
         asg, _ = self._run(mock_env_vars_free, users=6, desired=3, minimum=1, maximum=5)
 
         asg.set_desired_capacity.assert_not_called()
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+        assert asg.result["scaling_action"] == "none"
 
-    def test_scale_down_lowers_the_asg_but_leaves_ecs_to_the_terminate_event(
+    def test_a_persisted_surplus_of_one_goes(self, mock_env_vars_free):
+        """The same shape three runs later: one instance is removed. This is
+        the 2 -> 1 return at MinSize = 1 that no alarm makes any more."""
+        asg, _ = self._run(
+            mock_env_vars_free, users=0, desired=2, minimum=1, maximum=5, persisted=True
+        )
+
+        assert len(self._terminated(asg)) == 1
+        assert asg.result["scaling_action"] == "scale_down"
+
+    def test_surplus_is_measured_on_desired_capacity_not_on_instances(
+        self, mock_env_vars_free
+    ):
+        """
+        After a first termination the group still lists three instances, one
+        of them Terminating:Wait, against a desired capacity of 2. The surplus
+        is 1 against the target of 1, not 2: counting instances would remove
+        one too many.
+        """
+        terminating = {
+            "InstanceId": "i-going",
+            "LifecycleState": "Terminating:Wait",
+            "HealthStatus": "Healthy",
+            "AvailabilityZone": "ap-northeast-1c",
+            "ProtectedFromScaleIn": False,
+        }
+        asg, _ = self._run(
+            mock_env_vars_free,
+            users=0,
+            desired=2,
+            minimum=1,
+            maximum=5,
+            persisted=True,
+            extra_instances=[terminating],
+        )
+
+        assert len(self._terminated(asg)) == 1
+        assert "i-going" not in self._terminated(asg)
+
+    def test_no_scale_in_while_a_load_alarm_is_firing(self, mock_env_vars_free):
+        """A surplus of 2 with cpu-high in ALARM: the alarm says the capacity
+        is needed, so nothing is removed until it clears."""
+        asg, _ = self._run(
+            mock_env_vars_free, users=0, desired=3, minimum=1, maximum=5, alarm=True
+        )
+
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+        assert asg.result["scaling_action"] == "none"
+
+    def test_zero_users_return_the_group_to_its_minimum(self, mock_env_vars_free):
+        """
+        The state after a busy period: nobody left, desired still 3. The
+        target is MinSize and the two surplus instances go in one run, which
+        the threshold gate used to prevent.
+        """
+        asg, _ = self._run(mock_env_vars_free, users=0, desired=3, minimum=1, maximum=5)
+
+        assert len(self._terminated(asg)) == 2
+        assert asg.result["scaling_action"] == "scale_down"
+
+    def test_scale_down_terminates_chosen_instances_and_leaves_ecs_to_the_event(
         self, mock_env_vars_free
     ):
         """
         7 users want 2 against a desired of 4, so the gap of 2 clears
-        hysteresis. The ASG is lowered; ECS is **not**, because the instance is
-        still deregistering and ECS would pick a task to stop by AZ balance,
-        possibly the survivor's.
+        hysteresis. Two instances are terminated with the desired capacity
+        decremented in the same call -- the group never lowers the capacity
+        itself and so never chooses. ECS is **not** lowered: the terminate
+        event does that once each instance is gone.
         """
         asg, ecs = self._run(
             mock_env_vars_free, users=7, desired=4, minimum=1, maximum=10
         )
 
-        assert asg.set_desired_capacity.call_args[1]["DesiredCapacity"] == 2
+        assert len(self._terminated(asg)) == 2
+        for c in asg.terminate_instance_in_auto_scaling_group.call_args_list:
+            assert c[1]["ShouldDecrementDesiredCapacity"] is True
+        asg.set_desired_capacity.assert_not_called()
         ecs.update_service.assert_not_called()
+
+    def test_scale_in_takes_no_lock_and_scale_up_still_does(self, mock_env_vars_free):
+        """The terminate requests return at once; only the scale-out wait
+        holds the lock."""
+        asg, _ = self._run(mock_env_vars_free, users=0, desired=3, minimum=1, maximum=5)
+        asg.lock.assert_not_called()
+
+        asg, _ = self._run(mock_env_vars_free, users=6, desired=1, minimum=1, maximum=5)
+        assert asg.lock.call_args_list == [call(True), call(False)]
+
+    def test_scale_up_wait_is_bounded_by_the_remaining_invocation_time(
+        self, mock_env_vars_free
+    ):
+        """
+        With 4 minutes left, the loop gets 3 and stops after one check (the
+        mocked clock advances 2 minutes per read); the lock is cleared by this
+        invocation's finally. Unbounded, the loop would outlive the function
+        and the kill would skip the finally.
+        """
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 240_000
+
+        asg, _ = self._run(
+            mock_env_vars_free,
+            users=6,
+            desired=1,
+            minimum=1,
+            maximum=5,
+            context=context,
+            ready=["i-0"],
+        )
+
+        assert asg.result["rebalancing_attempts"] == 1
+        assert asg.lock.call_args_list[-1] == call(False)
 
     def test_scale_up_does_raise_ecs(self, mock_env_vars_free):
         """Raising is safe and still happens inline, unlike lowering."""
@@ -401,16 +567,31 @@ class TestScaleAndRebalanceUsesAsgBounds:
         ecs.update_service.assert_not_called()
 
 
+def _group(desired, in_group):
+    """An ASG describe with ``in_group`` instances listed (any lifecycle state)."""
+    return {
+        "AutoScalingGroups": [
+            {
+                "DesiredCapacity": desired,
+                "Instances": [
+                    {"InstanceId": f"i-{n}", "LifecycleState": "InService"}
+                    for n in range(in_group)
+                ],
+            }
+        ]
+    }
+
+
 class TestScheduledRunResyncsEcs:
     """
     The ASG-event sync fires once per event and is not retried, so the
     scheduled run repeats it as a backstop. It must run before the user
-    threshold is considered: a task-less instance needs correcting whether or
+    count is considered: a task-less instance needs correcting whether or
     not there is anyone to scale for.
     """
 
     @staticmethod
-    def _run(mock_env_vars_free, active_users, asg_desired, ecs_desired):
+    def _run(mock_env_vars_free, active_users, asg_desired, ecs_desired, in_group):
         from free_manager import handle_scheduled_monitoring
 
         with patch.dict("os.environ", mock_env_vars_free), patch(
@@ -422,11 +603,12 @@ class TestScheduledRunResyncsEcs:
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
-            "free_manager.scale_and_rebalance", return_value={"scaling_action": "none"}
+            "free_manager.scale_and_rebalance",
+            return_value={"scaling_action": "none", "desired_instances": 1},
         ):
-            mock_asg.describe_auto_scaling_groups.return_value = {
-                "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
-            }
+            mock_asg.describe_auto_scaling_groups.return_value = _group(
+                asg_desired, in_group
+            )
             mock_ecs.describe_services.return_value = {
                 "services": [{"desiredCount": ecs_desired}]
             }
@@ -437,7 +619,7 @@ class TestScheduledRunResyncsEcs:
     def test_resyncs_below_the_user_threshold(self, mock_env_vars_free):
         """No active users, ASG 3 and ECS 1: still corrected."""
         ecs, result = self._run(
-            mock_env_vars_free, active_users=0, asg_desired=3, ecs_desired=1
+            mock_env_vars_free, active_users=0, asg_desired=3, ecs_desired=1, in_group=3
         )
 
         ecs.update_service.assert_called_once_with(
@@ -447,38 +629,59 @@ class TestScheduledRunResyncsEcs:
         )
         assert json.loads(result["body"])["ecs_resynced"] is True
 
-    def test_does_not_lower_ecs(self, mock_env_vars_free):
+    def test_does_not_lower_ecs_while_the_instance_is_still_in_the_group(
+        self, mock_env_vars_free
+    ):
         """
-        ASG 1 against ECS 2 is left alone. Lowering here would land inside the
+        ASG 1 against ECS 2 with two instances still listed (one of them
+        deregistering) is left alone. Lowering here would land inside the
         target group's deregistration window, where ECS picks which task to
         stop by AZ balance -- possibly the survivor's, leaving no healthy
-        target. The terminate event lowers it instead.
+        target.
         """
         ecs, result = self._run(
-            mock_env_vars_free, active_users=0, asg_desired=1, ecs_desired=2
+            mock_env_vars_free, active_users=0, asg_desired=1, ecs_desired=2, in_group=2
         )
 
         ecs.update_service.assert_not_called()
         assert json.loads(result["body"])["ecs_resynced"] is False
 
+    def test_lowers_ecs_once_the_instance_has_left_the_group(self, mock_env_vars_free):
+        """
+        ASG 1, ECS 2, one instance in the group: the terminated instance is
+        gone and its task with it, so the scheduled run brings ECS down. This
+        is the repair for a terminate event that was lost or that raced
+        another (see the terminate-event cases below).
+        """
+        ecs, result = self._run(
+            mock_env_vars_free, active_users=0, asg_desired=1, ecs_desired=2, in_group=1
+        )
+
+        assert ecs.update_service.call_args[1]["desiredCount"] == 1
+        assert json.loads(result["body"])["ecs_resynced"] is True
+
     @pytest.mark.parametrize(
-        "asg_desired,ecs_desired,expected",
+        "asg_desired,ecs_desired,in_group,expected",
         [
-            # 4 -> 2 scale-in: one decrement per completed termination, so the
-            # second instance is never still deregistering while ECS has to
-            # choose two tasks to stop.
-            (2, 4, 3),
-            (2, 3, 2),
+            # 4 -> 2 scale-in, first event: one instance has left, one is still
+            # terminating and counts, so ECS goes to 3, not 2.
+            (2, 4, 3, 3),
+            # The same scale-in, both terminations completed within a second
+            # and both events handled concurrently: each reads 4 and both see
+            # two instances left, so both write 2. Idempotent, where "ECS - 1"
+            # per event would have left ECS at 3 for good.
+            (2, 4, 2, 2),
             # A single-instance scale-in converges in one event.
-            (1, 2, 1),
+            (1, 2, 1, 1),
             # Never below the ASG, however late the events arrive.
-            (2, 2, None),
+            (2, 2, 2, None),
+            # An instance that is still terminating holds its place.
+            (1, 3, 2, 2),
         ],
     )
-    def test_terminate_event_lowers_ecs_by_one(
-        self, mock_env_vars_free, asg_desired, ecs_desired, expected
+    def test_terminate_event_lowers_ecs_to_the_instances_still_in_the_group(
+        self, mock_env_vars_free, asg_desired, ecs_desired, in_group, expected
     ):
-        """The terminate event is per instance, so the decrement is too."""
         from free_manager import handle_asg_event
 
         event = {
@@ -490,9 +693,9 @@ class TestScheduledRunResyncsEcs:
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
-            mock_asg.describe_auto_scaling_groups.return_value = {
-                "AutoScalingGroups": [{"DesiredCapacity": asg_desired}]
-            }
+            mock_asg.describe_auto_scaling_groups.return_value = _group(
+                asg_desired, in_group
+            )
             mock_ecs.describe_services.return_value = {
                 "services": [{"desiredCount": ecs_desired}]
             }
@@ -504,8 +707,11 @@ class TestScheduledRunResyncsEcs:
         else:
             assert mock_ecs.update_service.call_args[1]["desiredCount"] == expected
 
-    def test_launch_event_does_not_lower_ecs(self, mock_env_vars_free):
-        """Only a completed termination may lower it."""
+    def test_launch_event_lowers_nothing_while_the_instances_are_in_the_group(
+        self, mock_env_vars_free
+    ):
+        """ASG 2, ECS 4, four instances still listed (two terminating): the
+        launch event changes nothing, the terminations have not completed."""
         from free_manager import handle_asg_event
 
         event = {
@@ -517,9 +723,7 @@ class TestScheduledRunResyncsEcs:
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs:
-            mock_asg.describe_auto_scaling_groups.return_value = {
-                "AutoScalingGroups": [{"DesiredCapacity": 2}]
-            }
+            mock_asg.describe_auto_scaling_groups.return_value = _group(2, 4)
             mock_ecs.describe_services.return_value = {
                 "services": [{"desiredCount": 4}]
             }
@@ -543,46 +747,52 @@ class TestScheduledRunResyncsEcs:
             "free_manager.count_active_free_users", return_value=0
         ), patch(
             "free_manager.publish_active_user_metric"
-        ) as mock_metric:
+        ) as mock_metric, patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
             mock_asg.describe_auto_scaling_groups.side_effect = Exception("throttled")
 
             with pytest.raises(Exception, match="throttled"):
                 handle_scheduled_monitoring({"source": "aws.events"}, MagicMock())
 
         mock_metric.assert_called_once_with(0)
+        # The run failed, so its period must read as a hole in the surplus history
+        mock_target.assert_not_called()
 
     def test_no_call_when_already_in_sync(self, mock_env_vars_free):
         """Matching counts leave the service alone."""
         ecs, result = self._run(
-            mock_env_vars_free, active_users=0, asg_desired=2, ecs_desired=2
+            mock_env_vars_free, active_users=0, asg_desired=2, ecs_desired=2, in_group=2
         )
 
         ecs.update_service.assert_not_called()
         assert json.loads(result["body"])["ecs_resynced"] is False
 
 
-class TestScheduledRunBelowThreshold:
+class TestScheduledRunComputesATargetAtAnyUserCount:
     """
-    Current specification, pinned so that changing it is deliberate: the
-    scaling path is not entered below FREE_USER_THRESHOLD, so the Lambda
-    neither grows nor shrinks the group there. Shrinking back to baseline
-    after a quiet period is the load alarms' job today.
+    The user-count model owns both directions, so every scheduled run makes
+    a scaling decision. The old threshold gate skipped it below 5 users,
+    which left the group unable to return to its baseline after a busy
+    period.
     """
 
-    def test_scale_and_rebalance_is_not_called(self, mock_env_vars_free):
-        """4 active users against a threshold of 5: no scaling decision."""
+    @pytest.mark.parametrize("active_users", [0, 4])
+    def test_scale_and_rebalance_is_called(self, mock_env_vars_free, active_users):
         from free_manager import handle_scheduled_monitoring
 
+        context = MagicMock()
         with patch.dict("os.environ", mock_env_vars_free), patch(
             "free_manager.autoscaling_client"
         ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
             "free_manager.cloudwatch_client"
         ), patch(
-            "free_manager.count_active_free_users", return_value=4
+            "free_manager.count_active_free_users", return_value=active_users
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
-            "free_manager.scale_and_rebalance"
+            "free_manager.scale_and_rebalance",
+            return_value={"scaling_action": "none", "desired_instances": 1},
         ) as mock_scale:
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [{"DesiredCapacity": 3}]
@@ -591,10 +801,583 @@ class TestScheduledRunBelowThreshold:
                 "services": [{"desiredCount": 3}]
             }
 
-            result = handle_scheduled_monitoring({"source": "aws.events"}, MagicMock())
+            handle_scheduled_monitoring({"source": "aws.events"}, context)
 
-        mock_scale.assert_not_called()
-        assert json.loads(result["body"])["status"] == "no_action_needed"
+        mock_scale.assert_called_once_with(
+            active_user_count=active_users, context=context, scheduled_at=None
+        )
+
+    def test_the_event_time_names_the_period(self, mock_env_vars_free):
+        """A scheduled event carries its fire time; floored to the interval
+        it is the run's period, passed on so the datapoint and the history
+        window do not depend on when the run actually got going."""
+        from free_manager import handle_scheduled_monitoring
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=0
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.scale_and_rebalance",
+            return_value={"scaling_action": "none", "desired_instances": 1},
+        ) as mock_scale:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [{"DesiredCapacity": 1}]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1}]
+            }
+
+            handle_scheduled_monitoring(
+                {"source": "aws.events", "time": "2026-10-13T11:04:47Z"},
+                MagicMock(),
+            )
+
+        assert mock_scale.call_args[1]["scheduled_at"] == datetime(
+            2026, 10, 13, 11, 0, tzinfo=timezone.utc
+        )
+
+
+class TestScheduledPeriod:
+    """scheduled_period: the event's fire time floored to the interval."""
+
+    @pytest.mark.parametrize(
+        "event,expected",
+        [
+            (
+                {"time": "2026-10-13T11:04:47Z"},
+                datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc),
+            ),
+            # Seconds after a boundary: the period that just started.
+            (
+                {"time": "2026-10-13T11:05:02Z"},
+                datetime(2026, 10, 13, 11, 5, tzinfo=timezone.utc),
+            ),
+            ({"source": "aws.events"}, None),
+            ({"time": "not a time"}, None),
+            ({"time": 12345}, None),
+            ("not an event", None),
+        ],
+    )
+    def test_period(self, event, expected):
+        from free_manager import scheduled_period
+
+        assert scheduled_period(event) == expected
+
+
+class TestScaleInChoosesByWorkload:
+    """
+    select_instances_to_terminate, as a pure function. The order is: never
+    an instance with a running workflow; then the fewest active users; then
+    the zone with the most instances; then the newest.
+    """
+
+    @staticmethod
+    def _inst(instance_id, az="1a", launch=0, state="InService", protected=False):
+        return {
+            "id": instance_id,
+            "az": az,
+            "launch_time": launch,
+            "lifecycle_state": state,
+            "protected": protected,
+        }
+
+    def test_a_running_workflow_is_never_chosen(self):
+        """i-b has the fewest users but a workflow; i-a (2 users) goes
+        instead, and the second slot stays unfilled rather than take i-b."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users_per_instance={"i-a": 2, "i-b": 0, "i-c": 3},
+            workload_per_instance={"i-b": 1},
+            count=2,
+        )
+
+        assert chosen == ["i-a", "i-c"]
+
+    def test_shortfall_is_left_for_a_later_run(self):
+        """Every candidate but one is busy: one id, not two."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users_per_instance={},
+            workload_per_instance={"i-b": 2, "i-c": 1},
+            count=2,
+        )
+
+        assert chosen == ["i-a"]
+
+    def test_fewest_active_users_first(self):
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users_per_instance={"i-a": 3, "i-b": 1, "i-c": 2},
+            workload_per_instance={},
+            count=2,
+        )
+
+        assert chosen == ["i-b", "i-c"]
+
+    def test_the_heavier_zone_breaks_a_tie(self):
+        """Two in 1a, one in 1c, no users anywhere: removing from 1a keeps
+        the zones balanced, so the group has no reason to rebalance."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-c1", az="1c"),
+                self._inst("i-a1", az="1a"),
+                self._inst("i-a2", az="1a"),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=1,
+        )
+
+        assert chosen[0] in {"i-a1", "i-a2"}
+
+    def test_two_picks_alternate_zones(self):
+        """Two in each zone, remove two: one from each, never both from
+        one zone, which would leave 2/0 and trigger a rebalance."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-a1", az="1a", launch=1),
+                self._inst("i-a2", az="1a", launch=2),
+                self._inst("i-c1", az="1c", launch=3),
+                self._inst("i-c2", az="1c", launch=4),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=2,
+        )
+
+        assert len(chosen) == 2
+        assert {c[2] for c in chosen} == {"a", "c"}
+
+    def test_zones_are_counted_over_in_service_instances_only(self):
+        """A Terminating instance in 1c does not make 1c the heavier zone:
+        with one InService in each, the newest (i-a, launched later) goes."""
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-a", az="1a", launch=2),
+                self._inst("i-c", az="1c", launch=1),
+                self._inst("i-c-going", az="1c", launch=3, state="Terminating:Wait"),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=1,
+        )
+
+        assert chosen == ["i-a"]
+
+    def test_the_newest_breaks_a_tie_within_a_zone(self):
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [self._inst("i-old", launch=100), self._inst("i-new", launch=200)],
+            users_per_instance={},
+            workload_per_instance={},
+            count=1,
+        )
+
+        assert chosen == ["i-new"]
+
+    def test_only_in_service_unprotected_instances_are_candidates(self):
+        from free_manager import select_instances_to_terminate
+
+        chosen = select_instances_to_terminate(
+            [
+                self._inst("i-wait", state="Terminating:Wait"),
+                self._inst("i-pending", state="Pending"),
+                self._inst("i-protected", protected=True),
+                self._inst("i-ok"),
+            ],
+            users_per_instance={},
+            workload_per_instance={},
+            count=3,
+        )
+
+        assert chosen == ["i-ok"]
+
+
+class TestScaleInTerminates:
+    """scale_in against the mocked clients: one TerminateInstanceInAutoScalingGroup
+    per chosen instance, decrementing the desired capacity."""
+
+    @staticmethod
+    def _run(mock_env_vars_free, instances, users, workload, count, side_effect=None):
+        from free_manager import scale_in
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ec2_client") as mock_ec2, patch(
+            "free_manager.get_users_per_instance", return_value=users
+        ), patch(
+            "free_manager.get_workload_per_instance", side_effect=workload
+        ):
+            mock_ec2.describe_instances.return_value = {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": inst["id"],
+                                "LaunchTime": datetime(
+                                    2026, 10, 13, 0, n, tzinfo=timezone.utc
+                                ),
+                            }
+                            for n, inst in enumerate(instances)
+                        ]
+                    }
+                ]
+            }
+            if side_effect is not None:
+                mock_asg.terminate_instance_in_auto_scaling_group.side_effect = (
+                    side_effect
+                )
+            terminated = scale_in(instances, count)
+            return mock_asg, terminated
+
+    @staticmethod
+    def _inst(instance_id):
+        return {
+            "id": instance_id,
+            "az": "1a",
+            "lifecycle_state": "InService",
+            "protected": False,
+        }
+
+    def test_terminates_each_chosen_instance_with_a_decrement(self, mock_env_vars_free):
+        asg, terminated = self._run(
+            mock_env_vars_free,
+            instances=[self._inst("i-a"), self._inst("i-b"), self._inst("i-c")],
+            users={"i-a": 2},
+            workload=lambda: {},
+            count=2,
+        )
+
+        assert set(terminated) == {"i-b", "i-c"}
+        assert asg.terminate_instance_in_auto_scaling_group.call_count == 2
+        for c in asg.terminate_instance_in_auto_scaling_group.call_args_list:
+            assert c[1]["ShouldDecrementDesiredCapacity"] is True
+
+    def test_a_refused_termination_is_skipped_not_fatal(self, mock_env_vars_free):
+        """ScalingActivityInProgress on the first: the second still goes, the
+        first is reported as not terminated and waits for the next run."""
+        asg, terminated = self._run(
+            mock_env_vars_free,
+            instances=[self._inst("i-a"), self._inst("i-b")],
+            users={},
+            workload=lambda: {},
+            count=2,
+            side_effect=[Exception("ScalingActivityInProgress"), {}],
+        )
+
+        assert len(terminated) == 1
+        assert asg.terminate_instance_in_auto_scaling_group.call_count == 2
+
+    def test_nothing_safe_means_no_call(self, mock_env_vars_free):
+        asg, terminated = self._run(
+            mock_env_vars_free,
+            instances=[self._inst("i-a"), self._inst("i-b")],
+            users={},
+            workload=lambda: {"i-a": 1, "i-b": 1},
+            count=1,
+        )
+
+        assert terminated == []
+        asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+
+    def test_an_unreadable_workload_aborts_the_scale_in(self, mock_env_vars_free):
+        """A database failure must not read as "no workflow anywhere"."""
+        with pytest.raises(Exception, match="MySQL"):
+            self._run(
+                mock_env_vars_free,
+                instances=[self._inst("i-a"), self._inst("i-b")],
+                users={},
+                workload=Exception("Can't connect to MySQL server"),
+                count=1,
+            )
+
+    def test_an_unreadable_user_count_aborts_the_scale_in(self, mock_env_vars_free):
+        """
+        The users read is asked to raise rather than return {}: an empty map
+        would order the candidates by zone and age alone and could remove an
+        instance with idle sessions ahead of an empty one.
+        """
+        from free_manager import scale_in
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch(
+            "free_manager.get_users_per_instance",
+            side_effect=Exception("Lost connection to MySQL server"),
+        ) as mock_users, patch(
+            "free_manager.get_workload_per_instance", return_value={}
+        ):
+            with pytest.raises(Exception, match="MySQL"):
+                scale_in([self._inst("i-a"), self._inst("i-b")], 1)
+
+        assert mock_users.call_args[1]["raise_on_error"] is True
+        mock_asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+
+    def test_unreadable_launch_times_abort_the_scale_in(self, mock_env_vars_free):
+        """EC2 refusing describe_instances fails the run; nothing is
+        terminated on a partial picture."""
+        from free_manager import scale_in
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ec2_client") as mock_ec2, patch(
+            "free_manager.get_users_per_instance", return_value={}
+        ), patch(
+            "free_manager.get_workload_per_instance", return_value={}
+        ):
+            mock_ec2.describe_instances.side_effect = Exception("throttled")
+            with pytest.raises(Exception, match="throttled"):
+                scale_in([self._inst("i-a"), self._inst("i-b")], 1)
+
+        mock_asg.terminate_instance_in_auto_scaling_group.assert_not_called()
+
+    def test_the_callers_instance_list_is_not_modified(self, mock_env_vars_free):
+        instances = [self._inst("i-a"), self._inst("i-b")]
+        before = [dict(i) for i in instances]
+
+        self._run(
+            mock_env_vars_free,
+            instances=instances,
+            users={},
+            workload=lambda: {},
+            count=1,
+        )
+
+        assert instances == before
+
+
+class TestSurplusOfOne:
+    """
+    surplus_of_one_has_persisted reads TargetInstances against
+    GroupDesiredCapacity, period by period; load_alarm_holds_capacity reads
+    the -high alarms' state and when it last changed. Both raise rather than
+    guess when the read fails.
+    """
+
+    # The run is at 09:03:20, so the current period is 09:00-09:05 and the
+    # three completed periods before it start at 08:55, 08:50 and 08:45.
+    NOW = datetime(2026, 10, 13, 9, 3, 20, tzinfo=timezone.utc)
+    PERIOD_START = datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def _history(cls, mock_env_vars_free, targets, desireds, current=None):
+        """
+        targets/desireds: one value per completed period, newest first (08:55,
+        08:50, 08:45, 08:40, ...); None = no datapoint. ``current`` adds a
+        (target, desired) datapoint in the incomplete 09:00 period, as
+        CloudWatch may already serve this run's own publication.
+        """
+        from free_manager import surplus_of_one_has_persisted
+
+        stamps = [
+            cls.PERIOD_START - timedelta(minutes=5 * (i + 1))
+            for i in range(len(targets))
+        ]
+
+        def series(values, current_value):
+            pairs = [(t, v) for t, v in zip(stamps, values) if v is not None]
+            if current_value is not None:
+                pairs.insert(0, (cls.PERIOD_START, current_value))
+            return {
+                "Timestamps": [t for t, _ in pairs],
+                "Values": [float(v) for _, v in pairs],
+            }
+
+        current = current or (None, None)
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.get_metric_data.return_value = {
+                "MetricDataResults": [
+                    {"Id": "target", **series(targets, current[0])},
+                    {"Id": "desired", **series(desireds, current[1])},
+                ]
+            }
+            persisted = surplus_of_one_has_persisted(now=cls.NOW)
+            return persisted, mock_cw
+
+    def test_three_completed_periods_of_surplus_count(self, mock_env_vars_free):
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1, 1], desireds=[2, 2, 2]
+        )
+        assert persisted is True
+
+    def test_two_periods_do_not(self, mock_env_vars_free):
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1], desireds=[2, 2]
+        )
+        assert persisted is False
+
+    def test_the_current_period_is_not_counted(self, mock_env_vars_free):
+        """Two completed periods plus this run's own datapoint: not three.
+        Whether the fresh point is readable yet must not change the answer."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1], desireds=[2, 2], current=(1, 2)
+        )
+        assert persisted is False
+
+    def test_a_period_without_surplus_breaks_the_run(self, mock_env_vars_free):
+        """Newest first: the middle period had desired == target."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 2, 1], desireds=[2, 2, 2]
+        )
+        assert persisted is False
+
+    def test_only_the_latest_periods_are_read(self, mock_env_vars_free):
+        """An older period without surplus does not matter once three newer
+        ones have it."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, 1, 1, 3], desireds=[2, 2, 2, 3]
+        )
+        assert persisted is True
+
+    def test_a_hole_restarts_the_wait(self, mock_env_vars_free):
+        """A failed run publishes no target. Three surplus periods around a
+        hole are not three consecutive ones."""
+        persisted, _ = self._history(
+            mock_env_vars_free, targets=[1, None, 1, 1], desireds=[2, 2, 2, 2]
+        )
+        assert persisted is False
+
+    def test_the_query_covers_exactly_the_completed_periods(self, mock_env_vars_free):
+        """Bounds on period multiples, so CloudWatch cuts the periods there;
+        the end is the current period's start, so it is never read."""
+        _, mock_cw = self._history(mock_env_vars_free, targets=[], desireds=[])
+        kwargs = mock_cw.get_metric_data.call_args[1]
+        assert kwargs["EndTime"] == self.PERIOD_START
+        assert kwargs["StartTime"] == self.PERIOD_START - timedelta(minutes=15)
+
+    def test_reads_the_most_demanding_target_and_the_lowest_desired(
+        self, mock_env_vars_free
+    ):
+        _, mock_cw = self._history(mock_env_vars_free, targets=[], desireds=[])
+        queries = {
+            q["Id"]: q["MetricStat"]
+            for q in mock_cw.get_metric_data.call_args[1]["MetricDataQueries"]
+        }
+        assert queries["target"]["Stat"] == "Maximum"
+        assert queries["target"]["Metric"]["MetricName"] == "TargetInstances"
+        assert queries["desired"]["Stat"] == "Minimum"
+        assert queries["desired"]["Metric"]["Dimensions"] == [
+            {"Name": "AutoScalingGroupName", "Value": "test-free-asg"}
+        ]
+
+    def test_an_unreadable_history_raises(self, mock_env_vars_free):
+        from free_manager import surplus_of_one_has_persisted
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.get_metric_data.side_effect = Exception("throttled")
+            with pytest.raises(Exception, match="throttled"):
+                surplus_of_one_has_persisted()
+
+    # (state, minutes since the state changed) per alarm. An alarm in ALARM
+    # holds capacity whatever its age; an alarm out of ALARM holds it for
+    # ALARM_QUIET_PERIOD (15 min) after the transition, so the instance it
+    # added is not taken back on the first run after OK.
+    @pytest.mark.parametrize(
+        "states,expected",
+        [
+            ({"cpu-high": ("ALARM", 60), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("ALARM", 1), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", 60), "memory-high": ("OK", 60)}, False),
+            ({"cpu-high": ("OK", 5), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", 14), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", 15), "memory-high": ("OK", 60)}, False),
+            ({"cpu-high": ("INSUFFICIENT_DATA", 60), "memory-high": ("OK", 60)}, False),
+            ({"cpu-high": ("INSUFFICIENT_DATA", 2), "memory-high": ("OK", 60)}, True),
+            ({"cpu-high": ("OK", None), "memory-high": ("OK", None)}, False),
+        ],
+    )
+    def test_load_alarm_state_and_age(self, mock_env_vars_free, states, expected):
+        from free_manager import load_alarm_holds_capacity
+
+        now = datetime(2026, 10, 13, 9, 3, 20, tzinfo=timezone.utc)
+        alarms = []
+        for name, (state, minutes_ago) in states.items():
+            alarm = {"AlarmName": f"test-optinist-{name}", "StateValue": state}
+            if minutes_ago is not None:
+                alarm["StateTransitionedTimestamp"] = now - timedelta(
+                    minutes=minutes_ago
+                )
+            alarms.append(alarm)
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.describe_alarms.return_value = {"MetricAlarms": alarms}
+            assert load_alarm_holds_capacity(now=now) is expected
+            assert mock_cw.describe_alarms.call_args[1]["AlarmNames"] == [
+                "test-optinist-cpu-high",
+                "test-optinist-memory-high",
+            ]
+
+    def test_no_alarm_names_means_no_read(self, mock_env_vars_free):
+        from free_manager import load_alarm_holds_capacity
+
+        env = {**mock_env_vars_free, "LOAD_ALARM_NAMES": ""}
+        with patch.dict("os.environ", env), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            assert load_alarm_holds_capacity() is False
+            mock_cw.describe_alarms.assert_not_called()
+
+    def test_unreadable_alarms_raise(self, mock_env_vars_free):
+        from free_manager import load_alarm_holds_capacity
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            mock_cw.describe_alarms.side_effect = Exception("AccessDenied")
+            with pytest.raises(Exception, match="AccessDenied"):
+                load_alarm_holds_capacity()
+
+
+class TestScaleUpWaitBudget:
+    """scale_up_wait_budget: the remaining time less the margin, capped at
+    MAX_WAIT_TIME, and never negative."""
+
+    @pytest.mark.parametrize(
+        "remaining_ms,expected",
+        [
+            (900_000, 840),
+            (1_500_000, 1020),
+            (120_000, 60),
+            (30_000, 0),
+        ],
+    )
+    def test_budget(self, remaining_ms, expected):
+        from free_manager import scale_up_wait_budget
+
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = remaining_ms
+
+        assert scale_up_wait_budget(context) == expected
+
+    def test_no_context_falls_back_to_the_constant(self):
+        from free_manager import MAX_WAIT_TIME, scale_up_wait_budget
+
+        assert scale_up_wait_budget(None) == MAX_WAIT_TIME
+        assert scale_up_wait_budget({}) == MAX_WAIT_TIME
 
 
 class TestDatabaseFailureReachesTheAlarm:
@@ -672,7 +1455,7 @@ class TestHandlerFailsTheInvocation:
         ), patch(
             "free_manager.ec2_client"
         ), patch(
-            "free_manager.count_active_free_users", return_value=5
+            "free_manager.count_active_free_users", return_value=6
         ), patch(
             "free_manager.publish_active_user_metric"
         ), patch(
@@ -683,19 +1466,19 @@ class TestHandlerFailsTheInvocation:
             mock_asg.describe_auto_scaling_groups.return_value = {
                 "AutoScalingGroups": [
                     {
-                        "DesiredCapacity": 5,
-                        "MinSize": 3,
-                        "MaxSize": 5,
+                        "DesiredCapacity": 1,
+                        "MinSize": 1,
+                        "MaxSize": 3,
                         "Instances": [],
                     }
                 ]
             }
             mock_ecs.describe_services.return_value = {
-                "services": [{"desiredCount": 5, "runningCount": 5, "pendingCount": 0}]
+                "services": [{"desiredCount": 1, "runningCount": 1, "pendingCount": 0}]
             }
             mock_ecs.list_tasks.return_value = {"taskArns": []}
             mock_asg.set_desired_capacity.side_effect = Exception(
-                "ValidationError: desired capacity below MinSize"
+                "ValidationError: desired capacity above MaxSize"
             )
 
             with pytest.raises(Exception, match="ValidationError"):
@@ -804,3 +1587,200 @@ class TestPublishActiveUserMetric:
             metric = call_kwargs["MetricData"][0]
             assert metric["MetricName"] == "ActiveLogins"
             assert metric["Value"] == 42
+
+    def test_publishes_the_target_next_to_active_logins(self, mock_env_vars_free):
+        """Same namespace as ActiveLogins, so the two plot together against
+        the group's GroupDesiredCapacity."""
+        env_prefix = mock_env_vars_free["ENV_PREFIX"]
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            from free_manager import publish_target_metric
+
+            publish_target_metric(3)
+
+            call_kwargs = mock_cw.put_metric_data.call_args[1]
+            assert call_kwargs["Namespace"] == f"OptiNiSt/FreeUsers/{env_prefix}"
+            metric = call_kwargs["MetricData"][0]
+            assert metric["MetricName"] == "TargetInstances"
+            assert metric["Value"] == 3
+
+    def test_the_period_stamps_the_datapoint(self, mock_env_vars_free):
+        """With a period given, the datapoint carries it as its timestamp,
+        so a run that got going after the boundary still lands in its own
+        period; without one, CloudWatch stamps it with the clock."""
+        from free_manager import publish_target_metric
+
+        period = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.cloudwatch_client"
+        ) as mock_cw:
+            publish_target_metric(2, timestamp=period)
+            stamped = mock_cw.put_metric_data.call_args[1]["MetricData"][0]
+            publish_target_metric(2)
+            unstamped = mock_cw.put_metric_data.call_args[1]["MetricData"][0]
+
+        assert stamped["Timestamp"] == period
+        assert "Timestamp" not in unstamped
+
+    def test_the_period_bounds_the_history_and_nothing_is_published_inside(
+        self, mock_env_vars_free
+    ):
+        """scale_and_rebalance reads the history up to the run's period and
+        leaves publishing to the handler, which does it only once the whole
+        run has succeeded."""
+        from free_manager import scale_and_rebalance
+
+        period = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.is_scaling_in_progress", return_value=False
+        ), patch(
+            "free_manager.load_alarm_holds_capacity", return_value=False
+        ), patch(
+            "free_manager.surplus_of_one_has_persisted", return_value=False
+        ) as mock_history, patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [
+                    {
+                        "DesiredCapacity": 2,
+                        "MinSize": 1,
+                        "MaxSize": 3,
+                        "Instances": [],
+                    }
+                ]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 2, "runningCount": 2, "pendingCount": 0}]
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": []}
+
+            result = scale_and_rebalance(active_user_count=0, scheduled_at=period)
+
+        assert result["desired_instances"] == 1
+        mock_history.assert_called_once_with(now=period)
+        mock_target.assert_not_called()
+
+    def test_the_lock_held_path_still_reports_its_target(self, mock_env_vars_free):
+        """A held lock skips the actions, not the measurement: the target is
+        exactly what a reader needs to judge a skipped run, so the result
+        carries it for the handler to publish."""
+        from free_manager import scale_and_rebalance
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.is_scaling_in_progress", return_value=True
+        ):
+            mock_asg.describe_auto_scaling_groups.return_value = {
+                "AutoScalingGroups": [
+                    {
+                        "DesiredCapacity": 1,
+                        "MinSize": 1,
+                        "MaxSize": 3,
+                        "Instances": [],
+                    }
+                ]
+            }
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1, "runningCount": 1, "pendingCount": 0}]
+            }
+            mock_ecs.list_tasks.return_value = {"taskArns": []}
+
+            result = scale_and_rebalance(active_user_count=7)
+
+        assert result["status"] == "scaling_in_progress"
+        assert result["desired_instances"] == 2
+        mock_asg.set_desired_capacity.assert_not_called()
+
+
+class TestTargetIsPublishedBySuccessfulRunsOnly:
+    """
+    The surplus history reads a period with no TargetInstances datapoint as
+    a hole, and the stated rule is that a failed run leaves one. So the
+    handler publishes last, after everything that can fail, the deferred
+    ECS-sync error included.
+    """
+
+    PERIOD = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+    EVENT = {"source": "aws.events", "time": "2026-10-13T11:04:47Z"}
+
+    @staticmethod
+    def _handler(mock_env_vars_free, scale_result=None, scale_error=None, asg=None):
+        from free_manager import handle_scheduled_monitoring
+
+        with patch.dict("os.environ", mock_env_vars_free), patch(
+            "free_manager.autoscaling_client"
+        ) as mock_asg, patch("free_manager.ecs_client") as mock_ecs, patch(
+            "free_manager.cloudwatch_client"
+        ), patch(
+            "free_manager.count_active_free_users", return_value=0
+        ), patch(
+            "free_manager.publish_active_user_metric"
+        ), patch(
+            "free_manager.scale_and_rebalance",
+            return_value=scale_result,
+            side_effect=scale_error,
+        ), patch(
+            "free_manager.publish_target_metric"
+        ) as mock_target:
+            if asg is None:
+                mock_asg.describe_auto_scaling_groups.return_value = {
+                    "AutoScalingGroups": [{"DesiredCapacity": 1}]
+                }
+            else:
+                mock_asg.describe_auto_scaling_groups.side_effect = asg
+            mock_ecs.describe_services.return_value = {
+                "services": [{"desiredCount": 1}]
+            }
+            try:
+                handle_scheduled_monitoring(
+                    TestTargetIsPublishedBySuccessfulRunsOnly.EVENT, MagicMock()
+                )
+            except Exception as e:  # noqa: BLE001 - the test asserts on it
+                return mock_target, e
+            return mock_target, None
+
+    def test_a_successful_run_publishes_the_target_with_its_period(
+        self, mock_env_vars_free
+    ):
+        target, error = self._handler(
+            mock_env_vars_free,
+            scale_result={"scaling_action": "none", "desired_instances": 2},
+        )
+
+        assert error is None
+        target.assert_called_once_with(2, timestamp=self.PERIOD)
+
+    def test_a_lock_held_run_is_a_successful_run(self, mock_env_vars_free):
+        target, error = self._handler(
+            mock_env_vars_free,
+            scale_result={"status": "scaling_in_progress", "desired_instances": 2},
+        )
+
+        assert error is None
+        target.assert_called_once_with(2, timestamp=self.PERIOD)
+
+    def test_a_run_that_fails_in_scaling_publishes_nothing(self, mock_env_vars_free):
+        """An unreadable alarm or workload raises out of scale_and_rebalance."""
+        target, error = self._handler(
+            mock_env_vars_free, scale_error=Exception("AccessDenied")
+        )
+
+        assert error is not None
+        target.assert_not_called()
+
+    def test_a_run_whose_ecs_resync_failed_publishes_nothing(self, mock_env_vars_free):
+        """The resync failure is held until the end and re-raised; the run
+        failed, so its period must read as a hole."""
+        target, error = self._handler(
+            mock_env_vars_free,
+            scale_result={"scaling_action": "none", "desired_instances": 1},
+            asg=Exception("throttled"),
+        )
+
+        assert error is not None and "throttled" in str(error)
+        target.assert_not_called()
