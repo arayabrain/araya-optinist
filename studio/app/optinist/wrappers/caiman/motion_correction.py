@@ -9,8 +9,7 @@ from studio.app.optinist.wrappers.caiman.caiman_utils import (
     CaimanUtils,
     caiman_cluster,
     distribute_params_to_groups,
-    save_memmap_c_order,
-    save_memmap_c_order_fallback,
+    needs_save_memmap,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
@@ -21,7 +20,7 @@ def caiman_mc(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(mc_images=ImageData):
     import numpy as np
-    from caiman import load_memmap
+    from caiman import load_memmap, save_memmap
     from caiman.motion_correction import MotionCorrect
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -49,32 +48,30 @@ def caiman_mc(
         mc.motion_correct(save_movie=True)
         border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
 
-        # memory mapping
-        mmap_file_new = save_memmap_c_order(
-            mc.mmap_file, base_name=function_id, border_to_0=border_to_0
-        )
+        reason = needs_save_memmap(mc.mmap_file, border_to_0)
+        if reason:
+            logger.warning(
+                "caiman.save_memmap converts the movie in memory: %s", reason
+            )
+            mmap_file_new = save_memmap(
+                mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
+            )
+        else:
+            mmap_file_new = None
 
-    # now load the file
-    Yr, dims, T = load_memmap(mmap_file_new)
-
-    # The corrected movie stays memory-mapped: this view of the pixels x time
-    # file has the layout the full in-memory copy (np.array of it) used to have,
-    # so the mean below is the same arithmetic on the same values
-    movie = Yr.T.reshape((T,) + dims, order="F")
-
-    meanImg, rois = __process_images(movie)
-
-    # A frame of the pixels x time file is spread over all of it, so the TIFF
-    # is written from MotionCorrect's frame-contiguous file when the C-order
-    # file is known to be that file plus CaImAn's 0.0001 offset
-    if save_memmap_c_order_fallback(mc.mmap_file, border_to_0) is None:
-        Yf, _, _ = load_memmap(mc.mmap_file[0])
-        frames, offset = Yf.T.reshape((T,) + dims, order="F"), C_ORDER_OFFSET
+    if mmap_file_new is None:
+        # MotionCorrect's file plus C_ORDER_OFFSET is what save_memmap would write
+        Yr, dims, T = load_memmap(mc.mmap_file[0])
+        offset = C_ORDER_OFFSET
+        meanImg = mean_over_time(Yr, offset).reshape(dims, order="F")
+        frames = Yr.T.reshape((T,) + dims, order="F")
     else:
-        # caiman.save_memmap has just held the movie in memory, so a copy costs
-        # no more than that did, where batches of the pixels x time view would
-        # re-read the whole file each
-        Yf, frames, offset = None, np.array(movie), None
+        Yr, dims, T = load_memmap(mmap_file_new)
+        offset = None
+        frames = np.array(Yr.T.reshape((T,) + dims, order="F"))
+        meanImg = frames.mean(axis=0)
+
+    rois = __extract_rois(meanImg)
 
     xy_trans_data = (
         (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
@@ -90,7 +87,7 @@ def caiman_mc(
 
     # Release variables associated with memmap files when they are no longer needed.
     # *Avoid lock errors when cleaning memmap files.
-    del movie, frames, Yf, Yr, dims, T
+    del frames, Yr, dims, T
 
     nwbfile = {}
     nwbfile[NWBDATASET.MOTION_CORRECTION] = {
@@ -128,13 +125,42 @@ def caiman_mc(
 C_ORDER_OFFSET = (0.0001, 0.0)
 # tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
 BIGTIFF_BYTES = 2**32 - 2**25
-# frames per write, bounded in bytes
-TIFF_BATCH_BYTES = 64 << 20
+# rows per batch, bounded in bytes
+BATCH_BYTES = 64 << 20
 
 
-def movie_to_tiff(
-    movie, output_dir, file_name, offset=None, batch_bytes=TIFF_BATCH_BYTES
-):
+def batches(array, dtype, offset=None, batch_bytes=BATCH_BYTES):
+    """
+    C-contiguous copies of consecutive runs of array[i] of at most batch_bytes
+    each, as dtype, with each value of offset added in float32 in that order,
+    as save_memmap adds them.
+    """
+    import numpy as np
+
+    row_bytes = int(np.prod(array.shape[1:])) * dtype.itemsize
+    size = max(1, batch_bytes // row_bytes)
+    for i in range(0, array.shape[0], size):
+        batch = np.array(array[i : i + size], dtype=dtype, order="C")
+        for value in offset or ():
+            batch += np.float32(value)
+        yield batch
+
+
+def mean_over_time(Yr, offset, batch_bytes=BATCH_BYTES):
+    """
+    The mean over time of each pixel of a pixels x time movie plus offset, in
+    float32. Each batch of pixels is reduced along its contiguous time axis, as
+    the movie save_memmap writes in C order is, so the values are bit-identical.
+    """
+    import numpy as np
+
+    dtype = np.dtype(np.float32)
+    return np.concatenate(
+        [batch.mean(axis=1) for batch in batches(Yr, dtype, offset, batch_bytes)]
+    )
+
+
+def movie_to_tiff(movie, output_dir, file_name, offset=None, batch_bytes=BATCH_BYTES):
     """
     Write a (T, Ly, Lx) array-like to the TIFF path ImageData would use, one
     batch of at most batch_bytes at a time, so a memory-mapped movie is never
@@ -162,23 +188,17 @@ def movie_to_tiff(
     tmp_path = f"{tiff_path}.partial"
 
     dtype = np.dtype(np.float32 if offset else movie.dtype)
-    frame_bytes = int(np.prod(movie.shape[1:])) * dtype.itemsize
-    batch_size = max(1, batch_bytes // frame_bytes)
-
-    def frames():
-        for i in range(0, movie.shape[0], batch_size):
-            batch = np.ascontiguousarray(movie[i : i + batch_size], dtype=dtype)
-            for value in offset or ():
-                batch = batch + np.float32(value)
-            yield from batch
+    frames = (
+        frame for batch in batches(movie, dtype, offset, batch_bytes) for frame in batch
+    )
 
     try:
         tifffile.imwrite(
             tmp_path,
-            frames(),
+            frames,
             shape=movie.shape,
             dtype=dtype,
-            bigtiff=movie.shape[0] * frame_bytes > BIGTIFF_BYTES,
+            bigtiff=int(np.prod(movie.shape)) * dtype.itemsize > BIGTIFF_BYTES,
         )
         os.replace(tmp_path, tiff_path)
     except BaseException:
@@ -188,11 +208,10 @@ def movie_to_tiff(
     return [tiff_path]
 
 
-def __process_images(images):
+def __extract_rois(meanImg):
     import numpy as np
     from caiman.base.rois import extract_binary_masks_from_structural_channel
 
-    meanImg = images.mean(axis=0)
     rois = (
         extract_binary_masks_from_structural_channel(
             meanImg, gSig=7, expand_method="dilation"
@@ -208,7 +227,7 @@ def __process_images(images):
     rois = np.nanmax(rois, axis=0)
     rois[rois == 0] = np.nan
     rois -= 1
-    return meanImg, rois
+    return rois
 
 
 def __handle_mmap_cleanup(mc, mmap_file_new):
@@ -222,5 +241,5 @@ def __handle_mmap_cleanup(mc, mmap_file_new):
         if os.path.isfile(mmap_file):
             os.remove(mmap_file)
 
-    if os.path.isfile(mmap_file_new):
+    if mmap_file_new and os.path.isfile(mmap_file_new):
         os.remove(mmap_file_new)

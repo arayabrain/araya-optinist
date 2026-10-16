@@ -9,7 +9,9 @@ import pytest
 import tifffile
 
 from studio.app.optinist.wrappers.caiman.motion_correction import (
+    BATCH_BYTES,
     C_ORDER_OFFSET,
+    mean_over_time,
     movie_to_tiff,
 )
 
@@ -17,11 +19,11 @@ D1, D2, T = 9, 7, 31
 FRAME_BYTES = D1 * D2 * 4
 
 
-def motion_corrected(tmp_path):
-    """MotionCorrect's frame-contiguous file and the C-order file save_memmap
-    makes of it (each value + float32(0.0001) + float32(0)), both viewed as
-    (T, d1, d2) the way caiman_mc reshapes them."""
-    values = np.random.default_rng(0).normal(500, 80, (D1 * D2, T))
+def pixels_by_time(tmp_path, dims=(D1, D2), T=T):
+    """MotionCorrect's frame-contiguous (F-order) pixels x time float32 file and
+    the C-order file CaImAn 1.11.4's save_memmap makes of it, each value
+    + float32(0.0001) + float32(0)."""
+    values = np.random.default_rng(0).normal(500, 80, (int(np.prod(dims)), T))
     values[0, :3] = [np.nan, np.inf, -0.0]
     F = np.memmap(
         tmp_path / "F.mmap", mode="w+", dtype=np.float32, shape=values.shape, order="F"
@@ -31,8 +33,13 @@ def motion_corrected(tmp_path):
         tmp_path / "C.mmap", mode="w+", dtype=np.float32, shape=values.shape, order="C"
     )
     C[:] = np.ascontiguousarray(F) + np.float32(0.0001) + np.float32(0.0)
+    return F, C
+
+
+def motion_corrected(tmp_path):
+    """Both files viewed as (T, d1, d2) the way caiman_mc reshapes them."""
     view = lambda Y: Y.T.reshape((T, D1, D2), order="F")  # noqa: E731
-    return view(F), view(C)
+    return tuple(view(Y) for Y in pixels_by_time(tmp_path))
 
 
 class NoFullCopy:
@@ -158,13 +165,65 @@ def test_a_failed_write_leaves_no_tiff(tmp_path):
     assert list((out / "tiff" / "mc_images").iterdir()) == []
 
 
-def test_mean_of_the_view_equals_mean_of_the_copy(tmp_path):
-    _, movie = motion_corrected(tmp_path)
-    # Same layout, same reduction: bit-identical, so the ROIs derived from it
-    # are unchanged
-    assert np.array_equal(
-        movie.mean(axis=0), np.array(movie).mean(axis=0), equal_nan=True
+@pytest.mark.parametrize("dims, T", [((D1, D2), T), ((16, 12), 300), ((5, 3), 20000)])
+@pytest.mark.parametrize("rows", [None, 5, 1])
+def test_mean_over_time_is_the_mean_of_the_c_order_file(tmp_path, dims, T, rows):
+    F, C = pixels_by_time(tmp_path, dims, T)
+    # the mean caiman_mc took over the C-order file save_memmap wrote
+    expected = C.T.reshape((T,) + dims, order="F").mean(axis=0)
+
+    batch_bytes = BATCH_BYTES if rows is None else 4 * T * rows
+    actual = mean_over_time(F, C_ORDER_OFFSET, batch_bytes).reshape(dims, order="F")
+
+    assert actual.dtype == expected.dtype == np.float32
+    assert actual.flags.f_contiguous and expected.flags.f_contiguous
+    assert actual.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize("rows", [5, 1])
+def test_mean_over_time_reads_pixel_rows_batch_by_batch(tmp_path, rows):
+    F, _ = pixels_by_time(tmp_path)
+    mean_over_time(NoFullCopy(F, limit=rows), C_ORDER_OFFSET, 4 * T * rows)
+
+
+def test_the_guard_names_why_save_memmap_is_needed(monkeypatch):
+    from studio.app.optinist.wrappers.caiman.caiman_utils import needs_save_memmap
+
+    caiman = types.ModuleType("caiman")
+    monkeypatch.setitem(sys.modules, "caiman", caiman)
+    mmap = "m_rig__d1_9_d2_7_d3_1_order_F_frames_31.mmap"
+
+    for version in ["1.11.3", "1.11.4", "1.12.2"]:
+        caiman.__version__ = version
+        assert needs_save_memmap([mmap]) is None
+    assert needs_save_memmap([mmap], border_to_0=2)
+    assert needs_save_memmap([mmap, mmap])
+    assert needs_save_memmap(["movie.tif"])
+    caiman.__version__ = "1.13.0"
+    assert needs_save_memmap([mmap])
+
+
+def test_mean_and_frames_match_caiman_save_memmap(tmp_path, monkeypatch):
+    caiman = pytest.importorskip("caiman")
+    dims, T = (D1, D2), 23
+    source = str(tmp_path / f"m_rig__d1_{D1}_d2_{D2}_d3_1_order_F_frames_{T}.mmap")
+    values = np.random.default_rng(0).normal(100, 30, (D1 * D2, T))
+    F = np.memmap(source, mode="w+", dtype=np.float32, shape=values.shape, order="F")
+    F[:] = values
+    F.flush()
+    monkeypatch.setenv("CAIMAN_TEMP", str(tmp_path))
+
+    Yr, _, _ = caiman.load_memmap(
+        caiman.save_memmap([source], base_name="mc", order="C", border_to_0=0)
     )
+    movie = Yr.T.reshape((T,) + dims, order="F")
+    F, _, _ = caiman.load_memmap(source)
+
+    expected = movie.mean(axis=0)
+    actual = mean_over_time(F, C_ORDER_OFFSET).reshape(dims, order="F")
+    assert actual.tobytes() == expected.tobytes()
+    frames = F.T.reshape((T,) + dims, order="F") + np.float32(0.0001)
+    assert (frames + np.float32(0.0)).tobytes() == np.array(movie).tobytes()
 
 
 class StubCaiman:
@@ -180,6 +239,7 @@ class StubCaiman:
 
         self.temp = tmp_path / "caiman_temp"
         self.temp.mkdir()
+        self.save_memmap_calls, self.temp_files = [], []
         stub = self
 
         def fn_relocated(fn, force_temp=False):
@@ -200,6 +260,7 @@ class StubCaiman:
             return Yr.reshape((d1 * d2, T), order=order), (d1, d2), T
 
         def save_memmap(filenames, base_name, order, border_to_0):
+            stub.save_memmap_calls.append(border_to_0)
             Yr, dims, T = load_memmap(filenames[0])
             frames = np.array(Yr.T.reshape((T,) + dims, order="F"))
             b, low = border_to_0, frames.min()
@@ -238,6 +299,7 @@ class StubCaiman:
                 return False
 
         def masks(meanImg, gSig, expand_method):
+            stub.temp_files.extend(os.listdir(stub.temp))
             A = np.zeros((meanImg.size, 1))
             A[0, 0] = 1
             return (A,)
@@ -247,13 +309,6 @@ class StubCaiman:
         caiman.load_memmap, caiman.save_memmap = load_memmap, save_memmap
         modules = {
             "caiman": caiman,
-            "caiman.mmapping": types.SimpleNamespace(
-                load_memmap=load_memmap,
-                prepare_shape=lambda shape: tuple(np.uint64(n) for n in shape),
-            ),
-            "caiman.paths": types.SimpleNamespace(
-                fn_relocated=fn_relocated, generate_fname_tot=generate_fname_tot
-            ),
             "caiman.motion_correction": types.SimpleNamespace(
                 MotionCorrect=MotionCorrect
             ),
@@ -266,8 +321,6 @@ class StubCaiman:
         }
         for name, module in modules.items():
             monkeypatch.setitem(sys.modules, name, module)
-        caiman.mmapping = modules["caiman.mmapping"]
-        caiman.paths = modules["caiman.paths"]
 
         @contextlib.contextmanager
         def no_cluster(*args, **kwargs):
@@ -279,20 +332,29 @@ class StubCaiman:
 
 
 @pytest.mark.parametrize("border_nan", ["copy", True])
+@pytest.mark.parametrize("shape", [(T, D1, D2), (200, 16, 12)])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.uint16, np.int16])
 def test_caiman_mc_writes_the_tiff_develop_main_wrote(
-    tmp_path, monkeypatch, border_nan
+    tmp_path, monkeypatch, border_nan, shape, dtype
 ):
     from studio.app.common.dataclass import ImageData
     from studio.app.optinist.wrappers.caiman.motion_correction import caiman_mc
 
-    StubCaiman(tmp_path, monkeypatch, border_nan)
-    movie = np.random.default_rng(3).normal(500, 80, (T, D1, D2)).astype(np.float32)
+    stub = StubCaiman(tmp_path, monkeypatch, border_nan)
+    T, D1, D2 = shape
+    movie = np.random.default_rng(3).normal(500, 80, shape).astype(dtype)
     source = str(tmp_path / "movie.tif")
     tifffile.imwrite(source, movie)
     output_dir = tmp_path / "output" / "ws" / "uid" / "caiman_mc_x"
     output_dir.mkdir(parents=True)
 
     info = caiman_mc(ImageData(source), str(output_dir), params=None)
+
+    # the C-order file exists only where caiman.save_memmap is needed
+    c_order = [f for f in stub.temp_files if "_order_C_" in f]
+    assert len(stub.save_memmap_calls) == len(c_order) == (border_nan != "copy")
+    assert os.listdir(stub.temp) == []
+    movie = movie.astype(np.float32)  # what MotionCorrect writes
 
     # develop-main: np.array of the pixels x time file save_memmap writes
     if border_nan == "copy":  # (x + float32(0.0001)) + float32(0)
