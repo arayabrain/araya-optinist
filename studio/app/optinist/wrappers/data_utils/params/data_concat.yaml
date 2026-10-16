@@ -1,4 +1,6 @@
-# Axis along which to concatenate the data (0=rows/cells, 1=columns/time)
+# Axis along which to concatenate the data (0=rows/cells, 1=columns/time).
+# axis 1 on 1D inputs stacks them as columns of one (time, columns) table
+# and outputs behaviors_data unless output_type says otherwise.
 axis: null
 
 # Optional: specify output dictionary key (behaviors_data, neural_data, image, roi)

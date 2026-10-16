@@ -200,3 +200,22 @@ def test_eta_runs_on_the_split_output(tmp_path):
 
     windows = np.stack([fluo[:, s - 5 : s + 8] for s in (120, 150, 180)])
     np.testing.assert_allclose(eta["mean"].data, windows.mean(axis=0))
+
+
+def test_modulo_keeps_every_second_trial(tmp_path):
+    trial = np.array([0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+
+    info = _split(
+        tmp_path,
+        behavior=_behavior(trial),
+        params={"condition": "equal", "threshold": 1.0, "modulo": 2},
+    )
+
+    even = _split(
+        tmp_path,
+        behavior=_behavior(trial),
+        params={"condition": "equal", "threshold": 0.0, "modulo": 2},
+    )
+
+    assert list(info["behaviors_data"].data[:, 0]) == [2, 3, 6, 7]
+    assert list(even["behaviors_data"].data[:, 0]) == [0, 1, 4, 5]

@@ -13,12 +13,37 @@ from studio.app.optinist.wrappers.optinist.utils import (
 
 logger = AppLogger.get_logger()
 
+HEATMAP_NORMALIZATION_OPTIONS = ("minmax", "mean", "none")
+
+
+def _row_order_from(reference: HeatMapData, cell_numbers: np.ndarray) -> np.ndarray:
+    """Position of each of our cells in the reference heatmap's row labels."""
+    assert isinstance(
+        reference, HeatMapData
+    ), f"order_from must be a heatmap, got {type(reference).__name__}"
+    labels = [] if reference.index is None else np.asarray(reference.index).tolist()
+    assert (
+        len(labels) > 0
+    ), "order_from heatmap has no row labels to take the order from"
+    position = {}
+    for i, label in enumerate(labels):
+        position.setdefault(label, i)
+    missing = [c for c in cell_numbers.tolist() if c not in position]
+    assert not missing, (
+        f"order_from heatmap has no row for {len(missing)} of {len(cell_numbers)} "
+        f"cells (first missing: {missing[:5]}; its labels are "
+        f"{type(labels[0]).__name__} such as {labels[:5]}); "
+        "both nodes must bin the same cells"
+    )
+    return np.argsort([position[c] for c in cell_numbers.tolist()], kind="stable")
+
 
 def covariate_binning(
     neural_data: FluoData,
     behaviors_data: BehaviorData,
     output_dir: str,
     iscell: IscellData = None,
+    order_from: HeatMapData = None,
     params: dict = None,
     **kwargs,
 ) -> dict(mean=TimeSeriesData, mean_heatmap=HeatMapData):
@@ -30,6 +55,10 @@ def covariate_binning(
     bin also holds value == bin_max. Samples outside the range, NaN or infinite
     are excluded. No run, trial or modal-length filtering is applied, so each
     bin's std and sem are over individual time samples, not trials.
+
+    When order_from is connected, the heatmap rows follow that heatmap's row
+    labels (cell numbers) instead of their own peak, so two bins of the same
+    cells, for example before and after a switch, share one row order.
     """
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start covariate_binning: %s", function_id)
@@ -58,6 +87,11 @@ def covariate_binning(
     )
     n_bins = int(params["n_bins"])
     assert n_bins > 0, f"n_bins must be > 0, got {n_bins}"
+    normalization = str(params.get("heatmap_normalization") or "minmax").strip().lower()
+    assert normalization in HEATMAP_NORMALIZATION_OPTIONS, (
+        f"heatmap_normalization must be one of {HEATMAP_NORMALIZATION_OPTIONS}, "
+        f"got '{normalization}'"
+    )
 
     cell_numbers = np.arange(X.shape[1])
     if iscell is not None:
@@ -111,8 +145,30 @@ def covariate_binning(
     value_range[value_range == 0] = 1
     norm_mean = (mean - min_value) / value_range
 
+    if normalization == "mean":
+        # masked sum and count, so the binned samples are not copied out of X
+        counted = in_range[:, None] & ~np.isnan(X)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cell_mean = np.sum(X, axis=0, where=counted) / counted.sum(axis=0)
+        undefined = ~(cell_mean > 0)
+        if undefined.any():
+            logger.warning(
+                "covariate_binning: heatmap_normalization 'mean' needs a positive "
+                "cell mean; blanking %d cells: %s",
+                np.count_nonzero(undefined),
+                cell_numbers[undefined].tolist(),
+            )
+        cell_mean = np.where(undefined, np.nan, cell_mean)
+        heatmap = mean / cell_mean[:, np.newaxis]
+    elif normalization == "none":
+        heatmap = mean
+    else:
+        heatmap = norm_mean
+
     order = np.arange(num_cell)
-    if params["sort_by_peak"]:
+    if order_from is not None:
+        order = _row_order_from(order_from, cell_numbers)
+    elif params["sort_by_peak"]:
         order = peak_order(norm_mean)
 
     nwbfile = {}
@@ -136,7 +192,7 @@ def covariate_binning(
         file_name="mean",
     )
     info["mean_heatmap"] = HeatMapData(
-        norm_mean[order],
+        heatmap[order],
         columns=centers.tolist(),
         index=cell_numbers[order].tolist(),
         file_name="mean_heatmap",

@@ -21,6 +21,8 @@ def condition_split(
     A sample is kept when its value v in column event_col_index satisfies
     'greater' v > threshold, 'less' v < threshold, 'equal' v == threshold
     (exact) or 'between' threshold <= v <= threshold_upper. NaN never matches.
+    With modulo > 0 the remainder v mod modulo is tested instead, so modulo 2
+    with 'equal' 1 keeps the odd-numbered trials of a trial-number column.
     With margin > 0, a kept sample within margin samples of a rejected one is
     dropped too, which trims transitions where the behaviour stream and the
     imaging frames are not aligned to the sample.
@@ -56,6 +58,10 @@ def condition_split(
     )
 
     values = np.asarray(Y[:, col], dtype=float)
+    modulo = float(params.get("modulo") or 0)
+    assert modulo >= 0, f"modulo must be >= 0, got {modulo}"
+    if modulo:
+        values = np.mod(values, modulo)
     condition = params["condition"]
     threshold = float(params["threshold"])
     if condition == "greater":
