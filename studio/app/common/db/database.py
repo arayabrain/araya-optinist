@@ -59,13 +59,15 @@ def session_scope(use_cache: bool = True):
 
 def get_db():
     """
-    Request-scoped session on the cached engine, for Depends().
+    Request-scoped session on the cached engine.
 
-    Takes no parameters: FastAPI turns every parameter of a dependency into a
-    request parameter of each operation that depends on it.
+    - Used through Depends(); a few non-request callers take it with
+      next(get_db()).
+    - Takes no parameters: FastAPI turns every plain parameter of a dependency
+      into a request parameter of each operation that depends on it.
     """
+    db = get_session()
     try:
-        db = get_session()
         yield db
     finally:
         db.close()
