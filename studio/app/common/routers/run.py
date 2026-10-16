@@ -286,7 +286,10 @@ async def run_result(
     nodeDict: NodeItem,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
+    # The save below is awaited; do not hold the guards' connection across it
+    release_request_session(db)
     try:
         # Ensure experiment yaml exists locally before accessing results.
         # Downloads from S3 if not present (handles multi-instance scenarios).
