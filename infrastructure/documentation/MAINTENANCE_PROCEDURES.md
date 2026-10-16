@@ -855,8 +855,11 @@ would stop and start the instance in place, and runs only on first boot), so an 
 `user_data` takes effect at the next replacement.
 
 **Why it is deliberate.** A replacement pauses private-subnet internet egress from the moment the
-Elastic IP moves to the new instance until its `user_data` has set up forwarding: SSM sessions, Firebase
-authentication and any external API call fail meanwhile. With `enable_second_nat` (production) both NAT
+Elastic IP moves to the new instance until its `user_data` has set up forwarding — about a minute on
+development, where the `iptables-nft` install finished about 50 seconds after boot: SSM sessions,
+Firebase authentication and any external API call fail meanwhile. `create_before_destroy` protects
+against a failed create, not against an instance that is created and does not forward, which is what
+step 5 checks. With `enable_second_nat` (production) both NAT
 instances are replaced in the same apply, so **both AZs pause together**. The replacement must also be
 applied together with its dependents — the Elastic IP and both private route tables — or they keep
 pointing at the old instance. A `-target` apply never includes them, so **never replace a NAT instance
@@ -995,12 +998,33 @@ aws ssm get-command-invocation --region ap-northeast-1 --command-id "$CMD_ID" --
   --query '[Status,StandardOutputContent]' --output text
 ```
 
-If it fails, the NAT's boot log shows whether `user_data` set up forwarding (the NAT instance has no SSM
-agent role): `aws ec2 get-console-output --region ap-northeast-1 --instance-id <NAT id> --latest
---output text`. A second `terraform plan` shows no change for the NAT resources.
+A command that stays `Pending` for minutes means the instance cannot reach SSM, so egress is down. The
+NAT's boot log shows whether `user_data` set up forwarding (the NAT instance has no SSM agent role):
+`aws ec2 get-console-output --region ap-northeast-1 --instance-id <NAT id> --latest --output text`.
+Look for `Killed` on the `yum install` line and `Failed to start nat-iptables`. A second `terraform plan`
+shows no change for the NAT resources.
 
-**6. Roll back** if step 5 fails: put the noted id back with the same `put-parameter`, then a full plan
-and apply as in steps 3 and 4. That replaces the NAT instances again, onto the image they ran before.
+**6. Roll back** if step 5 fails. The old instance is already destroyed, so egress comes back only with
+a new NAT that forwards, as fast as possible:
+
+- If the image is at fault, put the noted id back with the same `put-parameter`
+- If the image is fine and the boot failed (the boot log above), keep the pin and replace the instance
+  again: `-replace=aws_instance.nat` (and `nat2[0]`)
+
+Either way, to avoid a full apply's image rebuild while egress is down, plan with the NAT instances and
+**every** dependent as targets, check that all of them are in the plan, and apply it:
+
+```bash
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN" \
+  -target=aws_instance.nat -target=aws_eip.nat_instance \
+  -target=aws_route_table.private1 -target=aws_route_table.private2 \
+  -target='aws_lambda_function.dev_scheduler[0]' -target='aws_iam_role_policy.dev_scheduler_permissions[0]'
+# Production: also -target='aws_instance.nat2[0]' -target='aws_eip.nat_instance2[0]', and no
+# dev_scheduler targets (they exist on development only)
+```
+
+This is the one targeted apply that may replace a NAT instance: naming every dependent is what the
+"never in a targeted apply" rule exists to guarantee. Then repeat step 5.
 
 **Setting up the parameter** (once per environment, and before the first plan from a tree that reads
 it): create it with the image the NAT instances run today, so nothing is replaced. Both production NAT

@@ -102,16 +102,32 @@ class TestNatReplacement:
 
 
 class TestNatUserData:
-    def test_no_dnf_update_on_first_boot(self, tf):
-        """On AL2023 dnf is locked to the image's release: the image is the
-        patch level, and an update only adds a network dependency to boot."""
+    @pytest.fixture(autouse=True)
+    def _load(self, tf):
         locals_match = re.search(
             r"nat_user_data\s*=\s*<<-EOF(.*?)^\s*EOF$", tf, re.DOTALL | re.MULTILINE
         )
         assert locals_match, "nat_user_data heredoc not found"
-        user_data = locals_match.group(1)
-        assert "yum install -y iptables-nft" in user_data
-        assert not re.search(r"\b(yum|dnf)\s+(update|upgrade)\b", user_data)
+        self.user_data = locals_match.group(1)
+
+    def test_no_dnf_update_on_first_boot(self):
+        """On AL2023 dnf is locked to the image's release: the image is the
+        patch level, and an update only adds a network dependency to boot."""
+        assert "yum install -y iptables-nft" in self.user_data
+        assert not re.search(r"\b(yum|dnf)\s+(update|upgrade)\b", self.user_data)
+
+    def test_the_install_has_swap_before_it(self):
+        """On a t3.nano the install was killed by the OOM killer while loading
+        the repository metadata, and the NAT never forwarded."""
+        swapon = self.user_data.index("swapon /swapfile")
+        install = self.user_data.index("yum install -y iptables-nft")
+        assert swapon < install
+
+    def test_the_install_is_retried(self):
+        assert re.search(
+            r"for attempt in [^;]+; do\s+yum install -y iptables-nft && break",
+            self.user_data,
+        )
 
 
 class TestNatAmiFreshness:
