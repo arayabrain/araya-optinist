@@ -32,16 +32,22 @@ from studio.app.optinist.core.nwb.nwb_creater import (
     save_nwb,
 )
 from studio.app.optinist.dataclass.behavior import BehaviorData
+from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 from studio.app.wrappers import wrapper_dict
 
 logger = AppLogger.get_logger()
 
 
-def _cast_behavior_inputs(func, input_info: dict) -> None:
+def _cast_behavior_inputs(func, input_info: dict, params: dict | None = None) -> None:
     """Cast a numeric 1D input at a BehaviorData port to a (time, 1) column.
 
     Only a bare `BehaviorData` annotation matches; `Optional[BehaviorData]` is skipped.
+    With `transpose_y` set it is cast as (1, time), so the wrapper's own transpose
+    still puts the vector on the time axis.
     """
+    flat_params = {}
+    recursive_flatten_params(params or {}, flat_params)
+    transpose_y = bool(flat_params.get("transpose_y"))
     for name, param in inspect.signature(func).parameters.items():
         annotation = param.annotation
         if not (inspect.isclass(annotation) and issubclass(annotation, BehaviorData)):
@@ -56,7 +62,8 @@ def _cast_behavior_inputs(func, input_info: dict) -> None:
             and arr.size > 0
             and is_plain_number(arr.dtype)
         ):
-            input_info[name] = annotation(arr[:, None].copy())
+            column = arr[None, :] if transpose_y else arr[:, None]
+            input_info[name] = annotation(column.copy())
             logger.info(
                 "cast %s at port '%s' to %s with shape %s; "
                 "column-index params refer to its single column 0",
@@ -229,7 +236,7 @@ class Runner:
     def __execute_function(cls, path, params, nwb_params, output_dir, input_info):
         wrapper = cls.__dict2leaf(wrapper_dict, path.split("/"))
         func = copy.deepcopy(wrapper["function"])
-        _cast_behavior_inputs(func, input_info)
+        _cast_behavior_inputs(func, input_info, params)
         output_info = func(
             params=params, nwbfile=nwb_params, output_dir=output_dir, **input_info
         )

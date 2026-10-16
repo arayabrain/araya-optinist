@@ -234,9 +234,15 @@ PARAMS_DIR = Path(ETA.__code__.co_filename).parent / "params"
         ("condition_split", "neural_data"),
     ],
 )
-def test_numpy_consumers_run_on_the_cast_column_0(tmp_path, name, output):
+@pytest.mark.parametrize(
+    "transpose_y, cast_shape", [(False, (N_TIME, 1)), (True, (1, N_TIME))]
+)
+def test_numpy_consumers_run_on_the_cast_column_0(
+    tmp_path, name, output, transpose_y, cast_shape
+):
     params = yaml.safe_load((PARAMS_DIR / f"{name}.yaml").read_text())
     params["I/O"]["event_col_index"] = 0
+    params["I/O"]["transpose_y"] = transpose_y
     info = _eta_inputs(tmp_path)
 
     result = Runner._Runner__execute_function(
@@ -247,7 +253,7 @@ def test_numpy_consumers_run_on_the_cast_column_0(tmp_path, name, output):
         input_info=info,
     )
 
-    assert info["behaviors_data"].data.shape == (N_TIME, 1)
+    assert info["behaviors_data"].data.shape == cast_shape
     assert result[output].data.shape[0] == 3
 
 
