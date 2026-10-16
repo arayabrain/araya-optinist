@@ -555,6 +555,7 @@ class ExptDataWriter:
         elif isinstance(obj, np.ndarray):
             if obj.dtype.kind not in "OU":  # only object and str arrays can hold an id
                 return obj
+            memo[obj_id] = (obj, obj)
             if obj.ndim == 0:  # Handle 0D (scalar-like) arrays
                 result = self.__replace_ids_recursive(obj.item(), old_id, new_id, memo)
             else:  # Handle 1D or higher-dimensional arrays

@@ -172,12 +172,15 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     paths = [f"{tmp_path}/{old_id}/suite2p_roi/data_{i}.tif" for i in range(2)]
     cycle = []
     cycle.append(cycle)
+    self_array = np.empty((), dtype=object)
+    self_array[()] = self_array
     data = {
         "ops": {"filelist": paths},
         "images": SimpleNamespace(path=paths),
         "copied": list(paths),
         "grid": np.array([[p] for p in paths]),
         "cycle": cycle,
+        "self_array": self_array,
     }
 
     src_file = tmp_path / old_id / "suite2p_roi" / f"suite2p_roi.{suffix}"
@@ -207,3 +210,4 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     assert loaded["grid"].ravel().tolist() == expected
     assert loaded["images"].path is loaded["ops"]["filelist"]
     assert loaded["cycle"][0] is loaded["cycle"]
+    assert loaded["self_array"][()] is loaded["self_array"]
