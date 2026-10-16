@@ -25,7 +25,7 @@
    - Scale-out raises the ASG; scale-in terminates instances this Lambda
      chooses (see *Scale-in* below). Published as `TargetInstances`
 
-2. **Proactive Rebalancing**
+2. **Rebalancing of Assignment Records**
    - Distributes users evenly across ALL instances (not just most/least loaded)
    - Also rebalances when distribution is imbalanced without scaling
    - Waits for new instances with retry (max 17 min in code, Lambda timeout 15 min)
@@ -240,52 +240,28 @@ refreshes it on each response, so a polling client never expires it. Hence:
   rotation, so a small sample spreads evenly in expectation rather than
   exactly.
 
-### Procedure: Pre-provisioning Capacity for an Expected Burst
+### Pre-provisioning Capacity for an Expected Burst
 
 Reactive scaling cannot serve the first wave of a burst — a 5-minute polling
-interval, instance boot, and sticky sessions that keep active users put.
+interval, an instance launch, and sticky sessions that keep active users put —
+so capacity for an expected burst is raised ahead of it, on the group's own
+bounds:
 
-1. **Size it.** Minimum = `ceil(expected concurrent users / 5)`, "concurrent"
-   meaning a request within `FREE_IDLE_THRESHOLD_MINUTES`. **Raise
-   `asg_max_size` first if the target exceeds it** — it is a cap the Lambda
-   clamps to, and `MinSize <= MaxSize` must hold. **Raise the minimum, never
-   `desired` alone:** a desired capacity above the user-count target is a
-   surplus, and the Lambda removes a surplus of 2 or more on its next run.
-2. **Allow 30 minutes.** Instance boot, then task placement and two health
-   checks at 60-second intervals.
-3. **Choose a route.** `asg_min_size` in tfvars is durable; a console or CLI
-   override takes effect at once but **the next apply removes the floor**
-   (`min_size` is not under `ignore_changes`). So freeze applies for the
-   window, or re-apply the override straight after.
-   - An apply does not remove the instances — `desired_capacity` is ignored,
-     so they stay up. It removes the *floor*, after which this Lambda scales
-     the group in to what the user count needs, within one run. **Instances
-     still running after an apply is not evidence the window is safe.**
-4. **Check the chain** once settled. `HEALTH-03` and `HEALTH-05` assert it, and
-   `free-manager-errors` should read `OK`:
-   ```
-   ASG DesiredCapacity == ASG InService == ECS runningCount == healthy targets
-   ```
-5. **Restore the floor first, the ceiling last.** Lower `min_size` and leave
-   the desired capacity alone: the next scheduled run computes the target
-   from the user count and removes the surplus, choosing instances with no
-   running workflow. Lowering `--desired-capacity` by hand would have the
-   group choose instead, blind to workloads — and so would lowering
-   `--max-size` below the current desired, since `UpdateAutoScalingGroup`
-   then sets desired to the new maximum. If `asg_max_size` was raised for
-   the event, lower it only once desired is at or below the old value.
+- **Raise the minimum, never desired capacity alone.** A desired capacity above
+  the user-count target is a surplus, and this Lambda removes a surplus of 2 or
+  more on its next run. The ceiling goes up first when the target exceeds it.
+- **A CLI floor does not survive an apply.** `min_size` and `max_size` are
+  managed; only `desired_capacity` is ignored. The instances stay up after an
+  apply, but the floor goes, and this Lambda then scales in to the user count.
+- **Restore the floor first, the ceiling last.** Lowering the floor leaves the
+  choice of instances to this Lambda, which never removes one running a
+  workflow; lowering desired capacity or the ceiling first leaves it to the
+  group's termination policy.
 
-```bash
-aws autoscaling update-auto-scaling-group --auto-scaling-group-name <asg> \
-  --min-size <original> --region <region>
-```
-
-   Expect the group at `<original>` within about 15 minutes when the surplus
-   is 2 or more: one run (up to 5 minutes) plus the ~10-minute termination.
-   A surplus of exactly 1 waits for three completed periods first, so about
-   20 minutes more. If it stays above, read the Lambda's log — a workflow
-   on every candidate holds the instance until it finishes, and a `-high`
-   alarm in ALARM holds everything.
+The procedure — sizing, lead time, route, checks and restore — and its
+rehearsal on development are in
+[FREE_TIER_CAPACITY_PROCEDURE.md](FREE_TIER_CAPACITY_PROCEDURE.md).
+`HEALTH-03` and `HEALTH-05` assert the settled chain on a deployed environment.
 
 ### Flow Diagrams
 
@@ -1087,7 +1063,7 @@ CREATE TABLE free_user_assignments (
 
 1. **Activity Tracking** - Verify middleware updates last_activity
 2. **Active User Count** - Verify Lambda counts users correctly
-3. **Proactive Scaling** - Verify ASG scales when threshold reached
+3. **Scale-out by User Count** - Verify the ASG grows with the active-user count
 4. **Instance Readiness** - Verify Lambda waits for new instances
 5. **User Rebalancing** - Verify even distribution across instances
 6. **Workflow Protection** - Verify users with jobs are NOT migrated
@@ -1111,60 +1087,15 @@ python test_free_manager.py --region ap-northeast-1
 
 ### Manual Testing Scenarios
 
-**Scenario 1: Simulate Demo Rush (20 users)**
+Scaling and pre-provisioning are exercised on development with
+[FREE_TIER_CAPACITY_PROCEDURE.md](FREE_TIER_CAPACITY_PROCEDURE.md): growth with
+the user count, the return to `MinSize`, a raised floor brought up, held,
+serving and restored, and new sessions reaching every instance. Its helpers
+can only target development, and production is compared before and after.
 
-```bash
-# 1. Cleanup existing state
-python test_free_manager.py --action cleanup
-
-# 2. Create 20 test users
-python test_free_manager.py --action simulate_users --count 20
-
-# 3. Trigger Free Manager
-aws lambda invoke \
-  --function-name subscr-free-manager \
-  --payload '{}' \
-  /dev/stdout
-
-# Expected: Scales to 4 instances, distributes 5 users per instance
-```
-
-**Scenario 2: Verify Workflow Protection**
-
-```bash
-# 1. Create test user with workflow
-python test_free_manager.py --action simulate_workflow --user test_user_1
-
-# 2. Trigger rebalancing
-aws lambda invoke \
-  --function-name subscr-free-manager \
-  --payload '{}' \
-  /dev/stdout
-
-# 3. Check user assignment
-python test_free_manager.py --action check_assignment --user test_user_1
-
-# Expected: User NOT migrated (still on original instance)
-```
-
-**Scenario 3: ASG Manual Scaling**
-
-```bash
-# 1. Manually scale ASG
-aws autoscaling set-desired-capacity \
-  --auto-scaling-group-name subscr-optinist-asg \
-  --desired-capacity 3
-
-# Expected: EventBridge triggers Free Manager, ECS syncs to 3
-
-# 2. Verify ECS synced
-aws ecs describe-services \
-  --cluster subscr-optinist-cloud-cluster \
-  --services subscr-optinist-cloud-service \
-  --query 'services[0].desiredCount'
-
-# Expected: 3
-```
+Do not move capacity by setting desired capacity by hand on any environment: a
+desired capacity above the user-count target is a surplus that this Lambda
+removes, and a lower one leaves the choice of instance to the group.
 
 ---
 
@@ -1245,9 +1176,9 @@ Detailed premium-side mechanics are in
 | **Architecture** | Auto Scaling Group (ASG) | Individual EC2 instances |
 | **Scaling Trigger** | Active user count, both directions | Per-user assignment |
 | **Scaling Unit** | 1 instance per 5 users | 1 instance per user |
-| **Load Balancing** | Proactive rebalancing | User assignment at login |
+| **Load Balancing** | ALB round robin plus sticky sessions; assignment records rebalanced | User assignment at login |
 | **Sticky Sessions** | 5-minute ALB cookies | Target group per user |
-| **Max Instances** | 10 (configurable) | Unlimited (cost-limited) |
+| **Max Instances** | The free ASG's `MaxSize` | Unlimited (cost-limited) |
 | **Cost Model** | Shared resources | Dedicated resources |
 | **Monitoring** | Every 5 minutes | Every 15 minutes |
 | **Migration** | Multi-instance rebalancing | 5-tier priority cascade; autoscaling pool → dedicated (see [Priority Matrix](./PREMIUM_USER_ASSIGNMENT.md#assignment-priority-matrix)) |
