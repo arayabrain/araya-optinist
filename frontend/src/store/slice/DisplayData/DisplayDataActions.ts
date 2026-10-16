@@ -43,6 +43,7 @@ import {
 } from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
+  DisplayData,
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
@@ -86,13 +87,44 @@ export const getTimeSeriesInitData = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; itemId: number; isFull?: boolean }
+  { path: string; itemId: number; isFull?: boolean },
+  { state: { displayData: DisplayData } }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesInitData`,
   async ({ path, isFull }, thunkAPI) => {
     try {
       const response = await getTimeSeriesInitDataApi(path, isFull)
-      return response
+      const data = { ...response.data }
+      const std = { ...response.std }
+      const tried = new Set<string>()
+      // One point per record, so refetch the records another item holds in full,
+      // including any a by-id request filled while this one was in flight
+      for (;;) {
+        const entry = thunkAPI.getState().displayData.timeSeries[path]
+        const held = entry?.data ?? {}
+        const reload = Object.keys(data).filter(
+          (key) =>
+            !tried.has(key) &&
+            Object.keys(held[key] ?? {}).length > 1 &&
+            Object.keys(data[key]).length === 1,
+        )
+        if (reload.length === 0) break
+        const records = await Promise.allSettled(
+          reload.map((index) => getTimeSeriesDataByIdApi(path, index, isFull)),
+        )
+        records.forEach((record, i) => {
+          const key = reload[i]
+          tried.add(key)
+          // a failed refetch keeps the series already held rather than a blank
+          const source =
+            record.status === "fulfilled"
+              ? record.value
+              : { data: held, std: entry?.std ?? {} }
+          data[key] = source.data[key]
+          if (source.std[key] !== undefined) std[key] = source.std[key]
+        })
+      }
+      return { ...response, data, std }
     } catch (e) {
       return thunkAPI.rejectWithValue(e)
     }
