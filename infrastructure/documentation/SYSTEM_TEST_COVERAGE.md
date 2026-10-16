@@ -859,6 +859,12 @@ logs, and none of them says the tier has lost its database, run out of memory or
 had a worker killed. Reading the remaining ERROR lines for a release round is
 still a human job.
 
+**HEALTH-30 has no row here, or in any sheet.** It is a configuration guard: the
+free ASG carries exactly its launch hook and ECS's draining hook. The retired
+terminate hook can only be removed by hand, and Terraform never shows it, so this
+read is what notices an environment where the removal was skipped. The
+procedure is in `FREE_MANAGER_ARCHITECTURE.md`, *Lifecycle Hooks*.
+
 **The background tier's log timestamps were wrong until this lane was written.**
 Its `awslogs-multiline-pattern` expected a leading `[` the application never
 emits, so the driver stamped every event with the task's start time while
