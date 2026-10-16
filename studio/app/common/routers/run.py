@@ -78,8 +78,10 @@ def _finished_within_grace(expt_config: ExptConfig) -> bool:
     return (now - finished).total_seconds() < RECORD_WRITE_GRACE_SEC
 
 
-async def _check_storage_quota(user_id: int) -> None:
+async def _check_storage_quota(user_id: Optional[int]) -> None:
     """Raise 403 if user has exceeded their storage quota."""
+    if user_id is None:
+        return
     current_usage = await get_current_user_storage_usage(user_id, force_live=False)
     storage_info = get_user_storage_usage(user_id)
     quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
@@ -110,7 +112,8 @@ async def run(
     db: Session = Depends(get_db),
 ):
     try:
-        await _check_storage_quota(current_user.id)
+        user_id = current_user.id if current_user else None
+        await _check_storage_quota(user_id)
         await ensure_structure_caches(
             remote_bucket_name, workspace_id, runItem.nodeDict
         )
@@ -118,7 +121,7 @@ async def run(
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
         runner = WorkflowRunner(
-            remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
+            remote_bucket_name, workspace_id, unique_id, runItem, user_id
         )
 
         # Download any remote-only input files before workflow runs
@@ -129,9 +132,10 @@ async def run(
         runner.run_workflow(background_tasks)
 
         # Refresh storage cache in background to keep it up-to-date
-        background_tasks.add_task(
-            get_current_user_storage_usage, current_user.id, force_live=True
-        )
+        if user_id is not None:
+            background_tasks.add_task(
+                get_current_user_storage_usage, user_id, force_live=True
+            )
 
         logger.info("run snakemake")
 
@@ -191,7 +195,8 @@ async def run_id(
     db: Session = Depends(get_db),
 ):
     try:
-        await _check_storage_quota(current_user.id)
+        user_id = current_user.id if current_user else None
+        await _check_storage_quota(user_id)
         await ensure_structure_caches(
             remote_bucket_name, workspace_id, runItem.nodeDict
         )
@@ -201,9 +206,7 @@ async def run_id(
         # on; refuse before the runner rewrites the experiment's config files
         RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
-        runner = WorkflowRunner(
-            remote_bucket_name, workspace_id, uid, runItem, current_user.id
-        )
+        runner = WorkflowRunner(remote_bucket_name, workspace_id, uid, runItem, user_id)
 
         # Download any remote-only input files before workflow runs
         if RemoteStorageController.is_available():
@@ -212,11 +215,12 @@ async def run_id(
         runner.run_workflow(background_tasks)
 
         # Refresh storage cache in background
-        background_tasks.add_task(
-            get_current_user_storage_usage,
-            current_user.id,
-            force_live=True,
-        )
+        if user_id is not None:
+            background_tasks.add_task(
+                get_current_user_storage_usage,
+                user_id,
+                force_live=True,
+            )
 
         logger.info("run snakemake")
         logger.info("forcerun list: %s", runItem.forceRunList)
