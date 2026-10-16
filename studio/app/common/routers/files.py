@@ -44,7 +44,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
-from studio.app.common.db.database import get_db
+from studio.app.common.db.database import get_db, release_request_session, session_scope
 from studio.app.common.schemas.files import (
     DownloadFileRequest,
     DownloadStatus,
@@ -726,8 +726,8 @@ async def create_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
     try:
         # Check storage quota before allowing file upload
@@ -772,11 +772,7 @@ async def create_file(
             update_mat_structure(workspace_id, filename)
 
         if WorkspaceDataCapacityService.is_available():
-            background_tasks.add_task(
-                WorkspaceDataCapacityService.update_workspace_data_usage,
-                db,
-                workspace_id,
-            )
+            background_tasks.add_task(_update_workspace_data_usage, workspace_id)
 
         # Operate remote storage data.
         if RemoteStorageController.is_available():
@@ -821,8 +817,21 @@ async def create_file(
             detail=f"Failed to upload file: {str(e)}",
         )
 
+    finally:
+        # The live storage refresh lists every S3 object of the user; do not
+        # hold the guards' connection while it runs
+        release_request_session(db)
+
 
 DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
+
+
+def _update_workspace_data_usage(workspace_id: str) -> None:
+    """Background task: opens its own session, never the request's."""
+    with session_scope() as db:
+        WorkspaceDataCapacityService.update_workspace_data_usage(
+            db, workspace_id, auto_commit=False
+        )
 
 
 def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
@@ -860,7 +869,6 @@ async def delete_file(
     workspace_id: str,
     filename: str,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
@@ -906,11 +914,7 @@ async def delete_file(
         )
 
         if WorkspaceDataCapacityService.is_available():
-            background_tasks.add_task(
-                WorkspaceDataCapacityService.update_workspace_data_usage,
-                db,
-                workspace_id,
-            )
+            background_tasks.add_task(_update_workspace_data_usage, workspace_id)
 
         return True
     except Exception as e:
@@ -941,27 +945,28 @@ async def download_file(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    path = PurePath(urlparse(file.url).path)
-    if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
-        raise HTTPException(status_code=400, detail="Invalid url")
-
-    create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
-
     try:
-        res = requests.get(file.url, stream=True)
-        res.raise_for_status()
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    background_tasks.add_task(download, db, res, path.name, workspace_id)
-    # Only update image shape for TIFF files
-    if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        background_tasks.add_task(update_image_shape, workspace_id, path.name)
-    return {"file_name": path.name}
+        path = PurePath(urlparse(file.url).path)
+        if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
+            raise HTTPException(status_code=400, detail="Invalid url")
+
+        create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+
+        try:
+            res = requests.get(file.url, stream=True)
+            res.raise_for_status()
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        background_tasks.add_task(download, res, path.name, workspace_id)
+        # Only update image shape for TIFF files
+        if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+            background_tasks.add_task(update_image_shape, workspace_id, path.name)
+        return {"file_name": path.name}
+    finally:
+        release_request_session(db)
 
 
-def download(
-    db: Session, res: Response, file_name: str, workspace_id: str, chunk_size=1024
-):
+def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
     total = int(res.headers.get("content-length", 0))
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
     current = 0
@@ -986,4 +991,4 @@ def download(
         DOWNLOAD_STATUS[filepath] = DownloadStatus(error=str(e))
 
     if WorkspaceDataCapacityService.is_available():
-        WorkspaceDataCapacityService.update_workspace_data_usage(db, workspace_id)
+        _update_workspace_data_usage(workspace_id)

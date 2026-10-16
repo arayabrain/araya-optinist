@@ -6,10 +6,12 @@ the test. No real AWS calls are ever made.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from terraform_source import TERRAFORM_DIR, read, resource_block
 
 # Env vars dev_scheduler reads. Set as a module-level dict so every fixture
 # patch starts from the same baseline; individual tests override as needed.
@@ -317,6 +319,112 @@ class TestStartInstance:
         clients["ec2"].describe_instances.side_effect = RuntimeError("boom")
         result = module.start_instance("i-x", "Test")
         assert result.startswith("error:")
+
+
+def _tasks(**statuses):
+    """describe_tasks response: task id=lastStatus."""
+    return {
+        "tasks": [
+            {"taskArn": f"arn:task/c/{t}", "lastStatus": st}
+            for t, st in statuses.items()
+        ]
+    }
+
+
+def _arns(*ids):
+    return [f"arn:task/c/{t}" for t in ids]
+
+
+class TestListServiceTasks:
+    def test_lists_running_tasks_per_service(self, ds):
+        module, clients = ds
+        clients["ecs"].list_tasks.side_effect = [
+            {"taskArns": _arns("t1")},
+            {"taskArns": []},
+        ]
+        assert module.list_service_tasks("c", ["a", "b"]) == {"a": _arns("t1"), "b": []}
+        clients["ecs"].list_tasks.assert_any_call(
+            cluster="c", serviceName="a", desiredStatus="RUNNING"
+        )
+
+    def test_a_listing_failure_is_none_not_empty(self, ds):
+        """None means "could not tell", which the stop reports; an empty list
+        would read as "nothing to wait for"."""
+        module, clients = ds
+        clients["ecs"].list_tasks.side_effect = [RuntimeError("throttled")]
+        assert module.list_service_tasks("c", ["a"]) == {"a": None}
+
+
+class TestWaitForTasksStopped:
+    @pytest.fixture
+    def clock(self, ds, monkeypatch):
+        """Fake monotonic clock that advances one poll interval per sleep."""
+        module, _ = ds
+        now = [0.0]
+        monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(
+            module.time,
+            "sleep",
+            lambda s: now.__setitem__(0, now[0] + s),
+        )
+        return now
+
+    def test_returns_at_once_when_all_stopped(self, ds, clock):
+        module, clients = ds
+        clients["ecs"].describe_tasks.return_value = _tasks(t1="STOPPED", t2="STOPPED")
+        assert module.wait_for_tasks_stopped("c", _arns("t1", "t2")) == "stopped"
+        assert clients["ecs"].describe_tasks.call_count == 1
+
+    def test_deactivating_and_stopping_are_not_stopped(self, ds, clock):
+        """The service counts drop at DEACTIVATING; the agent still has to
+        report STOPPED, through NAT. Only STOPPED ends the wait."""
+        module, clients = ds
+        clients["ecs"].describe_tasks.side_effect = [
+            _tasks(t1="RUNNING"),
+            _tasks(t1="DEACTIVATING"),
+            _tasks(t1="STOPPING"),
+            _tasks(t1="DEPROVISIONING"),
+            _tasks(t1="STOPPED"),
+        ]
+        assert module.wait_for_tasks_stopped("c", _arns("t1")) == "stopped"
+        assert clients["ecs"].describe_tasks.call_count == 5
+
+    def test_times_out_with_a_warning_not_an_error(self, ds, clock):
+        """``stop_environment`` raises on any result starting with "error";
+        a slow task must not fail the whole stop."""
+        module, clients = ds
+        clients["ecs"].describe_tasks.return_value = _tasks(
+            t1="DEACTIVATING", t2="STOPPED"
+        )
+        result = module.wait_for_tasks_stopped("c", _arns("t1", "t2"))
+        assert result == "timeout: t1=DEACTIVATING"
+        assert clock[0] >= module.TASK_STOP_WAIT_SECONDS
+
+    def test_a_task_describe_cannot_return_counts_as_not_stopped(self, ds, clock):
+        module, clients = ds
+        resp = _tasks(t1="STOPPED")
+        resp["failures"] = [{"arn": "arn:task/c/t2", "reason": "MISSING"}]
+        clients["ecs"].describe_tasks.return_value = resp
+        result = module.wait_for_tasks_stopped("c", _arns("t1", "t2"))
+        assert result == "timeout: t2=failure(MISSING)"
+
+    def test_describe_failure_keeps_waiting_then_times_out(self, ds, clock):
+        module, clients = ds
+        clients["ecs"].describe_tasks.side_effect = RuntimeError("throttled")
+        result = module.wait_for_tasks_stopped("c", _arns("t1"))
+        assert result == "timeout: t1=unknown"
+
+    def test_wait_outlasts_the_free_target_groups_deregistration_delay(self, ds):
+        """ECS stops a load-balanced task only after its target group's
+        deregistration delay; the wait must cover that plus the container
+        stop (~110 s measured), or it times out on every scheduled stop."""
+        module, _ = ds
+        tg = resource_block(
+            read(TERRAFORM_DIR / "compute.tf"), "aws_lb_target_group", "autoscaling"
+        )
+        declared = re.search(r"^\s*deregistration_delay\s*=\s*(\d+)", tg, re.M)
+        delay = int(declared.group(1)) if declared else 300  # ALB default
+        assert module.TASK_STOP_WAIT_SECONDS >= delay + 120
 
 
 class TestStopInstance:
@@ -915,6 +1023,10 @@ class TestStopEnvironment:
             "update_ecs_services": MagicMock(
                 return_value={"ecs_svc-a": "desired_count=0"}
             ),
+            "list_service_tasks": MagicMock(
+                return_value={"svc-a": ["arn:task/c/ta"], "svc-b": ["arn:task/c/tb"]}
+            ),
+            "wait_for_tasks_stopped": MagicMock(return_value="stopped"),
             "scale_asg": MagicMock(return_value="min=0,desired=0"),
             "stop_instance": MagicMock(return_value="stopping"),
             "destroy_rds": MagicMock(return_value="deleting"),
@@ -925,6 +1037,98 @@ class TestStopEnvironment:
             mock.__name__ = name  # with_retry logs fn.__name__ on retries
             monkeypatch.setattr(module, name, mock)
         return module, clients, helpers
+
+    def test_waits_for_tasks_before_terminating_free_asg_and_stopping_nat(
+        self, patched
+    ):
+        """The task must be reported stopped while NAT is still up; otherwise
+        ECS keeps the managed-draining hook renewed until NAT returns."""
+        module, _, helpers = patched
+        calls = []
+        helpers["list_service_tasks"].side_effect = lambda *a, **k: (
+            calls.append("list_tasks")
+            or {"svc-a": ["arn:task/c/ta"], "svc-b": ["arn:task/c/tb"]}
+        )
+        helpers["update_ecs_services"].side_effect = lambda *a, **k: (
+            calls.append("ecs_desired_0") or {"ecs_svc-a": "desired_count=0"}
+        )
+        helpers["wait_for_tasks_stopped"].side_effect = lambda *a, **k: (
+            calls.append("wait") or "stopped"
+        )
+        helpers["scale_asg"].side_effect = lambda *a, **k: (
+            calls.append(f"asg:{a[0]}") or "min=0,desired=0"
+        )
+        helpers["stop_instance"].side_effect = lambda *a, **k: (
+            calls.append(f"stop:{a[0]}") or "stopping"
+        )
+        module.stop_environment(stop_mode="stop")
+        wait = calls.index("wait")
+        # Captured before the scale-down: afterwards they no longer list as RUNNING
+        assert calls.index("list_tasks") < calls.index("ecs_desired_0") < wait
+        assert wait < calls.index("asg:test-asg")
+        assert wait < calls.index("stop:i-nat")
+        helpers["wait_for_tasks_stopped"].assert_called_once_with(
+            "test-cluster", ["arn:task/c/ta", "arn:task/c/tb"]
+        )
+
+    def test_task_wait_timeout_does_not_fail_the_stop(self, patched):
+        module, _, helpers = patched
+        helpers["wait_for_tasks_stopped"].return_value = "timeout: svc-a=1/0"
+        result = module.stop_environment(stop_mode="stop")
+        assert result["statusCode"] == 200
+        assert result["results"]["ecs_tasks_stopped"] == "timeout: svc-a=1/0"
+        helpers["scale_asg"].assert_any_call("test-asg", min_size=0, desired=0)
+
+    def test_task_wait_skipped_when_nat_down(self, patched):
+        """With NAT down the agent cannot report, so the tasks never stop;
+        the verify-stop and a weekend manual stop must not sit out the wait."""
+        module, clients, helpers = patched
+        clients["ec2"].describe_instances.return_value = _ec2_response("stopped")
+        result = module.stop_environment(stop_mode="stop")
+        helpers["wait_for_tasks_stopped"].assert_not_called()
+        assert result["results"]["ecs_tasks_stopped"] == "skipped_nat_down"
+
+    def test_task_wait_skipped_without_ecs_services(self, patched, monkeypatch):
+        module, _, helpers = patched
+        monkeypatch.setenv("ECS_SERVICE_NAMES", "[]")
+        result = module.stop_environment(stop_mode="stop")
+        helpers["wait_for_tasks_stopped"].assert_not_called()
+        assert "ecs_tasks_stopped" not in result["results"]
+
+    def test_task_wait_excludes_services_whose_update_failed(self, patched):
+        """Its desired count is still 1, so waiting would only run out the
+        timeout before the stop fails on the error anyway."""
+        module, _, helpers = patched
+        helpers["update_ecs_services"].side_effect = None
+        helpers["update_ecs_services"].return_value = {
+            "ecs_svc-a": "error: throttled",
+            "ecs_svc-b": "desired_count=0",
+        }
+        with pytest.raises(RuntimeError):
+            module.stop_environment(stop_mode="stop")
+        helpers["wait_for_tasks_stopped"].assert_called_once_with(
+            "test-cluster", ["arn:task/c/tb"]
+        )
+
+    def test_service_whose_tasks_could_not_be_listed_is_named(self, patched):
+        module, _, helpers = patched
+        helpers["list_service_tasks"].return_value = {
+            "svc-a": None,
+            "svc-b": ["arn:task/c/tb"],
+        }
+        result = module.stop_environment(stop_mode="stop")
+        helpers["wait_for_tasks_stopped"].assert_called_once_with(
+            "test-cluster", ["arn:task/c/tb"]
+        )
+        assert result["results"]["ecs_tasks_stopped"] == "stopped; not listed: svc-a"
+
+    def test_no_running_tasks_means_no_wait(self, patched):
+        """The verify-stop with NAT still up: the services are already at 0."""
+        module, _, helpers = patched
+        helpers["list_service_tasks"].return_value = {"svc-a": [], "svc-b": []}
+        result = module.stop_environment(stop_mode="stop")
+        helpers["wait_for_tasks_stopped"].assert_not_called()
+        assert result["results"]["ecs_tasks_stopped"] == "no_tasks"
 
     def test_skipped_when_override_active(self, patched):
         module, _, helpers = patched
@@ -976,6 +1180,10 @@ class TestStopEnvironment:
         clients["ec2"].describe_instances.side_effect = RuntimeError("throttled")
         module.stop_environment()
         helpers["cleanup_dynamic_premium_instances"].assert_not_called()
+        # The opposite trade-off for the task wait: a wasted wait costs at
+        # most TASK_STOP_WAIT_SECONDS, a skipped one with NAT up costs the
+        # free instance's overnight hold. So "unknown" still waits.
+        helpers["wait_for_tasks_stopped"].assert_called_once()
 
     def test_verify_stop_with_already_deleting_completes_cleanly(self, patched):
         """A verify-stop that finds RDS already in 'deleting' state must
