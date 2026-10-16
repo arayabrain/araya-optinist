@@ -65,6 +65,16 @@ async function roiIds(page: Page): Promise<number[]> {
   })
 }
 
+// z is [] while getRoiData is pending, a full pixel grid once it lands
+async function roiRowCount(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const plot = document.querySelector(".js-plotly-plot") as unknown as {
+      data?: { name?: string; z?: unknown[] }[]
+    }
+    return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
+  })
+}
+
 // Select an ROI by id. Plotly's own hit test needs the ROI's pixel coordinates,
 // which the test would have to re-derive from the axis transform; emitting the
 // event Plotly would emit drives the real ImagePlot handler (redux dispatch and
@@ -113,7 +123,8 @@ async function runRoiAction(
 }
 
 // Commit Edit renders only once statusRoi has entries after the getStatus
-// round-trip, and runs the recompute in-request.
+// round-trip, and runs the recompute in-request. The success snackbar shows
+// before the ROI refetch, whose pending state empties the plot until it lands.
 async function commitRoiEdit(page: Page) {
   const commitEdit = page.getByTestId("roi-commit-edit")
   await expect(commitEdit).toBeVisible({ timeout: 60_000 })
@@ -123,9 +134,20 @@ async function commitRoiEdit(page: Page) {
   )
   await commitEdit.click()
   expect((await committed).status(), "commit_edit").toBe(200)
+  // Registered after the commit so an earlier action's refetch cannot match
+  const refetched = page.waitForResponse(
+    (r) =>
+      r.request().method() === "GET" &&
+      /\/api\/visualizations\/image\/.*_roi\.json(\?|$)/i.test(r.url()),
+    { timeout: 60_000 },
+  )
   await expect(
     page.getByText("Successfully committed to Edit ROI."),
   ).toBeVisible({ timeout: 120_000 })
+  expect((await refetched).status(), "ROI refetch").toBe(200)
+  await expect
+    .poll(() => roiRowCount(page), { timeout: 60_000 })
+    .toBeGreaterThan(0)
 }
 
 async function editRoiAndCommit(
@@ -250,14 +272,7 @@ test.describe("Visualize", () => {
     // Trace *count* is no good either: ImagePlot always builds a fixed two-trace
     // array ("images" then "roi"), with the roi trace's z starting as []. So the
     // ROI-specific artefact is that trace's z gaining rows.
-    const roiRowCount = () =>
-      page.evaluate(() => {
-        const plot = document.querySelector(".js-plotly-plot") as unknown as {
-          data?: { name?: string; z?: unknown[] }[]
-        }
-        return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
-      })
-    expect(await roiRowCount()).toBe(0)
+    expect(await roiRowCount(page)).toBe(0)
 
     // getRoiData GETs /api/visualizations/image/<path>/cell_roi.json while
     // getStatus POSTs .../cell_roi.json/status on the same prefix, so matching
@@ -271,7 +286,9 @@ test.describe("Visualize", () => {
     await selectFromMui(page, "Select Roi", "cell_roi")
     expect((await roiResponse).status()).toBe(200)
 
-    await expect.poll(roiRowCount, { timeout: 60_000 }).toBeGreaterThan(0)
+    await expect
+      .poll(() => roiRowCount(page), { timeout: 60_000 })
+      .toBeGreaterThan(0)
 
     // Both selectors keep their values after the plot re-renders
     await expect(
