@@ -7,6 +7,7 @@ import time
 import traceback
 from dataclasses import asdict
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from filelock import FileLock
@@ -38,7 +39,9 @@ from studio.app.wrappers import wrapper_dict
 logger = AppLogger.get_logger()
 
 
-def _cast_behavior_inputs(func, input_info: dict, params: dict | None = None) -> None:
+def _cast_behavior_inputs(
+    func, input_info: dict, params: Optional[dict] = None
+) -> None:
     """Cast a numeric 1D input at a BehaviorData port to a (time, 1) column.
 
     Only a bare `BehaviorData` annotation matches; `Optional[BehaviorData]` is skipped.
