@@ -744,7 +744,10 @@ it when it is idle, and step 3 adopts it whenever it is stopped -- by its
 Terraform provisioner after creation, by the dev scheduler at night, or by
 `cleanup_orphaned_ec2_instances()`. Neither step 4 nor step 5 terminates it,
 and `terminate_standby_instance()` refuses one from any caller. It stays
-in Terraform state and in the dev scheduler's start/stop list.
+in Terraform state and in the dev scheduler's start/stop list. As a
+backstop, `aws_instance.premium` has EC2 termination protection
+(`disable_api_termination`, with `force_destroy` so Terraform can still
+replace it): a `TerminateInstances` from any other caller fails.
 
 The full 12-step sequence of `handle_scheduled_monitoring()` (including
 the non-standby steps) is enumerated in

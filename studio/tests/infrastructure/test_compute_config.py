@@ -4,6 +4,8 @@
   all ECS task definitions.
 - Free-tier ASG scale-in: ECS managed draining can complete its lifecycle
   hook, and the termination policy spares long-held sticky sessions.
+- Base premium instance: termination protection, with Terraform still able
+  to replace it.
 """
 
 import re
@@ -108,3 +110,22 @@ class TestFreeAsgScaleIn:
             self.service,
         )
         assert constraints == ["attribute:tier == free"]
+
+
+class TestBasePremiumInstanceProtection:
+    """The Terraform-managed base premium instance."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.instance = resource_block(read(COMPUTE_TF), "aws_instance", "premium")
+
+    def test_termination_protection_is_on(self):
+        """Premium manager leaves the instance alone only while
+        PREMIUM_INSTANCE_IDS names it; an unset variable protects nothing.
+        Termination protection refuses TerminateInstances from any caller."""
+        assert attribute(self.instance, "disable_api_termination") == "true"
+
+    def test_terraform_can_still_replace_it(self):
+        """Without force_destroy, a Terraform replace or destroy of a
+        protected instance fails."""
+        assert attribute(self.instance, "force_destroy") == "true"
