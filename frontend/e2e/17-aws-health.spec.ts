@@ -519,22 +519,29 @@ test.describe("Compute and routing", () => {
     )
   })
 
-  test("HEALTH-30 - the free ASG carries no lifecycle hook but ECS's draining hook", () => {
-    skipUnlessDeployed("950")
+  test("HEALTH-30 - the free ASG carries the launch hook and ECS's draining hook only", () => {
+    skipUnlessDeployed("none, a configuration guard")
 
-    // Terraform ignores initial_lifecycle_hook on this group, so a retired hook
-    // left in AWS plans clean; this is what notices it.
-    // - a launch hook holds every scale-out in Pending:Wait for its timeout
-    // - a terminate hook holds every scale-in for its timeout
-    // - ECS installs and completes ecs-managed-draining-termination-hook
+    // Terraform ignores initial_lifecycle_hook on this group, so the retired
+    // terminate hook left in AWS plans clean; this is what notices it.
+    // - launch hook: Terraform's boot wait (aws_autoscaling_lifecycle_hook)
+    // - terminate hook: retired; it held every scale-in for its timeout
+    // - ecs-managed-draining-termination-hook: ECS installs and completes it
     const hooks = awsJson<string[]>(
       `autoscaling describe-lifecycle-hooks ` +
         `--auto-scaling-group-name ${ENV}-optinist-asg ` +
         `--query 'LifecycleHooks[].LifecycleHookName'`,
     )
-    expect(hooks.sort(), `${ENV}-optinist-asg lifecycle hooks`).toEqual([
-      "ecs-managed-draining-termination-hook",
-    ])
+    expect(
+      hooks.sort(),
+      `${ENV}-optinist-asg lifecycle hooks; to delete a retired one see ` +
+        `FREE_MANAGER_ARCHITECTURE.md, Lifecycle Hooks`,
+    ).toEqual(
+      [
+        `${ENV}-optinist-launch-hook`,
+        "ecs-managed-draining-termination-hook",
+      ].sort(),
+    )
   })
 })
 
