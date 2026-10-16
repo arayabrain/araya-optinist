@@ -1,21 +1,29 @@
+import asyncio
 import copy
 import os
 import re
 import signal
 import time
 from abc import ABCMeta, abstractmethod
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from glob import glob
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 from fastapi import HTTPException, status
+from filelock import FileLock, Timeout
 from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.logger_context_helpers import (
+    get_client_id_for_subprocess,
+    with_client_id_context,
+)
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -29,6 +37,7 @@ from studio.app.common.core.utils.datetime_utils import (
     get_datetime_for_timezone_formatted,
     parse_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import (
     InvalidPathError,
     join_filepath,
@@ -54,6 +63,8 @@ logger = AppLogger.get_logger()
 
 
 class WorkflowResult:
+    OBSERVE_LOCK_WAIT_SECONDS = 600
+
     def __init__(self, workspace_id: str, unique_id: str):
         self.workspace_id = workspace_id
         self.unique_id = unique_id
@@ -66,11 +77,14 @@ class WorkflowResult:
         )
         self.monitor = WorkflowMonitor(workspace_id, unique_id)
 
-    async def observe(self, observe_node_ids: List[str]) -> Dict[str, Message]:
+    async def observe(
+        self, observe_node_ids: List[str], save_wait: float = 0
+    ) -> Dict[str, Message]:
         """
         Perform the following operations for the specified workflow
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
+        save_wait: seconds to wait for the save slot; 0 leaves a node to the next poll
         """
         # validate args
         if not observe_node_ids:
@@ -100,8 +114,8 @@ class WorkflowResult:
         )
 
         # observe node list
-        node_results = await self.__observe_nodes(
-            observe_node_ids, expt_config, workflow_error
+        node_results, save_deferred = await self.__observe_nodes(
+            observe_node_ids, expt_config, workflow_error, save_wait
         )
 
         # check workflow status
@@ -110,8 +124,9 @@ class WorkflowResult:
         )
 
         # If the workflow status observation is ongoing (maybe workflow is incomplete),
-        # check whether the actual process exists.
-        if is_workflow_observation_ongoing:
+        # check whether the actual process exists. A save left to the next poll is
+        # not a dead process's missing result.
+        if is_workflow_observation_ongoing and not save_deferred:
             # check workflow process exists
             current_process = self.monitor.search_process()
 
@@ -121,34 +136,58 @@ class WorkflowResult:
                     has_error=True, error_log="No Snakemake process found."
                 )
 
-            # re-run observe node list (reflects workflow error)
-            node_results = await self.__observe_nodes(
-                observe_node_ids, expt_config, workflow_error
-            )
+                # re-run observe node list (reflects workflow error)
+                node_results, _ = await self.__observe_nodes(
+                    observe_node_ids, expt_config, workflow_error, save_wait
+                )
 
         return node_results
+
+    def observe_lock(self, timeout: float = 0) -> FileLock:
+        """Held while observing or resetting for a rerun, so neither overlaps a save.
+
+        LOCKFILE_DIR is container-local: it only excludes observers in this container.
+        """
+        return FileLock(FileLockUtils.get_lockfile_path(self.workflow_dirpath), timeout)
 
     async def observe_overall(self) -> Dict[str, Message]:
         """
         Automatically observe all nodes
+        Blocks on the observe lock, so not for the API loop
         """
-        expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+        # Finalization waits out a poll mid-save rather than save alongside it
+        lock = self.observe_lock(timeout=self.OBSERVE_LOCK_WAIT_SECONDS)
+        try:
+            lock.acquire()
+        except Timeout:
+            logger.warning(
+                f"Observe lock still held after {self.OBSERVE_LOCK_WAIT_SECONDS}s, "
+                f"observing without it: [{self.workspace_id}/{self.unique_id}]"
+            )
+        try:
+            expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
 
-        # Observe all nodes
-        observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
+            # Observe all nodes
+            observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
 
-        return await self.observe(observe_node_ids)
+            return await self.observe(
+                observe_node_ids, save_wait=self.OBSERVE_LOCK_WAIT_SECONDS
+            )
+        finally:
+            lock.release()
 
     async def __observe_nodes(
         self,
         observe_node_ids: List[str],
         expt_config: ExptConfig,
         workflow_error: WorkflowErrorInfo,
-    ) -> Dict[str, Message]:
+        save_wait: float,
+    ) -> Tuple[Dict[str, Message], bool]:
         """
-        Observe by Nodes
+        Observe by Nodes; also whether a save was left to the next poll
         """
         node_results: Dict[str, Message] = {}
+        save_deferred = False
 
         for node_id in observe_node_ids:
             # Check node processed status (inspect ExptConfig)
@@ -178,13 +217,16 @@ class WorkflowResult:
                 )
 
             if node_result.is_ready():
-                node_results[node_id] = await node_result.observe(expt_function)
+                message = await node_result.observe(expt_function, save_wait)
+                save_deferred |= node_result.save_deferred
+                if message is not None:
+                    node_results[node_id] = message
 
         # If all nodes have already been processed, return here.
         if NodeResult.is_all_nodes_already_finished(expt_config):
             if not expt_config.hasNWB:  # latched before whole.nwb landed
                 self.__check_has_whole_nwb()
-            return node_results
+            return node_results, save_deferred
 
         # Check if whole.nwb file exists
         self.__check_has_whole_nwb()
@@ -238,7 +280,7 @@ class WorkflowResult:
                         target_files,
                     )
 
-        return node_results
+        return node_results, save_deferred
 
     def __is_workflow_observation_ongoing(
         self, observe_node_ids: List[str], messages: Dict[str, Message]
@@ -318,31 +360,75 @@ class NodeResult(BaseNodeResult):
         self.workflow_has_error = workflow_error.has_error if workflow_error else False
         self.workflow_error_log = workflow_error.error_log if workflow_error else None
 
-        # Read node's output pickle file
+        # Locate node's output pickle file; only the save worker reads it
         self.algo_name = None
         self.info = None
+        self.node_pickle_path = None
+        self.save_deferred = False  # the save slot was busy; the next poll saves
         if not self.workflow_has_error:
             node_pickle_path = PickleReader.search_node_pickle_path(self.node_dirpath)
             if node_pickle_path:
-                node_pickle_path = node_pickle_path.replace("\\", "/")
-                self.algo_name = os.path.splitext(os.path.basename(node_pickle_path))[0]
-                try:
-                    self.info = PickleReader.read(node_pickle_path)
-                except Exception as e:
-                    self.info = None  # indicates error
-                    logger.error(e, exc_info=True)
+                self.node_pickle_path = node_pickle_path.replace("\\", "/")
+                self.algo_name = os.path.splitext(
+                    os.path.basename(self.node_pickle_path)
+                )[0]
 
-    async def observe(self, expt_function: ExptFunction) -> Message:
+    async def observe(
+        self, expt_function: ExptFunction, save_wait: float = 0
+    ) -> Optional[Message]:
+        """None while the node's pickle is not readable yet or the save slot is busy"""
         # Generate node process status (workflow.Message)
         # case) error throughout workflow
         if self.workflow_has_error:
             message = self.error(self.workflow_error_log)
-        # case) error in node
-        elif PickleReader.check_is_error_node_pickle(self.info):
-            message = self.error()
-        # case) success in node
+        # case) success already recorded, so its JSON is already saved
+        elif (
+            expt_function.success == NodeRunStatus.SUCCESS.value
+            and expt_function.outputPaths is not None
+        ):
+            message = Message(
+                status=expt_function.success,
+                message=expt_function.message,
+                outputPaths=expt_function.outputPaths,
+            )
+        # case) error or success in node
         else:
-            message = self.success()
+            slot = _save_slot(save_wait)
+            # Finalization waits as long as it takes: saving beside another save
+            # would defeat the limit. A dead holder's lock is freed by the OS.
+            while True:
+                try:
+                    slot.acquire()
+                    break
+                except Timeout:
+                    if not save_wait:
+                        self.save_deferred = True
+                        return None
+                    logger.warning(
+                        f"Save slot still held after {save_wait}s, still waiting: "
+                        f"[{self.workspace_id}/{self.unique_id}/{self.node_id}]"
+                    )
+            try:
+                # A worker process, so a large read and save hold neither the loop
+                # nor its GIL
+                with ProcessPoolExecutor(max_workers=1) as executor:
+                    message = await _await_despite_cancel(
+                        asyncio.get_running_loop().run_in_executor(
+                            executor,
+                            partial(
+                                _read_node_outputs,
+                                type(self),
+                                self.workspace_id,
+                                self.unique_id,
+                                self.node_id,
+                                client_id=get_client_id_for_subprocess(),
+                            ),
+                        )
+                    )
+            finally:
+                slot.release()
+            if message is None:
+                return None
 
         # Determine if the node has already been processed
         # *If it has, skip subsequent ExptConfig update process.
@@ -443,8 +529,21 @@ class NodeResult(BaseNodeResult):
         return message
 
     def is_ready(self) -> bool:
-        is_ready = (self.info is not None) or self.workflow_has_error
+        is_ready = (self.node_pickle_path is not None) or self.workflow_has_error
         return is_ready
+
+    def read(self) -> Optional[Message]:
+        """The pickle's error or success (saving its outputs), None if unreadable"""
+        try:
+            self.info = PickleReader.read(self.node_pickle_path)
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            return None
+        if self.info is None:
+            return None
+        if PickleReader.check_is_error_node_pickle(self.info):
+            return self.error()
+        return self.success()
 
     @classmethod
     def is_node_already_finished(cls, expt_function: ExptFunction) -> bool:
@@ -517,6 +616,39 @@ class PostProcessResult(NodeResult):
         workflow_error: WorkflowErrorInfo = None,
     ):
         super().__init__(workspace_id, unique_id, node_id, workflow_error)
+
+
+def _save_slot(timeout: float) -> FileLock:
+    """One node save per container, polls and finalization alike: each save holds
+    its whole output in memory. A size-weighted budget if throughput matters.
+    """
+    return FileLock(
+        FileLockUtils.get_lockfile_path(
+            join_filepath([DIRPATH.OUTPUT_DIR, "node_output_save"])
+        ),
+        timeout,
+    )
+
+
+async def _await_despite_cancel(future: asyncio.Future) -> Message:
+    """Wait out the save when cancelled, so the caller's lock outlives the worker"""
+    cancelled = None
+    while not future.done():
+        try:
+            await asyncio.wait({future})
+        except asyncio.CancelledError as e:
+            cancelled = e
+    if cancelled:
+        raise cancelled
+    return future.result()
+
+
+@with_client_id_context
+def _read_node_outputs(
+    result_cls, workspace_id: str, unique_id: str, node_id: str, client_id=None
+) -> Optional[Message]:
+    # Reads the node pickle here rather than receive it through the process pipe
+    return result_cls(workspace_id, unique_id, node_id).read()
 
 
 class WorkflowMonitor:

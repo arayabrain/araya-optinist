@@ -110,7 +110,9 @@ class TestPollingAnAbsentConfig:
         with patch.object(
             ExptConfigReader, "read", return_value=object()
         ), patch.object(
-            WorkflowResult, "_WorkflowResult__observe_nodes", return_value=sentinel
+            WorkflowResult,
+            "_WorkflowResult__observe_nodes",
+            return_value=(sentinel, False),
         ), patch.object(
             WorkflowResult,
             "_WorkflowResult__is_workflow_observation_ongoing",
