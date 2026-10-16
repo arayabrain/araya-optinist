@@ -10,6 +10,7 @@ from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
     save_memmap_c_order,
+    save_memmap_c_order_fallback,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
@@ -63,6 +64,18 @@ def caiman_mc(
 
     meanImg, rois = __process_images(movie)
 
+    # A frame of the pixels x time file is spread over all of it, so the TIFF
+    # is written from MotionCorrect's frame-contiguous file when the C-order
+    # file is known to be that file plus CaImAn's 0.0001 offset
+    if save_memmap_c_order_fallback(mc.mmap_file, border_to_0) is None:
+        Yf, _, _ = load_memmap(mc.mmap_file[0])
+        frames, offset = Yf.T.reshape((T,) + dims, order="F"), C_ORDER_OFFSET
+    else:
+        # caiman.save_memmap has just held the movie in memory, so a copy costs
+        # no more than that did, where batches of the pixels x time view would
+        # re-read the whole file each
+        Yf, frames, offset = None, np.array(movie), None
+
     xy_trans_data = (
         (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
         if opts.get("motion", "pw_rigid")
@@ -70,14 +83,14 @@ def caiman_mc(
     )
 
     mc_images = ImageData(
-        movie_to_tiff(movie, output_dir, "mc_images"),
+        movie_to_tiff(frames, output_dir, "mc_images", offset=offset),
         output_dir=output_dir,
         file_name="mc_images",
     )
 
     # Release variables associated with memmap files when they are no longer needed.
     # *Avoid lock errors when cleaning memmap files.
-    del movie, Yr, dims, T
+    del movie, frames, Yf, Yr, dims, T
 
     nwbfile = {}
     nwbfile[NWBDATASET.MOTION_CORRECTION] = {
@@ -111,13 +124,30 @@ def caiman_mc(
     return info
 
 
-def movie_to_tiff(movie, output_dir, file_name, batch_size=200):
+# What CaImAn 1.11's save_memmap adds to each motion-corrected value
+C_ORDER_OFFSET = (0.0001, 0.0)
+# tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
+BIGTIFF_BYTES = 2**32 - 2**25
+# frames per write, bounded in bytes
+TIFF_BATCH_BYTES = 64 << 20
+
+
+def movie_to_tiff(
+    movie, output_dir, file_name, offset=None, batch_bytes=TIFF_BATCH_BYTES
+):
     """
-    Write a (T, Ly, Lx) array-like to the TIFF path ImageData would use,
-    batch_size frames at a time. tifffile writes a frame iterator with a
-    declared shape exactly as it writes the whole array (a byte-identical
-    file), so a memory-mapped movie is never copied into memory as a whole.
+    Write a (T, Ly, Lx) array-like to the TIFF path ImageData would use, one
+    batch of at most batch_bytes at a time, so a memory-mapped movie is never
+    copied into memory as a whole. The file is byte-identical to writing the
+    whole array: tifffile picks BigTIFF from data.nbytes, which a frame
+    iterator does not have, so the choice is made here the same way.
+
+    offset, when given, is a tuple of values added in float32 in that order,
+    as save_memmap adds them. The file is written beside the final path and
+    moved there when complete, so a failed write leaves no partial TIFF.
     """
+    import os
+
     import numpy as np
     import tifffile
 
@@ -129,12 +159,32 @@ def movie_to_tiff(movie, output_dir, file_name, batch_size=200):
     tiff_dir = join_filepath([output_dir, "tiff", file_name])
     create_directory(tiff_dir)
     tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
+    tmp_path = f"{tiff_path}.partial"
+
+    dtype = np.dtype(np.float32 if offset else movie.dtype)
+    frame_bytes = int(np.prod(movie.shape[1:])) * dtype.itemsize
+    batch_size = max(1, batch_bytes // frame_bytes)
 
     def frames():
         for i in range(0, movie.shape[0], batch_size):
-            yield from np.ascontiguousarray(movie[i : i + batch_size])
+            batch = np.ascontiguousarray(movie[i : i + batch_size], dtype=dtype)
+            for value in offset or ():
+                batch = batch + np.float32(value)
+            yield from batch
 
-    tifffile.imwrite(tiff_path, frames(), shape=movie.shape, dtype=movie.dtype)
+    try:
+        tifffile.imwrite(
+            tmp_path,
+            frames(),
+            shape=movie.shape,
+            dtype=dtype,
+            bigtiff=movie.shape[0] * frame_bytes > BIGTIFF_BYTES,
+        )
+        os.replace(tmp_path, tiff_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
     return [tiff_path]
 
 
