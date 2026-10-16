@@ -74,6 +74,7 @@ from studio.app.common.routers import (
 )
 from studio.app.common.schemas.files import DownloadFileRequest
 from studio.app.optinist.routers import hdf5, mat, nwb, roi
+from studio.tests.app.common.dependency_tree import depends_on
 
 APP_DIR = Path(studio.app.__file__).parent
 
@@ -221,12 +222,6 @@ def test_the_guard_detects_a_session_passed_to_add_task(call, expected):
 # --------------------------------------------------------------------------
 
 
-def _depends_on(dependant, target) -> bool:
-    return any(
-        d.call is target or _depends_on(d, target) for d in dependant.dependencies
-    )
-
-
 def _takes_background_tasks(dependant) -> bool:
     return dependant.background_tasks_param_name is not None or any(
         _takes_background_tasks(d) for d in dependant.dependencies
@@ -245,7 +240,7 @@ def _get_db_routes_with_background_tasks():
         for route in router.routes
         if isinstance(route, APIRoute)
         and _takes_background_tasks(route.dependant)
-        and _depends_on(route.dependant, get_db)
+        and depends_on(route.dependant, get_db)
     }
 
 

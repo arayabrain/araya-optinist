@@ -578,8 +578,13 @@ resource "aws_instance" "premium" {
   # On shutdown, stop instance instead of terminating
   instance_initiated_shutdown_behavior = "stop"
 
-  # Prevent accidental termination
-  disable_api_termination = false
+  # Termination protection: TerminateInstances from any Lambda, script or the
+  # console fails with OperationNotPermitted. Backstop for PREMIUM_INSTANCE_IDS,
+  # which premium manager reads to leave this instance alone. Stop and start
+  # are unaffected. force_destroy lets Terraform itself still replace or
+  # destroy it; it takes effect only once applied, so both are set together.
+  disable_api_termination = true
+  force_destroy           = true
 
   tags = {
     # Pre-provisioned at deploy time. Distinct from "premium-dedicated"
