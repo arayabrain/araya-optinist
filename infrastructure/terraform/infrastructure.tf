@@ -71,8 +71,20 @@ resource "aws_subnet" "private2" {
 locals {
   nat_user_data = <<-EOF
     #!/bin/bash
-    # The iptables binary is not preinstalled on the AL2023 base AMI
-    yum install -y iptables-nft
+    # t3.nano has 0.5 GB of memory: loading dnf's repository metadata can
+    # exhaust it, and the OOM killer ends the install. A swap file for the
+    # install gets it through; removed at the end
+    dd if=/dev/zero of=/swapfile bs=1M count=1024
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+
+    # The iptables binary is not preinstalled on the AL2023 base AMI. Retried:
+    # without it the NAT never forwards
+    for attempt in 1 2 3; do
+      yum install -y iptables-nft && break
+      sleep 10
+    done
 
     # Authoritative drop-in so a pre-existing sysctl.conf entry cannot win
     echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
@@ -114,6 +126,9 @@ locals {
     systemctl daemon-reload
     systemctl enable nat-iptables.service
     systemctl start nat-iptables.service
+
+    swapoff /swapfile
+    rm -f /swapfile
   EOF
 }
 
