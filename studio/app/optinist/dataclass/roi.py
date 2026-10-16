@@ -105,3 +105,50 @@ class EditRoiData(BaseData):
         self.temp_add_roi = {}
         self.temp_merge_roi = {}
         self.temp_delete_roi = {}
+
+
+class RoiStack(np.memmap):
+    """
+    A per-ROI mask stack (n_roi x Ly x Lx) kept in a .npy file next to the
+    node's outputs, rather than in memory and in the node pickle.
+
+    It behaves as a read-only array. Pickling the whole stack stores only its
+    path, so the node pickle, result polling, post-processing and ROI-edit
+    requests do not carry n_roi x Ly x Lx x 8 bytes. Anything derived from it
+    (a slice, a fancy-indexed subset, a ufunc or reduction result) is a plain
+    array as far as pickling goes, and is serialised with its data as before.
+    """
+
+    @classmethod
+    def create(cls, path: str, shape: tuple, fill=np.nan, dtype=np.float64):
+        """A writable stack at `path`, filled with `fill` one layer at a time."""
+        out = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
+        for i in range(shape[0]):
+            out[i] = fill
+        out.flush()
+        return out, path
+
+    @classmethod
+    def open(cls, path: str):
+        obj = np.load(path, mmap_mode="r").view(cls)
+        obj._stack_path = path
+        obj._whole_file = True
+        return obj
+
+    def __array_finalize__(self, obj):
+        super().__array_finalize__(obj)
+        # Views, subsets and results are not the file: they pickle their data
+        self._stack_path = getattr(obj, "_stack_path", None)
+        self._whole_file = False
+
+    def __array_wrap__(self, arr, context=None, *args, **kwargs):
+        # Ufunc and reduction results are new data, not the file: plain arrays
+        arr = super().__array_wrap__(arr, context, *args, **kwargs)
+        if isinstance(arr, RoiStack) and not np.shares_memory(arr, self):
+            return arr.view(np.ndarray)
+        return arr
+
+    def __reduce__(self):
+        if getattr(self, "_whole_file", False) and self._stack_path:
+            return (RoiStack.open, (self._stack_path,))
+        return np.array(self, subok=False).__reduce__()
