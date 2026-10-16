@@ -34,7 +34,7 @@ from studio.app.common.core.workflow.workflow import (
     NodeItem,
     RunItem,
 )
-from studio.app.common.core.workflow.workflow_result import WorkflowResult
+from studio.app.common.core.workflow.workflow_result import WorkflowResult, _save_slot
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.common.routers.run import run_id, run_result
@@ -362,6 +362,39 @@ async def test_finalization_waits_for_a_poll_mid_save(finished_node):
 
     assert saved_while_held == [False]
     assert "func1" in results
+
+
+@pytest.mark.asyncio
+async def test_a_poll_leaves_a_node_to_the_next_poll_while_another_save_runs(
+    finished_node,
+):
+    executor = Mock(wraps=ThreadPoolExecutor)
+
+    with patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        executor,
+    ):
+        with _save_slot(0):
+            busy = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+        free = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+
+    assert "func1" not in busy
+    assert free["func1"].status == "success"
+    assert executor.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_finalization_past_the_save_slot_wait_still_saves(finished_node):
+    with _save_slot(0), patch.object(
+        WorkflowResult, "OBSERVE_LOCK_WAIT_SECONDS", 0.1
+    ), patch("studio.app.common.core.workflow.workflow_result.logger") as log:
+        results = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall()
+
+    assert results["func1"].status == "success"
+    assert (finished_node / "func1" / "behavior").is_dir()
+    assert any(
+        "Save slot still held" in call.args[0] for call in log.warning.call_args_list
+    )
 
 
 @pytest.mark.asyncio

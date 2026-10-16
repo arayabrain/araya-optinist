@@ -77,11 +77,14 @@ class WorkflowResult:
         )
         self.monitor = WorkflowMonitor(workspace_id, unique_id)
 
-    async def observe(self, observe_node_ids: List[str]) -> Dict[str, Message]:
+    async def observe(
+        self, observe_node_ids: List[str], save_wait: float = 0
+    ) -> Dict[str, Message]:
         """
         Perform the following operations for the specified workflow
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
+        save_wait: seconds to wait for the save slot; 0 leaves a node to the next poll
         """
         # validate args
         if not observe_node_ids:
@@ -112,7 +115,7 @@ class WorkflowResult:
 
         # observe node list
         node_results = await self.__observe_nodes(
-            observe_node_ids, expt_config, workflow_error
+            observe_node_ids, expt_config, workflow_error, save_wait
         )
 
         # check workflow status
@@ -134,7 +137,7 @@ class WorkflowResult:
 
                 # re-run observe node list (reflects workflow error)
                 node_results = await self.__observe_nodes(
-                    observe_node_ids, expt_config, workflow_error
+                    observe_node_ids, expt_config, workflow_error, save_wait
                 )
 
         return node_results
@@ -166,7 +169,9 @@ class WorkflowResult:
             # Observe all nodes
             observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
 
-            return await self.observe(observe_node_ids)
+            return await self.observe(
+                observe_node_ids, save_wait=self.OBSERVE_LOCK_WAIT_SECONDS
+            )
         finally:
             lock.release()
 
@@ -175,6 +180,7 @@ class WorkflowResult:
         observe_node_ids: List[str],
         expt_config: ExptConfig,
         workflow_error: WorkflowErrorInfo,
+        save_wait: float,
     ) -> Dict[str, Message]:
         """
         Observe by Nodes
@@ -209,7 +215,7 @@ class WorkflowResult:
                 )
 
             if node_result.is_ready():
-                message = await node_result.observe(expt_function)
+                message = await node_result.observe(expt_function, save_wait)
                 if message is not None:
                     node_results[node_id] = message
 
@@ -363,8 +369,10 @@ class NodeResult(BaseNodeResult):
                     os.path.basename(self.node_pickle_path)
                 )[0]
 
-    async def observe(self, expt_function: ExptFunction) -> Optional[Message]:
-        """None while the node's pickle is not readable yet"""
+    async def observe(
+        self, expt_function: ExptFunction, save_wait: float = 0
+    ) -> Optional[Message]:
+        """None while the node's pickle is not readable yet or the save slot is busy"""
         # Generate node process status (workflow.Message)
         # case) error throughout workflow
         if self.workflow_has_error:
@@ -381,22 +389,36 @@ class NodeResult(BaseNodeResult):
             )
         # case) error or success in node
         else:
-            # A worker process, so a large read and save hold neither the loop
-            # nor its GIL
-            with ProcessPoolExecutor(max_workers=1) as executor:
-                message = await _await_despite_cancel(
-                    asyncio.get_running_loop().run_in_executor(
-                        executor,
-                        partial(
-                            _read_node_outputs,
-                            type(self),
-                            self.workspace_id,
-                            self.unique_id,
-                            self.node_id,
-                            client_id=get_client_id_for_subprocess(),
-                        ),
-                    )
+            slot = _save_slot(save_wait)
+            try:
+                slot.acquire()
+            except Timeout:
+                if not save_wait:
+                    return None
+                logger.warning(
+                    f"Save slot still held after {save_wait}s, saving without it: "
+                    f"[{self.workspace_id}/{self.unique_id}/{self.node_id}]"
                 )
+            try:
+                # A worker process, so a large read and save hold neither the loop
+                # nor its GIL
+                with ProcessPoolExecutor(max_workers=1) as executor:
+                    message = await _await_despite_cancel(
+                        asyncio.get_running_loop().run_in_executor(
+                            executor,
+                            partial(
+                                _read_node_outputs,
+                                type(self),
+                                self.workspace_id,
+                                self.unique_id,
+                                self.node_id,
+                                client_id=get_client_id_for_subprocess(),
+                            ),
+                        )
+                    )
+            finally:
+                if slot.is_locked:
+                    slot.release()
             if message is None:
                 return None
 
@@ -586,6 +608,18 @@ class PostProcessResult(NodeResult):
         workflow_error: WorkflowErrorInfo = None,
     ):
         super().__init__(workspace_id, unique_id, node_id, workflow_error)
+
+
+def _save_slot(timeout: float) -> FileLock:
+    """One node save per container, polls and finalization alike: each save holds
+    its whole output in memory. A size-weighted budget if throughput matters.
+    """
+    return FileLock(
+        FileLockUtils.get_lockfile_path(
+            join_filepath([DIRPATH.OUTPUT_DIR, "node_output_save"])
+        ),
+        timeout,
+    )
 
 
 async def _await_despite_cancel(future: asyncio.Future) -> Message:
