@@ -71,7 +71,7 @@ class TimeSeriesData(BaseData):
 
         record_ids = [str(cell_i) for cell_i in self.cell_numbers]
         columns = {"data": self.data}
-        if self.std is not None:
+        if self.std is not None and len(self.data):
             # A 1D std holds one value per record, spread over its time points
             std = np.asarray(self.std)[: len(self.data)]
             if std.ndim == 1:

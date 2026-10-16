@@ -33,6 +33,12 @@ def test_records_across_chunks_keep_nan_and_a_per_record_std(tmp_path):
     }
 
 
+def test_an_empty_series_with_a_2d_std_saves_no_records(tmp_path):
+    TimeSeriesData(np.empty((0, 10)), std=np.empty((0, 10))).save_json(str(tmp_path))
+
+    assert Handler.load_index_map(str(tmp_path / "timeseries")) == {}
+
+
 def test_numeric_csv_rows_split_across_chunks(tmp_path):
     with patch.object(Handler, "CHUNK_SIZE", 1):
         CsvData(np.array([[1.5, np.nan, 2.0], [3.0, 4.0, 5.0]]), params={}).save_json(
