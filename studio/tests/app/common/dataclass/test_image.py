@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import tifffile
 
+from studio.app.common.dataclass import image as image_module
 from studio.app.common.dataclass.image import ImageData
 
 
@@ -123,7 +124,7 @@ def test_output_path_and_save_json_do_not_read_a_stack(tmp_path, monkeypatch):
     tifffile.imwrite(second, np.zeros((3, 4, 4), np.uint16))
     both = ImageData([image_data.path[0], str(second)])
     both.save_json(str(tmp_path))
-    assert both.output_path.max_index == 13
+    assert both.output_path.max_index == 10
 
 
 def _imagej_tzcyx(path):
@@ -169,6 +170,13 @@ def _png(path):
     imageio.imwrite(path, np.zeros((5, 6), np.uint8))
 
 
+def _two_stacks(path):
+    second = path.replace(".tif", "_2.tif")
+    tifffile.imwrite(path, np.zeros((7, 5, 6), np.uint16), photometric="minisblack")
+    tifffile.imwrite(second, np.zeros((3, 5, 6), np.uint16), photometric="minisblack")
+    return [path, second]
+
+
 @pytest.mark.parametrize(
     "write, name",
     [
@@ -179,20 +187,30 @@ def _png(path):
         (_rgb, "rgb.tif"),
         (_zlib_tiled_float, "zlib_tiled.tif"),
         (_png, "fallback.png"),
+        (_two_stacks, "two_stacks.tif"),
     ],
 )
-def test_shape_and_output_path_match_a_full_read(tmp_path, write, name):
+@pytest.mark.parametrize("headers", ["readable", "unreadable"])
+def test_shape_and_output_path_match_a_full_read(
+    tmp_path, monkeypatch, write, name, headers
+):
     # tifffile and imageio are unpinned; this pins shape to what data returns
     path = str(tmp_path / name)
-    write(path)
-    image_data = ImageData(path)
+    image_data = ImageData(write(path) or path)
     data = image_data.data
+    if headers == "unreadable":
+
+        def unreadable(_path):
+            raise ValueError("unreadable headers")
+
+        monkeypatch.setattr(image_module, "_tiff_shape", unreadable)
 
     assert image_data.shape == data.shape
-    # 3D and up is served as the TIFF, below that as JSON
+    # 3D and up is served as the first TIFF, below that as JSON
     output_path = image_data.output_path
     if data.ndim >= 3:
-        assert (output_path.path, output_path.max_index) == (path, len(data))
+        served = len(ImageData(path).data)
+        assert (output_path.path, output_path.max_index) == (path, served)
     else:
         assert (output_path.path, output_path.max_index) == (None, 1)
 

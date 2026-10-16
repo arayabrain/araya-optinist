@@ -176,6 +176,9 @@ class ImageData(BaseData):
                 _path = self.path[0]
             else:
                 _path = self.path
+            # the viewer serves only _path, so count its frames alone
+            if isinstance(self.path, list) and len(self.path) > 1:
+                shape = ImageData(_path).shape
             return OutputPath(
                 path=_path,
                 type=OutputType.IMAGE,
