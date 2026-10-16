@@ -147,8 +147,9 @@ Users with active workflows are **never migrated** during rebalancing:
 ## Instance Readiness
 
 Waits for new instances to become operational, retrying every 60 seconds:
-- **EC2 Launch**: ~5 minutes
-- **ECS Task Start**: ~7 minutes
+- **Launch hook**: 5 minutes in `Pending:Wait`; the instance boots and its
+  task is placed meanwhile
+- **Healthy target**: about 8 minutes after the launch starts
 
 The wait is bounded by the invocation's remaining time (less a 60 s margin),
 so the `finally` that clears the scaling lock always runs; a launch that

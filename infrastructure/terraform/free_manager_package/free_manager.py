@@ -107,8 +107,10 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
 # which is how the group returns to its baseline after a busy period.
 USERS_PER_INSTANCE = 5
 
-# Scale-out wait ceiling (hook ~5 min + boot ~5 min + task ~7 min), bounded
-# further by the invocation's remaining time: scale_up_wait_budget
+# Scale-out wait ceiling, with headroom over the ~8 min measured to a healthy
+# target (the instance boots during the 5 min launch hook, then the task
+# starts). Bounded further by the invocation's remaining time:
+# scale_up_wait_budget
 MAX_WAIT_TIME = 1020
 CHECK_INTERVAL = 60
 

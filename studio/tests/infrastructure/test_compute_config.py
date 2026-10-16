@@ -4,7 +4,9 @@
   all ECS task definitions.
 - Free-tier ASG scale-in: ECS managed draining can complete its lifecycle
   hook, the termination policy spares long-held sticky sessions, and no
-  logging-only hook delays a launch or a termination.
+  terminate hook of the group's own delays a termination.
+- Free-tier ASG scale-out: the launch hook holds InService until the
+  instance has booted.
 """
 
 import re
@@ -66,6 +68,7 @@ class TestFreeAsgScaleIn:
     @pytest.fixture(autouse=True)
     def _load(self):
         tf = read(COMPUTE_TF)
+        self.tf = tf
         self.asg = resource_block(tf, "aws_autoscaling_group", "main")
         self.capacity_provider = resource_block(tf, "aws_ecs_capacity_provider", "main")
         self.service = resource_block(tf, "aws_ecs_service", "autoscaling")
@@ -111,19 +114,50 @@ class TestFreeAsgScaleIn:
         assert constraints == ["attribute:tier == free"]
 
     def test_asg_declares_no_initial_lifecycle_hook(self):
-        """A hook nothing completes holds every launch in ``Pending:Wait`` and
-        every termination in ``Terminating:Wait`` for its full timeout. The
-        only hook the group needs is the one ECS installs for draining.
-
-        Also guards the ``ignore_changes`` carve-out: a block added here would
-        be silently ignored on existing groups. A hook belongs in an
-        ``aws_autoscaling_lifecycle_hook`` resource."""
-        assert not re.search(r"^\s*initial_lifecycle_hook\s*\{", self.asg, re.MULTILINE)
+        """Guards the ``ignore_changes`` carve-out: a block added here, plain
+        or ``dynamic``, would be silently ignored on existing groups. A hook
+        belongs in an ``aws_autoscaling_lifecycle_hook`` resource."""
+        assert not re.search(
+            r'^\s*(?:dynamic\s+")?initial_lifecycle_hook"?\s*\{',
+            self.asg,
+            re.MULTILINE,
+        )
 
     def test_asg_ignores_changes_to_initial_lifecycle_hook(self):
         """``initial_lifecycle_hook`` is ForceNew and never read back from
         AWS, so the hooks a group was created with stay in state; without
         this the removed blocks replace the group."""
-        ignored = attribute(self.asg, "ignore_changes")
-        assert re.fullmatch(r"\[.*\]", ignored), f"not a list: {ignored}"
-        assert "initial_lifecycle_hook" in re.findall(r"\w+", ignored)
+        match = re.search(r"ignore_changes\s*=\s*\[(.*?)\]", self.asg, re.DOTALL)
+        assert match, "ignore_changes not found"
+        assert "initial_lifecycle_hook" in re.findall(r"\w+", match.group(1))
+
+    def test_launch_hook_holds_in_service_until_the_instance_has_booted(self):
+        """InService starts the target-group registration, the ELB
+        health-check grace, the refresh warmup and the scale_up cooldown.
+        Without the wait the target is registered with nothing on port 8000,
+        goes unhealthy and fires free-tg-unhealthy-hosts on every scale-out,
+        and a slow start can outlast the grace."""
+        hook = resource_block(self.tf, "aws_autoscaling_lifecycle_hook", "launch")
+        assert attribute(hook, "autoscaling_group_name") == (
+            "aws_autoscaling_group.main.name"
+        )
+        assert attribute(hook, "lifecycle_transition") == (
+            '"autoscaling:EC2_INSTANCE_LAUNCHING"'
+        )
+        assert attribute(hook, "heartbeat_timeout") == "300"
+        assert attribute(hook, "default_result") == '"CONTINUE"'
+        # The name the group was created with, so the first apply on an
+        # existing group overwrites that hook rather than adding a second
+        assert attribute(hook, "name") == '"${local.env_prefix}-launch-hook"'
+
+    def test_no_terminate_hook_of_the_groups_own(self):
+        """A terminate hook nothing completes holds every scale-in in
+        ``Terminating:Wait`` for its timeout after ECS's draining hook has
+        completed. ECS installs and completes its own hook."""
+        transitions = re.findall(
+            r'resource\s+"aws_autoscaling_lifecycle_hook"\s+"[^"]+"\s*\{.*?'
+            r'lifecycle_transition\s*=\s*"([^"]+)"',
+            self.tf,
+            re.DOTALL,
+        )
+        assert "autoscaling:EC2_INSTANCE_TERMINATING" not in transitions
