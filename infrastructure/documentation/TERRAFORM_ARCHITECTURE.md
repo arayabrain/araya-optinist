@@ -108,8 +108,8 @@ The ASG carries `ignore_changes = [desired_capacity]`, and
 written at runtime and Terraform must not fight them. The two are written by
 different things:
 
-- **ASG desired capacity** — by the Free Manager Lambda (user count) *and* the
-  CPU/memory alarms (instance load).
+- **ASG desired capacity** — by the Free Manager Lambda (user count, both
+  directions) *and* the `-high` CPU/memory alarms (instance load, adding only).
 - **ECS desired count** — by the Free Manager Lambda only, which syncs it to
   the ASG. That is why `sync_ecs_to_asg()` exists: the alarms move the group
   without telling ECS.
@@ -123,15 +123,18 @@ instances task-less and unhealthy.
 | `asg_max_size` | The real ceiling: the Lambda clamps its target to the group's bounds, so neither scaling path can exceed it |
 | `asg_desired_capacity` | Applied at creation, and re-applied on every `dev_scheduler` start in environments where that is enabled. Otherwise ignored |
 
-**Lowering `min_size` does not lower desired capacity** — nothing re-reads the
-ignored value. Set desired capacity explicitly when scaling back down.
+**Lowering `min_size` does not lower desired capacity by itself** — the group
+keeps it, and Terraform ignores it. The Free Manager does: its next run computes
+the target from the user count and removes the surplus, choosing instances with
+no running workflow. Leave desired capacity alone when scaling back down; set by
+hand, the group would choose the instances instead.
 
 The Lambda reads both bounds off the live ASG rather than from its own
 environment, so they can also be changed on the group (console or CLI) without
 a redeploy. That is not persistent: `min_size` is not under `ignore_changes`,
 so the next apply restores the declared value. For sizing, lead time, checks
 and restore, see the pre-provisioning procedure in
-`FREE_MANAGER_ARCHITECTURE.md`.
+[FREE_TIER_CAPACITY_PROCEDURE.md](FREE_TIER_CAPACITY_PROCEDURE.md).
 
 ### Database Username (`mysql_user`)
 
