@@ -23,6 +23,8 @@ from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
 
+CORRELATION_CHUNK_ELEMENTS = 2**24  # float64 values per frame chunk, 128 MB
+
 
 def get_roi(A, roi_thr, thr_method, swap_dim, dims):
     from scipy.ndimage import binary_fill_holes
@@ -110,6 +112,58 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     mmap_images = np.reshape(mmap_images.T, [T] + list(dims), order="F")
     mmap_images[:] = images[:]
     return mmap_images, dims, mmap_path
+
+
+def correlation_image(movie):
+    """caiman.local_correlations(movie.transpose(1, 2, 0)) for a (T, d1, d2) movie.
+
+    The moments are accumulated in float64 over frame chunks, so memory stays near
+    one chunk instead of the several whole-movie float32 copies caiman makes.
+    """
+    T, d1, d2 = movie.shape
+    step = max(1, CORRELATION_CHUNK_ELEMENTS // (d1 * d2))
+    chunks = [movie[t : t + step] for t in range(0, T, step)]
+
+    mean = sum(c.sum(axis=0, dtype=np.float64) for c in chunks) / T
+    # caiman's rho_h, rho_w, rho_d1, rho_d2 pixel pairs
+    pairs = [
+        (np.s_[:-1, :], np.s_[1:, :]),
+        (np.s_[:, :-1], np.s_[:, 1:]),
+        (np.s_[1:, :-1], np.s_[:-1, 1:]),
+        (np.s_[:-1, :-1], np.s_[1:, 1:]),
+    ]
+    sq = np.zeros((d1, d2))
+    cross = [0.0] * len(pairs)
+    for c in chunks:
+        d = c - mean
+        sq += (d * d).sum(axis=0)
+        for i, (a, b) in enumerate(pairs):
+            cross[i] = cross[i] + (d[:, a[0], a[1]] * d[:, b[0], b[1]]).sum(axis=0)
+    std = np.sqrt(sq / T)
+    rho_h, rho_w, rho_d1, rho_d2 = (
+        x / T / (std[a] * std[b]) for x, (a, b) in zip(cross, pairs)
+    )
+
+    # caiman's placement, swapped diagonal terms included, so the image is unchanged
+    rho = np.zeros((d1, d2))
+    rho[:-1, :] += rho_h
+    rho[1:, :] += rho_h
+    rho[:, :-1] += rho_w
+    rho[:, 1:] += rho_w
+    rho[:-1, :-1] += rho_d2
+    rho[1:, 1:] += rho_d1
+    rho[1:, :-1] += rho_d1
+    rho[:-1, 1:] += rho_d2
+    neighbors = np.full((d1, d2), 8.0)
+    neighbors[[0, -1], :] -= 3
+    neighbors[:, [0, -1]] -= 3
+    neighbors[[0, 0, -1, -1], [0, -1, 0, -1]] += 1
+    return rho / neighbors
+
+
+def edit_roi_dtype(dtype):
+    """The movie kept for ROI edits: its own dtype when float32 holds it exactly."""
+    return dtype if np.can_cast(dtype, np.float32) else np.float32
 
 
 def util_cleanup_image_memmap(mmap_paths: list):
@@ -226,10 +280,12 @@ def component_outputs(
         else np.zeros((0, *dims))
     )
 
+    # the pixel order get_roi reads A in, so the NWB masks match the ROI images
+    mask_order = "C" if swap_dim else "F"
     roi_list = []
     for comp in order:
         kargs = {}
-        kargs["image_mask"] = A.T[comp].T.toarray().reshape(dims)
+        kargs["image_mask"] = A[:, comp].toarray().reshape(dims, order=mask_order)
         if accepted_list is not None:
             kargs["accepted"] = comp in accepted_list
         if rejected_list is not None:
@@ -248,7 +304,6 @@ def component_outputs(
 def caiman_cnmf(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import local_correlations
     from caiman.source_extraction.cnmf import cnmf, online_cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -273,6 +328,7 @@ def caiman_cnmf(
         file_path = file_path[0]
 
     images = images.data
+    edit_dtype = edit_roi_dtype(images.dtype)
     mmap_paths = []
     mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
     mmap_paths.append(mmap_path)
@@ -328,7 +384,7 @@ def caiman_cnmf(
             idx_bad = []
 
     # contours plot
-    Cn = local_correlations(mmap_images.transpose(1, 2, 0))
+    Cn = correlation_image(mmap_images)
     Cn[np.isnan(Cn)] = 0
 
     thr_method = "nrg"
@@ -409,7 +465,9 @@ def caiman_cnmf(
             output_dir=output_dir,
             file_name="non_cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, im),
+        "edit_roi_data": EditRoiData(
+            np.asarray(mmap_images).astype(edit_dtype, copy=False), im
+        ),
         "nwbfile": nwbfile,
     }
 
