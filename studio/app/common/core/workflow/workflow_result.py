@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from functools import partial
 from glob import glob
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import yaml
 from fastapi import HTTPException, status
@@ -209,7 +209,9 @@ class WorkflowResult:
                 )
 
             if node_result.is_ready():
-                node_results[node_id] = await node_result.observe(expt_function)
+                message = await node_result.observe(expt_function)
+                if message is not None:
+                    node_results[node_id] = message
 
         # If all nodes have already been processed, return here.
         if NodeResult.is_all_nodes_already_finished(expt_config):
@@ -349,28 +351,24 @@ class NodeResult(BaseNodeResult):
         self.workflow_has_error = workflow_error.has_error if workflow_error else False
         self.workflow_error_log = workflow_error.error_log if workflow_error else None
 
-        # Read node's output pickle file
+        # Locate node's output pickle file; only the save worker reads it
         self.algo_name = None
         self.info = None
+        self.node_pickle_path = None
         if not self.workflow_has_error:
             node_pickle_path = PickleReader.search_node_pickle_path(self.node_dirpath)
             if node_pickle_path:
-                node_pickle_path = node_pickle_path.replace("\\", "/")
-                self.algo_name = os.path.splitext(os.path.basename(node_pickle_path))[0]
-                try:
-                    self.info = PickleReader.read(node_pickle_path)
-                except Exception as e:
-                    self.info = None  # indicates error
-                    logger.error(e, exc_info=True)
+                self.node_pickle_path = node_pickle_path.replace("\\", "/")
+                self.algo_name = os.path.splitext(
+                    os.path.basename(self.node_pickle_path)
+                )[0]
 
-    async def observe(self, expt_function: ExptFunction) -> Message:
+    async def observe(self, expt_function: ExptFunction) -> Optional[Message]:
+        """None while the node's pickle is not readable yet"""
         # Generate node process status (workflow.Message)
         # case) error throughout workflow
         if self.workflow_has_error:
             message = self.error(self.workflow_error_log)
-        # case) error in node
-        elif PickleReader.check_is_error_node_pickle(self.info):
-            message = self.error()
         # case) success already recorded, so its JSON is already saved
         elif (
             expt_function.success == NodeRunStatus.SUCCESS.value
@@ -381,16 +379,16 @@ class NodeResult(BaseNodeResult):
                 message=expt_function.message,
                 outputPaths=expt_function.outputPaths,
             )
-        # case) success in node
+        # case) error or success in node
         else:
-            # A worker process, so a large save holds neither the loop nor its GIL
-            self.info = None  # the worker re-reads it; don't hold two copies
+            # A worker process, so a large read and save hold neither the loop
+            # nor its GIL
             with ProcessPoolExecutor(max_workers=1) as executor:
                 message = await _await_despite_cancel(
                     asyncio.get_running_loop().run_in_executor(
                         executor,
                         partial(
-                            _save_node_outputs,
+                            _read_node_outputs,
                             type(self),
                             self.workspace_id,
                             self.unique_id,
@@ -399,6 +397,8 @@ class NodeResult(BaseNodeResult):
                         ),
                     )
                 )
+            if message is None:
+                return None
 
         # Determine if the node has already been processed
         # *If it has, skip subsequent ExptConfig update process.
@@ -499,8 +499,21 @@ class NodeResult(BaseNodeResult):
         return message
 
     def is_ready(self) -> bool:
-        is_ready = (self.info is not None) or self.workflow_has_error
+        is_ready = (self.node_pickle_path is not None) or self.workflow_has_error
         return is_ready
+
+    def read(self) -> Optional[Message]:
+        """The pickle's error or success (saving its outputs), None if unreadable"""
+        try:
+            self.info = PickleReader.read(self.node_pickle_path)
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            return None
+        if self.info is None:
+            return None
+        if PickleReader.check_is_error_node_pickle(self.info):
+            return self.error()
+        return self.success()
 
     @classmethod
     def is_node_already_finished(cls, expt_function: ExptFunction) -> bool:
@@ -589,11 +602,11 @@ async def _await_despite_cancel(future: asyncio.Future) -> Message:
 
 
 @with_client_id_context
-def _save_node_outputs(
+def _read_node_outputs(
     result_cls, workspace_id: str, unique_id: str, node_id: str, client_id=None
-) -> Message:
-    # Re-reads the node pickle rather than receive it through the process pipe
-    return result_cls(workspace_id, unique_id, node_id).success()
+) -> Optional[Message]:
+    # Reads the node pickle here rather than receive it through the process pipe
+    return result_cls(workspace_id, unique_id, node_id).read()
 
 
 class WorkflowMonitor:

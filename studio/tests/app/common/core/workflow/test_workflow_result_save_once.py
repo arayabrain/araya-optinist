@@ -26,7 +26,14 @@ from studio.app.common.core.snakemake.smk import ForceRun
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
 )
-from studio.app.common.core.workflow.workflow import Node, NodeData, NodeItem, RunItem
+from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
+from studio.app.common.core.workflow.workflow import (
+    Message,
+    Node,
+    NodeData,
+    NodeItem,
+    RunItem,
+)
 from studio.app.common.core.workflow.workflow_result import WorkflowResult
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.dataclass.timeseries import TimeSeriesData
@@ -118,6 +125,67 @@ async def test_a_finished_node_without_outputs_is_saved_once(finished_node):
     assert first["func1"].outputPaths == {}
     assert second["func1"] == first["func1"]
     assert executor.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_saved_node_is_answered_without_unpickling(finished_node):
+    first = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+    executor = Mock(wraps=ThreadPoolExecutor)
+
+    with patch.object(PickleReader, "read", wraps=PickleReader.read) as read, patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        executor,
+    ):
+        second = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+
+    assert second["func1"] == first["func1"]
+    assert read.call_count == 0
+    assert executor.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_node_to_save_is_unpickled_once(finished_node):
+    with patch.object(PickleReader, "read", wraps=PickleReader.read) as read, patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        ThreadPoolExecutor,
+    ):
+        results = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+
+    assert results["func1"].status == "success"
+    assert read.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_torn_pickle_is_not_ready_until_it_reads(finished_node):
+    pkl = finished_node / "func1" / "func1.pkl"
+    whole = pkl.read_bytes()
+    pkl.write_bytes(whole[: len(whole) // 2])
+
+    torn = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+
+    func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+    assert "func1" not in torn
+    assert (func1.success, func1.outputPaths) == ("running", None)
+
+    pkl.write_bytes(whole)
+    whole_read = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+    assert whole_read["func1"].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_an_error_pickle_is_reported_on_a_poll_and_at_finalization(
+    finished_node,
+):
+    pkl = str(finished_node / "func1" / "func1.pkl")
+    PickleWriter.write_error(pkl, ValueError("boom"))
+    error = Message(status="error", message="\n".join(PickleReader.read(pkl)))
+
+    polled = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(NODES)
+    finalized = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall()
+
+    func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+    assert polled["func1"] == finalized["func1"] == error
+    assert (func1.success, func1.message) == ("error", error.message)
 
 
 @pytest.mark.asyncio
