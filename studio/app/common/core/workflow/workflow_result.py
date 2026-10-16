@@ -498,10 +498,11 @@ class NodeResult(BaseNodeResult):
         for k, v in self.info.items():
             if isinstance(v, BaseData):
                 v.save_json(self.node_dirpath)
-                if v.output_path:
+                # output_path may read file headers; ask for it once
+                output_path = v.output_path
+                if output_path:
                     # Normalize path to relative form for storage
                     # This ensures paths work across environments (local, Docker, etc.)
-                    output_path = v.output_path
                     output_path.path = normalize_output_path(output_path.path)
                     output_paths[k] = output_path
 

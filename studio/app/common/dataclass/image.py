@@ -7,6 +7,7 @@ import imageio
 import numpy as np
 import tifffile
 
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
@@ -18,11 +19,24 @@ from studio.app.common.dataclass.utils import create_images_list
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
 
+logger = AppLogger.get_logger()
+
 
 def _tiff_shape(path: str) -> tuple:
-    """Shape imageio.volread would return for a TIFF, from its headers only."""
+    """
+    Shape imageio.volread would return for a TIFF, from its headers.
+
+    The last frame is decoded as well, so a file volread cannot read (truncated,
+    compressed with a codec that is not installed, or with a description that
+    claims more frames than it holds) raises here too.
+    """
     with tifffile.TiffFile(path) as tif:
-        return tuple(int(n) for n in tif.series[0].shape)
+        series = tif.series[0]
+        end = None if series.dataoffset is None else series.dataoffset + series.nbytes
+        if end is not None and end > tif.filehandle.size:
+            raise ValueError(f"{path} is truncated")
+        tif.asarray(key=-1, series=0)
+        return tuple(int(n) for n in series.shape)
 
 
 class ImageData(BaseData):
@@ -124,12 +138,14 @@ class ImageData(BaseData):
 
         `data` reads every frame from disk on each access, so asking it for
         `ndim` or `len` costs a full read of the stack. Falls back to that read
-        when the headers cannot be parsed or the files do not stack cleanly.
+        when the headers cannot be parsed or the files do not stack cleanly, so
+        a file `data` cannot read raises as it does there.
         """
         paths = self.path if isinstance(self.path, list) else [self.path]
         try:
             shapes = [_tiff_shape(p) for p in paths]
-        except Exception:
+        except Exception as e:
+            logger.debug("ImageData.shape: headers unreadable, reading data (%s)", e)
             return self.data.shape
         if len(shapes) == 1:
             return shapes[0]
@@ -137,6 +153,7 @@ class ImageData(BaseData):
         if len(first) == 0 or any(
             len(s) != len(first) or s[1:] != first[1:] for s in shapes
         ):
+            logger.debug("ImageData.shape: files do not stack, reading data")
             return self.data.shape
         return (sum(s[0] for s in shapes),) + first[1:]
 
