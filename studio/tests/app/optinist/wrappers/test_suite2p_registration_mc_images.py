@@ -56,6 +56,20 @@ def test_mc_images_is_byte_identical_to_writing_the_whole_movie(tmp_path):
     np.testing.assert_array_equal(tifffile.imread(path), movie)
 
 
+@pytest.mark.parametrize("shape", [(3, LY, LX), (4, LY, LX), (FRAMES, LY, 3)])
+def test_shapes_tifffile_reads_as_rgb_match_writing_the_whole_movie(tmp_path, shape):
+    movie = np.random.default_rng(0).integers(-3000, 30000, shape).astype(np.int16)
+    reg_file = tmp_path / "data.bin"
+    movie.tofile(reg_file)
+    ops = {"Ly": shape[1], "Lx": shape[2], "reg_file": str(reg_file)}
+
+    (path,) = binary_to_tiff(FakeIO, ops, str(tmp_path / "out"), "mc_images", 2)
+
+    expected = tmp_path / "expected.tif"
+    tifffile.imwrite(expected, movie)
+    assert open(path, "rb").read() == open(expected, "rb").read()
+
+
 class SizedBinaryFile(FakeBinaryFile):
     """Declares a frame count without any data, for the BigTIFF decision."""
 

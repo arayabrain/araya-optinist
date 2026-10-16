@@ -103,13 +103,17 @@ def binary_to_tiff(io, ops, output_dir, file_name, batch_size=None):
                 ):
                     yield from batch
 
-            tifffile.imwrite(
-                tmp_path,
-                frames(),
-                shape=(nframes, Ly, Lx),
-                dtype=np.int16,
-                bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
-            )
+            # tifffile stores these shapes as RGB, which 2022.3 cannot stream
+            if nframes in (3, 4) or Lx in (3, 4):
+                tifffile.imwrite(tmp_path, np.stack(list(frames())))
+            else:
+                tifffile.imwrite(
+                    tmp_path,
+                    frames(),
+                    shape=(nframes, Ly, Lx),
+                    dtype=np.int16,
+                    bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
+                )
         os.replace(tmp_path, tiff_path)
     except BaseException:
         if os.path.exists(tmp_path):
