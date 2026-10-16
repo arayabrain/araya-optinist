@@ -1,7 +1,7 @@
 """Helpers for configuration tests that read the terraform source as text.
 
-Shared by ``test_compute_config.py``, ``test_public_instance_config.py`` and
-``test_nat_instance_config.py``.
+Shared by ``test_compute_config.py``, ``test_ec2_instance_config.py``,
+``test_nat_instance_config.py`` and ``test_public_instance_config.py``.
 Regex-based, not an HCL parser: each helper assumes ``terraform fmt`` layout,
 with top-level blocks starting at column 0.
 """
@@ -34,6 +34,19 @@ def resource_block(tf: str, resource_type: str, name: str) -> str:
     )
     assert match, f'resource "{resource_type}" "{name}" not found'
     return match.group()
+
+
+def resource_blocks(tf: str, resource_type: str) -> dict:
+    """Return ``{name: source}`` for every ``resource "<type>"`` block in ``tf``."""
+    return {
+        match.group(1): match.group()
+        for match in re.finditer(
+            r'resource\s+"%s"\s+"(\w+)"\s*\{.*?%s'
+            % (re.escape(resource_type), NEXT_TOP_LEVEL_BLOCK),
+            tf,
+            re.DOTALL | re.MULTILINE,
+        )
+    }
 
 
 def data_block(tf: str, data_type: str, name: str) -> str:
@@ -73,3 +86,10 @@ def string_list(value: str) -> list:
     """Return the quoted items of a one-line list literal, e.g. ``["a", "b"]``."""
     assert value.startswith("[") and value.endswith("]"), f"not a list: {value}"
     return re.findall(r'"([^"]*)"', value)
+
+
+def identifier_list(value: str) -> list:
+    """Return the bare items of a one-line list literal, e.g. ``[user_data, ami]``,
+    as ``ignore_changes`` is written."""
+    assert value.startswith("[") and value.endswith("]"), f"not a list: {value}"
+    return [item.strip() for item in value[1:-1].split(",") if item.strip()]
