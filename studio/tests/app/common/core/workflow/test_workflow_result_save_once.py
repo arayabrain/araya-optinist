@@ -34,7 +34,11 @@ from studio.app.common.core.workflow.workflow import (
     NodeItem,
     RunItem,
 )
-from studio.app.common.core.workflow.workflow_result import WorkflowResult, _save_slot
+from studio.app.common.core.workflow.workflow_result import (
+    WorkflowMonitor,
+    WorkflowResult,
+    _save_slot,
+)
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.common.routers.run import run_id, run_result
@@ -384,17 +388,47 @@ async def test_a_poll_leaves_a_node_to_the_next_poll_while_another_save_runs(
 
 
 @pytest.mark.asyncio
-async def test_finalization_past_the_save_slot_wait_still_saves(finished_node):
-    with _save_slot(0), patch.object(
-        WorkflowResult, "OBSERVE_LOCK_WAIT_SECONDS", 0.1
-    ), patch("studio.app.common.core.workflow.workflow_result.logger") as log:
-        results = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall()
+async def test_finalization_waits_for_the_save_slot_rather_than_save_beside_it(
+    finished_node,
+):
+    held, release = threading.Event(), threading.Event()
+    saved_while_held = []
 
+    def hold_slot():
+        with _save_slot(0):
+            held.set()
+            release.wait(5)
+            saved_while_held.append((finished_node / "func1" / "behavior").exists())
+
+    holder = threading.Thread(target=hold_slot)
+    holder.start()
+    held.wait()
+    threading.Timer(0.3, release.set).start()
+    with patch.object(WorkflowResult, "OBSERVE_LOCK_WAIT_SECONDS", 0.1), patch(
+        "studio.app.common.core.workflow.workflow_result.logger"
+    ) as log:
+        results = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall()
+    holder.join()
+
+    assert saved_while_held == [False]
     assert results["func1"].status == "success"
-    assert (finished_node / "func1" / "behavior").is_dir()
     assert any(
         "Save slot still held" in call.args[0] for call in log.warning.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_save_is_not_recorded_as_a_dead_process(finished_node):
+    # Only func1, whose pickle is complete: func2 really would be a dead run's gap
+    with patch.object(WorkflowMonitor, "search_process", return_value=None):
+        with _save_slot(0):
+            await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(["func1"])
+        deferred = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+        await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe(["func1"])
+    saved = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+
+    assert deferred.success == "running"
+    assert saved.success == "success"
 
 
 @pytest.mark.asyncio

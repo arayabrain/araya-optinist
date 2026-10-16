@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from functools import partial
 from glob import glob
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 from fastapi import HTTPException, status
@@ -114,7 +114,7 @@ class WorkflowResult:
         )
 
         # observe node list
-        node_results = await self.__observe_nodes(
+        node_results, save_deferred = await self.__observe_nodes(
             observe_node_ids, expt_config, workflow_error, save_wait
         )
 
@@ -124,8 +124,9 @@ class WorkflowResult:
         )
 
         # If the workflow status observation is ongoing (maybe workflow is incomplete),
-        # check whether the actual process exists.
-        if is_workflow_observation_ongoing:
+        # check whether the actual process exists. A save left to the next poll is
+        # not a dead process's missing result.
+        if is_workflow_observation_ongoing and not save_deferred:
             # check workflow process exists
             current_process = self.monitor.search_process()
 
@@ -136,7 +137,7 @@ class WorkflowResult:
                 )
 
                 # re-run observe node list (reflects workflow error)
-                node_results = await self.__observe_nodes(
+                node_results, _ = await self.__observe_nodes(
                     observe_node_ids, expt_config, workflow_error, save_wait
                 )
 
@@ -181,11 +182,12 @@ class WorkflowResult:
         expt_config: ExptConfig,
         workflow_error: WorkflowErrorInfo,
         save_wait: float,
-    ) -> Dict[str, Message]:
+    ) -> Tuple[Dict[str, Message], bool]:
         """
-        Observe by Nodes
+        Observe by Nodes; also whether a save was left to the next poll
         """
         node_results: Dict[str, Message] = {}
+        save_deferred = False
 
         for node_id in observe_node_ids:
             # Check node processed status (inspect ExptConfig)
@@ -216,6 +218,7 @@ class WorkflowResult:
 
             if node_result.is_ready():
                 message = await node_result.observe(expt_function, save_wait)
+                save_deferred |= node_result.save_deferred
                 if message is not None:
                     node_results[node_id] = message
 
@@ -223,7 +226,7 @@ class WorkflowResult:
         if NodeResult.is_all_nodes_already_finished(expt_config):
             if not expt_config.hasNWB:  # latched before whole.nwb landed
                 self.__check_has_whole_nwb()
-            return node_results
+            return node_results, save_deferred
 
         # Check if whole.nwb file exists
         self.__check_has_whole_nwb()
@@ -277,7 +280,7 @@ class WorkflowResult:
                         target_files,
                     )
 
-        return node_results
+        return node_results, save_deferred
 
     def __is_workflow_observation_ongoing(
         self, observe_node_ids: List[str], messages: Dict[str, Message]
@@ -361,6 +364,7 @@ class NodeResult(BaseNodeResult):
         self.algo_name = None
         self.info = None
         self.node_pickle_path = None
+        self.save_deferred = False  # the save slot was busy; the next poll saves
         if not self.workflow_has_error:
             node_pickle_path = PickleReader.search_node_pickle_path(self.node_dirpath)
             if node_pickle_path:
@@ -390,15 +394,20 @@ class NodeResult(BaseNodeResult):
         # case) error or success in node
         else:
             slot = _save_slot(save_wait)
-            try:
-                slot.acquire()
-            except Timeout:
-                if not save_wait:
-                    return None
-                logger.warning(
-                    f"Save slot still held after {save_wait}s, saving without it: "
-                    f"[{self.workspace_id}/{self.unique_id}/{self.node_id}]"
-                )
+            # Finalization waits as long as it takes: saving beside another save
+            # would defeat the limit. A dead holder's lock is freed by the OS.
+            while True:
+                try:
+                    slot.acquire()
+                    break
+                except Timeout:
+                    if not save_wait:
+                        self.save_deferred = True
+                        return None
+                    logger.warning(
+                        f"Save slot still held after {save_wait}s, still waiting: "
+                        f"[{self.workspace_id}/{self.unique_id}/{self.node_id}]"
+                    )
             try:
                 # A worker process, so a large read and save hold neither the loop
                 # nor its GIL
@@ -417,8 +426,7 @@ class NodeResult(BaseNodeResult):
                         )
                     )
             finally:
-                if slot.is_locked:
-                    slot.release()
+                slot.release()
             if message is None:
                 return None
 
