@@ -1,3 +1,4 @@
+import contextlib
 import os
 import re
 import shutil
@@ -37,48 +38,83 @@ def distribute_params_to_groups(flat_params: dict, groups: dict) -> dict:
     return pathed
 
 
+# The CaImAn releases whose save_memmap save_memmap_c_order reproduces (1.12's
+# is the same code as 1.11.4's); any other goes through caiman.save_memmap
+SAVE_MEMMAP_VERIFIED_CAIMAN = ("1.11.", "1.12.")
+# float32 bytes per block of pixel rows; a block and one temporary are in memory
+C_ORDER_BLOCK_BYTES = 128 << 20
+
+
+def _write_block(f, block):
+    block.tofile(f)
+
+
+def save_memmap_c_order_fallback(filenames: list, border_to_0: int = 0):
+    """
+    Why save_memmap_c_order passes this call to caiman.save_memmap, or None when
+    it writes the file itself as (x + float32(0.0001)) + float32(0) per value.
+    """
+    import caiman
+
+    if not caiman.__version__.startswith(SAVE_MEMMAP_VERIFIED_CAIMAN):
+        return f"CaImAn {caiman.__version__} is not 1.11 or 1.12"
+    if len(filenames) != 1:
+        return f"{len(filenames)} files"
+    if border_to_0 > 0:
+        return f"border_to_0={border_to_0} (border_nan is not 'copy')"
+    if not str(filenames[0]).endswith(".mmap"):
+        return "the input is not a memmap"
+    return None
+
+
 def save_memmap_c_order(
-    filenames: list, base_name: str, border_to_0: int = 0, batch_size: int = 200
+    filenames: list,
+    base_name: str,
+    border_to_0: int = 0,
+    block_bytes: int = C_ORDER_BLOCK_BYTES,
 ) -> str:
     """
     caiman.save_memmap(filenames, base_name=..., order="C", border_to_0=...) for
-    the single motion-corrected file caiman_mc passes, written batch_size frames
-    at a time instead of loading the whole movie (and three full-size copies of
-    it: the transposed copy and two additions) into memory.
+    the single motion-corrected file caiman_mc passes, without loading the whole
+    movie (and three full-size copies of it: the transposed copy and two
+    additions) into memory.
 
     Same file, same bytes: each value is (x + float32(0.0001)) + float32(0), as
-    save_memmap computes it, laid out pixels x time in C order. Anything else
-    (several files, border_to_0 > 0) is passed to caiman.save_memmap unchanged.
+    CaImAn 1.11's save_memmap computes it, laid out pixels x time in C order.
+    It is written in blocks of whole pixel rows, in file order. Anything else
+    (several files, border_to_0 > 0, another CaImAn release) is passed to
+    caiman.save_memmap unchanged.
     """
     import numpy as np
     from caiman import save_memmap
-    from caiman.mmapping import load_memmap, prepare_shape
+    from caiman.mmapping import load_memmap
     from caiman.paths import fn_relocated, generate_fname_tot
 
-    if (
-        len(filenames) != 1
-        or border_to_0 > 0
-        or not str(filenames[0]).endswith(".mmap")
-    ):
+    reason = save_memmap_c_order_fallback(filenames, border_to_0)
+    if reason:
+        logger.warning("caiman.save_memmap converts the movie in memory: %s", reason)
         return save_memmap(
             filenames, base_name=base_name, order="C", border_to_0=border_to_0
         )
 
     source, dims, T = load_memmap(filenames[0])  # pixels x time, F order
+    n_pixels = int(np.prod(dims))
     fname_tot = generate_fname_tot(base_name, dims, "C")
     fname_tot = fn_relocated(os.path.join(os.path.split(filenames[0])[0], fname_tot))
-    out = np.memmap(
-        fname_tot,
-        mode="w+",
-        dtype=np.float32,
-        shape=prepare_shape((int(np.prod(dims)), T)),
-        order="C",
-    )
-    for t in range(0, T, batch_size):
-        block = np.asarray(source[:, t : t + batch_size], dtype=np.float32)
-        out[:, t : t + batch_size] = block + np.float32(0.0001) + np.float32(0.0)
-    out.flush()
-    del out, source
+    rows = max(1, min(n_pixels, block_bytes // (4 * T)))
+    # Blocks of whole pixel rows are consecutive in the C-order file, so they
+    # are written in file order: a full disk raises OSError here, where a
+    # memory-mapped output would die of SIGBUS with nothing cleaned up
+    try:
+        with open(fname_tot, "wb") as f:
+            for p in range(0, n_pixels, rows):
+                block = np.asarray(source[p : p + rows], dtype=np.float32)
+                _write_block(f, block + np.float32(0.0001) + np.float32(0.0))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(fname_tot)  # no partial memmap left in the temp dir
+        raise
+    del source
 
     fname_new = fn_relocated(f"{fname_tot}_frames_{T}.mmap")
     try:
