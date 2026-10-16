@@ -202,15 +202,27 @@ async def run_id(
         # on; refuse before the runner rewrites the experiment's config files
         RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
-        runner = WorkflowRunner(
-            remote_bucket_name, workspace_id, uid, runItem, current_user.id
-        )
+        # An observer mid-save would record its result into the reset config
+        observe_lock = WorkflowResult(workspace_id, uid).observe_lock()
+        try:
+            observe_lock.acquire()
+        except Timeout:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail="The previous run's results are still being saved.",
+            )
+        try:
+            runner = WorkflowRunner(
+                remote_bucket_name, workspace_id, uid, runItem, current_user.id
+            )
 
-        # Download any remote-only input files before workflow runs
-        if RemoteStorageController.is_available():
-            await runner.ensure_input_data_local()
+            # Download any remote-only input files before workflow runs
+            if RemoteStorageController.is_available():
+                await runner.ensure_input_data_local()
 
-        runner.run_workflow(background_tasks)
+            runner.run_workflow(background_tasks)
+        finally:
+            observe_lock.release()
 
         # Refresh storage cache in background
         background_tasks.add_task(

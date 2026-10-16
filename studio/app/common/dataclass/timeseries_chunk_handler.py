@@ -102,7 +102,7 @@ class TimeSeriesChunkHandler:
 
     @staticmethod
     def _json_rows(values) -> list:
-        """2D array -> one list per row, NaN/Inf as None (null in JSON)"""
+        """Array -> nested lists (one per row), NaN/Inf as None (null in JSON)"""
         values = np.asarray(values)
         if values.dtype.kind == "f" and not np.isfinite(values).all():
             values = np.where(np.isfinite(values), values, None)

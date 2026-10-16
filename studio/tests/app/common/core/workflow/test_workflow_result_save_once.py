@@ -11,18 +11,26 @@ import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 from filelock import Timeout
 
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.workflow.workflow import NodeItem
+from studio.app.common.core.snakemake.smk import ForceRun
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+)
+from studio.app.common.core.workflow.workflow import Node, NodeData, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_result import WorkflowResult
+from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.dataclass.timeseries import TimeSeriesData
-from studio.app.common.routers.run import run_result
+from studio.app.common.routers.run import run_id, run_result
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass import BehaviorData
 
@@ -53,6 +61,30 @@ def poll():
         nodeDict=NodeItem(pendingNodeIdList=NODES),
         background_tasks=Mock(),
         remote_bucket_name="",
+    )
+
+
+def rerun():
+    nodes = {
+        node_id: Node(
+            id=node_id,
+            type="AlgorithmNode",
+            data=NodeData(label=node_id, param={}, path="", type="algorithm"),
+            position={"x": 0, "y": 0},
+            style={},
+        )
+        for node_id in NODES
+    }
+    return run_id(
+        workspace_id=WORKSPACE_ID,
+        uid=UNIQUE_ID,
+        runItem=RunItem(
+            nodeDict=nodes, forceRunList=[ForceRun(nodeId="func1", name="func1")]
+        ),
+        background_tasks=Mock(),
+        remote_bucket_name="",
+        current_user=Mock(id=None),
+        db=Mock(),
     )
 
 
@@ -163,6 +195,86 @@ async def test_a_cancelled_poll_frees_the_loop_and_holds_its_lock(finished_node)
 
 
 @pytest.mark.asyncio
+async def test_a_failed_save_answers_500_and_the_next_poll_retries(finished_node):
+    with patch(
+        "studio.app.common.routers.run.ExptConfigReader.ensure_synced_async",
+        new=AsyncMock(),
+    ), patch(
+        "studio.app.common.routers.run.ExperimentRecordService.is_available",
+        return_value=False,
+    ):
+        with patch.object(
+            TimeSeriesData, "save_json", side_effect=BrokenProcessPool("worker died")
+        ), patch(
+            "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+            ThreadPoolExecutor,
+        ):
+            with pytest.raises(HTTPException) as failed:
+                await poll()
+        assert failed.value.status_code == 500
+
+        func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+        assert (func1.success, func1.outputPaths) == ("running", None)
+        with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
+            pass
+
+        assert "func1" in (await poll()).nodeResults
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_mid_save_is_refused_so_the_save_cannot_land_in_it(
+    finished_node,
+):
+    started, finish = threading.Event(), threading.Event()
+
+    def slow_save(self, json_dir):
+        started.set()
+        finish.wait(3)
+        save_json(self, json_dir)
+
+    with patch.object(
+        TimeSeriesData, "save_json", autospec=True, side_effect=slow_save
+    ), patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        ThreadPoolExecutor,
+    ), patch(
+        "studio.app.common.routers.run.ExptConfigReader.ensure_synced_async",
+        new=AsyncMock(),
+    ), patch(
+        "studio.app.common.routers.run.ExperimentRecordService.is_available",
+        return_value=False,
+    ), patch(
+        "studio.app.common.routers.run._check_storage_quota", new=AsyncMock()
+    ), patch(
+        "studio.app.common.routers.run.ensure_structure_caches", new=AsyncMock()
+    ), patch(
+        "studio.app.common.routers.run.validate_input_edges"
+    ), patch(
+        "studio.app.common.routers.run.get_current_user_storage_usage",
+        new=AsyncMock(),
+    ), patch.object(
+        RemoteStorageController, "is_available", return_value=False
+    ), patch.object(
+        WorkflowRunner, "set_smk_config"
+    ):
+        task = asyncio.create_task(poll())
+        try:
+            assert await asyncio.to_thread(started.wait, 10)
+            with pytest.raises(HTTPException) as refused:
+                await rerun()
+        finally:
+            finish.set()
+            await task
+        assert refused.value.status_code == 423
+
+        assert await rerun() == UNIQUE_ID
+
+    func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+    assert (func1.success, func1.outputPaths) == ("running", None)
+    assert not (finished_node / "func1" / "func1.pkl").exists()
+
+
+@pytest.mark.asyncio
 async def test_finalization_waits_for_a_poll_mid_save(finished_node):
     held = threading.Event()
     saved_while_held = []
@@ -181,3 +293,19 @@ async def test_finalization_waits_for_a_poll_mid_save(finished_node):
 
     assert saved_while_held == [False]
     assert "func1" in results
+
+
+@pytest.mark.asyncio
+async def test_finalization_past_the_lock_wait_still_saves(finished_node):
+    with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock(), patch.object(
+        WorkflowResult, "OBSERVE_LOCK_WAIT_SECONDS", 0.1
+    ), patch("studio.app.common.core.workflow.workflow_result.logger") as log:
+        results = await WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall()
+
+    func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+    assert func1.success == "success"
+    assert func1.outputPaths == results["func1"].outputPaths
+    assert (finished_node / "func1" / "behavior").is_dir()
+    assert any(
+        "Observe lock still held" in call.args[0] for call in log.warning.call_args_list
+    )

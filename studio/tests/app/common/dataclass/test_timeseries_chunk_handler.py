@@ -33,6 +33,21 @@ def test_records_across_chunks_keep_nan_and_a_per_record_std(tmp_path):
     }
 
 
+def test_numeric_csv_rows_split_across_chunks(tmp_path):
+    with patch.object(Handler, "CHUNK_SIZE", 1):
+        CsvData(np.array([[1.5, np.nan, 2.0], [3.0, 4.0, 5.0]]), params={}).save_json(
+            str(tmp_path)
+        )
+
+    path = str(tmp_path / "csv")
+    index, columns = [0, 1, 2], ["data"]
+    assert Handler.load_index_map(path) == {"0": 0, "1": 1}
+    assert Handler.load_all_records(path) == {
+        "0": {"index": index, "columns": columns, "data": [[1.5], [None], [2.0]]},
+        "1": {"index": index, "columns": columns, "data": [[3.0], [4.0], [5.0]]},
+    }
+
+
 def test_a_mixed_csv_column_writes_nan_as_null(tmp_path):
     CsvData(np.array([["a", np.nan]], dtype=object), params={}).save_json(str(tmp_path))
 

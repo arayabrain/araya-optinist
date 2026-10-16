@@ -140,12 +140,16 @@ class WorkflowResult:
         return node_results
 
     def observe_lock(self, timeout: float = 0) -> FileLock:
-        """Held while observing, so two observers never save the same outputs"""
+        """Held while observing or resetting for a rerun, so neither overlaps a save.
+
+        LOCKFILE_DIR is container-local: it only excludes observers in this container.
+        """
         return FileLock(FileLockUtils.get_lockfile_path(self.workflow_dirpath), timeout)
 
     async def observe_overall(self) -> Dict[str, Message]:
         """
         Automatically observe all nodes
+        Blocks on the observe lock, so not for the API loop
         """
         # Finalization waits out a poll mid-save rather than save alongside it
         lock = self.observe_lock(timeout=self.OBSERVE_LOCK_WAIT_SECONDS)
