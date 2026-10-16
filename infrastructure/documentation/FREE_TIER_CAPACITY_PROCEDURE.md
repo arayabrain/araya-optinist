@@ -73,10 +73,11 @@ instance in the group = ECS desired count = ECS running count = healthy free tar
 still draining stays in the group, and the Free Manager keeps the ECS desired count at the group's
 instance count until it has gone, so the running count alone would call a draining group settled.
 
-**Timing, as measured on development** (custom AMI, no logging lifecycle hooks): the chain at N
-about 9 minutes after the floor is raised, most of it ECS placing the tasks once the new
-instances register. Back at baseline about 12 minutes after the floor is lowered when the surplus
-is 2 or more: one run, then the drain. A surplus of exactly 1 waits for three completed periods
+**Timing, as measured on development** (custom AMI; the launch hook as the boot wait, no
+terminate hook): the chain at N about 7 to 9 minutes after the floor is raised. Each new instance
+waits about 300 s in `Pending:Wait` while it boots and its ECS agent registers, so its target is
+never registered before it can answer; the rest is ECS placing the task. Back at baseline about
+12 minutes after the floor is lowered when the surplus is 2 or more: one run, then the drain. A surplus of exactly 1 waits for three completed periods
 first, about 15 minutes more. A `-high` alarm in `ALARM`, or a workflow on every candidate, holds
 the surplus until it clears.
 
@@ -179,13 +180,15 @@ fts_preflight
 | The chain is settled | A case started unsettled measures the settling |
 | No suspended process, no instance refresh running | Either stops a launch |
 | Scaling lock clear (no `1` in the last 20 minutes) | A set lock makes the Free Manager skip scaling, and the run looks silent |
-| No load or errors alarm in `ALARM` | `cpu-high` / `memory-high` scale out on their own and hold scale-in; an errors alarm means the Free Manager is failing |
+| No load, errors or unhealthy-hosts alarm in `ALARM` | `cpu-high` / `memory-high` scale out on their own and hold scale-in; an errors alarm means the Free Manager is failing; `free-tg-unhealthy-hosts` is what the cases watch for a new instance |
 | Schedule rule `ENABLED` | Every case is driven by the scheduled run |
 | NAT running | Off-hours, or a stopped environment |
 | Active users 0 | The cases need an exact count |
 
-It also prints the lifecycle hooks; the timings here assume only
-`ecs-managed-draining-termination-hook`. **Record the starting bounds** from the chain line as
+It also prints the lifecycle hooks. Expected: `development-optinist-launch-hook` (the boot wait)
+and `ecs-managed-draining-termination-hook`. A `-terminate-hook` as well means the retired hook
+was never deleted, and every scale-in takes a few minutes longer; see *Lifecycle Hooks* in
+[FREE_MANAGER_ARCHITECTURE.md](FREE_MANAGER_ARCHITECTURE.md). **Record the starting bounds** from the chain line as
 `<min0>` and `<max0>` (normally the environment's tfvars values): the cases restore to them.
 `fts_whoami` prints the idle threshold the Free Manager uses (`FREE_IDLE_THRESHOLD_MINUTES`); the
 cases below call it the idle threshold.
@@ -213,12 +216,14 @@ fts_log 10
 
 | Mark | Where it shows | Expected |
 |---|---|---|
-| T1 — launched | `fts_activities`: one `Launching a new EC2 instance` per added instance | Seconds after T0. No `Pending:Wait`: there is no launch hook |
-| T2 — ECS raised | `fts_log`: `Event Type: EC2 Instance Launch Successful`, then `Syncing ECS from <min0> to 3` | Within a second of the instances going `InService` |
-| T3 — serving | `fts_chain`: `CHAIN OK at 3` | Under 30 minutes; record the figure. Most of it is ECS placing the tasks: it fails while the new instances' agents register, and retries on its own schedule |
+| T1 — launched | `fts_activities`: one `Launching a new EC2 instance` per added instance; `fts_instances`: `Pending:Wait` | Seconds after T0 |
+| T2 — ECS raised | `fts_log`: `Event Type: EC2 Instance-launch Lifecycle Action`, then `Syncing ECS from <min0> to 3` | Within seconds of the launch, while the instances wait on the launch hook |
+| T3 — in service | `fts_instances`: `InService` | About 300 s after T1, when the launch hook ends |
+| T4 — serving | `fts_chain`: `CHAIN OK at 3` | Under 30 minutes; record the figure (about 7 to 9 minutes on development) |
 
-**Pass:** `CHAIN OK at 3` within 30 minutes of T0, nothing rejected, `free-manager-errors` `OK`
-(`fts_alarms`), and the next scheduled run logging `Calculated desired instances: 3`.
+**Pass:** `CHAIN OK at 3` within 30 minutes of T0, nothing rejected, `free-manager-errors` and
+`free-tg-unhealthy-hosts` `OK` throughout (`fts_alarms`): a new target is never unhealthy. The
+next scheduled run logs `Calculated desired instances: 3`.
 
 ### PP-2: What an apply does to a CLI floor
 
@@ -277,7 +282,7 @@ follows the same day; otherwise `fts_forget_token`.
 fts_set_bounds <min0> 3   # WRITE: the floor back; the maximum stays; desired left to the Free Manager
 ```
 
-Note the time: **T4**. Then:
+Note the time: **T0** (each case's marks start again from T0). Then:
 
 ```bash
 fts_log 10                # the next run: Calculated desired instances: <min0>, Scaling down from 3 to <min0>
@@ -294,7 +299,7 @@ fts_set_bounds <min0> <max0>   # WRITE: the ceiling back; refused while desired 
 ```
 
 **Pass:** the Free Manager, not the group's policy, removes the surplus (`Scaling down` in its
-log); `CHAIN OK at <min0>` at the starting bounds. Record T4 to the decision and T4 to the chain
+log); `CHAIN OK at <min0>` at the starting bounds. Record T0 to the decision and T0 to the chain
 settling.
 
 ---
@@ -343,7 +348,7 @@ fts_activities 3
 | Mark | Where it shows | Expected |
 |---|---|---|
 | T1 — the decision | `fts_log`: `Active users: 6`, `Calculated desired instances: 2`, `Scaling up from 1 to 2 instances`, `Scaling ASG … to desired capacity: 2`, `Successfully updated ECS service … to 2 tasks` | The first scheduled run after T0 (within 5 minutes) |
-| T2 — the launch | `fts_activities`: `Launching a new EC2 instance: <B>` | Seconds after T1. No `Pending:Wait` |
+| T2 — the launch | `fts_activities`: `Launching a new EC2 instance: <B>`; `fts_instances`: `Pending:Wait` for about 300 s (the launch hook), then `InService` | Seconds after T1 |
 | T3 — the second task running | `fts_chain`: ECS `2/2` | A few minutes after T2 |
 | T4 — serving | `fts_chain`: `CHAIN OK at 2` | Within about 10 minutes of T1 |
 
@@ -372,7 +377,8 @@ fts_map <U1>:<A> <U2>:<A> <U3>:<A> <U4>:<B> <U5>:<B> <U6>:<B>   # WRITE: the run
 Without this, every later run finds six users on one instance and rebalances again.
 
 **Pass:** T1 within one schedule period of T0; ASG and ECS desired raised together; the new
-instance `InService` with no lifecycle wait; `CHAIN OK at 2`; `free-manager-errors` `OK` throughout
+instance `InService` after the launch hook; `CHAIN OK at 2`; `free-manager-errors` and
+`free-tg-unhealthy-hosts` `OK` throughout
 (`fts_alarms`); and `fts_target` showing `2.0` from the run at T1 on.
 
 ### RS-2: New sessions reach the new instance
@@ -442,11 +448,11 @@ Record each run as a comment on the tracking issue, with this table.
 |---|---|
 | Date, commit deployed on development | |
 | Starting bounds, hooks present | |
-| PP-1: T0 → T1 (floor raised → launched); T0 → T3 (→ `CHAIN OK at 3`) | |
+| PP-1: T0 → T1 (floor raised → launched); T0 → T3 (→ `InService`); T0 → T4 (→ `CHAIN OK at 3`); `free-tg-unhealthy-hosts` stayed `OK` | |
 | PP-2: plan diff | |
 | PP-3: three idle runs, target and instances | |
 | PP-4: distinct `x-served-by-instance` values in 20 new sessions; sticky 5 of 5 | |
-| PP-5: T4 → decision; T4 → `CHAIN OK at <min0>`; who chose the instances | |
+| PP-5: T0 → decision; T0 → `CHAIN OK at <min0>`; who chose the instances | |
 | RS-1: T0 → T1 (count reaches 6 → decision); T1 → T4 (→ `CHAIN OK at 2`); skipped runs after T1 | |
 | RS-2: distinct values in 20 new sessions; sticky 5 of 5 | |
 | RS-3: users cleared → scale-in decision; → `CHAIN OK at 1` | |

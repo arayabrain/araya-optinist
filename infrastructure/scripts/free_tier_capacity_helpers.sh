@@ -163,11 +163,13 @@ fts_target() {
     --output text
 }
 
-# The alarms that hold or block scaling: the two load alarms (scale-out, and the
-# Free Manager's scale-in guard) and the Free Manager's own errors alarm.
+# The alarms a case reads: the two load alarms (scale-out, and the Free Manager's
+# scale-in guard), the Free Manager's own errors alarm, and the free target group's
+# unhealthy-hosts alarm, which a new instance must never trip.
 fts_alarms() {
   fts__aws cloudwatch describe-alarms --alarm-names development-optinist-cpu-high \
     development-optinist-memory-high development-free-manager-errors \
+    development-optinist-free-tg-unhealthy-hosts \
     --query 'MetricAlarms[].[AlarmName,StateValue]' --output text
 }
 
@@ -216,6 +218,7 @@ fts_preflight() {
   [ "$v" = "ENABLED" ] || { echo "STOP: $FTS_RULE is $v"; stops=$((stops + 1)); }
   echo "--- NAT"
   v=$(fts__aws ec2 describe-instances --filters "Name=tag:Name,Values=$FTS_NAT_NAME" \
+    "Name=instance-state-name,Values=pending,running,stopping,stopped" \
     --query 'Reservations[].Instances[].State.Name' --output text); echo "$v"
   case "$v" in *running*) ;; *) echo "STOP: NAT is not running (outside on-hours?)"; stops=$((stops + 1)) ;; esac
   echo "--- active users"; v=$(fts_active) || stops=$((stops + 1)); echo "$v"
