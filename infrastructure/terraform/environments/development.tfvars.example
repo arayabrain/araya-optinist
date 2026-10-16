@@ -87,12 +87,9 @@ asg_desired_capacity = 1
 # image_builder.tf (local.custom_ami_version), not here.
 use_custom_ami = false
 
-# NAT instance AMI, pinned. Changing it replaces the NAT instances: bump here,
-# full-apply (never a targeted apply), then promote the same id to production.
-# Record each bump on the tracking issue. See MAINTENANCE_PROCEDURES.md,
-# NAT Instance AMI Refresh. Find the latest with:
-#   aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-nat_ami_id = "<AMI_ID>"
+# The NAT instance AMI is not set here: it is pinned in the SSM parameter
+# /development/optinist/nat-ami-id. See MAINTENANCE_PROCEDURES.md, NAT Instance
+# AMI Refresh.
 
 # No test users initially
 test_users = []

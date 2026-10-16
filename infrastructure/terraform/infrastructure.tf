@@ -114,14 +114,11 @@ locals {
     systemctl daemon-reload
     systemctl enable nat-iptables.service
     systemctl start nat-iptables.service
-
-    # After the NAT is forwarding, so the update is off the egress critical path
-    yum update -y
   EOF
 }
 
 resource "aws_instance" "nat" {
-  ami                    = var.nat_ami_id
+  ami                    = data.aws_ami.nat_pinned.id
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public1.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
@@ -136,13 +133,17 @@ resource "aws_instance" "nat" {
 
   user_data = local.nat_user_data
 
-  # The AMI changes only when var.nat_ami_id is bumped, and the bump is applied
-  # with a full apply, never a targeted one (MAINTENANCE_PROCEDURES.md, NAT
-  # Instance AMI Refresh). user_data is ignored: a change stops and starts the
-  # instance in place, and runs only on first boot anyway; it takes effect at
-  # the next replacement
+  # The AMI changes only when the pin is bumped, and a bump is applied with a
+  # full apply, never a targeted one (MAINTENANCE_PROCEDURES.md, NAT Instance
+  # AMI Refresh).
+  # - create_before_destroy: a failed create leaves the old NAT forwarding, and
+  #   egress pauses only from the Elastic IP moving until the new instance's
+  #   user_data has set up forwarding
+  # - user_data is ignored: a change stops and starts the instance in place,
+  #   and runs only on first boot; it takes effect at the next replacement
   lifecycle {
-    ignore_changes = [user_data]
+    create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 
   tags = {
@@ -153,7 +154,7 @@ resource "aws_instance" "nat" {
 # Second NAT Instance in AZ 1c (optional, for HA)
 resource "aws_instance" "nat2" {
   count                  = var.enable_second_nat ? 1 : 0
-  ami                    = var.nat_ami_id
+  ami                    = data.aws_ami.nat_pinned.id
   instance_type          = "t3.nano"
   subnet_id              = aws_subnet.public2.id
   vpc_security_group_ids = [aws_security_group.nat_instance.id]
@@ -168,9 +169,11 @@ resource "aws_instance" "nat2" {
 
   user_data = local.nat_user_data
 
-  # Same as aws_instance.nat
+  # Same as aws_instance.nat. A bump replaces both NAT instances in the same
+  # apply, so both AZs pause together
   lifecycle {
-    ignore_changes = [user_data]
+    create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 
   tags = {
@@ -199,9 +202,39 @@ resource "aws_eip" "nat_instance2" {
   }
 }
 
+# NAT Instance AMI pin: one SSM parameter per environment, so every apply reads
+# the same value whichever branch or tfvars copy it runs from. Created at
+# rollout with the image the NAT instances run, then bumped with put-parameter,
+# never by Terraform (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh).
+# insecure_value: a String parameter, and value would show the AMI as
+# (sensitive value) in plans.
+data "aws_ssm_parameter" "nat_ami_id" {
+  name = "/${var.environment}/optinist/nat-ami-id"
+}
+
+# Resolving the pin fails the plan, before anything is destroyed, on an id that
+# does not exist in this region, is not Amazon's, or is not x86_64 (t3.nano).
+# include_deprecated: Amazon deprecates AL2023 images about 90 days after
+# creation.
+data "aws_ami" "nat_pinned" {
+  owners             = ["amazon"]
+  include_deprecated = true
+
+  filter {
+    name   = "image-id"
+    values = [data.aws_ssm_parameter.nat_ami_id.insecure_value]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+}
+
 # The latest AL2023 image on the default kernel line, for nat_ami_freshness.
-# insecure_value: the public parameter is not secret, and value would hide
-# the AMI id in the check's message.
+# Read at the top level, not inside the check: a check block's own data source
+# is printed in every plan, and these calls are the ones resolving the pin
+# already needs, so they add no new way for a plan to fail.
 data "aws_ssm_parameter" "nat_ami_latest" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
@@ -215,29 +248,17 @@ data "aws_ami" "nat_ami_latest" {
   }
 }
 
-# Warns on every plan and apply when the pinned NAT AMI is over 30 days older
-# than the latest image. Compared with the latest image, not today's date, so
-# a quiet month upstream does not fire it. A failed assertion, or a failed
-# lookup of the scoped data source, is a warning, never an error. A check block
-# allows one scoped data source, so the lookup that can fail goes here: Amazon
-# deprecates old images, and include_deprecated keeps them findable.
+# Warns when the pinned image is over 30 days older than the latest one; a
+# failed assertion is a warning, never an error. Compared with the latest
+# image, not today's date, so a quiet month upstream does not fire it.
+# Evaluated in full plans and applies only: -target skips check blocks.
 check "nat_ami_freshness" {
-  data "aws_ami" "pinned" {
-    owners             = ["amazon"]
-    include_deprecated = true
-
-    filter {
-      name   = "image-id"
-      values = [var.nat_ami_id]
-    }
-  }
-
   assert {
     condition = timecmp(
-      timeadd(data.aws_ami.pinned.creation_date, "720h"),
+      timeadd(data.aws_ami.nat_pinned.creation_date, "720h"),
       data.aws_ami.nat_ami_latest.creation_date
     ) >= 0
-    error_message = "NAT AMI ${var.nat_ami_id} is over 30 days behind ${data.aws_ami.nat_ami_latest.id}. Bump nat_ami_id on development, full-apply, then promote to production (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh)."
+    error_message = "NAT AMI ${data.aws_ami.nat_pinned.id} is over 30 days behind ${data.aws_ami.nat_ami_latest.id}. Bump /${var.environment}/optinist/nat-ami-id on development, full-apply, then promote to production (MAINTENANCE_PROCEDURES.md, NAT Instance AMI Refresh)."
   }
 }
 

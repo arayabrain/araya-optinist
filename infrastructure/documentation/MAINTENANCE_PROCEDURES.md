@@ -842,39 +842,60 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 ### NAT Instance AMI Refresh
 
 The NAT instances (`aws_instance.nat`, and `aws_instance.nat2` when `enable_second_nat` is set) run the
-AMI pinned in `nat_ami_id`, set in each environment's tfvars in the deployment checkout (tfvars are not in
-git). A newer image is taken by bumping the pin; Terraform then plans the replacement. AL2023 locks
-`dnf` to the release its image was built from, so the patch level of a NAT instance is the image it was
-launched from: refreshing means a newer image, not an update on the running instance.
+AMI pinned in the SSM parameter `/<environment>/optinist/nat-ami-id` (`/development/...` and
+`/subscr/...`). Every apply reads the same value, whichever branch or tfvars copy it runs from. A newer
+image is taken by bumping the parameter; Terraform then plans the replacement. AL2023 locks `dnf` to the
+release its image was built from, so the patch level of a NAT instance is the image it was launched
+from: refreshing means a newer image, not an update on the running instance.
 
-`user_data` is ignored (a change would stop and start the instance in place, and runs only on first
-boot), so an edit to the NAT `user_data` takes effect at the next replacement.
+Terraform resolves the pin through `data.aws_ami.nat_pinned`, so a pin that does not exist in this
+region, is not Amazon's or is not x86_64 fails the plan before anything is destroyed. The instances are
+`create_before_destroy`: a failed create leaves the old NAT running. `user_data` is ignored (a change
+would stop and start the instance in place, and runs only on first boot), so an edit to the NAT
+`user_data` takes effect at the next replacement.
 
-**Why it is deliberate.** Replacing a NAT instance takes private-subnet internet egress down for two to five
-minutes: SSM sessions, Firebase authentication and any external API call fail meanwhile. The replacement
-must also be applied together with its dependents — the Elastic IP and both private route tables — or they
-keep pointing at the destroyed instance. A `-target` apply never includes them, so **never replace a NAT
-instance in a targeted apply**.
+**Why it is deliberate.** A replacement pauses private-subnet internet egress from the moment the
+Elastic IP moves to the new instance until its `user_data` has set up forwarding: SSM sessions, Firebase
+authentication and any external API call fail meanwhile. With `enable_second_nat` (production) both NAT
+instances are replaced in the same apply, so **both AZs pause together**. The replacement must also be
+applied together with its dependents — the Elastic IP and both private route tables — or they keep
+pointing at the old instance. A `-target` apply never includes them, so **never replace a NAT instance
+in a targeted apply**.
 
 **Rules.**
 
-- **Development first.** Production gets only an id development has already run.
+- **Development first.** Production gets only an id development has already run, in the same region
+  (AMI ids are regional).
 - **Full-apply a bump straight away**, on the environment bumped. Until it is applied, any targeted apply
   that reaches the NAT through a dependency (the dev scheduler Lambda, for one) pulls the replacement in
   without the Elastic IP and the routes.
 - **Production in its own apply**, not inside a release apply: a release apply that also replaces the NAT
   mixes an egress gap into an apply that is about something else. It can follow the release in the same
   window, announced as an egress gap.
-- **Record each bump** on the tracking issue: date, environment, old id, new id. tfvars have no history of
-  their own.
+- **Apply only from a branch that reads the pin.** A branch cut before the pin still takes the newest
+  image itself and plans a NAT replacement on most applies; merge `develop-main` into it first.
+- SSM keeps each bump: `aws ssm get-parameter-history --name /<environment>/optinist/nat-ami-id`.
 
-**1. Check whether a refresh is due.** Every plan and apply warns when the pin is over 30 days older than
-the latest AL2023 image on the default kernel line (`check "nat_ami_freshness"`; a warning, never an
-error). To check by hand, compare each NAT instance's image with the latest one, and its `user_data`
-with the configuration about to be applied:
+**0. Set up for the environment.** Profile and backend first, so a plan cannot read one environment's
+tfvars against the other's state:
 
 ```bash
-ENV_PREFIX=subscr-optinist   # development: <environment>-optinist
+export AWS_PROFILE=<the profile for the account hosting the environment>
+TF_ENV=development   # the tfvars and backend file names: development or production
+ENV=development      # the Terraform var.environment value: development or subscr
+ENV_PREFIX=${ENV}-optinist
+cd infrastructure/terraform
+terraform init -reconfigure -backend-config="backends/${TF_ENV}.hcl"
+```
+
+**1. Check whether a refresh is due.** Full plans and applies warn when the pin is over 30 days older
+than the latest AL2023 image on the default kernel line (`check "nat_ami_freshness"`; a warning, never
+an error; `-target` skips it). To check by hand, compare the pin and each NAT instance's image with the
+latest one, and its `user_data` with the configuration about to be applied:
+
+```bash
+aws ssm get-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --query Parameter.Value --output text
 
 aws ec2 describe-instances --region ap-northeast-1 \
   --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
@@ -885,7 +906,7 @@ aws ec2 describe-instances --region ap-northeast-1 \
 # The latest AL2023 image on the default kernel line (what the check compares the pin with)
 aws ssm get-parameter --region ap-northeast-1 \
   --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
-  --query 'Parameter.[Value,LastModifiedDate]' --output table
+  --query Parameter.Value --output text
 
 # The user_data an instance launched with, against local.nat_user_data on the checked-out
 # branch (run from the repository root, once per instance id above). No output: identical
@@ -900,30 +921,35 @@ The `user_data` comparison is what shows whether a `user_data` change is pending
 not: a stop and start resets it (development's NAT restarts every day), but `user_data` runs only on
 first boot.
 
-If every NAT instance already runs the latest image, and its `user_data` matches, there is nothing to
-do.
+If the pin and every NAT instance are on the latest image, and the `user_data` matches, there is nothing
+to do.
 
-**2. Choose the window.** Production: a low-traffic time, announced like any other maintenance.
-Development: during the dev scheduler's daytime hours, while the NAT is running.
+**2. Choose the window.** Production: a low-traffic time, announced like any other maintenance, as an
+egress pause in both AZs. Development: during the dev scheduler's daytime hours, while the NAT is running.
 
-**3. Bump the pin and plan as a full plan**, without `-target`, and save it. In the deployment checkout,
-set `nat_ami_id` in `infrastructure/terraform/environments/<ENV>.tfvars`: on development, the latest id
-from step 1; on production, the id in `development.tfvars`. If only the `user_data` changed and the id
-stays, replace instead with `-replace=aws_instance.nat` (and `-replace='aws_instance.nat2[0]'` with
-`enable_second_nat = true`).
+**3. Bump the pin and plan as a full plan**, without `-target`, and save it. Note the current id first:
+it is the rollback (step 6). The new id: on development, the latest one from step 1; on production, the
+one development runs (`/development/optinist/nat-ami-id`). If only the `user_data` changed and the id
+stays, skip the bump and add `-replace=aws_instance.nat` to the plan (and `-replace='aws_instance.nat2[0]'`
+with `enable_second_nat = true`).
 
 ```bash
-cd infrastructure/terraform
-# Outside the tree: a saved plan holds every variable value
-PLAN=$(mktemp "${TMPDIR:-/tmp}/tfplan-nat-refresh.XXXXXX")
-terraform plan -var-file=environments/<ENV>.tfvars -out="$PLAN"
+OLD_AMI=$(aws ssm get-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --query Parameter.Value --output text); echo "rollback id: ${OLD_AMI}"
+aws ssm put-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --type String --overwrite --value <new id>
+
+# Outside the tree, and removed however the shell exits: a saved plan holds every variable value
+PLAN=$(mktemp "${TMPDIR:-/tmp}/tfplan-nat-refresh.XXXXXX"); trap 'rm -f "$PLAN"' EXIT
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
 ```
 
-The plan must contain all of these together:
+A pin the plan cannot resolve fails it (`Your query returned no results`): put the old id back and check
+the new one's region and architecture. The plan must contain all of these together:
 
 | Resource | Expected change |
 |---|---|
-| `aws_instance.nat` (and `aws_instance.nat2[0]`) | Replaced: `ami` to the new `nat_ami_id`, and `user_data` if it changed |
+| `aws_instance.nat` (and `aws_instance.nat2[0]`) | Replaced, create before destroy (`+/-`): `ami` to the new pin, and `user_data` if it changed |
 | `aws_eip.nat_instance` (and `aws_eip.nat_instance2[0]`) | Updated in place: `instance` |
 | `aws_route_table.private1`, `aws_route_table.private2` | Updated in place: the route's `network_interface_id` |
 | Development only: `aws_lambda_function.dev_scheduler[0]`, `aws_iam_role_policy.dev_scheduler_permissions[0]` | Updated in place: the NAT instance id |
@@ -934,11 +960,10 @@ Anything else in the plan is unrelated drift: resolve it, or accept it deliberat
 
 ```bash
 terraform apply "$PLAN"
-rm -f "$PLAN"
 ```
 
-**5. Verify and record.** Re-run the step 1 instance query: the new instance runs the pinned image. Then
-confirm that both private routes reach it and the Elastic IP follows it:
+**5. Verify.** Re-run the step 1 instance query: the new instance runs the pinned image, and the old one
+is gone. Then confirm that both private routes reach it and the Elastic IP follows it:
 
 ```bash
 aws ec2 describe-route-tables --region ap-northeast-1 \
@@ -953,8 +978,43 @@ aws ec2 describe-addresses --region ap-northeast-1 \
 ```
 
 Each route is `active` (not `blackhole`) on the new instance's interface, and each Elastic IP is
-associated with a new instance. A second `terraform plan` shows no change for the NAT resources. Record
-the bump on the tracking issue (date, environment, old id, new id).
+associated with a new instance. That shows the interface exists, not that it forwards. Prove egress from
+a private-subnet instance: the background instance is SSM-managed, and its SSM traffic itself leaves
+through the NAT, so the command answering is evidence too. The output must be a NAT Elastic IP:
+
+```bash
+BG_ID=$(aws ec2 describe-instances --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-background" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+CMD_ID=$(aws ssm send-command --region ap-northeast-1 --instance-ids "$BG_ID" \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["curl -sS -m 10 https://checkip.amazonaws.com"]' \
+  --query Command.CommandId --output text)
+sleep 10
+aws ssm get-command-invocation --region ap-northeast-1 --command-id "$CMD_ID" --instance-id "$BG_ID" \
+  --query '[Status,StandardOutputContent]' --output text
+```
+
+If it fails, the NAT's boot log shows whether `user_data` set up forwarding (the NAT instance has no SSM
+agent role): `aws ec2 get-console-output --region ap-northeast-1 --instance-id <NAT id> --latest
+--output text`. A second `terraform plan` shows no change for the NAT resources.
+
+**6. Roll back** if step 5 fails: put the noted id back with the same `put-parameter`, then a full plan
+and apply as in steps 3 and 4. That replaces the NAT instances again, onto the image they ran before.
+
+**Setting up the parameter** (once per environment, and before the first plan from a tree that reads
+it): create it with the image the NAT instances run today, so nothing is replaced. Both production NAT
+instances must run the same image; if they do not, bump to one of them deliberately.
+
+```bash
+aws ec2 describe-instances --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,ImageId]' --output text
+aws ssm put-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --type String --value <that ImageId>
+```
+
+A new environment, with no NAT yet, takes the latest id from step 1.
 
 ---
 

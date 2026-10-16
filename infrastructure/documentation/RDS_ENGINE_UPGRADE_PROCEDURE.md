@@ -1176,10 +1176,11 @@ bucket each falls in:
 | Drift | An AMI data source with `most_recent`, a JSON body, a recomputed hash | Usually harmless, but read the ones that replace rather than update |
 
 **A replacement is not an update.** Anything showing `delete,create` is down between the two; a NAT instance
-in that state takes the private subnets with it and the in-VPC checks in steps 11 to 14 fail meanwhile
-(the NAT instances no longer replace on AMI drift — only through *NAT Instance AMI Refresh* in
-MAINTENANCE_PROCEDURES.md — so one in this plan means something else forces it):
+in that state takes the private subnets with it and the in-VPC checks in steps 11 to 14 fail meanwhile:
 **retry them once the apply settles**, and record the gap so a soak metric is not attributed to the engine.
+A NAT replacement should not be in this plan at all. The NAT image is pinned
+(*NAT Instance AMI Refresh* in MAINTENANCE_PROCEDURES.md), so compare the pin with the NAT instances'
+`ImageId` first: a pin bumped and not yet applied, or a checkout from before the pin, forces one.
 
 #### The apply and what it must prove — steps 10 to 14
 
