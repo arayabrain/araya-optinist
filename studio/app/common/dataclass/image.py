@@ -40,16 +40,20 @@ def _tiff_shape(path: str) -> tuple:
         return tuple(int(n) for n in series.shape)
 
 
-# frames per read when splitting, bounded in bytes
+# frames per decoded read when splitting, bounded in bytes
 BATCH_BYTES = 64 << 20
 
 
 def iter_frame_batches(path: str, frames: int, batch_size: int):
     """
     The frames imageio.volread reads from a stack file, in batches along the
-    first axis: memory-mapped slices when its pixels are contiguous, else a
-    batch of pages decoded at a time when each page is one frame (compressed
-    stacks), and read in full only otherwise.
+    first axis: the whole file as one memory-mapped view when its pixels are
+    contiguous, else batch_size pages decoded at a time when each page is one
+    frame (compressed stacks), and read in full only otherwise.
+
+    The view uses no memory, so it is not split: a memmap filled from it in one
+    assignment has each page written once, where every batch would dirty most
+    pages again and a page written back in between would be written twice.
     """
     try:
         source = tifffile.memmap(path, mode="r")
@@ -57,8 +61,7 @@ def iter_frame_batches(path: str, frames: int, batch_size: int):
         # compressed or scattered pixels, not a TIFF, or a mount that cannot map
         source = None
     if source is not None:
-        for i in range(0, len(source), batch_size):
-            yield source[i : i + batch_size]
+        yield source
         return
     try:
         with tifffile.TiffFile(path) as tif:

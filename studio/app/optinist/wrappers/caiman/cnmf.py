@@ -175,13 +175,15 @@ def util_get_image_memmap_from_files(
     As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
     filled from the image files batch by batch, with the same values: the movie
     is not held in memory as a whole, nor a second time while being copied into
-    the memmap. A file is memory-mapped when its pixels are contiguous, else
-    decoded a batch of pages at a time when each page is one frame (compressed
-    stacks), and read in full only otherwise.
+    the memmap. A file is memory-mapped and assigned in one piece when its
+    pixels are contiguous, else decoded a batch of pages at a time when each
+    page is one frame (compressed stacks), and read in full only otherwise.
 
     The memmap is pixels x time, so a 4 KiB page holds 1024 consecutive frames
-    of one pixel: batches of about that many frames write each page about
-    once (smaller batches rewrite every page several times and run slower).
+    of one pixel: decoded batches of about that many frames write each page
+    about once (smaller batches rewrite every page several times and run
+    slower). A memory-mapped file needs no batches, and one assignment writes
+    each page once even where a pixel's frames do not start on a page.
     """
     import imageio
     import tifffile

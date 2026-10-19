@@ -128,25 +128,15 @@ def test_a_compressed_stack_is_never_read_whole(tmp_path, monkeypatch):
 
 
 def test_a_failed_fill_leaves_no_memmap_and_keeps_its_error(tmp_path, monkeypatch):
+    from studio.app.optinist.wrappers.caiman import cnmf
+
     path = write(tmp_path / "a.tif", 9, np.uint16)
-    mapped = tifffile.memmap
 
-    class FailsAfterOneBatch:
-        def __init__(self, source):
-            self.source, self.reads = source, 0
+    def fails_after_one_batch(path, frames, batch_size):
+        yield tifffile.imread(path)[:4]
+        raise OSError("read error")
 
-        def __len__(self):
-            return len(self.source)
-
-        def __getitem__(self, key):
-            self.reads += 1
-            if self.reads > 1:
-                raise OSError("read error")
-            return self.source[key]
-
-    monkeypatch.setattr(
-        tifffile, "memmap", lambda *a, **k: FailsAfterOneBatch(mapped(*a, **k))
-    )
+    monkeypatch.setattr(cnmf, "iter_frame_batches", fails_after_one_batch)
     out = tmp_path / "out"
     out.mkdir()
     with pytest.raises(OSError, match="read error"):

@@ -341,7 +341,8 @@ def test_split_parts_are_byte_identical_to_slices_of_data(
         n = 2 if split == "halves" else 3
         base, extra = divmod(frames, n)
         lengths = [base + 1 if i < extra else base for i in range(n)]
-    # parts start and end between batches (one frame each) or inside them
+    # decoded files come a frame or a whole file at a time, so parts start and
+    # end between batches or inside them; mapped files come whole
     monkeypatch.setattr(image_module, "BATCH_BYTES", batch_bytes)
 
     expected = split_as_before(image_data, str(tmp_path / "old"), lengths)
@@ -401,3 +402,18 @@ def test_split_refuses_a_file_that_reads_fewer_frames_than_its_headers(
     monkeypatch.setattr(image_module, "iter_frame_batches", one_frame_short)
     with pytest.raises(ValueError, match="read 9 frames, but its headers give 10"):
         image_data.split_image(str(tmp_path), n_files=2)
+
+
+@pytest.mark.parametrize(
+    "write, batches", [(_stack, [11]), (_zlib_stack, [4, 4, 3])], ids=["mapped", "zlib"]
+)
+def test_a_mapped_file_comes_as_one_view_decoded_pages_in_batches(
+    tmp_path, write, batches
+):
+    # one view costs no memory, and a memmap filled from it in one assignment
+    # writes each of its pages once
+    path = write(str(tmp_path / "movie.tif"))
+    read = list(image_module.iter_frame_batches(path, 11, 4))
+    assert [len(batch) for batch in read] == batches
+    assert isinstance(read[0], np.memmap) == (batches == [11])
+    np.testing.assert_array_equal(np.concatenate(read), tifffile.imread(path))
