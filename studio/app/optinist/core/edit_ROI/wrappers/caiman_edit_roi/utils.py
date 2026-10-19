@@ -20,7 +20,8 @@ def set_nwbfile(
     else:
         for i in range(n_cells):
             kargs = {}
-            kargs["image_mask"] = edit_roi_data.im[i, :]
+            # im holds the ROI id inside the footprint and NaN outside
+            kargs["image_mask"] = (~np.isnan(edit_roi_data.im[i])).astype(np.float32)
             roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}

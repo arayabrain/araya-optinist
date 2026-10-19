@@ -93,3 +93,16 @@ async def test_a_delete_only_commit_keeps_the_recording_rate(file_path):
     nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
     series = nwbfile[NWBDATASET.FLUORESCENCE][NODE_ID]["Fluorescence"]
     assert series["rate"] == RATE
+
+
+@pytest.mark.asyncio
+async def test_a_commit_exports_binary_footprints_as_nwb_masks(file_path):
+    EditROI(file_path=file_path).delete([2])
+    await EditROI(file_path=file_path).commit()
+
+    nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
+    masks = [roi["image_mask"] for roi in nwbfile[NWBDATASET.ROI][NODE_ID]["roi_list"]]
+    for i in range(2):
+        expected = np.zeros(SHAPE)
+        expected[i, :] = 1
+        np.testing.assert_array_equal(masks[i], expected)
