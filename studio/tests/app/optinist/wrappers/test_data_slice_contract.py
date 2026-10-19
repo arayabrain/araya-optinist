@@ -9,6 +9,7 @@ from studio.app.common.core.rules.file_writer import FileWriter
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.dataclass import (
     BarData,
+    CsvData,
     HeatMapData,
     HTMLData,
     ScatterData,
@@ -336,3 +337,39 @@ def test_behaviour_from_the_hdf5_loader_slices_time_on_axis_0(tmp_path, output_d
     assert list(sliced.index) == list(range(5, 15))
     sliced.save_json(output_dir)
     assert sliced.output_path.data_shape == [2, 10]
+
+
+@pytest.mark.parametrize(
+    "make, time_label",
+    [
+        (lambda t, s: BehaviorData(t, std=s, index=np.arange(N_TIME) + 100), 105),
+        (lambda t, s: CsvData(t, params={}), 0),
+    ],
+    ids=["behaviour", "csv"],
+)
+def test_integer_time_spec_keeps_one_time_point(make, time_label, output_dir):
+    rng = np.random.default_rng(11)
+    table, std = rng.random((N_TIME, 3)), rng.random((N_TIME, 3))
+    data = make(table, std)
+
+    sliced = data_slice(data, output_dir, params={"slice_dims": ["5", ":"]})[
+        "sliced_data"
+    ]
+
+    assert type(sliced) is BehaviorData
+    np.testing.assert_array_equal(sliced.data, table[5:6])
+    if isinstance(data, BehaviorData):
+        np.testing.assert_array_equal(sliced.std, std[5:6])
+    assert list(sliced.index) == [time_label]
+    sliced.save_json(output_dir)
+    assert sliced.output_path.data_shape == [3, 1]
+
+
+def test_squeezing_a_singleton_time_axis_keeps_the_columns(output_dir):
+    row = np.random.default_rng(12).random((1, 3))
+
+    sliced = data_slice(
+        BehaviorData(row), output_dir, params={"slice_dims": ["squeeze", ":"]}
+    )["sliced_data"]
+
+    np.testing.assert_array_equal(sliced.data, row)

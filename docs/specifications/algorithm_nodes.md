@@ -607,7 +607,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - `start:stop`: range slice (Python semantics, `stop` excluded)
     - `start:stop:step`: strided slice, e.g. `0:8152:2` keeps every 2nd sample of the first 8152
     - `squeeze`: remove a dimension of size 1
-    - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time).
+    - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time). On the time axis of BehaviorData and CsvData, an integer or `squeeze` keeps the axis one sample long, e.g. `5, :` gives shape (1, columns).
   - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell of a FluoData input and downsample time, or `0:8152:2, :` for BehaviorData.
   - Unparsable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
   - **cell_normalization** [str, default: `none`]: `none` or `zscore`. Z-scores each row of a FluoData or TimeSeriesData input along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Other inputs, and slices that remove the time axis, are left unchanged with a warning. NaN samples stay NaN and a constant row becomes zeros.
