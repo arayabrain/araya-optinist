@@ -168,7 +168,8 @@ def suite2p_roi(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(images=ImageData(ops["filelist"]).data, im=im),
+        # reference only: suite2p edits read ops["reg_file"]
+        "edit_roi_data": EditRoiData(images=ImageData(ops["filelist"]), im=im),
         "nwbfile": nwbfile,
     }
 
