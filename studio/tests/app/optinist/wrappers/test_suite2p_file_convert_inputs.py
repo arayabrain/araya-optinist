@@ -93,6 +93,19 @@ def test_integer_input_is_listed_by_its_own_path_and_not_copied(tmp_path, dtype,
     assert list(out.iterdir()) == []
 
 
+def test_a_relative_input_path_is_listed_as_an_absolute_one(tmp_path, monkeypatch):
+    write(tmp_path / "in" / "movie.tif", movie_of(np.uint16))
+    monkeypatch.chdir(tmp_path)
+    use_sktiff_reader, _ = readers()
+
+    tiff_list = tiff_list_for_binary(
+        ["in/movie.tif"], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
+    )
+
+    # a relative name would be joined to data_path[0], the node directory
+    assert tiff_list == [str(tmp_path / "in" / "movie.tif")]
+
+
 @pytest.mark.parametrize("needs_tifffile", [(), ("movie.tif",)])
 @pytest.mark.parametrize("batch_bytes", [None, 2 * LY * LX * 4 + 1])
 def test_float32_copy_is_byte_identical_to_the_whole_file_copy(
@@ -145,6 +158,9 @@ def test_float32_copy_keeps_the_whole_array_result_for_nan_and_constant_input(
         ("float32 one frame", movie_of(np.float32, (LY, LX)), {}),
         ("uint16 3 frames", movie_of(np.uint16, (3, LY, LX)), {}),
         ("imagej hyperstack", movie_of(np.uint16, (FRAMES, 2, LY, LX)), {}),
+        # one IFD for the whole series, as ImageJ writes above 4 GB: page-wise
+        # reads would see one frame
+        ("uint16 single IFD", movie_of(np.uint16), {"truncate": True}),
     ],
 )
 def test_other_inputs_get_the_whole_file_copy(tmp_path, name, movie, kwargs):
@@ -270,11 +286,14 @@ def test_bigtiff_is_chosen_as_tifffile_chooses_it_for_the_whole_array(
 
 
 @pytest.mark.parametrize("error", [OSError("disk full"), KeyboardInterrupt()])
-def test_a_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch, error):
+def test_a_failed_copy_leaves_the_previous_copy_untouched(tmp_path, monkeypatch, error):
     monkeypatch.setattr(file_convert, "BATCH_BYTES", 2 * LY * LX * 4)
     path = write(tmp_path / "in" / "movie.tif", movie_of(np.float32))
     out = tmp_path / "out"
     out.mkdir()
+    # the copy from an earlier run of the node
+    previous = out / "movie.tif"
+    previous.write_bytes(b"earlier run")
     real_iter_batches = file_convert.iter_batches
     passes = []
 
@@ -290,7 +309,9 @@ def test_a_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch, error):
     use_sktiff_reader, _ = readers()
     with pytest.raises(type(error)):
         tiff_list_for_binary([path], str(out), PARAMS, open_tiff, use_sktiff_reader)
-    assert list(out.iterdir()) == []
+    # no partial file, under the final name or beside it
+    assert list(out.iterdir()) == [previous]
+    assert previous.read_bytes() == b"earlier run"
 
 
 def test_suite2p_file_convert_hands_tiff_to_binary_the_list(tmp_path, monkeypatch):
@@ -324,3 +345,34 @@ def test_suite2p_file_convert_hands_tiff_to_binary_the_list(tmp_path, monkeypatc
     # registration looks for bad_frames.npy there
     assert seen["data_path"] == [str(out)] * 2
     assert seen["save_path0"] == str(out)
+
+
+def test_the_reader_rule_takes_the_defaults_tiff_to_binary_takes(tmp_path, monkeypatch):
+    # a node saved without batch_size / force_sktiff: tiff_to_binary falls back
+    # to default_ops(), so the reader rule must probe with the same values
+    paths = [write(tmp_path / "in" / "a.tif", movie_of(np.uint16))]
+    out = tmp_path / "out"
+    out.mkdir()
+    probed = []
+
+    def use_sktiff_reader(path, batch_size=None):
+        probed.append(batch_size)
+        return False
+
+    def tiff_to_binary(ops):
+        return {**ops, "meanImg": np.zeros((LY, LX), np.float32)}
+
+    tiff = types.SimpleNamespace(
+        open_tiff=open_tiff, use_sktiff_reader=use_sktiff_reader
+    )
+    io = types.SimpleNamespace(tiff_to_binary=tiff_to_binary, tiff=tiff)
+    defaults = {"nplanes": 1, "batch_size": 500, "force_sktiff": False}
+    suite2p = types.SimpleNamespace(default_ops=lambda: dict(defaults), io=io)
+    monkeypatch.setitem(sys.modules, "suite2p", suite2p)
+    monkeypatch.setitem(sys.modules, "suite2p.io", io)
+    monkeypatch.setitem(sys.modules, "suite2p.io.tiff", tiff)
+
+    image = types.SimpleNamespace(path=paths)
+    file_convert.suite2p_file_convert(image, str(out), params={})
+
+    assert probed == [500]

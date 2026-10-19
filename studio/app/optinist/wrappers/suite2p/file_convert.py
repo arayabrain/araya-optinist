@@ -24,8 +24,10 @@ def suite2p_file_convert(
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_file_convert: %s", function_id)
 
+    # the reader rule reads force_sktiff / batch_size as tiff_to_binary will
+    ops = {**default_ops(), **params}
     tiff_list = tiff_list_for_binary(
-        image.path, output_dir, params, open_tiff, use_sktiff_reader
+        image.path, output_dir, ops, open_tiff, use_sktiff_reader
     )
     data_path_list = [output_dir] * len(tiff_list)
 
@@ -39,7 +41,7 @@ def suite2p_file_convert(
         "save_folder": "suite2p",
     }
 
-    ops = {**default_ops(), **params, **db}
+    ops = {**ops, **db}
 
     # save folderを指定
     create_directory(join_filepath([ops["save_path0"], ops["save_folder"]]))
@@ -63,7 +65,7 @@ BIGTIFF_BYTES = 2**32 - 2**25
 BATCH_BYTES = 64 << 20
 
 
-def tiff_list_for_binary(paths, output_dir, params, open_tiff, use_sktiff_reader):
+def tiff_list_for_binary(paths, output_dir, ops, open_tiff, use_sktiff_reader):
     """
     Name each input file for tiff_to_binary, copying only what it cannot read as is.
 
@@ -74,11 +76,12 @@ def tiff_list_for_binary(paths, output_dir, params, open_tiff, use_sktiff_reader
       written in batches;
     - anything else: the whole-file copy (normalised if float32), as before.
     tiff_to_binary then sees the same frames either way, so data.bin and meanImg
-    do not change. `open_tiff` and `use_sktiff_reader` are suite2p.io.tiff's,
+    do not change. `ops` is default_ops() with the node's params, as tiff_to_binary
+    gets them. `open_tiff` and `use_sktiff_reader` are suite2p.io.tiff's,
     passed in because suite2p is imported lazily.
     """
-    force_sktiff = bool(params.get("force_sktiff"))
-    batch_size = params.get("batch_size")
+    force_sktiff = bool(ops.get("force_sktiff"))
+    batch_size = ops.get("batch_size")
 
     tiff_list = []
     # the reader tiff_to_binary picks once, from the first listed file
