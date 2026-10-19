@@ -28,18 +28,28 @@ from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 logger = AppLogger.get_logger()
 
 
-def session_dff(session_estimates, assignments, frames_window):
-    """dff per union cell, sessions joined in time; NaN where assignments is NaN."""
+def session_rows(session_estimates, assignments, rows):
+    """Union cell rows per session joined in time; NaN where assignments is NaN."""
     blocks = []
     for j, estimates in enumerate(session_estimates):
-        n_frames = estimates.C.shape[1]
         matched = ~np.isnan(assignments[:, j])
-        block = np.full((len(assignments), n_frames), np.nan, dtype=np.float32)
-        block[matched] = caiman_dff(
-            estimates, assignments[matched, j].astype(int), n_frames, frames_window
-        )
+        cells = rows(estimates, assignments[matched, j].astype(int))
+        block = np.full((len(assignments), estimates.C.shape[1]), np.nan, cells.dtype)
+        block[matched] = cells
         blocks.append(block)
     return np.concatenate(blocks, axis=1)
+
+
+def session_fluorescence(session_estimates, assignments):
+    return session_rows(session_estimates, assignments, lambda e, cells: e.C[cells])
+
+
+def session_dff(session_estimates, assignments, frames_window):
+    return session_rows(
+        session_estimates,
+        assignments,
+        lambda e, cells: caiman_dff(e, cells, e.C.shape[1], frames_window),
+    )
 
 
 def union_footprints(spatial, assignments):
@@ -159,8 +169,7 @@ def caiman_cnmf_multisession(
 
     reg_files = int(len(split_image_paths) * reg_file_rate)
     kept = assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files]
-    assignments_filtered = np.array(np.nan_to_num(kept), dtype=int)
-    if assignments_filtered.shape[0] == 0:
+    if len(kept) == 0:
         raise Exception(
             f"No same cells found in {reg_files} or more "
             + f"out of {n_split_images} files. "
@@ -169,25 +178,15 @@ def caiman_cnmf_multisession(
 
     spatial_filtered = union_footprints(spatial, kept)
 
-    fluorescence = np.array(
-        [
-            np.concatenate(
-                [
-                    cnm_list[j].estimates.C[int(assignments_filtered[i, j])]
-                    for j in range(assignments_filtered.shape[1])
-                ]
-            )
-            for i in range(assignments_filtered.shape[0])
-        ]
-    )
-
-    dff = session_dff([cnm.estimates for cnm in cnm_list], kept, frames_window)
+    session_estimates = [cnm.estimates for cnm in cnm_list]
+    fluorescence = session_fluorescence(session_estimates, kept)
+    dff = session_dff(session_estimates, kept, frames_window)
 
     # contours plot
     thr_method = "nrg"
     swap_dim = False
 
-    iscell = np.concatenate([np.ones(assignments_filtered.shape[0], dtype=int)])
+    iscell = np.ones(len(kept), dtype=int)
 
     cell_ims = get_roi(spatial_filtered, roi_thr, thr_method, swap_dim, dims)
     cell_ims = np.stack(cell_ims).astype(float)
