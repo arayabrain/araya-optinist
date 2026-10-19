@@ -1,9 +1,12 @@
+import tracemalloc
+
 import numpy as np
 import pytest
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import CsvData, ImageData, TimeSeriesData
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
+from studio.app.optinist.wrappers.data_utils.data_slice import _dff as dff_rows
 from studio.app.optinist.wrappers.data_utils.data_slice import data_slice
 
 # init logging config at import so dictConfig cannot replace caplog's handler mid-test
@@ -259,6 +262,20 @@ def test_dff_keeps_float32(output_dir):
     x = (np.random.default_rng(16).random((2, 30)) + 1.0).astype(np.float32)
     out = _dff(FluoData(x, file_name="f"), output_dir)["sliced_data"].data
     assert out.dtype == np.float32
+
+
+@pytest.mark.parametrize("method", ["percentile", "maximin"])
+def test_dff_sliding_baseline_peaks_below_three_input_copies(method):
+    x = 2 + np.random.default_rng(18).random((64, 10000), dtype=np.float32)
+    x[::4, 5000] = np.nan
+    tracemalloc.start()
+    try:
+        dff_rows(x, 1, method, 50, 8.0, 10.0)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 3 * x.nbytes
 
 
 @pytest.mark.parametrize(

@@ -89,33 +89,33 @@ def _dff(values, axis, method, window, percentile, sigma):
     if method == "maximin":
         # Suite2p's dcnv.preprocess recipe, including its default reflect mode
         f0 = gaussian_filter1d(rows, sigma, axis=-1)
-        f0 = maximum_filter1d(minimum_filter1d(f0, window, axis=-1), window, axis=-1)
-        bad = ~finite.all(axis=-1)
-        if bad.any():
-            ok = finite[bad]
+        minimum_filter1d(f0, window, axis=-1, output=f0)
+        maximum_filter1d(f0, window, axis=-1, output=f0)
+        for i in np.flatnonzero(~finite.all(axis=-1)):
+            ok = finite[i]
             with np.errstate(invalid="ignore"):
-                sub = gaussian_filter1d(np.where(ok, rows[bad], 0), sigma, axis=-1)
-                sub /= gaussian_filter1d(ok.astype(dtype), sigma, axis=-1)
-            low = pd.DataFrame(sub.T).rolling(window, center=True, min_periods=1).min()
-            low = low.rolling(window, center=True, min_periods=1).max()
-            f0[bad] = low.to_numpy().T
+                sub = gaussian_filter1d(np.where(ok, rows[i], 0), sigma)
+                sub /= gaussian_filter1d(ok.astype(dtype), sigma)
+            low = pd.Series(sub).rolling(window, center=True, min_periods=1).min()
+            f0[i] = low.rolling(window, center=True, min_periods=1).max().to_numpy()
     elif 0 < window < n_time:
         half = window // 2
-        padded = np.pad(rows, ((0, 0), (half, half)), mode="edge")
-        rolled = pd.DataFrame(padded.T).rolling(window, center=True, min_periods=1)
-        f0 = rolled.quantile(percentile / 100).to_numpy(dtype=dtype).T
-        f0 = f0[:, half : half + n_time]
+        # pandas rolls in float64, so rows go one at a time to bound memory
+        f0 = np.empty_like(rows)
+        for i, row in enumerate(rows):
+            padded = pd.Series(np.pad(row, half, mode="edge"))
+            rolled = padded.rolling(window, center=True, min_periods=1)
+            f0[i] = rolled.quantile(percentile / 100).to_numpy()[half : half + n_time]
     else:
         f0 = np.nanpercentile(rows, percentile, axis=-1, keepdims=True)
         f0 = f0.astype(dtype, copy=False)
 
-    in_range = rows if finite.all() else np.where(finite, rows, np.nan)
-    spread = np.nanmax(in_range, axis=-1, keepdims=True)
-    spread -= np.nanmin(in_range, axis=-1, keepdims=True)
-    zero = np.broadcast_to(np.abs(f0) <= 1e-6 * spread, rows.shape)
+    spread = np.max(rows, axis=-1, keepdims=True, initial=-np.inf, where=finite)
+    spread -= np.min(rows, axis=-1, keepdims=True, initial=np.inf, where=finite)
     with np.errstate(divide="ignore", invalid="ignore"):
         out = rows - f0
-        out /= np.abs(f0)
+        out /= np.abs(f0, out=f0)
+    zero = np.broadcast_to(f0 <= 1e-6 * spread, rows.shape)
     out[zero] = np.nan
     n_zero = int(zero.any(axis=-1).sum())
     if n_zero:
