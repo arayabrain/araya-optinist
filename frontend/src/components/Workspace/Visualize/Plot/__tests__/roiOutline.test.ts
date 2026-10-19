@@ -26,13 +26,17 @@ describe("outlineRoi", () => {
   })
 
   it("keeps the edge pixels on both sides where two ROIs touch", () => {
+    // 3-wide ROIs, so the middle row's x = 3 and x = 4 touch only each other
     const roi = [
-      [_, _, _, _, _, _],
-      [_, 0, 0, 2, 2, _],
-      [_, 0, 0, 2, 2, _],
-      [_, _, _, _, _, _],
+      [_, 0, 0, 0, 2, 2, 2, _],
+      [_, 0, 0, 0, 2, 2, 2, _],
+      [_, 0, 0, 0, 2, 2, 2, _],
     ]
-    expect(outlineRoi(roi)).toEqual(roi)
+    expect(outlineRoi(roi)).toEqual([
+      [_, 0, 0, 0, 2, 2, 2, _],
+      [_, 0, _, 0, 2, _, 2, _],
+      [_, 0, 0, 0, 2, 2, 2, _],
+    ])
   })
 
   it("keeps a one-pixel ROI", () => {
