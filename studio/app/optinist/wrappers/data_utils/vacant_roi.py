@@ -23,22 +23,22 @@ def vacant_roi(
 
     logger.debug("params: %s", params)
 
-    D = LoadData(mc_images)
-    assert len(D.shape) == 3, "input array should have dimensions (width, height, time)"
+    shape = movie_shape(mc_images)
+    assert len(shape) == 3, "input array should have dimensions (width, height, time)"
 
     num_cell = 0
-    roi = np.zeros((D.shape[0] * D.shape[1], 0))  # Empty ROIs
-    num_frames = D.shape[2]
+    roi = np.zeros((shape[0] * shape[1], 0))  # Empty ROIs
+    num_frames = shape[2]
 
     # Handle zero ROIs case (always)
     if num_cell == 0:
-        empty_roi = np.full(D.shape[:2], np.nan)
-        im = np.zeros((0, *D.shape[:2]))  # Empty stack of ROIs
+        empty_roi = np.full(shape[:2], np.nan)
+        im = np.zeros((0, *shape[:2]))  # Empty stack of ROIs
         iscell = np.array([], dtype=int)
         timeseries = np.zeros((0, num_frames))
 
     # Create ROI list for NWB
-    roi_list = [{"image_mask": roi[:, i].reshape(D.shape[:2])} for i in range(num_cell)]
+    roi_list = [{"image_mask": roi[:, i].reshape(shape[:2])} for i in range(num_cell)]
 
     nwbfile = kwargs.get("nwbfile", {})
     logger.debug(f"nwbfile: {nwbfile}")
@@ -91,20 +91,10 @@ def vacant_roi(
     return info
 
 
-def LoadData(mc_images):
+def movie_shape(mc_images):
+    """(rows, columns, frames) of the first TIFF of mc_images, from its headers."""
     from PIL import Image
 
-    img_pile = Image.open(mc_images.path[0])
-    num_page = img_pile.n_frames
-
-    imgs = np.zeros((img_pile.size[0], img_pile.size[1], num_page))
-    for i in range(num_page):
-        img_pile.seek(i)
-        imgs[:, :, i] = np.asarray(img_pile)
-    img_pile.close()
-
-    maxval = np.max(imgs)
-    minval = np.min(imgs)
-    imgs = (imgs - minval) / (maxval - minval)
-
-    return imgs
+    with Image.open(mc_images.path[0]) as img_pile:
+        width, height = img_pile.size
+        return (height, width, img_pile.n_frames)
