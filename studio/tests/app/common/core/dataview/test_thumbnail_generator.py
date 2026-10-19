@@ -118,6 +118,9 @@ class TestRenderArrayAsThumbnail:
         )
         img = imageio.imread(output_path)
         assert not (img == 0).all(axis=1).any()
+        # the signal survives: a white background and the dark negative events
+        assert (img == 255).mean() > 0.5
+        assert (img <= 10).any()
 
 
 class TestGenerateHdf5Thumbnail:
