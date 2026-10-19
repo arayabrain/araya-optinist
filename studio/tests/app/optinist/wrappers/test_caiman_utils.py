@@ -234,6 +234,7 @@ def test_a_failed_fit_still_stops_the_pool(fake_caiman):
         ("low_rank_background", "none", None),
         ("low_rank_background", "", None),
         ("low_rank_background", False, False),
+        ("enclosed_thr", "0.5", 0.5),
     ],
 )
 def test_text_from_the_panel_is_parsed_to_caimans_type(key, value, expected):
@@ -411,3 +412,35 @@ def test_multisession_nwb_mask_puts_each_pixel_where_the_movie_has_it(
 
     roi = info["nwbfile"][NWBDATASET.ROI]["cnmf_multisession_x"]["roi_list"][0]
     assert np.argwhere(roi["image_mask"]).tolist() == [list(MASK_PIXEL)]
+
+
+@pytest.mark.parametrize(
+    "parents,key,text,group,expected",
+    [
+        (["patch_params"], "rf", "16", "patch", 16),
+        (["patch_params"], "rf", "0", "patch", None),
+        (
+            ["advanced", "preprocess_params"],
+            "n_pixels_per_process",
+            "1000",
+            "preprocess",
+            1000,
+        ),
+        (["multisession_params"], "enclosed_thr", "0.5", "register", 0.5),
+    ],
+)
+def test_text_typed_in_the_multisession_panel_reaches_caiman_typed(
+    run_multisession, parents, key, text, group, expected
+):
+    tree = ConfigReader.read(PARAMS_DIR / "cnmf_multisession.yaml")
+    section = tree
+    for parent in parents:
+        section = section[parent]
+    assert section[key] is None
+    section[key] = text
+    params = get_typecheck_params(panel_message(tree), "cnmf_multisession")
+
+    _, seen = run_multisession(params)
+
+    sent = seen["register"][key] if group == "register" else seen["params"][group][key]
+    assert sent == expected and type(sent) is type(expected)

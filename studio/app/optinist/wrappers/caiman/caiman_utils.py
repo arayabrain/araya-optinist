@@ -43,6 +43,7 @@ TEXT_PARAM_TYPES = {
     "rf": int,
     "n_pixels_per_process": int,
     "low_rank_background": bool,
+    "enclosed_thr": float,
 }
 
 

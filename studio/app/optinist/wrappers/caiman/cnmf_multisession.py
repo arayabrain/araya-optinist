@@ -11,6 +11,7 @@ from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, Roi
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
+    parse_text_params,
 )
 from studio.app.optinist.wrappers.caiman.cnmf import (
     caiman_dff,
@@ -85,7 +86,7 @@ def caiman_cnmf_multisession(
 
     flattened_params = {}
     recursive_flatten_params(params or {}, flattened_params)
-    params = flattened_params
+    params = parse_text_params(flattened_params)
 
     Ain = params.pop("Ain", None)
     roi_thr = params.pop("roi_thr", None)
