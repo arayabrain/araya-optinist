@@ -31,6 +31,12 @@ MODULE = "studio.app.common.db.database"
 # (dependency, kind, name). Each one is meant to be caller-supplied.
 INTENDED_DEPENDENCY_PARAMS = {
     (
+        "studio.app.common.core.workspace.workspace_dependencies."
+        "is_workspace_available",
+        "query",
+        "workspace_id",
+    ),
+    (
         "studio.app.common.core.workspace.workspace_dependencies.is_workspace_owner",
         "query",
         "workspace_id",

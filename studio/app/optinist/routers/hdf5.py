@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.workspace.workspace_dependencies import (
+    is_workspace_available,
+)
 from studio.app.common.dataclass.utils import is_plain_number
 from studio.app.common.routers.files import (
     HDF5_STRUCTURE_VERSION,
@@ -123,7 +126,12 @@ def _dict_to_hdf5_node(d: dict) -> HDF5Node:
     )
 
 
-@router.get("/hdf5/{file_path:path}", response_model=List[HDF5Node], tags=["outputs"])
+@router.get(
+    "/hdf5/{file_path:path}",
+    response_model=List[HDF5Node],
+    dependencies=[Depends(is_workspace_available)],
+    tags=["outputs"],
+)
 async def get_files(
     file_path: str,
     workspace_id: str,
