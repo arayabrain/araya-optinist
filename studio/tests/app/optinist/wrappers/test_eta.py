@@ -6,7 +6,10 @@ import numpy as np
 import pytest
 
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
-from studio.app.optinist.wrappers.optinist.basic_neural_analysis.eta import ETA
+from studio.app.optinist.wrappers.optinist.basic_neural_analysis.eta import (
+    ETA,
+    baseline_zscore,
+)
 
 N_TIME, N_CELL = 100, 3
 PARAMS = {
@@ -190,6 +193,22 @@ def test_constant_baseline_skips_that_event_for_that_cell_only(
     np.testing.assert_allclose(info["mean"].data[[0, 2]], untouched[[0, 2]])
     np.testing.assert_allclose(info["mean"].sem[1], info["mean"].std[1] / np.sqrt(2))
     assert not np.isnan(info["mean_trace"].data).any()
+
+
+@pytest.mark.parametrize(
+    "baseline",
+    [[np.nan, np.nan, np.nan], [0.5, np.nan, np.nan]],
+    ids=["all_nan", "one_finite_sample"],
+)
+def test_a_baseline_without_spread_is_skipped_never_divided(baseline):
+    data = np.random.default_rng(0).random((2, 9, 3))  # (event, frame, cell)
+    data[0, 1:4, 1] = baseline
+
+    z, skip = baseline_zscore(data, onset=4, baseline_window=3)
+
+    assert skip.tolist() == [[False, True, False], [False, False, False]]
+    assert np.isnan(z[0, :, 1]).all()
+    assert np.isfinite(z[0][:, [0, 2]]).all() and np.isfinite(z[1]).all()
 
 
 def test_skipped_pairs_are_logged_with_iscell_cell_numbers(neural, output_dir, caplog):
