@@ -1,17 +1,22 @@
-"""EFS mount path regression tests for compute.tf.
+"""Configuration regression tests for compute.tf.
 
-Ensures the snakemake volume containerPath is correct and
-consistent across all ECS task definitions.
+- EFS: the snakemake volume containerPath is correct and consistent across
+  all ECS task definitions.
+- Free-tier ASG scale-in: ECS managed draining can complete its lifecycle
+  hook, the termination policy spares long-held sticky sessions, and no
+  terminate hook of the group's own delays a termination.
+- Free-tier ASG scale-out: the launch hook holds InService until the
+  instance has booted.
+- Base premium instance: termination protection, with Terraform still able
+  to replace it.
 """
 
 import re
-from pathlib import Path
 
 import pytest
+from terraform_source import TERRAFORM_DIR, attribute, read, resource_block, string_list
 
-# Locate compute.tf relative to the project root
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-COMPUTE_TF = PROJECT_ROOT / "infrastructure" / "terraform" / "compute.tf"
+COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 
 EXPECTED_MOUNT_PATH = "/app/.snakemake"
 
@@ -57,3 +62,123 @@ class TestEFSMountPaths:
         assert all(
             p == EXPECTED_MOUNT_PATH for p in paths
         ), f"Mount path mismatch: {paths}"
+
+
+class TestFreeAsgScaleIn:
+    """The free-tier ASG's scale-in configuration."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        tf = read(COMPUTE_TF)
+        self.tf = tf
+        self.asg = resource_block(tf, "aws_autoscaling_group", "main")
+        self.capacity_provider = resource_block(tf, "aws_ecs_capacity_provider", "main")
+        self.service = resource_block(tf, "aws_ecs_service", "autoscaling")
+
+    def test_asg_carries_the_amazon_ecs_managed_tag(self):
+        """The ECS service-linked role may complete the managed-draining hook
+        only on a group carrying this tag; without it every scale-in waits
+        out the hook's 3600 s timeout. ECS adds the tag itself, and an apply
+        that does not declare it removes it."""
+        tags = re.findall(r'tag\s*\{\s*key\s*=\s*"([^"]+)"', self.asg)
+        assert "AmazonECSManaged" in tags
+
+    def test_capacity_provider_enables_managed_draining(self):
+        """Declared rather than left to the API default, so the hook the tag
+        exists for cannot disappear unnoticed."""
+        assert attribute(self.capacity_provider, "managed_draining") == '"ENABLED"'
+
+    def test_asg_terminates_the_newest_instance_first(self):
+        """With sticky sessions the oldest instance holds the longest-held
+        sessions, so ``OldestInstance`` removes the most established users."""
+        policies = string_list(attribute(self.asg, "termination_policies"))
+        assert policies == ["NewestInstance"]
+
+    def test_free_service_lets_a_drain_stop_its_task_at_once(self):
+        """Managed draining completes its hook only once the draining instance
+        has no tasks. At 0 the task stops without waiting for a replacement;
+        raised, the replacement has nowhere to go (one task per instance, and
+        the free task fills one), so the hook waits out its 3600 s timeout
+        again. Raising this needs that solved first."""
+        assert attribute(self.service, "deployment_minimum_healthy_percent") == "0"
+
+    def test_free_service_is_pinned_to_free_instances(self):
+        """The other tiers' services pin themselves with ``memberOf`` on the
+        ``tier`` attribute. Without the same pin a free replacement task
+        placed during a drain could land on another tier's instance with
+        spare capacity, leaving ECS to choose which of two free tasks to
+        stop when the count comes down."""
+        constraints = re.findall(
+            r'placement_constraints\s*\{\s*type\s*=\s*"memberOf"\s*'
+            r'expression\s*=\s*"([^"]+)"',
+            self.service,
+        )
+        assert constraints == ["attribute:tier == free"]
+
+    def test_asg_declares_no_initial_lifecycle_hook(self):
+        """Guards the ``ignore_changes`` carve-out: a block added here, plain
+        or ``dynamic``, would be silently ignored on existing groups. A hook
+        belongs in an ``aws_autoscaling_lifecycle_hook`` resource."""
+        assert not re.search(
+            r'^\s*(?:dynamic\s+")?initial_lifecycle_hook"?\s*\{',
+            self.asg,
+            re.MULTILINE,
+        )
+
+    def test_asg_ignores_changes_to_initial_lifecycle_hook(self):
+        """``initial_lifecycle_hook`` is ForceNew and never read back from
+        AWS, so the hooks a group was created with stay in state; without
+        this the removed blocks replace the group."""
+        match = re.search(r"ignore_changes\s*=\s*\[(.*?)\]", self.asg, re.DOTALL)
+        assert match, "ignore_changes not found"
+        assert "initial_lifecycle_hook" in re.findall(r"\w+", match.group(1))
+
+    def test_launch_hook_holds_in_service_until_the_instance_has_booted(self):
+        """InService starts the target-group registration, the ELB
+        health-check grace, the refresh warmup and the scale_up cooldown.
+        Without the wait the target is registered with nothing on port 8000,
+        goes unhealthy and fires free-tg-unhealthy-hosts on every scale-out,
+        and a slow start can outlast the grace."""
+        hook = resource_block(self.tf, "aws_autoscaling_lifecycle_hook", "launch")
+        assert attribute(hook, "autoscaling_group_name") == (
+            "aws_autoscaling_group.main.name"
+        )
+        assert attribute(hook, "lifecycle_transition") == (
+            '"autoscaling:EC2_INSTANCE_LAUNCHING"'
+        )
+        assert attribute(hook, "heartbeat_timeout") == "300"
+        assert attribute(hook, "default_result") == '"CONTINUE"'
+        # The name the group was created with, so the first apply on an
+        # existing group overwrites that hook rather than adding a second
+        assert attribute(hook, "name") == '"${local.env_prefix}-launch-hook"'
+
+    def test_no_terminate_hook_of_the_groups_own(self):
+        """A terminate hook nothing completes holds every scale-in in
+        ``Terminating:Wait`` for its timeout after ECS's draining hook has
+        completed. ECS installs and completes its own hook."""
+        transitions = re.findall(
+            r'resource\s+"aws_autoscaling_lifecycle_hook"\s+"[^"]+"\s*\{.*?'
+            r'lifecycle_transition\s*=\s*"([^"]+)"',
+            self.tf,
+            re.DOTALL,
+        )
+        assert "autoscaling:EC2_INSTANCE_TERMINATING" not in transitions
+
+
+class TestBasePremiumInstanceProtection:
+    """The Terraform-managed base premium instance."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.instance = resource_block(read(COMPUTE_TF), "aws_instance", "premium")
+
+    def test_termination_protection_is_on(self):
+        """Premium manager leaves the instance alone only while
+        PREMIUM_INSTANCE_IDS names it; an unset variable protects nothing.
+        Termination protection refuses TerminateInstances from any caller."""
+        assert attribute(self.instance, "disable_api_termination") == "true"
+
+    def test_terraform_can_still_replace_it(self):
+        """Without force_destroy, a Terraform replace or destroy of a
+        protected instance fails."""
+        assert attribute(self.instance, "force_destroy") == "true"

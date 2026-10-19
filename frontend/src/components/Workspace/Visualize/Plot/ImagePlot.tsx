@@ -48,6 +48,7 @@ import {
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
+  getDisplayErrorMessage,
   RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -787,7 +788,14 @@ const ImagePlotChart = memo(function ImagePlotChart({
         )
       }
     } catch (error) {
-      enqueueSnackbar("Failed to commit Edit ROI.", { variant: "error" })
+      // e.g. 409 when the movie this node read was removed or rewritten
+      enqueueSnackbar(
+        getDisplayErrorMessage(
+          error as RejectPayload | undefined,
+          "Failed to commit Edit ROI.",
+        ),
+        { variant: "error" },
+      )
     } finally {
       setEdit(false)
       setAction("")
