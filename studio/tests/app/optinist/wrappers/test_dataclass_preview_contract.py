@@ -98,6 +98,16 @@ def test_empty_behaviour_keeps_its_columns(json_dir):
     assert saved.output_path.data_shape == [N_COL, 0]
 
 
+@pytest.mark.parametrize("shape", [(0, N_COL), (N_TIME, 0)])
+def test_empty_behaviour_with_a_2d_std_keeps_std_per_record(shape, json_dir):
+    saved = BehaviorData(np.zeros(shape), std=np.zeros(shape), file_name="b")
+
+    saved.save_json(json_dir)
+
+    records = TimeSeriesChunkHandler.load_all_records(saved.json_path)
+    assert [r["columns"] for r in records.values()] == [["data", "std"]] * shape[1]
+
+
 def test_csv_saves_one_record_per_row(json_dir):
     data = RNG.random((N_TIME, N_COL))
     saved = CsvData(data, params={}, file_name="c")
