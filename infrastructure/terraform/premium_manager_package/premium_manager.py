@@ -41,7 +41,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import boto3
 import pymysql
@@ -1199,7 +1199,11 @@ def is_creation_lock_held(lock_name: str) -> bool:
 
 
 def get_available_standby_instances():
-    """Get standby instances from database (AWS state checked separately)"""
+    """Get standby instances that EC2 reports as stopped, oldest first.
+
+    Fails closed: if EC2 cannot be asked, returns no standbys rather than the
+    unchecked database list, which can include running instances.
+    """
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -1222,7 +1226,11 @@ def get_available_standby_instances():
             ec2: "EC2Client" = boto3.client("ec2")
 
             try:
-                response = ec2.describe_instances(InstanceIds=standby_instance_ids)
+                # An instance-id filter, not InstanceIds: one id missing from
+                # EC2 must not fail the call for the rest.
+                response = ec2.describe_instances(
+                    Filters=[{"Name": "instance-id", "Values": standby_instance_ids}]
+                )
                 aws_states = {}
                 for reservation in response["Reservations"]:
                     for instance in reservation["Instances"]:
@@ -1241,8 +1249,7 @@ def get_available_standby_instances():
 
             except Exception as aws_error:
                 print(f"Failed to check AWS states for standby instances: {aws_error}")
-                # Fall back to database list if AWS check fails
-                available_standby = db_standby_instances
+                available_standby = []
 
         return available_standby
 
@@ -5147,13 +5154,36 @@ def convert_running_instance_to_standby(instance_id: str):
         return False
 
 
+def _base_instance_ids() -> Set[str]:
+    """Terraform-managed base premium instances (PREMIUM_INSTANCE_IDS).
+
+    They stay in Terraform state and in the dev scheduler's start/stop list,
+    so premium manager must never terminate one, even while it is a standby.
+    An unset or empty variable protects nothing, so it is logged.
+    """
+    raw = os.environ.get("PREMIUM_INSTANCE_IDS", "")
+    ids = {i.strip() for i in raw.split(",") if i.strip()}
+    if not ids:
+        print("WARNING: PREMIUM_INSTANCE_IDS is empty; no base instance is protected")
+    return ids
+
+
 def cleanup_excess_standby_instances(excess_count: int):
-    """Remove excess standby instances (terminate oldest ones)"""
+    """Remove excess standby instances (terminate oldest ones).
+
+    Base instances are not candidates: one counted as a standby still
+    occupies a pool slot, and a dynamic standby is trimmed instead.
+    """
     removed_count = 0
 
     try:
         # Get all standby instances ordered by creation time (oldest first)
-        standby_instances = get_available_standby_instances()
+        base_instance_ids = _base_instance_ids()
+        standby_instances = [
+            s
+            for s in get_available_standby_instances()
+            if s["instance_id"] not in base_instance_ids
+        ]
 
         # Terminate the oldest excess instances
         for i in range(min(excess_count, len(standby_instances))):
@@ -5185,8 +5215,18 @@ def _parse_stop_time(state_transition_reason: str):
 
 
 def terminate_aged_stopped_instances():
-    """Terminate standby instances that have been stoppedlonger than
+    """Terminate standby instances that have been stopped longer than
     PREMIUM_STOPPED_MAX_AGE_HOURS.
+
+    Every active standby row is checked against EC2, and EC2 decides; the
+    row's instance_state is not read, since it can be stale either way (the
+    dev scheduler starts instances without touching it). Premium cleanup's
+    reconcile_instance_states() corrects the rows.
+    - Only an instance EC2 reports as stopped is aged
+    - Terraform-managed base instances (PREMIUM_INSTANCE_IDS) are never
+      terminated
+    - An instance missing from EC2 is skipped; cleanup_failed_standby_instances()
+      removes its row
 
     Uses EC2 StateTransitionReason to determine when each instance was actually
     stopped. Falls back to standby_created_at when the EC2 timestamp is not
@@ -5197,40 +5237,56 @@ def terminate_aged_stopped_instances():
     convert_running_instance_to_standby(). It is not a precise "stopped at"
     timestamp but serves as a conservative fallback.
     """
-    max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
-    ec2: "EC2Client" = boto3.client("ec2")
-
     try:
-        # Get stopped standby instances with fallback timestamp from the database
+        max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
+        base_instance_ids = _base_instance_ids()
+        ec2: "EC2Client" = boto3.client("ec2")
+
+        # Every active standby, whatever its row says: EC2 decides the state
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT instance_id, standby_created_at
                        FROM premium_user_assignments
-                       WHERE is_standby = 1 AND status = 'active'
-                         AND instance_state = 'stopped'"""
+                       WHERE is_standby = 1 AND status = 'active'"""
                 )
                 standby_rows = cursor.fetchall()
 
         if not standby_rows:
-            print("No stopped standby instances to check")
+            print("No standby instances to check")
             return 0
 
-        instance_ids = [row["instance_id"] for row in standby_rows]
+        instance_ids = [
+            row["instance_id"] for row in standby_rows if row["instance_id"]
+        ]
+        if not instance_ids:
+            print("No standby instances to check")
+            return 0
         db_fallback = {
             row["instance_id"]: row["standby_created_at"] for row in standby_rows
         }
 
-        # Query EC2 for actual stop times via StateTransitionReason
-        response = ec2.describe_instances(InstanceIds=instance_ids)
+        # Query EC2 for actual state and stop time (StateTransitionReason).
+        # An instance-id filter, not InstanceIds: one id missing from EC2
+        # must not fail the call for the rest. The filter must never be empty,
+        # and the loop acts only on ids it asked for. No pagination: standby
+        # counts are far below EC2's per-filter value limit.
+        response = ec2.describe_instances(
+            Filters=[{"Name": "instance-id", "Values": instance_ids}]
+        )
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = timedelta(hours=max_age_hours)
         env_prefix = EnvironmentConfig.get_env_prefix()
         aged_instances = []
+        found_ids = set()
 
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
                 instance_id = instance["InstanceId"]
+                if instance_id not in db_fallback:
+                    print(f"Skipping instance {instance_id}: not a requested standby")
+                    continue
+                found_ids.add(instance_id)
 
                 # Defense-in-depth: verify instance belongs to this environment
                 tags = {t.get("Key"): t.get("Value") for t in instance.get("Tags", [])}
@@ -5240,6 +5296,23 @@ def terminate_aged_stopped_instances():
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
                         f"environment prefix '{env_prefix}'"
+                    )
+                    continue
+
+                if instance_id in base_instance_ids:
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"Terraform-managed base instance"
+                    )
+                    continue
+
+                # A running instance has an empty StateTransitionReason, so
+                # the fallback below would date it from standby_created_at.
+                ec2_state = instance["State"]["Name"]
+                if ec2_state != InstanceState.STOPPED:
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"EC2 state is '{ec2_state}', not stopped"
                     )
                     continue
 
@@ -5257,6 +5330,9 @@ def terminate_aged_stopped_instances():
                         )
                 if stop_time and (now - stop_time) > cutoff:
                     aged_instances.append((instance_id, stop_time))
+
+        for instance_id in set(instance_ids) - found_ids:
+            print(f"Skipping instance {instance_id}: not found in EC2")
 
         if not aged_instances:
             print(f"No stopped standby instances older than {max_age_hours} hours")
@@ -5285,11 +5361,18 @@ def terminate_aged_stopped_instances():
 
 
 def terminate_standby_instance(instance_id: str):
-    """Terminate a standby instance and clean up database entry"""
+    """Terminate a standby instance and clean up database entry.
+
+    Refuses a base instance (PREMIUM_INSTANCE_IDS) whatever the caller chose.
+    """
+    if instance_id in _base_instance_ids():
+        print(f"Refusing to terminate {instance_id}: Terraform-managed base instance")
+        return False
+
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        print(f"Terminating excess standby instance {instance_id}")
+        print(f"Terminating standby instance {instance_id}")
 
         # Terminate the instance
         ec2.terminate_instances(InstanceIds=[instance_id])
@@ -5317,15 +5400,17 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
     Terminate all dynamic premium instances and clean up their DB entries.
     Called by the dev scheduler before stopping the environment.
 
-    Dynamic instances are those with tag Service: premium-tier that are NOT
-    in the base_instance_ids list (Terraform-managed base instances).
+    Dynamic instances are those with tag Service: premium-tier that are
+    neither in base_instance_ids nor in PREMIUM_INSTANCE_IDS (the
+    Terraform-managed base instances).
 
     Args:
         base_instance_ids: List of Terraform-managed instance IDs to preserve
-        (stop, not terminate)
+        (stop, not terminate). PREMIUM_INSTANCE_IDS is always preserved too,
+        so an event without the list cannot terminate a base instance.
     """
     ec2_client: "EC2Client" = boto3.client("ec2")
-    base_set = set(base_instance_ids)
+    base_set = set(base_instance_ids) | _base_instance_ids()
     result = {"terminated": [], "errors": [], "db_cleaned": 0}
 
     try:

@@ -209,3 +209,91 @@ def test_neuropil_follows_the_ring_geometry_on_a_ramped_background(tmp_path):
     # the disk is symmetric about y = 30, so its mean is the ramp at its centre
     assert np.allclose(ops["F"][2], FLAT + 30, atol=1e-2)
     assert np.allclose(ops["Fneu"][2], FLAT + RING_MEAN_Y, atol=1e-2)
+
+
+def test_commit_never_reads_the_movie_edit_roi_data_carries(tmp_path):
+    # suite2p_roi stores a reference to the input movie in EditRoiData; editing
+    # reads traces from the registered binary, so the reference is never opened
+    from studio.app.common.dataclass.image import ImageData
+
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    ops, im = build(tmp_path, movie)
+    unread = ImageData(str(tmp_path / "missing.tif"))  # opening it would raise
+    data = EditRoiData(
+        images=unread, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    )
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_x")
+
+    assert len(info["fluorescence"].data) == 3
+    assert info["edit_roi_data"].images is unread
+
+
+def test_suite2p_roi_stores_a_reference_to_the_movie(tmp_path, monkeypatch):
+    # runs the wrapper with a stubbed suite2p, so reading the movie back into
+    # EditRoiData (ImageData(...).data) fails here
+    import sys
+    import types
+
+    import tifffile
+
+    from studio.app.common.dataclass.image import ImageData
+    from studio.app.optinist.wrappers.suite2p.roi import suite2p_roi
+
+    movie = tmp_path / "movie.tif"
+    tifffile.imwrite(movie, np.zeros((FRAMES, LY, LX), np.int16))
+    ops, im = build(tmp_path, np.zeros((FRAMES, LY, LX)))
+    stat = ops.pop("stat")
+
+    class FakeROI:
+        def __init__(self, ypix, xpix, lam, med, do_crop):
+            self.ypix, self.xpix = ypix, xpix
+
+        def to_array(self, Ly, Lx):
+            plane = np.zeros((Ly, Lx))
+            plane[self.ypix, self.xpix] = 1
+            return plane
+
+    fake = types.ModuleType("suite2p")
+    fake.ROI = FakeROI
+    fake.default_ops = lambda: {"use_builtin_classifier": True}
+    fake.classification = types.SimpleNamespace(
+        builtin_classfile=tmp_path / "builtin.npy",
+        user_classfile=tmp_path / "user.npy",
+        classify=lambda stat, classfile: np.array([[1, 0.9], [0, 0.1]]),
+    )
+    fake.detection = types.SimpleNamespace(detect=lambda ops, classfile: (ops, stat))
+    fake.extraction = types.SimpleNamespace(
+        create_masks_and_extract=lambda ops, stat: (
+            ops,
+            np.array(stat, dtype=object),
+            ops["F"],
+            ops["Fneu"],
+            None,
+            None,
+        )
+    )
+    monkeypatch.setitem(sys.modules, "suite2p", fake)
+
+    def no_full_read(self):
+        # pytest.fail, not an AssertionError: the wrapper's except Exception
+        # around detection would swallow that
+        pytest.fail("suite2p_roi read the movie")
+
+    monkeypatch.setattr(ImageData, "data", property(no_full_read))
+
+    output_dir = tmp_path / "output" / "default" / "uid" / "suite2p_roi_x"
+    output_dir.mkdir(parents=True)
+    ops.update(
+        filelist=[str(movie)],
+        max_proj=np.zeros((LY, LX)),
+        Vcorr=np.zeros((LY, LX)),
+    )
+    info = suite2p_roi(Suite2pData(ops), str(output_dir), params={})
+
+    assert len(info["fluorescence"].data) == len(CELLS)  # detection really ran
+    images = info["edit_roi_data"].images
+    assert isinstance(images, ImageData)
+    assert images.path == [str(movie)]

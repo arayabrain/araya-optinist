@@ -218,8 +218,6 @@ resource "aws_iam_role_policy" "ecs_instance_enhanced_monitoring" {
           "logs:CreateLogStream",
           "logs:DescribeLogStreams",
           "autoscaling:Describe*",
-          "autoscaling:CompleteLifecycleAction",
-          "autoscaling:RecordLifecycleActionHeartbeat",
           "ec2:DescribeVolumes",
           "ec2:DescribeNetworkInterfaces",
           "ecs:ListTasks",

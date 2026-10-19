@@ -107,8 +107,10 @@ def get_required_env_var(var_name: str, default_value: str | None = None) -> str
 # which is how the group returns to its baseline after a busy period.
 USERS_PER_INSTANCE = 5
 
-# Scale-out wait ceiling (hook ~5 min + boot ~5 min + task ~7 min), bounded
-# further by the invocation's remaining time: scale_up_wait_budget
+# Scale-out wait ceiling, with headroom over the ~8 min measured to a healthy
+# target (the instance boots during the 5 min launch hook, then the task
+# starts). Bounded further by the invocation's remaining time:
+# scale_up_wait_budget
 MAX_WAIT_TIME = 1020
 CHECK_INTERVAL = 60
 
@@ -544,7 +546,7 @@ def sync_ecs_to_asg() -> Dict[str, Any]:
 
     Why the floor counts instances that are still terminating: on scale-in
     the ASG deregisters the instance and waits out the target group's
-    deregistration delay (300 s by default) *before* the terminate hook, and
+    deregistration delay (300 s by default) *before* ECS's draining hook, and
     ECS still sees the container instance as ACTIVE throughout. Lowering the
     desired count while it is in the group would let ECS pick which task to
     stop by AZ balance -- possibly a survivor's -- leaving no healthy free
@@ -823,8 +825,7 @@ def scale_and_rebalance(
 
             print(
                 f"\nWaiting for new instances to launch and become ECS-ready "
-                f"(up to {max_wait_time}s this invocation, includes lifecycle "
-                f"hooks)"
+                f"(up to {max_wait_time}s this invocation)"
             )
 
             rebalanced = []
