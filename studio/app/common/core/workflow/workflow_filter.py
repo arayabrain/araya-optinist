@@ -328,7 +328,10 @@ class WorkflowNodeDataFilter:
             info["non_cell_roi"] = RoiData(
                 np.nanmax(im[iscell_filtered == 0], axis=0, initial=np.nan),
                 output_dir=output_dir,
-                file_name="non_cell_roi",
+                # suite2p names its file noncell_roi
+                file_name=getattr(
+                    output_info.get("non_cell_roi"), "file_name", "non_cell_roi"
+                ),
             )
 
         return info

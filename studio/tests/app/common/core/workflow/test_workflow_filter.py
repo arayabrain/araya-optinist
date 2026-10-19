@@ -69,6 +69,20 @@ def test_caiman_regenerates_the_roi_images_with_or_without_dff(tmp_path, with_df
         assert "dff" not in info
 
 
+def test_the_filter_keeps_the_node_own_non_cell_file_name(tmp_path):
+    output = roi_node_output("suite2p_roi", with_dff=False)
+    output["non_cell_roi"] = RoiData(
+        np.full(SHAPE, np.nan), output_dir=str(tmp_path), file_name="noncell_roi"
+    )
+
+    info = WorkflowNodeDataFilter.filter_data(
+        output, PARAM, "suite2p_roi", str(tmp_path)
+    )
+
+    assert info["non_cell_roi"].file_name == "noncell_roi"
+    assert roi_ids(info["non_cell_roi"]) == {1, 2}
+
+
 def test_lccd_keeps_its_own_roi_images_and_trims_dff(tmp_path):
     output = roi_node_output("lccd_detect")
 
