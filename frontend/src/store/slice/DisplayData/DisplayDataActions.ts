@@ -1,6 +1,11 @@
 import { AxiosError } from "axios"
 
-import { createAsyncThunk } from "@reduxjs/toolkit"
+import {
+  AnyAction,
+  ThunkAction,
+  createAction,
+  createAsyncThunk,
+} from "@reduxjs/toolkit"
 
 import {
   TimeSeriesData,
@@ -43,6 +48,7 @@ import {
 } from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
+  DisplayData,
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
@@ -106,7 +112,8 @@ export const getTimeSeriesDataById = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; index: string; isFull?: boolean }
+  // background: a request the user did not make, whose failure leaves the plot up
+  { path: string; index: string; isFull?: boolean; background?: boolean }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesDataById`,
   async ({ path, index, isFull }, thunkAPI) => {
@@ -117,6 +124,25 @@ export const getTimeSeriesDataById = createAsyncThunk<
       return thunkAPI.rejectWithValue(e)
     }
   },
+)
+
+// Skips a record another plot already requested or loaded
+export const getTimeSeriesDataByIdOnce =
+  (arg: {
+    path: string
+    index: string
+  }): ThunkAction<void, { displayData: DisplayData }, unknown, AnyAction> =>
+  (dispatch, getState) => {
+    if (
+      getState().displayData.timeSeries[arg.path]?.byId?.[arg.index] == null
+    ) {
+      dispatch(getTimeSeriesDataById({ ...arg, background: true }))
+    }
+  }
+
+// Forgets the records whose request failed, so they are requested once more
+export const retryRejectedTimeSeries = createAction<{ path: string }>(
+  `${DISPLAY_DATA_SLICE_NAME}/retryRejectedTimeSeries`,
 )
 
 export const getTimeSeriesAllData = createAsyncThunk<
