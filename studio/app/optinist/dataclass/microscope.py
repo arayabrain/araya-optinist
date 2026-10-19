@@ -1,6 +1,7 @@
 import os
 
 from studio.app.common.dataclass.base import BaseData
+from studio.app.common.dataclass.image import ImageData
 from studio.app.optinist.microscopes.IsxdReader import IsxdReader
 from studio.app.optinist.microscopes.ND2Reader import ND2Reader
 from studio.app.optinist.microscopes.OIRReader import OIRReader
@@ -35,5 +36,19 @@ class MicroscopeData(BaseData):
         reader.load(self.path)
         return reader
 
-    def set_data(self, data):
-        self.data = data
+    def set_data(self, image: ImageData):
+        """Keep the converted stack as a reference; its frames are read only
+        when asked for (NWB with save_raw_image_to_nwb)."""
+        self.image = image
+
+    @property
+    def data(self):
+        # An older build stored the frames themselves
+        if "data" in self.__dict__:
+            return self.__dict__["data"]
+        return self.image.data
+
+    @data.setter
+    def data(self, frames):
+        # Experiment copy rewrites every attribute with setattr
+        self.__dict__["data"] = frames
