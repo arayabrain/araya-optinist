@@ -43,6 +43,33 @@ def test_every_cell_pair_is_written(output_dir):
     assert post["mat"].shape == (N_CELL, N_CELL, n_lags)
 
 
+@pytest.mark.parametrize("transpose", [False, True])
+def test_shuffle_baseline_leaves_the_input_and_real_pairs_untouched(
+    output_dir, transpose
+):
+    import scipy.signal as ss
+
+    cells = np.random.default_rng(1).random((N_CELL, N_TIME))
+    fluo = FluoData(cells.T.copy() if transpose else cells.copy(), file_name="f")
+    before = fluo.data.copy()
+
+    lags = ss.correlation_lags(N_TIME, N_TIME, mode="same")
+    keep = (lags >= -LAGS) & (lags <= LAGS)
+    expected = {
+        (i, j): ss.correlate(cells[i], cells[j], mode="same")[keep]
+        for i in range(N_CELL)
+        for j in range(i + 1, N_CELL)
+    }
+
+    info = cross_correlation(
+        fluo, output_dir, params={**PARAMS, "transpose": transpose}
+    )
+
+    np.testing.assert_array_equal(fluo.data, before)
+    for (i, j), ref in expected.items():
+        np.testing.assert_allclose(info[f"{i}-{j}"].data[1], ref)
+
+
 def test_cross_correlation_needs_two_cells(output_dir):
     fluo = FluoData(np.random.default_rng(5).random((1, N_TIME)), file_name="f")
     with pytest.raises(ValueError, match="at least 2 cells"):
