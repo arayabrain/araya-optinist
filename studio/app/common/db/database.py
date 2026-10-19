@@ -30,6 +30,13 @@ def get_cached_engine():
 
 
 def get_session(use_cache: bool = True):
+    """
+    Session on the process's cached engine, or on a new one.
+
+    - use_cache=False builds an engine that the caller owns: closing the
+      session does not dispose it, so call session.get_bind().dispose().
+    - session_scope(use_cache=False) does not dispose it either.
+    """
     engine = get_cached_engine() if use_cache else get_new_engine()
     SessionLocal = sessionmaker(
         autocommit=False, autoflush=False, expire_on_commit=False, bind=engine
@@ -50,9 +57,17 @@ def session_scope(use_cache: bool = True):
         session.close()
 
 
-def get_db(use_cache: bool = True):
+def get_db():
+    """
+    Request-scoped session on the cached engine.
+
+    - Used through Depends(); a few non-request callers take it with
+      next(get_db()).
+    - Takes no parameters: FastAPI turns every plain parameter of a dependency
+      into a request parameter of each operation that depends on it.
+    """
+    db = get_session()
     try:
-        db = get_session(use_cache)
         yield db
     finally:
         db.close()

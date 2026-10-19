@@ -723,7 +723,7 @@ aws autoscaling describe-instance-refreshes \
   --auto-scaling-group-name <environment>-optinist-asg --region ap-northeast-1
 ```
 
-**With one instance, the free tier is unavailable for the refresh — roughly 20 minutes.** Below `MinHealthyPercentage 100` a refresh terminates before it launches. The old instance goes first (300 s deregistration, then the group's 300 s terminate hook), then the new one launches (300 s launch hook, boot, ECS registration, 300 s warmup). One instance is production's normal state, so schedule the refresh as a maintenance window.
+**With one instance, the free tier is unavailable for the refresh — roughly 17 minutes.** Below `MinHealthyPercentage 100` a refresh terminates before it launches. The old instance goes first (300 s deregistration, then ECS's draining hook, completed once the task has stopped: about 9 minutes), then the new one launches (the 300 s launch hook, during which it boots and its task is placed, then the task's start: about 8 minutes to a healthy target). The 300 s warmup counts from `InService`, after the launch hook, so the refresh does not move on before the new instance is about to serve. One instance is production's normal state, so schedule the refresh as a maintenance window.
 
 Do not raise `MinHealthyPercentage` to 100 to avoid the gap. Launch-before-terminate holds the group above its `DesiredCapacity` without changing it, and the Free Manager keeps the ECS desired count at `DesiredCapacity`, so the new instance gets no task, never passes the ELB health check, and the refresh fails after retrying. Terminate-first works because the old task stops and ECS places it on the new instance.
 
