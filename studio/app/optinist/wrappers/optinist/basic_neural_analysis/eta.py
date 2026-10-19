@@ -93,7 +93,11 @@ def baseline_zscore(event_trigger_data, onset, baseline_window):
     # skipped: baseline constant to 1e-6 of its scale, or no finite sample
     skip = ~(sd > 1e-6 * np.maximum(scale, np.finfo(float).tiny))
     sd[skip] = np.nan
-    return (event_trigger_data - mean) / sd, skip[:, 0]
+    # In place: a full-size copy per step is GBs on a large recording
+    event_trigger_data = event_trigger_data.astype(float, copy=False)
+    event_trigger_data -= mean
+    event_trigger_data /= sd
+    return event_trigger_data, skip[:, 0]
 
 
 def nan_stats(data):
