@@ -107,7 +107,9 @@ def _dff(values, axis, method, window, percentile, sigma):
             rolled = padded.rolling(window, center=True, min_periods=1)
             f0[i] = rolled.quantile(percentile / 100).to_numpy()[half : half + n_time]
     else:
-        f0 = np.nanpercentile(rows, percentile, axis=-1, keepdims=True)
+        # nanpercentile skips NaN but not inf; copy only when an inf is there
+        source = np.where(finite, rows, np.nan) if np.isinf(rows).any() else rows
+        f0 = np.nanpercentile(source, percentile, axis=-1, keepdims=True)
         f0 = f0.astype(dtype, copy=False)
 
     spread = np.max(rows, axis=-1, keepdims=True, initial=-np.inf, where=finite)

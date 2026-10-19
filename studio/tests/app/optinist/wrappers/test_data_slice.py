@@ -366,6 +366,25 @@ def test_dff_percentile_nan_row_matches_nan_aware_reference(output_dir):
     np.testing.assert_allclose(out["sliced_data"].data[0], (x[0] - f0) / f0)
 
 
+@pytest.mark.parametrize("window", [0, 9], ids=["whole", "window"])
+@pytest.mark.parametrize("bad", [np.inf, -np.inf])
+def test_dff_percentile_treats_an_infinite_sample_as_missing(window, bad, output_dir):
+    x = _trace(80)[None, :].copy()
+    x[0, 40] = bad
+    missing = x.copy()
+    missing[0, 40] = np.nan
+
+    def dff(data):
+        result = _dff(
+            FluoData(data, file_name="f"), output_dir, f0_window_frames=window
+        )
+        return result["sliced_data"].data[0]
+
+    out = dff(x)
+    np.testing.assert_allclose(out, dff(missing))
+    assert np.isfinite(np.delete(out, 40)).all()
+
+
 @pytest.mark.parametrize("bad", [np.nan, np.inf])
 def test_dff_maximin_nonfinite_row_matches_away_from_the_gap(bad, output_dir):
     window, sigma, gap = 20, 3.0, 200
