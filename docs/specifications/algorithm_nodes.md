@@ -101,7 +101,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Output:** Suite2pData
 - **Parameters:**
   - force sktiff [boolean, default: False] Specifies whether or not to use scikit-image for reading in tiffs
-  - batch_size [int, default: 500]: How many frames to register simultaneously in each batch. This depends on memory constraints it will be faster to run if the batch is larger, but it will require more RAM.
+  - batch_size [int, default: 500]: How many frames are converted at a time. It is carried to suite2p_roi, which reads frames in batches of this size for detection and extraction. Registration uses its own batch_size (see suite2p_registration).
 
 ###### suite2p_registration
 
@@ -119,11 +119,13 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **Registration**
 
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Registration's peak memory grows with it: about 1 GB plus 25 MB per frame at 512 x 512, in proportion to the frame area. Results do not depend on it. When smooth_sigma_time > 0, registration uses suite2p_file_convert's batch_size instead, because temporal smoothing runs within each batch and its edges change the shifts; its memory is then that of the larger batch (about 13 GB at 512 x 512 and 500 frames). A workflow saved without this parameter, or without do_regmetrics, uses their defaults.
+    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
     - **smooth_sigma_time**: [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Might need this to be set to 1 or 2 for low SNR data.
     - **maxregshift** [float, default: 0.1]: Maximum shift as a fraction of the frame size. If the frame is Ly pixels x Lx pixels, then the maximum pixel shift in pixels will be max(Ly,Lx) \* ops[‘maxregshift’].
     - **align_by_chan** [int, default: 1]: Which channel to use for alignment (1-based, so 1 means 1st channel and 2 means 2nd channel). If you have a non-functional channel with something like td-Tomato expression, you may want to use this channel for alignment rather than the functional channel.
-    - **reg_tif** [bool, default: False]: Whether or not to write the registered binary to tiff files
+    - **reg_tif** [bool, default: False]: Whether or not to write the registered binary to tiff files, one file per registration batch
     - **th_badframes** [float, default: 1.0]: Involved with setting threshold for excluding frames for cropping. Set this smaller to exclude more frames.
 
   - **1P:**
