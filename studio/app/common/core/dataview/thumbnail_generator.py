@@ -18,6 +18,16 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 
+def uint8_histogram(values: np.ndarray) -> np.ndarray:
+    """Count of each uint8 value, in chunks: bincount casts its input to int64"""
+    flat = values.ravel()
+    step = 1 << 20
+    counts = np.zeros(256, dtype=np.int64)
+    for start in range(0, flat.size, step):
+        counts += np.bincount(flat[start : start + step], minlength=256)
+    return counts
+
+
 class ThumbnailGenerator:
     """Utility class for generating PNG thumbnails from various sources."""
 
@@ -135,7 +145,7 @@ class ThumbnailGenerator:
             # sparse events of either sign survive and symmetric data never flips
             ys = (np.arange(min(new_h, h)) * h / min(new_h, h)).astype(int)
             xs = (np.arange(min(new_w, w)) * w / min(new_w, w)).astype(int)
-            counts = np.cumsum(np.bincount(img_normalized.ravel(), minlength=256))
+            counts = np.cumsum(uint8_histogram(img_normalized))
             low, median, high = np.searchsorted(counts, [1, counts[-1] / 2, counts[-1]])
             pool = np.minimum if median - low > 2 * (high - median) else np.maximum
             img_normalized = pool.reduceat(pool.reduceat(img_normalized, ys), xs, 1)

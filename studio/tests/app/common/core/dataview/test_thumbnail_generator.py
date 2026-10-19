@@ -1,6 +1,7 @@
 """Tests for ThumbnailGenerator HDF5/MAT thumbnail generation."""
 
 import os
+import tracemalloc
 
 import h5py
 import imageio.v3 as imageio
@@ -9,7 +10,10 @@ import pytest
 from scipy.io import savemat
 
 from studio.app.common.core.dataview.dataview import DatasetPaths
-from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
+from studio.app.common.core.dataview.thumbnail_generator import (
+    ThumbnailGenerator,
+    uint8_histogram,
+)
 
 
 @pytest.fixture
@@ -298,3 +302,15 @@ class TestEdgeCases:
         assert os.path.exists(output)
         img = imageio.imread(output)
         assert img.ndim == 3  # placeholder is RGB
+
+
+def test_the_histogram_counts_in_chunks_without_an_int64_copy():
+    values = np.random.default_rng(0).integers(0, 256, 1 << 24, dtype=np.uint8)
+
+    tracemalloc.start()
+    counts = uint8_histogram(values)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    assert np.array_equal(counts, np.bincount(values, minlength=256))
+    assert peak < 16 << 20  # one int64 copy of all 16M values would be 128 MB
