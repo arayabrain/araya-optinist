@@ -36,6 +36,9 @@ const SOURCE = "/output/source"
 const TARGET_ID = 0
 const SOURCE_ID = 1
 const OTHER_SOURCE_ID = 2
+const IMAGE_ID = 3
+const ROI = "/output/roi"
+const NODE = "node"
 const stub = { "0": 0 }
 
 const xrangeOf = (frames: number) =>
@@ -59,6 +62,7 @@ const item = (
   filePath: string,
   drawOrderList: string[],
   shadeSourceItemId: number | null,
+  refImageItemId: number | null = null,
 ) => ({
   itemType: VISUALIZE_ITEM_TYPE_SET.DISPLAY_DATA,
   dataType: DATA_TYPE_SET.TIME_SERIES,
@@ -69,7 +73,7 @@ const item = (
   rangeUnit: "frames",
   xrange: {},
   drawOrderList,
-  refImageItemId: null,
+  refImageItemId,
   shadeSourceItemId,
 })
 
@@ -93,11 +97,22 @@ function renderPlot(
       experiments: (state = {}) => state,
     },
     preloadedState: {
+      algorithmNode: {
+        [NODE]: { draftDataFilterParam: { roi: [{ start: 0, end: 4 }] } },
+      },
       displayData: {
         ...displayData(undefined, { type: "" }),
         timeSeries: {
           [TARGET]: entry(4, { "0": events(4) }, { "0": "fulfilled" }),
           [SOURCE]: entry(frames, data, byId),
+        },
+        roi: {
+          [ROI]: {
+            type: "roi",
+            data: [],
+            fulfilled: true,
+            roiUniqueList: ["1", "3", "4"],
+          },
         },
       },
       visualaizeItem: {
@@ -212,6 +227,30 @@ describe("TimeSeriesPlot shading", () => {
     expect(screen.getByText(/Too many events/)).toBeDefined()
     expect(lastLayout().shapes).toHaveLength(SHADE_TOTAL_CAP)
     expect(requested()).toEqual([])
+  })
+
+  it("shades and fetches only the source selections its own plot draws", () => {
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockReturnValue(new Promise(() => undefined))
+    const keys = ["1", "2", "3", "4"]
+    renderPlot(
+      4,
+      { "1": events(4), "2": events(4), "3": stub, "4": stub },
+      { "1": "fulfilled", "2": "fulfilled" },
+      keys,
+      {
+        [SOURCE_ID]: { ...item(SOURCE, keys, null, IMAGE_ID), nodeId: NODE },
+        [IMAGE_ID]: {
+          itemType: VISUALIZE_ITEM_TYPE_SET.DISPLAY_DATA,
+          dataType: DATA_TYPE_SET.IMAGE,
+          roiItem: { filePath: ROI },
+        },
+      },
+    )
+
+    expect(lastLayout().shapes).toHaveLength(2)
+    expect(requested()).toEqual(["3"])
   })
 
   it("redraws once per settled record, not again for the request it frees", async () => {
