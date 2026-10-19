@@ -411,3 +411,20 @@ def test_3d_dataset_ignores_both_settings(tmp_path, params):
 
     assert type(image) is ImageData
     np.testing.assert_array_equal(image.data, arr)
+
+
+def test_a_source_rate_that_differs_from_the_nwb_setting_is_logged(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    h5 = _h5(tmp_path, {"g/data": np.ones((N_TIME, N_ROI)), "g/starting_time": 0.0})
+    with h5py.File(h5, "a") as f:
+        f["g/starting_time"].attrs["rate"] = 10.0
+    rule = _rule(tmp_path, h5, "g/data")
+
+    rule.nwbfile["imaging_plane"] = {"imaging_rate": 30}
+    FileWriter.hdf5(rule)
+    assert "sampled at 10 Hz but the NWB setting imaging_rate is 30 Hz" in caplog.text
+
+    caplog.clear()
+    rule.nwbfile["imaging_plane"] = {"imaging_rate": 10.0}
+    FileWriter.hdf5(rule)
+    assert "sampled at" not in caplog.text
