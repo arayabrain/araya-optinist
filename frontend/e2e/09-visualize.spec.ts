@@ -556,7 +556,7 @@ test.describe("Visualize", () => {
   // The un-merge half that has to happen before a commit: merge two ROIs, then
   // delete the merged ROI while it is still pending. Its temp_merge_roi entry
   // used to force it back to a cell at commit, so the delete was silently
-  // ignored; now it stays demoted and its sources are promotable.
+  // ignored; now the commit drops it and its sources are cell ROIs again.
   test("VIS-09 - deleting a pending merge before commit really removes it @slow", async ({
     page,
   }) => {
@@ -592,8 +592,17 @@ test.describe("Visualize", () => {
     )
     expect(afterCommit).toContain(second)
 
-    await selectRoiProjection(page, "non_cell_roi")
-    expect(await roiIds(page), "the undone merge is a non-cell ROI").toContain(
+    // The sources are cells, so a loaded grid without them is non_cell_roi
+    await selectFromMui(page, "Select Roi", "non_cell_roi")
+    await expect
+      .poll(
+        async () =>
+          (await roiRowCount(page)) > 0 &&
+          !(await roiIds(page)).includes(first),
+        { timeout: 60_000 },
+      )
+      .toBe(true)
+    expect(await roiIds(page), "the undone merge leaves no ROI").not.toContain(
       merged[0],
     )
   })
