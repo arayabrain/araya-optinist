@@ -439,7 +439,7 @@ The `handler()` function routes events based on type:
 |---|---|---|
 | `{"action": "migrate_shared_users"}` | `_handle_migrate_shared_users()` | Async migration under MySQL `GET_LOCK` |
 | `{"action": "fix_shared_flags"}` | `fix_incorrect_is_shared_flags()` | One-time data cleanup |
-| `{"action": "cleanup_all_dynamic"}` | `cleanup_all_dynamic_instances()` | Tear down all dynamically-provisioned premium instances (dev scheduler before environment stop) |
+| `{"action": "cleanup_all_dynamic"}` | `cleanup_all_dynamic_instances()` | Tear down all dynamically-provisioned premium instances (dev scheduler before environment stop). Base instances are preserved: the event's `base_instance_ids` plus `PREMIUM_INSTANCE_IDS` |
 | CloudWatch Scheduled Event | `handle_scheduled_monitoring()` | 15-min monitoring cycle |
 | `GET` (API Gateway) | `get_premium_user_status()` | Status check |
 | `POST action=assign` | `assign_premium_user()` | User assignment |
@@ -459,8 +459,8 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 6.   update_premium_service_desired_count() - Sync ECS desired count to running count
 7.   cleanup_failed_standby_instances()    - Remove DB rows for terminated standbys
 8a.  register_orphaned_stopped_instances() - Re-register stopped instances missing from DB
-8b.  terminate_aged_stopped_instances()    - Terminate standbys stopped longer than PREMIUM_STOPPED_MAX_AGE_HOURS
-9.   cleanup_excess_standby_instances()    - Trim standby pool to PREMIUM_STANDBY_POOL_SIZE
+8b.  terminate_aged_stopped_instances()    - Terminate standbys stopped longer than PREMIUM_STOPPED_MAX_AGE_HOURS (never a base instance)
+9.   cleanup_excess_standby_instances()    - Trim standby pool to PREMIUM_STANDBY_POOL_SIZE (never a base instance)
 10a. finalize_expired_pending_releases()   - Tear down ALB resources for assignments past soft-release grace
 10b. cleanup_ghost_ecs_registrations()     - Deregister ECS container instances whose EC2 is gone
 11.  cleanup_orphaned_ec2_instances()      - Stop premium-tagged EC2 not in the ECS cluster (10-min launch-age grace)

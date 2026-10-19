@@ -16,6 +16,7 @@ from studio.app.optinist.wrappers.caiman.cnmf import (
     get_roi,
     util_cleanup_image_memmap,
     util_download_model_files,
+    util_edit_roi_movie,
     util_get_image_memmap,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
@@ -33,6 +34,11 @@ def caiman_cnmf_multisession(
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info(f"start caiman_cnmf_multisession: {function_id}")
+
+    # ROI editing reads new traces from the input movie, opened lazily at
+    # commit time: EditRoiData keeps a reference to it when util_edit_roi_movie
+    # allows it, rather than a copy
+    images_ref = images
 
     # NOTE: evaluate_components requires cnn_model files in caiman_data directory.
     util_download_model_files()
@@ -224,7 +230,9 @@ def caiman_cnmf_multisession(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, cell_ims),
+        "edit_roi_data": EditRoiData(
+            util_edit_roi_movie(images_ref, mmap_images, output_dir), cell_ims
+        ),
         "nwbfile": nwbfile,
     }
 

@@ -55,3 +55,18 @@ def test_every_roi_call_during_a_commit_is_refused_with_423(
     finally:
         shutil.rmtree(join_filepath([DIRPATH.OUTPUT_DIR, "1", "uid"]))
     assert res.status_code == 423
+
+
+def test_a_commit_whose_movie_is_missing_answers_409_with_the_reason(
+    client, monkeypatch
+):
+    from studio.app.optinist.core.edit_ROI import EditRoiUtils
+    from studio.app.optinist.dataclass.roi import EditImagesUnavailableError
+
+    async def missing(*args, **kwargs):
+        raise EditImagesUnavailableError("The movie ... is missing (mc_images.tif)")
+
+    monkeypatch.setattr(EditRoiUtils, "execute", missing)
+    res = client.post(roi_url(1, "commit_edit", 1))
+    assert res.status_code == 409
+    assert "mc_images.tif" in res.json()["detail"]
