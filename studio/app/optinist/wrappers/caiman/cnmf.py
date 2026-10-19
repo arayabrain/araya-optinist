@@ -20,6 +20,7 @@ from studio.app.optinist.dataclass.roi import edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
+    parse_text_params,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
@@ -443,7 +444,7 @@ def caiman_cnmf(
 
     flattened_params = {}
     recursive_flatten_params(params or {}, flattened_params)
-    params = flattened_params
+    params = parse_text_params(flattened_params)
 
     Ain = params.pop("Ain", None)
     do_refit = params.pop("do_refit", None)
