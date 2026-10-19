@@ -11,6 +11,7 @@ import {
   getBarData,
   getHTMLData,
   getTimeSeriesInitData,
+  retryRejectedTimeSeries,
   getHistogramData,
   getLineData,
   getPieData,
@@ -84,7 +85,7 @@ export const displayDataSlice = createSlice({
         }
       })
       .addCase(getTimeSeriesDataById.pending, (state, action) => {
-        const { path } = action.meta.arg
+        const { path, index } = action.meta.arg
         if (!Object.prototype.hasOwnProperty.call(state.timeSeries, path)) {
           state.timeSeries[path] = {
             type: "timeSeries",
@@ -100,9 +101,13 @@ export const displayDataSlice = createSlice({
           state.timeSeries[path].fulfilled = false
           state.timeSeries[path].error = null
         }
+        const entry = state.timeSeries[path]
+        entry.byId = { ...entry.byId, [index]: "pending" }
       })
       .addCase(getTimeSeriesDataById.rejected, (state, action) => {
-        const { path } = action.meta.arg
+        const { path, index, background } = action.meta.arg
+        const entry = state.timeSeries[path]
+        if (!entry) return
         if (isNoRoisFound(action.error.message)) {
           state.timeSeries[path] = {
             type: "timeSeries",
@@ -114,20 +119,23 @@ export const displayDataSlice = createSlice({
             error: null, // Not an error state
             meta: { title: "0 ROIs found" }, // User-facing message
           }
+          return
+        }
+        // a newer response already loaded it; leave the plot's readiness alone
+        if (entry.byId?.[index] === "fulfilled") return
+        entry.pending = false
+        // one record failed, so keep the others; only a user's request errors
+        entry.byId = { ...entry.byId, [index]: "rejected" }
+        if (background) {
+          entry.fulfilled = true
         } else {
-          state.timeSeries[path] = {
-            type: "timeSeries",
-            xrange: [],
-            data: {},
-            std: {},
-            pending: false,
-            fulfilled: false,
-            error: action.error.message ?? "rejected",
-          }
+          entry.fulfilled = false
+          entry.error = action.error.message ?? "rejected"
         }
       })
       .addCase(getTimeSeriesDataById.fulfilled, (state, action) => {
         const { path, index } = action.meta.arg
+        if (!state.timeSeries[path]) return
         state.timeSeries[path].pending = false
         state.timeSeries[path].fulfilled = true
         state.timeSeries[path].error = null
@@ -137,6 +145,15 @@ export const displayDataSlice = createSlice({
         if (action.payload.std[index] !== undefined) {
           state.timeSeries[path].std[index] = action.payload.std[index]
         }
+        const entry = state.timeSeries[path]
+        entry.byId = { ...entry.byId, [index]: "fulfilled" }
+      })
+      .addCase(retryRejectedTimeSeries, (state, action) => {
+        const entry = state.timeSeries[action.payload.path]
+        if (entry?.byId == null) return
+        entry.byId = Object.fromEntries(
+          Object.entries(entry.byId).filter(([, s]) => s !== "rejected"),
+        )
       })
       .addCase(getTimeSeriesAllData.pending, (state, action) => {
         const { path } = action.meta.arg
@@ -155,6 +172,14 @@ export const displayDataSlice = createSlice({
           state.timeSeries[path].fulfilled = false
           state.timeSeries[path].error = null
         }
+        // every record is on its way, so no by-id request duplicates one
+        const entry = state.timeSeries[path]
+        entry.byId = Object.fromEntries(
+          Object.keys(entry.data).map((key) => [
+            key,
+            entry.byId?.[key] === "fulfilled" ? "fulfilled" : "pending",
+          ]),
+        )
       })
       .addCase(getTimeSeriesAllData.rejected, (state, action) => {
         const { path } = action.meta.arg
@@ -183,6 +208,7 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getTimeSeriesAllData.fulfilled, (state, action) => {
         const { path } = action.meta.arg
+        if (!state.timeSeries[path]) return
         state.timeSeries[path].pending = false
         state.timeSeries[path].fulfilled = true
         state.timeSeries[path].error = null
@@ -192,6 +218,9 @@ export const displayDataSlice = createSlice({
         if (action.payload.std !== undefined) {
           state.timeSeries[path].std = action.payload.std
         }
+        state.timeSeries[path].byId = Object.fromEntries(
+          Object.keys(action.payload.data).map((key) => [key, "fulfilled"]),
+        )
       })
       .addCase(getTimeSeriesInitData.pending, (state, action) => {
         const { path } = action.meta.arg
@@ -238,6 +267,7 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getTimeSeriesInitData.fulfilled, (state, action) => {
         const { path } = action.meta.arg
+        if (!state.timeSeries[path]) return
         state.timeSeries[path].pending = false
         state.timeSeries[path].fulfilled = true
         state.timeSeries[path].error = null
@@ -246,6 +276,19 @@ export const displayDataSlice = createSlice({
         state.timeSeries[path].meta = action.payload.meta
         state.timeSeries[path].data = action.payload.data
         state.timeSeries[path].std = action.payload.std
+        const full = action.payload.xrange.length
+        // a request still in flight stays pending, so no plot sends it again
+        state.timeSeries[path].byId = Object.fromEntries([
+          ...Object.entries(state.timeSeries[path].byId ?? {}).filter(
+            ([, status]) => status === "pending",
+          ),
+          // a one-sample init pads every record with the first's sample
+          ...Object.entries(action.payload.data)
+            .filter(
+              ([, record]) => full > 1 && Object.keys(record).length >= full,
+            )
+            .map(([key]) => [key, "fulfilled"]),
+        ])
       })
       .addCase(getHeatMapData.pending, (state, action) => {
         const { path } = action.meta.arg
