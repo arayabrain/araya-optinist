@@ -439,7 +439,8 @@ describe("RecordReproduce", () => {
           input_0: {
             message: "",
             name: "hoge.tif",
-            status: "error",
+            status: "success",
+            outputPaths: {},
           },
         },
         uid: "96844a59",
