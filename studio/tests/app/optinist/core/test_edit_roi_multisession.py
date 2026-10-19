@@ -13,6 +13,7 @@ from studio.app.common.core.utils.pickle_handler import PickleWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.core.edit_ROI.utils import EditRoiUtils
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
 from studio.app.optinist.schemas.roi import RoiPos
 
@@ -23,6 +24,7 @@ SHAPE = (6, 6)
 NUM_FRAME = 5
 WORKSPACE = f"{DIRPATH.OUTPUT_DIR}/multisession_edit_ws"
 DFF = np.arange(NUM_ROI * NUM_FRAME, dtype=np.float32).reshape(NUM_ROI, NUM_FRAME)
+RATE = 10.0
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +64,7 @@ def file_path():
             "iscell": IscellData(np.ones(NUM_ROI, dtype=int)),
             "fluorescence": FluoData(np.zeros((NUM_ROI, NUM_FRAME))),
             "dff": FluoData(DFF, file_name="dff"),
-            "nwbfile": {},
+            "nwbfile": {"input": {"imaging_plane": {"imaging_rate": RATE}}},
         },
     )
     yield f"{node_dirpath}/cell_roi.json"
@@ -81,3 +83,13 @@ async def test_a_multisession_commit_goes_through_the_caiman_commit(file_path):
     assert list(committed["iscell"].data) == [CellType.ROI] * (NUM_ROI + 1)
     np.testing.assert_array_equal(committed["dff"].data[:NUM_ROI], DFF)
     assert np.isnan(committed["dff"].data[NUM_ROI]).all()
+
+
+@pytest.mark.asyncio
+async def test_a_delete_only_commit_keeps_the_recording_rate(file_path):
+    EditROI(file_path=file_path).delete([0])
+    await EditROI(file_path=file_path).commit()
+
+    nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
+    series = nwbfile[NWBDATASET.FLUORESCENCE][NODE_ID]["Fluorescence"]
+    assert series["rate"] == RATE

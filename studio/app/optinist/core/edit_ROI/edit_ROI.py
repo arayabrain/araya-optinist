@@ -269,6 +269,8 @@ class EditROI:
                 commit_edit as caiman_commit,
             )
 
+            # the same lookup the CaImAn wrappers make for their series rate
+            nwb_input = self.output_info["nwbfile"].get("input", {})
             info = caiman_commit(
                 self.images,
                 self.tmp_data,
@@ -277,6 +279,7 @@ class EditROI:
                 self.node_dirpath,
                 self.function_id,
                 dff=self.output_info.get("dff"),
+                rate=nwb_input.get("imaging_plane", {}).get("imaging_rate", 30),
             )
 
         iscell = info["iscell"].data

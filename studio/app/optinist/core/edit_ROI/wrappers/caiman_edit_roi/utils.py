@@ -4,7 +4,9 @@ from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass.roi import EditRoiData
 
 
-def set_nwbfile(edit_roi_data: EditRoiData, iscell, function_id, fluorescence=None):
+def set_nwbfile(
+    edit_roi_data: EditRoiData, iscell, function_id, rate, fluorescence=None
+):
     # NWBの追加
     nwbfile = {}
 
@@ -43,7 +45,7 @@ def set_nwbfile(edit_roi_data: EditRoiData, iscell, function_id, fluorescence=No
                 if fluorescence is not None and fluorescence.size > 0
                 else np.array([]).reshape(0, 0),
                 "unit": "lumens",
-                "rate": nwbfile.get("imaging_plane", {}).get("imaging_rate", 30),
+                "rate": rate,
             },
         }
     }
