@@ -50,7 +50,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **method_init** [‘greedy_roi’,’corr_pnr’, default: ‘greedy_roi’]: Use ‘greedy_roi’ for standard 2P, ‘corr_pnr’ for 1p (CNMF-E).
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
   - **p** [int, default: 2]: Order of the autoregression model.
-  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None, no patches are constructed and the whole FOV is processed jointly.
+  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None or 0, no patches are constructed and the whole FOV is processed jointly.
   - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
   - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
   - **n_processes** [int, default: 1, under advanced > patch_params]: CaImAn worker processes. The value is clamped to the CPUs available to the process minus one, so on a 2-CPU instance it always resolves to 1. Memory, not CPU, is the ceiling: each worker holds its own slice of the movie. With `rf: None` (the default) the whole field of view is one patch, so extra workers only parallelise preprocessing and residual computation; set `rf` as well to parallelise the patch-level fit.
@@ -73,7 +73,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **nb** [int, default: 0]: Background model. 0 is CNMF-E's exact ring model, which patch mode needs; a positive value approximates the background with that many low-rank components.
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
   - **p** [int, default: 1]: Order of the autoregression model.
-  - **rf** [int or None, default: 32]: Half-size of patch in pixels. Each patch is initialised on its own, so peak memory is about 24 bytes x (2 x rf + 1)^2 x frames plus about 1 GB: about 5 GB for rf 32 on a 40,000-frame movie. Halve rf for a movie four times longer. None processes the whole field of view at once, which holds about six float32 copies of the movie (more than 13 GB for 97 x 133 pixels x 40,000 frames) and only suits short movies.
+  - **rf** [int or None, default: 32]: Half-size of patch in pixels. Each patch is initialised on its own, so peak memory is about 24 bytes x (2 x rf + 1)^2 x frames plus about 1 GB: about 5 GB for rf 32 on a 40,000-frame movie. Halve rf for a movie four times longer. 0 (None in a workflow file) processes the whole field of view at once, which holds about six float32 copies of the movie (more than 13 GB for 97 x 133 pixels x 40,000 frames) and only suits short movies.
   - **stride** [int, default: 16]: Overlap between neighboring patches in pixels. Keep it at least gSiz.
   - **merge_thr** [float, default: 0.7]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
 

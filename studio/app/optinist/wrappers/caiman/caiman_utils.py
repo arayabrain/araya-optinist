@@ -38,7 +38,12 @@ def distribute_params_to_groups(flat_params: dict, groups: dict) -> dict:
 
 
 # Null-default params, so the parameter panel edits them as text
-TEXT_PARAM_TYPES = {"K": int, "n_pixels_per_process": int, "low_rank_background": bool}
+TEXT_PARAM_TYPES = {
+    "K": int,
+    "rf": int,
+    "n_pixels_per_process": int,
+    "low_rank_background": bool,
+}
 
 
 def parse_text_params(flat_params: dict) -> dict:
@@ -60,6 +65,9 @@ def parse_text_params(flat_params: dict) -> dict:
                 f"CaImAn param '{key}' must be {cast.__name__} or empty for None, "
                 f"got {value!r}"
             ) from None
+    # a number field cannot be cleared, so rf 0 means None: the whole field of view
+    if type(parsed.get("rf")) is int and parsed["rf"] == 0:
+        parsed["rf"] = None
     return parsed
 
 
