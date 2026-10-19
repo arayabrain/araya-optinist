@@ -1,5 +1,11 @@
+import os
+
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.filepath_creater import (
+    create_directory,
+    join_filepath,
+)
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
@@ -69,19 +75,14 @@ def binary_to_tiff(io, ops, output_dir, file_name, batch_size=None):
     Byte-identical to writing the whole array (develop-main's ImageData(mv)),
     with one batch in memory. tifffile picks BigTIFF from `data.nbytes`, which a
     frame iterator does not have, so the choice is made here the same way.
+    photometric="minisblack" keeps 3- or 4-frame and 3- or 4-pixel-wide movies
+    grayscale stacks, where tifffile would guess RGB (and 2022.3 cannot stream).
     The file is written beside the final path and moved there when complete,
     so a failed write leaves no partial mc_images.tif.
     `io` is suite2p.io, passed in because suite2p is imported lazily here.
     """
-    import os
-
     import numpy as np
     import tifffile
-
-    from studio.app.common.core.utils.filepath_creater import (
-        create_directory,
-        join_filepath,
-    )
 
     tiff_dir = join_filepath([output_dir, "tiff", file_name])
     create_directory(tiff_dir)
@@ -103,17 +104,14 @@ def binary_to_tiff(io, ops, output_dir, file_name, batch_size=None):
                 ):
                     yield from batch
 
-            # tifffile stores these shapes as RGB, which 2022.3 cannot stream
-            if nframes in (3, 4) or Lx in (3, 4):
-                tifffile.imwrite(tmp_path, np.stack(list(frames())))
-            else:
-                tifffile.imwrite(
-                    tmp_path,
-                    frames(),
-                    shape=(nframes, Ly, Lx),
-                    dtype=np.int16,
-                    bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
-                )
+            tifffile.imwrite(
+                tmp_path,
+                frames(),
+                shape=(nframes, Ly, Lx),
+                dtype=np.int16,
+                photometric="minisblack",
+                bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
+            )
         os.replace(tmp_path, tiff_path)
     except BaseException:
         if os.path.exists(tmp_path):

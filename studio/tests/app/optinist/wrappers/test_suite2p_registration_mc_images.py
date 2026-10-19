@@ -56,8 +56,10 @@ def test_mc_images_is_byte_identical_to_writing_the_whole_movie(tmp_path):
     np.testing.assert_array_equal(tifffile.imread(path), movie)
 
 
-@pytest.mark.parametrize("shape", [(3, LY, LX), (4, LY, LX), (FRAMES, LY, 3)])
-def test_shapes_tifffile_reads_as_rgb_match_writing_the_whole_movie(tmp_path, shape):
+@pytest.mark.parametrize(
+    "shape", [(3, LY, LX), (4, LY, LX), (FRAMES, LY, 3), (FRAMES, LY, 4)]
+)
+def test_shapes_tifffile_would_guess_as_rgb_are_written_grayscale(tmp_path, shape):
     movie = np.random.default_rng(0).integers(-3000, 30000, shape).astype(np.int16)
     reg_file = tmp_path / "data.bin"
     movie.tofile(reg_file)
@@ -66,8 +68,11 @@ def test_shapes_tifffile_reads_as_rgb_match_writing_the_whole_movie(tmp_path, sh
     (path,) = binary_to_tiff(FakeIO, ops, str(tmp_path / "out"), "mc_images", 2)
 
     expected = tmp_path / "expected.tif"
-    tifffile.imwrite(expected, movie)
+    tifffile.imwrite(expected, movie, photometric="minisblack")
     assert open(path, "rb").read() == open(expected, "rb").read()
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.pages) == shape[0]
+    np.testing.assert_array_equal(tifffile.imread(path), movie)
 
 
 class SizedBinaryFile(FakeBinaryFile):
