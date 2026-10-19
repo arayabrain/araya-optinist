@@ -19,6 +19,16 @@ from studio.app.common.core.workflow.workflow_tracking import (
 from studio.app.common.models import FreeUserAssignment, PremiumUserAssignment
 
 
+@pytest.fixture(autouse=True)
+def _off_ec2():
+    """No metadata-service lookup from the increment's host pin."""
+    with patch(
+        "studio.app.common.core.workflow.workflow_tracking._execution_host",
+        return_value="i-0abc123def4567890",
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_session():
     """Mock database session with tier detection for free tier user"""
