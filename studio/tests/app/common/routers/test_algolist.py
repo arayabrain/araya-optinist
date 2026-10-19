@@ -102,6 +102,7 @@ def test_binning_and_split_nodes_expose_their_ports():
         ("neural_data", "FluoData", False),
         ("behaviors_data", "BehaviorData", False),
         ("iscell", "IscellData", True),
+        ("order_from", "HeatMapData", True),
     ]
     assert [(a.name, a.type) for a in split.args] == [
         ("neural_data", "FluoData"),

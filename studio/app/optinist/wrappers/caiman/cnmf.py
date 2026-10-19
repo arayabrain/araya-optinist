@@ -280,14 +280,16 @@ def util_get_image_memmap_from_files(
     return mmap_images, dims, mmap_path
 
 
-def util_edit_roi_movie(images: ImageData, mmap_images, output_dir: str):
+def util_edit_roi_movie(images: ImageData, fallback, output_dir: str):
     """
     The movie EditRoiData keeps for ROI edits: a reference to the input when it
-    lives in this node's experiment (see edit_reference), else CaImAn's float32
-    copy of it, as before references were stored.
+    lives in this node's experiment (see edit_reference), else the fallback copy,
+    or what a fallback function returns, called only when there is no reference.
     """
     reference = edit_reference(images, output_dir)
-    return mmap_images if reference is None else reference
+    if reference is not None:
+        return reference
+    return fallback() if callable(fallback) else fallback
 
 
 def util_cleanup_image_memmap(mmap_paths: list):

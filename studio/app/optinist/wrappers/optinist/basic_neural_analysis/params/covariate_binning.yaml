@@ -9,3 +9,4 @@ covariate_binning:
   bin_min: 0.0
   bin_max: 1.0
   sort_by_peak: True
+  heatmap_normalization: 'minmax' # ['minmax', 'mean', 'none']

@@ -261,11 +261,12 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 ###### covariate_binning
 
 - **Description:** Bins neural activity by a continuous behavioural covariate, such as track position or distance to a goal, and averages each cell's activity within each bin.
-- **Input:** FluoData, BehaviorData, IsCellData (optional)
+- **Input:** FluoData, BehaviorData, IsCellData (optional), HeatMapData `order_from` (optional)
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
   - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+  - `order_from`: another node's heatmap, typically the `mean_heatmap` of a `covariate_binning` on a different part of the same recording. When connected, the rows of this node's `mean_heatmap` follow that heatmap's row labels (cell numbers), so a before and an after panel share one order, and `sort_by_peak` is ignored. Every cell binned here must have a row in the reference, so use the same `iscell` in both nodes; extra rows in the reference are ignored.
 - **Output:** mean (TimeSeriesData, cells x bins, with std and sem, x axis is the bin centres), mean_heatmap (HeatMapData), nwbfile
-  - mean_heatmap is the mean normalised to 0..1 per cell, one row per cell, labelled with the cell number. Empty bins are left blank.
+  - mean_heatmap is the mean scaled per cell as set by `heatmap_normalization`, one row per cell, labelled with the cell number. Empty bins are left blank.
   - The NWB output stores mean, std, sem, `bin_centers` and `num_sample`, the number of time samples in each bin.
 - **Parameters:**
   - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
@@ -275,7 +276,8 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **use_data_range** [bool, default: true]: Bin from the minimum to the maximum of the covariate. When false, bin from `bin_min` to `bin_max`.
   - **bin_min** [float, default: 0.0]: Lower edge of the first bin, used when `use_data_range` is false.
   - **bin_max** [float, default: 1.0]: Upper edge of the last bin, used when `use_data_range` is false.
-  - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak, lowest bin in the bottom row, with the same tie and flat-cell rules as `eta`. Only the heatmap is reordered.
+  - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak, lowest bin in the bottom row, with the same tie and flat-cell rules as `eta`. Only the heatmap is reordered. Ignored when `order_from` is connected.
+  - **heatmap_normalization** ['minmax', 'mean', 'none', default: 'minmax']: How each row of `mean_heatmap` is scaled. `minmax` maps each cell's binned means to 0..1. `mean` divides each cell's binned means by that cell's mean activity over the samples that were binned (NaN samples excluded), the convention of place-field papers that show activity as a multiple of the session mean; it needs non-negative activity such as raw fluorescence, dF/F or deconvolved spikes, and a cell whose mean is not positive (for example after z-scoring) is blanked with a warning. `none` plots the binned means as they are. The `mean` output and the NWB file always hold the unscaled means, and the peak used by `sort_by_peak` is taken from the min-max scaled row, so the order does not depend on this choice.
   - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. No trial or event filtering is applied, so std and sem are over time samples, which are usually autocorrelated, not over trials. A NaN in a cell's fluorescence makes that cell's mean NaN for the bin it falls in, as in ETA.
 
 ###### condition_split
@@ -298,6 +300,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **threshold** [float, default: 0.5]: Value the column is compared with.
   - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
   - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake (for example 2 for Sosa et al. 2025).
+  - **modulo** [float, default: 0]: When greater than 0, the condition is tested on the remainder of the column divided by this value instead of the column itself. With a trial-number column, `modulo: 2` and `equal` with `threshold: 1` keeps the odd-numbered trials and `threshold: 0` the even ones, which is how a cross-validated sort (order from one half, display the other) is built without a parity column. For a column that is not exactly integer, test the remainder with 'between' (0.5 to 1.5 for odd) rather than 'equal'. A column that codes the inter-trial interval as 0 or -1 puts those samples into one half, so split off `trial > 0` with a 'greater' node first.
   - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction
