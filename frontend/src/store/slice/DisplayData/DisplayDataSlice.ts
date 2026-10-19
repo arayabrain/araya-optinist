@@ -128,6 +128,7 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getTimeSeriesDataById.fulfilled, (state, action) => {
         const { path, index } = action.meta.arg
+        if (!state.timeSeries[path]) return
         state.timeSeries[path].pending = false
         state.timeSeries[path].fulfilled = true
         state.timeSeries[path].error = null
@@ -183,6 +184,7 @@ export const displayDataSlice = createSlice({
       })
       .addCase(getTimeSeriesAllData.fulfilled, (state, action) => {
         const { path } = action.meta.arg
+        if (!state.timeSeries[path]) return
         state.timeSeries[path].pending = false
         state.timeSeries[path].fulfilled = true
         state.timeSeries[path].error = null

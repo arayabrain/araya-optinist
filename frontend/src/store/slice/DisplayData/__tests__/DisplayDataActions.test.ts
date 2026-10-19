@@ -254,6 +254,19 @@ describe("getTimeSeriesInitData", () => {
   )
 })
 
+describe("time-series results for a deleted path", () => {
+  const payload = { data: {}, xrange: [], std: {} }
+
+  it.each([
+    getTimeSeriesDataById.fulfilled(payload, "r", { path: "/p", index: "0" }),
+    getTimeSeriesAllData.fulfilled(payload, "r", { path: "/p" }),
+  ])("are ignored by $type", (action) => {
+    const state = reducer(undefined, { type: "init" })
+
+    expect(reducer(state, action).timeSeries).toEqual({})
+  })
+})
+
 describe("commitRoi", () => {
   it("rejects with the server's reason when the movie is unavailable", async () => {
     const detail =
