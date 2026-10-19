@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import signal
@@ -5,14 +6,20 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
+import scipy.sparse as sp
 
 from studio.app.common.core.utils.config_handler import ConfigReader
-from studio.app.optinist.wrappers.caiman import caiman_utils
+from studio.app.common.core.workflow.workflow_params import get_typecheck_params
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
+from studio.app.optinist.wrappers.caiman import caiman_utils, cnmf, cnmf_multisession
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
+    parse_text_params,
 )
+from studio.app.optinist.wrappers.caiman.cnmfe import caiman_cnmfe
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 GROUPS = {
@@ -74,13 +81,22 @@ REAL_GROUPS = {
     )["groups"].items()
 }
 PARAMS_DIR = Path(caiman_utils.__file__).parent / "params"
+CNMF_KEYS = {
+    "Ain",
+    "do_refit",
+    "roi_thr",
+    "use_online",
+    "n_processes",
+    "frames_window",
+}
 WRAPPER_KEYS = {
-    "caiman_cnmf.yaml": {"Ain", "do_refit", "roi_thr", "use_online", "n_processes"},
-    "caiman_cnmfe.yaml": {"Ain", "do_refit", "roi_thr", "use_online", "n_processes"},
+    "caiman_cnmf.yaml": CNMF_KEYS,
+    "caiman_cnmfe.yaml": CNMF_KEYS,
     "cnmf_multisession.yaml": {
         "Ain",
         "roi_thr",
         "n_processes",
+        "frames_window",
         "session_lengths",
         "n_reg_files",
         "reg_file_rate",
@@ -197,3 +213,234 @@ def test_a_failed_fit_still_stops_the_pool(fake_caiman):
     with pytest.raises(RuntimeError), caiman_cluster(2) as (dview, _):
         raise RuntimeError("fit failed")
     assert fake_caiman.stopped == [dview]
+
+
+@pytest.mark.parametrize(
+    "key,value,expected",
+    [
+        ("K", "10", 10),
+        ("K", " 7 ", 7),
+        ("K", "", None),
+        ("K", "None", None),
+        ("K", 10, 10),
+        ("K", None, None),
+        ("n_pixels_per_process", "1000", 1000),
+        ("rf", "16", 16),
+        ("rf", 32, 32),
+        ("rf", 0, None),
+        ("rf", "0", None),
+        ("low_rank_background", "False", False),
+        ("low_rank_background", "TRUE", True),
+        ("low_rank_background", "none", None),
+        ("low_rank_background", "", None),
+        ("low_rank_background", False, False),
+        ("enclosed_thr", "0.5", 0.5),
+    ],
+)
+def test_text_from_the_panel_is_parsed_to_caimans_type(key, value, expected):
+    parsed = parse_text_params({key: value, "gSig": [3, 3]})
+    assert parsed == {key: expected, "gSig": [3, 3]}
+    assert type(parsed[key]) is type(expected)
+
+
+@pytest.mark.parametrize(
+    "key,value", [("K", "ten"), ("K", "10.5"), ("low_rank_background", "no")]
+)
+def test_unparseable_text_is_refused_naming_the_param(key, value):
+    with pytest.raises(ValueError, match=f"'{key}' must be .* got '{value}'"):
+        parse_text_params({key: value})
+
+
+class Captured(Exception):
+    pass
+
+
+@pytest.fixture
+def capture_cnmfparams(monkeypatch):
+    """Stub caiman so caiman_cnmf stops at its first change_params, raising
+    Captured with the pathed params CaImAn would be handed."""
+
+    class CNMFParams:
+        def __init__(self):
+            vars(self).update({g: dict(keys) for g, keys in REAL_GROUPS.items()})
+
+        def change_params(self, pathed):
+            raise Captured(pathed)
+
+    names = ["caiman", "caiman.source_extraction", "caiman.source_extraction.cnmf"]
+    modules = {name: types.ModuleType(name) for name in names}
+    modules["caiman.source_extraction.cnmf"].cnmf = None
+    modules["caiman.source_extraction.cnmf"].online_cnmf = None
+    params_module = types.ModuleType("caiman.source_extraction.cnmf.params")
+    params_module.CNMFParams = CNMFParams
+    modules[params_module.__name__] = params_module
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(cnmf, "util_download_model_files", lambda: None)
+    monkeypatch.setattr(
+        cnmf, "util_get_image_memmap_from_files", lambda *_: (None, None, "m.mmap")
+    )
+    monkeypatch.setattr(
+        cnmf, "caiman_cluster", lambda _: contextlib.nullcontext((None, 1))
+    )
+
+
+def panel_message(tree):
+    return {
+        key: (
+            {"type": "parent", "children": panel_message(value)}
+            if isinstance(value, dict)
+            else {"type": "child", "value": value}
+        )
+        for key, value in tree.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "parents,key,text,group,expected",
+    [
+        (["init_params"], "K", "10", "init", 10),
+        (["advanced", "patch_params"], "low_rank_background", "False", "patch", False),
+    ],
+)
+def test_text_typed_in_the_panel_reaches_caiman_typed(
+    capture_cnmfparams, parents, key, text, group, expected
+):
+    tree = ConfigReader.read(PARAMS_DIR / "caiman_cnmfe.yaml")
+    section = tree
+    for parent in parents:
+        section = section[parent]
+    assert section[key] is None
+    section[key] = text
+    params = get_typecheck_params(panel_message(tree), "caiman_cnmfe")
+
+    with pytest.raises(Captured) as captured:
+        caiman_cnmfe(
+            images=types.SimpleNamespace(path="movie.tif"),
+            output_dir="1/abc/caiman_cnmfe_x",
+            params=params,
+        )
+
+    sent = captured.value.args[0][group][key]
+    assert sent == expected and type(sent) is type(expected)
+
+
+MASK_DIMS, MASK_PIXEL, FRAMES = (3, 5), (1, 3), 4
+MULTISESSION_DIR = "1/abc/cnmf_multisession_x"
+
+
+@pytest.fixture
+def run_multisession(monkeypatch, tmp_path):
+    """Stub caiman so caiman_cnmf_multisession runs two sessions that each find
+    one component at MASK_PIXEL; returns its outputs and what CNMFParams and
+    register_multisession were handed."""
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+    footprint = np.zeros((MASK_DIMS[0] * MASK_DIMS[1], 1))
+    footprint[np.ravel_multi_index(MASK_PIXEL, MASK_DIMS, order="F"), 0] = 1.0
+    A = sp.csc_matrix(footprint)
+
+    class CNMFParams:
+        def __init__(self):
+            vars(self).update({g: dict(keys) for g, keys in REAL_GROUPS.items()})
+
+        def change_params(self, pathed):
+            seen["params"] = pathed
+
+    class CNMF:
+        def __init__(self, **_):
+            self.estimates = types.SimpleNamespace(
+                A=A, b=None, f=None, C=np.ones((1, FRAMES)), YrA=None
+            )
+
+        def fit(self, _):
+            return self
+
+    def register_multisession(A, dims, templates, **kwargs):
+        seen["register"] = kwargs
+        return None, np.zeros((1, len(A))), None
+
+    modules = {
+        "caiman": types.SimpleNamespace(load=lambda _: np.zeros((FRAMES, *MASK_DIMS))),
+        "caiman.base": types.ModuleType("caiman.base"),
+        "caiman.base.rois": types.SimpleNamespace(
+            register_multisession=register_multisession
+        ),
+        "caiman.source_extraction": types.ModuleType("caiman.source_extraction"),
+        "caiman.source_extraction.cnmf": types.SimpleNamespace(
+            cnmf=types.SimpleNamespace(CNMF=CNMF)
+        ),
+        "caiman.source_extraction.cnmf.params": types.SimpleNamespace(
+            CNMFParams=CNMFParams
+        ),
+        "caiman.source_extraction.cnmf.utilities": types.SimpleNamespace(
+            detrend_df_f=lambda A, b, C, f, **_: C
+        ),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    stubs = {
+        "util_download_model_files": lambda: None,
+        "caiman_cluster": lambda _: contextlib.nullcontext((None, 1)),
+        "imageio": types.SimpleNamespace(volread=lambda _: None),
+        "util_get_image_memmap": lambda *_: (None, None, "m.mmap"),
+        "util_edit_roi_movie": lambda *_: None,
+        "util_cleanup_image_memmap": lambda _: None,
+        "correlation_image": lambda _: np.zeros(MASK_DIMS),
+        "get_roi": lambda A, *_: [np.ones(MASK_DIMS)] * A.shape[1],
+    }
+    for name, stub in stubs.items():
+        monkeypatch.setattr(cnmf_multisession, name, stub)
+    images = types.SimpleNamespace(
+        split_image=lambda *_, **__: ["s0.tif", "s1.tif"],
+        data=np.zeros((2 * FRAMES, *MASK_DIMS)),
+    )
+
+    def run(params):
+        info = cnmf_multisession.caiman_cnmf_multisession(
+            images=images, output_dir=MULTISESSION_DIR, params=params
+        )
+        return info, seen
+
+    return run
+
+
+def test_multisession_nwb_mask_puts_each_pixel_where_the_movie_has_it(
+    run_multisession,
+):
+    info, _ = run_multisession({})
+
+    roi = info["nwbfile"][NWBDATASET.ROI]["cnmf_multisession_x"]["roi_list"][0]
+    assert np.argwhere(roi["image_mask"]).tolist() == [list(MASK_PIXEL)]
+
+
+@pytest.mark.parametrize(
+    "parents,key,text,group,expected",
+    [
+        (["patch_params"], "rf", "16", "patch", 16),
+        (["patch_params"], "rf", "0", "patch", None),
+        (
+            ["advanced", "preprocess_params"],
+            "n_pixels_per_process",
+            "1000",
+            "preprocess",
+            1000,
+        ),
+        (["multisession_params"], "enclosed_thr", "0.5", "register", 0.5),
+    ],
+)
+def test_text_typed_in_the_multisession_panel_reaches_caiman_typed(
+    run_multisession, parents, key, text, group, expected
+):
+    tree = ConfigReader.read(PARAMS_DIR / "cnmf_multisession.yaml")
+    section = tree
+    for parent in parents:
+        section = section[parent]
+    assert section[key] is None
+    section[key] = text
+    params = get_typecheck_params(panel_message(tree), "cnmf_multisession")
+
+    _, seen = run_multisession(params)
+
+    sent = seen["register"][key] if group == "register" else seen["params"][group][key]
+    assert sent == expected and type(sent) is type(expected)

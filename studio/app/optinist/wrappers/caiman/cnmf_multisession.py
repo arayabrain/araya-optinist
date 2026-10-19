@@ -11,9 +11,15 @@ from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, Roi
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
+    parse_text_params,
 )
 from studio.app.optinist.wrappers.caiman.cnmf import (
+    caiman_dff,
+    correlation_image,
+    dff_frames_window,
+    edit_roi_dtype,
     get_roi,
+    nwb_image_mask,
     util_cleanup_image_memmap,
     util_download_model_files,
     util_edit_roi_movie,
@@ -24,10 +30,45 @@ from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 logger = AppLogger.get_logger()
 
 
+def session_rows(session_estimates, assignments, rows):
+    """Union cell rows per session joined in time; NaN where assignments is NaN."""
+    blocks = []
+    for j, estimates in enumerate(session_estimates):
+        matched = ~np.isnan(assignments[:, j])
+        cells = rows(estimates, assignments[matched, j].astype(int))
+        block = np.full((len(assignments), estimates.C.shape[1]), np.nan, cells.dtype)
+        block[matched] = cells
+        blocks.append(block)
+    return np.concatenate(blocks, axis=1)
+
+
+def session_fluorescence(session_estimates, assignments):
+    return session_rows(session_estimates, assignments, lambda e, cells: e.C[cells])
+
+
+def session_dff(session_estimates, assignments, frames_window):
+    return session_rows(
+        session_estimates,
+        assignments,
+        lambda e, cells: caiman_dff(e, cells, e.C.shape[1], frames_window),
+    )
+
+
+def union_footprints(spatial, assignments):
+    """Each union cell's footprint from the first session it was matched in."""
+    from scipy.sparse import hstack
+
+    first = np.argmax(~np.isnan(assignments), axis=1)
+    return hstack(
+        [spatial[j][:, [int(assignments[i, j])]] for i, j in enumerate(first)],
+        format="csc",
+    )
+
+
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import load, local_correlations
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
+    from caiman import load
     from caiman.base.rois import register_multisession
     from caiman.source_extraction.cnmf import cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
@@ -45,11 +86,12 @@ def caiman_cnmf_multisession(
 
     flattened_params = {}
     recursive_flatten_params(params or {}, flattened_params)
-    params = flattened_params
+    params = parse_text_params(flattened_params)
 
     Ain = params.pop("Ain", None)
     roi_thr = params.pop("roi_thr", None)
     requested_n_processes = params.pop("n_processes", 1)
+    frames_window = dff_frames_window(params.pop("frames_window", 500))
 
     # mulisiession params
     session_lengths = params.pop("session_lengths", None)
@@ -128,38 +170,25 @@ def caiman_cnmf_multisession(
     )
 
     reg_files = int(len(split_image_paths) * reg_file_rate)
-    assignments_filtered = np.array(
-        np.nan_to_num(
-            assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files],
-        ),
-        dtype=int,
-    )
-    if assignments_filtered.shape[0] == 0:
+    kept = assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files]
+    if len(kept) == 0:
         raise Exception(
             f"No same cells found in {reg_files} or more "
             + f"out of {n_split_images} files. "
             + "Try to set lower reg_file_rate.",
         )
 
-    spatial_filtered = spatial[0][:, assignments_filtered[:, 0]]
+    spatial_filtered = union_footprints(spatial, kept)
 
-    fluorescence = np.array(
-        [
-            np.concatenate(
-                [
-                    cnm_list[j].estimates.C[int(assignments_filtered[i, j])]
-                    for j in range(assignments_filtered.shape[1])
-                ]
-            )
-            for i in range(assignments_filtered.shape[0])
-        ]
-    )
+    session_estimates = [cnm.estimates for cnm in cnm_list]
+    fluorescence = session_fluorescence(session_estimates, kept)
+    dff = session_dff(session_estimates, kept, frames_window)
 
     # contours plot
     thr_method = "nrg"
     swap_dim = False
 
-    iscell = np.concatenate([np.ones(assignments_filtered.shape[0], dtype=int)])
+    iscell = np.ones(len(kept), dtype=int)
 
     cell_ims = get_roi(spatial_filtered, roi_thr, thr_method, swap_dim, dims)
     cell_ims = np.stack(cell_ims).astype(float)
@@ -174,7 +203,7 @@ def caiman_cnmf_multisession(
     n_cells = spatial_filtered.shape[-1]
     for i in range(n_cells):
         kargs = {}
-        kargs["image_mask"] = spatial_filtered.T[i].T.toarray().reshape(dims)
+        kargs["image_mask"] = nwb_image_mask(spatial_filtered, i, dims, swap_dim)
         roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
@@ -204,17 +233,8 @@ def caiman_cnmf_multisession(
         }
     }
 
-    # get mean image
-    file_path = images.path
-    if isinstance(file_path, list):
-        file_path = file_path[0]
     images = images.data
-    mmap_images, dims, mmap_path = util_get_image_memmap(
-        function_id, images.data, file_path
-    )
-    mmap_paths.append(mmap_path)
-
-    Cn = local_correlations(mmap_images.transpose(1, 2, 0))
+    Cn = correlation_image(images)
     Cn[np.isnan(Cn)] = 0
 
     info = {
@@ -224,6 +244,7 @@ def caiman_cnmf_multisession(
             file_name="images",
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+        "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "cell_roi": RoiData(
             np.nanmax(cell_ims[iscell != 0], axis=0),
@@ -231,7 +252,12 @@ def caiman_cnmf_multisession(
             file_name="cell_roi",
         ),
         "edit_roi_data": EditRoiData(
-            util_edit_roi_movie(images_ref, mmap_images, output_dir), cell_ims
+            util_edit_roi_movie(
+                images_ref,
+                lambda: images.astype(edit_roi_dtype(images.dtype), copy=False),
+                output_dir,
+            ),
+            cell_ims,
         ),
         "nwbfile": nwbfile,
     }
