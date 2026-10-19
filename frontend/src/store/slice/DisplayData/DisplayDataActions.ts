@@ -109,11 +109,17 @@ export const getTimeSeriesInitData = createAsyncThunk<
             Object.keys(data[key]).length === 1,
         )
         if (reload.length === 0) break
+        // many reloads (after select all) share one all-data request, which has no isFull
+        const bulk = !isFull && reload.length > 5
         const records = await Promise.allSettled(
-          reload.map((index) => getTimeSeriesDataByIdApi(path, index, isFull)),
+          bulk
+            ? [getTimeSeriesAllDataApi(path)]
+            : reload.map((index) =>
+                getTimeSeriesDataByIdApi(path, index, isFull),
+              ),
         )
-        records.forEach((record, i) => {
-          const key = reload[i]
+        reload.forEach((key, i) => {
+          const record = records[bulk ? 0 : i]
           tried.add(key)
           // a failed refetch keeps the series already held rather than a blank
           const source =

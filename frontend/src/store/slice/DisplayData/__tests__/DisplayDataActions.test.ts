@@ -6,6 +6,7 @@ import { configureStore } from "@reduxjs/toolkit"
 import {
   commitRoiApi,
   getStatusRoi,
+  getTimeSeriesAllDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesInitDataApi,
 } from "api/visualizations/Outputs"
@@ -13,6 +14,7 @@ import {
   commitRoi,
   getDisplayErrorMessage,
   getStatus,
+  getTimeSeriesAllData,
   getTimeSeriesDataById,
   getTimeSeriesInitData,
   RejectPayload,
@@ -129,6 +131,81 @@ describe("getTimeSeriesInitData", () => {
     expect(entry.data["0"]).toEqual(record(1))
     expect(entry.data["1"]).toEqual(record(4))
   })
+
+  it("refetches a record a by-id request filled during the first refetch", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": record(1), "1": { "0": 1 }, "2": { "0": 1 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockImplementationOnce(async () => {
+        await store.dispatch(getTimeSeriesDataById({ path, index: "2" }))
+        return { data: { "1": record(6) }, xrange, std: {} }
+      })
+      .mockResolvedValueOnce({ data: { "2": record(5) }, xrange, std: {} })
+      .mockResolvedValueOnce({ data: { "2": record(7) }, xrange, std: {} })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.data["1"]).toEqual(record(6))
+    expect(entry.data["2"]).toEqual(record(7))
+    expect(jest.mocked(getTimeSeriesDataByIdApi)).toHaveBeenCalledTimes(4)
+  })
+
+  // alltimedata has no isFull variant, so the filter dialog keeps the by-id path
+  it.each([
+    [undefined, 2, 0],
+    [true, 1, 9],
+  ])(
+    "refetches after select all (isFull %s): %i all-data, %i by-id requests",
+    async (isFull, allCalls, byIdCalls) => {
+      const keys = Array.from({ length: 10 }, (_, i) => String(i))
+      const all = (a: number) =>
+        Object.fromEntries(keys.map((key) => [key, record(a)]))
+      jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+        data: {
+          ...Object.fromEntries(keys.map((key) => [key, { "0": 1 }])),
+          "0": record(1),
+        },
+        xrange,
+        std: {},
+      })
+      jest
+        .mocked(getTimeSeriesAllDataApi)
+        .mockResolvedValueOnce({ data: all(2), xrange, std: {} })
+        .mockResolvedValueOnce({ data: all(3), xrange, std: {} })
+      jest
+        .mocked(getTimeSeriesDataByIdApi)
+        .mockImplementation(async (_path, index) => ({
+          data: { [index]: record(3) },
+          xrange,
+          std: {},
+        }))
+      const store = configureStore({ reducer: { displayData: reducer } })
+      await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+      await store.dispatch(getTimeSeriesAllData({ path }))
+
+      await store.dispatch(getTimeSeriesInitData({ path, itemId: 1, isFull }))
+
+      expect(store.getState().displayData.timeSeries[path].data).toEqual({
+        ...all(3),
+        "0": record(1),
+      })
+      expect(jest.mocked(getTimeSeriesAllDataApi)).toHaveBeenCalledTimes(
+        allCalls,
+      )
+      expect(jest.mocked(getTimeSeriesDataByIdApi)).toHaveBeenCalledTimes(
+        byIdCalls,
+      )
+    },
+  )
 })
 
 describe("commitRoi", () => {
