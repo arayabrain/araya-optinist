@@ -283,6 +283,19 @@ def test_dff_zero_baseline_row_is_nan_with_warning(row, output_dir, caplog):
     np.testing.assert_allclose(result["mean_timeseries"].data[0], out[1])
 
 
+def test_dff_mean_skips_a_partly_floored_row_only_where_it_is_nan(output_dir):
+    x = np.vstack([np.ones(100), 2 + np.random.default_rng(17).random((4, 100))])
+    x[0, 40:60] = 0
+    result = _dff(FluoData(x, file_name="f"), output_dir, f0_window_frames=11)
+
+    out = result["sliced_data"].data
+    mean = result["mean_timeseries"].data[0]
+    floored = np.isnan(out[0])
+    assert floored[40:60].all() and not floored.all()
+    np.testing.assert_allclose(mean[floored], out[1:, floored].mean(axis=0))
+    np.testing.assert_allclose(mean[~floored], out[:, ~floored].mean(axis=0))
+
+
 def test_dff_leaves_behavior_data_unchanged(output_dir, caplog):
     behavior = BehaviorData(np.random.default_rng(12).random((N_TIME, 3)))
     with caplog.at_level("WARNING"):

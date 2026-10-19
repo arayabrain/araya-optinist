@@ -1,3 +1,4 @@
+import warnings
 from numbers import Integral, Real
 
 import numpy as np
@@ -430,7 +431,9 @@ def data_slice(
                         f"mean_timeseries leaves out {int(empty.sum())} "
                         "all-NaN dff row(s)"
                     )
-                mean_timeseries = rows[~empty].mean(axis=0)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    mean_timeseries = np.nanmean(rows, axis=0)
             elif other_axes:
                 mean_timeseries = np.mean(sliced_data, axis=other_axes)
             else:
