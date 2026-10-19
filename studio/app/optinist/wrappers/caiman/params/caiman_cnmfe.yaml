@@ -14,24 +14,24 @@ init_params:
 
   do_refit: False
 
-  K: 10
-  gSig: [4, 4]
+  K: null  # per patch; null caps it at a fifth of the patch pixels
+  gSig: [3, 3]
   ssub: 1
   tsub: 2
-  nb: 2
+  nb: 0  # ring model background, needed with patches
   # method_init: "greedy_roi"  # Fixed for cnmf-e
 
   roi_thr: 0.9  # Note: Extended param for ROI
 
 preprocess_params:
-  p: 2
+  p: 1
 
 patch_params:
-  rf: null
-  stride: 6
+  rf: 32  # patches bound memory to (2 rf + 1)^2 pixels x frames
+  stride: 16  # at least gSiz
 
 merge_params:
-  merge_thr: 0.85
+  merge_thr: 0.7
 
 
 # ----------------------------------------
@@ -62,10 +62,10 @@ advanced:
     # center_psf: False  # Fixed for cnmf-e
     lambda_gnmf: 1
     maxIter: 5
-    min_corr: 0.85
+    min_corr: 0.8
     min_pnr: 10
     seed_method: "auto"
-    ring_size_factor: 1.5
+    ring_size_factor: 1.4
     ssub_B: 2
     init_iter: 2
     nIter: 5
@@ -94,8 +94,8 @@ advanced:
   patch_params:
     nb_patch: 0
     border_pix: 0
-    low_rank_background: False
-    del_duplicates: False
+    low_rank_background: null
+    del_duplicates: True
     # only_init: True  # Fixed for cnmf-e
     p_patch: 0
     skip_refinement: False
@@ -117,7 +117,10 @@ advanced:
     min_SNR: 2.5
     min_cnn_thr: 0.9
     rval_lowest: -1
-    rval_thr: 0.8
-    use_cnn: True
+    rval_thr: 0.85
+    use_cnn: False  # the CNN is trained on 2p data
     use_ecc: False
     max_ecc: 3
+
+  dff_params:  # dff output, from CaImAn detrend_df_f
+    frames_window: 500  # running baseline window in frames, >= 2; null = whole recording
