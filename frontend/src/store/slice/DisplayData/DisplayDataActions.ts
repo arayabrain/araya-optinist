@@ -97,16 +97,22 @@ export const getTimeSeriesInitData = createAsyncThunk<
       const data = { ...response.data }
       const std = { ...response.std }
       const tried = new Set<string>()
+      const failed = new Set<string>()
       // One point per record, so refetch the records another item holds in full,
       // including any a by-id request filled while this one was in flight
       for (;;) {
         const entry = thunkAPI.getState().displayData.timeSeries[path]
         const held = entry?.data ?? {}
+        const full = (key: string) => Object.keys(held[key] ?? {}).length > 1
+        // a failed refetch keeps the newest series held rather than a blank
+        failed.forEach((key) => {
+          if (!full(key)) return
+          data[key] = held[key]
+          if (entry?.std[key] !== undefined) std[key] = entry.std[key]
+        })
         const reload = Object.keys(data).filter(
           (key) =>
-            !tried.has(key) &&
-            Object.keys(held[key] ?? {}).length > 1 &&
-            Object.keys(data[key]).length === 1,
+            !tried.has(key) && full(key) && Object.keys(data[key]).length === 1,
         )
         if (reload.length === 0) break
         // every record held in full (select all): one all-data request, which has
@@ -123,15 +129,11 @@ export const getTimeSeriesInitData = createAsyncThunk<
                 getTimeSeriesDataByIdApi(path, index, isFull),
               ),
         )
-        const now = thunkAPI.getState().displayData.timeSeries[path]
-        // a failed refetch keeps the newest series held rather than a blank
-        const kept = {
-          data: { ...held, ...now?.data },
-          std: { ...entry?.std, ...now?.std },
-        }
+        const kept = { data: held, std: entry?.std ?? {} }
         reload.forEach((key, i) => {
           const record = records[bulk ? 0 : i]
           tried.add(key)
+          if (record.status === "rejected") failed.add(key)
           const source = record.status === "fulfilled" ? record.value : kept
           data[key] = source.data[key]
           if (source.std[key] !== undefined) std[key] = source.std[key]

@@ -205,6 +205,41 @@ describe("getTimeSeriesInitData", () => {
     expect(jest.mocked(getTimeSeriesDataByIdApi)).toHaveBeenCalledTimes(4)
   })
 
+  it("keeps a by-id result that lands a round after its refetch failed", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": record(1), "1": { "0": 1 }, "2": { "0": 1 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockImplementationOnce(async () => {
+        await store.dispatch(getTimeSeriesDataById({ path, index: "2" }))
+        throw new Error("503")
+      })
+      .mockResolvedValueOnce({ data: { "2": record(5) }, xrange, std: {} })
+      .mockImplementationOnce(async () => {
+        await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+        return { data: { "2": record(7) }, xrange, std: {} }
+      })
+      .mockResolvedValueOnce({
+        data: { "1": record(6) },
+        xrange,
+        std: { "1": record(0) },
+      })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.data["1"]).toEqual(record(6))
+    expect(entry.std["1"]).toEqual(record(0))
+    expect(entry.data["2"]).toEqual(record(7))
+  })
+
   // alltimedata has no isFull variant, so the filter dialog keeps the by-id path
   it.each([
     [undefined, 2, 0],
