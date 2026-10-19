@@ -7,6 +7,7 @@ import imageio
 import numpy as np
 import tifffile
 
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
@@ -17,6 +18,25 @@ from studio.app.common.dataclass.base import BaseData
 from studio.app.common.dataclass.utils import create_images_list
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
+
+logger = AppLogger.get_logger()
+
+
+def _tiff_shape(path: str) -> tuple:
+    """
+    Shape imageio.volread would return for a TIFF, from its headers.
+
+    The last frame is decoded as well, so a file volread cannot read (truncated,
+    compressed with a codec that is not installed, or with a description that
+    claims more frames than it holds) raises here too.
+    """
+    with tifffile.TiffFile(path) as tif:
+        series = tif.series[0]
+        end = None if series.dataoffset is None else series.dataoffset + series.nbytes
+        if end is not None and end > tif.filehandle.size:
+            raise ValueError(f"{path} is truncated")
+        tif.asarray(key=-1, series=0)
+        return tuple(int(n) for n in series.shape)
 
 
 class ImageData(BaseData):
@@ -111,24 +131,58 @@ class ImageData(BaseData):
         else:
             return np.array(imageio.volread(self.path))
 
+    @property
+    def shape(self) -> tuple:
+        """
+        Shape of `data`, read from the TIFF headers rather than the pixels.
+
+        `data` reads every frame from disk on each access, so asking it for
+        `ndim` or `len` costs a full read of the stack. Falls back to that read
+        when the headers cannot be parsed or the files do not stack cleanly, so
+        a file `data` cannot read raises as it does there.
+        """
+        paths = self.path if isinstance(self.path, list) else [self.path]
+        try:
+            shapes = [_tiff_shape(p) for p in paths]
+        except Exception as e:
+            logger.debug("ImageData.shape: headers unreadable, reading data (%s)", e)
+            return self.data.shape
+        if len(shapes) == 1:
+            return shapes[0]
+        first = shapes[0]
+        if len(first) == 0 or any(
+            len(s) != len(first) or s[1:] != first[1:] for s in shapes
+        ):
+            logger.debug("ImageData.shape: files do not stack, reading data")
+            return self.data.shape
+        return (sum(s[0] for s in shapes),) + first[1:]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
     def save_json(self, json_dir):
-        if self.data.ndim < 3:
+        if self.ndim < 3:
             self.json_path = join_filepath([json_dir, f"{self.file_name}.json"])
             JsonWriter.write_as_split(self.json_path, create_images_list(self.data))
             JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)
 
     @property
     def output_path(self) -> OutputPath:
-        if self.data.ndim >= 3:
+        shape = self.shape
+        if len(shape) >= 3:
             # self.path will be a list if self.data got into else statement on __init__
             if isinstance(self.path, list) and isinstance(self.path[0], str):
                 _path = self.path[0]
             else:
                 _path = self.path
+            # the viewer serves only _path, so count its frames alone
+            if isinstance(self.path, list) and len(self.path) > 1:
+                shape = ImageData(_path).shape
             return OutputPath(
                 path=_path,
                 type=OutputType.IMAGE,
-                max_index=len(self.data),
+                max_index=shape[0],
             )
         else:
             return OutputPath(

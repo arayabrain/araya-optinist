@@ -358,7 +358,10 @@ resource "aws_cloudwatch_event_rule" "free_manager_asg_events" {
       "EC2 Instance Launch Successful",
       "EC2 Instance Terminate Successful",
       "EC2 Instance Launch Unsuccessful",
+      # Sent by the launch hook at launch start: the first launch-side sync,
+      # so the task is placed while the instance boots in Pending:Wait
       "EC2 Instance-launch Lifecycle Action",
+      # Sent by ECS's draining hook
       "EC2 Instance-terminate Lifecycle Action"
     ]
     detail = {

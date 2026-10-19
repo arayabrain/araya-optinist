@@ -49,7 +49,10 @@ from studio.app.common.core.auth.auth_dependencies import (
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageLockError,
 )
-from studio.app.common.core.workspace.workspace_dependencies import is_workspace_owner
+from studio.app.common.core.workspace.workspace_dependencies import (
+    is_workspace_available,
+    is_workspace_owner,
+)
 from studio.app.common.db.database import get_db
 from studio.app.common.routers import (
     algolist,
@@ -74,6 +77,7 @@ from studio.app.common.routers import (
 )
 from studio.app.common.schemas.files import DownloadFileRequest
 from studio.app.optinist.routers import hdf5, mat, nwb, roi
+from studio.tests.app.common.dependency_tree import depends_on
 
 APP_DIR = Path(studio.app.__file__).parent
 
@@ -103,11 +107,12 @@ ROUTER_MODULES = [
     roi,
 ]
 
-# Endpoints that depend on get_db and queue long work: each releases the
-# request session before it returns. Keyed by (router module, endpoint).
+# Endpoints that depend on get_db and queue or await long work: each releases
+# the request session before that work. Keyed by (router module, endpoint).
 RELEASING_ENDPOINTS = {
     ("run", "run"),
     ("run", "run_id"),
+    ("run", "run_result"),
     ("files", "create_file"),
     ("files", "download_file"),
     ("outputs", "sync_visualization_files"),
@@ -120,7 +125,6 @@ RELEASING_ENDPOINTS = {
 SHORT_TASK_ENDPOINTS = {
     ("files", "sync_input_file"): "uploads the input's metadata JSON",
     ("files", "delete_file"): "workspace usage (folder size)",
-    ("run", "run_result"): "experiment usage (folder size)",
     ("run", "apply_filter"): "experiment usage (folder size)",
 }
 
@@ -221,12 +225,6 @@ def test_the_guard_detects_a_session_passed_to_add_task(call, expected):
 # --------------------------------------------------------------------------
 
 
-def _depends_on(dependant, target) -> bool:
-    return any(
-        d.call is target or _depends_on(d, target) for d in dependant.dependencies
-    )
-
-
 def _takes_background_tasks(dependant) -> bool:
     return dependant.background_tasks_param_name is not None or any(
         _takes_background_tasks(d) for d in dependant.dependencies
@@ -245,7 +243,7 @@ def _get_db_routes_with_background_tasks():
         for route in router.routes
         if isinstance(route, APIRoute)
         and _takes_background_tasks(route.dependant)
-        and _depends_on(route.dependant, get_db)
+        and depends_on(route.dependant, get_db)
     }
 
 
@@ -363,6 +361,53 @@ def test_run_holds_no_connection_while_its_task_runs():
     )
     assert seen["run"] == 0
     assert engine.pool.checkedout() == 0
+
+
+def test_run_result_holds_no_connection_while_it_saves():
+    engine = create_engine(
+        "sqlite://",
+        poolclass=QueuePool,
+        connect_args={"check_same_thread": False},
+    )
+    make_session = sessionmaker(bind=engine)
+
+    def counting_get_db():
+        db = make_session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def querying_guard(db=Depends(get_db)):
+        db.execute(text("select 1"))
+
+    checked_out_during_save = []
+
+    async def observe(self, node_ids):
+        checked_out_during_save.append(engine.pool.checkedout())
+        return {}
+
+    app = FastAPI()
+    app.include_router(run.router)
+    app.dependency_overrides = {
+        get_db: counting_get_db,
+        is_workspace_available: querying_guard,
+        get_user_remote_bucket_name: lambda: "bucket",
+    }
+
+    with patch.object(
+        run.ExptConfigReader, "ensure_synced_async", new=AsyncMock()
+    ), patch.object(run.WorkflowResult, "observe", new=observe), patch.object(
+        run.RemoteStorageController, "is_available", return_value=False
+    ), patch.object(
+        run.ExperimentRecordService, "is_available", return_value=False
+    ):
+        response = TestClient(app).post(
+            "/run/result/1/uid", json={"pendingNodeIdList": ["func1"]}
+        )
+
+    assert response.status_code == 200
+    assert checked_out_during_save == [0]
 
 
 # --------------------------------------------------------------------------
