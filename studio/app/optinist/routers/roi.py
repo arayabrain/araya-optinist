@@ -16,6 +16,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.utils.filepath_creater import resolve_absolute_output_path
 from studio.app.common.core.workspace.workspace_dependencies import is_workspace_owner
 from studio.app.optinist.core.edit_ROI import EditROI, EditRoiUtils
+from studio.app.optinist.dataclass.roi import EditImagesUnavailableError
 from studio.app.optinist.schemas.roi import RoiList, RoiPos, RoiStatus
 
 router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
@@ -163,6 +164,9 @@ async def commit_edit(
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except EditImagesUnavailableError as e:
+        logger.error(e)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
