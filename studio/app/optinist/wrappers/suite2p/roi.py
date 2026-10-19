@@ -1,5 +1,6 @@
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import (
@@ -9,6 +10,7 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
+from studio.app.optinist.dataclass.roi import RoiStack
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -18,7 +20,7 @@ def suite2p_roi(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData, fluorescence=FluoData, iscell=IscellData):
     import numpy as np
-    from suite2p import ROI, classification, default_ops, detection, extraction
+    from suite2p import classification, default_ops, detection, extraction
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_roi: %s", function_id)
@@ -40,6 +42,7 @@ def suite2p_roi(
     Fneu = np.zeros((0, ops["nframes"]))
     iscell = np.array([], dtype=int)
     stat = []
+    roi_images = None
 
     try:
         # ROI detection
@@ -76,21 +79,18 @@ def suite2p_roi(
                 iscell = classification.classify(stat=stat, classfile=classfile)
                 iscell = iscell[:, 0].astype(int)
 
-                arrays = []
+                # The per-ROI mask stack (NaN outside ROI i, i inside it), written
+                # to disk one ROI at a time and referenced rather than held
+                stack, stack_path = RoiStack.create(
+                    join_filepath([output_dir, "roi_mask_stack.npy"]),
+                    (len(stat), ops["Ly"], ops["Lx"]),
+                )
                 for i, s in enumerate(stat):
-                    array = ROI(
-                        ypix=s["ypix"],
-                        xpix=s["xpix"],
-                        lam=s["lam"],
-                        med=s["med"],
-                        do_crop=False,
-                    ).to_array(Ly=ops["Ly"], Lx=ops["Lx"])
-                    array *= i + 1
-                    arrays.append(array)
-
-                im = np.stack(arrays)
-                im[im == 0] = np.nan
-                im -= 1
+                    stack[i, s["ypix"], s["xpix"]] = i
+                stack.flush()
+                del stack
+                im = RoiStack.open(stack_path)
+                roi_images = roi_label_images(stat, iscell, ops["Ly"], ops["Lx"])
             else:
                 logger.info("No ROIs detected in the data.")
 
@@ -154,22 +154,42 @@ def suite2p_roi(
         "fluorescence": FluoData(F, file_name="fluorescence"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
-            np.nanmax(im, axis=0) if len(im) > 0 else empty_roi,
+            roi_images["all"] if roi_images else empty_roi,
             output_dir=output_dir,
             file_name="all_roi",
         ),
         "non_cell_roi": RoiData(
-            np.nanmax(im[iscell == 0], axis=0) if len(im) > 0 else empty_roi,
+            roi_images["non_cell"] if roi_images else empty_roi,
             output_dir=output_dir,
             file_name="noncell_roi",
         ),
         "cell_roi": RoiData(
-            np.nanmax(im[iscell != 0], axis=0) if len(im) > 0 else empty_roi,
+            roi_images["cell"] if roi_images else empty_roi,
             output_dir=output_dir,
             file_name="cell_roi",
         ),
-        "edit_roi_data": EditRoiData(images=ImageData(ops["filelist"]).data, im=im),
+        # A reference to the movie, not the movie: suite2p's ROI editing reads
+        # traces from the registered binary (ops["reg_file"]), never from this
+        "edit_roi_data": EditRoiData(images=ImageData(ops["filelist"]), im=im),
         "nwbfile": nwbfile,
     }
 
     return info
+
+
+def roi_label_images(stat, iscell, Ly, Lx):
+    """
+    The all / cell / non-cell ROI images, from the ROIs' pixel lists.
+
+    Each pixel holds the highest ROI index covering it, which is what nanmax
+    over the per-ROI stack gives (layer i is i on ROI i's pixels, NaN elsewhere)
+    without reading the stack.
+    """
+    import numpy as np
+
+    images = {k: np.full((Ly, Lx), np.nan) for k in ("all", "cell", "non_cell")}
+    for i, s in enumerate(stat):
+        group = "cell" if iscell[i] != 0 else "non_cell"
+        for key in ("all", group):
+            images[key][s["ypix"], s["xpix"]] = i
+    return images

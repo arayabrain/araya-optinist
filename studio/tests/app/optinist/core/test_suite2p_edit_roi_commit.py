@@ -209,3 +209,23 @@ def test_neuropil_follows_the_ring_geometry_on_a_ramped_background(tmp_path):
     # the disk is symmetric about y = 30, so its mean is the ramp at its centre
     assert np.allclose(ops["F"][2], FLAT + 30, atol=1e-2)
     assert np.allclose(ops["Fneu"][2], FLAT + RING_MEAN_Y, atol=1e-2)
+
+
+def test_commit_never_reads_the_movie_edit_roi_data_carries(tmp_path):
+    # suite2p_roi stores a reference to the input movie in EditRoiData; editing
+    # reads traces from the registered binary, so the reference is never opened
+    from studio.app.common.dataclass.image import ImageData
+
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    ops, im = build(tmp_path, movie)
+    unread = ImageData(str(tmp_path / "missing.tif"))  # opening it would raise
+    data = EditRoiData(
+        images=unread, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    )
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_x")
+
+    assert len(info["fluorescence"].data) == 3
+    assert info["edit_roi_data"].images is unread
