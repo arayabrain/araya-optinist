@@ -112,3 +112,24 @@ class TestFreeManagerLambda:
 
     def test_idle_threshold_is_still_configured(self):
         assert attribute(self.function, "FREE_IDLE_THRESHOLD_MINUTES") == '"5"'
+
+    @pytest.mark.parametrize(
+        "detail_type",
+        [
+            # Alarm-driven scale-outs reach ECS only through these: the launch
+            # hook's event at launch start, then Launch Successful
+            "EC2 Instance-launch Lifecycle Action",
+            "EC2 Instance Launch Successful",
+            # The only event on which the ECS desired count may come down
+            "EC2 Instance Terminate Successful",
+        ],
+    )
+    def test_asg_events_drive_the_ecs_sync(self, detail_type):
+        rule = resource_block(
+            read(FREE_MANAGER_TF),
+            "aws_cloudwatch_event_rule",
+            "free_manager_asg_events",
+        )
+        detail_types = re.search(r"detail-type\s*=\s*\[(.*?)\]", rule, re.DOTALL)
+        assert detail_types, "detail-type list not found"
+        assert f'"{detail_type}"' in detail_types.group(1)

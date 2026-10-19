@@ -201,6 +201,23 @@ def test_local_file_is_read_when_cache_is_missing(workspace):
         validate_input_edges(workspace, nodes, edges)
 
 
+def test_compound_column_path_is_resolved_from_the_local_file(workspace):
+    with h5py.File(join_filepath([DIRPATH.INPUT_DIR, workspace, "f.h5"]), "w") as f:
+        f["g/table"] = np.zeros(50, dtype=[("time", "f8"), ("lick", "i4")])
+    nodes = {
+        "in": _node("in", "HDF5FileNode", "f.h5", "f.h5", hdf5Path="g/table/lick"),
+        "algo": _node(
+            "algo",
+            "AlgorithmNode",
+            "suite2p_file_convert",
+            "suite2p/suite2p_file_convert",
+        ),
+    }
+    edges = {"e": _edge("in", "HDF5Data", "algo", "image", "ImageData")}
+    with pytest.raises(WorkflowValidationError, match=r"\(50,\)"):
+        validate_input_edges(workspace, nodes, edges)
+
+
 def test_local_matlab_file_is_read_when_cache_is_missing(workspace):
     scipy.io.savemat(
         join_filepath([DIRPATH.INPUT_DIR, workspace, "f.mat"]),

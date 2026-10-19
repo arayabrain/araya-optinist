@@ -39,58 +39,6 @@ def run_command(
         return None
 
 
-def complete_lifecycle_actions() -> bool:
-    """Complete any pending lifecycle actions for terminating instances"""
-    print(f"{Colors.YELLOW}Completing pending lifecycle actions...{Colors.NC}")
-
-    # Get instances in Terminating:Wait state
-    terminating_instances = run_command(
-        [
-            "aws",
-            "autoscaling",
-            "describe-auto-scaling-groups",
-            "--auto-scaling-group-names",
-            "subscr-optinist-asg",
-            "--query",
-            "AutoScalingGroups[0].Instances[?LifecycleState=='Terminating:Wait']."
-            "InstanceId",
-            "--output",
-            "text",
-        ]
-    )
-
-    if terminating_instances and terminating_instances.strip() != "None":
-        instance_list = terminating_instances.split()
-        print(
-            f"{Colors.YELLOW}Found {len(instance_list)} instances in "
-            f"Terminating:Wait{Colors.NC}"
-        )
-
-        for instance_id in instance_list:
-            print(
-                f"{Colors.YELLOW}Completing lifecycle action for "
-                f"{instance_id}...{Colors.NC}"
-            )
-            run_command(
-                [
-                    "aws",
-                    "autoscaling",
-                    "complete-lifecycle-action",
-                    "--lifecycle-hook-name",
-                    "subscr-optinist-terminate-hook",
-                    "--auto-scaling-group-name",
-                    "subscr-optinist-asg",
-                    "--lifecycle-action-result",
-                    "CONTINUE",
-                    "--instance-id",
-                    instance_id,
-                ],
-                check=False,
-            )
-
-    return True
-
-
 def update_services(services: list[str]) -> bool:
     """Scale down ECS services to 0 tasks"""
     print(f"{Colors.YELLOW}Scaling down ECS services to 0 tasks...{Colors.NC}")
@@ -378,9 +326,6 @@ def wait_for_asg_to_terminate(timeout: int = 600) -> bool:
     asg_name = "subscr-optinist-asg"
     elapsed = 0
     while elapsed < timeout:
-        # Complete any pending lifecycle actions first
-        complete_lifecycle_actions()
-
         all_terminated = check_asg_instances(asg_name)
         if all_terminated:
             break
