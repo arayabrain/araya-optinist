@@ -1,10 +1,15 @@
 import numpy as np
+import pytest
 
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi import (
     commit_edit as caiman_commit_edit,
 )
+from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi import (
+    commit_edit as lccd_commit_edit,
+)
 from studio.app.optinist.core.edit_ROI.wrappers.vacant_roi_edit_roi import commit_edit
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData
 
 # vacant_roi, lccd and caiman share this commit implementation; caiman also
@@ -179,3 +184,19 @@ def test_a_caiman_pickle_without_dff_commits_without_one(tmp_path):
     )
 
     assert "dff" not in info
+
+
+@pytest.mark.parametrize("commit", [commit_edit, lccd_commit_edit])
+def test_a_commit_exports_the_rate_and_binary_masks_to_nwb(tmp_path, commit):
+    images, data, fluorescence, iscell = build_state(
+        [CellType.ROI, CellType.ROI, CellType.TEMP_DELETE, CellType.TEMP_DELETE]
+    )
+
+    info = commit(images, data, fluorescence, iscell, str(tmp_path), "node", rate=10.0)
+
+    nwbfile = info["nwbfile"]
+    assert nwbfile[NWBDATASET.FLUORESCENCE]["node"]["Fluorescence"]["rate"] == 10.0
+    mask = nwbfile[NWBDATASET.ROI]["node"]["roi_list"][0]["image_mask"]
+    expected = np.zeros(SHAPE)
+    expected[0, :] = 1
+    np.testing.assert_array_equal(mask, expected)
