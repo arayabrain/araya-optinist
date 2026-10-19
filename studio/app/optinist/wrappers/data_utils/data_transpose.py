@@ -95,7 +95,8 @@ def data_transpose(
         logger.info(f"Transposed data shape: {tp_data.shape}")
 
         # a flipped time-major table is (rows, time), which is TimeSeriesData
-        from_time_major = isinstance(data, (BehaviorData, CsvData)) and dims == [1, 0]
+        axes = [d % ndim for d in dims]
+        from_time_major = isinstance(data, (BehaviorData, CsvData)) and axes == [1, 0]
         output_data = return_as_data_type(
             data,
             tp_data,

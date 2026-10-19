@@ -377,10 +377,13 @@ def test_c6_concat_std_follows_the_data_axis(output_dir):
     ],
     ids=["behaviour", "csv", "fluo", "timeseries", "heatmap", "bar"],
 )
-def test_c7_transpose_type(make, expected_type, output_dir):
+@pytest.mark.parametrize(
+    "params", [{}, {"transpose_dims": "-1, -2"}], ids=["default", "negative-axes"]
+)
+def test_c7_transpose_type(make, expected_type, params, output_dir):
     data = make()
 
-    out = data_transpose(data, output_dir, params={})["transposed_data"]
+    out = data_transpose(data, output_dir, params=params)["transposed_data"]
 
     assert type(out) is expected_type
     np.testing.assert_array_equal(out.data, data.data.T)
