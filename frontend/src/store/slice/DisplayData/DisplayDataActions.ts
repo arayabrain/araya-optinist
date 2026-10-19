@@ -1,6 +1,11 @@
 import { AxiosError } from "axios"
 
-import { createAsyncThunk } from "@reduxjs/toolkit"
+import {
+  AnyAction,
+  ThunkAction,
+  createAction,
+  createAsyncThunk,
+} from "@reduxjs/toolkit"
 
 import {
   TimeSeriesData,
@@ -43,6 +48,7 @@ import {
 } from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
+  DisplayData,
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
@@ -86,13 +92,59 @@ export const getTimeSeriesInitData = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; itemId: number; isFull?: boolean }
+  { path: string; itemId: number; isFull?: boolean },
+  { state: { displayData: DisplayData } }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesInitData`,
   async ({ path, isFull }, thunkAPI) => {
     try {
       const response = await getTimeSeriesInitDataApi(path, isFull)
-      return response
+      const data = { ...response.data }
+      const std = { ...response.std }
+      const tried = new Set<string>()
+      const failed = new Set<string>()
+      // One point per record, so refetch the records another item holds in full,
+      // including any a by-id request filled while this one was in flight
+      for (;;) {
+        const entry = thunkAPI.getState().displayData.timeSeries[path]
+        const held = entry?.data ?? {}
+        const full = (key: string) => Object.keys(held[key] ?? {}).length > 1
+        // a failed refetch keeps the newest series held rather than a blank
+        failed.forEach((key) => {
+          if (!full(key)) return
+          data[key] = held[key]
+          if (entry?.std[key] !== undefined) std[key] = entry.std[key]
+        })
+        const reload = Object.keys(data).filter(
+          (key) =>
+            !tried.has(key) && full(key) && Object.keys(data[key]).length === 1,
+        )
+        if (reload.length === 0) break
+        // every record held in full (select all): one all-data request, which has
+        // no isFull; a sparser selection stays by id rather than load the output
+        const stubs = Object.keys(data).filter(
+          (key) => Object.keys(data[key]).length === 1,
+        )
+        const bulk =
+          !isFull && reload.length > 1 && reload.length === stubs.length
+        const records = await Promise.allSettled(
+          bulk
+            ? [getTimeSeriesAllDataApi(path)]
+            : reload.map((index) =>
+                getTimeSeriesDataByIdApi(path, index, isFull),
+              ),
+        )
+        const kept = { data: held, std: entry?.std ?? {} }
+        reload.forEach((key, i) => {
+          const record = records[bulk ? 0 : i]
+          tried.add(key)
+          if (record.status === "rejected") failed.add(key)
+          const source = record.status === "fulfilled" ? record.value : kept
+          data[key] = source.data[key]
+          if (source.std[key] !== undefined) std[key] = source.std[key]
+        })
+      }
+      return { ...response, data, std }
     } catch (e) {
       return thunkAPI.rejectWithValue(e)
     }
@@ -106,7 +158,8 @@ export const getTimeSeriesDataById = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; index: string; isFull?: boolean }
+  // background: a request the user did not make, whose failure leaves the plot up
+  { path: string; index: string; isFull?: boolean; background?: boolean }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesDataById`,
   async ({ path, index, isFull }, thunkAPI) => {
@@ -117,6 +170,25 @@ export const getTimeSeriesDataById = createAsyncThunk<
       return thunkAPI.rejectWithValue(e)
     }
   },
+)
+
+// Skips a record another plot already requested or loaded
+export const getTimeSeriesDataByIdOnce =
+  (arg: {
+    path: string
+    index: string
+  }): ThunkAction<void, { displayData: DisplayData }, unknown, AnyAction> =>
+  (dispatch, getState) => {
+    if (
+      getState().displayData.timeSeries[arg.path]?.byId?.[arg.index] == null
+    ) {
+      dispatch(getTimeSeriesDataById({ ...arg, background: true }))
+    }
+  }
+
+// Forgets the records whose request failed, so they are requested once more
+export const retryRejectedTimeSeries = createAction<{ path: string }>(
+  `${DISPLAY_DATA_SLICE_NAME}/retryRejectedTimeSeries`,
 )
 
 export const getTimeSeriesAllData = createAsyncThunk<

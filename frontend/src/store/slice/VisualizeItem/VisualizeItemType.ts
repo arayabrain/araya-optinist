@@ -105,6 +105,7 @@ export interface TimeSeriesItem extends DisplayDataItemBaseType {
   rangeUnit: "frames" | "time"
   maxIndex: number
   refImageItemId: number | null
+  shadeSourceItemId: number | null
   drawOrderList: string[]
 }
 
