@@ -77,6 +77,7 @@ import {
   selectVisualizeSaveFormat,
   selectImageItemRangeUnit,
   selectTimeSeriesShadeSourceItem,
+  selectTimeSeriesItemShadeSourceItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch, RootState } from "store/store"
@@ -314,6 +315,9 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   )
 
   const store = useStore<RootState>()
+  const shadeSourceId = useSelector(
+    selectTimeSeriesItemShadeSourceItemId(itemId),
+  )
   const shadeSource = useSelector(selectTimeSeriesShadeSourceItem(itemId))
   const shadePath = shadeSource?.filePath ?? null
   const shadeKeys = shadeSource?.drawOrderList
@@ -339,7 +343,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   useEffect(() => {
     if (shadePath != null)
       dispatch(retryRejectedTimeSeries({ path: shadePath }))
-  }, [dispatch, shadePath])
+  }, [dispatch, shadePath, shadeSourceId])
 
   const shade = useMemo(() => {
     const loaded = new Set(loadedShadeKeys)

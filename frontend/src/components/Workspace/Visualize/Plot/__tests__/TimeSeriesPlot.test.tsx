@@ -16,7 +16,9 @@ import {
 import { TimeSeriesPlot } from "components/Workspace/Visualize/Plot/TimeSeriesPlot"
 import displayData from "store/slice/DisplayData/DisplayDataSlice"
 import { DATA_TYPE_SET } from "store/slice/DisplayData/DisplayDataType"
-import visualaizeItem from "store/slice/VisualizeItem/VisualizeItemSlice"
+import visualaizeItem, {
+  setTimeSeriesItemShadeSource,
+} from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { VISUALIZE_ITEM_TYPE_SET } from "store/slice/VisualizeItem/VisualizeItemType"
 
 const mockPlot = jest.fn()
@@ -33,6 +35,7 @@ const TARGET = "/output/target"
 const SOURCE = "/output/source"
 const TARGET_ID = 0
 const SOURCE_ID = 1
+const OTHER_SOURCE_ID = 2
 const stub = { "0": 0 }
 
 const xrangeOf = (frames: number) =>
@@ -76,6 +79,7 @@ function renderPlot(
   data: object,
   byId: object,
   keys: string[],
+  extraItems: object = {},
 ) {
   jest
     .mocked(getTimeSeriesInitDataApi)
@@ -101,6 +105,7 @@ function renderPlot(
         items: {
           [TARGET_ID]: item(TARGET, ["0"], SOURCE_ID),
           [SOURCE_ID]: item(SOURCE, keys, null),
+          ...extraItems,
         },
       },
     } as never,
@@ -165,6 +170,27 @@ describe("TimeSeriesPlot shading", () => {
       screen.getByText(/Shading could not load 1 trace\(s\)/),
     ).toBeDefined()
     expect(lastLayout().shapes).toHaveLength(2)
+  })
+
+  it("retries again when the link moves to another box on the same output", async () => {
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockRejectedValue(new Error("504") as never)
+    const store = renderPlot(4, { "1": stub }, { "1": "rejected" }, ["1"], {
+      [OTHER_SOURCE_ID]: item(SOURCE, ["1"], null),
+    })
+    await waitFor(() => expect(requested()).toEqual(["1"]))
+
+    await settle(() =>
+      store.dispatch(
+        setTimeSeriesItemShadeSource({
+          itemId: TARGET_ID,
+          shadeSourceItemId: OTHER_SOURCE_ID,
+        }),
+      ),
+    )
+
+    await waitFor(() => expect(requested()).toEqual(["1", "1"]))
   })
 
   it("notes the cap and fetches nothing more once the shading is full", () => {
