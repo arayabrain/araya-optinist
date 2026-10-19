@@ -227,7 +227,7 @@ def caiman_cnmf_multisession(
         "edit_roi_data": EditRoiData(
             util_edit_roi_movie(
                 images_ref,
-                images.astype(edit_roi_dtype(images.dtype), copy=False),
+                lambda: images.astype(edit_roi_dtype(images.dtype), copy=False),
                 output_dir,
             ),
             cell_ims,
