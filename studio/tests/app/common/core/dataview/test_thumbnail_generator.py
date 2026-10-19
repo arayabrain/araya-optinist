@@ -85,6 +85,16 @@ class TestRenderArrayAsThumbnail:
         img = imageio.imread(output_path)
         assert (img <= 10).mean() < 0.01
 
+    def test_symmetric_noise_pools_the_same_way_whatever_the_seed(self, output_path):
+        bright = set()
+        for seed in range(30):
+            arr = np.random.default_rng(seed).random((2000, 3)).astype(np.float32)
+            ThumbnailGenerator._render_array_as_thumbnail(
+                arr, output_path, max_size=128, keep_aspect=False
+            )
+            bright.add(imageio.imread(output_path).mean() > 127)
+        assert len(bright) == 1
+
     def test_sparse_negative_events_survive_the_downsampling(self, output_path):
         arr = np.zeros((2000, 300), dtype=np.float32)
         arr[::100, ::50] = -1.0

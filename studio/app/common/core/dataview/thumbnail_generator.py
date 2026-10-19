@@ -130,13 +130,13 @@ class ThumbnailGenerator:
         else:
             new_h, new_w = h, w
         if not keep_aspect and (h > new_h or w > new_w):
-            # Pool toward the extreme farther from the median, so sparse events
-            # of either sign survive the downsampling and dense data stays even
+            # Pool toward the minimum only if the median sits in the top third, so
+            # sparse events of either sign survive and symmetric data never flips
             ys = (np.arange(min(new_h, h)) * h / min(new_h, h)).astype(int)
             xs = (np.arange(min(new_w, w)) * w / min(new_w, w)).astype(int)
             counts = np.cumsum(np.bincount(img_normalized.ravel(), minlength=256))
             low, median, high = np.searchsorted(counts, [1, counts[-1] / 2, counts[-1]])
-            pool = np.minimum if median - low > high - median else np.maximum
+            pool = np.minimum if median - low > 2 * (high - median) else np.maximum
             img_normalized = pool.reduceat(pool.reduceat(img_normalized, ys), xs, 1)
             h, w = img_normalized.shape
         if (new_h, new_w) != (h, w):
