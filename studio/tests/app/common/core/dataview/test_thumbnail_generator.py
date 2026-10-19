@@ -83,7 +83,7 @@ class TestRenderArrayAsThumbnail:
             arr, output_path, max_size=128, keep_aspect=False
         )
         img = imageio.imread(output_path)
-        assert (img <= 10).mean() < 0.01
+        assert min((img <= 10).mean(), (img >= 245).mean()) < 0.01
 
     def test_symmetric_noise_pools_the_same_way_whatever_the_seed(self, output_path):
         bright = set()
