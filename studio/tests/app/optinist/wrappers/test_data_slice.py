@@ -370,21 +370,26 @@ def test_dff_percentile_nan_row_matches_nan_aware_reference(output_dir):
 def test_dff_maximin_nonfinite_row_matches_away_from_the_gap(bad, output_dir):
     window, sigma, gap = 20, 3.0, 200
     clean = _trace(400)
-    x = clean[None, :].copy()
+    x = np.stack([clean, clean])
     x[0, gap] = bad
-    out = _dff(
+    result = _dff(
         FluoData(x, file_name="f"),
         output_dir,
         f0_method="maximin",
         f0_window_frames=window,
         f0_sigma_frames=sigma,
-    )["sliced_data"].data[0]
+    )
+    out, healthy = result["sliced_data"].data
 
     reach = int(4 * sigma) + 2 * window
     far = np.r_[reach : gap - reach, gap + reach + 1 : 400 - reach]
     f0 = _maximin(clean, window, sigma)
     np.testing.assert_allclose(out[far], ((clean - f0) / np.abs(f0))[far])
     assert np.isfinite(np.delete(out, gap)).all()
+    # the gap is NaN, so the population mean takes the healthy row there
+    assert np.isnan(out[gap])
+    mean = result["mean_timeseries"].data[0]
+    np.testing.assert_allclose(mean[gap], healthy[gap])
 
 
 @pytest.mark.parametrize(

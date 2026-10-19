@@ -117,6 +117,7 @@ def _dff(values, axis, method, window, percentile, sigma):
         out /= np.abs(f0, out=f0)
     zero = np.broadcast_to(f0 <= 1e-6 * spread, rows.shape)
     out[zero] = np.nan
+    out[~finite] = np.nan
     n_zero = int(zero.any(axis=-1).sum())
     if n_zero:
         logger.warning(
