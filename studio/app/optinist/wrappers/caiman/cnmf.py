@@ -15,6 +15,7 @@ from studio.app.common.core.utils.filepath_creater import (
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -110,6 +111,16 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     mmap_images = np.reshape(mmap_images.T, [T] + list(dims), order="F")
     mmap_images[:] = images[:]
     return mmap_images, dims, mmap_path
+
+
+def util_edit_roi_movie(images: ImageData, mmap_images, output_dir: str):
+    """
+    The movie EditRoiData keeps for ROI edits: a reference to the input when it
+    lives in this node's experiment (see edit_reference), else CaImAn's float32
+    copy of it, as before references were stored.
+    """
+    reference = edit_reference(images, output_dir)
+    return mmap_images if reference is None else reference
 
 
 def util_cleanup_image_memmap(mmap_paths: list):
@@ -254,6 +265,11 @@ def caiman_cnmf(
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info(f"start caiman_cnmf: {function_id}")
+
+    # ROI editing reads new traces from the input movie, opened lazily at
+    # commit time: EditRoiData keeps a reference to it when util_edit_roi_movie
+    # allows it, rather than a copy
+    images_ref = images
 
     # NOTE: evaluate_components requires cnn_model files in caiman_data directory.
     util_download_model_files()
@@ -409,7 +425,9 @@ def caiman_cnmf(
             output_dir=output_dir,
             file_name="non_cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, im),
+        "edit_roi_data": EditRoiData(
+            util_edit_roi_movie(images_ref, mmap_images, output_dir), im
+        ),
         "nwbfile": nwbfile,
     }
 
