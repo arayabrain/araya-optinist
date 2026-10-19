@@ -40,16 +40,25 @@ MODULE = "studio.app.common.core.workflow.workflow_tracking"
 USER_ID = 4321
 
 
-def _run_with_tier(operation, tier, has_free_record, has_premium_record, rowcount=1):
+HOST = "i-0abc123def4567890"
+
+
+def _run_with_tier(
+    operation, tier, has_free_record, has_premium_record, rowcount=1, host=HOST
+):
     """Run increment/decrement with an injected tier and return every UPDATE it
     executed, as (table_name, compiled_sql).
 
     ``_get_user_tier`` is patched so each branch can be addressed directly. That
     makes the *routing* below the decision observable, not the decision itself.
+    ``_execution_host`` is patched too: off EC2 it would try the metadata
+    service.
     """
     with patch(f"{MODULE}._get_user_tier") as get_tier, patch(
         f"{MODULE}.session_scope"
-    ) as mock_session, patch(f"{MODULE}.MODE") as mode:
+    ) as mock_session, patch(f"{MODULE}.MODE") as mode, patch(
+        f"{MODULE}._execution_host", return_value=host
+    ):
         mode.IS_STANDALONE = False
         get_tier.return_value = (tier, has_free_record, has_premium_record)
 
@@ -165,6 +174,84 @@ class TestIncrementWritesToTheTierTable:
         _, sql = statements[0]
         assert "last_workflow_start" in sql
         assert "active_workflow_count" in sql
+
+
+class TestIncrementPinsTheFreeRowToItsHost:
+    """
+    The free scale-in spares the instance named by ``instance_id`` when the
+    row has a running workflow. The activity middleware moves that column to
+    whichever instance serves a request, so the row has to be pinned to the
+    host the workflow actually runs on when the workflow starts, and left
+    there while one runs. Both halves are in the compiled UPDATE.
+    """
+
+    @staticmethod
+    def _set_clause(sql):
+        upper = sql.upper()
+        return sql[upper.index(" SET ") : upper.index(" WHERE ")]
+
+    def test_the_first_workflow_pins_the_row_to_this_host(self):
+        statements, session = _run_with_tier(
+            increment_workflow_count,
+            tier=TIER_FREE,
+            has_free_record=True,
+            has_premium_record=False,
+        )
+
+        _, sql = statements[0]
+        values = self._set_clause(sql)
+        assert (
+            "instance_id=CASE WHEN (free_user_assignments.active_workflow_count > "
+            in (values)
+        )
+        assert "THEN free_user_assignments.instance_id ELSE " in values
+        compiled = session.execute.call_args.args[0].compile(dialect=mysql.dialect())
+        assert HOST in compiled.params.values()
+
+    def test_a_later_workflow_does_not_move_the_row(self):
+        """The CASE keeps the stored instance_id while the count is above 0,
+        so a second workflow started through another instance does not
+        unprotect the first one's host."""
+        statements, _ = _run_with_tier(
+            increment_workflow_count,
+            tier=TIER_FREE,
+            has_free_record=True,
+            has_premium_record=False,
+        )
+
+        _, sql = statements[0]
+        case_clause = self._set_clause(sql).split("instance_id=", 1)[1]
+        assert case_clause.startswith(
+            "CASE WHEN (free_user_assignments.active_workflow_count > "
+        )
+        assert "THEN free_user_assignments.instance_id" in case_clause
+
+    def test_off_ec2_the_row_is_not_pinned(self):
+        """No host to pin to (local runs): the increment leaves instance_id
+        alone rather than writing a placeholder."""
+        statements, _ = _run_with_tier(
+            increment_workflow_count,
+            tier=TIER_FREE,
+            has_free_record=True,
+            has_premium_record=False,
+            host=None,
+        )
+
+        _, sql = statements[0]
+        assert "instance_id" not in self._set_clause(sql)
+
+    def test_the_premium_increment_carries_no_instance_id(self):
+        """Premium users sit on a dedicated instance; the column is the
+        assignment itself and is not the free scale-in's concern."""
+        statements, _ = _run_with_tier(
+            increment_workflow_count,
+            tier=TIER_PREMIUM,
+            has_free_record=False,
+            has_premium_record=True,
+        )
+
+        _, sql = statements[0]
+        assert "instance_id" not in self._set_clause(sql)
 
 
 class TestDecrementWritesToTheTierTable:

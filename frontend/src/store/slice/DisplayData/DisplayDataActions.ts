@@ -331,7 +331,7 @@ export const commitRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
