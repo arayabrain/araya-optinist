@@ -3,6 +3,7 @@ workspace, and NWB fluorescence oriented to (roi, time) using the
 sibling `rois` dataset so the transpose knob on fluo_from_hdf5 is no longer
 load-bearing for NWB input.
 """
+import logging
 import os
 import pickle
 
@@ -288,3 +289,20 @@ def test_matlab_variables_get_the_same_types_and_tiff_cache(tmp_path):
     assert isinstance(
         FileWriter.mat(_matrule(tmp_path, mat, "iscell"))["input_x"], IscellData
     )
+
+
+def test_a_source_rate_that_differs_from_the_nwb_setting_is_logged(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    h5 = _h5(tmp_path, {"g/data": np.ones((N_TIME, N_ROI)), "g/starting_time": 0.0})
+    with h5py.File(h5, "a") as f:
+        f["g/starting_time"].attrs["rate"] = 10.0
+    rule = _rule(tmp_path, h5, "g/data")
+
+    rule.nwbfile["imaging_plane"] = {"imaging_rate": 30}
+    FileWriter.hdf5(rule)
+    assert "sampled at 10 Hz but the NWB setting imaging_rate is 30 Hz" in caplog.text
+
+    caplog.clear()
+    rule.nwbfile["imaging_plane"] = {"imaging_rate": 10.0}
+    FileWriter.hdf5(rule)
+    assert "sampled at" not in caplog.text
