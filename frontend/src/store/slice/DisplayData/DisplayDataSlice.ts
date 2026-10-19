@@ -275,11 +275,15 @@ export const displayDataSlice = createSlice({
         state.timeSeries[path].data = action.payload.data
         state.timeSeries[path].std = action.payload.std
         const full = action.payload.xrange.length
-        state.timeSeries[path].byId = Object.fromEntries(
-          Object.entries(action.payload.data)
+        // a request still in flight stays pending, so no plot sends it again
+        state.timeSeries[path].byId = Object.fromEntries([
+          ...Object.entries(state.timeSeries[path].byId ?? {}).filter(
+            ([, status]) => status === "pending",
+          ),
+          ...Object.entries(action.payload.data)
             .filter(([, record]) => Object.keys(record).length >= full)
             .map(([key]) => [key, "fulfilled"]),
-        )
+        ])
       })
       .addCase(getHeatMapData.pending, (state, action) => {
         const { path } = action.meta.arg

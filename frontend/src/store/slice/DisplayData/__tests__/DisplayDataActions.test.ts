@@ -256,6 +256,31 @@ describe("getTimeSeriesDataByIdOnce", () => {
       "1": "pending",
     })
   })
+
+  it("keeps a record in flight pending when another box's init lands first", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": { "0": 1, "1": 2 }, "1": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    let resolve: (value: unknown) => void = () => undefined
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockReturnValue(new Promise((r) => (resolve = r)) as never)
+    const store = configureStore({ reducer: { displayData: reducer } })
+    const byId = () => store.getState().displayData.timeSeries[path].byId
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+    expect(byId()).toEqual({ "0": "fulfilled", "1": "pending" })
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "1" }))
+    resolve({ data: { "1": { "0": 0, "1": 1 } }, xrange, std: {} })
+    await new Promise(process.nextTick)
+
+    expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(1)
+    expect(byId()).toEqual({ "0": "fulfilled", "1": "fulfilled" })
+  })
 })
 
 describe("commitRoi", () => {
