@@ -1,5 +1,8 @@
 import os
 
+import numpy as np
+import tifffile
+
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import (
@@ -15,45 +18,23 @@ logger = AppLogger.get_logger()
 def suite2p_file_convert(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData):
-    import numpy as np
-    import tifffile
     from suite2p import default_ops, io
     from suite2p.io.tiff import open_tiff, use_sktiff_reader
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_file_convert: %s", function_id)
 
-    data_path_list = []
-    data_name_list = []
-    for file_path in image.path:
-        use_sktiff = (
-            True
-            if params.get("force_sktiff")
-            else use_sktiff_reader(file_path, batch_size=params.get("batch_size"))
-        )
-
-        tif, _ = open_tiff(file_path, use_sktiff)
-        if use_sktiff:
-            im = tifffile.imread(file_path)
-        else:
-            im = tif.data()
-
-        if im.dtype.type == np.float32:
-            im = (im - im.min()) / (im.max() - im.min())
-            im = (im * np.iinfo(np.int16).max).astype(np.int16)
-
-        file_path = join_filepath([output_dir, os.path.basename(file_path)])
-        tifffile.imwrite(file_path, im)
-
-        data_path_list.append(os.path.dirname(file_path))
-        data_name_list.append(os.path.basename(file_path))
+    tiff_list = tiff_list_for_binary(
+        image.path, output_dir, params, open_tiff, use_sktiff_reader
+    )
+    data_path_list = [output_dir] * len(tiff_list)
 
     logger.debug(data_path_list)
-    logger.debug(data_name_list)
+    logger.debug(tiff_list)
     # data pathと保存pathを指定
     db = {
         "data_path": data_path_list,
-        "tiff_list": data_name_list,
+        "tiff_list": tiff_list,
         "save_path0": output_dir,
         "save_folder": "suite2p",
     }
@@ -74,3 +55,177 @@ def suite2p_file_convert(
     }
 
     return info
+
+
+# tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
+BIGTIFF_BYTES = 2**32 - 2**25
+# frames per read when normalising a float32 input, bounded in bytes
+BATCH_BYTES = 64 << 20
+
+
+def tiff_list_for_binary(paths, output_dir, params, open_tiff, use_sktiff_reader):
+    """
+    Name each input file for tiff_to_binary, copying only what it cannot read as is.
+
+    tiff_to_binary joins each name to data_path[0] (output_dir); an absolute path
+    replaces it, so an input read as is is listed by its own path. Per file:
+    - integer pixels, plain layout, the reader tiff_to_binary will use: as is;
+    - float32, plain layout: an int16 copy normalised to the file's own min / max,
+      written in batches;
+    - anything else: the whole-file copy (normalised if float32), as before.
+    tiff_to_binary then sees the same frames either way, so data.bin and meanImg
+    do not change. `open_tiff` and `use_sktiff_reader` are suite2p.io.tiff's,
+    passed in because suite2p is imported lazily.
+    """
+    force_sktiff = bool(params.get("force_sktiff"))
+    batch_size = params.get("batch_size")
+
+    tiff_list = []
+    # the reader tiff_to_binary picks once, from the first listed file
+    binary_sktiff = None
+    for path in paths:
+        use_sktiff = force_sktiff or use_sktiff_reader(path, batch_size=batch_size)
+        layout = plain_layout(path)
+        if (
+            layout is not None
+            and np.issubdtype(layout[1], np.integer)
+            and binary_sktiff in (None, use_sktiff)
+        ):
+            name = os.path.abspath(path)
+            listed_sktiff = use_sktiff
+            treatment = "as is"
+        else:
+            name = os.path.basename(path)
+            copy_path = join_filepath([output_dir, name])
+            if layout is not None and can_normalise_in_batches(*layout):
+                write_normalised_copy(path, copy_path, layout[0], use_sktiff, open_tiff)
+                treatment = "int16 copy, in batches"
+            else:
+                write_whole_copy(path, copy_path, use_sktiff, open_tiff)
+                treatment = "whole-file copy"
+            listed_sktiff = None  # tiff_to_binary decides it on the copy
+        logger.info("suite2p_file_convert: %s (%s)", path, treatment)
+
+        if binary_sktiff is None:
+            if listed_sktiff is None:
+                listed_sktiff = force_sktiff or use_sktiff_reader(
+                    copy_path, batch_size=batch_size
+                )
+            binary_sktiff = listed_sktiff
+        tiff_list.append(name)
+
+    return tiff_list
+
+
+def plain_layout(path):
+    """
+    (shape, dtype) of a TIFF whose pages are the frames of its whole-file read,
+    else None.
+
+    tiff_to_binary reads by page; the whole-file read returns series 0. They
+    agree for one series of (T, Y, X) or (Y, X) grey pages, one page per frame.
+    """
+    try:
+        with tifffile.TiffFile(path) as tif:
+            if len(tif.series) != 1:
+                return None
+            series = tif.series[0]
+            shape = tuple(int(n) for n in series.shape)
+            frames = shape[0] if len(shape) == 3 else 1
+            page = tif.pages[0]
+            if (
+                len(shape) not in (2, 3)
+                or len(tif.pages) != frames
+                or page.samplesperpixel != 1
+                or tuple(page.shape) != shape[-2:]
+            ):
+                return None
+            return shape, np.dtype(series.dtype)
+    except Exception as e:
+        logger.debug("suite2p_file_convert: layout unreadable, %s (%s)", path, e)
+        return None
+
+
+def can_normalise_in_batches(shape, dtype):
+    # tifffile stores 3- / 4-frame and 3- / 4-column stacks as RGB, which
+    # 2022.3 cannot stream; those and single frames are copied whole
+    return (
+        dtype == np.float32
+        and len(shape) == 3
+        and shape[0] not in (3, 4)
+        and shape[2] not in (3, 4)
+    )
+
+
+def normalise_to_int16(im, im_min, im_max):
+    return ((im - im_min) / (im_max - im_min) * np.iinfo(np.int16).max).astype(np.int16)
+
+
+def write_whole_copy(path, copy_path, use_sktiff, open_tiff):
+    if use_sktiff:
+        im = tifffile.imread(path)
+    else:
+        tif, _ = open_tiff(path, use_sktiff)
+        im = tif.data()
+
+    if im.dtype.type == np.float32:
+        im = normalise_to_int16(im, im.min(), im.max())
+
+    tifffile.imwrite(copy_path, im)
+
+
+def iter_batches(path, nframes, batch_size, use_sktiff, open_tiff):
+    """Frames [i, i + batch_size) of the file, with the reader its whole read uses."""
+    if use_sktiff:
+        with tifffile.TiffFile(path) as tif:
+            for i in range(0, nframes, batch_size):
+                yield tif.asarray(key=range(i, min(i + batch_size, nframes)))
+    else:
+        tif, _ = open_tiff(path, use_sktiff)
+        for i in range(0, nframes, batch_size):
+            yield tif.data(beg=i, end=min(i + batch_size, nframes))
+
+
+def write_normalised_copy(path, copy_path, shape, use_sktiff, open_tiff):
+    """
+    The whole-file copy's int16 normalisation, one batch in memory.
+
+    Two passes: the file's min / max, then each batch scaled with them. The
+    operations are element-wise with the same float32 scalars, so the pixels are
+    those of the whole-array expression; np.minimum / np.maximum propagate NaN
+    as min() / max() do. tifffile picks BigTIFF from `data.nbytes`, which a
+    frame iterator does not have, so the choice is made here the same way.
+    """
+    nframes, Ly, Lx = shape
+    batch_size = max(1, BATCH_BYTES // (Ly * Lx * np.dtype(np.float32).itemsize))
+
+    def batches():
+        for batch in iter_batches(path, nframes, batch_size, use_sktiff, open_tiff):
+            yield batch.reshape(-1, Ly, Lx)
+
+    im_min = im_max = None
+    for batch in batches():
+        if im_min is None:
+            im_min, im_max = batch.min(), batch.max()
+        else:
+            im_min = np.minimum(im_min, batch.min())
+            im_max = np.maximum(im_max, batch.max())
+
+    def frames():
+        for batch in batches():
+            yield from normalise_to_int16(batch, im_min, im_max)
+
+    tmp_path = f"{copy_path}.partial"
+    try:
+        tifffile.imwrite(
+            tmp_path,
+            frames(),
+            shape=shape,
+            dtype=np.int16,
+            bigtiff=nframes * Ly * Lx * np.dtype(np.int16).itemsize > BIGTIFF_BYTES,
+        )
+        os.replace(tmp_path, copy_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise

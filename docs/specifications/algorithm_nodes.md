@@ -96,7 +96,10 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 ###### suite2p_file_convert
 
-- **Description:** Convert to int16
+- **Description:** Convert to int16 (suite2p's binary, `data.bin`)
+  - Integer TIFFs with one frame per page are read in place, in batches.
+  - float32 TIFFs, including HDF5 input, are first normalised to int16 into a copy in the node directory, also in batches.
+  - Other layouts (several series, RGB pages, ImageJ hyperstacks) are first copied whole into the node directory.
 - **Input:** Image (Tiff), HDF5
 - **Output:** Suite2pData
 - **Parameters:**
