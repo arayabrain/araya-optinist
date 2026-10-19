@@ -6,11 +6,14 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
+import scipy.sparse as sp
 
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.workflow.workflow_params import get_typecheck_params
-from studio.app.optinist.wrappers.caiman import caiman_utils, cnmf
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
+from studio.app.optinist.wrappers.caiman import caiman_utils, cnmf, cnmf_multisession
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -319,3 +322,92 @@ def test_text_typed_in_the_panel_reaches_caiman_typed(
 
     sent = captured.value.args[0][group][key]
     assert sent == expected and type(sent) is type(expected)
+
+
+MASK_DIMS, MASK_PIXEL, FRAMES = (3, 5), (1, 3), 4
+MULTISESSION_DIR = "1/abc/cnmf_multisession_x"
+
+
+@pytest.fixture
+def run_multisession(monkeypatch, tmp_path):
+    """Stub caiman so caiman_cnmf_multisession runs two sessions that each find
+    one component at MASK_PIXEL; returns its outputs and what CNMFParams and
+    register_multisession were handed."""
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+    footprint = np.zeros((MASK_DIMS[0] * MASK_DIMS[1], 1))
+    footprint[np.ravel_multi_index(MASK_PIXEL, MASK_DIMS, order="F"), 0] = 1.0
+    A = sp.csc_matrix(footprint)
+
+    class CNMFParams:
+        def __init__(self):
+            vars(self).update({g: dict(keys) for g, keys in REAL_GROUPS.items()})
+
+        def change_params(self, pathed):
+            seen["params"] = pathed
+
+    class CNMF:
+        def __init__(self, **_):
+            self.estimates = types.SimpleNamespace(
+                A=A, b=None, f=None, C=np.ones((1, FRAMES)), YrA=None
+            )
+
+        def fit(self, _):
+            return self
+
+    def register_multisession(A, dims, templates, **kwargs):
+        seen["register"] = kwargs
+        return None, np.zeros((1, len(A))), None
+
+    modules = {
+        "caiman": types.SimpleNamespace(load=lambda _: np.zeros((FRAMES, *MASK_DIMS))),
+        "caiman.base": types.ModuleType("caiman.base"),
+        "caiman.base.rois": types.SimpleNamespace(
+            register_multisession=register_multisession
+        ),
+        "caiman.source_extraction": types.ModuleType("caiman.source_extraction"),
+        "caiman.source_extraction.cnmf": types.SimpleNamespace(
+            cnmf=types.SimpleNamespace(CNMF=CNMF)
+        ),
+        "caiman.source_extraction.cnmf.params": types.SimpleNamespace(
+            CNMFParams=CNMFParams
+        ),
+        "caiman.source_extraction.cnmf.utilities": types.SimpleNamespace(
+            detrend_df_f=lambda A, b, C, f, **_: C
+        ),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    stubs = {
+        "util_download_model_files": lambda: None,
+        "caiman_cluster": lambda _: contextlib.nullcontext((None, 1)),
+        "imageio": types.SimpleNamespace(volread=lambda _: None),
+        "util_get_image_memmap": lambda *_: (None, None, "m.mmap"),
+        "util_edit_roi_movie": lambda *_: None,
+        "util_cleanup_image_memmap": lambda _: None,
+        "correlation_image": lambda _: np.zeros(MASK_DIMS),
+        "get_roi": lambda A, *_: [np.ones(MASK_DIMS)] * A.shape[1],
+    }
+    for name, stub in stubs.items():
+        monkeypatch.setattr(cnmf_multisession, name, stub)
+    images = types.SimpleNamespace(
+        split_image=lambda *_, **__: ["s0.tif", "s1.tif"],
+        data=np.zeros((2 * FRAMES, *MASK_DIMS)),
+    )
+
+    def run(params):
+        info = cnmf_multisession.caiman_cnmf_multisession(
+            images=images, output_dir=MULTISESSION_DIR, params=params
+        )
+        return info, seen
+
+    return run
+
+
+def test_multisession_nwb_mask_puts_each_pixel_where_the_movie_has_it(
+    run_multisession,
+):
+    info, _ = run_multisession({})
+
+    roi = info["nwbfile"][NWBDATASET.ROI]["cnmf_multisession_x"]["roi_list"][0]
+    assert np.argwhere(roi["image_mask"]).tolist() == [list(MASK_PIXEL)]

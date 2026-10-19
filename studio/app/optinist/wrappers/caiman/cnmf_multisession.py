@@ -18,6 +18,7 @@ from studio.app.optinist.wrappers.caiman.cnmf import (
     dff_frames_window,
     edit_roi_dtype,
     get_roi,
+    nwb_image_mask,
     util_cleanup_image_memmap,
     util_download_model_files,
     util_edit_roi_movie,
@@ -201,8 +202,7 @@ def caiman_cnmf_multisession(
     n_cells = spatial_filtered.shape[-1]
     for i in range(n_cells):
         kargs = {}
-        # caiman's Fortran pixel order, as get_roi reads it
-        kargs["image_mask"] = spatial_filtered[:, i].toarray().reshape(dims, order="F")
+        kargs["image_mask"] = nwb_image_mask(spatial_filtered, i, dims, swap_dim)
         roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
