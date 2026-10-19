@@ -1,3 +1,6 @@
+import sys
+import types
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -14,9 +17,14 @@ PIXELS = DIMS[0] * DIMS[1]
 
 
 def labelled_masks(A, roi_thr, thr_method, swap_dim, dims):
-    # get_roi labels the pixels of the k-th passed component with k + 1
+    # get_roi labels the pixels of the k-th passed component with k + 1, reading
+    # caiman's pixel index in Fortran order
     dense = A.toarray()
-    return [(dense[:, k].reshape(dims) > 0) * (k + 1.0) for k in range(dense.shape[1])]
+    order = "C" if swap_dim else "F"
+    return [
+        (dense[:, k].reshape(dims, order=order) > 0) * (k + 1.0)
+        for k in range(dense.shape[1])
+    ]
 
 
 def test_every_output_row_is_the_same_component(monkeypatch):
@@ -25,7 +33,7 @@ def test_every_output_row_is_the_same_component(monkeypatch):
     A = sp.csc_matrix(
         np.array(
             [
-                [1.0 if p // DIMS[1] == c else 0.0 for c in range(3)]
+                [1.0 if p % DIMS[0] == c else 0.0 for c in range(3)]
                 for p in range(PIXELS)
             ]
         )
@@ -33,7 +41,16 @@ def test_every_output_row_is_the_same_component(monkeypatch):
     C = np.arange(3)[:, None] * 10.0 + np.arange(FRAMES)
     idx_good, idx_bad = [2, 0], [1]  # deliberately not a prefix
 
-    im, iscell, roi_list, F, non_cell_roi, n_rois, n_noncell = cnmf.component_outputs(
+    (
+        im,
+        iscell,
+        roi_list,
+        F,
+        non_cell_roi,
+        n_rois,
+        n_noncell,
+        order,
+    ) = cnmf.component_outputs(
         A,
         C,
         idx_good,
@@ -53,15 +70,64 @@ def test_every_output_row_is_the_same_component(monkeypatch):
         assert np.array_equal(F[row], C[comp])
         assert set(np.argwhere(~np.isnan(im[row]))[:, 0]) == {comp}
         assert np.nanmax(im[row]) == row
-        expected_mask = A.toarray()[:, comp].reshape(DIMS)
+        expected_mask = A.toarray()[:, comp].reshape(DIMS, order="F")
         assert np.array_equal(roi_list[row]["image_mask"], expected_mask)
     assert roi_list[0]["accepted"] and roi_list[2]["rejected"]
     assert (n_rois, n_noncell) == (2, 1)
     assert np.nanmax(non_cell_roi) == 2
+    assert order == idx_good + idx_bad
+
+
+def test_dff_rows_are_the_fluorescence_rows(monkeypatch):
+    # caiman_cnmf orders dff with the order component_outputs returns
+    monkeypatch.setattr(cnmf, "get_roi", labelled_masks)
+    utilities = types.ModuleType("caiman.source_extraction.cnmf.utilities")
+    utilities.detrend_df_f = lambda A, b, C, f, **kwargs: C * 2.0
+    for name in ("caiman", "caiman.source_extraction", "caiman.source_extraction.cnmf"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, utilities.__name__, utilities)
+    A = sp.csc_matrix(np.eye(PIXELS)[:, :3])
+    C = np.arange(3)[:, None] * 10.0 + np.arange(FRAMES)
+    estimates = types.SimpleNamespace(
+        A=A, b=np.ones((PIXELS, 1)), C=C, f=np.ones((1, FRAMES)), YrA=None
+    )
+
+    *_, F, _, _, _, order = cnmf.component_outputs(
+        A, C, [2, 0], [1], DIMS, 0.9, "nrg", False, n_frames=FRAMES
+    )
+    dff = cnmf.caiman_dff(estimates, order, F.shape[1], 500)
+
+    np.testing.assert_array_equal(F, C[[2, 0, 1]])
+    np.testing.assert_array_equal(dff, 2.0 * F)
+
+
+def test_nwb_mask_puts_each_pixel_where_the_movie_has_it(monkeypatch):
+    # caiman numbers pixels in Fortran order; reading them in C order exported
+    # transposed or scrambled masks while the ROI images were right
+    monkeypatch.setattr(cnmf, "get_roi", labelled_masks)
+    dims = (3, 5)
+    A = np.zeros((dims[0] * dims[1], 1))
+    A[np.ravel_multi_index((1, 3), dims, order="F"), 0] = 1.0
+
+    im, _, roi_list, *_ = cnmf.component_outputs(
+        sp.csc_matrix(A), np.ones((1, FRAMES)), [0], [], dims, 0.9, "nrg", False
+    )
+
+    assert np.argwhere(roi_list[0]["image_mask"]).tolist() == [[1, 3]]
+    assert np.argwhere(~np.isnan(im[0])).tolist() == [[1, 3]]
 
 
 def test_no_components_gives_empty_outputs_with_the_time_axis_kept():
-    im, iscell, roi_list, F, non_cell_roi, n_rois, n_noncell = cnmf.component_outputs(
+    (
+        im,
+        iscell,
+        roi_list,
+        F,
+        non_cell_roi,
+        n_rois,
+        n_noncell,
+        order,
+    ) = cnmf.component_outputs(
         None, None, [], [], DIMS, 0.9, "nrg", False, n_frames=FRAMES
     )
 

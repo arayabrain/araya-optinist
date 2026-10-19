@@ -110,6 +110,33 @@ def test_a_movie_in_the_experiment_is_kept_as_a_reference(tmp_path):
     np.testing.assert_array_equal(open_edit_images(kept, node_dir), frames)
 
 
+def test_a_reference_never_builds_the_fallback_copy(tmp_path):
+    experiment = tmp_path / "output" / "default" / "uid"
+    movie = ImageData(
+        np.zeros((3, 4, 4), np.uint16),
+        output_dir=str(experiment / "caiman_mc_x"),
+        file_name="mc_images",
+    )
+
+    def build_copy():
+        raise AssertionError("the fallback copy was built")
+
+    kept = util_edit_roi_movie(movie, build_copy, str(experiment / "caiman_x"))
+
+    assert isinstance(kept, ImageData)
+
+
+def test_a_movie_outside_the_experiment_builds_the_fallback_copy(tmp_path):
+    movie = ImageData(
+        np.zeros((3, 4, 4), np.uint16),
+        output_dir=str(tmp_path / "input" / "default"),
+        file_name="m",
+    )
+    copy = np.zeros((3, 4, 4), np.uint16)
+    output_dir = tmp_path / "output" / "default" / "uid" / "caiman_x"
+    assert util_edit_roi_movie(movie, lambda: copy, str(output_dir)) is copy
+
+
 @pytest.mark.parametrize("where", ["input/default", "output/default/input_tiff/abc"])
 def test_a_movie_outside_the_experiment_keeps_caimans_copy(tmp_path, where):
     # an input file wired straight in, or the HDF5 / MAT / NWB input_tiff cache
