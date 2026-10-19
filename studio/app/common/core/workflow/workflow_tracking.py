@@ -103,13 +103,50 @@ def _get_user_tier(user_id: int) -> Tuple[Optional[str], bool, bool]:
     return tier, has_free_record, has_premium_record
 
 
+def _execution_host() -> Optional[str]:
+    """The EC2 instance this process runs on; None off EC2 (local, tests)."""
+    from studio.app.common.core.middleware.user_activity_middleware import (
+        _get_instance_id,
+    )
+
+    host = _get_instance_id()
+    return host if host and host != "local" else None
+
+
+def _free_increment_values(host: Optional[str]) -> dict:
+    """SET clause of the free-tier increment.
+
+    - active_workflow_count: computed in SQL, so concurrent starts cannot lose one
+    - instance_id: the first workflow pins the row to this host; a later one
+      does not move it. The free scale-in reads this column to spare the host
+      a workflow runs on, so it must name that host, not the last instance
+      that served a request
+    """
+    from sqlalchemy import case, func
+
+    values = {
+        "active_workflow_count": FreeUserAssignment.active_workflow_count + 1,
+        "last_workflow_start": func.now(),
+    }
+    if host:
+        values["instance_id"] = case(
+            (
+                FreeUserAssignment.active_workflow_count > 0,
+                FreeUserAssignment.instance_id,
+            ),
+            else_=host,
+        )
+    return values
+
+
 def increment_workflow_count(user_id: Optional[int]) -> None:
     """
     Increment the active_workflow_count for a user (free or premium tier).
 
     Called when a workflow starts. Checks user's subscription tier first,
     then updates the appropriate table. Falls back to the other table if
-    the primary table doesn't have a record.
+    the primary table doesn't have a record. For the free tier the row is
+    also pinned to this host (see _free_increment_values).
 
     Args:
         user_id: User ID of the user starting the workflow
@@ -122,6 +159,7 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
 
         # Determine user's tier and which tables have records
         tier, has_free_record, has_premium_record = _get_user_tier(user_id)
+        host = _execution_host()
 
         logger.info(
             f"Workflow count increment for user {user_id}: "
@@ -152,14 +190,10 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                     updated = True
 
             elif tier == TIER_FREE and has_free_record:
-                new_count = FreeUserAssignment.active_workflow_count + 1
                 stmt = (
                     update(FreeUserAssignment)
                     .where(FreeUserAssignment.user_id == user_id)
-                    .values(
-                        active_workflow_count=new_count,
-                        last_workflow_start=func.now(),
-                    )
+                    .values(**_free_increment_values(host))
                 )
                 result = session.execute(stmt)
                 if result.rowcount > 0:
@@ -193,14 +227,10 @@ def increment_workflow_count(user_id: Optional[int]) -> None:
                         updated = True
 
                 elif has_free_record:
-                    new_count = FreeUserAssignment.active_workflow_count + 1
                     stmt = (
                         update(FreeUserAssignment)
                         .where(FreeUserAssignment.user_id == user_id)
-                        .values(
-                            active_workflow_count=new_count,
-                            last_workflow_start=func.now(),
-                        )
+                        .values(**_free_increment_values(host))
                     )
                     result = session.execute(stmt)
                     if result.rowcount > 0:
