@@ -203,6 +203,17 @@ def test_dff_percentile_sliding_window_pads_with_edge(q, output_dir):
     np.testing.assert_allclose(result["sliced_data"].data[0], (x[0] - f0) / f0)
 
 
+def test_dff_percentile_even_window_takes_the_extra_sample_before(output_dir):
+    x = np.array([[5.0, 1.0, 4.0, 2.0, 8.0, 3.0, 7.0, 6.0]])
+    result = _dff(
+        FluoData(x, file_name="f"), output_dir, f0_window_frames=4, f0_percentile=50
+    )
+
+    # median of x[i - 2 : i + 2], edge padded
+    f0 = np.array([5.0, 4.5, 3.0, 3.0, 3.5, 5.0, 6.5, 6.0])
+    np.testing.assert_allclose(result["sliced_data"].data[0], (x[0] - f0) / f0)
+
+
 def test_dff_sigma_longer_than_trace_is_clamped(output_dir, caplog):
     fluo = FluoData(np.random.default_rng(16).random((2, 40)) + 1.0, file_name="f")
     maximin = {"f0_method": "maximin", "f0_window_frames": 5}
