@@ -255,3 +255,149 @@ def test_a_tiff_data_cannot_read_fails_as_it_does_for_data(tmp_path, write):
         image_data.data
     with pytest.raises(type(from_data.value)):
         image_data.output_path
+
+
+def split_as_before(image_data, output_dir, lengths):
+    """split_image as it was: data read whole, then each part written as a slice."""
+    image = image_data.data
+    path = image_data.path[0] if isinstance(image_data.path, list) else image_data.path
+    name, ext = os.path.splitext(os.path.basename(path))
+    os.makedirs(os.path.join(output_dir, "image_split", name))
+    paths, offset = [], 0
+    for n, length in enumerate(lengths):
+        paths.append(os.path.join(output_dir, "image_split", name, f"{name}_{n}{ext}"))
+        with tifffile.TiffWriter(paths[-1], bigtiff=True) as tif:
+            tif.write(image[offset : offset + length])
+        offset += length
+    return paths
+
+
+def _stack(path, frames=11, dtype=np.uint16, frame_shape=(5, 6), **kwargs):
+    rng = np.random.default_rng(frames)
+    movie = rng.normal(300, 60, (frames, *frame_shape)).clip(0).astype(dtype)
+    tifffile.imwrite(path, movie, photometric="minisblack", **kwargs)
+    return path
+
+
+def _big_endian(path):
+    return _stack(path, byteorder=">")
+
+
+def _zlib_stack(path):
+    return _stack(path, compression="zlib")
+
+
+def _float64(path):
+    return _stack(path, dtype=np.float64)
+
+
+def _three_wide(path):
+    return _stack(path, frame_shape=(5, 3))
+
+
+def _mixed_dtypes(path):
+    second = path.replace(".tif", "_2.tif")
+    return [_stack(path, frames=7), _stack(second, frames=4, dtype=np.float32)]
+
+
+def _three_stacks(path):
+    return [_stack(path.replace(".tif", f"_{n}.tif"), frames=n + 3) for n in range(3)]
+
+
+@pytest.mark.parametrize(
+    "write, name",
+    [
+        (_stack, "stack.tif"),
+        (_big_endian, "big_endian.tif"),
+        (_zlib_stack, "zlib.tif"),  # decoded a batch of pages at a time
+        (_zlib_tiled_float, "zlib_tiled.tif"),
+        (_float64, "float64.tif"),
+        (_three_wide, "three_wide.tif"),  # stored as RGB
+        (_mixed_dtypes, "mixed.tif"),
+        (_three_stacks, "three.tif"),
+        (_two_stacks, "two_stacks.tif"),
+        (_ome_two_series, "two_series.ome.tif"),
+        (_pages_without_shape_metadata, "pages.tif"),
+        (_rgb, "rgb.tif"),
+        (_imagej_tzcyx, "imagej.tif"),  # read whole, as before
+        (_png, "fallback.png"),  # read whole, as before
+    ],
+)
+@pytest.mark.parametrize("split", ["halves", "thirds", "short parts"])
+@pytest.mark.parametrize(
+    "batch_bytes", [1, 64 << 20], ids=["frame batches", "file batches"]
+)
+def test_split_parts_are_byte_identical_to_slices_of_data(
+    tmp_path, monkeypatch, write, name, split, batch_bytes
+):
+    path = str(tmp_path / name)
+    image_data = ImageData(write(path) or path)
+    frames = len(image_data.data)
+    if split == "short parts":  # 3- and 4-frame parts are stored as RGB
+        if frames < 8:
+            pytest.skip("too few frames")
+        lengths = [3, 4, frames - 7]
+    else:
+        n = 2 if split == "halves" else 3
+        base, extra = divmod(frames, n)
+        lengths = [base + 1 if i < extra else base for i in range(n)]
+    # parts start and end between batches (one frame each) or inside them
+    monkeypatch.setattr(image_module, "BATCH_BYTES", batch_bytes)
+
+    expected = split_as_before(image_data, str(tmp_path / "old"), lengths)
+    if split == "short parts":
+        actual = image_data.split_image(str(tmp_path / "new"), lengths=lengths)
+    else:
+        actual = image_data.split_image(str(tmp_path / "new"), n_files=len(lengths))
+
+    assert [os.path.basename(p) for p in actual] == [
+        os.path.basename(p) for p in expected
+    ]
+    for a, e in zip(actual, expected):
+        assert open(a, "rb").read() == open(e, "rb").read(), os.path.basename(a)
+
+
+@pytest.mark.parametrize("write", [_stack, _zlib_stack, _three_stacks])
+def test_split_does_not_read_a_stack_whole(tmp_path, monkeypatch, write):
+    paths = write(str(tmp_path / "movie.tif"))
+    image_data = ImageData(paths)
+
+    def no_full_read(*args, **kwargs):
+        raise AssertionError("the whole stack was read")
+
+    monkeypatch.setattr(ImageData, "data", property(no_full_read))
+    monkeypatch.setattr(imageio, "volread", no_full_read)
+    parts = image_data.split_image(str(tmp_path), n_files=2)
+    assert sum(len(tifffile.imread(p)) for p in parts) == image_data.shape[0]
+
+
+@pytest.mark.parametrize("write", [_stack, _pages_without_shape_metadata])
+def test_split_still_works_where_files_cannot_be_mapped(tmp_path, monkeypatch, write):
+    # pages are read a batch at a time where each is a frame; a contiguous file
+    # (tifffile's own, one IFD) is read whole, as split_image read every file
+    path = str(tmp_path / "movie.tif")
+    image_data = ImageData(write(path) or path)
+    lengths = [2, image_data.shape[0] - 2]
+    expected = split_as_before(image_data, str(tmp_path / "old"), lengths)
+
+    def cannot_map(*args, **kwargs):
+        raise OSError("mmap is not supported on this mount")
+
+    monkeypatch.setattr(tifffile, "memmap", cannot_map)
+    actual = image_data.split_image(str(tmp_path / "new"), lengths=lengths)
+    for a, e in zip(actual, expected):
+        assert open(a, "rb").read() == open(e, "rb").read()
+
+
+def test_split_refuses_a_file_that_reads_fewer_frames_than_its_headers(
+    tmp_path, monkeypatch
+):
+    image_data, _ = make_image_data(tmp_path, frames=10)
+    read = image_module.iter_frame_batches
+
+    def one_frame_short(path, frames, batch_size):
+        yield next(read(path, frames, frames))[:-1]
+
+    monkeypatch.setattr(image_module, "iter_frame_batches", one_frame_short)
+    with pytest.raises(ValueError, match="read 9 frames, but its headers give 10"):
+        image_data.split_image(str(tmp_path), n_files=2)

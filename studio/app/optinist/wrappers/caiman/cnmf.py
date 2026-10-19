@@ -14,6 +14,7 @@ from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
 )
 from studio.app.common.dataclass import ImageData
+from studio.app.common.dataclass.image import iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
 from studio.app.optinist.dataclass.roi import edit_reference
@@ -122,12 +123,15 @@ def correlation_image(movie):
 
     The moments are accumulated in float64 over frame chunks, so memory stays near
     one chunk instead of the several whole-movie float32 copies caiman makes.
+    movie can also be an array-like that reads its frames when sliced.
     """
     T, d1, d2 = movie.shape
     step = max(1, CORRELATION_CHUNK_ELEMENTS // (d1 * d2))
-    chunks = [movie[t : t + step] for t in range(0, T, step)]
 
-    mean = sum(c.sum(axis=0, dtype=np.float64) for c in chunks) / T
+    def chunks():  # one at a time, so a movie read when sliced is never held whole
+        return (movie[t : t + step] for t in range(0, T, step))
+
+    mean = sum(c.sum(axis=0, dtype=np.float64) for c in chunks()) / T
     # caiman's rho_h, rho_w, rho_d1, rho_d2 pixel pairs
     pairs = [
         (np.s_[:-1, :], np.s_[1:, :]),
@@ -137,7 +141,7 @@ def correlation_image(movie):
     ]
     sq = np.zeros((d1, d2))
     cross = [0.0] * len(pairs)
-    for c in chunks:
+    for c in chunks():
         d = c - mean
         sq += (d * d).sum(axis=0)
         for i, (a, b) in enumerate(pairs):
@@ -162,11 +166,6 @@ def correlation_image(movie):
     neighbors[:, [0, -1]] -= 3
     neighbors[[0, 0, -1, -1], [0, -1, 0, -1]] += 1
     return rho / neighbors
-
-
-def edit_roi_dtype(dtype):
-    """The movie kept for ROI edits: its own dtype when float32 holds it exactly."""
-    return dtype if np.can_cast(dtype, np.float32) else np.float32
 
 
 def util_get_image_memmap_from_files(
@@ -197,30 +196,6 @@ def util_get_image_memmap_from_files(
                 return tuple(int(n) for n in tif.series[0].shape)
         except Exception:
             return np.asarray(imageio.volread(path)).shape
-
-    def frame_batches(path, frames):
-        try:
-            source = tifffile.memmap(path, mode="r")
-        except ValueError:  # compressed or scattered pixels, or not a TIFF
-            source = None
-        if source is not None:
-            for i in range(0, len(source), batch_size):
-                yield source[i : i + batch_size]
-            return
-        try:
-            with tifffile.TiffFile(path) as tif:
-                series = tif.series[0]
-                if len(series.pages) == frames:  # one page per frame
-                    for i in range(0, frames, batch_size):
-                        pages = range(i, min(i + batch_size, frames))
-                        yield tif.asarray(key=pages, series=0).reshape(
-                            (len(pages),) + series.shape[1:]
-                        )
-                    return
-        except tifffile.TiffFileError:
-            pass
-        logger.info("%s is read in full to fill the memmap", os.path.basename(path))
-        yield np.asarray(imageio.volread(path))
 
     shapes = [header_shape(path) for path in paths]
     T, dims = sum(s[0] for s in shapes), shapes[0][1:]
@@ -258,7 +233,7 @@ def util_get_image_memmap_from_files(
         t = 0
         for path, shape in zip(paths, shapes):
             end = t + shape[0]
-            for batch in frame_batches(path, shape[0]):
+            for batch in iter_frame_batches(path, shape[0], batch_size):
                 if batch.shape[1:] != dims or t + len(batch) > end:
                     raise ValueError(
                         f"{os.path.basename(path)}: read as frames of "

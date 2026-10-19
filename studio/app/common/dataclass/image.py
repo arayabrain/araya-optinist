@@ -1,4 +1,5 @@
 import gc
+import itertools
 import operator
 import os
 from typing import Optional
@@ -39,6 +40,83 @@ def _tiff_shape(path: str) -> tuple:
         return tuple(int(n) for n in series.shape)
 
 
+# frames per read when splitting, bounded in bytes
+BATCH_BYTES = 64 << 20
+
+
+def iter_frame_batches(path: str, frames: int, batch_size: int):
+    """
+    The frames imageio.volread reads from a stack file, in batches along the
+    first axis: memory-mapped slices when its pixels are contiguous, else a
+    batch of pages decoded at a time when each page is one frame (compressed
+    stacks), and read in full only otherwise.
+    """
+    try:
+        source = tifffile.memmap(path, mode="r")
+    except (ValueError, OSError):
+        # compressed or scattered pixels, not a TIFF, or a mount that cannot map
+        source = None
+    if source is not None:
+        for i in range(0, len(source), batch_size):
+            yield source[i : i + batch_size]
+        return
+    try:
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            if len(series.pages) == frames:  # one page per frame
+                for i in range(0, frames, batch_size):
+                    pages = range(i, min(i + batch_size, frames))
+                    yield tif.asarray(key=pages, series=0).reshape(
+                        (len(pages),) + series.shape[1:]
+                    )
+                return
+    except tifffile.TiffFileError:
+        pass
+    logger.info("%s is read in full", os.path.basename(path))
+    yield np.asarray(imageio.volread(path))
+
+
+def _stack_headers(paths: list) -> Optional[list]:
+    """
+    (shape, dtype) of series 0 of each file, from its headers, when every file
+    is a TIFF stack of 2-D frames; None otherwise.
+    """
+    headers = []
+    try:
+        for path in paths:
+            with tifffile.TiffFile(path) as tif:
+                series = tif.series[0]
+                headers.append((tuple(int(n) for n in series.shape), series.dtype))
+    except Exception:
+        return None
+    return headers if all(len(shape) == 3 for shape, _ in headers) else None
+
+
+def _iter_frames(paths: list, headers: list, dtype, batch_bytes: int):
+    """
+    The frames of the files one at a time, joined in time and cast to dtype as
+    `ImageData.data` concatenates them, read in batches of at most batch_bytes.
+    """
+    frame_shape = headers[0][0][1:]
+    frame_bytes = int(np.prod(frame_shape)) * dtype.itemsize
+    batch_size = max(1, batch_bytes // frame_bytes)
+    for path, (shape, _) in zip(paths, headers):
+        name, count = os.path.basename(path), 0
+        for batch in iter_frame_batches(path, shape[0], batch_size):
+            count += len(batch)
+            if batch.shape[1:] != frame_shape or count > shape[0]:
+                raise ValueError(
+                    f"{name}: read as frames of {batch.shape[1:]}, "
+                    f"but its headers give {shape}"
+                )
+            for frame in batch:
+                yield np.asarray(frame, dtype)
+        if count != shape[0]:
+            raise ValueError(
+                f"{name}: read {count} frames, but its headers give {shape[0]}"
+            )
+
+
 class ImageData(BaseData):
     def __init__(
         self,
@@ -75,9 +153,12 @@ class ImageData(BaseData):
         """
         Split the image along the time axis, either into n_files near-equal
         parts or at the explicit per-part frame counts given in lengths.
+
+        TIFF stacks of 2-D frames are written part by part from batches of
+        their frames, byte-identical to writing slices of `data`, so the movie
+        is not held as a whole; anything else is read whole.
         """
-        image = self.data
-        frames = image.shape[0]
+        frames = self.shape[0]
 
         if lengths is not None:
             if len(lengths) < 2:
@@ -107,20 +188,36 @@ class ImageData(BaseData):
             base, extra = divmod(frames, n_files)
             lengths = [base + 1 if i < extra else base for i in range(n_files)]
 
-        file_name = self.path[0] if isinstance(self.path, list) else self.path
-        name, ext = os.path.splitext(os.path.basename(file_name))
-        save_paths = []
+        paths = self.path if isinstance(self.path, list) else [self.path]
+        name, ext = os.path.splitext(os.path.basename(paths[0]))
 
         _dir = join_filepath([output_dir, "image_split", name])
         create_directory(_dir)
+        save_paths = [
+            join_filepath([_dir, f"{name}_{n}{ext}"]) for n in range(len(lengths))
+        ]
 
-        offset = 0
-        for n, length in enumerate(lengths):
-            _path = join_filepath([_dir, f"{name}_{n}{ext}"])
+        headers = _stack_headers(paths)
+        if headers is None:
+            image = self.data
+            offset = 0
+            for _path, length in zip(save_paths, lengths):
+                with tifffile.TiffWriter(_path, bigtiff=True) as tif:
+                    tif.write(image[offset : offset + length])
+                offset += length
+            return save_paths
+
+        frame_shape = headers[0][0][1:]
+        dtype = np.result_type(*(dt.newbyteorder("=") for _, dt in headers))
+        movie = _iter_frames(paths, headers, dtype, BATCH_BYTES)
+        for _path, length in zip(save_paths, lengths):
+            part = itertools.islice(movie, length)
             with tifffile.TiffWriter(_path, bigtiff=True) as tif:
-                tif.write(image[offset : offset + length])
-            offset += length
-            save_paths.append(_path)
+                # shapes tifffile stores as RGB, which older versions cannot stream
+                if length in (3, 4) or frame_shape[1] in (3, 4):
+                    tif.write(np.stack(list(part)))
+                else:
+                    tif.write(part, shape=(length, *frame_shape), dtype=dtype)
 
         return save_paths
 
