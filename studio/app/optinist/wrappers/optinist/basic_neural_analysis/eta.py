@@ -84,17 +84,19 @@ def calc_trigger_average(neural_data, trigger_idx, trigger_len, pre_event, post_
 
 
 def baseline_zscore(event_trigger_data, onset, baseline_window):
+    # In place, keeping float32: a full-size copy is GBs on a large recording
+    if not np.issubdtype(event_trigger_data.dtype, np.floating):
+        event_trigger_data = event_trigger_data.astype(float)
     base = event_trigger_data[:, onset - baseline_window : onset]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        mean = np.nanmean(base, axis=1, keepdims=True)
-        sd = np.nanstd(base, axis=1, keepdims=True)
-        scale = np.nanmax(np.abs(base), axis=1, keepdims=True)
+        # float64: float32 sums leave a constant baseline with a nonzero s.d.
+        mean = np.nanmean(base, axis=1, keepdims=True, dtype=np.float64)
+        sd = np.nanstd(base, axis=1, keepdims=True, dtype=np.float64)
+        scale = np.nanmax(np.abs(base), axis=1, keepdims=True).astype(float)
     # skipped: baseline constant to 1e-6 of its scale, or no finite sample
     skip = ~(sd > 1e-6 * np.maximum(scale, np.finfo(float).tiny))
     sd[skip] = np.nan
-    # In place: a full-size copy per step is GBs on a large recording
-    event_trigger_data = event_trigger_data.astype(float, copy=False)
     event_trigger_data -= mean
     event_trigger_data /= sd
     return event_trigger_data, skip[:, 0]

@@ -211,6 +211,16 @@ def test_a_baseline_without_spread_is_skipped_never_divided(baseline):
     assert np.isfinite(z[0][:, [0, 2]]).all() and np.isfinite(z[1]).all()
 
 
+def test_a_float32_input_stays_float32_and_its_constant_baseline_is_skipped():
+    data = np.random.default_rng(0).random((2, 160, 4)).astype(np.float32)
+    data[0, 5:155, 1] = 0.1
+
+    z, skip = baseline_zscore(data, onset=155, baseline_window=150)
+
+    assert z.dtype == np.float32
+    assert skip.tolist() == [[False, True, False, False], [False] * 4]
+
+
 def test_skipped_pairs_are_logged_with_iscell_cell_numbers(neural, output_dir, caplog):
     caplog.set_level(logging.WARNING, logger="optinist")
     x = neural.data.copy()
