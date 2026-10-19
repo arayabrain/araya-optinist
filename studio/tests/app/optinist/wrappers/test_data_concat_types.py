@@ -9,6 +9,7 @@ from studio.app.common.dataclass import (
     ScatterData,
     TimeSeriesData,
 )
+from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.data_utils.data_concat import data_concat
 
 RNG = np.random.default_rng(0)
@@ -57,3 +58,96 @@ def test_scatter_points_are_appended_and_saved(output_dir):
 
     assert type(out) is ScatterData
     np.testing.assert_allclose(out.data, ScatterData(np.vstack([p1, p2])).data)
+
+
+def test_axis_1_stacks_1d_inputs_as_behaviour_columns(output_dir):
+    position, speed, trial = RNG.random(6), RNG.random(6), np.arange(6.0)
+
+    two = data_concat(
+        IscellData(position), IscellData(speed), output_dir, params={"axis": 1}
+    )["concatenated_data"]
+    three = _concat(two, IscellData(trial), output_dir)
+    three_first = data_concat(IscellData(trial), two, output_dir, params={"axis": 1})[
+        "concatenated_data"
+    ]
+    three_first.save_json(output_dir)
+
+    assert type(two) is BehaviorData and type(three) is BehaviorData
+    np.testing.assert_array_equal(three.data, np.column_stack([position, speed, trial]))
+    assert three.output_path.data_shape == [6, 3]
+    np.testing.assert_array_equal(three_first.data[:, 0], trial)
+    assert three_first.output_path.data_shape == [6, 3]
+
+
+def test_1d_inputs_on_axis_0_are_still_appended(output_dir):
+    out = data_concat(
+        IscellData(np.ones(6)), IscellData(np.zeros(6)), output_dir, params={}
+    )["concatenated_data"]
+
+    assert type(out) is IscellData and out.data.shape == (12,)
+
+
+def test_behaviour_column_concat_rebuilds_the_index(output_dir):
+    a = BehaviorData(RNG.random((6, 2)), file_name="a")
+    b = BehaviorData(RNG.random((6, 1)), file_name="b")
+
+    out = _concat(a, b, output_dir)
+
+    assert out.data.shape == (6, 3) and list(out.index) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("cls", [BarData, HeatMapData])
+def test_row_labels_survive_a_1d_column_stack(cls, output_dir):
+    table = cls(RNG.random((3, 4)), index=[10, 11, 12], file_name="t")
+
+    out = data_concat(table, IscellData(RNG.random(3)), output_dir, params={"axis": 1})[
+        "concatenated_data"
+    ]
+
+    assert type(out) is cls and out.data.shape == (3, 5)
+    assert list(out.index) == [10, 11, 12]
+
+
+def test_heatmap_column_stack_with_computed_std_saves(output_dir):
+    table = HeatMapData(RNG.random((3, 4)), index=[10, 11, 12], file_name="t")
+
+    result = data_concat(
+        table,
+        IscellData(RNG.random(3)),
+        output_dir,
+        params={"axis": 1, "std_method": "compute"},
+    )
+
+    for out in result.values():
+        out.save_json(output_dir)
+    assert list(result["concatenated_data"].index) == [10, 11, 12]
+
+
+def test_fluo_column_stack_as_a_heatmap_relabels_its_rows(output_dir):
+    fluo = FluoData(RNG.random((3, 4)), file_name="f")
+
+    out = data_concat(
+        fluo,
+        IscellData(RNG.random(3)),
+        output_dir,
+        params={"axis": 1, "output_type": "heatmap_data"},
+    )["concatenated_data"]
+
+    out.save_json(output_dir)
+    assert type(out) is HeatMapData and list(out.index) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("extra", [{}, {"output_type": "behaviors_data"}])
+def test_1d_column_stack_computes_std_per_column(output_dir, extra):
+    position, speed = RNG.random(6), RNG.random(6)
+
+    result = data_concat(
+        IscellData(position),
+        IscellData(speed),
+        output_dir,
+        params={"axis": 1, "std_method": "compute", **extra},
+    )
+
+    std = result["concatenated_std"].data
+    assert std.shape == (6, 2)
+    np.testing.assert_allclose(std[0], [np.std(position), np.std(speed)])
