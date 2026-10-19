@@ -132,6 +132,52 @@ describe("getTimeSeriesInitData", () => {
     expect(entry.data["1"]).toEqual(record(4))
   })
 
+  it("keeps a by-id result that lands while its refetch fails", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue(initWithStubs)
+    const store = configureStore({ reducer: { displayData: reducer } })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockImplementationOnce(async () => {
+        await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+        throw new Error("503")
+      })
+      .mockResolvedValueOnce({
+        data: { "1": record(5) },
+        xrange,
+        std: { "1": record(0) },
+      })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.data["1"]).toEqual(record(5))
+    expect(entry.std["1"]).toEqual(record(0))
+  })
+
+  it("keeps the held series when a by-id failure clears the entry mid-refetch", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue(initWithStubs)
+    const store = configureStore({ reducer: { displayData: reducer } })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockImplementationOnce(async () => {
+        await store.dispatch(getTimeSeriesDataById({ path, index: "0" }))
+        throw new Error("503")
+      })
+      .mockRejectedValueOnce(new Error("503"))
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    expect(store.getState().displayData.timeSeries[path].data["1"]).toEqual(
+      record(4),
+    )
+  })
+
   it("refetches a record a by-id request filled during the first refetch", async () => {
     jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
       data: { "0": record(1), "1": { "0": 1 }, "2": { "0": 1 } },

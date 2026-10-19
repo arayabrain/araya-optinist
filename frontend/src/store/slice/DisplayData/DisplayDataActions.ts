@@ -118,14 +118,16 @@ export const getTimeSeriesInitData = createAsyncThunk<
                 getTimeSeriesDataByIdApi(path, index, isFull),
               ),
         )
+        const now = thunkAPI.getState().displayData.timeSeries[path]
+        // a failed refetch keeps the newest series held rather than a blank
+        const kept = {
+          data: { ...held, ...now?.data },
+          std: { ...entry?.std, ...now?.std },
+        }
         reload.forEach((key, i) => {
           const record = records[bulk ? 0 : i]
           tried.add(key)
-          // a failed refetch keeps the series already held rather than a blank
-          const source =
-            record.status === "fulfilled"
-              ? record.value
-              : { data: held, std: entry?.std ?? {} }
+          const source = record.status === "fulfilled" ? record.value : kept
           data[key] = source.data[key]
           if (source.std[key] !== undefined) std[key] = source.std[key]
         })
