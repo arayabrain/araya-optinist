@@ -321,42 +321,49 @@ resource "aws_autoscaling_group" "main" {
     }
   }
 
+  # No initial_lifecycle_hook. The group's hooks: the launch hook
+  # (aws_autoscaling_lifecycle_hook.launch below) and ECS's
+  # ecs-managed-draining-termination-hook. The former terminate hook is retired.
+  # - initial_lifecycle_hook is ForceNew and never refreshed from AWS, so the
+  #   hooks a group was created with stay in state; removing the blocks alone
+  #   would replace the group. ignore_changes keeps it in place
+  # - existing groups: delete the terminate hook with delete-lifecycle-hook
+  #   (FREE_MANAGER_ARCHITECTURE.md, Lifecycle Hooks)
+  # - a block added here is ignored on existing groups; declare a hook with
+  #   aws_autoscaling_lifecycle_hook instead
   lifecycle {
-    ignore_changes = [desired_capacity]
+    ignore_changes = [desired_capacity, initial_lifecycle_hook]
   }
 
   timeouts {
     delete = "30m"
   }
-
-  # Lifecycle hooks for logging
-  initial_lifecycle_hook {
-    name                 = "${local.env_prefix}-launch-hook"
-    default_result       = "CONTINUE"
-    heartbeat_timeout    = 300
-    lifecycle_transition = "autoscaling:EC2_INSTANCE_LAUNCHING"
-  }
-
-  initial_lifecycle_hook {
-    name                 = "${local.env_prefix}-terminate-hook"
-    default_result       = "CONTINUE"
-    heartbeat_timeout    = 300
-    lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
-  }
 }
 
-# Auto Scaling Policies
+# Boot wait: holds every launch in Pending:Wait for 300 s, then CONTINUE.
+# Nothing completes it. InService starts the target-group registration, the
+# ELB health-check grace, the refresh warmup and the scale_up cooldown; the
+# wait makes them count from a booted instance whose task is being placed.
+# - without it the target is registered with nothing on port 8000 and turns
+#   unhealthy (free-tg-unhealthy-hosts fires on every scale-out), and the 900 s
+#   grace can run out before a slow start serves
+# - the name is the one the group was created with, so on an existing group
+#   the first apply overwrites the same hook (PutLifecycleHook)
+resource "aws_autoscaling_lifecycle_hook" "launch" {
+  name                   = "${local.env_prefix}-launch-hook"
+  autoscaling_group_name = aws_autoscaling_group.main.name
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_LAUNCHING"
+  heartbeat_timeout      = 300
+  default_result         = "CONTINUE"
+}
+
+# Auto Scaling Policies: scale-out only.
+# - scale_up is driven by cpu-high / memory-high (monitoring.tf)
+# - no scale-down policy: the free-manager Lambda removes instances, chosen
+#   by workload; a policy would let the group choose, blind to workflows
 resource "aws_autoscaling_policy" "scale_up" {
   name                   = "${local.env_prefix}-scale-up"
   scaling_adjustment     = 1
-  adjustment_type        = "ChangeInCapacity"
-  cooldown               = 300
-  autoscaling_group_name = aws_autoscaling_group.main.name
-}
-
-resource "aws_autoscaling_policy" "scale_down" {
-  name                   = "${local.env_prefix}-scale-down"
-  scaling_adjustment     = -1
   adjustment_type        = "ChangeInCapacity"
   cooldown               = 300
   autoscaling_group_name = aws_autoscaling_group.main.name
@@ -571,8 +578,13 @@ resource "aws_instance" "premium" {
   # On shutdown, stop instance instead of terminating
   instance_initiated_shutdown_behavior = "stop"
 
-  # Prevent accidental termination
-  disable_api_termination = false
+  # Termination protection: TerminateInstances from any Lambda, script or the
+  # console fails with OperationNotPermitted. Backstop for PREMIUM_INSTANCE_IDS,
+  # which premium manager reads to leave this instance alone. Stop and start
+  # are unaffected. force_destroy lets Terraform itself still replace or
+  # destroy it; it takes effect only once applied, so both are set together.
+  disable_api_termination = true
+  force_destroy           = true
 
   tags = {
     # Pre-provisioned at deploy time. Distinct from "premium-dedicated"
@@ -591,9 +603,11 @@ resource "aws_instance" "premium" {
     command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }
 
-
+  # Same as aws_instance.background: the launch template owns user_data, and
+  # applying its removal would clear the bootstrap and start a stopped standby
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 }
 
@@ -1142,6 +1156,14 @@ resource "aws_ecs_service" "autoscaling" {
 
   placement_constraints {
     type = "distinctInstance" # Force different instances
+  }
+
+  # Tier pin, as on the premium, public and background services: a drain's
+  # replacement task can only land on a free instance, headroom elsewhere
+  # or not (the capacity provider strategy confines placement today)
+  placement_constraints {
+    type       = "memberOf"
+    expression = "attribute:tier == free"
   }
 
   health_check_grace_period_seconds = 900

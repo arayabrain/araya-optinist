@@ -32,7 +32,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageSimpleReader,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
-from studio.app.common.db.database import get_db, get_session
+from studio.app.common.db.database import get_db, get_session, release_request_session
 from studio.app.common.models.user import User
 from studio.app.common.models.workspace import Workspace
 from studio.app.dir_path import DIRPATH
@@ -128,6 +128,9 @@ async def sync_user_experiments(
         f"Initiating experiment sync for user {user_id} "
         f"(email: {user.email}, bucket: {bucket_name})"
     )
+
+    # The metadata sync outlives the request; do not hold this connection
+    release_request_session(db)
 
     # Trigger background download (non-blocking)
     background_tasks.add_task(_download_experiments_for_user, bucket_name, user_id)
