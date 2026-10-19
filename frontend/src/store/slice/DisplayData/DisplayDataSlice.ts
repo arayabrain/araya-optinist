@@ -121,9 +121,9 @@ export const displayDataSlice = createSlice({
           }
           return
         }
-        entry.pending = false
-        // a newer response already loaded it
+        // a newer response already loaded it; leave the plot's readiness alone
         if (entry.byId?.[index] === "fulfilled") return
+        entry.pending = false
         // one record failed, so keep the others; only a user's request errors
         entry.byId = { ...entry.byId, [index]: "rejected" }
         if (background) {

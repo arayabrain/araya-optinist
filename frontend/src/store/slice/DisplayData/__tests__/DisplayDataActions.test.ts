@@ -232,6 +232,35 @@ describe("getTimeSeriesDataByIdOnce", () => {
     expect(entry.error).toBeNull()
   })
 
+  it("leaves the plot's readiness alone when it ignores a stale failure", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "1": { "0": 0 }, "2": { "0": 0 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    store.dispatch({
+      type: getTimeSeriesDataById.fulfilled.type,
+      meta: { arg: { path, index: "1" } },
+      payload: { data: { "1": { "0": 0, "1": 1 } }, xrange, std: {} },
+    })
+    store.dispatch({
+      type: getTimeSeriesDataById.pending.type,
+      meta: { arg: { path, index: "2" } },
+    })
+
+    store.dispatch({
+      type: getTimeSeriesDataById.rejected.type,
+      meta: { arg: { path, index: "1" } },
+      error: { message: "504" },
+    })
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.pending).toBe(true)
+    expect(entry.fulfilled).toBe(false)
+  })
+
   it("requests no record by id while an all-data request is in flight", async () => {
     jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
       data: { "0": { "0": 1, "1": 2 }, "1": { "0": 0 } },
