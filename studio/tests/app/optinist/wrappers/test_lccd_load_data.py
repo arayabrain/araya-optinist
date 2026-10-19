@@ -7,7 +7,7 @@ import types
 import numpy as np
 import pytest
 import tifffile
-from PIL import TiffImagePlugin
+from PIL import Image, TiffImagePlugin
 
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.wrappers.data_utils.vacant_roi import movie_shape, vacant_roi
@@ -109,12 +109,53 @@ def test_no_roi_reads_no_frame(tmp_path, monkeypatch):
     assert timeseries.shape == (0, 37)
 
 
+def test_batches_smaller_than_one_frame_are_2_frames_wide(tmp_path, monkeypatch):
+    """Frames over half of BATCH_BYTES (above 2048 x 2048 at 64 MiB)."""
+    monkeypatch.setattr(lccd_detection, "BATCH_BYTES", 1)
+    path = write(tmp_path / "m.tif", 37, np.int16)
+    expected_movie = whole_movie(path)
+    roi = random_rois(expected_movie.shape, 12, np.random.default_rng(1))
+    with LoadData(ImageData([path])) as D:
+        actual = D.roi_means(roi)
+    assert actual.tobytes() == whole_movie_means(expected_movie, roi).tobytes()
+
+
 def test_non_square_frames_fail_as_before(tmp_path):
     path = write(tmp_path / "m.tif", 5, np.uint16, shape=(16, 12))
     with pytest.raises(ValueError):
         whole_movie(path)
     with pytest.raises(ValueError):
         LoadData(ImageData([path]))
+
+
+@pytest.fixture
+def opened(monkeypatch):
+    """The file object of every PIL image opened (Pillow sets the image's own
+    fp to None once a page is loaded, so the image cannot tell)."""
+    files = []
+    real_open = Image.open
+
+    def recording_open(*args, **kwargs):
+        image = real_open(*args, **kwargs)
+        files.append(image.fp)
+        return image
+
+    monkeypatch.setattr(Image, "open", recording_open)
+    return files
+
+
+def test_the_file_is_closed_after_the_block(tmp_path, opened):
+    path = write(tmp_path / "m.tif", 37, np.uint16)
+    with LoadData(ImageData([path])):
+        pass
+    assert [f.closed for f in opened] == [True]
+
+
+def test_the_file_is_closed_when_the_scan_fails(tmp_path, opened):
+    path = write(tmp_path / "m.tif", 5, np.uint16, shape=(16, 12))
+    with pytest.raises(ValueError):
+        LoadData(ImageData([path]))
+    assert [f.closed for f in opened] == [True]
 
 
 @pytest.fixture
@@ -155,6 +196,20 @@ def test_lccd_detect_matches_the_whole_movie(tmp_path, small_batches, lccd_stub)
         assert window == D[:, :, start : start + FRAME_DIVIDER].tobytes()
     roi = random_rois(D.shape[:2], 5, np.random.default_rng(2))
     assert info["fluorescence"].data.tobytes() == whole_movie_means(D, roi).tobytes()
+
+
+def test_the_file_is_closed_when_lccd_raises(tmp_path, opened, monkeypatch, lccd_stub):
+    def fail(self, v):
+        raise MemoryError
+
+    lccd = sys.modules[f"{lccd_detection.__package__}.lccd_python.lccd"]  # the stub
+    monkeypatch.setattr(lccd.LCCD, "apply", fail)
+    path = write(tmp_path / "m.tif", 37, np.int16)
+    output_dir = tmp_path / "output" / "default" / "uid" / "lccd"
+    output_dir.mkdir(parents=True)
+    with pytest.raises(MemoryError):
+        lccd_detect(ImageData([path]), str(output_dir), params={})
+    assert [f.closed for f in opened] == [True]
 
 
 def test_vacant_roi_decodes_no_frame(tmp_path, monkeypatch):
