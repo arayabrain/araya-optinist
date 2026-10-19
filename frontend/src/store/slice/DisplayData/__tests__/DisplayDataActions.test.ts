@@ -365,7 +365,13 @@ describe("getTimeSeriesDataByIdOnce", () => {
     expect(byId()).toEqual({ "3": "fulfilled" })
 
     await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
-    expect(byId()).toEqual({})
+    expect(byId()).toEqual({ "3": "fulfilled" })
+    expect(store.getState().displayData.timeSeries[path].data["3"]).toEqual({
+      "0": 0,
+      "1": 1,
+    })
+    store.dispatch(getTimeSeriesDataByIdOnce({ path, index: "3" }))
+    expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)
   })
 
   it("marks the records an init or all-data response holds in full", async () => {
