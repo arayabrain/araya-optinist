@@ -211,6 +211,32 @@ def test_neuropil_follows_the_ring_geometry_on_a_ramped_background(tmp_path):
     assert np.allclose(ops["Fneu"][2], FLAT + RING_MEAN_Y, atol=1e-2)
 
 
+def test_extraction_settings_are_read_from_a_1_1_0_pickle(tmp_path):
+    # suite2p 1.1.0 pickles nest them under settings.extraction and carry no
+    # flat copies; the same ring geometry must come out
+    movie = (
+        np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)) + np.arange(LY)[:, None]
+    )
+    ops, im = build(tmp_path, movie)
+    ops["settings"] = {
+        "extraction": {
+            key: ops.pop(key)
+            for key in ("allow_overlap", "inner_neuropil_radius", "min_neuropil_pixels")
+        }
+    }
+    data = EditRoiData(
+        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    )
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    ops = info["ops"].data
+    assert np.allclose(ops["F"][2], FLAT + 30, atol=1e-2)
+    assert np.allclose(ops["Fneu"][2], FLAT + RING_MEAN_Y, atol=1e-2)
+
+
 def test_commit_never_reads_the_movie_edit_roi_data_carries(tmp_path):
     # suite2p_roi stores a reference to the input movie in EditRoiData; editing
     # reads traces from the registered binary, so the reference is never opened
@@ -241,41 +267,54 @@ def test_suite2p_roi_stores_a_reference_to_the_movie(tmp_path, monkeypatch):
 
     from studio.app.common.dataclass.image import ImageData
     from studio.app.optinist.wrappers.suite2p.roi import suite2p_roi
+    from studio.tests.app.optinist.suite2p_settings_1_1_0 import default_settings
 
     movie = tmp_path / "movie.tif"
     tifffile.imwrite(movie, np.zeros((FRAMES, LY, LX), np.int16))
     ops, im = build(tmp_path, np.zeros((FRAMES, LY, LX)))
     stat = ops.pop("stat")
 
-    class FakeROI:
-        def __init__(self, ypix, xpix, lam, med, do_crop):
-            self.ypix, self.xpix = ypix, xpix
+    class BinaryFile:
+        def __init__(self, Ly, Lx, filename, n_frames=None, write=False):
+            self.shape = (n_frames, Ly, Lx)
 
-        def to_array(self, Ly, Lx):
-            plane = np.zeros((Ly, Lx))
-            plane[self.ypix, self.xpix] = 1
-            return plane
+        def __enter__(self):
+            return self
 
-    fake = types.ModuleType("suite2p")
-    fake.ROI = FakeROI
-    fake.default_ops = lambda: {"use_builtin_classifier": True}
-    fake.classification = types.SimpleNamespace(
-        builtin_classfile=tmp_path / "builtin.npy",
-        user_classfile=tmp_path / "user.npy",
-        classify=lambda stat, classfile: np.array([[1, 0.9], [0, 0.1]]),
-    )
-    fake.detection = types.SimpleNamespace(detect=lambda ops, classfile: (ops, stat))
-    fake.extraction = types.SimpleNamespace(
-        create_masks_and_extract=lambda ops, stat: (
-            ops,
+        def __exit__(self, *exc):
+            return False
+
+    def pipeline(save_path, f_reg, run_registration, settings, device):
+        detect_outputs = {
+            "max_proj": np.zeros((LY, LX)),
+            "Vcorr": np.zeros((LY, LX)),
+            "meanImg_crop": np.zeros((LY, LX)),
+            "diameter": np.array([12.0, 12.0]),
+        }
+        iscell = np.array([[1, 0.9], [0, 0.1]])
+        return (
+            None,
+            detect_outputs,
             np.array(stat, dtype=object),
             ops["F"],
             ops["Fneu"],
             None,
             None,
+            None,
+            iscell,
+            None,
+            None,
+            {},
         )
-    )
+
+    fake = types.ModuleType("suite2p")
+    fake.default_settings = default_settings
+    fake.io = types.SimpleNamespace(BinaryFile=BinaryFile)
+    fake.pipeline = pipeline
+    run_s2p = types.ModuleType("suite2p.run_s2p")
+    run_s2p._assign_torch_device = lambda name: name
     monkeypatch.setitem(sys.modules, "suite2p", fake)
+    monkeypatch.setitem(sys.modules, "suite2p.run_s2p", run_s2p)
 
     def no_full_read(self):
         # pytest.fail, not an AssertionError: the wrapper's except Exception
@@ -286,11 +325,7 @@ def test_suite2p_roi_stores_a_reference_to_the_movie(tmp_path, monkeypatch):
 
     output_dir = tmp_path / "output" / "default" / "uid" / "suite2p_roi_x"
     output_dir.mkdir(parents=True)
-    ops.update(
-        filelist=[str(movie)],
-        max_proj=np.zeros((LY, LX)),
-        Vcorr=np.zeros((LY, LX)),
-    )
+    ops["file_list"] = [str(movie)]
     info = suite2p_roi(Suite2pData(ops), str(output_dir), params={})
 
     assert len(info["fluorescence"].data) == len(CELLS)  # detection really ran

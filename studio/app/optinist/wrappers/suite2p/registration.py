@@ -1,9 +1,12 @@
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.workflow.workflow_params import read_default_params
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.suite2p.utils import (
+    binary_to_tiff,
+    load_settings,
+    pair,
+)
 
 logger = AppLogger.get_logger()
 
@@ -11,66 +14,57 @@ logger = AppLogger.get_logger()
 def suite2p_registration(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData, mc_images=ImageData):
-    from suite2p import default_ops, io, registration
+    from suite2p import default_settings, io, pipeline
+    from suite2p.run_s2p import _assign_torch_device
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p registration: %s", function_id)
 
-    flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
-    params = flattened_params
-
-    # A node saved without these keys (its parameter panel cannot add them)
-    # takes this node's shipped defaults
-    shipped_yaml = read_default_params("suite2p_registration")
-    if not shipped_yaml:
-        raise FileNotFoundError("suite2p_registration.yaml not found")
-    shipped_params = {}
-    recursive_flatten_params(shipped_yaml, shipped_params)
-    for key in ("batch_size", "do_regmetrics"):
-        params.setdefault(key, shipped_params[key])
-
     ops = ops.data
-    refImg = ops["meanImg"]
+    settings = load_settings(default_settings(), "suite2p_registration", params)
+    settings["run"]["do_detection"] = False
+    reg = settings["registration"]
+    # suite2p slices with it
+    reg["bidiphase"] = int(reg["bidiphase"])
+    reg["block_size"] = pair(reg["block_size"], "registration.block_size")
+    if reg["nonrigid"] and any(
+        size >= frame for size, frame in zip(reg["block_size"], (ops["Ly"], ops["Lx"]))
+    ):
+        # one block along an axis gives suite2p an empty shift field to interpolate
+        logger.warning(
+            "block_size %s is not below the %sx%s frame: rigid registration only",
+            reg["block_size"],
+            ops["Ly"],
+            ops["Lx"],
+        )
+        reg["nonrigid"] = False
+    if reg["smooth_sigma_time"] > 0:
+        # the phase correlations are smoothed over each batch's frames, so the
+        # batch edges shape the shifts: keep suite2p_file_convert's batches
+        reg["batch_size"] = ops["batch_size"]
+    device = _assign_torch_device(settings["torch_device"])
 
-    # REGISTRATION
-    if len(refImg.shape) == 3:
-        refImg = refImg[0]
+    logger.info("registering in batches of %s frames", reg["batch_size"])
 
-    # This node's batch_size sizes registration only (its peak memory grows
-    # with it); downstream nodes keep the batch_size they were given.
-    input_batch_size = ops.get("batch_size", default_ops()["batch_size"])
-    ops = {**default_ops(), **ops, **params}
+    # Registers the binary in place and writes reg_outputs.npy into output_dir;
+    # mc_images.tif is copied from the registered binary batch by batch
+    with io.BinaryFile(
+        Ly=ops["Ly"],
+        Lx=ops["Lx"],
+        filename=ops["reg_file"],
+        n_frames=ops["nframes"],
+        write=True,
+    ) as f_reg:
+        reg_outputs = pipeline(
+            output_dir, f_reg, run_registration=True, settings=settings, device=device
+        )[0]
+        mc_images = ImageData(
+            binary_to_tiff(f_reg, output_dir, "mc_images"),
+            output_dir=output_dir,
+            file_name="mc_images",
+        )
 
-    # smooth_sigma_time > 0 smooths over the frames of each batch, so the batch
-    # edges shape the shifts: register with the incoming batch_size then
-    smoothing = ops.get("smooth_sigma_time", 0) > 0
-    if smoothing:
-        ops["batch_size"] = input_batch_size
-    logger.info(
-        "registering in batches of %s frames%s",
-        ops["batch_size"],
-        " (smooth_sigma_time > 0: the incoming batch_size)" if smoothing else "",
-    )
-
-    # register binary
-    ops = registration.register_binary(ops, refImg=refImg)
-
-    # compute metrics for registration (QC only; off by default)
-    if ops.get("do_regmetrics", True) and ops["nframes"] >= 1500:
-        ops = registration.get_pc_metrics(ops)
-
-    # Record the batch registration used; pass the incoming one on
-    ops["reg_batch_size"] = ops["batch_size"]
-    ops["batch_size"] = input_batch_size
-
-    # Copy the registered binary into mc_images.tif batch by batch, instead of
-    # reading the whole movie into memory and then copying it once more
-    mc_images = ImageData(
-        binary_to_tiff(io, ops, output_dir, "mc_images"),
-        output_dir=output_dir,
-        file_name="mc_images",
-    )
+    ops = {**ops, **reg_outputs, "settings": settings}
 
     info = {
         "refImg": ImageData(ops["refImg"], output_dir=output_dir, file_name="refImg"),
@@ -82,71 +76,3 @@ def suite2p_registration(
     }
 
     return info
-
-
-# tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
-BIGTIFF_BYTES = 2**32 - 2**25
-# frames per read, bounded in bytes: suite2p's BinaryFile.read holds the raw
-# buffer and its astype copy at once
-BATCH_BYTES = 64 << 20
-
-
-def binary_to_tiff(io, ops, output_dir, file_name, batch_size=None):
-    """
-    Write the registered binary to the TIFF path ImageData would use.
-
-    Byte-identical to writing the whole array (develop-main's ImageData(mv)),
-    with one batch in memory. tifffile picks BigTIFF from `data.nbytes`, which a
-    frame iterator does not have, so the choice is made here the same way.
-    The file is written beside the final path and moved there when complete,
-    so a failed write leaves no partial mc_images.tif.
-    `io` is suite2p.io, passed in because suite2p is imported lazily here.
-    """
-    import os
-
-    import numpy as np
-    import tifffile
-
-    from studio.app.common.core.utils.filepath_creater import (
-        create_directory,
-        join_filepath,
-    )
-
-    tiff_dir = join_filepath([output_dir, "tiff", file_name])
-    create_directory(tiff_dir)
-    tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
-    tmp_path = f"{tiff_path}.partial"
-
-    Ly, Lx = ops["Ly"], ops["Lx"]
-    frame_bytes = Ly * Lx * np.dtype(np.int16).itemsize
-    if batch_size is None:
-        batch_size = max(1, BATCH_BYTES // frame_bytes)
-
-    try:
-        with io.BinaryFile(Ly=Ly, Lx=Lx, read_filename=ops["reg_file"]) as binary:
-            nframes = binary.n_frames
-
-            def frames():
-                for _, batch in binary.iter_frames(
-                    batch_size=batch_size, dtype=np.int16
-                ):
-                    yield from batch
-
-            # tifffile stores these shapes as RGB, which 2022.3 cannot stream
-            if nframes in (3, 4) or Lx in (3, 4):
-                tifffile.imwrite(tmp_path, np.stack(list(frames())))
-            else:
-                tifffile.imwrite(
-                    tmp_path,
-                    frames(),
-                    shape=(nframes, Ly, Lx),
-                    dtype=np.int16,
-                    bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
-                )
-        os.replace(tmp_path, tiff_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
-
-    return [tiff_path]

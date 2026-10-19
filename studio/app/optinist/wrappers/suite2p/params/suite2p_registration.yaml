@@ -1,27 +1,22 @@
-I/O:
-  nplanes: 1
-  nchannels: 1
-  functional_chan : 1
-  frames_include: -1
+torch_device: cpu         # cpu, cuda or mps; falls back to cpu when unavailable
 
-Registration:
-  batch_size: 100
-  do_regmetrics: False
-  smooth_sigma: 1.15
-  smooth_sigma_time: 0
-  maxregshift: 0.1
-  align_by_chan: 1
-  reg_tif: False
-  th_badframes: 1.0
+run:
+  do_regmetrics: False    # registration quality metrics (PCs); QC only, needs 1500+ frames
 
-1P setting:
-  1Preg: False
-  spatial_hp_reg: 42
-  pre_smooth: 0
-  spatial_taper: 40
-
-Non-Rigid:
-  nonrigid: True
-  block_size: [128, 128]
-  snr_thresh: 1.2
-  maxregshiftNR: 5
+registration:
+  batch_size: 100         # frames per registration batch (peak memory grows with it)
+  nimg_init: 400          # frames used to compute the reference image
+  smooth_sigma: 1.15      # gaussian smoothing in XY; ~1 for 2P, 3-5 may work for 1P
+  smooth_sigma_time: 0    # gaussian smoothing in time
+  maxregshift: 0.1        # max allowed registration shift, as a fraction of the frame size
+  th_badframes: 1.0       # frames with a lower correlation than this are excluded from detection
+  norm_frames: True       # normalize frames when detecting shifts
+  subpixel: 10            # precision of the subpixel registration (1/subpixel steps)
+  spatial_taper: 3.45     # edge tapering width in pixels; larger for 1P
+  do_bidiphase: False     # estimate the bidirectional phase offset
+  bidiphase: 0            # bidirectional phase offset in pixels when not estimated
+  reg_tif: False          # write the registered binary as tiffs into the suite2p folder
+  nonrigid: True          # non-rigid registration
+  block_size: [128, 128]  # block size for non-rigid registration
+  snr_thresh: 1.2         # block shifts below this SNR are smoothed from their neighbours
+  maxregshiftNR: 5        # max shift of a block in pixels relative to the rigid shift

@@ -2,40 +2,46 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import SpikingActivityData, Suite2pData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.suite2p.utils import load_settings
 
 logger = AppLogger.get_logger()
+
+BASELINES = ("maximin", "constant", "prctile")
 
 
 def suite2p_spike_deconv(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData, spks=SpikingActivityData):
     import numpy as np
-    from suite2p import default_ops, extraction
+    import torch
+    from suite2p import default_settings, extraction
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2_spike_deconv: %s", function_id)
 
-    flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
-    params = flattened_params
+    settings = load_settings(default_settings(), "suite2p_spike_deconv", params)
+    baseline = settings["dcnv_preprocess"]["baseline"]
+    if baseline not in BASELINES:
+        # suite2p subtracts no baseline at all for any other value
+        raise ValueError(f"baseline must be one of {BASELINES}, got '{baseline}'")
 
     ops = ops.data
+    # pre-upgrade roi pickles store tau flat
+    tau = ops.get("settings", {}).get("tau", ops.get("tau", settings["tau"]))
+    batch_size = settings["extraction"]["batch_size"]
 
-    ops = {**default_ops(), **ops, **params}
-
-    dF = ops["F"].copy() - ops["neucoeff"] * ops["Fneu"]
-    dF = extraction.preprocess(
-        F=dF,
-        baseline=ops["baseline"],
-        win_baseline=ops["win_baseline"],
-        sig_baseline=ops["sig_baseline"],
-        fs=ops["fs"],
-        prctile_baseline=ops["prctile_baseline"],
-    )
-    spks = extraction.oasis(
-        F=dF, batch_size=ops["batch_size"], tau=ops["tau"], fs=ops["fs"]
-    )
+    dF = ops["F"].copy() - settings["extraction"]["neuropil_coefficient"] * ops["Fneu"]
+    if dF.shape[0] == 0:
+        spks = np.zeros_like(dF)
+    else:
+        dF = extraction.preprocess(
+            F=dF,
+            fs=ops["fs"],
+            batch_size=batch_size,
+            device=torch.device("cpu"),
+            **settings["dcnv_preprocess"],
+        )
+        spks = extraction.oasis(F=dF, batch_size=batch_size, tau=tau, fs=ops["fs"])
 
     ops["spks"] = spks
 

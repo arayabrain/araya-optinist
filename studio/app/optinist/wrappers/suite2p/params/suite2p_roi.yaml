@@ -1,25 +1,35 @@
 # main settings
-tau:  1.0              # this is the main parameter for deconvolution
+tau: 1.0                   # timescale of the sensor, in seconds; sets the detection bin size with fs and drives deconvolution
+diameter: [12, 12]         # expected cell diameter in pixels (y, x); normalises the ROI shape statistics and sizes sourcery
+
+detection:
+  algorithm: sparsery      # sparsery or sourcery
+  highpass_time: 100       # running mean subtraction window in bins (use low values for 1P)
+  nbins: 5000              # max number of binned frames for cell detection
+  denoise: False           # PCA-denoise the binned movie before detection
+  block_size: [64, 64]     # block size for denoising
+  threshold_scaling: 1.0   # adjust the automatically determined threshold by this scalar multiplier
+  max_overlap: 0.75        # cells with more overlap than this get removed during triage (must be below 1)
+  soma_crop: True          # crop dendrites for cell classification stats like compactness
+  npix_norm_min: 0.0       # drop ROIs smaller than this fraction of the median area of the first 100 ROIs
+  npix_norm_max: 100       # drop ROIs larger than this fraction of the median area of the first 100 ROIs
+  sparsery_settings:
+    spatial_scale: 0       # 0: multi-scale; 1: 6 pixels 2: 12 pixels 3: 24 pixels 4: 48 pixels
+    highpass_neuropil: 25  # window for spatial high-pass filtering for neuropil subtraction before detection
+    max_ROIs: 5000         # stop detection after this many ROIs
+    active_percentile: 0.0 # above 0, frames over this percentile of an ROI's activity count as active when that is below the usual threshold
+  sourcery_settings:
+    max_iterations: 20     # maximum number of iterations to do cell detection
+    connected: True        # require ROIs to be connected
+    smooth_masks: False    # smooth the ROI masks
+
+extraction:
+  allow_overlap: False     # pixels that are overlapping are thrown out (False) or added to both ROIs (True)
+  inner_neuropil_radius: 2 # number of pixels to keep between ROI and neuropil donut
+  min_neuropil_pixels: 350 # minimum number of pixels in the neuropil
+  snr_threshold: 0.0       # drop ROIs with an SNR below this and re-extract (0 = keep all)
+  batch_size: 500          # frames per extraction batch
 
 classification:
-  soma_crop: True        # crop dendrites for cell classification stats like compactness
-
-cell_detection:
-  high_pass: 100         # running mean subtraction with window of size 'high_pass(use low values for 1P)
-  sparse_mode: True      # whether or not to run sparse_mode
-  max_overlap: 0.75      # cells with more overlap than this get removed during triage before refinement
-  nbinned: 5000          # max number of binned frames for cell detection
-  spatial_scale: 0       # 0: multi-scale; 1: 6 pixels 2: 12 pixels 3: 24 pixels 4: 48 pixels
-  threshold_scaling: 1.0 # adjust the automatically determined threshold by this scalar multiplier
-  max_iterations: 20     # maximum number of iterations to do cell detection
-
-1P:
-  spatial_hp_detect: 25  # window for spatial high-pass filtering for neuropil subtraction before detection
-
-Output:
-  preclassify: 0.       # apply classifier before signal extraction with probability 0.3
-
-ROI_extraction:
-  allow_overlap: False      # pixels that are overlapping are thrown out (False) or added to both ROIs (True)
-  inner_neuropil_radius: 2  # number of pixels to keep between ROI and neuropil donut
-  min_neuropil_pixels: 350  # minimum number of pixels in the neuropil
+  preclassify: 0.0         # apply classifier before signal extraction with probability threshold (0 = off)
+  use_builtin_classifier: False
