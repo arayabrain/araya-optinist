@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import signal
@@ -8,11 +9,14 @@ from pathlib import Path
 import pytest
 
 from studio.app.common.core.utils.config_handler import ConfigReader
-from studio.app.optinist.wrappers.caiman import caiman_utils
+from studio.app.common.core.workflow.workflow_params import get_typecheck_params
+from studio.app.optinist.wrappers.caiman import caiman_utils, cnmf
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
+    parse_text_params,
 )
+from studio.app.optinist.wrappers.caiman.cnmfe import caiman_cnmfe
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 GROUPS = {
@@ -206,3 +210,112 @@ def test_a_failed_fit_still_stops_the_pool(fake_caiman):
     with pytest.raises(RuntimeError), caiman_cluster(2) as (dview, _):
         raise RuntimeError("fit failed")
     assert fake_caiman.stopped == [dview]
+
+
+@pytest.mark.parametrize(
+    "key,value,expected",
+    [
+        ("K", "10", 10),
+        ("K", " 7 ", 7),
+        ("K", "", None),
+        ("K", "None", None),
+        ("K", 10, 10),
+        ("K", None, None),
+        ("n_pixels_per_process", "1000", 1000),
+        ("rf", "16", 16),
+        ("rf", 32, 32),
+        ("rf", 0, None),
+        ("rf", "0", None),
+        ("low_rank_background", "False", False),
+        ("low_rank_background", "TRUE", True),
+        ("low_rank_background", "none", None),
+        ("low_rank_background", "", None),
+        ("low_rank_background", False, False),
+    ],
+)
+def test_text_from_the_panel_is_parsed_to_caimans_type(key, value, expected):
+    parsed = parse_text_params({key: value, "gSig": [3, 3]})
+    assert parsed == {key: expected, "gSig": [3, 3]}
+    assert type(parsed[key]) is type(expected)
+
+
+@pytest.mark.parametrize(
+    "key,value", [("K", "ten"), ("K", "10.5"), ("low_rank_background", "no")]
+)
+def test_unparseable_text_is_refused_naming_the_param(key, value):
+    with pytest.raises(ValueError, match=f"'{key}' must be .* got '{value}'"):
+        parse_text_params({key: value})
+
+
+class Captured(Exception):
+    pass
+
+
+@pytest.fixture
+def capture_cnmfparams(monkeypatch):
+    """Stub caiman so caiman_cnmf stops at its first change_params, raising
+    Captured with the pathed params CaImAn would be handed."""
+
+    class CNMFParams:
+        def __init__(self):
+            vars(self).update({g: dict(keys) for g, keys in REAL_GROUPS.items()})
+
+        def change_params(self, pathed):
+            raise Captured(pathed)
+
+    names = ["caiman", "caiman.source_extraction", "caiman.source_extraction.cnmf"]
+    modules = {name: types.ModuleType(name) for name in names}
+    modules["caiman.source_extraction.cnmf"].cnmf = None
+    modules["caiman.source_extraction.cnmf"].online_cnmf = None
+    params_module = types.ModuleType("caiman.source_extraction.cnmf.params")
+    params_module.CNMFParams = CNMFParams
+    modules[params_module.__name__] = params_module
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(cnmf, "util_download_model_files", lambda: None)
+    monkeypatch.setattr(
+        cnmf, "util_get_image_memmap_from_files", lambda *_: (None, None, "m.mmap")
+    )
+    monkeypatch.setattr(
+        cnmf, "caiman_cluster", lambda _: contextlib.nullcontext((None, 1))
+    )
+
+
+def panel_message(tree):
+    return {
+        key: (
+            {"type": "parent", "children": panel_message(value)}
+            if isinstance(value, dict)
+            else {"type": "child", "value": value}
+        )
+        for key, value in tree.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "parents,key,text,group,expected",
+    [
+        (["init_params"], "K", "10", "init", 10),
+        (["advanced", "patch_params"], "low_rank_background", "False", "patch", False),
+    ],
+)
+def test_text_typed_in_the_panel_reaches_caiman_typed(
+    capture_cnmfparams, parents, key, text, group, expected
+):
+    tree = ConfigReader.read(PARAMS_DIR / "caiman_cnmfe.yaml")
+    section = tree
+    for parent in parents:
+        section = section[parent]
+    assert section[key] is None
+    section[key] = text
+    params = get_typecheck_params(panel_message(tree), "caiman_cnmfe")
+
+    with pytest.raises(Captured) as captured:
+        caiman_cnmfe(
+            images=types.SimpleNamespace(path="movie.tif"),
+            output_dir="1/abc/caiman_cnmfe_x",
+            params=params,
+        )
+
+    sent = captured.value.args[0][group][key]
+    assert sent == expected and type(sent) is type(expected)
