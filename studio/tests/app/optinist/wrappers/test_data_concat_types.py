@@ -138,14 +138,15 @@ def test_fluo_column_stack_as_a_heatmap_relabels_its_rows(output_dir):
     assert type(out) is HeatMapData and list(out.index) == [0, 1, 2]
 
 
-def test_1d_column_stack_computes_std_per_column(output_dir):
+@pytest.mark.parametrize("extra", [{}, {"output_type": "behaviors_data"}])
+def test_1d_column_stack_computes_std_per_column(output_dir, extra):
     position, speed = RNG.random(6), RNG.random(6)
 
     result = data_concat(
         IscellData(position),
         IscellData(speed),
         output_dir,
-        params={"axis": 1, "std_method": "compute"},
+        params={"axis": 1, "std_method": "compute", **extra},
     )
 
     std = result["concatenated_std"].data

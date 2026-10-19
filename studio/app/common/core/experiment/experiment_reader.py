@@ -205,7 +205,7 @@ class ExptConfigReader:
 
     @classmethod
     def convert_output_paths(cls, config: dict) -> Dict[str, OutputPath]:
-        if config:
+        if config is not None:
             return {
                 key: OutputPath(
                     path=value["path"],
