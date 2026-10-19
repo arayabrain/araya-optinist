@@ -109,8 +109,13 @@ export const getTimeSeriesInitData = createAsyncThunk<
             Object.keys(data[key]).length === 1,
         )
         if (reload.length === 0) break
-        // many reloads (after select all) share one all-data request, which has no isFull
-        const bulk = !isFull && reload.length > 5
+        // every record held in full (select all): one all-data request, which has
+        // no isFull; a sparser selection stays by id rather than load the output
+        const stubs = Object.keys(data).filter(
+          (key) => Object.keys(data[key]).length === 1,
+        )
+        const bulk =
+          !isFull && reload.length > 1 && reload.length === stubs.length
         const records = await Promise.allSettled(
           bulk
             ? [getTimeSeriesAllDataApi(path)]

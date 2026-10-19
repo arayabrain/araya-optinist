@@ -252,6 +252,39 @@ describe("getTimeSeriesInitData", () => {
       )
     },
   )
+
+  it("refetches a sparse selection by id rather than load the whole output", async () => {
+    const keys = Array.from({ length: 10 }, (_, i) => String(i))
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: {
+        ...Object.fromEntries(keys.map((key) => [key, { "0": 1 }])),
+        "0": record(1),
+      },
+      xrange,
+      std: {},
+    })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockImplementation(async (_path, index) => ({
+        data: { [index]: record(3) },
+        xrange,
+        std: {},
+      }))
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    for (const index of ["1", "2", "3", "4", "5", "6", "7"]) {
+      await store.dispatch(getTimeSeriesDataById({ path, index }))
+    }
+    jest.mocked(getTimeSeriesDataByIdApi).mockClear()
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    expect(jest.mocked(getTimeSeriesAllDataApi)).not.toHaveBeenCalled()
+    expect(jest.mocked(getTimeSeriesDataByIdApi)).toHaveBeenCalledTimes(7)
+    expect(store.getState().displayData.timeSeries[path].data["8"]).toEqual({
+      "0": 1,
+    })
+  })
 })
 
 describe("time-series results for a deleted path", () => {
