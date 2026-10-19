@@ -110,6 +110,11 @@ def ran_node_dir(monkeypatch, with_dff):
         output_dir=node_dirpath,
         file_name="cell_roi",
     )
+    output["non_cell_roi"] = RoiData(
+        np.nanmax(output["edit_roi_data"].im[[1]], axis=0),
+        output_dir=node_dirpath,
+        file_name="non_cell_roi",
+    )
     PickleWriter.write(f"{node_dirpath}/caiman_cnmf.pkl", output)
     for value in output.values():
         if isinstance(value, (FluoData, RoiData)):
@@ -132,6 +137,7 @@ def test_a_filter_reset_restores_every_json_the_run_wrote(ran_node_dir, with_dff
     WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(None)
 
     changed = {p for p in ran if filtered[p] != ran[p]}
+    assert f"{ran_node_dir}/non_cell_roi.json" in changed
     assert any("/fluorescence/" in p for p in changed)
     assert any("/dff/" in p for p in changed) == with_dff
     assert {p: v for p, v in json_files(ran_node_dir).items() if p in ran} == ran

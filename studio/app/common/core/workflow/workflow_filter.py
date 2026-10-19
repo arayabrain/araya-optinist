@@ -166,6 +166,10 @@ class WorkflowNodeDataFilter:
 
         shutil.rmtree(self.tiff_dirpath)
         os.rename(self.original_tiff_dirpath, self.tiff_dirpath)
+        # the filter also rewrote ROI images beside cell_roi, such as non_cell_roi
+        for v in output_info.values():
+            if isinstance(v, RoiData):
+                v.save_json(self.node_dirpath)
 
         shutil.rmtree(self.fluorescence_dirpath)
         os.rename(self.original_fluorescence_dirpath, self.fluorescence_dirpath)
