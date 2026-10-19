@@ -186,6 +186,18 @@ describe("getTimeSeriesDataByIdOnce", () => {
     expect(getTimeSeriesDataByIdApi).toHaveBeenCalledTimes(2)
   })
 
+  it("marks no record loaded from the init of a one-sample series", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": { "0": 5 }, "1": { "0": 5 } },
+      xrange: ["0"],
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+
+    expect(store.getState().displayData.timeSeries[path].byId).toEqual({})
+  })
+
   it("does not recreate an entry deleted while its request was in flight", () => {
     const state = reducer(undefined, {
       type: getTimeSeriesDataById.rejected.type,

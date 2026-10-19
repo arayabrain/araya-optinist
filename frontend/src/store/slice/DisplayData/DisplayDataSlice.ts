@@ -280,8 +280,11 @@ export const displayDataSlice = createSlice({
           ...Object.entries(state.timeSeries[path].byId ?? {}).filter(
             ([, status]) => status === "pending",
           ),
+          // a one-sample init pads every record with the first's sample
           ...Object.entries(action.payload.data)
-            .filter(([, record]) => Object.keys(record).length >= full)
+            .filter(
+              ([, record]) => full > 1 && Object.keys(record).length >= full,
+            )
             .map(([key]) => [key, "fulfilled"]),
         ])
       })
