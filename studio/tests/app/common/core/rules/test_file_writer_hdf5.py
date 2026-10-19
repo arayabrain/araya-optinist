@@ -76,6 +76,26 @@ def test_1d_dataset_is_iscell(tmp_path):
     )
 
 
+def test_compound_column_loads_as_a_plain_1d_dataset(tmp_path):
+    table = np.zeros(N_TIME, dtype=[("time", "f8"), ("lick", "i4")])
+    table["lick"] = np.arange(N_TIME)
+    h5 = _h5(tmp_path, {"g/table": table})
+
+    loaded = FileWriter.hdf5(_rule(tmp_path, h5, "g/table/lick"))["input_x"]
+
+    assert isinstance(loaded, IscellData)
+    assert loaded.data.dtype.names is None
+    np.testing.assert_array_equal(loaded.data, np.arange(N_TIME))
+
+
+@pytest.mark.parametrize("path", ["g/data/missing", "g/missing", "g/sub/missing"])
+def test_unknown_dataset_path_still_raises_key_error(tmp_path, path):
+    h5 = _h5(tmp_path, {"g/data": np.zeros(N_TIME), "g/sub/x": np.zeros(3)})
+
+    with pytest.raises(KeyError):
+        FileWriter.hdf5(_rule(tmp_path, h5, path))
+
+
 def test_scalar_dataset_is_refused_by_name(tmp_path):
     h5 = _h5(tmp_path, {"g/data": np.float64(3.0)})
     with pytest.raises(ValueError, match="'g/data' is a scalar"):

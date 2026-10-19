@@ -4,17 +4,21 @@ import { describe, expect, it, jest } from "@jest/globals"
 import { configureStore } from "@reduxjs/toolkit"
 
 import {
+  commitRoiApi,
   getStatusRoi,
   getTimeSeriesAllDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesInitDataApi,
 } from "api/visualizations/Outputs"
 import {
+  commitRoi,
+  getDisplayErrorMessage,
   getStatus,
   getTimeSeriesAllData,
   getTimeSeriesDataById,
   getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  RejectPayload,
   retryRejectedTimeSeries,
 } from "store/slice/DisplayData/DisplayDataActions"
 import reducer from "store/slice/DisplayData/DisplayDataSlice"
@@ -251,5 +255,36 @@ describe("getTimeSeriesDataByIdOnce", () => {
       "0": "fulfilled",
       "1": "pending",
     })
+  })
+})
+
+describe("commitRoi", () => {
+  it("rejects with the server's reason when the movie is unavailable", async () => {
+    const detail =
+      "The movie this node read is missing (mc_images.tif). Run the workflow again"
+    const error = new AxiosError("Request failed with status code 409")
+    error.response = {
+      status: 409,
+      statusText: "Conflict",
+      headers: {},
+      config: { headers: new AxiosHeaders() },
+      data: { detail },
+    }
+    jest.mocked(commitRoiApi).mockRejectedValue(error)
+    const store = configureStore({ reducer: { displayData: reducer } })
+
+    const result = await store.dispatch(
+      commitRoi({ path: "/p", workspaceId: 1 }),
+    )
+
+    expect(result.payload).toEqual({ status: 409, message: detail })
+    // what ImagePlot's snackbar shows
+    expect(
+      getDisplayErrorMessage(
+        result.payload as RejectPayload,
+        "Failed to commit Edit ROI.",
+      ),
+    ).toBe(detail)
+    expect(store.getState().displayData.loading).toBe(false)
   })
 })
