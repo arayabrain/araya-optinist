@@ -36,8 +36,23 @@ def suite2p_stub(monkeypatch):
         return ops
 
     class BinaryFile:
-        def __init__(self, Lx, Ly, read_filename):
-            self.data = np.zeros((6, Ly, Lx), np.int16)
+        """What binary_to_tiff uses; no `.data`, so a whole-movie read fails"""
+
+        n_frames = 6
+
+        def __init__(self, Ly, Lx, read_filename):
+            self.Ly, self.Lx = Ly, Lx
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_frames(self, batch_size, dtype):
+            for i in range(0, self.n_frames, batch_size):
+                n = min(batch_size, self.n_frames - i)
+                yield np.arange(i, i + n), np.zeros((n, self.Ly, self.Lx), dtype)
 
     fake = types.ModuleType("suite2p")
     fake.default_ops = lambda: {"batch_size": 500, "do_regmetrics": True}
