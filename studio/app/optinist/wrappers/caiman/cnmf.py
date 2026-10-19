@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import os
 
@@ -15,6 +16,7 @@ from studio.app.common.core.utils.filepath_creater import (
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -110,6 +112,127 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     mmap_images = np.reshape(mmap_images.T, [T] + list(dims), order="F")
     mmap_images[:] = images[:]
     return mmap_images, dims, mmap_path
+
+
+def util_get_image_memmap_from_files(
+    function_id: str, paths, file_path: str, batch_size: int = 1024
+):
+    """
+    As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
+    filled from the image files batch by batch, with the same values: the movie
+    is not held in memory as a whole, nor a second time while being copied into
+    the memmap. A file is memory-mapped when its pixels are contiguous, else
+    decoded a batch of pages at a time when each page is one frame (compressed
+    stacks), and read in full only otherwise.
+
+    The memmap is pixels x time, so a 4 KiB page holds 1024 consecutive frames
+    of one pixel: batches of about that many frames write each page about
+    once (smaller batches rewrite every page several times and run slower).
+    """
+    import imageio
+    import tifffile
+    from caiman.mmapping import prepare_shape
+    from caiman.paths import memmap_frames_filename
+
+    paths = paths if isinstance(paths, list) else [paths]
+
+    def header_shape(path):
+        try:
+            with tifffile.TiffFile(path) as tif:
+                return tuple(int(n) for n in tif.series[0].shape)
+        except Exception:
+            return np.asarray(imageio.volread(path)).shape
+
+    def frame_batches(path, frames):
+        try:
+            source = tifffile.memmap(path, mode="r")
+        except ValueError:  # compressed or scattered pixels, or not a TIFF
+            source = None
+        if source is not None:
+            for i in range(0, len(source), batch_size):
+                yield source[i : i + batch_size]
+            return
+        try:
+            with tifffile.TiffFile(path) as tif:
+                series = tif.series[0]
+                if len(series.pages) == frames:  # one page per frame
+                    for i in range(0, frames, batch_size):
+                        pages = range(i, min(i + batch_size, frames))
+                        yield tif.asarray(key=pages, series=0).reshape(
+                            (len(pages),) + series.shape[1:]
+                        )
+                    return
+        except tifffile.TiffFileError:
+            pass
+        logger.info("%s is read in full to fill the memmap", os.path.basename(path))
+        yield np.asarray(imageio.volread(path))
+
+    shapes = [header_shape(path) for path in paths]
+    T, dims = sum(s[0] for s in shapes), shapes[0][1:]
+
+    # The per-file assignment below would broadcast a mismatched frame shape
+    # (a 2D file, or a (T, 1, X) one) where concatenating the files raises
+    for path, shape in zip(paths, shapes):
+        name = os.path.basename(path)
+        if len(shape) < 3:
+            raise ValueError(f"{name}: shape {shape} is not a stack of frames")
+        if shape[1:] != dims:
+            raise ValueError(
+                f"{name}: frame shape {shape[1:]} differs from {dims}, "
+                f"the frame shape of {os.path.basename(paths[0])}"
+            )
+
+    order = "C"
+    shape_mov = (np.prod(dims), T)
+    dir_path = join_filepath(file_path.split("/")[:-1])
+    file_basename = file_path.split("/")[-1]
+    mmap_basename = f"{file_basename}.{function_id}"
+    fname_tot = memmap_frames_filename(mmap_basename, dims, T, order)
+    mmap_path = join_filepath([dir_path, fname_tot])
+
+    mmap = np.memmap(
+        mmap_path,
+        mode="w+",
+        dtype=np.float32,
+        shape=prepare_shape(shape_mov),
+        order=order,
+    )
+    mmap_images = np.reshape(mmap.T, [T] + list(dims), order="F")
+
+    try:
+        t = 0
+        for path, shape in zip(paths, shapes):
+            end = t + shape[0]
+            for batch in frame_batches(path, shape[0]):
+                if batch.shape[1:] != dims or t + len(batch) > end:
+                    raise ValueError(
+                        f"{os.path.basename(path)}: read as frames of "
+                        f"{batch.shape[1:]}, but its headers give {shape}"
+                    )
+                mmap_images[t : t + len(batch)] = batch
+                t += len(batch)
+            if t != end:
+                raise ValueError(
+                    f"{os.path.basename(path)}: read {shape[0] - (end - t)} "
+                    f"frames, but its headers give {shape[0]}"
+                )
+    except BaseException:
+        # no half-filled memmap left for the run to use; a failure to remove it
+        # must not hide why the fill failed
+        with contextlib.suppress(OSError):
+            os.remove(mmap_path)
+        raise
+    return mmap_images, dims, mmap_path
+
+
+def util_edit_roi_movie(images: ImageData, mmap_images, output_dir: str):
+    """
+    The movie EditRoiData keeps for ROI edits: a reference to the input when it
+    lives in this node's experiment (see edit_reference), else CaImAn's float32
+    copy of it, as before references were stored.
+    """
+    reference = edit_reference(images, output_dir)
+    return mmap_images if reference is None else reference
 
 
 def util_cleanup_image_memmap(mmap_paths: list):
@@ -255,6 +378,11 @@ def caiman_cnmf(
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info(f"start caiman_cnmf: {function_id}")
 
+    # ROI editing reads new traces from the input movie, opened lazily at
+    # commit time: EditRoiData keeps a reference to it when util_edit_roi_movie
+    # allows it, rather than a copy
+    images_ref = images
+
     # NOTE: evaluate_components requires cnn_model files in caiman_data directory.
     util_download_model_files()
 
@@ -272,9 +400,10 @@ def caiman_cnmf(
     if isinstance(file_path, list):
         file_path = file_path[0]
 
-    images = images.data
     mmap_paths = []
-    mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
+    mmap_images, dims, mmap_path = util_get_image_memmap_from_files(
+        function_id, images.path, file_path
+    )
     mmap_paths.append(mmap_path)
 
     del images
@@ -411,7 +540,9 @@ def caiman_cnmf(
             output_dir=output_dir,
             file_name="non_cell_roi",
         ),
-        "edit_roi_data": EditRoiData(mmap_images, im),
+        "edit_roi_data": EditRoiData(
+            util_edit_roi_movie(images_ref, mmap_images, output_dir), im
+        ),
         "nwbfile": nwbfile,
     }
 
