@@ -2,7 +2,7 @@ import { Provider } from "react-redux"
 
 import { describe, expect, it, jest } from "@jest/globals"
 import { configureStore } from "@reduxjs/toolkit"
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 
 import {
   getTimeSeriesDataByIdApi,
@@ -132,6 +132,14 @@ const lastLayout = () => {
 const requested = () =>
   jest.mocked(getTimeSeriesDataByIdApi).mock.calls.map(([, index]) => index)
 
+type ByIdResponse = Awaited<ReturnType<typeof getTimeSeriesDataByIdApi>>
+
+const settle = (respond: () => void) =>
+  act(async () => {
+    respond()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+
 describe("TimeSeriesPlot shading", () => {
   it("retries the failed records, fetches the rest and reports what fails again", async () => {
     jest
@@ -178,5 +186,41 @@ describe("TimeSeriesPlot shading", () => {
     expect(screen.getByText(/Too many events/)).toBeDefined()
     expect(lastLayout().shapes).toHaveLength(SHADE_TOTAL_CAP)
     expect(requested()).toEqual([])
+  })
+
+  it("redraws once per settled record, not again for the request it frees", async () => {
+    const requests: {
+      [index: string]: {
+        resolve: (response: ByIdResponse) => void
+        reject: (error: Error) => void
+      }
+    } = {}
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockImplementation(
+        (_path, index) =>
+          new Promise(
+            (resolve, reject) => (requests[index] = { resolve, reject }),
+          ),
+      )
+    const keys = ["1", "2", "3", "4", "5", "6"]
+    renderPlot(4, Object.fromEntries(keys.map((key) => [key, stub])), {}, keys)
+    expect(requested()).toEqual(["1", "2", "3", "4"])
+    const draws = mockPlot.mock.calls.length
+
+    await settle(() =>
+      requests["1"].resolve({
+        data: { "1": events(4) },
+        xrange: xrangeOf(4),
+        std: {},
+      }),
+    )
+    expect(requested()).toEqual(["1", "2", "3", "4", "5"])
+    expect(mockPlot.mock.calls.length).toBe(draws + 1)
+    expect(lastLayout().shapes).toHaveLength(2)
+
+    await settle(() => requests["2"].reject(new Error("504")))
+    expect(requested()).toEqual(["1", "2", "3", "4", "5", "6"])
+    expect(mockPlot.mock.calls.length).toBe(draws + 2)
   })
 })

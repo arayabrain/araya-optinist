@@ -25,6 +25,13 @@ export const selectTimeSeriesById =
   (filePath: string | null) => (state: RootState) =>
     filePath ? selectDisplayData(state).timeSeries[filePath]?.byId : undefined
 
+export const selectTimeSeriesIdsWithStatus =
+  (filePath: string | null, keys: string[], status: string) =>
+  (state: RootState) => {
+    const byId = selectTimeSeriesById(filePath)(state)
+    return keys.filter((key) => byId?.[key] === status)
+  }
+
 export const selectTimesSeriesMeta = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).timeSeries[filePath].meta
 

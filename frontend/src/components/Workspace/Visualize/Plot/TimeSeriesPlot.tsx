@@ -8,7 +8,7 @@ import {
   useState,
 } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
-import { useSelector, useDispatch, shallowEqual } from "react-redux"
+import { useSelector, useDispatch, useStore, shallowEqual } from "react-redux"
 
 import createColormap from "colormap"
 import { LegendClickEvent } from "plotly.js"
@@ -54,6 +54,7 @@ import {
   selectTimeSeriesDataIsFulfilled,
   selectTimeSeriesDataIsInitialized,
   selectTimeSeriesDataIsPending,
+  selectTimeSeriesIdsWithStatus,
   selectTimeSeriesStd,
   selectTimeSeriesXrange,
   selectTimesSeriesMeta,
@@ -78,7 +79,7 @@ import {
   selectTimeSeriesShadeSourceItem,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { AppDispatch } from "store/store"
+import { AppDispatch, RootState } from "store/store"
 import { arrayEqualityFn } from "utils/EqualityUtils"
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
@@ -312,6 +313,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     [data, drawOrderList, newDataXrange],
   )
 
+  const store = useStore<RootState>()
   const shadeSource = useSelector(selectTimeSeriesShadeSourceItem(itemId))
   const shadePath = shadeSource?.filePath ?? null
   const shadeKeys = shadeSource?.drawOrderList
@@ -324,11 +326,14 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     arrayEqualityFn,
   )
 
-  const shadeById = useSelector(selectTimeSeriesById(shadePath))
-  const isShadeLoaded = useCallback(
-    (key: string) => shadeById?.[key] === "fulfilled",
-    [shadeById],
+  const loadedShadeKeys = useSelector(
+    selectTimeSeriesIdsWithStatus(shadePath, shadeKeys ?? [], "fulfilled"),
+    arrayEqualityFn,
   )
+  const failedShadeCount = useSelector(
+    selectTimeSeriesIdsWithStatus(shadePath, shadeKeys ?? [], "rejected"),
+    arrayEqualityFn,
+  ).length
 
   // one more try for records that failed, each time the box links a source
   useEffect(() => {
@@ -336,30 +341,36 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
       dispatch(retryRejectedTimeSeries({ path: shadePath }))
   }, [dispatch, shadePath])
 
-  const failedShadeCount = (shadeKeys ?? []).filter(
-    (key) => shadeById?.[key] === "rejected",
-  ).length
+  const shade = useMemo(() => {
+    const loaded = new Set(loadedShadeKeys)
+    return buildShadeShapes(
+      shadeXrange,
+      shadeData,
+      shadeKeys ?? [],
+      rangeUnit === "time" ? frameRate : 1,
+      SHADE_COLORS,
+      (key) => loaded.has(key),
+    )
+  }, [shadeXrange, shadeData, shadeKeys, rangeUnit, frameRate, loadedShadeKeys])
 
-  const shade = useMemo(
-    () =>
-      buildShadeShapes(
-        shadeXrange,
-        shadeData,
-        shadeKeys ?? [],
-        rangeUnit === "time" ? frameRate : 1,
-        SHADE_COLORS,
-        isShadeLoaded,
-      ),
-    [shadeXrange, shadeData, shadeKeys, rangeUnit, frameRate, isShadeLoaded],
-  )
-
+  // runs when a request settles; a pending write is read here, so it redraws nothing
   useEffect(() => {
     if (shadePath == null) return
-    nextShadeKeys(shadeKeys ?? [], shadeData, shadeById, shade.full).forEach(
+    const status = selectTimeSeriesById(shadePath)(store.getState())
+    nextShadeKeys(shadeKeys ?? [], shadeData, status, shade.full).forEach(
       (key) =>
         dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key })),
     )
-  }, [dispatch, shadePath, shadeKeys, shadeData, shadeById, shade.full])
+  }, [
+    dispatch,
+    store,
+    shadePath,
+    shadeKeys,
+    shadeData,
+    loadedShadeKeys,
+    failedShadeCount,
+    shade.full,
+  ])
 
   const layout = useMemo(
     () => ({
