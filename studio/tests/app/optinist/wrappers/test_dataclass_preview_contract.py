@@ -4,6 +4,7 @@ same records. BehaviorData is (time, columns), so it saves one record per
 column; the other types are pinned as they are."""
 
 import json
+import pickle
 
 import numpy as np
 import pytest
@@ -106,6 +107,47 @@ def test_empty_behaviour_with_a_2d_std_keeps_std_per_record(shape, json_dir):
 
     records = TimeSeriesChunkHandler.load_all_records(saved.json_path)
     assert [r["columns"] for r in records.values()] == [["data", "std"]] * shape[1]
+
+
+def _legacy_behaviour_pickle(data, std=None):
+    """BehaviorData pickled when its __init__ was TimeSeriesData's."""
+    legacy = TimeSeriesData(data, std=std, file_name="b")
+    legacy.__class__ = BehaviorData
+    return pickle.dumps(legacy)
+
+
+def test_legacy_behaviour_pickle_previews_one_record_per_column(json_dir):
+    data, std = RNG.random((N_TIME, N_COL)), RNG.random((N_TIME, N_COL))
+
+    saved = pickle.loads(_legacy_behaviour_pickle(data, std))
+    saved.save_json(json_dir)
+
+    np.testing.assert_array_equal(saved.data, data)
+    assert_preview(saved, data.T, np.arange(N_TIME), std.T)
+
+
+@pytest.mark.parametrize("with_std", [False, True])
+def test_legacy_1d_behaviour_pickle_is_one_column(with_std, json_dir):
+    data = RNG.random(N_TIME)
+    std = RNG.random(N_TIME) if with_std else None
+
+    saved = pickle.loads(_legacy_behaviour_pickle(data, std))
+    saved.save_json(json_dir)
+
+    assert saved.data.shape == (N_TIME, 1)
+    assert_preview(
+        saved, data[np.newaxis], np.arange(N_TIME), None if std is None else [std]
+    )
+
+
+def test_one_time_point_behaviour_survives_a_pickle_round_trip():
+    saved = BehaviorData(RNG.random((1, N_COL)), index=[7])
+
+    loaded = pickle.loads(pickle.dumps(saved))
+
+    np.testing.assert_array_equal(loaded.data, saved.data)
+    assert list(loaded.index) == [7]
+    assert list(loaded.cell_numbers) == list(range(N_COL))
 
 
 def test_csv_saves_one_record_per_row(json_dir):
