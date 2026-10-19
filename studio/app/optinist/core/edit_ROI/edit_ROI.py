@@ -264,7 +264,7 @@ class EditROI:
                 self.function_id,
             )
 
-        elif "caiman" in self.function_id:
+        elif "caiman" in self.function_id or "cnmf_multisession" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi import (
                 commit_edit as caiman_commit,
             )
@@ -276,6 +276,7 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                dff=self.output_info.get("dff"),
             )
 
         iscell = info["iscell"].data

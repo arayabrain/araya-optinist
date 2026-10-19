@@ -13,6 +13,7 @@ def commit_edit(
     iscell,
     node_dirpath,
     function_id,
+    dff: FluoData = None,
 ):
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
@@ -56,4 +57,11 @@ def commit_edit(
         "edit_roi_data": data,
         "nwbfile": set_nwbfile(data, iscell, function_id, new_fluorescences),
     }
+
+    if dff is not None:
+        # rows the edit added or merged have no CaImAn dF/F
+        new_dff = np.full(new_fluorescences.shape, np.nan, dtype=np.float32)
+        if dff.data.size > 0:
+            new_dff[: len(dff.data)] = dff.data
+        info["dff"] = FluoData(new_dff, file_name="dff")
     return info
