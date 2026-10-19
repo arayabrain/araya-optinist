@@ -178,6 +178,14 @@ def test_order_from_matches_cell_numbers_under_iscell(tmp_path):
     assert info["mean_heatmap"].index == [1, 3, 2]
 
 
+def test_order_from_keeps_the_first_row_of_a_duplicate_label(tmp_path):
+    reference = HeatMapData(np.zeros((3, 4)), index=[1, 0, 1])
+
+    info = _bin(tmp_path, fluo=_peaked_fluo([0.5, 2.5]), order_from=reference)
+
+    assert info["mean_heatmap"].index == [1, 0]
+
+
 def test_order_from_missing_a_cell_fails_with_a_clear_message(tmp_path):
     reference = HeatMapData(np.zeros((2, 4)), index=[0, 2])
 
