@@ -37,6 +37,30 @@ def distribute_params_to_groups(flat_params: dict, groups: dict) -> dict:
     return pathed
 
 
+# The CaImAn releases whose save_memmap only adds C_ORDER_OFFSET to a single
+# memmap when border_to_0 is 0 (1.12's is the same code as 1.11.4's)
+SAVE_MEMMAP_VERIFIED_CAIMAN = ("1.11.", "1.12.")
+
+
+def needs_save_memmap(filenames: list, border_to_0: int = 0):
+    """
+    Why caiman_mc needs the file caiman.save_memmap(filenames, order="C",
+    border_to_0=...) writes, or None when MotionCorrect's file with
+    (x + float32(0.0001)) + float32(0) per value has the same values.
+    """
+    import caiman
+
+    if not caiman.__version__.startswith(SAVE_MEMMAP_VERIFIED_CAIMAN):
+        return f"CaImAn {caiman.__version__} is not 1.11 or 1.12"
+    if len(filenames) != 1:
+        return f"{len(filenames)} files"
+    if border_to_0 > 0:
+        return f"border_to_0={border_to_0} (border_nan is not 'copy')"
+    if not str(filenames[0]).endswith(".mmap"):
+        return "the input is not a memmap"
+    return None
+
+
 def _available_cpus() -> int:
     if hasattr(os, "sched_getaffinity"):
         return len(os.sched_getaffinity(0))

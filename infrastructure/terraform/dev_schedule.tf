@@ -352,6 +352,19 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           aws_ecs_service.public.id,
         ]
       },
+      # On stop, list the services' tasks before scaling down, then wait for
+      # them to reach STOPPED before NAT goes. Both scoped to this cluster:
+      # production shares the account
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:ListTasks", "ecs:DescribeTasks"]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.main.arn
+          }
+        }
+      },
     ]
   })
 }

@@ -79,8 +79,15 @@ resource "aws_lambda_function" "free_manager" {
       # The instance count floor/ceiling are not set here: the Lambda reads the
       # ASG's own MinSize/MaxSize (var.asg_min_size / var.asg_max_size), so the
       # group's configuration cannot drift from what the Lambda will request.
-      FREE_USER_THRESHOLD         = "5" # Trigger scaling at 5 active users
+      # No user threshold: the target is computed on every run, at any count.
       FREE_IDLE_THRESHOLD_MINUTES = "5" # Consider user idle after 5 minutes (reduced from 10)
+
+      # Alarms that add capacity. No scale-in while one is in ALARM, nor for
+      # 15 min after it clears (load_alarm_holds_capacity).
+      LOAD_ALARM_NAMES = join(",", [
+        aws_cloudwatch_metric_alarm.cpu_high.alarm_name,
+        aws_cloudwatch_metric_alarm.memory_high.alarm_name,
+      ])
 
       # Internal API configuration for experiment sync after migration
       ALB_DNS_NAME        = aws_lb.autoscaling.dns_name
@@ -181,21 +188,27 @@ resource "aws_iam_role_policy" "free_manager_lambda_policy" {
         Resource = "*"
       },
       # ASG Management (scoped to free tier ASG)
+      # - SetDesiredCapacity: scale-out
+      # - TerminateInstanceInAutoScalingGroup: scale-in of the instance the
+      #   Lambda chose, desired capacity decremented in the same call
       {
         Effect = "Allow"
         Action = [
           "autoscaling:SetDesiredCapacity",
-          "autoscaling:UpdateAutoScalingGroup"
+          "autoscaling:UpdateAutoScalingGroup",
+          "autoscaling:TerminateInstanceInAutoScalingGroup"
         ]
         Resource = aws_autoscaling_group.main.arn
       },
-      # CloudWatch metrics (requires wildcard)
+      # CloudWatch metrics (requires wildcard); DescribeAlarms for the
+      # load alarms' state before a scale-in
       {
         Effect = "Allow"
         Action = [
           "cloudwatch:PutMetricData",
           "cloudwatch:GetMetricData",
-          "cloudwatch:GetMetricStatistics"
+          "cloudwatch:GetMetricStatistics",
+          "cloudwatch:DescribeAlarms"
         ]
         Resource = "*"
       },
@@ -311,19 +324,14 @@ resource "aws_cloudwatch_event_rule" "free_manager_schedule" {
   }
 }
 
-# CloudWatch Events Target
+# CloudWatch Events Target. No fixed input, on purpose:
+# - the Lambda routes on the native event (source aws.events)
+# - the event's `time` stamps TargetInstances and bounds the surplus history
+# - a fixed input replaces the event and drops `time`
 resource "aws_cloudwatch_event_target" "free_manager_target" {
   rule      = aws_cloudwatch_event_rule.free_manager_schedule.name
   target_id = "FreeManagerTarget"
   arn       = aws_lambda_function.free_manager.arn
-
-  input = jsonencode({
-    source      = "aws.events"
-    detail-type = "Scheduled Event"
-    detail = {
-      action = "monitor"
-    }
-  })
 }
 
 # Lambda Permission for CloudWatch Events
@@ -350,7 +358,10 @@ resource "aws_cloudwatch_event_rule" "free_manager_asg_events" {
       "EC2 Instance Launch Successful",
       "EC2 Instance Terminate Successful",
       "EC2 Instance Launch Unsuccessful",
+      # Sent by the launch hook at launch start: the first launch-side sync,
+      # so the task is placed while the instance boots in Pending:Wait
       "EC2 Instance-launch Lifecycle Action",
+      # Sent by ECS's draining hook
       "EC2 Instance-terminate Lifecycle Action"
     ]
     detail = {
