@@ -42,6 +42,17 @@ def session_dff(session_estimates, assignments, frames_window):
     return np.concatenate(blocks, axis=1)
 
 
+def union_footprints(spatial, assignments):
+    """Each union cell's footprint from the first session it was matched in."""
+    from scipy.sparse import hstack
+
+    first = np.argmax(~np.isnan(assignments), axis=1)
+    return hstack(
+        [spatial[j][:, [int(assignments[i, j])]] for i, j in enumerate(first)],
+        format="csc",
+    )
+
+
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
@@ -156,7 +167,7 @@ def caiman_cnmf_multisession(
             + "Try to set lower reg_file_rate.",
         )
 
-    spatial_filtered = spatial[0][:, assignments_filtered[:, 0]]
+    spatial_filtered = union_footprints(spatial, kept)
 
     fluorescence = np.array(
         [
