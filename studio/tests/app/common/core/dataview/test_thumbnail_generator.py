@@ -104,6 +104,17 @@ class TestRenderArrayAsThumbnail:
         img = imageio.imread(output_path)
         assert (img == 0).sum() >= 100 and img.max() == 255
 
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_nan_rows_render_as_background(self, output_path):
+        arr = np.zeros((2000, 300), dtype=np.float32)
+        arr[::100, ::50] = -1.0
+        arr[500:510] = np.nan
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert not (img == 0).all(axis=1).any()
+
 
 class TestGenerateHdf5Thumbnail:
     def test_3d_dataset(self, tmp_path, output_path):
