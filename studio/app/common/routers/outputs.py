@@ -52,8 +52,8 @@ router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
 
-# One TIFF preview build at a time per process keeps its memory bounded;
-# a request waiting longer than this is answered 429
+# One TIFF preview at a time per process, built or read, keeps its memory
+# bounded; a request waiting longer than this is answered 429
 TIFF_PREVIEW_WAIT_SECONDS = 30
 _tiff_preview_lock = asyncio.Lock()
 
@@ -860,10 +860,9 @@ async def get_image(
         json_filepath = join_filepath(
             [save_dirpath, f"{filename}_{str(start_index)}_{str(end_index)}.json"]
         )
-        if not os.path.exists(json_filepath):
-            await _build_tiff_preview(
-                abs_filepath, save_dirpath, json_filepath, start_index, end_index
-            )
+        return await _read_tiff_preview(
+            abs_filepath, save_dirpath, json_filepath, start_index, end_index
+        )
     else:
         json_filepath = abs_filepath
         # Check if output file exists after sync attempt
@@ -890,14 +889,20 @@ async def get_image(
     return JsonReader.read_as_output(json_filepath)
 
 
-async def _build_tiff_preview(
+async def _read_tiff_preview(
     tiff_filepath: str,
     save_dirpath: str,
     json_filepath: str,
     start_index: int,
     end_index: int,
-) -> None:
-    """Write a TIFF preview's JSON off the event loop, one build at a time."""
+) -> OutputData:
+    """
+    A TIFF preview's JSON, written first in a thread if missing.
+
+    Builds and reads share the lock, so one preview at a time is in memory per
+    process: a read on the event loop never overlaps a build in its thread, and
+    FastAPI encodes the response before the loop runs another request.
+    """
     try:
         async with asyncio.timeout(TIFF_PREVIEW_WAIT_SECONDS):
             await _tiff_preview_lock.acquire()
@@ -909,11 +914,11 @@ async def _build_tiff_preview(
         )
     try:
         # A request queued behind the same window finds it written
-        if os.path.exists(json_filepath):
-            return
-        await asyncio.to_thread(
-            save_tiff2json, tiff_filepath, save_dirpath, start_index, end_index
-        )
+        if not os.path.exists(json_filepath):
+            await asyncio.to_thread(
+                save_tiff2json, tiff_filepath, save_dirpath, start_index, end_index
+            )
+        return JsonReader.read_as_output(json_filepath)
     except TiffPreviewTooLargeError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)

@@ -70,9 +70,10 @@ class JsonWriter:
             return obj
 
 
-# Preview JSON costs tens of bytes per pixel whatever the dtype, so a window is
-# bounded by pixel count, sized for the smallest tier's API process
-TIFF_PREVIEW_MAX_PIXELS = 8 * 2**20
+# A preview request costs up to about 70 bytes per pixel end to end, whatever
+# the dtype, so a window is bounded by pixel count. Sized for the smallest
+# tier's API process: the viewer's default 10 frames at 1024 x 1024.
+TIFF_PREVIEW_MAX_PIXELS = 10 * 2**20
 # Bound on decoding a whole series, for layouts with no frame-wise access
 TIFF_PREVIEW_MAX_DECODE_BYTES = 256 * 2**20
 
