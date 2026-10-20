@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
+from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.dataclass.roi import RoiStack
 from studio.app.optinist.wrappers.suite2p.roi import roi_label_images, suite2p_roi
@@ -141,7 +142,7 @@ def run_suite2p_roi(monkeypatch, tmp_path, n_roi):
     )
     monkeypatch.setitem(sys.modules, "suite2p", suite2p)
     output_dir = tmp_path / "ws" / "0123abcd" / "suite2p_roi_x"
-    output_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     ops = {
         "Ly": LY,
         "Lx": LX,
@@ -174,3 +175,45 @@ def test_a_failed_stack_write_fails_the_node(monkeypatch, tmp_path):
     monkeypatch.setattr(RoiStack, "create", disk_full)
     with pytest.raises(OSError, match="No space left"):
         run_suite2p_roi(monkeypatch, tmp_path, n_roi=2)
+
+
+@pytest.mark.parametrize(
+    "derive", [lambda im: im, lambda im: im[[0, 2]], copy.deepcopy]
+)
+def test_nanmax_with_a_nan_initial_sees_the_stack(tmp_path, derive):
+    # numpy's fast path for initial= is for exact ndarrays; a subclass took the
+    # slow path and returned all NaN, blanking every ROI image a commit redrew
+    im, expected = stack_on_disk(tmp_path)
+    result = np.nanmax(derive(im), axis=0, initial=np.nan)
+    np.testing.assert_array_equal(
+        result, np.nanmax(derive(expected), axis=0, initial=np.nan)
+    )
+    assert type(result) is np.ndarray
+    assert np.isscalar(im.sum()) and np.isscalar(np.nanmax(im))
+
+
+def test_a_stack_under_the_output_dir_pickles_relative_to_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+    node_dir = tmp_path / "ws" / "0123" / "suite2p_roi_x"
+    node_dir.mkdir(parents=True)
+    im, expected = stack_on_disk(node_dir)
+    blob = pickle.dumps(im)
+    assert b"roi_mask_stack.npy" in blob and str(tmp_path).encode() not in blob
+    np.testing.assert_array_equal(pickle.loads(blob), expected)
+    moved = tmp_path / "moved"
+    shutil.move(str(tmp_path / "ws"), str(moved / "ws"))
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(moved))
+    np.testing.assert_array_equal(pickle.loads(blob), expected)
+
+
+def test_a_rerun_replaces_the_file_so_an_open_stack_keeps_its_data(
+    monkeypatch, tmp_path
+):
+    first = run_suite2p_roi(monkeypatch, tmp_path, n_roi=3)["edit_roi_data"].im
+    before = np.array(first)
+    second = run_suite2p_roi(monkeypatch, tmp_path, n_roi=1)["edit_roi_data"].im
+    assert second.shape[0] == 1
+    np.testing.assert_array_equal(first, before)
+    assert not (
+        tmp_path / "ws" / "0123abcd" / "suite2p_roi_x" / "roi_mask_stack.npy.tmp"
+    ).exists()

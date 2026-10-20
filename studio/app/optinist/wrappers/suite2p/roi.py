@@ -1,3 +1,5 @@
+import os
+
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.filepath_creater import join_filepath
@@ -89,14 +91,16 @@ def suite2p_roi(
     if len(iscell) > 0:
         # The per-ROI mask stack (NaN outside ROI i, i inside it), written
         # to disk one ROI at a time and referenced rather than held
-        stack, stack_path = RoiStack.create(
-            join_filepath([output_dir, "roi_mask_stack.npy"]),
-            (len(stat), ops["Ly"], ops["Lx"]),
+        stack_path = join_filepath([output_dir, "roi_mask_stack.npy"])
+        stack, tmp_path = RoiStack.create(
+            stack_path + ".tmp", (len(stat), ops["Ly"], ops["Lx"])
         )
         for i, s in enumerate(stat):
             stack[i, s["ypix"], s["xpix"]] = i
         stack.flush()
         del stack
+        # a new inode, so a request still reading the previous stack keeps it
+        os.replace(tmp_path, stack_path)
         im = RoiStack.open(stack_path)
         roi_images = roi_label_images(stat, iscell, ops["Ly"], ops["Lx"])
 

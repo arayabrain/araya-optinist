@@ -229,6 +229,23 @@ class EditRoiData(BaseData):
         self.temp_delete_roi = {}
 
 
+def _plain(value):
+    """RoiStack arguments as plain arrays, inside tuples and lists too."""
+    if isinstance(value, RoiStack):
+        return value.view(np.ndarray)
+    if isinstance(value, (list, tuple)):
+        return type(value)(_plain(v) for v in value)
+    return value
+
+
+def _stack_path_for_pickle(path: str) -> str:
+    """Relative to OUTPUT_DIR when under it, so the reference survives a move."""
+    output_dir = os.path.abspath(DIRPATH.OUTPUT_DIR)
+    if os.path.abspath(path).startswith(output_dir + os.sep):
+        return os.path.relpath(path, output_dir)
+    return path
+
+
 class RoiStack(np.memmap):
     """
     A per-ROI mask stack (n_roi x Ly x Lx) kept in a .npy file next to the
@@ -252,7 +269,8 @@ class RoiStack(np.memmap):
 
     @classmethod
     def open(cls, path: str):
-        obj = np.load(path, mmap_mode="r").view(cls)
+        absolute = path if os.path.isabs(path) else f"{DIRPATH.OUTPUT_DIR}/{path}"
+        obj = np.load(absolute, mmap_mode="r").view(cls)
         obj._stack_path = path
         obj._whole_file = True
         return obj
@@ -263,14 +281,18 @@ class RoiStack(np.memmap):
         self._stack_path = getattr(obj, "_stack_path", None)
         self._whole_file = False
 
+    def __array_function__(self, func, types, args, kwargs):
+        # numpy keeps fast paths (nanmax with initial, for one) for exact ndarrays
+        return func(*_plain(args), **{k: _plain(v) for k, v in kwargs.items()})
+
     def __array_wrap__(self, arr, context=None, *args, **kwargs):
         # Ufunc and reduction results are new data, not the file: plain arrays
         arr = super().__array_wrap__(arr, context, *args, **kwargs)
         if isinstance(arr, RoiStack) and not np.shares_memory(arr, self):
-            return arr.view(np.ndarray)
-        return arr
+            arr = arr.view(np.ndarray)
+        return arr[()] if arr.ndim == 0 else arr
 
     def __reduce__(self):
         if getattr(self, "_whole_file", False) and self._stack_path:
-            return (RoiStack.open, (self._stack_path,))
+            return (RoiStack.open, (_stack_path_for_pickle(self._stack_path),))
         return np.array(self, subok=False).__reduce__()
