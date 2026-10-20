@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import PurePath
@@ -291,6 +292,25 @@ def _locked_json_edit(
         data = _read_json_dict(filepath)
         edit(data)
         _write_json_atomic(filepath, data)
+
+
+def _write_file_atomic(filepath: str, source) -> None:
+    """
+    Write source (a file object) beside filepath, then replace filepath with it:
+    - a reader that has the old file open, such as a running workflow, keeps
+      reading the old file to the end;
+    - a failed write leaves the old file in place.
+    The temporary file is created with the default permissions, as before.
+    """
+    tmp_path = f"{filepath}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp_path, "xb") as f:
+            shutil.copyfileobj(source, f)
+        os.replace(tmp_path, filepath)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 def _write_json_atomic(filepath: str, data: dict) -> None:
@@ -773,8 +793,7 @@ async def create_file(
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-        with open(filepath, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        _write_file_atomic(filepath, file.file)
 
         # Update metadata caches based on file type
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
