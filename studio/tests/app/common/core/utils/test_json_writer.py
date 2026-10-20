@@ -26,6 +26,7 @@ RNG = np.random.default_rng(0)
 STACK_3D = RNG.integers(0, 4000, (20, 8, 6), dtype=np.uint16)
 STACK_4D = RNG.integers(0, 4000, (5, 2, 8, 6), dtype=np.uint16)
 STACK_RGB = RNG.integers(0, 255, (4, 8, 6, 3), dtype=np.uint8)
+VOLUME = RNG.integers(0, 4000, (4, 16, 16), dtype=np.uint16)
 
 # The comment names the read each layout takes in read_tiff_frames
 LAYOUTS = {
@@ -39,8 +40,15 @@ LAYOUTS = {
     "compressed_rgb": dict(  # page by page, 3 samples per pixel
         data=STACK_RGB, photometric="rgb", compression="zlib"
     ),
-    "compressed_hyperstack": dict(  # decoded whole: 2 pages per frame
+    "compressed_hyperstack": dict(  # page by page, 2 pages per frame
         data=STACK_4D, compression="zlib"
+    ),
+    "volumetric": dict(  # decoded whole: all 4 frames are in one page
+        data=VOLUME,
+        volumetric=True,
+        tile=(4, 16, 16),
+        photometric="minisblack",
+        compression="zlib",
     ),
 }
 
@@ -161,14 +169,32 @@ def test_a_frame_over_the_pixel_budget_is_refused(tmp_path, monkeypatch):
 
 
 def test_a_layout_decoded_whole_is_refused_over_its_byte_budget(tmp_path, monkeypatch):
-    path = str(tmp_path / "hyperstack.tif")
-    tifffile.imwrite(path, **LAYOUTS["compressed_hyperstack"])
-    monkeypatch.setattr(
-        json_writer, "TIFF_PREVIEW_MAX_DECODE_BYTES", STACK_4D.nbytes - 1
-    )
+    path = str(tmp_path / "volume.tif")
+    tifffile.imwrite(path, **LAYOUTS["volumetric"])
+    monkeypatch.setattr(json_writer, "TIFF_PREVIEW_MAX_DECODE_BYTES", VOLUME.nbytes - 1)
 
     with pytest.raises(TiffPreviewTooLargeError, match="cannot be read frame by"):
         read_tiff_frames(path, 0, 1)
+
+
+def test_a_frame_of_several_pages_is_read_without_a_whole_decode(tmp_path, monkeypatch):
+    path = str(tmp_path / "hyperstack.tif")
+    tifffile.imwrite(path, **LAYOUTS["compressed_hyperstack"])
+    monkeypatch.setattr(json_writer, "TIFF_PREVIEW_MAX_DECODE_BYTES", 0)
+
+    assert np.array_equal(read_tiff_frames(path, 1, 3), STACK_4D[1:3])
+
+
+def test_the_preview_file_keeps_the_umask_mode(tmp_path):
+    path = str(tmp_path / "stack.tif")
+    tifffile.imwrite(path, STACK_3D)
+    save_dirpath = tmp_path / "stack"
+    save_tiff2json(path, str(save_dirpath), 1, 10)
+    sibling = save_dirpath / "sibling"
+    sibling.write_text("")
+
+    preview = save_dirpath / "stack_1_10.json"
+    assert preview.stat().st_mode == sibling.stat().st_mode
 
 
 def test_a_refused_preview_writes_nothing(tmp_path, monkeypatch):

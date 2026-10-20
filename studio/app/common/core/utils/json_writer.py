@@ -1,7 +1,7 @@
 import json
 import math
 import os
-import tempfile
+import uuid
 from contextlib import suppress
 from typing import Any, Optional
 
@@ -86,8 +86,8 @@ def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
     Frames [start, stop) along the first axis of a TIFF's first series, without
     decoding the rest of the file. A 2D image is a single frame.
 
-    Contiguous uncompressed data is memory-mapped, one page per frame is read
-    page by page, and any other layout is decoded whole, up to
+    Contiguous uncompressed data is memory-mapped, a whole number of pages per
+    frame is read page by page, and any other layout is decoded whole, up to
     TIFF_PREVIEW_MAX_DECODE_BYTES.
     """
     with tifffile.TiffFile(tiff_filepath) as tif:
@@ -108,12 +108,24 @@ def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
             )
 
         if series.dataoffset is not None:
-            stack = tifffile.memmap(tiff_filepath, mode="r")
-            # memmap keeps the file's byte order; series.dtype is native
-            return np.array(stack.reshape(shape)[start:stop], dtype=series.dtype)
+            stack = np.memmap(
+                tiff_filepath,
+                dtype=np.dtype(tif.byteorder + series.dtype.char),
+                mode="r",
+                offset=series.dataoffset,
+                shape=shape,
+            )
+            # the map keeps the file's byte order; series.dtype is native
+            return np.array(stack[start:stop], dtype=series.dtype)
 
-        if len(series) == shape[0] and math.prod(series.keyframe.shape) == frame_pixels:
-            frames = tif.asarray(key=range(start, stop), series=0)
+        # A frame's pages are consecutive, as the series is their C-order stack
+        pages_per_frame, remainder = divmod(len(series), shape[0])
+        if (
+            remainder == 0
+            and pages_per_frame * math.prod(series.keyframe.shape) == frame_pixels
+        ):
+            pages = range(start * pages_per_frame, stop * pages_per_frame)
+            frames = tif.asarray(key=pages, series=0)
             return frames.reshape((stop - start,) + frame_shape)
 
         if series.nbytes > TIFF_PREVIEW_MAX_DECODE_BYTES:
@@ -136,10 +148,11 @@ def _too_many_frames_message(start, stop, frame_shape) -> str:
 
 
 def _write_text_atomic(filepath, text):
-    # Readers of filepath never see a partly written file
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(filepath), suffix=".tmp")
+    # Readers of filepath never see a partly written file. open() rather than
+    # mkstemp, so the file keeps the umask's mode instead of owner-only.
+    tmp_path = f"{filepath}.{uuid.uuid4().hex}.tmp"
     try:
-        with os.fdopen(fd, "w") as f:
+        with open(tmp_path, "x") as f:
             f.write(text)
         os.replace(tmp_path, filepath)
     except BaseException:
