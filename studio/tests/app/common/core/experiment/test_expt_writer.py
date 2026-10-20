@@ -166,6 +166,19 @@ def test_write_add():
     assert os.path.exists(f"{dirpath}/experiment.yaml")
 
 
+class PathBackedStack(np.memmap):
+    """Pickles only the path of the .npy file it maps."""
+
+    @classmethod
+    def open(cls, path):
+        obj = np.load(path, mmap_mode="r").view(cls)
+        obj.stack_path = path
+        return obj
+
+    def __reduce__(self):
+        return (PathBackedStack.open, (self.stack_path,))
+
+
 @pytest.mark.parametrize("suffix, method", [("pkl", "pickle"), ("npy", "npy")])
 def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, method):
     old_id, new_id = "aaaa1111", "bbbb2222"
@@ -174,6 +187,9 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     cycle.append(cycle)
     self_array = np.empty((), dtype=object)
     self_array[()] = self_array
+    stack_path = f"{tmp_path}/{old_id}/suite2p_roi/roi_mask_stack.npy"
+    os.makedirs(os.path.dirname(stack_path))
+    np.save(stack_path, np.arange(6.0).reshape(1, 2, 3))
     data = {
         "ops": {"filelist": paths},
         "images": SimpleNamespace(path=paths),
@@ -181,10 +197,10 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
         "grid": np.array([[p] for p in paths]),
         "cycle": cycle,
         "self_array": self_array,
+        "stack": PathBackedStack.open(stack_path),
     }
 
     src_file = tmp_path / old_id / "suite2p_roi" / f"suite2p_roi.{suffix}"
-    src_file.parent.mkdir(parents=True)
     if suffix == "pkl":
         with open(src_file, "wb") as f:
             pickle.dump(data, f)
@@ -197,6 +213,7 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     getattr(writer, f"_ExptDataWriter__copy_data_update_{method}")(
         str(new_file), old_id, new_id
     )
+    shutil.rmtree(tmp_path / old_id)
 
     if suffix == "pkl":
         with open(new_file, "rb") as f:
@@ -211,3 +228,5 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     assert loaded["images"].path is loaded["ops"]["filelist"]
     assert loaded["cycle"][0] is loaded["cycle"]
     assert loaded["self_array"][()] is loaded["self_array"]
+    assert loaded["stack"].stack_path == stack_path.replace(old_id, new_id)
+    assert loaded["stack"].tolist() == np.arange(6.0).reshape(1, 2, 3).tolist()
