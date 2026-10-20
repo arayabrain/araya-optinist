@@ -42,7 +42,7 @@ from studio.app.common.core.workflow.workflow import (
     WorkflowRunStatus,
 )
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
-from studio.app.const import DATE_FORMAT
+from studio.app.const import DATE_FORMAT, ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -444,9 +444,14 @@ class ExptDataWriter:
                 "npy": glob.glob(
                     os.path.join(directory, "**", "*.npy"), recursive=True
                 ),
-                "pkl": glob.glob(
-                    os.path.join(directory, "**", "*.pkl"), recursive=True
-                ),
+                # with the data filter's backups, which a filter reset restores
+                "pkl": [
+                    path
+                    for pattern in ["*.pkl", f"*.pkl{ORIGINAL_DATA_EXT}"]
+                    for path in glob.glob(
+                        os.path.join(directory, "**", pattern), recursive=True
+                    )
+                ],
             }
 
             for file_type, files in targeted_files.items():

@@ -7,8 +7,9 @@ import numpy as np
 import pytest
 import yaml
 
+from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.utils.pickle_handler import PickleWriter
+from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
 from studio.app.common.core.workflow.workflow import (
     DataFilterParam,
     DataFilterRangeParam,
@@ -95,6 +96,7 @@ def test_lccd_keeps_its_own_roi_images_and_trims_dff(tmp_path):
 
 
 WORKSPACE, UNIQUE_ID, NODE_ID = "filter_reset_ws", "00000000", "caiman_cnmf_0000"
+COPY_ID = "11111111"
 
 
 @pytest.fixture
@@ -157,3 +159,27 @@ def test_a_filter_reset_restores_every_json_the_run_wrote(ran_node_dir, with_dff
     assert {p: v for p, v in json_files(ran_node_dir).items() if p in ran} == ran
     assert os.path.isdir(f"{ran_node_dir}/dff") == with_dff
     assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}") == []
+
+
+@pytest.mark.parametrize("with_dff", [True])
+def test_a_filter_reset_in_a_copied_experiment_reads_only_the_copy(
+    ran_node_dir, with_dff
+):
+    """The reset restores the filter's backup, so experiment copy must rewrite
+    the backup's paths as it does the node pickle's."""
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    source = os.path.dirname(ran_node_dir)
+    copied = f"{os.path.dirname(source)}/{COPY_ID}"
+    shutil.copytree(source, copied)  # as ExptDataWriter.copy_data does
+    writer = ExptDataWriter("bucket", WORKSPACE, UNIQUE_ID)
+    assert writer._ExptDataWriter__copy_data_replace_unique_id(
+        copied, UNIQUE_ID, COPY_ID
+    )
+    shutil.rmtree(source)  # the copy must not depend on the source
+
+    WorkflowNodeDataFilter(WORKSPACE, COPY_ID, NODE_ID).filter_node_data(None)
+
+    restored = PickleReader.read(f"{copied}/{NODE_ID}/caiman_cnmf.pkl")
+    for name in ["cell_roi", "non_cell_roi"]:
+        assert restored[name].path.startswith(f"{copied}/")
+    assert glob(f"{copied}/{NODE_ID}/*{ORIGINAL_DATA_EXT}") == []
