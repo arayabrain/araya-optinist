@@ -141,3 +141,18 @@ def test_a_stack_under_the_output_dir_pickles_relative_to_it(tmp_path, monkeypat
     shutil.move(str(tmp_path / "ws"), str(moved / "ws"))
     monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(moved))
     np.testing.assert_array_equal(pickle.loads(blob), expected)
+
+
+def test_a_reopened_reference_pickles_the_same_from_the_rule_cwd(tmp_path, monkeypatch):
+    # a downstream rule runs in the experiment directory and re-pickles the
+    # reference it loaded; the path must stay OUTPUT_DIR-relative, not grow
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+    node_dir = tmp_path / "ws" / "uid" / "suite2p_roi_x"
+    node_dir.mkdir(parents=True)
+    im, expected = stack_on_disk(node_dir)
+    from_node = pickle.dumps(im)
+    monkeypatch.chdir(tmp_path / "ws" / "uid")
+    downstream = pickle.dumps(pickle.loads(from_node))
+    assert b"ws/uid/suite2p_roi_x/roi_mask_stack.npy" in downstream
+    assert b"ws/uid/ws/uid" not in downstream
+    np.testing.assert_array_equal(pickle.loads(downstream), expected)
