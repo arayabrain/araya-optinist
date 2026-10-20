@@ -743,31 +743,33 @@ async def create_file(
     db: Session = Depends(get_db),
 ):
     try:
+        user_id = current_user.id if current_user else None
+
         # Check storage quota before allowing file upload
         # (use cached data to avoid timeout)
-        current_usage = await get_current_user_storage_usage(
-            current_user.id, force_live=False
-        )
-        storage_info = get_user_storage_usage(current_user.id)
-        quota_limit = get_effective_quota_bytes(
-            current_user.id, storage_info=storage_info
-        )
+        if user_id is not None:
+            current_usage = await get_current_user_storage_usage(
+                user_id, force_live=False
+            )
+            storage_info = get_user_storage_usage(user_id)
+            quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
 
-        if quota_limit > 0:
-            storage_usage_percent = (current_usage / quota_limit) * 100
+            if quota_limit > 0:
+                storage_usage_percent = (current_usage / quota_limit) * 100
 
-            # Block file upload if over quota (100%)
-            if storage_usage_percent >= 100:
-                logger.warning(
-                    f"File upload blocked for user {current_user.id}: "
-                    f"storage quota exceeded ({storage_usage_percent:.1f}% used)"
-                )
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Cannot upload file: Storage quota exceeded "
-                    f"({storage_usage_percent:.1f}% used). "
-                    f"Please free up space before uploading files.",
-                )
+                # Block file upload if over quota (100%)
+                if storage_usage_percent >= 100:
+                    logger.warning(
+                        f"File upload blocked for user {user_id}: "
+                        "storage quota exceeded "
+                        f"({storage_usage_percent:.1f}% used)"
+                    )
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Cannot upload file: Storage quota exceeded "
+                        f"({storage_usage_percent:.1f}% used). "
+                        f"Please free up space before uploading files.",
+                    )
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
@@ -811,9 +813,10 @@ async def create_file(
                     )
 
         # Refresh storage cache in background to keep it up-to-date
-        background_tasks.add_task(
-            get_current_user_storage_usage, current_user.id, force_live=True
-        )
+        if user_id is not None:
+            background_tasks.add_task(
+                get_current_user_storage_usage, user_id, force_live=True
+            )
 
         return {"file_path": filename}
 

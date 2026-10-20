@@ -136,6 +136,21 @@ def test_no_components_gives_empty_outputs_with_the_time_axis_kept():
     assert np.isnan(non_cell_roi).all()
 
 
+@pytest.mark.parametrize("idx_good,idx_bad", [([], [0, 1, 2]), ([0], [1, 2])])
+def test_rejected_ids_follow_the_accepted_ones_on_a_nan_background(
+    idx_good, idx_bad, monkeypatch
+):
+    monkeypatch.setattr(cnmf, "get_roi", labelled_masks)
+    A = sp.csc_matrix(np.eye(PIXELS)[:, :3])
+
+    im, _, _, _, non_cell_roi, *_ = cnmf.component_outputs(
+        A, np.ones((3, FRAMES)), idx_good, idx_bad, DIMS, 0.9, "nrg", False
+    )
+
+    assert [np.nanmax(row) for row in im] == [0, 1, 2]
+    np.testing.assert_array_equal(non_cell_roi, np.nanmax(im[len(idx_good) :], axis=0))
+
+
 def test_a_mask_count_that_differs_from_the_components_is_refused(monkeypatch):
     # get_roi now emits one mask per column, empty or not; a shorter list would
     # shift every row after the gap, so it is refused rather than realigned
