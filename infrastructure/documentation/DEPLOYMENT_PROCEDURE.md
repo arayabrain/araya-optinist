@@ -402,6 +402,11 @@ cd /path/to/araya-optinist
 make test_run_all
 ```
 
+**Free-tier capacity:** if the release changes the Free Manager, the free-tier Auto Scaling Group
+or its Terraform, run [FREE_TIER_CAPACITY_REHEARSAL.md](FREE_TIER_CAPACITY_REHEARSAL.md) on
+development with the release deployed there. It is not automated: it moves real capacity and takes
+about three hours.
+
 ### 3. Staging Environment Testing (staging-araya-optinist) [TODO]
 
 **Status:** Not yet set up
