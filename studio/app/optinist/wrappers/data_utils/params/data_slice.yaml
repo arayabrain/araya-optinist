@@ -2,5 +2,11 @@
 # One spec per dimension: ':' (all), 'start:stop', 'start:stop:step',
 # 'squeeze', or a non-negative integer index.
 slice_dims: []
-cell_normalization: 'none' # ['none', 'zscore']
+cell_normalization: 'none' # ['none', 'zscore', 'dff']
+# dff only: F0 baseline, sliding window in frames (0 = whole recording),
+# percentile (percentile only) and Gaussian s.d. in frames (maximin only)
+f0_method: 'percentile' # ['percentile', 'maximin']
+f0_window_frames: 0
+f0_percentile: 8
+f0_sigma_frames: 10
 mean_normalization: 'none' # ['none', 'zscore', 'minmax']
