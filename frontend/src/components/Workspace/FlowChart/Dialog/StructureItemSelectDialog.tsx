@@ -3,7 +3,15 @@ import { useDispatch, useSelector } from "react-redux"
 
 import FolderIcon from "@mui/icons-material/Folder"
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined"
-import { Box, Checkbox, Typography, Tooltip, Divider } from "@mui/material"
+import {
+  Box,
+  Checkbox,
+  Typography,
+  Tooltip,
+  Divider,
+  FormControlLabel,
+  Switch,
+} from "@mui/material"
 import Button from "@mui/material/Button"
 import { CheckboxProps } from "@mui/material/Checkbox"
 import Dialog from "@mui/material/Dialog"
@@ -25,6 +33,9 @@ import {
   TreeFileType,
 } from "components/Workspace/FlowChart/FlowChartNode/StructuredFileTree"
 import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
+import { selectInputNodeParam } from "store/slice/InputNode/InputNodeSelectors"
+import { setStructuredInputNodeParam } from "store/slice/InputNode/InputNodeSlice"
+import { StructuredInputParamType } from "store/slice/InputNode/InputNodeType"
 import { AppDispatch } from "store/store"
 
 type StructureItemSelectProps = {
@@ -44,9 +55,27 @@ export const StructureItemSelectDialog = memo(
     const [fileSelect, setFileSelect] = useState("")
 
     const structureFileName = useSelector(config.selectStructurePath(nodeId))
+    const savedParam = useSelector(selectInputNodeParam(nodeId)) as
+      | Partial<StructuredInputParamType>
+      | undefined
+    const [transpose, setTranspose] = useState(false)
+    const [behavior, setBehavior] = useState(false)
+
+    useEffect(() => {
+      if (!open) return
+      setFileSelect(structureFileName ?? "")
+      setTranspose(savedParam?.transpose ?? false)
+      setBehavior(savedParam?.dataType === "behavior")
+    }, [open, savedParam, structureFileName])
 
     const onClickOk = () => {
       dispatch(config.setStructurePath({ nodeId, path: fileSelect }))
+      dispatch(
+        setStructuredInputNodeParam({
+          nodeId,
+          param: { transpose, dataType: behavior ? "behavior" : "auto" },
+        }),
+      )
       setOpen?.(false)
     }
 
@@ -70,6 +99,26 @@ export const StructureItemSelectDialog = memo(
             setFileSelect={setFileSelect}
             config={config}
           />
+          <Box sx={{ px: 3, py: 1 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={transpose}
+                  onChange={(event) => setTranspose(event.target.checked)}
+                />
+              }
+              label="Transpose"
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={behavior}
+                  onChange={(event) => setBehavior(event.target.checked)}
+                />
+              }
+              label="Behavior data (rows are time)"
+            />
+          </Box>
           <DialogActions>
             <Button onClick={onClickCancel} color="primary" variant="outlined">
               cancel

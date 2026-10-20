@@ -63,18 +63,24 @@ def test_condition_keeps_the_matching_samples(
     np.testing.assert_array_equal(out["behaviors_data"].data, _behavior()[kept])
 
 
-def test_outputs_keep_the_input_orientation(tmp_path):
+@pytest.mark.parametrize("flipped", [False, True], ids=["contract", "flipped"])
+def test_behaviour_comes_back_time_major_and_neural_keeps_its_input(tmp_path, flipped):
+    kept = [2, 3, 5]
+    params = {"transpose_x": not flipped, "transpose_y": flipped}
     out = _split(
         tmp_path,
-        fluo=_fluo().T,
-        behavior=_behavior().T,
-        params={"transpose_x": False, "transpose_y": True},
+        fluo=_fluo().T if flipped else _fluo(),
+        behavior=_behavior().T if flipped else _behavior(),
+        params=params,
     )
 
-    np.testing.assert_array_equal(out["neural_data"].data, _fluo().T[[2, 3, 5]])
+    expected_neural = _fluo()[:, kept]
     np.testing.assert_array_equal(
-        out["behaviors_data"].data, _behavior().T[:, [2, 3, 5]]
+        out["neural_data"].data, expected_neural.T if flipped else expected_neural
     )
+    np.testing.assert_array_equal(out["behaviors_data"].data, _behavior()[kept])
+    out["behaviors_data"].save_json(str(tmp_path))
+    assert out["behaviors_data"].output_path.data_shape == [2, len(kept)]
 
 
 def test_1d_behaviour_is_one_column(tmp_path):

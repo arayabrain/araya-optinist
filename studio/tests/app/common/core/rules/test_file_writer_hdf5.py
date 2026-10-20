@@ -1,7 +1,8 @@
 """HDF5/NWB datasets entering a workflow: dataclass by rank, tiff cached per
 workspace, and NWB fluorescence oriented to (roi, time) using the
 sibling `rois` dataset so the transpose knob on fluo_from_hdf5 is no longer
-load-bearing for NWB input.
+load-bearing for NWB input. The input node's transpose and behaviour role
+settings are applied here, transpose first.
 """
 import logging
 import os
@@ -16,7 +17,8 @@ from studio.app.common.core.rules.file_writer import FileWriter
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.dataclass import ImageData
 from studio.app.dir_path import DIRPATH
-from studio.app.optinist.dataclass import FluoData, IscellData
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
+from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.data_utils.data_slice import data_slice
 from studio.app.optinist.wrappers.data_utils.data_transpose import data_transpose
 from studio.app.optinist.wrappers.data_utils.fluo_from_hdf5 import fluo_from_hdf5
@@ -25,13 +27,66 @@ N_ROI, N_TIME = 7, 50
 LEGACY_NWB = f"{DIRPATH.INPUT_DIR}/1/files/test.nwb"
 
 
-def _rule(tmp_path, h5_path, dataset):
+TABLE = np.random.default_rng(7).random((N_TIME, 3))
+COLUMN = TABLE[:, 0]
+BEHAVIOR = {"dataType": "behavior"}
+
+# (stored array, node params, loaded type, loaded array, NWB bucket, nwb_oriented)
+LOAD_CASES = {
+    "1d-auto": (COLUMN, {}, IscellData, COLUMN, NWBDATASET.COLUMN, False),
+    "1d-transpose-ignored": (
+        COLUMN,
+        {"transpose": True},
+        IscellData,
+        COLUMN,
+        NWBDATASET.COLUMN,
+        False,
+    ),
+    "1d-behavior": (
+        COLUMN,
+        BEHAVIOR,
+        BehaviorData,
+        COLUMN[:, np.newaxis],
+        NWBDATASET.BEHAVIOR,
+        False,
+    ),
+    "2d-auto": (TABLE, {}, FluoData, TABLE, NWBDATASET.TIMESERIES, False),
+    "2d-transpose": (
+        TABLE.T,
+        {"transpose": True},
+        FluoData,
+        TABLE,
+        NWBDATASET.TIMESERIES,
+        True,
+    ),
+    "2d-behavior": (TABLE, BEHAVIOR, BehaviorData, TABLE, NWBDATASET.BEHAVIOR, False),
+    "2d-transpose-behavior": (
+        TABLE.T,
+        {"transpose": True, **BEHAVIOR},
+        BehaviorData,
+        TABLE,
+        NWBDATASET.BEHAVIOR,
+        True,
+    ),
+}
+
+
+def assert_loaded(info, case):
+    _, _, loaded_type, expected, bucket, oriented = case
+    loaded = info["input_x"]
+    assert type(loaded) is loaded_type
+    np.testing.assert_array_equal(loaded.data, expected)
+    assert getattr(loaded, "nwb_oriented", False) is oriented
+    assert info["nwbfile"]["input"][bucket]["input_x"] is loaded
+
+
+def _rule(tmp_path, h5_path, dataset, params=None):
     output = tmp_path / "output" / "default" / "uid" / "input_x" / "input_x.pkl"
     output.parent.mkdir(parents=True, exist_ok=True)
     return Rule(
         input=str(h5_path),
         return_arg="input_x",
-        params={},
+        params=params or {},
         output=str(output),
         type="hdf5",
         nwbfile={"image_series": {}},
@@ -175,13 +230,13 @@ def test_hdf5_fluo_passes_through_data_utils(tmp_path):
     assert "sliced_data" in data_slice(fluo, str(tmp_path), params={"slice_dims": None})
 
 
-def _matrule(tmp_path, mat_path, variable):
+def _matrule(tmp_path, mat_path, variable, params=None):
     output = tmp_path / "output" / "default" / "uid" / "input_x" / "input_x.pkl"
     output.parent.mkdir(parents=True, exist_ok=True)
     return Rule(
         input=str(mat_path),
         return_arg="input_x",
-        params={},
+        params=params or {},
         output=str(output),
         type="matlab",
         nwbfile={"image_series": {}},
@@ -289,6 +344,73 @@ def test_matlab_variables_get_the_same_types_and_tiff_cache(tmp_path):
     assert isinstance(
         FileWriter.mat(_matrule(tmp_path, mat, "iscell"))["input_x"], IscellData
     )
+
+
+@pytest.mark.parametrize("case", LOAD_CASES.values(), ids=LOAD_CASES.keys())
+def test_input_transpose_and_behaviour_role(tmp_path, case):
+    h5 = _h5(tmp_path, {"g/data": case[0]})
+
+    info = FileWriter.hdf5(_rule(tmp_path, h5, "g/data", params=case[1]))
+
+    assert_loaded(info, case)
+
+
+def test_behaviour_role_previews_one_record_per_column(tmp_path):
+    h5 = _h5(tmp_path, {"g/data": TABLE})
+    behavior = FileWriter.hdf5(_rule(tmp_path, h5, "g/data", params=BEHAVIOR))[
+        "input_x"
+    ]
+
+    behavior.save_json(str(tmp_path))
+
+    assert behavior.output_path.data_shape == [3, N_TIME]
+    assert list(behavior.index) == list(range(N_TIME))
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [np.zeros((N_TIME, N_ROI)), np.zeros((N_ROI, N_TIME))],
+    ids=["nwb", "legacy"],
+)
+def test_rois_sibling_wins_over_the_input_transpose(tmp_path, stored, caplog):
+    stored = stored + np.arange(stored.size).reshape(stored.shape)
+    expected = stored if stored.shape[0] == N_ROI else stored.T
+    h5 = _h5(tmp_path, {"g/data": stored}, rois=N_ROI)
+    caplog.set_level(logging.WARNING, logger="optinist")
+
+    fluo = FileWriter.hdf5(_rule(tmp_path, h5, "g/data", params={"transpose": True}))[
+        "input_x"
+    ]
+
+    np.testing.assert_array_equal(fluo.data, expected)
+    assert fluo.nwb_oriented
+    assert "the input Transpose setting is ignored" in caplog.text
+    out = fluo_from_hdf5(fluo, str(tmp_path), params={"transpose": True})
+    assert out["fluorescence"].data.shape == (N_ROI, N_TIME)
+
+
+def test_square_fluorescence_follows_the_input_transpose_once(tmp_path):
+    arr = np.random.default_rng(8).random((N_ROI, N_ROI))
+    h5 = _h5(tmp_path, {"g/data": arr}, rois=N_ROI)
+
+    fluo = FileWriter.hdf5(_rule(tmp_path, h5, "g/data", params={"transpose": True}))[
+        "input_x"
+    ]
+
+    np.testing.assert_array_equal(fluo.data, arr.T)
+    out = fluo_from_hdf5(fluo, str(tmp_path), params={"transpose": True})
+    np.testing.assert_array_equal(out["fluorescence"].data, arr.T)
+
+
+@pytest.mark.parametrize("params", [{"transpose": True}, BEHAVIOR])
+def test_3d_dataset_ignores_both_settings(tmp_path, params):
+    arr = np.arange(5 * 4 * 3, dtype=np.float32).reshape(5, 4, 3)
+    h5 = _h5(tmp_path, {"g/data": arr})
+
+    image = FileWriter.hdf5(_rule(tmp_path, h5, "g/data", params=params))["input_x"]
+
+    assert type(image) is ImageData
+    np.testing.assert_array_equal(image.data, arr)
 
 
 def test_a_source_rate_that_differs_from_the_nwb_setting_is_logged(tmp_path, caplog):

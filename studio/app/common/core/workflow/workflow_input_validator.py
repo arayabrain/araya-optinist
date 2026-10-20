@@ -5,7 +5,11 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 
-from studio.app.common.core.rules.file_writer import dataclass_for_rank, hdf5_dataset
+from studio.app.common.core.rules.file_writer import (
+    dataclass_for_rank,
+    hdf5_dataset,
+    is_behavior_role,
+)
 from studio.app.common.core.utils.filepath_creater import (
     InvalidPathError,
     join_filepath,
@@ -48,6 +52,7 @@ def validate_input_edges(
     """Reject HDF5/Matlab datasets wired into an input of an incompatible kind.
 
     Only rank is checked: 3D+ datasets fit ImageData only, 1D/2D fit anything else.
+    A dataset declared as behaviour data must be 1D or 2D, whatever it feeds.
     Anything that cannot be resolved (missing cache and file, unknown function,
     untyped arg) is skipped; the node error path still catches it at run time.
     """
@@ -68,7 +73,8 @@ def validate_input_edges(
 
         arg_name = edge.targetHandle.split("--")[1]
         expected = _expected_arg_type(target.data.path, arg_name)
-        if expected is None:
+        behavior = is_behavior_role(source.data.param)
+        if expected is None and not behavior:
             continue
 
         dataset_path = (
@@ -84,6 +90,14 @@ def validate_input_edges(
             )
         shape = _dataset_shape(workspace_dir, caches[source.type], source, dataset_path)
         if shape is None:
+            continue
+
+        if behavior and len(shape) >= 3:
+            raise WorkflowValidationError(
+                f"{source.type} dataset '{dataset_path}' has shape {tuple(shape)}; "
+                "Behaviour data needs a 1D or 2D dataset"
+            )
+        if expected is None:
             continue
 
         produced = dataclass_for_rank(len(shape))

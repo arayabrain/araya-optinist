@@ -7,6 +7,7 @@ from scipy.ndimage import gaussian_filter1d, maximum_filter1d, minimum_filter1d
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass.base import BaseData
+from studio.app.common.dataclass.csv import CsvData
 from studio.app.common.dataclass.scatter import ScatterData
 from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.optinist.dataclass.behavior import BehaviorData
@@ -161,6 +162,8 @@ def data_slice(
                                  - 'squeeze': Remove this dimension (must have size 1)
                                  - non-negative integer: Single index to select
                                    (removes dimension)
+                                 Both keep the time axis of BehaviorData and
+                                 CsvData, one sample long.
                                  Unparsable specs, 'squeeze' on a dimension of
                                  size > 1, and out-of-range integer indices keep
                                  the entire dimension and log a warning. A slice
@@ -317,6 +320,10 @@ def data_slice(
         # Unrecognized specification
         logger.warning(f"Unrecognized slice spec: {spec}")
         index_specs.append(slice(None))
+
+    if isinstance(data, (BehaviorData, CsvData)) and isinstance(index_specs[0], int):
+        # a time-major table keeps its time axis, one sample long
+        index_specs[0] = slice(index_specs[0], index_specs[0] + 1)
 
     logger.debug(f"Data slice - Applying indexing: {index_specs}")
 
