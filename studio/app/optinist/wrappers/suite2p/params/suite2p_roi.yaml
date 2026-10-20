@@ -17,7 +17,7 @@ detection:
     spatial_scale: 0       # 0: multi-scale; 1: 6 pixels 2: 12 pixels 3: 24 pixels 4: 48 pixels
     highpass_neuropil: 25  # window for spatial high-pass filtering for neuropil subtraction before detection
     max_ROIs: 5000         # stop detection after this many ROIs
-    active_percentile: 0.0 # above 0, frames over this percentile of an ROI's activity count as active when that is below the usual threshold
+    active_percentile: 0.0 # above 0, frames over this percentile (0-100) of an ROI's activity count as active when that is below the usual threshold; lower admits more frames
   sourcery_settings:
     max_iterations: 20     # maximum number of iterations to do cell detection
     connected: True        # require ROIs to be connected

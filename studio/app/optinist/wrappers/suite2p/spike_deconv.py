@@ -51,6 +51,14 @@ def suite2p_spike_deconv(
         spks = extraction.oasis(F=dF, batch_size=batch_size, tau=tau, fs=ops["fs"])
 
     ops["spks"] = spks
+    # what this node ran with, over the roi node's tree
+    upstream = ops.get("settings", {})
+    ops["settings"] = {
+        **upstream,
+        "tau": tau,
+        "dcnv_preprocess": preprocess,
+        "extraction": {**upstream.get("extraction", {}), **settings["extraction"]},
+    }
 
     # NWBを追加
     nwbfile = {}

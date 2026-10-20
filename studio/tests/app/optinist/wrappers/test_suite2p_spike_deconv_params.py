@@ -77,15 +77,21 @@ def test_yaml_and_the_roi_pickles_tau_reach_suite2p(output_dir, suite2p_stub):
         "fs": 30.0,
     }
     np.testing.assert_allclose(info["spks"].data, 0.9 * F + 1, rtol=1e-6)
+    # the pickle records what ran, not the roi node's deconvolution defaults
+    saved = info["ops"].data["settings"]
+    assert saved["tau"] == 1.5
+    assert saved["dcnv_preprocess"] == params["dcnv_preprocess"]
+    assert saved["extraction"]["neuropil_coefficient"] == 0.5
 
 
 def test_a_pre_upgrade_roi_pickle_stores_tau_flat(output_dir, suite2p_stub):
-    suite2p_spike_deconv(
+    info = suite2p_spike_deconv(
         _ops(np.ones((N_ROI, FRAMES), np.float32), tau=0.7),
         output_dir,
         params=read_default_params("suite2p_spike_deconv"),
     )
     assert suite2p_stub["oasis"]["tau"] == 0.7
+    assert info["ops"].data["settings"]["tau"] == 0.7
 
 
 def test_no_rois_gives_no_spikes_without_calling_suite2p(output_dir, suite2p_stub):

@@ -175,7 +175,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
       - **spatial_scale** [int, default: 0]: If set to 0, then the algorithm determines the optimal scale of the recording in pixels automatically. If it seems off, set it yourself to the following values: 1 (=6 pixels), 2 (=12 pixels), 3 (=24 pixels), or 4 (=48 pixels).
       - **highpass_neuropil** [int, default: 25]: Window for spatial high-pass filtering for neuropil subtraction before ROI detection takes place.
       - **max_ROIs** [int, default: 5000]: Stop detection after this many ROIs.
-      - **active_percentile** [float, default: 0.0]: Above 0, each ROI's active frames are those over this percentile of its temporal projection whenever that is lower than the usual threshold (from `threshold_scaling`), so raising it admits more frames. 0 keeps the usual threshold.
+      - **active_percentile** [float, default: 0.0]: Above 0, each ROI's active frames are those over the lower of the usual threshold (from `threshold_scaling`) and this percentile (0 to 100) of its temporal projection. A small positive value admits more frames; raising it moves the cutoff up towards the usual threshold and admits fewer. 0 keeps the usual threshold.
     - **sourcery_settings:**
       - **max_iterations** [int, default: 20]: How many iterations over which to extract cells - usually stops before due to the threshold_scaling criterion. In suite2p 0.10.3 this also capped sparsery at 250 x `max_iterations` ROIs; in 1.1.0 `max_ROIs` caps sparsery and this key is sourcery's alone.
       - **connected** [bool, default: True]: Require each ROI to be a connected region.
