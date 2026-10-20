@@ -20,10 +20,13 @@ from studio.app.optinist.dataclass.roi import edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
+    parse_text_params,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
+
+CORRELATION_CHUNK_ELEMENTS = 2**24  # float64 values per frame chunk, 128 MB
 
 
 def get_roi(A, roi_thr, thr_method, swap_dim, dims):
@@ -112,6 +115,58 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     mmap_images = np.reshape(mmap_images.T, [T] + list(dims), order="F")
     mmap_images[:] = images[:]
     return mmap_images, dims, mmap_path
+
+
+def correlation_image(movie):
+    """caiman.local_correlations(movie.transpose(1, 2, 0)) for a (T, d1, d2) movie.
+
+    The moments are accumulated in float64 over frame chunks, so memory stays near
+    one chunk instead of the several whole-movie float32 copies caiman makes.
+    """
+    T, d1, d2 = movie.shape
+    step = max(1, CORRELATION_CHUNK_ELEMENTS // (d1 * d2))
+    chunks = [movie[t : t + step] for t in range(0, T, step)]
+
+    mean = sum(c.sum(axis=0, dtype=np.float64) for c in chunks) / T
+    # caiman's rho_h, rho_w, rho_d1, rho_d2 pixel pairs
+    pairs = [
+        (np.s_[:-1, :], np.s_[1:, :]),
+        (np.s_[:, :-1], np.s_[:, 1:]),
+        (np.s_[1:, :-1], np.s_[:-1, 1:]),
+        (np.s_[:-1, :-1], np.s_[1:, 1:]),
+    ]
+    sq = np.zeros((d1, d2))
+    cross = [0.0] * len(pairs)
+    for c in chunks:
+        d = c - mean
+        sq += (d * d).sum(axis=0)
+        for i, (a, b) in enumerate(pairs):
+            cross[i] = cross[i] + (d[:, a[0], a[1]] * d[:, b[0], b[1]]).sum(axis=0)
+    std = np.sqrt(sq / T)
+    rho_h, rho_w, rho_d1, rho_d2 = (
+        x / T / (std[a] * std[b]) for x, (a, b) in zip(cross, pairs)
+    )
+
+    # caiman's placement, swapped diagonal terms included, so the image is unchanged
+    rho = np.zeros((d1, d2))
+    rho[:-1, :] += rho_h
+    rho[1:, :] += rho_h
+    rho[:, :-1] += rho_w
+    rho[:, 1:] += rho_w
+    rho[:-1, :-1] += rho_d2
+    rho[1:, 1:] += rho_d1
+    rho[1:, :-1] += rho_d1
+    rho[:-1, 1:] += rho_d2
+    neighbors = np.full((d1, d2), 8.0)
+    neighbors[[0, -1], :] -= 3
+    neighbors[:, [0, -1]] -= 3
+    neighbors[[0, 0, -1, -1], [0, -1, 0, -1]] += 1
+    return rho / neighbors
+
+
+def edit_roi_dtype(dtype):
+    """The movie kept for ROI edits: its own dtype when float32 holds it exactly."""
+    return dtype if np.can_cast(dtype, np.float32) else np.float32
 
 
 def util_get_image_memmap_from_files(
@@ -225,14 +280,16 @@ def util_get_image_memmap_from_files(
     return mmap_images, dims, mmap_path
 
 
-def util_edit_roi_movie(images: ImageData, mmap_images, output_dir: str):
+def util_edit_roi_movie(images: ImageData, fallback, output_dir: str):
     """
     The movie EditRoiData keeps for ROI edits: a reference to the input when it
-    lives in this node's experiment (see edit_reference), else CaImAn's float32
-    copy of it, as before references were stored.
+    lives in this node's experiment (see edit_reference), else the fallback copy,
+    or what a fallback function returns, called only when there is no reference.
     """
     reference = edit_reference(images, output_dir)
-    return mmap_images if reference is None else reference
+    if reference is not None:
+        return reference
+    return fallback() if callable(fallback) else fallback
 
 
 def util_cleanup_image_memmap(mmap_paths: list):
@@ -281,6 +338,11 @@ def util_download_model_files():
                 f.write(response.content)
 
 
+def nwb_image_mask(A, comp, dims, swap_dim):
+    # the pixel order get_roi reads A in, so the NWB masks match the ROI images
+    return A[:, comp].toarray().reshape(dims, order="C" if swap_dim else "F")
+
+
 def component_outputs(
     A,
     C,
@@ -297,7 +359,8 @@ def component_outputs(
     """im, iscell, the NWB ROI table and fluorescence in one shared row order.
 
     Row i of every output is component order[i], accepted components first, so
-    the ROI editor and the analyses can index fluorescence by im row.
+    the ROI editor and the analyses can index fluorescence by im row. order is
+    returned last for the outputs computed elsewhere.
     """
     order = list(idx_good) + list(idx_bad)
     n_components = len(order)
@@ -352,7 +415,7 @@ def component_outputs(
     roi_list = []
     for comp in order:
         kargs = {}
-        kargs["image_mask"] = A.T[comp].T.toarray().reshape(dims)
+        kargs["image_mask"] = nwb_image_mask(A, comp, dims, swap_dim)
         if accepted_list is not None:
             kargs["accepted"] = comp in accepted_list
         if rejected_list is not None:
@@ -365,13 +428,75 @@ def component_outputs(
         else np.zeros((0, n_frames))
     )
 
-    return im, iscell, roi_list, fluorescence, non_cell_roi, n_rois, n_noncell_rois
+    return (
+        im,
+        iscell,
+        roi_list,
+        fluorescence,
+        non_cell_roi,
+        n_rois,
+        n_noncell_rois,
+        order,
+    )
+
+
+def dff_frames_window(value):
+    """frames_window for detrend_df_f: None (whole recording) or an integer >= 2."""
+    if value is None:
+        return None
+    try:
+        window = int(value)
+    except (TypeError, ValueError):
+        window = None
+    if isinstance(value, bool) or window is None or window != value or window < 2:
+        raise ValueError(
+            f"frames_window must be null or an integer of at least 2, got {value!r}"
+        )
+    return window
+
+
+def caiman_dff(estimates, rows, n_frames, frames_window):
+    """CaImAn's detrend_df_f of estimates as float32, rows in the given order.
+
+    A CaImAn failure gives NaN rows with a warning instead of failing the node.
+    """
+    if len(rows) == 0:
+        return np.zeros((0, n_frames), dtype=np.float32)
+    from caiman.source_extraction.cnmf.utilities import detrend_df_f
+
+    b, f = estimates.b, estimates.f
+    if b is None or f is None or np.shape(b)[-1] == 0:
+        # detrend_df_f only takes None as no background; zero-width divides by F0
+        b = f = None
+    b0 = getattr(estimates, "b0", None)
+    if b is None and b0 is not None:
+        # ring model: the static background b0 only, its W fluctuations left out
+        b, f = np.reshape(b0, (-1, 1)), np.ones((1, n_frames))
+    elif b is None:
+        logger.warning(
+            "CaImAn estimates have no background (b, f or b0); dff is "
+            "detrended only, F - F0, not divided by a baseline"
+        )
+    try:
+        dff = detrend_df_f(
+            estimates.A,
+            b,
+            estimates.C,
+            f,
+            YrA=estimates.YrA,
+            frames_window=frames_window,
+            flag_auto=True,
+            use_fast=False,
+        )
+    except Exception:
+        logger.warning("CaImAn detrend_df_f failed, dff is all NaN", exc_info=True)
+        return np.full((len(rows), n_frames), np.nan, dtype=np.float32)
+    return np.asarray(dff, dtype=np.float32)[rows]
 
 
 def caiman_cnmf(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import local_correlations
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
     from caiman.source_extraction.cnmf import cnmf, online_cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -388,13 +513,14 @@ def caiman_cnmf(
 
     flattened_params = {}
     recursive_flatten_params(params or {}, flattened_params)
-    params = flattened_params
+    params = parse_text_params(flattened_params)
 
     Ain = params.pop("Ain", None)
     do_refit = params.pop("do_refit", None)
     roi_thr = params.pop("roi_thr", None)
     use_online = params.pop("use_online", False)
     requested_n_processes = params.pop("n_processes", 1)
+    frames_window = dff_frames_window(params.pop("frames_window", 500))
 
     file_path = images.path
     if isinstance(file_path, list):
@@ -457,7 +583,7 @@ def caiman_cnmf(
             idx_bad = []
 
     # contours plot
-    Cn = local_correlations(mmap_images.transpose(1, 2, 0))
+    Cn = correlation_image(mmap_images)
     Cn[np.isnan(Cn)] = 0
 
     thr_method = "nrg"
@@ -471,6 +597,7 @@ def caiman_cnmf(
         non_cell_roi,
         n_rois,
         n_noncell_rois,
+        order,
     ) = component_outputs(
         getattr(cnm.estimates, "A", None),
         getattr(cnm.estimates, "C", None),
@@ -484,6 +611,7 @@ def caiman_cnmf(
         getattr(cnm.estimates, "rejected_list", None),
         mmap_images.shape[0],
     )
+    dff = caiman_dff(cnm.estimates, order, fluorescence.shape[1], frames_window)
 
     # NWB additions
     nwbfile = {}
@@ -522,6 +650,7 @@ def caiman_cnmf(
             file_name="images",
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+        "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
             np.nanmax(im, axis=0) if len(im) > 0 else empty_roi.copy(),

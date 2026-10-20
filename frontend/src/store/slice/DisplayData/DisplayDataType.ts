@@ -111,6 +111,7 @@ export interface TimeSeriesDisplayData
   extends BaseDisplay<"timeSeries", TimeSeriesData> {
   xrange: string[]
   std: TimeSeriesData
+  byId?: { [index: string]: "pending" | "fulfilled" | "rejected" }
 }
 
 export interface HeatMapDisplayData

@@ -164,3 +164,6 @@ advanced:
     use_dense: True                 # flag for representation and storing of A and b
     use_peak_max: True              # flag for finding candidate centroids
     W_update_factor: 1              # update W less often than shapes by a given factor
+
+  dff_params:  # dff output, from CaImAn detrend_df_f
+    frames_window: 500  # running baseline window in frames, >= 2; null = whole recording
