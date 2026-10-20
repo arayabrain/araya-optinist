@@ -363,6 +363,11 @@ def _observe_overall_with_lock_retry(
             )
             break
 
+    # observe_overall() observed nothing if a rerun reset the config meanwhile
+    if generation and _started_at(workspace_id, unique_id) != generation:
+        logger.warning(f"Superseded by a rerun, skipping finalization: {unique_id}")
+        return False, False, False
+
     # The winner may have completed between our last attempt and now.
     if observe_lock_conflict and not upload_confirmed:
         upload_confirmed = RemoteSyncStatusFileUtil.check_sync_status_success(

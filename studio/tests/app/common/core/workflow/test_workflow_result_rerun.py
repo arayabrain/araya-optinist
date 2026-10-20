@@ -10,7 +10,6 @@ import asyncio
 import os
 import pickle
 import shutil
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -18,6 +17,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 import pytest
 
+from studio.app.common.core.experiment import experiment_writer
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.snakemake import snakemake_executor
 from studio.app.common.core.snakemake.smk import SmkParam
@@ -250,7 +250,6 @@ async def test_a_cancelled_runs_late_finalization_leaves_the_rerun_alone(
     await Frontend().poll()
     cancelled = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
     (WDIR / SmkStatusLogger.ERROR_LOG_NAME).write_text("job did not complete\n")
-    time.sleep(1.1)  # started_at has second resolution
     await rerun()
 
     assert finalize(cancelled) == {}
@@ -264,7 +263,6 @@ async def test_a_cancelled_runs_late_finalization_leaves_the_rerun_alone(
 @pytest.mark.asyncio
 async def test_a_child_superseded_by_a_rerun_skips_finalization(previous_run):
     def rerun_while_snakemake_runs():
-        time.sleep(1.1)  # started_at has second resolution
         asyncio.run(rerun())
         raise RuntimeError("job killed")
 
@@ -284,6 +282,58 @@ async def test_a_child_superseded_by_a_rerun_skips_finalization(previous_run):
 
     finalization.assert_not_called()
     assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
+
+
+@pytest.mark.asyncio
+async def test_a_same_second_rerun_gets_a_new_generation(previous_run):
+    clock = iter(["12:00:00", "12:00:00", "12:00:00", "12:00:01"])
+    with patch.object(
+        experiment_writer,
+        "get_datetime_for_timezone_formatted",
+        side_effect=lambda *_: next(clock),
+    ):
+        await rerun()
+        superseded = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+        await rerun()
+
+    assert ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at == "12:00:01"
+    assert finalize(superseded) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_during_finalization_skips_registration(previous_run):
+    await rerun()
+    generation = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+    observe_overall = WorkflowResult.observe_overall
+
+    async def rerun_while_waiting_for_the_lock(self, generation):
+        await rerun()
+        return await observe_overall(self, generation)
+
+    dag = Mock()
+    with patch.object(
+        snakemake_executor, "planned_outputs", return_value=[]
+    ), patch.object(snakemake_executor, "_dag", return_value=dag), patch.object(
+        WorkflowResult, "observe_overall", rerun_while_waiting_for_the_lock
+    ), patch.object(
+        snakemake_executor.ExperimentRecordService, "is_available", return_value=True
+    ), patch.object(
+        snakemake_executor.ExperimentRecordService,
+        "regist_record_on_workflow_completed",
+    ) as registration, patch.object(
+        snakemake_executor.WorkspaceDataCapacityService,
+        "update_experiment_data_usage",
+    ) as data_usage:
+        await asyncio.to_thread(
+            snakemake_executor._snakemake_execute_process,
+            WORKSPACE_ID,
+            UNIQUE_ID,
+            SmkParam(use_conda=False, cores=1, forceall=False),
+        )
+
+    assert ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at != generation
+    registration.assert_not_called()
+    data_usage.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import shutil
+import time
 from dataclasses import asdict
 from typing import Dict
 
@@ -78,7 +79,7 @@ class ExptConfigWriter:
             try:
                 expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
                 self.builder.set_config(expt_config)
-                self.add_run_info()
+                self.add_run_info(expt_config.started_at)
             # A rejected path is a security refusal, not corrupt data: it must not
             # be downgraded to "no data" by the broad clause below.
             except InvalidPathError:
@@ -150,11 +151,15 @@ class ExptConfigWriter:
             .build()
         )
 
-    def add_run_info(self) -> ExptConfig:
+    def add_run_info(self, previous_started_at: str = None) -> ExptConfig:
+        started_at = get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+        # started_at is the run's generation, so a same-second rerun takes the next
+        while started_at == previous_started_at:
+            time.sleep(0.05)
+            started_at = get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+
         return (
-            self.builder.set_started_at(
-                get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
-            )  # Update time
+            self.builder.set_started_at(started_at)  # Update time
             .set_success(WorkflowRunStatus.RUNNING.value)
             # rewritten with started_at above, or the pair disagrees on a rerun
             .set_timezone(self.timezone)
