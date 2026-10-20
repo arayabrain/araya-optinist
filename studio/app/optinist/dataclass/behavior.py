@@ -25,17 +25,17 @@ class BehaviorData(TimeSeriesData):
     def __setstate__(self, state):
         """Pickles from before the time-major layout carry (rows, time) metadata."""
         self.__dict__.update(state)
-        if len(self.cell_numbers) == self.data.shape[1]:
-            return
-        # a 1D input stored as one row; a one-sample table pickles the same, rarer
-        if len(self.data) == 1:
-            self.data = self.data.T
-            if self.std is not None:
-                std = np.asarray(self.std)
-                self.std = std[:, np.newaxis] if std.ndim == 1 else std.T
-        if len(self.index) != len(self.data):
-            self.index = np.arange(len(self.data))
-        self.cell_numbers = range(self.data.shape[1])
+        if len(self.cell_numbers) != self.data.shape[1]:
+            # a 1D input stored as one row; a one-sample table pickles the same, rarer
+            if len(self.data) == 1:
+                self.data = self.data.T
+                if self.std is not None:
+                    self.std = np.asarray(self.std).T
+            if len(self.index) != len(self.data):
+                self.index = np.arange(len(self.data))
+            self.cell_numbers = range(self.data.shape[1])
+        if self.std is not None and np.ndim(self.std) == 1:
+            self.std = np.asarray(self.std)[:, np.newaxis]
 
     def _records(self, array):
         return np.asarray(array).T

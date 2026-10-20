@@ -140,6 +140,16 @@ def test_legacy_1d_behaviour_pickle_is_one_column(with_std, json_dir):
     )
 
 
+@pytest.mark.parametrize("n_col", [N_COL, N_TIME])
+def test_legacy_table_pickle_keeps_a_1d_std_per_time_point(n_col, json_dir):
+    data, std = RNG.random((N_TIME, n_col)), RNG.random(N_TIME)
+
+    saved = pickle.loads(_legacy_behaviour_pickle(data, std))
+    saved.save_json(json_dir)
+
+    assert_preview(saved, data.T, np.arange(N_TIME), [std] * n_col)
+
+
 def test_legacy_one_row_behaviour_pickle_is_read_as_a_1d_vector():
     """A legacy one-sample table pickles exactly like a 1D vector, the common case"""
     data = RNG.random((1, 3))
