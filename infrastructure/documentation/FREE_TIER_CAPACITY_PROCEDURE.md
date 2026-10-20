@@ -173,14 +173,15 @@ Prints and saves production's free-tier state. Nothing to judge yet; Finish comp
 fts_preflight
 ```
 
-**Must end `PREFLIGHT OK`.** It checks, and prints `STOP:` for each that fails:
+**Must end `PREFLIGHT OK`.** It checks, and prints `STOP:` for each that fails; a check whose
+read fails is a `STOP` too:
 
 | Check | Why |
 |---|---|
 | The chain is settled | A case started unsettled measures the settling |
 | No suspended process, no instance refresh running | Either stops a launch |
 | Scaling lock clear (no `1` in the last 20 minutes) | A set lock makes the Free Manager skip scaling, and the run looks silent |
-| No load, errors or unhealthy-hosts alarm in `ALARM` | `cpu-high` / `memory-high` scale out on their own and hold scale-in; an errors alarm means the Free Manager is failing; `free-tg-unhealthy-hosts` is what the cases watch for a new instance |
+| The load, errors and unhealthy-hosts alarms all exist, none in `ALARM` | `cpu-high` / `memory-high` scale out on their own and hold scale-in; an errors alarm means the Free Manager is failing; `free-tg-unhealthy-hosts` is what the cases watch for a new instance |
 | Schedule rule `ENABLED` | Every case is driven by the scheduled run |
 | NAT running | Off-hours, or a stopped environment |
 | Active users 0 | The cases need an exact count |
@@ -319,7 +320,7 @@ the ASG and ECS desired counts to 2 at once, then waits for the new instance to 
 fts_cleanup_users                       # WRITE: clears leftover pool rows
 fts_instances                           # note the InService instance id: <A>
 fts_map <U1>:<A> <U2>:<A> <U3>:<A> <U4>:<A> <U5>:<A> <U6>:<A>
-fts_touch                               # WRITE: one pass; every user must read "200 None"
+fts_touch                               # WRITE: one pass; every user must read "ok"
 fts_active                              # must read active_user_count 6
 ```
 
@@ -329,8 +330,8 @@ Then keep them active for the rest of the case, in its own terminal or as a back
 fts_activity_loop 45 120                # WRITE: one pass every 120 s for up to 90 min
 ```
 
-Every pass prints one `u<id>:200 None` per user. Anything else means that user has no fresh row and
-the count will be short. The interval must stay well inside the idle threshold: 120 s against a
+Every pass prints one `u<id>:ok` per user. `u<id>:FAILED` means that user has no fresh row and the
+count will be short. The interval must stay well inside the idle threshold: 120 s against a
 5-minute threshold leaves room for one missed pass.
 
 Note the time the count first read 6: **T0**.

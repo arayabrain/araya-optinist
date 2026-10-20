@@ -38,17 +38,29 @@ fts__ago() {
 
 fts__state() { mkdir -p "$FTS_STATE_DIR" && chmod 700 "$FTS_STATE_DIR"; }
 
-# Invokes the cleanup Lambda with a JSON payload and prints its response body.
-# StatusCode is 200 even when the function raised, so FunctionError is checked too.
+# Invokes the cleanup Lambda with a JSON payload and prints its response. Fails on any
+# of three signals: FunctionError (an unhandled raise), a statusCode other than 200 (the
+# handler returns its own exceptions as 500), and result.success not true (an action
+# that reports its failure inside a 200). The invoke's StatusCode is 200 in all three.
 fts__cleanup_invoke() {
-  local out fe
+  local out fe rc=0
   fts__state || return 1
-  out="$FTS_STATE_DIR/cleanup_$$.json"
+  out=$(mktemp "$FTS_STATE_DIR/cleanup.XXXXXX") || return 1
   fe=$(fts__aws lambda invoke --function-name "$FTS_CLEANUP_FN" --payload "$1" \
-    --cli-binary-format raw-in-base64-out "$out" --query 'FunctionError' --output text) || return 1
+    --cli-binary-format raw-in-base64-out "$out" --query 'FunctionError' --output text) ||
+    { rm -f "$out"; return 1; }
   cat "$out"; echo
+  if [ "$fe" != "None" ]; then
+    echo "FunctionError: $fe" >&2; rc=1
+  elif ! python3 -c 'import json,sys
+r = json.load(open(sys.argv[1]))
+b = json.loads(r.get("body") or "{}")
+sys.exit(0 if r.get("statusCode") == 200 and b.get("result", {}).get("success") is True else 1)' \
+    "$out" 2>/dev/null; then
+    echo "cleanup action failed: statusCode or result.success" >&2; rc=1
+  fi
   rm -f "$out"
-  [ "$fe" = "None" ] || { echo "FunctionError: $fe" >&2; return 1; }
+  return "$rc"
 }
 
 # --- guard ---------------------------------------------------------------------------
@@ -91,8 +103,10 @@ fts_idle_minutes() {
 # Test-pool accounts the cleanup Lambda can find by name (optinist_test_user_free_%), id and
 # email. Accounts named otherwise are not listed; resolve those with fts_user_id.
 fts_pool_ids() {
-  fts__cleanup_invoke "{\"action\":\"get_free_test_user_ids\",\"num_users\":${1:-10}}" |
-    python3 -c 'import json,sys
+  local r
+  r=$(fts__cleanup_invoke "{\"action\":\"get_free_test_user_ids\",\"num_users\":${1:-10}}") ||
+    { echo "$r"; return 1; }
+  printf '%s' "$r" | python3 -c 'import json,sys
 r = json.loads(json.loads(sys.stdin.read())["body"])["result"]
 for u in r.get("users", []): print(u["id"], u["email"])
 print(r.get("message", ""))'
@@ -100,25 +114,27 @@ print(r.get("message", ""))'
 
 # One account's database id, by email (read only).
 fts_user_id() {
+  local r
   [ -n "$1" ] || { echo "usage: fts_user_id <email>" >&2; return 1; }
-  fts__cleanup_invoke "{\"action\":\"get_user_assignment\",\"user_email\":\"$1\"}" |
-    python3 -c 'import json,sys
-r = json.loads(json.loads(sys.stdin.read())["body"])["result"]
-print(r.get("user_id", r.get("message", r)))'
+  r=$(fts__cleanup_invoke "{\"action\":\"get_user_assignment\",\"user_email\":\"$1\"}") ||
+    { echo "$r"; return 1; }
+  printf '%s' "$r" | python3 -c 'import json,sys
+print(json.loads(json.loads(sys.stdin.read())["body"])["result"]["user_id"])'
 }
 
-# The four-number chain. Returns 0 only when the group is settled: ASG desired = InService =
-# every instance in the group = ECS desired = ECS running = healthy targets. An instance still
-# draining stays in the group, and ECS desired stays above the ASG until it has gone; reading
-# only the running count would call that settled.
-fts_chain() {
-  local asg tg ecs healthy desired insvc total ecs_des ecs_run
-  asg=$(fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$FTS_ASG" \
+# The settled chain of one environment's free tier: <asg> <cluster> <service> <target group>.
+# Returns 0 only when the group is settled: ASG desired = InService = every instance in the
+# group = ECS desired = ECS running = healthy targets. An instance still draining stays in the
+# group, and ECS desired stays above the ASG until it has gone; reading only the running count
+# would call that settled. Read only; called with the constants below, never with input.
+fts__chain() {
+  local asg tg ecs healthy desired insvc total ecs_des ecs_run n
+  asg=$(fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$1" \
     --query 'AutoScalingGroups[0].[MinSize,MaxSize,DesiredCapacity,length(Instances[?LifecycleState==`InService`]),length(Instances)]' \
     --output text) || return 1
-  ecs=$(fts__aws ecs describe-services --cluster "$FTS_CLUSTER" --services "$FTS_SERVICE" \
+  ecs=$(fts__aws ecs describe-services --cluster "$2" --services "$3" \
     --query 'services[0].[desiredCount,runningCount]' --output text) || return 1
-  tg=$(fts__aws elbv2 describe-target-groups --names "$FTS_TG" \
+  tg=$(fts__aws elbv2 describe-target-groups --names "$4" \
     --query 'TargetGroups[0].TargetGroupArn' --output text) || return 1
   healthy=$(fts__aws elbv2 describe-target-health --target-group-arn "$tg" \
     --query 'length(TargetHealthDescriptions[?TargetHealth.State==`healthy`])' --output text) || return 1
@@ -127,6 +143,9 @@ fts_chain() {
   ecs_des=$(echo "$ecs" | awk '{print $1}'); ecs_run=$(echo "$ecs" | awk '{print $2}')
   echo "$(date -u +%H:%M:%SZ) bounds(min/max/desired)=$(echo "$asg" | awk '{print $1"/"$2"/"$3}')" \
     "inservice=$insvc/$total ecs(desired/running)=$ecs_des/$ecs_run healthy=$healthy"
+  for n in "$desired" "$insvc" "$total" "$ecs_des" "$ecs_run" "$healthy"; do
+    case "$n" in ''|*[!0-9]*) echo "CHAIN NOT READ: a value is missing"; return 1 ;; esac
+  done
   if [ "$desired" = "$insvc" ] && [ "$insvc" = "$total" ] && [ "$total" = "$ecs_des" ] &&
      [ "$ecs_des" = "$ecs_run" ] && [ "$ecs_run" = "$healthy" ]; then
     echo "CHAIN OK at $desired"
@@ -134,6 +153,8 @@ fts_chain() {
     echo "CHAIN NOT SETTLED"; return 1
   fi
 }
+
+fts_chain() { fts__chain "$FTS_ASG" "$FTS_CLUSTER" "$FTS_SERVICE" "$FTS_TG"; }
 
 # The group's instances: id, lifecycle state, template version, zone, launch time.
 fts_instances() {
@@ -173,11 +194,16 @@ fts_alarms() {
     --query 'MetricAlarms[].[AlarmName,StateValue]' --output text
 }
 
-# Active users as the Free Manager counts them, with its own idle threshold.
+# Active users as the Free Manager counts them, with its own idle threshold. Prints
+# "active_user_count <n> ..."; fails when the count could not be read.
 fts_active() {
-  local m
+  local m r
   m=$(fts_idle_minutes) || return 1
-  fts__cleanup_invoke "{\"action\":\"count_active_users\",\"threshold_minutes\":$m}"
+  r=$(fts__cleanup_invoke "{\"action\":\"count_active_users\",\"threshold_minutes\":$m}") ||
+    { echo "$r"; return 1; }
+  printf '%s' "$r" | python3 -c 'import json,sys
+r = json.loads(json.loads(sys.stdin.read())["body"])["result"]
+print("active_user_count", r["active_user_count"], "threshold_minutes", r["threshold_minutes"])'
 }
 
 # The Free Manager's decision lines from the last N minutes (default 15).
@@ -208,11 +234,23 @@ fts_preflight() {
   echo "--- lifecycle hooks"
   fts__aws autoscaling describe-lifecycle-hooks --auto-scaling-group-name "$FTS_ASG" \
     --query 'LifecycleHooks[].LifecycleHookName' --output text
-  echo "--- scaling lock (20 min)"; v=$(fts_lock); echo "${v:-no datapoints}"
-  case "$v" in *1*) echo "STOP: the scaling lock is set"; stops=$((stops + 1)) ;; esac
-  echo "--- alarms"; fts_alarms
-  v=$(fts_alarms | grep -c 'ALARM$')
-  [ "$v" = "0" ] || { echo "STOP: an alarm is in ALARM"; stops=$((stops + 1)); }
+  echo "--- scaling lock (20 min)"
+  if v=$(fts_lock); then
+    echo "${v:-no datapoints}"
+    case "$v" in *1*) echo "STOP: the scaling lock is set"; stops=$((stops + 1)) ;; esac
+  else
+    echo "STOP: the scaling lock could not be read"; stops=$((stops + 1))
+  fi
+  echo "--- alarms"
+  if v=$(fts_alarms); then
+    echo "$v"
+    [ "$(printf '%s\n' "$v" | grep -c .)" = "4" ] ||
+      { echo "STOP: expected 4 alarms; one or more do not exist"; stops=$((stops + 1)); }
+    ! printf '%s\n' "$v" | grep -q 'ALARM$' ||
+      { echo "STOP: an alarm is in ALARM"; stops=$((stops + 1)); }
+  else
+    echo "STOP: the alarms could not be read"; stops=$((stops + 1))
+  fi
   echo "--- schedule rule"
   v=$(fts__aws events describe-rule --name "$FTS_RULE" --query State --output text); echo "$v"
   [ "$v" = "ENABLED" ] || { echo "STOP: $FTS_RULE is $v"; stops=$((stops + 1)); }
@@ -221,35 +259,54 @@ fts_preflight() {
     "Name=instance-state-name,Values=pending,running,stopping,stopped" \
     --query 'Reservations[].Instances[].State.Name' --output text); echo "$v"
   case "$v" in *running*) ;; *) echo "STOP: NAT is not running (outside on-hours?)"; stops=$((stops + 1)) ;; esac
-  echo "--- active users"; v=$(fts_active) || stops=$((stops + 1)); echo "$v"
+  echo "--- active users"
+  if v=$(fts_active); then
+    echo "$v"
+    case "$v" in "active_user_count 0 "*) ;; *) echo "STOP: active users are not 0"; stops=$((stops + 1)) ;; esac
+  else
+    echo "$v"; echo "STOP: the active-user count could not be read"; stops=$((stops + 1))
+  fi
   echo "==="
   if [ "$stops" -eq 0 ]; then echo "PREFLIGHT OK"; else echo "PREFLIGHT: $stops STOP item(s)"; return 1; fi
 }
 
 # Production's free tier, read only, saved under a label (before / after). The fields
-# are the ones this procedure could conceivably move; nothing here writes.
+# are the ones this procedure could conceivably move; nothing here writes. Every read must
+# succeed and the counts must be numbers, or nothing is saved: an incomplete snapshot
+# could compare equal to another.
 fts_prod_snapshot() {
-  local f
+  local f bounds insts hooks pols ecs
   [ -n "$1" ] || { echo "usage: fts_prod_snapshot <label>" >&2; return 1; }
   fts__state || return 1
   f="$FTS_STATE_DIR/prod-$1.txt"
+  rm -f "$f"
+  bounds=$(fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$FTS_PROD_ASG" \
+      --query 'AutoScalingGroups[0].[MinSize,MaxSize,DesiredCapacity,length(SuspendedProcesses)]' --output text) &&
+    insts=$(fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$FTS_PROD_ASG" \
+      --query 'AutoScalingGroups[0].Instances[].[InstanceId,LifecycleState]' --output text) &&
+    hooks=$(fts__aws autoscaling describe-lifecycle-hooks --auto-scaling-group-name "$FTS_PROD_ASG" \
+      --query 'LifecycleHooks[].LifecycleHookName' --output text) &&
+    pols=$(fts__aws autoscaling describe-policies --auto-scaling-group-name "$FTS_PROD_ASG" \
+      --query 'ScalingPolicies[].PolicyName' --output text) &&
+    ecs=$(fts__aws ecs describe-services --cluster "$FTS_PROD_CLUSTER" --services "$FTS_PROD_SERVICE" \
+      --query 'services[0].desiredCount' --output text) ||
+    { echo "NOT SAVED: a production read failed" >&2; return 1; }
+  case "$bounds" in ''|*[!0-9[:space:]]*) echo "NOT SAVED: ASG bounds read '$bounds'" >&2; return 1 ;; esac
+  case "$ecs" in ''|*[!0-9]*) echo "NOT SAVED: ECS desired count read '$ecs'" >&2; return 1 ;; esac
   {
-    fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$FTS_PROD_ASG" \
-      --query 'AutoScalingGroups[0].[MinSize,MaxSize,DesiredCapacity,length(SuspendedProcesses)]' --output text
-    fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$FTS_PROD_ASG" \
-      --query 'AutoScalingGroups[0].Instances[].[InstanceId,LifecycleState]' --output text | sort
-    fts__aws autoscaling describe-lifecycle-hooks --auto-scaling-group-name "$FTS_PROD_ASG" \
-      --query 'LifecycleHooks[].LifecycleHookName' --output text | tr '\t' '\n' | sort
-    fts__aws autoscaling describe-policies --auto-scaling-group-name "$FTS_PROD_ASG" \
-      --query 'ScalingPolicies[].PolicyName' --output text | tr '\t' '\n' | sort
-    fts__aws ecs describe-services --cluster "$FTS_PROD_CLUSTER" --services "$FTS_PROD_SERVICE" \
-      --query 'services[0].desiredCount' --output text
-  } > "$f" || return 1
+    printf '%s\n' "$bounds"
+    printf '%s\n' "$insts" | sort
+    printf '%s\n' "$hooks" | tr '\t' '\n' | sort
+    printf '%s\n' "$pols" | tr '\t' '\n' | sort
+    printf '%s\n' "$ecs"
+  } > "$f" || { rm -f "$f"; return 1; }
   echo "saved $f"; cat "$f"
 }
 
 # Compares two production snapshots. Returns 1 on any difference.
 fts_prod_compare() {
+  [ -s "$FTS_STATE_DIR/prod-$1.txt" ] && [ -s "$FTS_STATE_DIR/prod-$2.txt" ] ||
+    { echo "usage: fts_prod_compare <label> <label>, both saved by fts_prod_snapshot" >&2; return 1; }
   if diff "$FTS_STATE_DIR/prod-$1.txt" "$FTS_STATE_DIR/prod-$2.txt"; then
     echo "PRODUCTION UNCHANGED ($1 -> $2)"
   else
@@ -291,20 +348,23 @@ fts_map() {
   cat "$FTS_STATE_DIR/activity_map"
 }
 
-# One pass: marks every mapped user active on its instance. Prints each user's result;
-# anything other than "200 None" means that user has no fresh row.
+# One pass: marks every mapped user active on its instance. Prints "u<id>:ok" per user, or
+# "u<id>:FAILED" when that user has no fresh row; returns 1 if any failed.
 fts_touch() {
-  local u i r line=""
+  local u i line="" bad=0
   fts_assert_dev || return 1
   while read -r u i; do
     [ -n "$u" ] || continue
-    r=$(fts__aws lambda invoke --function-name "$FTS_CLEANUP_FN" \
-      --payload "{\"action\":\"simulate_user_activity\",\"user_id\":\"$u\",\"instance_id\":\"$i\",\"minutes_ago\":0}" \
-      --cli-binary-format raw-in-base64-out "$FTS_STATE_DIR/touch_$u.json" \
-      --query '[StatusCode,FunctionError]' --output text 2>&1 | tr '\t\n' '  ')
-    line="$line u$u:${r% }"
+    if fts__cleanup_invoke \
+      "{\"action\":\"simulate_user_activity\",\"user_id\":\"$u\",\"instance_id\":\"$i\",\"minutes_ago\":0}" \
+      < /dev/null > /dev/null 2>&1; then
+      line="$line u${u}:ok"
+    else
+      line="$line u${u}:FAILED"; bad=$((bad + 1))
+    fi
   done < "$FTS_STATE_DIR/activity_map"
   echo "$(date -u +%H:%M:%SZ)$line"
+  [ "$bad" -eq 0 ]
 }
 
 # Repeats fts_touch every INTERVAL seconds (default 120) for PASSES passes (default 45),
@@ -342,7 +402,7 @@ fts_base_url() {
   port=$(fts__aws elbv2 describe-listeners --load-balancer-arn "$arn" \
     --query 'Listeners[?Protocol==`HTTP` && Port!=`80`].Port | [0]' --output text) || return 1
   case "$port" in ''|None) port=80 ;; esac
-  echo "http://$dns:$port"
+  echo "http://${dns}:${port}"
 }
 
 # Logs in one pool account and keeps its token in a 0600 file. Run by a person: the
@@ -359,7 +419,7 @@ fts_login() {
     printf '%s\n%s' "$email" "$pw" |
       python3 -c 'import json,sys; e,p=sys.stdin.read().split("\n",1); print(json.dumps({"email":e,"password":p}))' |
       curl -s -X POST "$base/auth/login" -H 'Content-Type: application/json' --data-binary @- |
-      python3 -c 'import json,sys; t=json.load(sys.stdin).get("access_token",""); print("Authorization: Bearer "+t if t else "")' \
+      python3 -c 'import json,sys; t=json.load(sys.stdin).get("access_token"); t and print("Authorization: Bearer "+t)' \
       > "$FTS_STATE_DIR/auth_header" )
   pw=""
   if [ -s "$FTS_STATE_DIR/auth_header" ]; then echo "logged in; token kept in $FTS_STATE_DIR/auth_header"
