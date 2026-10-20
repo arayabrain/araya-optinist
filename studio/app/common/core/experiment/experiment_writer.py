@@ -517,6 +517,8 @@ class ExptDataWriter:
     def __replace_ids_recursive(
         self, obj: object, old_id: str, new_id: str, memo: dict = None
     ):
+        if isinstance(obj, type):  # a class is shared code, never per-record data
+            return obj
         if isinstance(obj, str):
             if old_id not in obj:
                 return obj

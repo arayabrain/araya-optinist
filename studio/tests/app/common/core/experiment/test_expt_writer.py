@@ -190,6 +190,10 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     items.append(tuple_cycle)
     self_array = np.empty((), dtype=object)
     self_array[()] = self_array
+    self_dict = {}
+    self_dict["self"] = self_dict
+    self_node = SimpleNamespace()
+    self_node.self = self_node
     stack_path = f"{tmp_path}/{old_id}/suite2p_roi/roi_mask_stack.npy"
     os.makedirs(os.path.dirname(stack_path))
     np.save(stack_path, np.arange(6.0).reshape(1, 2, 3))
@@ -197,10 +201,13 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
         "ops": {"filelist": paths},
         "images": SimpleNamespace(path=paths),
         "copied": list(paths),
-        "grid": np.array([[p] for p in paths]),
+        "grid": np.array([[[p]] for p in paths]),
         "cycle": cycle,
         "tuple_cycle": tuple_cycle,
         "self_array": self_array,
+        "self_dict": self_dict,
+        "self_node": self_node,
+        "masked": np.ma.masked_array([1.0, 2.0], mask=[False, True]),
         "stack": PathBackedStack.open(stack_path),
     }
 
@@ -233,5 +240,8 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     assert loaded["cycle"][0] is loaded["cycle"]
     assert loaded["tuple_cycle"][0][0] is loaded["tuple_cycle"]
     assert loaded["self_array"][()] is loaded["self_array"]
+    assert loaded["self_dict"]["self"] is loaded["self_dict"]
+    assert loaded["self_node"].self is loaded["self_node"]
+    assert loaded["masked"].mask.tolist() == [False, True]
     assert loaded["stack"].stack_path == stack_path.replace(old_id, new_id)
     assert loaded["stack"].tolist() == np.arange(6.0).reshape(1, 2, 3).tolist()
