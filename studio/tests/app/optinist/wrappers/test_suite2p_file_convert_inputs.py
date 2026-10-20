@@ -83,7 +83,7 @@ def test_integer_input_is_listed_by_its_own_path_and_not_copied(tmp_path, dtype,
     out.mkdir()
     use_sktiff_reader, _ = readers()
 
-    tiff_list = tiff_list_for_binary(
+    tiff_list, _ = tiff_list_for_binary(
         [path], str(out), PARAMS, open_tiff, use_sktiff_reader
     )
 
@@ -98,7 +98,7 @@ def test_a_relative_input_path_is_listed_as_an_absolute_one(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
     use_sktiff_reader, _ = readers()
 
-    tiff_list = tiff_list_for_binary(
+    tiff_list, _ = tiff_list_for_binary(
         ["in/movie.tif"], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
     )
 
@@ -118,7 +118,7 @@ def test_float32_copy_is_byte_identical_to_the_whole_file_copy(
     path = write(tmp_path / "in" / "movie.tif", movie)
     use_sktiff_reader, _ = readers(needs_tifffile)
 
-    tiff_list = tiff_list_for_binary(
+    tiff_list, _ = tiff_list_for_binary(
         [path], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
     )
 
@@ -169,7 +169,7 @@ def test_other_inputs_get_the_whole_file_copy(tmp_path, name, movie, kwargs):
     path = write(tmp_path / "in" / "movie.tif", movie, **kwargs)
     use_sktiff_reader, _ = readers(("movie.tif",))
 
-    tiff_list = tiff_list_for_binary(
+    tiff_list, _ = tiff_list_for_binary(
         [path], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
     )
 
@@ -177,6 +177,52 @@ def test_other_inputs_get_the_whole_file_copy(tmp_path, name, movie, kwargs):
     expected = tmp_path / "expected.tif"
     tifffile.imwrite(expected, whole_file_copy(tifffile.imread(path)))
     assert (tmp_path / "out" / "movie.tif").read_bytes() == expected.read_bytes()
+
+
+def write_ome_out_of_order(path, movie, ifd_of_frame):
+    """An OME-TIFF whose TiffData stores frame t in IFD ifd_of_frame[t]."""
+    T, Y, X = movie.shape
+    tiffdata = "".join(
+        f'<TiffData IFD="{ifd}" FirstT="{t}" PlaneCount="1"/>'
+        for t, ifd in enumerate(ifd_of_frame)
+    )
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">'
+        '<Image ID="Image:0"><Pixels ID="Pixels:0" DimensionOrder="XYCZT" '
+        f'Type="{movie.dtype.name}" SizeX="{X}" SizeY="{Y}" SizeC="1" SizeZ="1" '
+        f'SizeT="{T}"><Channel ID="Channel:0:0" SamplesPerPixel="1"/>'
+        f"{tiffdata}</Pixels></Image></OME>"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tifffile.TiffWriter(path) as tif:
+        for ifd in range(T):
+            frame = movie[ifd_of_frame.index(ifd)]
+            tif.write(
+                frame, metadata=None, **({"description": xml} if ifd == 0 else {})
+            )
+    return str(path)
+
+
+@pytest.mark.parametrize("dtype", [np.uint16, np.float32])
+def test_an_ome_tiff_storing_frames_out_of_order_gets_the_whole_file_copy(
+    tmp_path, dtype
+):
+    movie = movie_of(dtype)
+    ifd_of_frame = list(range(FRAMES))[::-1]
+    path = write_ome_out_of_order(tmp_path / "in" / "movie.tif", movie, ifd_of_frame)
+    # the whole-file read follows TiffData; reading by page would not
+    np.testing.assert_array_equal(tifffile.imread(path), movie)
+    use_sktiff_reader, _ = readers(("movie.tif",))
+
+    tiff_list, _ = tiff_list_for_binary(
+        [path], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
+    )
+
+    assert tiff_list == ["movie.tif"]
+    assert (tmp_path / "out" / "movie.tif").read_bytes() == expected_bytes(
+        tmp_path, movie
+    )
 
 
 def test_a_file_with_two_series_gets_the_whole_file_copy(tmp_path):
@@ -187,7 +233,7 @@ def test_a_file_with_two_series_gets_the_whole_file_copy(tmp_path):
         tif.write(movie_of(np.uint16, (5, LY - 1, LX)))
     use_sktiff_reader, _ = readers(("movie.tif",))
 
-    tiff_list = tiff_list_for_binary(
+    tiff_list, _ = tiff_list_for_binary(
         [str(path)], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
     )
 
@@ -227,7 +273,7 @@ def test_a_file_whose_reader_differs_from_the_first_files_is_copied(
     use_sktiff_reader, _ = readers(needs_tifffile)
     params = {**PARAMS, "force_sktiff": force}
 
-    tiff_list = tiff_list_for_binary(
+    tiff_list, _ = tiff_list_for_binary(
         paths, out_dir(tmp_path), params, open_tiff, use_sktiff_reader
     )
 
@@ -250,7 +296,9 @@ def test_when_the_first_file_is_copied_its_copy_sets_the_reader(
         calls.append(path)
         return copy_reader_needs_tifffile and path == copy
 
-    tiff_list = tiff_list_for_binary(paths, out, PARAMS, open_tiff, use_sktiff_reader)
+    tiff_list, _ = tiff_list_for_binary(
+        paths, out, PARAMS, open_tiff, use_sktiff_reader
+    )
 
     assert copy in calls
     # b.tif reads with ScanImageTiffReader: as is only if the copy does too
@@ -376,3 +424,72 @@ def test_the_reader_rule_takes_the_defaults_tiff_to_binary_takes(tmp_path, monke
     file_convert.suite2p_file_convert(image, str(out), params={})
 
     assert probed == [500]
+
+
+def stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader):
+    tiff = types.SimpleNamespace(
+        open_tiff=open_tiff, use_sktiff_reader=use_sktiff_reader
+    )
+    io = types.SimpleNamespace(tiff_to_binary=tiff_to_binary, tiff=tiff)
+    defaults = {"nplanes": 1, "batch_size": 500, "force_sktiff": False}
+    suite2p = types.SimpleNamespace(default_ops=lambda: dict(defaults), io=io)
+    monkeypatch.setitem(sys.modules, "suite2p", suite2p)
+    monkeypatch.setitem(sys.modules, "suite2p.io", io)
+    monkeypatch.setitem(sys.modules, "suite2p.io.tiff", tiff)
+
+
+def test_an_input_rewritten_during_the_conversion_fails_the_run(tmp_path, monkeypatch):
+    path = write(tmp_path / "in" / "a.tif", movie_of(np.uint16))
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def tiff_to_binary(ops):
+        # a same-name upload of a movie with the same layout, mid-conversion
+        tifffile.imwrite(path, movie_of(np.uint16)[::-1])
+        return {**ops, "meanImg": np.zeros((LY, LX), np.float32)}
+
+    use_sktiff_reader, _ = readers()
+    stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader)
+
+    image = types.SimpleNamespace(path=[path])
+    with pytest.raises(file_convert.InputChangedError, match="Run the workflow"):
+        file_convert.suite2p_file_convert(image, str(out), params=dict(PARAMS))
+
+
+def test_an_input_rewritten_between_the_normalisation_passes_leaves_no_copy(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(file_convert, "BATCH_BYTES", 2 * LY * LX * 4)
+    path = write(tmp_path / "in" / "movie.tif", movie_of(np.float32))
+    out = tmp_path / "out"
+    out.mkdir()
+    real_iter_batches = file_convert.iter_batches
+    passes = []
+
+    def rewriting_iter_batches(*args):
+        passes.append(1)
+        if len(passes) == 2:  # after the min / max pass
+            tifffile.imwrite(path, movie_of(np.float32) * 3)
+        yield from real_iter_batches(*args)
+
+    monkeypatch.setattr(file_convert, "iter_batches", rewriting_iter_batches)
+    use_sktiff_reader, _ = readers()
+    with pytest.raises(file_convert.InputChangedError):
+        tiff_list_for_binary([path], str(out), PARAMS, open_tiff, use_sktiff_reader)
+    assert list(out.iterdir()) == []
+
+
+def test_files_read_in_place_are_returned_with_their_version(tmp_path):
+    paths = [
+        write(tmp_path / "in" / "a.tif", movie_of(np.uint16)),
+        write(tmp_path / "in" / "b.tif", movie_of(np.float32)),
+    ]
+    use_sktiff_reader, _ = readers()
+
+    tiff_list, read_in_place = tiff_list_for_binary(
+        paths, out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
+    )
+
+    # the copied file was checked already; only the in-place one is left
+    assert list(read_in_place) == [tiff_list[0]]
+    assert read_in_place[tiff_list[0]] == file_convert.input_version(paths[0])
