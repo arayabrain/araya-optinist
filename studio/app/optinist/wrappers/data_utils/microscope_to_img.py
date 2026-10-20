@@ -16,6 +16,6 @@ def microscope_to_img(
     )
     # The NWB input's external_file is this object, and every node's pickle
     # carries the NWB input: keep a reference, not the frames
-    microscope.set_data(image)
+    microscope.set_image(image)
 
     return {"microscope_image": image}

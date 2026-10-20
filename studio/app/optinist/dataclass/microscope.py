@@ -20,23 +20,24 @@ class MicroscopeData(BaseData):
     @property
     def reader(self):
         ext = os.path.splitext(self.path)[1]
-        if ext == ".nd2":
+        # ".thor.zip" has two suffixes, so splitext gives ".zip". ThorlabsReader
+        # takes the archive itself and extracts it.
+        if self.path.endswith(".thor.zip"):
+            reader = ThorlabsReader()
+        elif ext == ".nd2":
             reader = ND2Reader()
         elif ext == ".oir":
             assert OIRReader.is_available(), "OIRReader is not available."
             reader = OIRReader()
         elif ext == ".isxd":
             reader = IsxdReader()
-        elif ext == ".thor.zip":
-            self.path = os.path.dirname(self.path)
-            reader = ThorlabsReader()
         else:
             raise Exception(f"Unsupported file type: {ext}")
 
         reader.load(self.path)
         return reader
 
-    def set_data(self, image: ImageData):
+    def set_image(self, image: ImageData):
         """Keep the converted stack as a reference; its frames are read only
         when asked for (NWB with save_raw_image_to_nwb)."""
         self.image = image
