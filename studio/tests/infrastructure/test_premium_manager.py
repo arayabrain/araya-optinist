@@ -6322,3 +6322,547 @@ class TestFinalizeExpiredPendingReleases:
             elbv2.delete_target_group.assert_called_once_with(
                 TargetGroupArn="arn:aws:tg/user-11"
             )
+
+
+class TestTerminateAgedStoppedInstances:
+    """terminate_aged_stopped_instances terminates only what EC2 reports stopped.
+
+    Standby rows' instance_state can be stale: on development, the dev
+    scheduler started a standby, its row still said stopped, the empty
+    StateTransitionReason sent the age check to the standby_created_at
+    fallback, and the running Terraform-managed base instance was terminated.
+    EC2 decides; the sweep neither reads nor writes instance_state (premium
+    cleanup's reconcile_instance_states() corrects it).
+    """
+
+    NOW = datetime.now(timezone.utc).replace(tzinfo=None)
+    AGED = NOW - timedelta(hours=10)
+    RECENT = NOW - timedelta(hours=1)
+
+    @staticmethod
+    def _row(instance_id, standby_created_at, instance_state=InstanceState.STOPPED):
+        return MockRow(
+            {
+                "instance_id": instance_id,
+                "instance_state": instance_state,
+                "standby_created_at": standby_created_at,
+            }
+        )
+
+    @staticmethod
+    def _instance(
+        instance_id, state=InstanceState.STOPPED, reason="", name="test-premium-standby"
+    ):
+        return {
+            "InstanceId": instance_id,
+            "State": {"Name": state},
+            "StateTransitionReason": reason,
+            "Tags": [{"Key": "Name", "Value": name}],
+        }
+
+    @staticmethod
+    def _stopped_reason(stopped_at):
+        return f"User initiated ({stopped_at:%Y-%m-%d %H:%M:%S} GMT)"
+
+    def _run(self, mock_env_vars_premium, rows, instances, unrequested=()):
+        """Run the sweep; returns (terminated ids, cursor, ec2).
+
+        `unrequested` instances are returned whatever the filter asks for,
+        as a malformed or empty filter could make EC2 do.
+        """
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            mock_connection = setup_db_mock(fetchall_values=[rows])
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            ec2 = MagicMock()
+
+            def describe_instances(InstanceIds=None, Filters=None):
+                # As EC2 does: InstanceIds fails whole on a missing id; an
+                # instance-id filter just leaves it out.
+                known = {i["InstanceId"] for i in instances}
+                if InstanceIds is not None:
+                    if set(InstanceIds) - known:
+                        raise ClientError(
+                            {"Error": {"Code": "InvalidInstanceID.NotFound"}},
+                            "DescribeInstances",
+                        )
+                    ids = InstanceIds
+                else:
+                    (id_filter,) = Filters
+                    assert id_filter["Name"] == "instance-id"
+                    assert id_filter["Values"]
+                    ids = id_filter["Values"]
+                matched = [i for i in instances if i["InstanceId"] in ids]
+                matched += list(unrequested)
+                return {"Reservations": [{"Instances": matched}] if matched else []}
+
+            ec2.describe_instances.side_effect = describe_instances
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_aged_stopped_instances
+
+            self.result = terminate_aged_stopped_instances()
+
+        terminated = [c[0][0] for c in mock_terminate.call_args_list]
+        return terminated, cursor, ec2
+
+    @staticmethod
+    def _updates(cursor):
+        return [
+            (" ".join(c[0][0].split()), c[0][1])
+            for c in cursor.execute.call_args_list
+            if c[0][0].strip().startswith("UPDATE")
+        ]
+
+    def test_running_instance_with_stale_stopped_row_is_not_terminated(
+        self, mock_env_vars_premium
+    ):
+        """The incident: running, empty StateTransitionReason, aged
+        standby_created_at. Skipped, and the row left to premium cleanup."""
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-started", self.AGED)],
+            [self._instance("i-started", state=InstanceState.RUNNING)],
+        )
+
+        assert terminated == []
+        assert self._updates(cursor) == []
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            InstanceState.PENDING,
+            InstanceState.STOPPING,
+            InstanceState.SHUTTING_DOWN,
+            InstanceState.TERMINATED,
+        ],
+    )
+    def test_state_other_than_stopped_is_skipped(self, mock_env_vars_premium, state):
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-other", self.AGED)],
+            [
+                self._instance(
+                    "i-other", state=state, reason=self._stopped_reason(self.AGED)
+                )
+            ],
+        )
+
+        assert terminated == []
+
+    def test_instance_ec2_returns_unasked_is_never_terminated(
+        self, mock_env_vars_premium
+    ):
+        """The loop acts only on ids it asked for: a malformed or empty filter
+        could return every instance, and on development the NAT and
+        background instances also stop every night with this env's prefix."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-standby", self.AGED)],
+            [self._instance("i-standby", reason=self._stopped_reason(self.AGED))],
+            unrequested=[
+                self._instance(
+                    "i-nat", reason=self._stopped_reason(self.AGED), name="test-nat"
+                )
+            ],
+        )
+
+        assert terminated == ["i-standby"]
+
+    def test_ec2_error_terminates_nothing(self, mock_env_vars_premium):
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance"
+        ) as mock_terminate:
+            mock_pymysql.return_value = setup_db_mock(
+                fetchall_values=[[self._row("i-standby", self.AGED)]]
+            )
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = ClientError(
+                {"Error": {"Code": "RequestLimitExceeded"}}, "DescribeInstances"
+            )
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_aged_stopped_instances
+
+            assert terminate_aged_stopped_instances() == 0
+
+        mock_terminate.assert_not_called()
+
+    def test_bad_max_age_value_does_not_raise(self, mock_env_vars_premium):
+        """A bad PREMIUM_STOPPED_MAX_AGE_HOURS must not raise out of the
+        monitor's step and skip the steps after it."""
+        env = {**mock_env_vars_premium, "PREMIUM_STOPPED_MAX_AGE_HOURS": "four"}
+        terminated, _, _ = self._run(
+            env,
+            [self._row("i-standby", self.AGED)],
+            [self._instance("i-standby", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == []
+        assert self.result == 0
+
+    def test_stale_running_row_of_a_stopped_instance_is_aged(
+        self, mock_env_vars_premium
+    ):
+        """The other direction: a timed-out start_standby_instance() leaves a
+        'running' row. The row's state is not read, so the instance ages like
+        any other stopped standby."""
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-stale-running", self.AGED, InstanceState.RUNNING)],
+            [self._instance("i-stale-running", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == ["i-stale-running"]
+        assert self._updates(cursor) == []
+
+    def test_base_instance_is_never_terminated(self, mock_env_vars_premium):
+        """PREMIUM_INSTANCE_IDS are Terraform-managed: never terminated, even
+        when stopped and aged."""
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row(base_id, self.AGED), self._row("i-dynamic", self.AGED)],
+            [
+                self._instance(base_id, reason=self._stopped_reason(self.AGED)),
+                self._instance("i-dynamic", reason=self._stopped_reason(self.AGED)),
+            ],
+        )
+
+        assert terminated == ["i-dynamic"]
+
+    def test_stopped_with_empty_reason_falls_back_to_standby_created_at(
+        self, mock_env_vars_premium
+    ):
+        """The fallback stays for a genuinely stopped instance."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-aged", self.AGED), self._row("i-fresh", self.RECENT)],
+            [self._instance("i-aged"), self._instance("i-fresh")],
+        )
+
+        assert terminated == ["i-aged"]
+
+    def test_stop_time_from_reason_takes_precedence(self, mock_env_vars_premium):
+        """An old standby row stopped again recently is not aged."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-restopped", self.AGED)],
+            [self._instance("i-restopped", reason=self._stopped_reason(self.RECENT))],
+        )
+
+        assert terminated == []
+
+    def test_instance_missing_from_ec2_does_not_block_the_rest(
+        self, mock_env_vars_premium
+    ):
+        """An instance-id filter returns nothing for a missing id instead of
+        raising InvalidInstanceID.NotFound for the whole call."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-gone", self.AGED), self._row("i-aged", self.AGED)],
+            [self._instance("i-aged", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == ["i-aged"]
+
+    def test_other_environment_instance_is_untouched_and_not_reported_missing(
+        self, mock_env_vars_premium, capsys
+    ):
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-foreign", self.AGED, InstanceState.RUNNING)],
+            [
+                self._instance(
+                    "i-foreign",
+                    reason=self._stopped_reason(self.AGED),
+                    name="prod-premium-standby",
+                )
+            ],
+        )
+
+        assert terminated == []
+        assert self._updates(cursor) == []
+        out = capsys.readouterr().out
+        assert "does not match environment prefix" in out
+        assert "not found in EC2" not in out
+
+
+class TestBaseInstanceNeverTerminatedAsStandby:
+    """A base instance (PREMIUM_INSTANCE_IDS) can be a standby - premium manager
+    stops it as idle like any other - but terminating it leaves Terraform state
+    and the dev scheduler pointing at an instance that no longer exists."""
+
+    def test_terminate_standby_instance_refuses_a_base_instance(
+        self, mock_env_vars_premium
+    ):
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_standby_instance
+
+            assert terminate_standby_instance(base_id) is False
+
+        ec2.terminate_instances.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_terminate_standby_instance_terminates_a_dynamic_instance(
+        self, mock_env_vars_premium
+    ):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_standby_instance
+
+            assert terminate_standby_instance("i-dynamic") is True
+
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+    def test_excess_trim_skips_a_base_instance_even_when_oldest(
+        self, mock_env_vars_premium
+    ):
+        """Oldest-first would pick the base instance every run; it is left out
+        of the candidates, so the next-oldest dynamic standby is trimmed."""
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        standbys = [
+            {"instance_id": base_id},
+            {"instance_id": "i-dynamic-old"},
+            {"instance_id": "i-dynamic-new"},
+        ]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_available_standby_instances", return_value=standbys
+        ), patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(1) == 1
+
+        mock_terminate.assert_called_once_with("i-dynamic-old")
+
+    def test_excess_trim_with_only_base_candidates_trims_nothing(
+        self, mock_env_vars_premium
+    ):
+        base_ids = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_available_standby_instances",
+            return_value=[{"instance_id": i} for i in base_ids],
+        ), patch("premium_manager.terminate_standby_instance") as mock_terminate:
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(2) == 0
+
+        mock_terminate.assert_not_called()
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_without_base_ids_a_standby_is_terminated_normally(
+        self, mock_env_vars_premium, value
+    ):
+        """A Lambda without PREMIUM_INSTANCE_IDS (or with it empty) has no
+        base instances to protect - it must not refuse or fail."""
+        import os
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            if value is None:
+                os.environ.pop("PREMIUM_INSTANCE_IDS")
+            else:
+                os.environ["PREMIUM_INSTANCE_IDS"] = value
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import _base_instance_ids, terminate_standby_instance
+
+            assert _base_instance_ids() == set()
+            assert terminate_standby_instance("i-test1") is True
+
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-test1"])
+
+    def test_cleanup_all_dynamic_preserves_base_ids_missing_from_the_event(
+        self, mock_env_vars_premium
+    ):
+        """The handler defaults base_instance_ids to [] when the event omits
+        it; PREMIUM_INSTANCE_IDS is preserved regardless."""
+        base_ids = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")
+        instances = [{"InstanceId": i} for i in [*base_ids, "i-dynamic"]]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": instances}]
+            }
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_all_dynamic_instances
+
+            result = cleanup_all_dynamic_instances(base_instance_ids=[])
+
+        assert result["terminated"] == ["i-dynamic"]
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+    def test_cleanup_all_dynamic_preserves_ids_only_in_the_event(
+        self, mock_env_vars_premium
+    ):
+        instances = [{"InstanceId": i} for i in ["i-event-base", "i-dynamic"]]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": instances}]
+            }
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_all_dynamic_instances
+
+            result = cleanup_all_dynamic_instances(base_instance_ids=["i-event-base"])
+
+        assert result["terminated"] == ["i-dynamic"]
+
+    @pytest.mark.parametrize(
+        "value", ["i-a,i-b", "i-a, i-b", " i-a ,i-b ", "i-a,i-b,", ",i-a,,i-b"]
+    )
+    def test_base_ids_parsing_tolerates_spaces_and_empty_items(
+        self, mock_env_vars_premium, value
+    ):
+        env = {**mock_env_vars_premium, "PREMIUM_INSTANCE_IDS": value}
+        with patch.dict("os.environ", env):
+            from premium_manager import _base_instance_ids
+
+            assert _base_instance_ids() == {"i-a", "i-b"}
+
+    def test_excess_trim_never_terminates_a_running_standby(
+        self, mock_env_vars_premium
+    ):
+        """End to end through get_available_standby_instances(): a dynamic
+        standby that EC2 reports running (e.g. mid Tier 3 assignment) is not
+        a candidate, even when it is the oldest."""
+        rows = [
+            MockRow({"instance_id": "i-running-old", "standby_created_at": None}),
+            MockRow({"instance_id": "i-stopped-new", "standby_created_at": None}),
+        ]
+        reservations = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-running-old", "State": {"Name": "running"}},
+                        {"InstanceId": "i-stopped-new", "State": {"Name": "stopped"}},
+                    ]
+                }
+            ]
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            mock_pymysql.return_value = setup_db_mock(fetchall_values=[rows])
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = reservations
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(1) == 1
+
+        mock_terminate.assert_called_once_with("i-stopped-new")
+
+
+class TestGetAvailableStandbyInstances:
+    """get_available_standby_instances returns only standbys EC2 reports stopped.
+
+    Its list feeds the excess trim and Tier 3 assignment, so an unchecked
+    database list - which can include a running standby mid-assignment - must
+    never come back from it.
+    """
+
+    @staticmethod
+    def _get(mock_env_vars_premium, rows, describe):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock(fetchall_values=[rows])
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import get_available_standby_instances
+
+            return get_available_standby_instances(), ec2
+
+    @staticmethod
+    def _rows(*instance_ids):
+        return [
+            MockRow({"instance_id": i, "standby_created_at": None})
+            for i in instance_ids
+        ]
+
+    def test_returns_only_stopped_and_skips_a_missing_id(self, mock_env_vars_premium):
+        def describe(Filters):
+            # i-gone is left out, as an instance-id filter does
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": "i-stopped", "State": {"Name": "stopped"}},
+                            {"InstanceId": "i-running", "State": {"Name": "running"}},
+                        ]
+                    }
+                ]
+            }
+
+        standbys, ec2 = self._get(
+            mock_env_vars_premium,
+            self._rows("i-stopped", "i-running", "i-gone"),
+            describe,
+        )
+
+        assert [s["instance_id"] for s in standbys] == ["i-stopped"]
+        assert ec2.describe_instances.call_args.kwargs["Filters"] == [
+            {
+                "Name": "instance-id",
+                "Values": ["i-stopped", "i-running", "i-gone"],
+            }
+        ]
+
+    def test_ec2_error_returns_no_standbys(self, mock_env_vars_premium):
+        """Fails closed: on a throttle or any other error, nothing is offered
+        for trimming or assignment."""
+        from botocore.exceptions import ClientError
+
+        def describe(Filters):
+            raise ClientError(
+                {"Error": {"Code": "RequestLimitExceeded"}}, "DescribeInstances"
+            )
+
+        standbys, _ = self._get(
+            mock_env_vars_premium, self._rows("i-stopped", "i-running"), describe
+        )
+
+        assert standbys == []

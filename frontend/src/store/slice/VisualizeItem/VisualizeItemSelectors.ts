@@ -52,6 +52,14 @@ export const selectVisualizeHeatMapLinkItemIdList = (state: RootState) =>
       )
     })
 
+export const selectVisualizeTimeSeriesItemIdList = (state: RootState) =>
+  Object.keys(state.visualaizeItem.items)
+    .map(Number)
+    .filter((itemId) => {
+      const item = selectVisualizeItemById(itemId)(state)
+      return !item.isWorkflowDialog && isTimeSeriesItem(item)
+    })
+
 export const selectVisualizeItems = (state: RootState) =>
   state.visualaizeItem.items
 
@@ -409,6 +417,24 @@ export const selectTimeSeriesItemRefImageItemId =
     }
   }
 
+export const selectTimeSeriesItemShadeSourceItemId =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isTimeSeriesItem(item)) {
+      return item.shadeSourceItemId ?? null
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectTimeSeriesShadeSourceItem =
+  (itemId: number) => (state: RootState) => {
+    const sourceId = selectTimeSeriesItemShadeSourceItemId(itemId)(state)
+    if (sourceId == null) return undefined
+    const source = selectVisualizeItemById(sourceId)(state)
+    return isTimeSeriesItem(source) ? source : undefined
+  }
+
 export const selectTimeSeriesItemRefRoiUniqueList =
   (itemId: number) => (state: RootState) => {
     const item = selectVisualizeItemById(itemId)(state)
@@ -676,6 +702,16 @@ export const selectImageItemShowRoiLabels =
     const item = selectVisualizeItemById(itemId)(state)
     if (isImageItem(item)) {
       return item.showRoiLabels
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectImageItemRoiOutline =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isImageItem(item)) {
+      return item.roiOutline
     } else {
       throw new Error("invalid VisualaizeItemType")
     }

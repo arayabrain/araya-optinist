@@ -85,8 +85,14 @@ resource "aws_instance" "background" {
     Tier    = "background"
   }
 
+  # user_data comes from the launch template. The provider reads it back into
+  # state, but the attribute is not Computed, so leaving it unset here plans
+  # its removal. Applying that clears the bootstrap script and stops and
+  # starts the instance, including one that was deliberately stopped. To
+  # change user_data on an existing instance, replace it (-replace).
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 }
 
