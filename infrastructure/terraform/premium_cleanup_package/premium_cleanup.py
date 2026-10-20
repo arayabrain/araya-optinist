@@ -20,8 +20,9 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
+import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Set
 
 import boto3
 import pymysql
@@ -204,6 +205,49 @@ def with_transaction(func):
                 raise e
 
     return wrapper
+
+
+def get_assign_claimed_user_ids() -> Set[int]:
+    """User ids holding an unexpired assign claim (an assign in flight).
+
+    Raises on DB error so callers skip deletion rather than reap resources
+    an assign may be creating.
+    """
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT user_id FROM premium_assign_claims
+                   WHERE expires_at >= NOW()"""
+            )
+            return {int(row["user_id"]) for row in cursor.fetchall()}
+
+
+_PREMIUM_TG_NAME_RE = re.compile(r":targetgroup/premium-(\d+)-tg/")
+
+
+def _rule_may_belong_to_inflight_assign(
+    rule: Dict[str, Any],
+    claimed_user_ids: Set[int],
+    autoscaling_tg_arn: str | None,
+) -> bool:
+    """Whether an in-flight assign may own this ALB rule.
+
+    A dedicated rule forwards to ``premium-<user_id>-tg``; a pool rule
+    forwards to the shared autoscaling TG and names no user, so it is kept
+    while any claim is live.
+    """
+    if not claimed_user_ids:
+        return False
+    for action in rule.get("Actions", []):
+        if action.get("Type") != "forward":
+            continue
+        tg_arn = action.get("TargetGroupArn") or ""
+        if autoscaling_tg_arn and tg_arn == autoscaling_tg_arn:
+            return True
+        match = _PREMIUM_TG_NAME_RE.search(tg_arn)
+        if match and int(match.group(1)) in claimed_user_ids:
+            return True
+    return False
 
 
 def get_assigned_users_for_instance(instance_id: str) -> List[str]:
@@ -440,6 +484,20 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
+        # Read claims after the rule listing and before the keep-set: an
+        # assign finishing in between has committed its row before dropping
+        # its claim, so each of its rules is seen in one set or the other.
+        try:
+            claimed_user_ids = get_assign_claimed_user_ids()
+        except Exception as claim_error:
+            print(f"Skipping orphan cleanup: cannot read assign claims: {claim_error}")
+            return {
+                "orphaned_rules_deleted": 0,
+                "orphaned_target_groups_deleted": 0,
+                "error": f"assign claims unavailable: {claim_error}",
+            }
+        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+
         # Keep-set: ACTIVE/MIGRATING/TERMINATING (statuses that can own a live
         # rule) plus any row touched within the grace window. TERMINATING
         # aliases PENDING_RELEASE, so an ACTIVE-only filter would reap a rule
@@ -476,9 +534,16 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
         print(f"Found {len(db_rule_arns)} keep-set assignments in database")
 
         # Find orphaned rules (in ALB but not in database)
-        orphaned_rules = [
-            rule for rule in premium_rules if rule["RuleArn"] not in db_rule_arns
-        ]
+        orphaned_rules = []
+        for rule in premium_rules:
+            if rule["RuleArn"] in db_rule_arns:
+                continue
+            if _rule_may_belong_to_inflight_assign(
+                rule, claimed_user_ids, autoscaling_tg_arn
+            ):
+                print(f"Keeping rule {rule['RuleArn']}: an assign is in flight")
+                continue
+            orphaned_rules.append(rule)
 
         if not orphaned_rules:
             print("No orphaned ALB resources found")
@@ -514,7 +579,6 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 print("Deleted ALB rule")
 
                 # Delete the target group if it exists (skip shared autoscaling TG)
-                autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
                 if target_group_arn and target_group_arn != autoscaling_tg_arn:
                     try:
                         _delete_premium_tg_unhealthy_alarm(target_group_arn)
@@ -598,6 +662,21 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                     rules_by_routing_id[routing_id] = []
                 rules_by_routing_id[routing_id].append(rule)
 
+        # Same ordering as the orphan sweep: claims before the keep-set.
+        try:
+            claimed_user_ids = get_assign_claimed_user_ids()
+        except Exception as claim_error:
+            print(
+                f"Skipping duplicate cleanup: cannot read assign claims: "
+                f"{claim_error}"
+            )
+            return {
+                "duplicates_deleted": 0,
+                "target_groups_deleted": 0,
+                "error": f"assign claims unavailable: {claim_error}",
+            }
+        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+
         # Get all active assignments from database to know which rules to keep
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -633,6 +712,11 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                 rule_arn = rule["RuleArn"]
                 if rule_arn in db_rule_arns:
                     print(f"Keeping rule {rule_arn} (in database)")
+                    continue
+                if _rule_may_belong_to_inflight_assign(
+                    rule, claimed_user_ids, autoscaling_tg_arn
+                ):
+                    print(f"Keeping rule {rule_arn}: an assign is in flight")
                     continue
 
                 # Delete this duplicate rule

@@ -8,14 +8,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
 
-from conftest import MockRow, setup_db_mock
+from conftest import FakeAssignClaimsDb, MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
 TEST_INSTANCE_ID = "i-testlambda123"
 
 
-def _always_acquired_lock():
-    """Mock distributed_lock that always grants the lock."""
+def _always_acquired_claim():
+    """Mock assign_claim that always grants the claim."""
     mock = MagicMock()
     mock.return_value.__enter__ = MagicMock(return_value=True)
     mock.return_value.__exit__ = MagicMock(return_value=False)
@@ -92,8 +92,8 @@ class TestPremiumManagerEvents:
         ) as mock_boto3, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
@@ -472,8 +472,8 @@ class TestEarlyCheckAndCleanup:
         ) as mock_get_existing, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_get_existing.return_value = existing_assignment
             mock_connection = setup_db_mock(fetchone_values=[None])
@@ -788,8 +788,8 @@ class TestEarlyCheckAndCleanup:
         ) as mock_boto3, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
@@ -920,7 +920,11 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_cleanup.get_db_connection") as mock_get_db:
+        ) as mock_boto3, patch(
+            "premium_cleanup.get_db_connection"
+        ) as mock_get_db, patch(
+            "premium_cleanup.get_assign_claimed_user_ids", return_value=set()
+        ):
             mock_cursor = MagicMock()
             mock_cursor.fetchall.return_value = [{"alb_rule_arn": valid_rule_arn}]
 
@@ -1031,8 +1035,8 @@ class TestEarlyCheckAndCleanup:
             ) as mock_boto3, patch(
                 "premium_manager.pymysql.connect"
             ) as mock_pymysql, patch(
-                "premium_manager.distributed_lock",
-                new=_always_acquired_lock(),
+                "premium_manager.assign_claim",
+                new=_always_acquired_claim(),
             ):
                 mock_get_existing.return_value = existing_autoscaling_assignment
                 mock_connection = setup_db_mock(fetchone_values=[None])
@@ -1081,8 +1085,8 @@ class TestEarlyCheckAndCleanup:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch("premium_manager.restore_pending_release") as mock_restore, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_restore.return_value = restored_assignment
 
@@ -1128,8 +1132,8 @@ class TestEarlyCheckAndCleanup:
         ) as mock_update_state, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
@@ -1204,8 +1208,8 @@ class TestEarlyCheckAndCleanup:
         ), patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
@@ -1300,8 +1304,8 @@ class TestEarlyCheckAndCleanup:
                 ) as mock_boto3, patch(
                     "pymysql.connect"
                 ) as mock_pymysql, patch(
-                    "premium_manager.distributed_lock",
-                    new=_always_acquired_lock(),
+                    "premium_manager.assign_claim",
+                    new=_always_acquired_claim(),
                 ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
@@ -1394,8 +1398,8 @@ class TestEarlyCheckAndCleanup:
                 ) as mock_boto3, patch(
                     "pymysql.connect"
                 ) as mock_pymysql, patch(
-                    "premium_manager.distributed_lock",
-                    new=_always_acquired_lock(),
+                    "premium_manager.assign_claim",
+                    new=_always_acquired_claim(),
                 ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
@@ -1443,25 +1447,25 @@ class TestEarlyCheckAndCleanup:
                     p.stop()
 
 
-class TestConcurrentAssignLock:
-    """Tests for per-user distributed lock on assign_premium_user."""
+class TestConcurrentAssignClaim:
+    """Tests for the per-user assign claim around assign_premium_user."""
 
     @staticmethod
-    def _lock_ctx(acquired: bool):
-        """Create a mock distributed_lock that returns *acquired*."""
+    def _claim_ctx(acquired: bool):
+        """Create a mock assign_claim that yields *acquired*."""
         mock = MagicMock()
         mock.return_value.__enter__ = MagicMock(return_value=acquired)
         mock.return_value.__exit__ = MagicMock(return_value=False)
         return mock
 
-    def test_lock_not_acquired_no_existing_returns_409(self, mock_env_vars_premium):
-        """When the per-user lock times out and no completed assignment
+    def test_claim_not_acquired_no_existing_returns_409(self, mock_env_vars_premium):
+        """When the claim wait times out and no completed assignment
         exists, the Lambda returns 409 so the caller retries."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(False),
+            "premium_manager.assign_claim",
+            new=self._claim_ctx(False),
         ), patch(
             "premium_manager.get_existing_user_assignment",
             return_value=None,
@@ -1475,8 +1479,8 @@ class TestConcurrentAssignLock:
             assert body["assigned"] is False
             assert "in progress" in body["message"].lower()
 
-    def test_lock_not_acquired_existing_found_returns_200(self, mock_env_vars_premium):
-        """When the per-user lock times out but the winning call stored
+    def test_claim_not_acquired_existing_found_returns_200(self, mock_env_vars_premium):
+        """When the claim wait times out but the winning call stored
         an assignment, return 200 with the existing assignment."""
         existing = {
             "instance_id": "i-winner",
@@ -1487,8 +1491,8 @@ class TestConcurrentAssignLock:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(False),
+            "premium_manager.assign_claim",
+            new=self._claim_ctx(False),
         ), patch(
             "premium_manager.get_existing_user_assignment",
             return_value=existing,
@@ -1502,10 +1506,10 @@ class TestConcurrentAssignLock:
             assert body["instance_id"] == "i-winner"
             assert body["assignment_source"] == "existing"
 
-    def test_lock_name_includes_user_id(self, mock_env_vars_premium):
-        """The lock name must include the user_id so different users
-        do not block each other."""
-        lock_mock = self._lock_ctx(True)
+    def test_claim_is_per_user_with_the_given_lifetime(self, mock_env_vars_premium):
+        """The claim is keyed by user_id, so different users do not block each
+        other, and lasts as long as the caller's invocation may run."""
+        claim_mock = self._claim_ctx(True)
         impl_response = {
             "statusCode": 200,
             "body": json.dumps({"instance_id": "i-impl", "assigned": True}),
@@ -1514,35 +1518,64 @@ class TestConcurrentAssignLock:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=lock_mock,
+            "premium_manager.assign_claim",
+            new=claim_mock,
         ), patch(
             "premium_manager._assign_premium_user_impl",
             return_value=impl_response,
         ):
-            from premium_manager import (
-                ASSIGN_LOCK_TIMEOUT_SECONDS,
-                ASSIGN_USER_LOCK_PREFIX,
-                assign_premium_user,
+            from premium_manager import assign_premium_user
+
+            assign_premium_user(
+                42, {"tier": "premium"}, "uid_42", claim_lifetime_seconds=123
             )
 
-            assign_premium_user(42, {"tier": "premium"}, "uid_42")
+            claim_mock.assert_called_once_with(42, 123)
 
-            lock_mock.assert_called_once_with(
-                f"{ASSIGN_USER_LOCK_PREFIX}42",
-                timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
-            )
+    def test_handler_sizes_the_claim_from_the_invocation_deadline(
+        self, mock_env_vars_premium
+    ):
+        """The claim must not expire while its holder can still run: the
+        handler passes the remaining invocation time plus the margin."""
+        event = {
+            "httpMethod": "POST",
+            "body": json.dumps({"action": "assign", "user_id": "uid_42"}),
+        }
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 599_500
 
-    def test_lock_acquired_does_not_consult_the_existing_assignment(
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.pymysql.connect",
+            return_value=setup_db_mock(fetchone_values=[MockRow({"id": 42})]),
+        ), patch(
+            "premium_manager.assign_premium_user", return_value={"statusCode": 200}
+        ) as mock_assign:
+            from premium_manager import ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS, handler
+
+            handler(event, context)
+
+        assert mock_assign.call_args.kwargs["claim_lifetime_seconds"] == (
+            599 + ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS
+        )
+
+    @pytest.mark.parametrize("context", [None, MagicMock()])
+    def test_claim_lifetime_defaults_without_a_deadline(self, context):
+        """No context (or one without a numeric deadline) gets the Lambda
+        maximum, which no invocation can outlive."""
+        from premium_manager import (
+            ASSIGN_CLAIM_DEFAULT_SECONDS,
+            assign_claim_lifetime_seconds,
+        )
+
+        assert assign_claim_lifetime_seconds(context) == ASSIGN_CLAIM_DEFAULT_SECONDS
+
+    def test_claim_acquired_does_not_consult_the_existing_assignment(
         self, mock_env_vars_premium
     ):
         """The winner assigns; only the loser reads back what the winner stored.
 
-        This case used to assert only ``mock_impl.assert_called_once()``, which
-        ``test_assign_impl_runs_inside_the_lock`` already covers more strictly.
-        The distinct claim is the branch: reading the existing assignment on the
-        acquired path would hand a stale row back as the fresh assignment and
-        skip the impl.
+        Reading the existing assignment on the acquired path would hand a
+        stale row back as the fresh assignment and skip the impl.
         """
         impl_response = {
             "statusCode": 200,
@@ -1551,8 +1584,8 @@ class TestConcurrentAssignLock:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(True),
+            "premium_manager.assign_claim",
+            new=self._claim_ctx(True),
         ), patch(
             "premium_manager.get_existing_user_assignment"
         ) as mock_existing, patch(
@@ -1569,27 +1602,23 @@ class TestConcurrentAssignLock:
         assert mock_impl.call_args.args[:3] == (123, {"tier": "premium"}, "uid_123")
         mock_existing.assert_not_called()
 
-    def test_assign_impl_runs_inside_the_lock(self, mock_env_vars_premium):
+    def test_assign_impl_runs_inside_the_claim(self, mock_env_vars_premium):
         """The critical section (_assign_premium_user_impl) must execute strictly
-        BETWEEN lock acquire and release. Guards the lock's scope, not just its
-        presence: a refactor that keeps distributed_lock but moves the impl call
-        outside the `with` block would reorder these events and fail here (the
-        real-lock serialization is proven by the GET_LOCK integration test;
-        this pins that assign runs its work under the lock). It treats impl as
-        opaque, so work hoisted OUT of _assign_premium_user_impl to before the
-        lock is NOT caught here - only a full concurrent-assign-vs-real-DB race
-        (deferred) would."""
+        BETWEEN claim acquire and release. Guards the claim's scope, not just
+        its presence: moving the impl call outside the `with` block would
+        reorder these events and fail here. Serialization itself is proven by
+        TestAssignClaimRow, the differential test and the real-MySQL test."""
         from contextlib import contextmanager
 
         events = []
 
         @contextmanager
-        def tracking_lock(name, timeout=None):
-            events.append(("enter", name))
+        def tracking_claim(user_id, lifetime_seconds):
+            events.append(("enter", user_id))
             try:
                 yield True
             finally:
-                events.append(("exit", name))
+                events.append(("exit", user_id))
 
         def impl_probe(*_args, **_kwargs):
             events.append(("impl", None))
@@ -1600,30 +1629,29 @@ class TestConcurrentAssignLock:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ), patch("premium_manager.distributed_lock", new=tracking_lock), patch(
+        ), patch("premium_manager.assign_claim", new=tracking_claim), patch(
             "premium_manager._assign_premium_user_impl", side_effect=impl_probe
         ):
-            from premium_manager import ASSIGN_USER_LOCK_PREFIX, assign_premium_user
+            from premium_manager import assign_premium_user
 
             result = assign_premium_user(77, {"tier": "premium"}, "uid_77")
 
         assert result["statusCode"] == 200
         assert [e[0] for e in events] == ["enter", "impl", "exit"]
-        assert events[0][1] == f"{ASSIGN_USER_LOCK_PREFIX}77"
+        assert events[0][1] == 77
 
     def _assign_once(self, premium_manager, fake_elbv2, ec2, *, existing_return):
         """Run one assign_premium_user for user 77 against a shared stateful
         fake ELBv2. existing_return is what get_existing_user_assignment yields
         for this call.
 
-        NOTE: the lock is always granted here (both variants). These two tests
-        do NOT exercise serialization — that is covered by test_lock_* above
-        (lock timeout -> 409/200, lock name includes user_id, impl runs under
-        the lock). What they isolate is the DOWNSTREAM behavior the lock's
-        happens-before guarantees: whether the existing-assignment read observes
-        a prior assignment (existing_return) decides orphan-cleanup vs
+        NOTE: the claim is always granted here (both variants). These two tests
+        do NOT exercise serialization — that is covered by test_claim_* above
+        and TestAssignClaimRow. What they isolate is the DOWNSTREAM behavior the
+        claim's happens-before guarantees: whether the existing-assignment read
+        observes a prior assignment (existing_return) decides orphan-cleanup vs
         short-circuit. This documents the corruption mechanism (6204); it is
-        not itself proof the lock serializes."""
+        not itself proof the claim serializes."""
         from contextlib import ExitStack
 
         def boto3_client(service):
@@ -1664,7 +1692,7 @@ class TestConcurrentAssignLock:
                 patch("premium_manager.pymysql.connect", return_value=setup_db_mock())
             )
             stack.enter_context(
-                patch("premium_manager.distributed_lock", new=_always_acquired_lock())
+                patch("premium_manager.assign_claim", new=_always_acquired_claim())
             )
             stack.enter_context(patch("boto3.client", side_effect=boto3_client))
 
@@ -1674,10 +1702,10 @@ class TestConcurrentAssignLock:
 
     def test_stale_existing_read_orphans_target_group(self, mock_env_vars_premium):
         """Corruption mechanism (6204): when a second assign does not
-        observe the first's stored assignment (the stale read the per-user lock
+        observe the first's stored assignment (the stale read the per-user claim
         prevents), its orphan-cleanup deletes the first's live target group,
-        corrupting routing. This is what the lock exists to prevent; the lock
-        itself is asserted by test_lock_* above, not here."""
+        corrupting routing. This is what the claim exists to prevent; the claim
+        itself is asserted by test_claim_* above, not here."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
@@ -1698,10 +1726,10 @@ class TestConcurrentAssignLock:
         self, mock_env_vars_premium
     ):
         """Post-serialization outcome (6204): once the second assign
-        observes the first's stored assignment (what the lock's happens-before
+        observes the first's stored assignment (what the claim's happens-before
         guarantees), it short-circuits to 'existing', creating and deleting
         nothing, so exactly one target group survives. The serialization that
-        produces this read ordering is asserted by test_lock_* above, not
+        produces this read ordering is asserted by test_claim_* above, not
         here."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
@@ -1730,6 +1758,109 @@ class TestConcurrentAssignLock:
         assert fake.deleted == []
         assert list(fake.live) == [first_tg]
         assert len(fake.created) == 1
+
+
+class TestAssignClaimRow:
+    """The real assign_claim against an in-memory premium_assign_claims."""
+
+    @pytest.fixture
+    def claims(self, mock_env_vars_premium):
+        db = FakeAssignClaimsDb()
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection", side_effect=db.get_db_connection
+        ):
+            yield db
+
+    def test_second_holder_is_refused_until_the_first_releases(self, claims):
+        from premium_manager import assign_claim
+
+        with assign_claim(7, 600) as first:
+            assert first is True
+            with assign_claim(7, 600, wait_seconds=0) as second:
+                assert second is False
+        assert claims.rows == {}
+        with assign_claim(7, 600, wait_seconds=0) as third:
+            assert third is True
+
+    def test_claims_of_different_users_do_not_block(self, claims):
+        from premium_manager import assign_claim
+
+        with assign_claim(7, 600) as a, assign_claim(8, 600, wait_seconds=0) as b:
+            assert (a, b) == (True, True)
+
+    def test_expired_claim_is_reclaimed_and_its_late_release_is_harmless(self, claims):
+        """A crashed holder leaves its row; once expired, the next assign
+        takes it over, and the stale holder's release cannot delete it."""
+        from premium_manager import _release_assign_claim, assign_claim
+
+        claims.rows[7] = {"claim_token": "crashed", "expires_at": 100.0}
+        claims.now = 50.0
+        with assign_claim(7, 600, wait_seconds=0) as live_refused:
+            assert live_refused is False
+        assert claims.rows[7]["claim_token"] == "crashed"
+
+        claims.now = 101.0
+        with assign_claim(7, 600, wait_seconds=0) as reclaimed:
+            assert reclaimed is True
+            token = claims.rows[7]["claim_token"]
+            assert token != "crashed"
+            _release_assign_claim(7, "crashed")
+            assert claims.rows[7]["claim_token"] == token
+        assert claims.rows == {}
+
+    def test_waiter_acquires_once_the_holder_releases(self, claims):
+        """The loser polls within its bounded wait instead of failing at once."""
+        from premium_manager import assign_claim
+
+        claims.rows[7] = {"claim_token": "holder", "expires_at": 1e9}
+        sleeps = []
+
+        def holder_finishes(seconds):
+            sleeps.append(seconds)
+            claims.rows.pop(7, None)
+
+        with patch("premium_manager.time.sleep", side_effect=holder_finishes):
+            with assign_claim(7, 600, wait_seconds=5) as acquired:
+                assert acquired is True
+        assert len(sleeps) == 1
+
+    def test_claim_is_released_when_the_block_raises(self, claims):
+        from premium_manager import assign_claim
+
+        with pytest.raises(RuntimeError):
+            with assign_claim(7, 600):
+                raise RuntimeError("impl failed")
+        assert claims.rows == {}
+
+    def test_missing_claims_table_is_not_acquired(self, mock_env_vars_premium):
+        """Before the migration lands, assign answers 200 / 409, not 500."""
+        db = FakeAssignClaimsDb(missing_table=True)
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection", side_effect=db.get_db_connection
+        ), patch("premium_manager.time.sleep") as mock_sleep:
+            from premium_manager import assign_claim
+
+            with assign_claim(7, 600) as acquired:
+                assert acquired is False
+        mock_sleep.assert_not_called()
+
+    def test_assign_returns_409_while_another_invocation_holds_the_claim(self, claims):
+        """End to end through assign_premium_user: no impl runs for the loser."""
+        claims.rows[123] = {"claim_token": "winner", "expires_at": 1e9}
+        with patch("boto3.client"), patch(
+            "premium_manager.ASSIGN_CLAIM_WAIT_SECONDS", 0
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=None
+        ), patch(
+            "premium_manager._assign_premium_user_impl"
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+        assert result["statusCode"] == 409
+        mock_impl.assert_not_called()
+        assert claims.rows[123]["claim_token"] == "winner"
 
 
 class TestDictCursorFix:
@@ -2522,8 +2653,8 @@ class TestStandbyReplenishmentAsync:
             ), patch(
                 "premium_manager.pymysql.connect"
             ) as mock_pymysql, patch(
-                "premium_manager.distributed_lock",
-                new=_always_acquired_lock(),
+                "premium_manager.assign_claim",
+                new=_always_acquired_claim(),
             ), patch(
                 "boto3.client"
             ) as mock_boto3:
@@ -5601,7 +5732,7 @@ class TestAssignCascadeTiers:
                 patch("premium_manager.pymysql.connect", return_value=setup_db_mock())
             )
             stack.enter_context(
-                patch("premium_manager.distributed_lock", new=_always_acquired_lock())
+                patch("premium_manager.assign_claim", new=_always_acquired_claim())
             )
             stack.enter_context(patch("boto3.client", side_effect=boto3_client))
 
@@ -5918,7 +6049,7 @@ class TestInlineMigrationOnAdoption:
             ) as mock_async, patch(
                 "premium_manager.pymysql.connect", return_value=setup_db_mock()
             ), patch(
-                "premium_manager.distributed_lock", new=_always_acquired_lock()
+                "premium_manager.assign_claim", new=_always_acquired_claim()
             ), patch(
                 "boto3.client", return_value=MagicMock()
             ):

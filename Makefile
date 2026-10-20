@@ -104,8 +104,8 @@ alembic_check:
 
 .PHONY: premium_lock_it
 premium_lock_it:
-	# Real-MySQL GET_LOCK integration test proving distributed_lock
-	# serializes concurrent sessions.
+	# Real-MySQL integration test proving distributed_lock (GET_LOCK) and
+	# the per-user assign claim serialize concurrent sessions.
 	# Opt-in: needs a real database, so it is not part of per-PR CI.
 	# Single shell with an EXIT trap so the throwaway DB is always torn down.
 	@bash -euc '\

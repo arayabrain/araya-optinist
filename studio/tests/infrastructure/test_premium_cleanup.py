@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from aws_constants import (
     ECSTaskStatus,
     PremiumAssignment,
@@ -104,7 +105,11 @@ class TestPremiumCleanupHandler:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_cleanup.pymysql.connect") as mock_pymysql:
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect"
+        ) as mock_pymysql, patch(
+            "premium_cleanup.get_assign_claimed_user_ids", return_value=set()
+        ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
                     MockRow({"count": 0}),
@@ -416,6 +421,12 @@ class TestCleanupStaleAssignments:
 class TestCleanupOrphanedAlbResources:
     """cleanup_orphaned_alb_resources tests."""
 
+    @pytest.fixture(autouse=True)
+    def _no_assign_in_flight(self):
+        """These cases cover the DB keep-set; no assign holds a claim."""
+        with patch("premium_cleanup.get_assign_claimed_user_ids", return_value=set()):
+            yield
+
     def test_no_orphans(self, mock_env_vars_premium):
         """All ALB rules match DB, no orphans."""
         valid_rule_arn = "arn:aws:rule/valid-in-db"
@@ -703,6 +714,217 @@ class TestCleanupOrphanedAlbResources:
             # ``orphaned_rules_deleted: 0``, so both assertions above also hold
             # when the sweep dies on its first line.
             assert "error" not in result, result
+
+
+def _user_tg_arn(user_id):
+    return (
+        "arn:aws:elasticloadbalancing:region:account:"
+        f"targetgroup/premium-{user_id}-tg/abc{user_id}"
+    )
+
+
+class TestAlbSweepsSkipInFlightAssign:
+    """The orphan and duplicate sweeps leave alone ALB resources an assign
+    holding a claim may still be creating: its rule exists before its row."""
+
+    @staticmethod
+    def _elbv2_with_rules(mock_boto3, rules):
+        mock_elbv2 = MagicMock()
+        mock_elbv2.describe_rules.return_value = {"Rules": rules}
+        mock_boto3.side_effect = lambda service: (
+            mock_elbv2 if service == "elbv2" else MagicMock()
+        )
+        return mock_elbv2
+
+    def test_orphan_sweep_keeps_only_the_claimed_users_rule(
+        self, mock_env_vars_premium
+    ):
+        """Neither rule has a row yet; only the claimed user's is kept."""
+        claimed_rule = "arn:aws:rule/user-12-in-flight"
+        orphan_rule = "arn:aws:rule/user-13-orphan"
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect", return_value=setup_db_mock()
+        ), patch(
+            "premium_cleanup.get_assign_claimed_user_ids", return_value={12}
+        ):
+            mock_elbv2 = self._elbv2_with_rules(
+                mock_boto3,
+                [
+                    _premium_alb_rule(claimed_rule, _user_tg_arn(12), "rid-12"),
+                    _premium_alb_rule(orphan_rule, _user_tg_arn(13), "rid-13", "101"),
+                ],
+            )
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+        mock_elbv2.delete_rule.assert_called_once_with(RuleArn=orphan_rule)
+        assert result["orphaned_rules_deleted"] == 1
+        deleted_tgs = [
+            c.kwargs["TargetGroupArn"]
+            for c in mock_elbv2.delete_target_group.call_args_list
+        ]
+        assert deleted_tgs == [_user_tg_arn(13)]
+
+    @pytest.mark.parametrize(
+        "claimed_user_ids, expect_deleted", [({99}, False), (set(), True)]
+    )
+    def test_orphan_sweep_keeps_pool_rules_while_any_claim_is_live(
+        self, mock_env_vars_premium, claimed_user_ids, expect_deleted
+    ):
+        """A pool rule names no user, so any live claim may own it."""
+        pool_rule = "arn:aws:rule/pool-user"
+        pool_tg = mock_env_vars_premium["AUTOSCALING_TARGET_GROUP_ARN"]
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect", return_value=setup_db_mock()
+        ), patch(
+            "premium_cleanup.get_assign_claimed_user_ids",
+            return_value=claimed_user_ids,
+        ):
+            mock_elbv2 = self._elbv2_with_rules(
+                mock_boto3, [_premium_alb_rule(pool_rule, pool_tg, "rid-pool")]
+            )
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            cleanup_orphaned_alb_resources()
+
+        assert mock_elbv2.delete_rule.called is expect_deleted
+        # The shared pool TG itself is never deleted.
+        assert not mock_elbv2.delete_target_group.called
+
+    def test_orphan_sweep_deletes_nothing_when_claims_are_unreadable(
+        self, mock_env_vars_premium
+    ):
+        """Fail closed: without the claims, an in-flight rule looks orphaned."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect", return_value=setup_db_mock()
+        ), patch(
+            "premium_cleanup.get_assign_claimed_user_ids",
+            side_effect=Exception("Table 'premium_assign_claims' doesn't exist"),
+        ):
+            mock_elbv2 = self._elbv2_with_rules(
+                mock_boto3,
+                [_premium_alb_rule("arn:aws:rule/x", _user_tg_arn(5), "rid-5")],
+            )
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+        assert not mock_elbv2.delete_rule.called
+        assert result["orphaned_rules_deleted"] == 0
+        assert "assign claims unavailable" in result["error"]
+
+    def test_claims_reader_raises_on_a_db_error(self, mock_env_vars_premium):
+        """Through the real reader: a missing claims table (the deploy window
+        before the migration) must stop the sweep, not read as "no claims"."""
+        import pymysql
+
+        def execute(sql, params=None):
+            if "premium_assign_claims" in sql:
+                raise pymysql.err.ProgrammingError(
+                    1146, "Table 'premium_assign_claims' doesn't exist"
+                )
+
+        connection = setup_db_mock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.execute.side_effect = execute
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect", return_value=connection
+        ):
+            mock_elbv2 = self._elbv2_with_rules(
+                mock_boto3,
+                [_premium_alb_rule("arn:aws:rule/x", _user_tg_arn(5), "rid-5")],
+            )
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+        assert not mock_elbv2.delete_rule.called
+        assert "assign claims unavailable" in result["error"]
+
+    def test_orphan_sweep_reads_claims_between_rules_and_keep_set(
+        self, mock_env_vars_premium
+    ):
+        """The read order is the guarantee: an assign that stores its row and
+        drops its claim between two reads is still seen by one of them."""
+        events = []
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect"
+        ) as mock_connect, patch(
+            "premium_cleanup.get_assign_claimed_user_ids",
+            side_effect=lambda: events.append("claims") or set(),
+        ):
+            connection = setup_db_mock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.execute.side_effect = lambda *a, **k: events.append("keep-set")
+            mock_connect.return_value = connection
+            mock_elbv2 = self._elbv2_with_rules(mock_boto3, [])
+            mock_elbv2.describe_rules.side_effect = lambda **k: (
+                events.append("rules") or {"Rules": []}
+            )
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            cleanup_orphaned_alb_resources()
+
+        assert events == ["rules", "claims", "keep-set"]
+
+    def test_duplicate_sweep_keeps_the_claimed_users_extra_rule(
+        self, mock_env_vars_premium
+    ):
+        """Two rules share a routing id and only one is stored: the extra one
+        is kept while its user holds a claim, deleted once it does not."""
+        stored_rule = "arn:aws:rule/user-12-stored"
+        extra_rule = "arn:aws:rule/user-12-extra"
+        rules = [
+            _premium_alb_rule(stored_rule, _user_tg_arn(12), "rid-12"),
+            _premium_alb_rule(extra_rule, _user_tg_arn(12), "rid-12", "101"),
+        ]
+
+        def run(claimed_user_ids):
+            with patch.dict("os.environ", mock_env_vars_premium), patch(
+                "boto3.client"
+            ) as mock_boto3, patch(
+                "premium_cleanup.pymysql.connect",
+                return_value=setup_db_mock(
+                    fetchall_values=[[MockRow({"alb_rule_arn": stored_rule})]]
+                ),
+            ), patch(
+                "premium_cleanup.get_assign_claimed_user_ids",
+                return_value=claimed_user_ids,
+            ):
+                mock_elbv2 = self._elbv2_with_rules(mock_boto3, rules)
+                from premium_cleanup import cleanup_duplicate_alb_rules
+
+                cleanup_duplicate_alb_rules()
+            return [c.kwargs["RuleArn"] for c in mock_elbv2.delete_rule.call_args_list]
+
+        assert run({12}) == []
+        assert run(set()) == [extra_rule]
+
+    def test_claimed_user_ids_are_read_as_ints(self, mock_env_vars_premium):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_cleanup.pymysql.connect",
+            return_value=setup_db_mock(
+                fetchall_values=[[MockRow({"user_id": 12}), MockRow({"user_id": 13})]]
+            ),
+        ):
+            from premium_cleanup import get_assign_claimed_user_ids
+
+            assert get_assign_claimed_user_ids() == {12, 13}
 
 
 class TestReconcileInstanceStates:
