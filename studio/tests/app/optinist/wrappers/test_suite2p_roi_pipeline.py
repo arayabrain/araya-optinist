@@ -47,10 +47,11 @@ def _detect_outputs():
     }
 
 
-def _found(stat=None, F=None):
+def _found(stat=None, F=None, iscell=None):
     stat = _stat() if stat is None else stat
     F = np.ones((len(stat), FRAMES), np.float32) if F is None else F
-    iscell = np.array([[1, 0.9], [0, 0.1]])[: len(stat)]
+    if iscell is None:
+        iscell = np.array([[1, 0.9], [0, 0.1]])[: len(stat)]
     return (None, _detect_outputs(), stat, F, F * 0.5, None, None, None, iscell) + (
         None,
         None,
@@ -202,6 +203,28 @@ def test_no_rois_gives_empty_outputs_and_keeps_the_detection_images(
     assert info["iscell"].data.shape == (0,)
     np.testing.assert_array_equal(ops["max_proj"], np.ones((LY, LX)))
     assert np.isnan(info["cell_roi"].data).all()
+
+
+@pytest.mark.parametrize("label", [1, 0], ids=["all_cells", "no_cells"])
+def test_an_empty_cell_or_non_cell_set_gives_an_all_nan_image(
+    output_dir, tmp_path, suite2p_stub, label
+):
+    n = len(CELLS)
+    suite2p_stub["result"] = _found(
+        iscell=np.column_stack([np.full(n, label), np.full(n, 0.5)])
+    )
+
+    info = suite2p_roi(
+        _registered_ops(tmp_path), output_dir, params=read_default_params("suite2p_roi")
+    )
+
+    assert list(info["iscell"].data) == [label] * n
+    filled, empty = (
+        ("cell_roi", "non_cell_roi") if label else ("non_cell_roi", "cell_roi")
+    )
+    assert np.isnan(info[empty].data).all()
+    np.testing.assert_array_equal(info[filled].data, info["all_roi"].data)
+    assert np.nanmax(info["all_roi"].data) == n - 1
 
 
 @pytest.mark.parametrize(
