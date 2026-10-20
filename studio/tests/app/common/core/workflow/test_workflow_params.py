@@ -1,6 +1,9 @@
 import pytest
 
 from studio.app.common.core.workflow import workflow_params
+from studio.app.common.core.workflow.workflow_input_validator import (
+    WorkflowValidationError,
+)
 from studio.app.common.core.workflow.workflow_params import (
     get_typecheck_params,
     read_default_params,
@@ -146,3 +149,51 @@ def test_flat_key_that_now_lives_two_groups_deep_raises(monkeypatch):
     )
     with pytest.raises(KeyError, match="unknown parameters 'deep'"):
         get_typecheck_params({"a": _child(1), "deep": _child(3)}, "x")
+
+
+@pytest.fixture
+def typed_defaults(monkeypatch):
+    monkeypatch.setattr(
+        workflow_params,
+        "read_default_params",
+        lambda name: {"n": 1, "x": 1.5, "s": "a", "b": True, "g": {"m": 2}},
+    )
+
+
+@pytest.mark.parametrize(
+    "saved, want",
+    [
+        ({"n": 2.0}, {"n": 2}),  # the form sends every number as a float
+        ({"n": "3"}, {"n": 3}),
+        ({"x": 2}, {"x": 2.0}),
+        ({"x": "2.5"}, {"x": 2.5}),
+        ({"s": 8}, {"s": "8"}),
+        ({"g": {"m": 4.0}}, {"g": {"m": 4}}),
+        ({"n": None}, {"n": None}),  # a yaml null stays null
+        ({"b": False}, {"b": False}),
+    ],
+)
+def test_a_saved_scalar_is_cast_to_the_yaml_type(typed_defaults, saved, want):
+    params = get_typecheck_params(_to_message(saved), "x")
+    assert params == want
+    leaf = next(iter(want.values()))
+    got = next(iter(params.values()))
+    if isinstance(leaf, dict):
+        leaf, got = leaf["m"], got["m"]
+    assert type(got) is type(leaf)
+
+
+@pytest.mark.parametrize(
+    "saved, match",
+    [
+        ({"n": 2.5}, "x.n must be a whole number, got 2.5"),
+        ({"n": "abc"}, "x.n must be a whole number, got 'abc'"),
+        ({"x": "abc"}, "x.x must be a number, got 'abc'"),
+        ({"g": {"m": 0.5}}, "x.m must be a whole number"),
+    ],
+)
+def test_a_value_that_cannot_take_the_yaml_type_is_refused(
+    typed_defaults, saved, match
+):
+    with pytest.raises(WorkflowValidationError, match=match):
+        get_typecheck_params(_to_message(saved), "x")

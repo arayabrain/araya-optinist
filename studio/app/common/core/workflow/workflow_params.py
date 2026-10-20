@@ -1,6 +1,9 @@
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.filepath_finder import find_param_filepath
+from studio.app.common.core.workflow.workflow_input_validator import (
+    WorkflowValidationError,
+)
 
 logger = AppLogger.get_logger()
 
@@ -79,17 +82,31 @@ def check_types(params, default_params, name=""):
         elif isinstance(params[key], dict):
             params[key] = check_types(params[key], default_params[key], name)
         else:
-            if not isinstance(type(params[key]), type(default_params[key])):
-                data_type = type(default_params[key])
-                p = params[key]
-                if isinstance(data_type, str):
-                    params[key] = str(p)
-                elif isinstance(data_type, float):
-                    params[key] = float(p)
-                elif isinstance(data_type, int):
-                    params[key] = int(p)
+            params[key] = as_default_type(
+                params[key], default_params[key], f"{name}.{key}" if name else key
+            )
 
     return params
+
+
+def as_default_type(value, default, label: str):
+    """The saved scalar as the yaml's type (the form sends every number as a float)."""
+    target = type(default)
+    if target not in (str, float, int) or value is None or isinstance(value, target):
+        return value
+    if target is str:
+        return str(value)
+    kind = "a whole number" if target is int else "a number"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise WorkflowValidationError(
+            f"{label} must be {kind}, got {value!r}"
+        ) from None
+    if target is int and not number.is_integer():
+        # truncating 2.5 to 2 would change the run without the user knowing
+        raise WorkflowValidationError(f"{label} must be {kind}, got {value!r}")
+    return target(number)
 
 
 def nest2dict(value):
