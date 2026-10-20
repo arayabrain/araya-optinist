@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import itertools
 import operator
@@ -43,6 +44,23 @@ def _tiff_shape(path: str) -> tuple:
 # frames per decoded read when splitting, bounded in bytes
 BATCH_BYTES = 64 << 20
 
+# tifffile.memmap raises these for a file it cannot map: compressed or scattered
+# pixels, not a TIFF (TiffFileError is no ValueError before tifffile 2026), or a
+# mount that cannot map
+CANNOT_MAP = (ValueError, OSError, tifffile.TiffFileError)
+
+
+def open_frames(path: str):
+    """
+    The frames imageio.volread reads from a file: memory-mapped when its pixels
+    are contiguous, so only what is sliced is read, else read in full.
+    """
+    try:
+        return tifffile.memmap(path, mode="r")
+    except CANNOT_MAP as e:
+        logger.warning("%s is read in full: %s", os.path.basename(path), e)
+        return np.asarray(imageio.volread(path))
+
 
 def iter_frame_batches(path: str, frames: int, batch_size: int):
     """
@@ -51,14 +69,15 @@ def iter_frame_batches(path: str, frames: int, batch_size: int):
     contiguous, else batch_size pages decoded at a time when each page is one
     frame (compressed stacks), and read in full only otherwise.
 
-    The view uses no memory, so it is not split: a memmap filled from it in one
-    assignment has each page written once, where every batch would dirty most
-    pages again and a page written back in between would be written twice.
+    The view uses no memory, and walked frame by frame it reads each page of
+    the file once. Assigned into an array of another memory order (CaImAn's
+    pixels x time memmap), it would be read once per image column, so it would
+    have to fit the page cache: util_get_image_memmap_from_files maps files
+    itself and assigns them a block of columns at a time.
     """
     try:
         source = tifffile.memmap(path, mode="r")
-    except (ValueError, OSError):
-        # compressed or scattered pixels, not a TIFF, or a mount that cannot map
+    except CANNOT_MAP:
         source = None
     if source is not None:
         yield source
@@ -159,9 +178,13 @@ class ImageData(BaseData):
 
         TIFF stacks of 2-D frames are written part by part from batches of
         their frames, byte-identical to writing slices of `data`, so the movie
-        is not held as a whole; anything else is read whole.
+        is not held as a whole; anything else is read whole, once. A failed
+        split leaves no parts behind.
         """
-        frames = self.shape[0]
+        paths = self.path if isinstance(self.path, list) else [self.path]
+        headers = _stack_headers(paths)
+        image = self.data if headers is None else None
+        frames = self.shape[0] if image is None else image.shape[0]
 
         if lengths is not None:
             if len(lengths) < 2:
@@ -191,7 +214,6 @@ class ImageData(BaseData):
             base, extra = divmod(frames, n_files)
             lengths = [base + 1 if i < extra else base for i in range(n_files)]
 
-        paths = self.path if isinstance(self.path, list) else [self.path]
         name, ext = os.path.splitext(os.path.basename(paths[0]))
 
         _dir = join_filepath([output_dir, "image_split", name])
@@ -200,29 +222,35 @@ class ImageData(BaseData):
             join_filepath([_dir, f"{name}_{n}{ext}"]) for n in range(len(lengths))
         ]
 
-        headers = _stack_headers(paths)
-        if headers is None:
-            image = self.data
-            offset = 0
+        try:
+            if image is not None:
+                offset = 0
+                for _path, length in zip(save_paths, lengths):
+                    with tifffile.TiffWriter(_path, bigtiff=True) as tif:
+                        tif.write(image[offset : offset + length])
+                    offset += length
+                return save_paths
+
+            frame_shape = headers[0][0][1:]
+            dtype = np.result_type(*(dt.newbyteorder("=") for _, dt in headers))
+            movie = _iter_frames(paths, headers, dtype, BATCH_BYTES)
             for _path, length in zip(save_paths, lengths):
+                part = itertools.islice(movie, length)
                 with tifffile.TiffWriter(_path, bigtiff=True) as tif:
-                    tif.write(image[offset : offset + length])
-                offset += length
+                    # shapes tifffile stores as RGB, which older tifffile
+                    # cannot stream
+                    if length in (3, 4) or frame_shape[1] in (3, 4):
+                        tif.write(np.stack(list(part)))
+                    else:
+                        tif.write(part, shape=(length, *frame_shape), dtype=dtype)
             return save_paths
-
-        frame_shape = headers[0][0][1:]
-        dtype = np.result_type(*(dt.newbyteorder("=") for _, dt in headers))
-        movie = _iter_frames(paths, headers, dtype, BATCH_BYTES)
-        for _path, length in zip(save_paths, lengths):
-            part = itertools.islice(movie, length)
-            with tifffile.TiffWriter(_path, bigtiff=True) as tif:
-                # shapes tifffile stores as RGB, which older versions cannot stream
-                if length in (3, 4) or frame_shape[1] in (3, 4):
-                    tif.write(np.stack(list(part)))
-                else:
-                    tif.write(part, shape=(length, *frame_shape), dtype=dtype)
-
-        return save_paths
+        except BaseException:
+            # a read error mid-split would leave earlier parts and a partial
+            # one; a failed node keeps no pickle that could reference them
+            for _path in save_paths:
+                with contextlib.suppress(OSError):
+                    os.remove(_path)
+            raise
 
     @property
     def data(self):

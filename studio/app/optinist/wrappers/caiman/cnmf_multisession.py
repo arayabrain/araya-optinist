@@ -1,11 +1,11 @@
 import gc
 
 import numpy as np
-import tifffile
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
+from studio.app.common.dataclass.image import open_frames
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
 from studio.app.optinist.dataclass.roi import edit_reference
@@ -36,12 +36,13 @@ BATCH_BYTES = 64 << 20
 class FrameStack:
     """
     The frames of TIFF stacks joined in time, as a (T, d1, d2) array-like that
-    reads them when sliced. Each file is memory-mapped, so a slice within one
-    file is a view, and a slice across files a copy of its frames.
+    reads them when sliced. Each file is memory-mapped where it can be, so a
+    slice within one file is a view, and a slice across files a copy of its
+    frames.
     """
 
     def __init__(self, paths: list):
-        self.files = [tifffile.memmap(path, mode="r") for path in paths]
+        self.files = [open_frames(path) for path in paths]
         self.starts = np.cumsum([0] + [len(f) for f in self.files])
         self.shape = (int(self.starts[-1]),) + self.files[0].shape[1:]
 

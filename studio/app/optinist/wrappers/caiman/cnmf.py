@@ -14,7 +14,7 @@ from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
 )
 from studio.app.common.dataclass import ImageData
-from studio.app.common.dataclass.image import iter_frame_batches
+from studio.app.common.dataclass.image import CANNOT_MAP, iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
 from studio.app.optinist.dataclass.roi import edit_reference
@@ -168,6 +168,33 @@ def correlation_image(movie):
     return rho / neighbors
 
 
+# a mapped file larger than this is assigned a block of image columns at a time
+FILL_BLOCK_BYTES = 256 << 20
+
+
+def assign_by_columns(target, source, block_bytes: int = None):
+    """
+    target[...] = source, for a (T, d1, d2) source memory-mapped in C order and
+    a target in CaImAn's pixels x time order, with a bounded share of the
+    source in play.
+
+    numpy fills the target in its own memory order, time innermost, so a whole
+    source would be read once per image column: it would have to stay in the
+    page cache, or be read again from disk each time. A source of up to
+    block_bytes is assigned whole. A larger one is copied out a block of
+    columns at a time (one sequential pass over the source per block, the
+    block held in memory) and assigned, and the target's pixels of a block are
+    contiguous, so each page is written once.
+    """
+    block_bytes = block_bytes or FILL_BLOCK_BYTES
+    if source.nbytes <= block_bytes:
+        target[...] = source
+        return
+    width = max(1, block_bytes // (source.nbytes // source.shape[-1]))
+    for j in range(0, source.shape[-1], width):
+        target[..., j : j + width] = np.ascontiguousarray(source[..., j : j + width])
+
+
 def util_get_image_memmap_from_files(
     function_id: str, paths, file_path: str, batch_size: int = 1024
 ):
@@ -175,15 +202,16 @@ def util_get_image_memmap_from_files(
     As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
     filled from the image files batch by batch, with the same values: the movie
     is not held in memory as a whole, nor a second time while being copied into
-    the memmap. A file is memory-mapped and assigned in one piece when its
-    pixels are contiguous, else decoded a batch of pages at a time when each
-    page is one frame (compressed stacks), and read in full only otherwise.
+    the memmap. A file is memory-mapped and assigned by assign_by_columns when
+    its pixels are contiguous, else decoded a batch of pages at a time when
+    each page is one frame (compressed stacks), and read in full only
+    otherwise (see iter_frame_batches).
 
     The memmap is pixels x time, so a 4 KiB page holds 1024 consecutive frames
     of one pixel: decoded batches of about that many frames write each page
     about once (smaller batches rewrite every page several times and run
-    slower). A memory-mapped file needs no batches, and one assignment writes
-    each page once even where a pixel's frames do not start on a page.
+    slower), and a mapped file, assigned by columns, has each page written
+    once.
     """
     import imageio
     import tifffile
@@ -235,6 +263,19 @@ def util_get_image_memmap_from_files(
         t = 0
         for path, shape in zip(paths, shapes):
             end = t + shape[0]
+            try:
+                source = tifffile.memmap(path, mode="r")
+            except CANNOT_MAP:
+                source = None
+            if source is not None:
+                if source.shape != shape:
+                    raise ValueError(
+                        f"{os.path.basename(path)}: read as {source.shape}, "
+                        f"but its headers give {shape}"
+                    )
+                assign_by_columns(mmap_images[t:end], source)
+                t = end
+                continue
             for batch in iter_frame_batches(path, shape[0], batch_size):
                 if batch.shape[1:] != dims or t + len(batch) > end:
                     raise ValueError(

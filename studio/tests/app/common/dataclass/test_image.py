@@ -374,8 +374,7 @@ def test_split_does_not_read_a_stack_whole(tmp_path, monkeypatch, write):
 
 @pytest.mark.parametrize("write", [_stack, _pages_without_shape_metadata])
 def test_split_still_works_where_files_cannot_be_mapped(tmp_path, monkeypatch, write):
-    # pages are read a batch at a time where each is a frame; a contiguous file
-    # (tifffile's own, one IFD) is read whole, as split_image read every file
+    # each page is a frame, so pages are decoded a batch at a time, not read whole
     path = str(tmp_path / "movie.tif")
     image_data = ImageData(write(path) or path)
     lengths = [2, image_data.shape[0] - 2]
@@ -385,9 +384,38 @@ def test_split_still_works_where_files_cannot_be_mapped(tmp_path, monkeypatch, w
         raise OSError("mmap is not supported on this mount")
 
     monkeypatch.setattr(tifffile, "memmap", cannot_map)
+    monkeypatch.setattr(imageio, "volread", lambda *a, **k: pytest.fail("read whole"))
     actual = image_data.split_image(str(tmp_path / "new"), lengths=lengths)
     for a, e in zip(actual, expected):
         assert open(a, "rb").read() == open(e, "rb").read()
+
+
+def test_a_split_that_fails_leaves_no_parts(tmp_path, monkeypatch):
+    # a read error in the second part: the first part and the partial second go
+    path = _stack(str(tmp_path / "movie.tif"))
+    read = image_module.iter_frame_batches
+
+    def fails_after_seven_frames(path, frames, batch_size):
+        yield next(read(path, frames, frames))[:7]
+        raise OSError("read error")
+
+    monkeypatch.setattr(image_module, "iter_frame_batches", fails_after_seven_frames)
+    out = tmp_path / "new"
+    with pytest.raises(OSError, match="read error"):
+        ImageData(path).split_image(str(out), lengths=[6, 5])
+    assert list((out / "image_split" / "movie").iterdir()) == []
+
+
+def test_split_reads_a_file_that_is_no_tiff_once(tmp_path, monkeypatch):
+    path = str(tmp_path / "frames.png")
+    _png(path)
+    reads = []
+    volread = imageio.volread
+    monkeypatch.setattr(
+        imageio, "volread", lambda *a, **k: reads.append(a) or volread(*a, **k)
+    )
+    ImageData(path).split_image(str(tmp_path / "new"), n_files=2)
+    assert len(reads) == 1
 
 
 def test_split_refuses_a_file_that_reads_fewer_frames_than_its_headers(
@@ -410,10 +438,19 @@ def test_split_refuses_a_file_that_reads_fewer_frames_than_its_headers(
 def test_a_mapped_file_comes_as_one_view_decoded_pages_in_batches(
     tmp_path, write, batches
 ):
-    # one view costs no memory, and a memmap filled from it in one assignment
-    # writes each of its pages once
+    # a view costs no memory, and walked frame by frame reads each page once
     path = write(str(tmp_path / "movie.tif"))
     read = list(image_module.iter_frame_batches(path, 11, 4))
     assert [len(batch) for batch in read] == batches
-    assert isinstance(read[0], np.memmap) == (batches == [11])
+    assert isinstance(read[0], np.memmap) == (write is _stack)
     np.testing.assert_array_equal(np.concatenate(read), tifffile.imread(path))
+
+
+def test_a_file_that_is_no_tiff_is_read_in_full(tmp_path):
+    # tifffile.memmap raises TiffFileError there, which is no ValueError
+    path = str(tmp_path / "frame.png")
+    imageio.imwrite(path, np.arange(30, dtype=np.uint8).reshape(5, 6))
+    expected = imageio.volread(path)
+    read = list(image_module.iter_frame_batches(path, 5, 4))
+    np.testing.assert_array_equal(np.concatenate(read), expected)
+    np.testing.assert_array_equal(image_module.open_frames(path), expected)
