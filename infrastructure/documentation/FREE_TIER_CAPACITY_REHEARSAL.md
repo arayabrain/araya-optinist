@@ -1,23 +1,26 @@
-# Free-Tier Capacity: Pre-provisioning and Scaling Verification
+# Free-Tier Capacity Rehearsal: Pre-provisioning and Reactive Scaling on Development
+
+This document rehearses on development the
+[pre-provisioning runbook](FREE_TIER_PREPROVISIONING_RUNBOOK.md) and the Free Manager's reactive
+scaling, so that an event can depend on both. Run it in pre-release testing of any release that
+changes the Free Manager, the free-tier Auto Scaling Group or its Terraform
+([DEPLOYMENT_PROCEDURE.md](DEPLOYMENT_PROCEDURE.md), *Pre-Release Testing*), and before the first
+event that depends on either mechanism.
 
 ## Executive Summary
 
 - **Two ways free-tier capacity grows, both required.** **Pre-provisioning** raises the Auto
-  Scaling Group's minimum ahead of expected load, and serves the first wave of a burst.
-  **Reactive scaling** is the Free Manager following the active-user count, out and back in, with
-  the `-high` load alarms adding capacity on load. It cannot serve the first wave: a 5-minute
-  polling interval, an instance launch, and sticky sessions that keep active users where they are.
-- **The pre-provisioning procedure applies to any environment** and is the first part of this
-  document. Its order matters in both directions: the ceiling before the floor on the way up,
-  the floor before the ceiling on the way back.
-- **The rehearsal runs on development only, and is built so that it cannot reach production.**
-  The helpers hold every target as a development constant, every write passes one guard, and
-  production is read before and after the session and compared.
-- **Eight cases, in two parts.** PP-1 to PP-5 rehearse pre-provisioning at 3 instances; RS-1 to
-  RS-3 show the group growing with the user count and returning to its baseline. Run them before
-  an event depends on either mechanism, and after any change to the Free Manager or the group.
-- **Carrying the procedure out on production is a separate task,** with its own commands and
-  checks. It is not done from this document or with these helpers.
+  Scaling Group's minimum ahead of expected load, and serves the first wave of a burst; the
+  runbook is how. **Reactive scaling** is the Free Manager following the active-user count, out
+  and back in, with the `-high` load alarms adding capacity on load. It cannot serve the first
+  wave: a 5-minute polling interval, an instance launch, and sticky sessions that keep active
+  users where they are.
+- **Development only, by construction.** The helpers hold every target as a development constant,
+  every write passes one guard, and production is read before and after the session and compared.
+- **Eight cases, in two parts.** PP-1 to PP-5 run the runbook's steps at N = 3; RS-1 to RS-3 show
+  the group growing with the user count and returning to its baseline.
+- **Run by an operator, not by CI.** The cases move real capacity on development and take about
+  three hours.
 
 The mechanism itself is described in [FREE_MANAGER_ARCHITECTURE.md](FREE_MANAGER_ARCHITECTURE.md).
 
@@ -28,7 +31,7 @@ The mechanism itself is described in [FREE_MANAGER_ARCHITECTURE.md](FREE_MANAGER
 | Case | Part | What it shows |
 |---|---|---|
 | **PP-1** | Pre-provisioning | Raising the ceiling, then the floor, brings the group to N instances serving |
-| **PP-2** | Pre-provisioning | An apply returns a CLI-raised floor to the tfvars value (read-only plan) |
+| **PP-2** | Pre-provisioning | An apply returns both CLI-raised bounds to the tfvars values (read-only plan) |
 | **PP-3** | Pre-provisioning | The raised capacity holds through an idle period: the Free Manager does not take it down |
 | **PP-4** | Pre-provisioning | New sessions reach every pre-provisioned instance; a session in progress stays put |
 | **PP-5** | Pre-provisioning | Floor first, ceiling last: the Free Manager returns the group to its baseline |
@@ -41,45 +44,12 @@ different days; each starts from Step 1.
 
 ---
 
-## The Pre-provisioning Procedure
+## What the Cases Exercise
 
-For any environment. PP-1 to PP-5 rehearse it on development with N = 3.
-
-1. **Size it.** N = `ceil(expected concurrent users / 5)`, "concurrent" meaning a request within
-   the idle threshold (`FREE_IDLE_THRESHOLD_MINUTES`). Below N the Free Manager adds capacity on
-   its own as users arrive, but only for new sessions and only after a launch.
-2. **Ceiling first.** If N is above `MaxSize`, raise the maximum to at least N before anything
-   else. The Free Manager clamps every target to `MaxSize`, and `MinSize <= MaxSize` must hold.
-3. **Then the floor, at least 30 minutes ahead.** Raise `MinSize` to N; the group raises its
-   desired capacity to match and launches. **Never raise desired capacity alone:** above the
-   user-count target it is a surplus, and the Free Manager removes a surplus of 2 or more on its
-   next run.
-4. **Choose the route, and hold it for the window.** tfvars (`asg_min_size`, `asg_max_size`) is
-   durable but needs an apply. A CLI change takes effect at once, but **the next apply puts the
-   tfvars values back**: `min_size` and `max_size` are managed, and only `desired_capacity` is
-   ignored. The instances stay up after such an apply; what goes is the floor, after which the
-   Free Manager scales in to what the user count needs. Either way, freeze applies for the window.
-5. **Check it is serving.** The chain below at N, `free-manager-errors` `OK`, and new sessions
-   reaching every instance.
-6. **Restore floor first, ceiling last.** Lower `MinSize` and leave desired capacity alone: the
-   Free Manager's next run computes the target from the user count and removes the surplus,
-   choosing instances with no running workflow. Lowering desired by hand would let the group
-   choose, blind to workloads, and so would lowering `MaxSize` below the current desired, since the
-   group then sets desired to the new maximum. Lower the maximum only once desired is at or below
-   it.
-
-**The chain.** The group is settled when ASG desired capacity = instances `InService` = every
-instance in the group = ECS desired count = ECS running count = healthy free targets. An instance
-still draining stays in the group, and the Free Manager keeps the ECS desired count at the group's
-instance count until it has gone, so the running count alone would call a draining group settled.
-
-**Timing, as measured on development** (custom AMI; the launch hook as the boot wait, no
-terminate hook): the chain at N about 7 to 9 minutes after the floor is raised. Each new instance
-waits about 300 s in `Pending:Wait` while it boots and its ECS agent registers, so its target is
-never registered before it can answer; the rest is ECS placing the task. Back at baseline about
-12 minutes after the floor is lowered when the surplus is 2 or more: one run, then the drain. A surplus of exactly 1 waits for three completed periods
-first, about 15 minutes more. A `-high` alarm in `ALARM`, or a workflow on every candidate, holds
-the surplus until it clears.
+PP-1 to PP-5 carry out the [runbook](FREE_TIER_PREPROVISIONING_RUNBOOK.md)'s steps on development
+at N = 3, with helpers in place of its commands: `fts_set_bounds` for the bounds (steps 2, 3, 6
+and 7) and `fts_chain` for the settled check (step 4). The runbook gives each step's reason and the
+timings measured here; the cases give what to run and what must be seen.
 
 ---
 
@@ -95,25 +65,12 @@ the surplus until it clears.
   `Environment = Development`. The writes are `fts_set_bounds`, `fts_map`, `fts_touch`,
   `fts_activity_loop`, `fts_cleanup_users` and `fts_login`; nothing else writes.
 - **`fts_set_bounds` sets the minimum and maximum, never desired capacity,** and refuses a maximum
-  below the current desired capacity, for the reason in step 6 above.
+  below the current desired capacity, for the reason in the runbook's step 7.
 - **Production is read before and after, and compared.** `fts_prod_snapshot` records production's
   free ASG bounds, instances, hooks, policies and ECS desired count, read only; every session ends
   with `fts_prod_compare`, which must print `PRODUCTION UNCHANGED`.
 - **Production and development share one AWS account,** told apart only by the name prefix. No
   account boundary catches a mistake, which is why the names are constants rather than inputs.
-
-### Running it with an assistant
-
-When an AI assistant drives the CLI, these rules apply on top of the above:
-
-- Read-only calls (`describe-*`, `get-*`, `list-*`, log reads, `count_active_users`) run without
-  asking
-- **Every write is shown before it runs** — the exact command, the development resource it
-  touches and the expected effect — and runs only on the operator's confirmation. A loop counts
-  as one write and is confirmed once, with its duration
-- After each write, the assistant reads the result back and reports it before the next step
-- `fts_login` is run by the operator in their own terminal: the password is typed there and
-  never passes through the assistant
 
 ### Constraints
 
@@ -132,8 +89,9 @@ When an AI assistant drives the CLI, these rules apply on top of the above:
 - **On-hours only.** The development scheduler stops the environment in the evening and rewrites
   the group's bounds on start. The Free Manager's schedule rule is a delayed rule: it stays
   disabled for 15 minutes after a scheduled start. Start at least 15 minutes after it.
-- **No apply to development during a session.** An apply returns the bounds to the tfvars values
-  (PP-2), removing a raised floor mid-case.
+- **No apply to development during a session.** An apply returns both bounds to the tfvars values
+  (PP-2): the raised floor goes mid-case, and a tfvars maximum below the current desired capacity
+  terminates instances the group chooses.
 - **Nobody else on development.** The count includes every active row, not only the pool's.
 
 ### Not to be used: `infrastructure/scripts/test_autoscaling_user_number.py`
@@ -198,8 +156,8 @@ cases below call it the idle threshold.
 
 ### PP-1: Ceiling, then floor
 
-The rehearsal takes N = 3, from Step 1's bounds with no active users, so desired capacity starts
-at `<min0>`. Raise the ceiling only if `<max0>` is below 3:
+The runbook's steps 2 to 4. The rehearsal takes N = 3, from Step 1's bounds with no active users,
+so desired capacity starts at `<min0>`. Raise the ceiling only if `<max0>` is below 3:
 
 ```bash
 fts_set_bounds <min0> 3   # WRITE: the ceiling first; desired stays where it is
@@ -226,10 +184,10 @@ fts_log 10
 `free-tg-unhealthy-hosts` `OK` throughout (`fts_alarms`): a new target is never unhealthy. The
 next scheduled run logs `Calculated desired instances: 3`.
 
-### PP-2: What an apply does to a CLI floor
+### PP-2: What an apply would do to CLI bounds
 
-While PP-1 holds the group at 3, from the deployment checkout, initialised against the development
-backend, with the development tfvars:
+The runbook's step 5. While PP-1 holds the group at 3, from the deployment checkout, initialised
+against the development backend, with the development tfvars:
 
 ```bash
 terraform plan -lock=false -var-file=environments/development.tfvars \
@@ -237,11 +195,14 @@ terraform plan -lock=false -var-file=environments/development.tfvars \
 grep -E '^\s+# |min_size|max_size|desired_capacity|Plan:' /tmp/pp2_plan.txt
 ```
 
-Read only: `-lock=false`, and nothing is applied.
+Read only: `-lock=false`, and nothing is applied. **Do not apply it.**
 
 **Pass:** the group updated in place, `min_size` and `max_size` back to the tfvars values,
-`desired_capacity` absent from the diff, and nothing else in the plan. That is step 4 of the
-procedure: an apply removes the floor and leaves the instances.
+`desired_capacity` absent from the diff, and nothing else in the plan. Read the `max_size` line
+against the current desired capacity: where the tfvars maximum is below it (`<max0>` below 3),
+applying this plan would make the group lower desired capacity to `<max0>` at once and terminate
+the difference itself, blind to workloads. The floor alone going would leave the instances to the Free Manager. That is why the
+runbook freezes applies for the window, and restores through tfvars in two applies, floor first.
 
 ### PP-3: The raised capacity holds while idle
 
@@ -278,6 +239,8 @@ counts requests, and each load-balancer node keeps its own rotation. Keep the to
 follows the same day; otherwise `fts_forget_token`.
 
 ### PP-5: Floor first, ceiling last
+
+The runbook's steps 6 and 7.
 
 ```bash
 fts_set_bounds <min0> 3   # WRITE: the floor back; the maximum stays; desired left to the Free Manager
@@ -464,5 +427,7 @@ Record each run as a comment on the tracking issue, with this table.
 ## References
 
 - Requirements, the case history and the first rehearsal's results: issue #890
+- [FREE_TIER_PREPROVISIONING_RUNBOOK.md](FREE_TIER_PREPROVISIONING_RUNBOOK.md) — the steps PP-1 to
+  PP-5 rehearse, with the production commands
 - [FREE_MANAGER_ARCHITECTURE.md](FREE_MANAGER_ARCHITECTURE.md) — the Free Manager's scaling rules
 - [TERRAFORM_ARCHITECTURE.md](TERRAFORM_ARCHITECTURE.md) — the ASG variables and `ignore_changes`

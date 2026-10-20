@@ -1,15 +1,16 @@
-# Shell helpers for infrastructure/documentation/FREE_TIER_CAPACITY_PROCEDURE.md
+# Shell helpers for infrastructure/documentation/FREE_TIER_CAPACITY_REHEARSAL.md
 #
 # Source this file once per shell, after exporting AWS_PROFILE:
 #   source infrastructure/scripts/free_tier_capacity_helpers.sh
 # It defines constants and functions only; nothing runs at source time.
-# Works under bash and zsh. The procedure document states what each function's
+# Works under bash and zsh. The rehearsal document states what each function's
 # output must look like; this file states only what each one does.
 #
 # Development only, by construction. Every target name is a constant below, so no
 # argument or environment variable can point a function at another environment.
-# Every function that writes calls fts_assert_dev first. Production is only read,
-# by fts_prod_snapshot, to show it was left untouched.
+# Every function that writes calls fts_assert_dev first. Production is only read:
+# by fts_prod_snapshot, to show a rehearsal left it untouched, and by fts_prod_chain,
+# the settled check of FREE_TIER_PREPROVISIONING_RUNBOOK.md.
 
 FTS_REGION=ap-northeast-1
 FTS_ASG=development-optinist-asg
@@ -25,6 +26,7 @@ FTS_NAT_NAME=development-optinist-nat-instance
 FTS_PROD_ASG=subscr-optinist-asg
 FTS_PROD_CLUSTER=subscr-optinist-cloud-cluster
 FTS_PROD_SERVICE=subscr-optinist-cloud-service
+FTS_PROD_TG=subscr-optinist-tg
 
 FTS_STATE_DIR="${FTS_STATE_DIR:-${TMPDIR:-/tmp}/free-tier-capacity}"
 
@@ -156,6 +158,9 @@ fts__chain() {
 
 fts_chain() { fts__chain "$FTS_ASG" "$FTS_CLUSTER" "$FTS_SERVICE" "$FTS_TG"; }
 
+# Production's chain, read only: the runbook's settled check.
+fts_prod_chain() { fts__chain "$FTS_PROD_ASG" "$FTS_PROD_CLUSTER" "$FTS_PROD_SERVICE" "$FTS_PROD_TG"; }
+
 # The group's instances: id, lifecycle state, template version, zone, launch time.
 fts_instances() {
   fts__aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$FTS_ASG" \
@@ -218,7 +223,7 @@ fts_log() {
   done
 }
 
-# Everything the procedure requires before a case starts, with a verdict.
+# Everything the rehearsal requires before a case starts, with a verdict.
 fts_preflight() {
   local stops=0 v
   fts_assert_dev || return 1
@@ -271,7 +276,7 @@ fts_preflight() {
 }
 
 # Production's free tier, read only, saved under a label (before / after). The fields
-# are the ones this procedure could conceivably move; nothing here writes. Every read must
+# are the ones a rehearsal could conceivably move; nothing here writes. Every read must
 # succeed and the counts must be numbers, or nothing is saved: an incomplete snapshot
 # could compare equal to another.
 fts_prod_snapshot() {

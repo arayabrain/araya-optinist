@@ -129,12 +129,19 @@ the target from the user count and removes the surplus, choosing instances with
 no running workflow. Leave desired capacity alone when scaling back down; set by
 hand, the group would choose the instances instead.
 
+**Lowering `max_size` below the current desired capacity does lower it** — the
+group sets desired capacity to the new maximum at once and terminates the
+difference by its termination policy, blind to workloads. Lower the maximum only
+once desired capacity is at or below it, whether by CLI or by apply: a restore
+through tfvars takes two applies, `asg_min_size` first.
+
 The Lambda reads both bounds off the live ASG rather than from its own
 environment, so they can also be changed on the group (console or CLI) without
-a redeploy. That is not persistent: `min_size` is not under `ignore_changes`,
-so the next apply restores the declared value. For sizing, lead time, checks
-and restore, see the pre-provisioning procedure in
-[FREE_TIER_CAPACITY_PROCEDURE.md](FREE_TIER_CAPACITY_PROCEDURE.md).
+a redeploy. That is not persistent: neither bound is under `ignore_changes`, so
+the next apply restores both declared values — the floor goes, and a declared
+maximum below the current desired capacity takes instances with it, as above.
+For sizing, lead time, checks and restore, see
+[FREE_TIER_PREPROVISIONING_RUNBOOK.md](FREE_TIER_PREPROVISIONING_RUNBOOK.md).
 
 ### Database Username (`mysql_user`)
 

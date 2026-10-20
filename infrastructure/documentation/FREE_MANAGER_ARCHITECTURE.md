@@ -252,17 +252,20 @@ bounds:
 - **Raise the minimum, never desired capacity alone.** A desired capacity above
   the user-count target is a surplus, and this Lambda removes a surplus of 2 or
   more on its next run. The ceiling goes up first when the target exceeds it.
-- **A CLI floor does not survive an apply.** `min_size` and `max_size` are
-  managed; only `desired_capacity` is ignored. The instances stay up after an
-  apply, but the floor goes, and this Lambda then scales in to the user count.
-- **Restore the floor first, the ceiling last.** Lowering the floor leaves the
-  choice of instances to this Lambda, which never removes one running a
-  workflow; lowering desired capacity or the ceiling first leaves it to the
-  group's termination policy.
+- **A CLI change does not survive an apply.** `min_size` and `max_size` are
+  managed; only `desired_capacity` is ignored. An apply removes the floor, after
+  which this Lambda scales in to the user count; and a declared maximum below
+  the current desired capacity makes the group lower desired capacity itself and
+  choose the instances, as below.
+- **Restore the floor first, the ceiling last** — by CLI, or by two applies.
+  Lowering the floor leaves the choice of instances to this Lambda, which never
+  removes one running a workflow; lowering desired capacity, or the ceiling
+  below it, leaves it to the group's termination policy.
 
-The procedure — sizing, lead time, route, checks and restore — and its
-rehearsal on development are in
-[FREE_TIER_CAPACITY_PROCEDURE.md](FREE_TIER_CAPACITY_PROCEDURE.md).
+The runbook, with the commands, is
+[FREE_TIER_PREPROVISIONING_RUNBOOK.md](FREE_TIER_PREPROVISIONING_RUNBOOK.md); its
+rehearsal on development is
+[FREE_TIER_CAPACITY_REHEARSAL.md](FREE_TIER_CAPACITY_REHEARSAL.md).
 `HEALTH-03` and `HEALTH-05` assert the settled chain on a deployed environment.
 
 ### Flow Diagrams
@@ -1154,7 +1157,7 @@ python test_free_manager.py --region ap-northeast-1
 ### Manual Testing Scenarios
 
 Scaling and pre-provisioning are exercised on development with
-[FREE_TIER_CAPACITY_PROCEDURE.md](FREE_TIER_CAPACITY_PROCEDURE.md): growth with
+[FREE_TIER_CAPACITY_REHEARSAL.md](FREE_TIER_CAPACITY_REHEARSAL.md): growth with
 the user count, the return to `MinSize`, a raised floor brought up, held,
 serving and restored, and new sessions reaching every instance. Its helpers
 can only target development, and production is compared before and after.
