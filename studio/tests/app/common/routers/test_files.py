@@ -42,6 +42,7 @@ def test_create_files(client):
 
 
 def test_upload_tiff_without_user(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")  # as a standalone deployment
     monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
     tiff = tmp_path / "src.tif"
     tifffile.imwrite(tiff, np.zeros((2, 4, 4), dtype=np.uint16))
