@@ -51,6 +51,9 @@ logger = AppLogger.get_logger()
 S3_DELETION_MAX_RETRIES = 3
 S3_DELETION_BASE_DELAY_SECONDS = 1.0
 
+# bool, int, uint, float, complex: arrays of these cannot hold a unique_id
+NUMERIC_DTYPE_KINDS = "biufc"
+
 
 class ExptConfigWriter:
     def __init__(
@@ -504,6 +507,16 @@ class ExptDataWriter:
         logger = AppLogger.get_logger()
         try:
             with open(file_path, "rb") as file:
+                major, _ = np.lib.format.read_magic(file)
+                read_header = (
+                    np.lib.format.read_array_header_1_0
+                    if major == 1
+                    else np.lib.format.read_array_header_2_0
+                )
+                _, _, dtype = read_header(file, max_header_size=2**64)
+                if dtype.kind in NUMERIC_DTYPE_KINDS:
+                    return
+                file.seek(0)
                 data = np.load(file, allow_pickle=True)
 
             updated_data = self.__replace_ids_recursive(data, old_id, new_id)
@@ -541,7 +554,7 @@ class ExptDataWriter:
                 self.__replace_ids_recursive(item, old_id, new_id, visited)
                 for item in obj
             )
-        elif isinstance(obj, np.ndarray):
+        elif isinstance(obj, np.ndarray) and obj.dtype.kind not in NUMERIC_DTYPE_KINDS:
             if obj.ndim == 0:  # Handle 0D (scalar-like) arrays
                 return self.__replace_ids_recursive(obj.item(), old_id, new_id, visited)
             else:  # Handle 1D or higher-dimensional arrays
@@ -558,7 +571,7 @@ class ExptDataWriter:
                 lambda match: match.group(0).replace(old_id, new_id), obj
             )
         elif hasattr(obj, "__dict__"):
-            # Process custom objects
+            # Custom objects, and numeric array subclasses that keep a file path
             for attr, value in obj.__dict__.items():
                 setattr(
                     obj,

@@ -1,11 +1,18 @@
 import copy
+import os
+import pathlib
 import pickle
+import shutil
+import sys
+import types
 
 import numpy as np
 import pytest
 
+from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
+from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.dataclass.roi import RoiStack
-from studio.app.optinist.wrappers.suite2p.roi import roi_label_images
+from studio.app.optinist.wrappers.suite2p.roi import roi_label_images, suite2p_roi
 
 LY, LX = 6, 5
 
@@ -76,3 +83,94 @@ def test_label_images_equal_nanmax_over_the_stack():
         np.testing.assert_array_equal(
             labels["non_cell"], np.nanmax(stack[iscell == 0], axis=0)
         )
+
+
+def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):
+    old_id, new_id = "0123abcd", "4567cdef"
+    node_dir = tmp_path / "ws" / old_id / "suite2p_roi_x"
+    node_dir.mkdir(parents=True)
+    im, expected = stack_on_disk(node_dir)
+    with open(node_dir / "suite2p_roi_x.pkl", "wb") as f:
+        pickle.dump({"nwbfile": {"all_roi_img": im}, "edit_roi_data": {"im": im}}, f)
+    copied = tmp_path / "ws" / new_id
+    shutil.copytree(tmp_path / "ws" / old_id, copied)
+    copied_stack = copied / "suite2p_roi_x" / "roi_mask_stack.npy"
+    stack_bytes = copied_stack.read_bytes()
+    os.utime(copied_stack, ns=(0, 0))
+
+    ExptDataWriter("", "ws", old_id)._ExptDataWriter__copy_data_replace_unique_id(
+        str(copied), old_id, new_id
+    )
+
+    assert copied_stack.stat().st_mtime_ns == 0  # not rewritten
+    assert copied_stack.read_bytes() == stack_bytes
+    copied_pkl = copied / "suite2p_roi_x" / "suite2p_roi_x.pkl"
+    assert copied_pkl.stat().st_size < 1000
+    with open(copied_pkl, "rb") as f:
+        back = pickle.load(f)
+    a, b = back["nwbfile"]["all_roi_img"], back["edit_roi_data"]["im"]
+    assert a is b
+    assert type(a) is RoiStack and a._stack_path == str(copied_stack)
+    np.testing.assert_array_equal(a, expected)
+
+
+def run_suite2p_roi(monkeypatch, tmp_path, n_roi):
+    stat = np.array(
+        [
+            {"ypix": np.array([i]), "xpix": np.array([i]), "lam": [1.0]}
+            for i in range(n_roi)
+        ]
+    )
+    suite2p = types.ModuleType("suite2p")
+    suite2p.default_ops = dict
+    suite2p.detection = types.SimpleNamespace(detect=lambda ops, classfile: (ops, stat))
+    suite2p.extraction = types.SimpleNamespace(
+        create_masks_and_extract=lambda ops, stat: (
+            ops,
+            stat,
+            np.ones((n_roi, 3)),
+            np.ones((n_roi, 3)),
+            None,
+            None,
+        )
+    )
+    suite2p.classification = types.SimpleNamespace(
+        builtin_classfile=pathlib.Path("builtin"),
+        user_classfile=pathlib.Path("user"),
+        classify=lambda stat, classfile: np.ones((len(stat), 2)),
+    )
+    monkeypatch.setitem(sys.modules, "suite2p", suite2p)
+    output_dir = tmp_path / "ws" / "0123abcd" / "suite2p_roi_x"
+    output_dir.mkdir(parents=True)
+    ops = {
+        "Ly": LY,
+        "Lx": LX,
+        "nframes": 3,
+        "filelist": ["movie.tif"],
+        "use_builtin_classifier": True,
+        "max_proj": np.zeros((LY, LX)),
+        "Vcorr": np.zeros((LY, LX)),
+    }
+    return suite2p_roi(Suite2pData(ops), str(output_dir), params={})
+
+
+def test_the_node_references_the_stack_it_wrote(monkeypatch, tmp_path):
+    info = run_suite2p_roi(monkeypatch, tmp_path, n_roi=2)
+    im = info["edit_roi_data"].im
+    assert type(im) is RoiStack and im.shape == (2, LY, LX)
+    (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
+    assert postprocess["all_roi_img"] is im
+
+
+def test_no_rois_still_finishes_with_empty_outputs(monkeypatch, tmp_path):
+    info = run_suite2p_roi(monkeypatch, tmp_path, n_roi=0)
+    assert info["edit_roi_data"].im.shape == (0, LY, LX)
+
+
+def test_a_failed_stack_write_fails_the_node(monkeypatch, tmp_path):
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(RoiStack, "create", disk_full)
+    with pytest.raises(OSError, match="No space left"):
+        run_suite2p_roi(monkeypatch, tmp_path, n_roi=2)
