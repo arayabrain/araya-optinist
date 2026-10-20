@@ -69,33 +69,33 @@ class TimeSeriesData(BaseData):
         create_directory(self.json_path, delete_dir=True)
         JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)
 
-        # Prepare record data for chunked storage
         record_ids = [str(cell_i) for cell_i in self.cell_numbers]
-        record_data = []
+        rows = self._records(self.data)
+        columns = {"data": rows}
+        if self.std is not None and len(rows):
+            # A 1D std holds one value per record, spread over its time points
+            std = np.asarray(self._records(self.std))[: len(rows)]
+            if std.ndim == 1:
+                std = std[:, np.newaxis]
+            columns["std"] = np.broadcast_to(std, rows.shape)
 
-        for i, cell_i in enumerate(self.cell_numbers):
-            # Prepare data for this cell
-            data = self.data[i]
-            if self.std is not None:
-                std = self.std[i]
-                df = pd.DataFrame({"data": data, "std": std}, index=self.index)
-            else:
-                df = pd.DataFrame({"data": data}, index=self.index)
-
-            record_data.append(df)
-
-        # Use TimeSeriesChunkHandler to save in chunked format
         TimeSeriesChunkHandler.save_chunked_data(
             dirpath=self.json_path,
             record_ids=record_ids,
-            record_data=record_data,
+            columns=columns,
+            index=self.index,
         )
+
+    def _records(self, array):
+        """The (records, time) view of `array` that the preview saves."""
+        return array
 
     @property
     def output_path(self) -> OutputPath:
+        rows = self._records(self.data)
         return OutputPath(
             path=self.json_path,
             type=OutputType.TIMESERIES,
-            max_index=len(self.data),
-            data_shape=list(self.data.shape),
+            max_index=len(rows),
+            data_shape=list(rows.shape),
         )

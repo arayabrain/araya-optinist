@@ -63,18 +63,24 @@ def test_condition_keeps_the_matching_samples(
     np.testing.assert_array_equal(out["behaviors_data"].data, _behavior()[kept])
 
 
-def test_outputs_keep_the_input_orientation(tmp_path):
+@pytest.mark.parametrize("flipped", [False, True], ids=["contract", "flipped"])
+def test_behaviour_comes_back_time_major_and_neural_keeps_its_input(tmp_path, flipped):
+    kept = [2, 3, 5]
+    params = {"transpose_x": not flipped, "transpose_y": flipped}
     out = _split(
         tmp_path,
-        fluo=_fluo().T,
-        behavior=_behavior().T,
-        params={"transpose_x": False, "transpose_y": True},
+        fluo=_fluo().T if flipped else _fluo(),
+        behavior=_behavior().T if flipped else _behavior(),
+        params=params,
     )
 
-    np.testing.assert_array_equal(out["neural_data"].data, _fluo().T[[2, 3, 5]])
+    expected_neural = _fluo()[:, kept]
     np.testing.assert_array_equal(
-        out["behaviors_data"].data, _behavior().T[:, [2, 3, 5]]
+        out["neural_data"].data, expected_neural.T if flipped else expected_neural
     )
+    np.testing.assert_array_equal(out["behaviors_data"].data, _behavior()[kept])
+    out["behaviors_data"].save_json(str(tmp_path))
+    assert out["behaviors_data"].output_path.data_shape == [2, len(kept)]
 
 
 def test_1d_behaviour_is_one_column(tmp_path):
@@ -200,3 +206,22 @@ def test_eta_runs_on_the_split_output(tmp_path):
 
     windows = np.stack([fluo[:, s - 5 : s + 8] for s in (120, 150, 180)])
     np.testing.assert_allclose(eta["mean"].data, windows.mean(axis=0))
+
+
+def test_modulo_keeps_every_second_trial(tmp_path):
+    trial = np.array([0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+
+    info = _split(
+        tmp_path,
+        behavior=_behavior(trial),
+        params={"condition": "equal", "threshold": 1.0, "modulo": 2},
+    )
+
+    even = _split(
+        tmp_path,
+        behavior=_behavior(trial),
+        params={"condition": "equal", "threshold": 0.0, "modulo": 2},
+    )
+
+    assert list(info["behaviors_data"].data[:, 0]) == [2, 3, 6, 7]
+    assert list(even["behaviors_data"].data[:, 0]) == [0, 1, 4, 5]

@@ -3,6 +3,7 @@ import numpy as np
 from studio.app.common.dataclass.image import ImageData
 from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi.utils import set_nwbfile
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import open_edit_images
 
 
 def commit_edit(
@@ -12,11 +13,18 @@ def commit_edit(
     iscell,
     node_dirpath,
     function_id,
+    dff: FluoData = None,
+    rate=30,
 ):
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
     fluorescence = fluorescence.data
     num_cell = data.im.shape[0]
+    # Only new traces read the movie, so a commit that only deletes ROIs never
+    # opens it. A node without traces also takes its frame count from it
+    # (FluoData stores no traces as (0, 0)).
+    if num_cell > len(fluorescence) or fluorescence.size == 0:
+        images = open_edit_images(images, node_dirpath)
 
     if fluorescence.size > 0:
         new_fluorescences = np.zeros((num_cell, fluorescence.shape[1]))
@@ -29,7 +37,11 @@ def commit_edit(
     added = iscell == CellType.TEMP_ADD
     iscell[iscell == CellType.TEMP_DELETE] = CellType.NON_ROI
     for i in range(num_committed, num_cell):
-        new_fluorescences[i] = np.mean(images[:, ~np.isnan(data.im[i])], axis=1)
+        # The movie CaImAn works on is float32: average in float32 so a
+        # reference to a uint16 input gives the same means as CaImAn's copy did
+        new_fluorescences[i] = np.mean(
+            images[:, ~np.isnan(data.im[i])], axis=1, dtype=np.float32
+        )
         if added[i]:
             iscell[i] = CellType.ROI
 
@@ -44,6 +56,13 @@ def commit_edit(
         "fluorescence": FluoData(new_fluorescences, file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "edit_roi_data": data,
-        "nwbfile": set_nwbfile(data, iscell, function_id, new_fluorescences),
+        "nwbfile": set_nwbfile(data, iscell, function_id, rate, new_fluorescences),
     }
+
+    if dff is not None:
+        # rows the edit added or merged have no CaImAn dF/F
+        new_dff = np.full(new_fluorescences.shape, np.nan, dtype=np.float32)
+        if dff.data.size > 0:
+            new_dff[: len(dff.data)] = dff.data
+        info["dff"] = FluoData(new_dff, file_name="dff")
     return info

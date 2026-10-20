@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pytest
 
+from studio.app.common.dataclass import HeatMapData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.optinist.basic_neural_analysis.covariate_binning import (  # noqa: E501
@@ -36,7 +37,7 @@ def _covariate():
     return np.tile([0.5, 1.5, 2.5, 3.5], NUM_FRAME // 4)
 
 
-def _bin(tmp_path, fluo=None, behavior=None, params=None, iscell=None):
+def _bin(tmp_path, fluo=None, behavior=None, params=None, iscell=None, order_from=None):
     return covariate_binning(
         FluoData(_fluo() if fluo is None else fluo, file_name="f"),
         BehaviorData(
@@ -44,8 +45,14 @@ def _bin(tmp_path, fluo=None, behavior=None, params=None, iscell=None):
         ),
         str(tmp_path / "default" / "uid" / "covariate_binning_1"),
         iscell=iscell,
+        order_from=order_from,
         params={**PARAMS, **(params or {})},
     )
+
+
+def _peaked_fluo(centres):
+    covariate = _covariate()
+    return np.stack([(covariate == c) * 1.0 for c in centres])
 
 
 def _postprocess(info):
@@ -140,6 +147,115 @@ def test_heatmap_rows_are_cell_numbers_with_iscell(tmp_path):
 
     assert info["mean"].data.shape == (3, 4)
     assert info["mean_heatmap"].index == [2, 3, 1]
+
+
+def test_order_from_overrides_sort_by_peak(tmp_path):
+    reference = HeatMapData(np.zeros((3, 4)), index=[1, 2, 0])
+
+    info = _bin(
+        tmp_path,
+        fluo=_peaked_fluo([3.5, 2.5, 0.5]),
+        order_from=reference,
+        params={"sort_by_peak": True},
+    )
+
+    assert info["mean_heatmap"].index == [1, 2, 0]
+    assert list(np.argmax(info["mean_heatmap"].data, axis=1)) == [2, 0, 3]
+    assert list(info["mean"].cell_numbers) == [0, 1, 2]
+
+
+def test_order_from_matches_cell_numbers_under_iscell(tmp_path):
+    reference = HeatMapData(np.zeros((4, 4)), index=[5, 1, 3, 2])
+
+    info = _bin(
+        tmp_path,
+        fluo=_peaked_fluo([3.5, 2.5, 0.5, 1.5]),
+        iscell=IscellData(np.array([0, 1, 1, 1])),
+        order_from=reference,
+        params={"sort_by_peak": True},
+    )
+
+    assert info["mean_heatmap"].index == [1, 3, 2]
+
+
+def test_order_from_keeps_the_first_row_of_a_duplicate_label(tmp_path):
+    reference = HeatMapData(np.zeros((3, 4)), index=[1, 0, 1])
+
+    info = _bin(tmp_path, fluo=_peaked_fluo([0.5, 2.5]), order_from=reference)
+
+    assert info["mean_heatmap"].index == [1, 0]
+
+
+def test_order_from_missing_a_cell_fails_with_a_clear_message(tmp_path):
+    reference = HeatMapData(np.zeros((2, 4)), index=[0, 2])
+
+    with pytest.raises(AssertionError, match="no row for 1 of 3 cells"):
+        _bin(tmp_path, order_from=reference)
+
+
+def test_order_from_that_is_not_a_heatmap_fails_with_a_clear_message(tmp_path):
+    # A 2D HDF5 dataset loads as FluoData and the validator lets it reach this port
+    with pytest.raises(AssertionError, match="must be a heatmap, got FluoData"):
+        _bin(tmp_path, order_from=FluoData(np.zeros((3, 4))))
+
+
+def test_order_from_without_row_labels_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="no row labels"):
+        _bin(tmp_path, order_from=HeatMapData(np.zeros((3, 4))))
+
+
+def test_heatmap_normalization_mean_divides_by_the_cell_mean(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    covariate = _covariate()
+    fluo = np.stack(
+        [covariate, np.tile([1.0, -1.0], NUM_FRAME // 2), covariate + 1, covariate - 3]
+    )
+
+    info = _bin(tmp_path, fluo=fluo, params={"heatmap_normalization": "mean"})
+
+    np.testing.assert_allclose(info["mean_heatmap"].data[0], [0.25, 0.75, 1.25, 1.75])
+    assert np.isnan(info["mean_heatmap"].data[1]).all()
+    np.testing.assert_allclose(info["mean_heatmap"].data[2], [0.5, 2.5 / 3, 7 / 6, 1.5])
+    assert np.isnan(info["mean_heatmap"].data[3]).all()
+    np.testing.assert_allclose(info["mean"].data[0], [0.5, 1.5, 2.5, 3.5])
+    assert "blanking 2 cells: [1, 3]" in caplog.text
+
+
+def test_heatmap_normalization_mean_uses_only_in_range_samples(tmp_path):
+    covariate = np.tile([0.5, 1.5, 2.5, 3.5, 10.0, 10.0], NUM_FRAME // 6)
+    fluo = np.where(covariate > 4, 100.0, covariate)[np.newaxis]
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(covariate),
+        params={"heatmap_normalization": "mean"},
+    )
+
+    np.testing.assert_allclose(info["mean_heatmap"].data[0], [0.25, 0.75, 1.25, 1.75])
+
+
+@pytest.mark.parametrize("normalization", ["minmax", "mean", "none", None])
+def test_row_order_does_not_depend_on_heatmap_normalization(tmp_path, normalization):
+    info = _bin(
+        tmp_path,
+        fluo=_peaked_fluo([3.5, 2.5, 0.5]) + 1,
+        params={"sort_by_peak": True, "heatmap_normalization": normalization},
+    )
+
+    assert info["mean_heatmap"].index == [2, 1, 0]
+
+
+def test_heatmap_normalization_none_plots_the_raw_mean(tmp_path):
+    fluo = _fluo()
+    info = _bin(tmp_path, fluo=fluo, params={"heatmap_normalization": "none"})
+
+    np.testing.assert_array_equal(info["mean_heatmap"].data, info["mean"].data)
+
+
+def test_unknown_heatmap_normalization_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="heatmap_normalization must be one of"):
+        _bin(tmp_path, params={"heatmap_normalization": "max"})
 
 
 @pytest.mark.parametrize("length", [NUM_CELL - 1, NUM_CELL + 1])

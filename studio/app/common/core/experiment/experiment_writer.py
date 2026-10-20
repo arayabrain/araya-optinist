@@ -51,6 +51,9 @@ logger = AppLogger.get_logger()
 S3_DELETION_MAX_RETRIES = 3
 S3_DELETION_BASE_DELAY_SECONDS = 1.0
 
+# bool, int, uint, float, complex: arrays of these cannot hold a unique_id
+NUMERIC_DTYPE_KINDS = "biufc"
+
 
 class ExptConfigWriter:
     def __init__(
@@ -444,8 +447,10 @@ class ExptDataWriter:
                 "npy": glob.glob(
                     os.path.join(directory, "**", "*.npy"), recursive=True
                 ),
-                "pkl": glob.glob(
-                    os.path.join(directory, "**", "*.pkl"), recursive=True
+                # the data filter's backups are pickles too
+                "pkl": glob.glob(os.path.join(directory, "**", "*.pkl"), recursive=True)
+                + glob.glob(
+                    os.path.join(directory, "**", "*.pkl.orig"), recursive=True
                 ),
             }
 
@@ -504,6 +509,16 @@ class ExptDataWriter:
         logger = AppLogger.get_logger()
         try:
             with open(file_path, "rb") as file:
+                major, _ = np.lib.format.read_magic(file)
+                read_header = (
+                    np.lib.format.read_array_header_1_0
+                    if major == 1
+                    else np.lib.format.read_array_header_2_0
+                )
+                _, _, dtype = read_header(file, max_header_size=2**64)
+                if dtype.kind in NUMERIC_DTYPE_KINDS:
+                    return
+                file.seek(0)
                 data = np.load(file, allow_pickle=True)
 
             updated_data = self.__replace_ids_recursive(data, old_id, new_id)
@@ -515,55 +530,78 @@ class ExptDataWriter:
             logger.warning(f"Failed to update NPY {file_path}: {e}")
 
     def __replace_ids_recursive(
-        self, obj: object, old_id: str, new_id: str, visited: set = None
+        self, obj: object, old_id: str, new_id: str, memo: dict = None
     ):
-        if visited is None:
-            visited = set()
-
-        obj_id = id(obj)
-        if obj_id in visited:
+        if isinstance(obj, type):  # a class is shared code, never per-record data
             return obj
-        visited.add(obj_id)
-
-        if isinstance(obj, dict):
-            return {
-                key: self.__replace_ids_recursive(value, old_id, new_id, visited)
-                for key, value in obj.items()
-            }
-        elif isinstance(obj, list):
-            return [
-                self.__replace_ids_recursive(item, old_id, new_id, visited)
-                for item in obj
-            ]
-        elif isinstance(obj, tuple):
-            # Convert tuple to list, process, and convert back to tuple
-            return tuple(
-                self.__replace_ids_recursive(item, old_id, new_id, visited)
-                for item in obj
-            )
-        elif isinstance(obj, np.ndarray):
-            if obj.ndim == 0:  # Handle 0D (scalar-like) arrays
-                return self.__replace_ids_recursive(obj.item(), old_id, new_id, visited)
-            else:  # Handle 1D or higher-dimensional arrays
-                return np.array(
-                    [
-                        self.__replace_ids_recursive(item, old_id, new_id, visited)
-                        for item in obj
-                    ]
-                )
-        elif isinstance(obj, str) and old_id in obj:
+        if isinstance(obj, str):
+            if old_id not in obj:
+                return obj
             # Use the custom regex pattern for strings
             pattern = re.compile(rf"(?:\b|\/){re.escape(old_id)}(?:\b|\/)(?:[^\s]*)")
             return pattern.sub(
                 lambda match: match.group(0).replace(old_id, new_id), obj
             )
+
+        # id -> (original, result); originals are held so temporaries cannot reuse ids
+        if memo is None:
+            memo = {}
+        obj_id = id(obj)
+        if obj_id in memo:
+            return memo[obj_id][1]
+
+        if isinstance(obj, dict):
+            result = {}
+            memo[obj_id] = (obj, result)
+            for key, value in obj.items():
+                result[key] = self.__replace_ids_recursive(value, old_id, new_id, memo)
+            return result
+        elif isinstance(obj, list):
+            result = []
+            memo[obj_id] = (obj, result)
+            result.extend(
+                self.__replace_ids_recursive(item, old_id, new_id, memo) for item in obj
+            )
+            return result
+        elif isinstance(obj, tuple):
+            result = tuple(
+                self.__replace_ids_recursive(item, old_id, new_id, memo) for item in obj
+            )
+            if obj_id in memo:  # a cycle through a child already copied this tuple
+                return memo[obj_id][1]
+            memo[obj_id] = (obj, result)
+            return result
+        elif isinstance(obj, np.ndarray):
+            if obj.dtype.kind not in "OU":  # only object and str arrays can hold an id
+                # but subclass attributes can, such as a pickled backing-file path
+                memo[obj_id] = (obj, obj)
+                for attr, value in getattr(obj, "__dict__", {}).items():
+                    setattr(
+                        obj,
+                        attr,
+                        self.__replace_ids_recursive(value, old_id, new_id, memo),
+                    )
+                return obj
+            memo[obj_id] = (obj, obj)
+            if obj.ndim == 0:  # Handle 0D (scalar-like) arrays
+                result = self.__replace_ids_recursive(obj.item(), old_id, new_id, memo)
+            else:  # Handle 1D or higher-dimensional arrays
+                result = np.array(
+                    [
+                        self.__replace_ids_recursive(item, old_id, new_id, memo)
+                        for item in obj
+                    ]
+                )
+            memo[obj_id] = (obj, result)
+            return result
         elif hasattr(obj, "__dict__"):
             # Process custom objects
+            memo[obj_id] = (obj, obj)
             for attr, value in obj.__dict__.items():
                 setattr(
                     obj,
                     attr,
-                    self.__replace_ids_recursive(value, old_id, new_id, visited),
+                    self.__replace_ids_recursive(value, old_id, new_id, memo),
                 )
             return obj
         elif obj is None:

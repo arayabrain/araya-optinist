@@ -11,6 +11,9 @@ from sqlmodel import Session
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptExtConfig
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_record_services import (
+    ExperimentRecordService,
+)
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.common.core.logger import AppLogger
@@ -184,7 +187,7 @@ async def get_experiments(
             logger.error(e, exc_info=True)
             pass
 
-    if exp_config:
+    if exp_config and ExperimentRecordService.is_available():
         data_flags = _get_experiment_data_flags(db, workspace_id)
         for uid, config in exp_config.items():
             # A finalised DB record overrides the yaml, e.g. after expiration

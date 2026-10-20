@@ -307,7 +307,6 @@ variable "enable_second_nat" {
   type        = bool
   default     = true
 }
-
 variable "monthly_budget_usd" {
   description = "Monthly cost budget in USD. Alert fires when projected spend exceeds this."
   type        = number

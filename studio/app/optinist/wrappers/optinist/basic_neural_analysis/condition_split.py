@@ -21,11 +21,14 @@ def condition_split(
     A sample is kept when its value v in column event_col_index satisfies
     'greater' v > threshold, 'less' v < threshold, 'equal' v == threshold
     (exact) or 'between' threshold <= v <= threshold_upper. NaN never matches.
+    With modulo > 0 the remainder v mod modulo is tested instead, so modulo 2
+    with 'equal' 1 keeps the odd-numbered trials of a trial-number column.
     With margin > 0, a kept sample within margin samples of a rejected one is
     dropped too, which trims transitions where the behaviour stream and the
     imaging frames are not aligned to the sample.
-    Kept samples are concatenated in their original order and both outputs keep
-    the input orientation. Nothing else is filtered: there is no trial, run or
+    Kept samples are concatenated in their original order. neural_data keeps
+    the input orientation and behaviors_data is always (time, columns), like
+    every BehaviorData. Nothing else is filtered: there is no trial, run or
     modal-length inference, and a downstream window can span the join between
     two kept segments that were not adjacent in the recording.
     """
@@ -56,6 +59,10 @@ def condition_split(
     )
 
     values = np.asarray(Y[:, col], dtype=float)
+    modulo = float(params.get("modulo") or 0)
+    assert modulo >= 0, f"modulo must be >= 0, got {modulo}"
+    if modulo:
+        values = np.mod(values, modulo)
     condition = params["condition"]
     threshold = float(params["threshold"])
     if condition == "greater":
@@ -100,7 +107,5 @@ def condition_split(
         "neural_data": FluoData(
             X.transpose() if params["transpose_x"] else X, file_name="neural_data"
         ),
-        "behaviors_data": BehaviorData(
-            Y.transpose() if params["transpose_y"] else Y, file_name="behaviors_data"
-        ),
+        "behaviors_data": BehaviorData(Y, file_name="behaviors_data"),
     }
