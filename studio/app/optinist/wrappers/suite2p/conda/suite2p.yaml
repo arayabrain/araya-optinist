@@ -10,4 +10,4 @@ dependencies:
     - torchvision==0.23.*
     - cellpose==4.0.*
     - opencv-python-headless<4.12
-    - tifffile
+    - tifffile==2026.3.*
