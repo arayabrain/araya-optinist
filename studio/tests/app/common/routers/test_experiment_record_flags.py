@@ -1,5 +1,6 @@
 """The Record list trusts a DB row over the yaml only once finalisation wrote it."""
 from datetime import datetime, timezone
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -99,3 +100,41 @@ def test_missing_row_leaves_the_config_alone():
     _apply_record_flags(config, None)
 
     assert config.hasNWB is False
+
+
+async def _list_experiments(db, record_storage):
+    from studio.app.common.routers import experiment
+
+    config = _config(has_nwb=True)
+    config.unique_id = "expired"
+    with patch.object(
+        experiment, "glob", return_value=["experiment.yaml"]
+    ), patch.object(
+        experiment.ExptConfigReader, "read_from_path", return_value=config
+    ), patch.object(
+        experiment.ExptConfigReader, "validate_experiment_config", return_value=True
+    ), patch.object(
+        experiment.RemoteStorageController, "is_available", return_value=False
+    ), patch.object(
+        experiment.ExperimentRecordService, "is_available", return_value=record_storage
+    ):
+        return await experiment.get_experiments(
+            str(WORKSPACE_ID), db=db, remote_bucket_name="bucket"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_list_keeps_the_yaml_flags_without_record_storage():
+    db = Mock()
+
+    experiments = await _list_experiments(db, record_storage=False)
+
+    assert experiments["expired"].hasNWB is True
+    db.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_list_applies_finalized_db_flags_with_record_storage(db):
+    experiments = await _list_experiments(db, record_storage=True)
+
+    assert experiments["expired"].hasNWB is False
