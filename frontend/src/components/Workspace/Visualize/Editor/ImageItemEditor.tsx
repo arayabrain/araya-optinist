@@ -36,6 +36,7 @@ import {
   selectImageItemFilePath,
   selectImageItemAlpha,
   selectImageItemShowRoiLabels,
+  selectImageItemRoiOutline,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
   setImageItemShowGrid,
@@ -50,6 +51,7 @@ import {
   setImageItemRoiAlpha,
   setImageItemAlpha,
   setImageItemShowRoiLabels,
+  setImageItemRoiOutline,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { ColorType } from "store/slice/VisualizeItem/VisualizeItemType"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
@@ -74,6 +76,7 @@ export const ImageItemEditor: FC = () => {
         <ShowGrid />
         <ShowScale />
         <ShowRoiLabels />
+        <RoiOutline />
         <Zsmooth />
         <Grid container component="label" alignItems="center">
           <Grid item xs={8}>
@@ -241,6 +244,22 @@ const ShowRoiLabels: FC = () => {
     <ParamSwitch
       label={"Show ROI labels"}
       value={showRoiLabels}
+      onChange={toggleChecked}
+    />
+  )
+}
+
+const RoiOutline: FC = () => {
+  const itemId = useContext(SelectedItemIdContext)
+  const roiOutline = useSelector(selectImageItemRoiOutline(itemId))
+  const dispatch = useDispatch()
+  const toggleChecked = () => {
+    dispatch(setImageItemRoiOutline({ itemId, roiOutline: !roiOutline }))
+  }
+  return (
+    <ParamSwitch
+      label={"Outline ROIs"}
+      value={roiOutline}
       onChange={toggleChecked}
     />
   )

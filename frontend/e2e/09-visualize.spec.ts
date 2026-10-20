@@ -295,6 +295,24 @@ test.describe("Visualize", () => {
       page.locator("text=sample_mouse2p_image.tiff").first(),
     ).toBeVisible()
     await expect(page.locator("text=cell_roi").first()).toBeVisible()
+
+    // Outline ROIs nulls each ROI's interior cells but keeps every ROI
+    const roiCellCount = () =>
+      page.evaluate(() => {
+        const plot = document.querySelector(".js-plotly-plot") as unknown as {
+          data?: { name?: string; z?: (number | null)[][] }[]
+        }
+        const z = plot?.data?.find((t) => t.name === "roi")?.z ?? []
+        return z.flat().filter((v) => v != null).length
+      })
+    const filled = await roiCellCount()
+    const ids = await roiIds(page)
+    const outline = page.getByRole("checkbox", { name: "Outline ROIs" })
+    await outline.click()
+    await expect.poll(roiCellCount).toBeLessThan(filled)
+    expect(await roiIds(page)).toEqual(ids)
+    await outline.click()
+    await expect.poll(roiCellCount).toBe(filled)
   })
 
   test("VIS-03 - Play advances image frames; Pause stops", async ({ page }) => {

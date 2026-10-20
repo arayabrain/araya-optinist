@@ -7,6 +7,9 @@ from pymatreader import read_mat
 
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.workspace.workspace_dependencies import (
+    is_workspace_available,
+)
 from studio.app.common.routers.files import (
     download_structure_cache,
     get_mat_structure_dict,
@@ -84,6 +87,7 @@ def _dict_to_mat_node(d: dict) -> MatNode:
 @router.get(
     "/mat/{file_path:path}",
     response_model=List[MatNode],
+    dependencies=[Depends(is_workspace_available)],
     tags=["outputs"],
 )
 async def get_matfiles(

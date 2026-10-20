@@ -69,6 +69,7 @@ def _poll(
                 nodeDict=NodeItem(pendingNodeIdList=[]),
                 background_tasks=Mock(),
                 remote_bucket_name="",
+                db=Mock(),
             )
         )
 

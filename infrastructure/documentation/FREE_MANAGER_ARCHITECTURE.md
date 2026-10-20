@@ -64,9 +64,11 @@
      cookie is re-issued on every response, so active users stay on the
      instance they started on, and the newest instance holds only sessions
      placed since it launched. It does not look at workload
-   - A terminated instance is released in about 10 minutes: the target group's
-     300 s deregistration delay, then the group's own logging-only
-     `-terminate-hook`, which nothing completes and which times out at 300 s
+   - A terminated instance is released in about 9 minutes: the target group's
+     300 s deregistration delay, then ECS's draining hook, which ECS completes
+     a few minutes after the task has stopped. Nothing else holds it: the
+     group's former terminate hook, which held every termination for a 300 s
+     timeout, is retired (see [Lifecycle Hooks](#lifecycle-hooks))
    - That depends on the instance's ECS agent reaching ECS, through NAT (there
      are no ECS VPC endpoints). If it cannot report its task stopped, ECS keeps
      renewing the draining hook, and the instance is held until connectivity
@@ -749,7 +751,9 @@ below zero, avoiding race conditions.
 
 ### 2. Instances Not Ready in Time
 
-**Problem:** New instances take 6-8 minutes to launch (lifecycle hooks ~5 min, EC2 boot ~5 min, ECS tasks ~7 min).
+**Problem:** A new instance takes about 8 minutes to a healthy target: the
+300 s launch hook, during which it boots and its task is placed, then the
+task's start.
 
 **Solution:** Retry logic with a bounded wait. The scale_and_rebalance()
 function retries every 60 seconds until the invocation has about a minute
@@ -791,9 +795,16 @@ ECS desired = max(ASG desired, instances still in the group, any lifecycle state
 - **Lower** only to the number of instances still in the group, never below
   the ASG's desired capacity.
 
+On a launch the first event is `EC2 Instance-launch Lifecycle Action`, sent
+by the launch hook as the instance enters `Pending:Wait`; `EC2 Instance
+Launch Successful` follows at `InService`. ECS cannot place the task until the
+new instance's agent has registered (about 2.5 minutes) and then retries on
+its own back-off; the launch hook's 300 s absorbs both, so the target is
+registered close to when the task serves.
+
 Why the floor counts instances that are still terminating: on scale-in the
-ASG waits out the target group's deregistration delay (300 s) *before* the
-terminate hook, with the container instance still ACTIVE in ECS. Lowering
+ASG waits out the target group's deregistration delay (300 s) *before* ECS's
+draining hook, with the container instance still ACTIVE in ECS. Lowering
 while it is in the group would let ECS stop a task chosen by AZ balance —
 possibly the survivor's — leaving no healthy target. Once the instance has
 left the group its task is already gone, so lowering to the remaining count
@@ -872,6 +883,61 @@ out.
 
 ---
 
+## Lifecycle Hooks
+
+The free ASG carries two lifecycle hooks. HEALTH-30 (`17-aws-health.spec.ts`)
+asserts exactly these two on a deployed environment.
+
+| Hook | Transition | Owner | Role |
+|---|---|---|---|
+| `<env>-optinist-launch-hook` | `EC2_INSTANCE_LAUNCHING`, 300 s, `CONTINUE` | Terraform (`aws_autoscaling_lifecycle_hook.launch`) | Boot wait. Nothing completes it |
+| `ecs-managed-draining-termination-hook` | `EC2_INSTANCE_TERMINATING`, 3600 s | ECS (managed draining) | Drains the container instance; ECS completes it |
+
+**Why the launch hook stays.** Several things start at `InService`, not at
+launch:
+
+- the ASG registers the instance in the free target group
+  (`target_group_arns`), and the group's 5 x 60 s health check starts counting
+- the ELB health-check grace (`health_check_grace_period`, 900 s)
+- an instance refresh's warmup (300 s)
+- the `scale_up` policy's cooldown (300 s)
+
+Without the hook an instance is `InService` within seconds of launch, before
+its ECS agent has registered. Measured on development: the target turned
+unhealthy for about 3 minutes and `free-tg-unhealthy-hosts` fired on every
+scale-out, and on a slow morning start the target was healthy only 17 minutes
+after `InService`, past the grace. Time to serving did not change (about 8.5
+minutes either way). With the hook, the instance boots and its task is placed
+inside the 300 s wait, so these timers count from an instance about to serve.
+
+**The retired terminate hook.** The group was created with a second
+`initial_lifecycle_hook`, `<env>-optinist-terminate-hook` (300 s, `CONTINUE`).
+Nothing completed it, so every scale-in waited out its timeout after ECS's
+draining hook had completed: 10.5 minutes to release instead of about 8.5.
+`initial_lifecycle_hook` is in the ASG's `ignore_changes` (the attribute is
+ForceNew and never read back), so Terraform neither shows nor removes it on an
+existing group. Delete it once per environment:
+
+```bash
+ASG=<env>-optinist-asg; REGION=ap-northeast-1
+aws autoscaling describe-lifecycle-hooks --auto-scaling-group-name "$ASG" --region "$REGION" \
+  --query 'LifecycleHooks[].LifecycleHookName'
+aws autoscaling delete-lifecycle-hook --auto-scaling-group-name "$ASG" \
+  --lifecycle-hook-name <env>-optinist-terminate-hook --region "$REGION"
+aws autoscaling describe-lifecycle-hooks --auto-scaling-group-name "$ASG" --region "$REGION" \
+  --query 'LifecycleHooks[].LifecycleHookName'
+# expect: the launch hook and ecs-managed-draining-termination-hook
+```
+
+- Safe at any time: `DeleteLifecycleHook` completes an outstanding action
+  first, and for a terminating instance that is `CONTINUE`, so a termination
+  in progress simply proceeds
+- Never delete the launch hook this way. For a launching instance the
+  outstanding action is `ABANDON`, which terminates the instance
+- The launch hook is Terraform's: on an existing group the first apply
+  overwrites the hook of the same name (`PutLifecycleHook`) with identical
+  settings, and recreates it where it was deleted
+
 ## Monitoring and Metrics
 
 ### CloudWatch Metrics Published
@@ -933,7 +999,7 @@ Scaling ASG subscr-optinist-asg to desired capacity: 4
 Successfully set ASG desired capacity to 4
 Successfully updated ECS service to 4 tasks
 
-Waiting for new instances to launch and become ECS-ready (up to 836s this invocation, includes lifecycle hooks)
+Waiting for new instances to launch and become ECS-ready (up to 836s this invocation)
 [Attempt 1] Checking instance readiness (elapsed: 0s / 836s)
 Found 3/4 running instances
 [Attempt 2] Checking instance readiness (elapsed: 60s / 836s)

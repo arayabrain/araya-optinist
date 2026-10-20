@@ -3,6 +3,7 @@ workspace, and NWB fluorescence oriented to (roi, time) using the
 sibling `rois` dataset so the transpose knob on fluo_from_hdf5 is no longer
 load-bearing for NWB input.
 """
+import logging
 import os
 import pickle
 
@@ -74,6 +75,26 @@ def test_1d_dataset_is_iscell(tmp_path):
     assert isinstance(
         FileWriter.hdf5(_rule(tmp_path, h5, "g/data"))["input_x"], IscellData
     )
+
+
+def test_compound_column_loads_as_a_plain_1d_dataset(tmp_path):
+    table = np.zeros(N_TIME, dtype=[("time", "f8"), ("lick", "i4")])
+    table["lick"] = np.arange(N_TIME)
+    h5 = _h5(tmp_path, {"g/table": table})
+
+    loaded = FileWriter.hdf5(_rule(tmp_path, h5, "g/table/lick"))["input_x"]
+
+    assert isinstance(loaded, IscellData)
+    assert loaded.data.dtype.names is None
+    np.testing.assert_array_equal(loaded.data, np.arange(N_TIME))
+
+
+@pytest.mark.parametrize("path", ["g/data/missing", "g/missing", "g/sub/missing"])
+def test_unknown_dataset_path_still_raises_key_error(tmp_path, path):
+    h5 = _h5(tmp_path, {"g/data": np.zeros(N_TIME), "g/sub/x": np.zeros(3)})
+
+    with pytest.raises(KeyError):
+        FileWriter.hdf5(_rule(tmp_path, h5, path))
 
 
 def test_scalar_dataset_is_refused_by_name(tmp_path):
@@ -268,3 +289,20 @@ def test_matlab_variables_get_the_same_types_and_tiff_cache(tmp_path):
     assert isinstance(
         FileWriter.mat(_matrule(tmp_path, mat, "iscell"))["input_x"], IscellData
     )
+
+
+def test_a_source_rate_that_differs_from_the_nwb_setting_is_logged(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    h5 = _h5(tmp_path, {"g/data": np.ones((N_TIME, N_ROI)), "g/starting_time": 0.0})
+    with h5py.File(h5, "a") as f:
+        f["g/starting_time"].attrs["rate"] = 10.0
+    rule = _rule(tmp_path, h5, "g/data")
+
+    rule.nwbfile["imaging_plane"] = {"imaging_rate": 30}
+    FileWriter.hdf5(rule)
+    assert "sampled at 10 Hz but the NWB setting imaging_rate is 30 Hz" in caplog.text
+
+    caplog.clear()
+    rule.nwbfile["imaging_plane"] = {"imaging_rate": 10.0}
+    FileWriter.hdf5(rule)
+    assert "sampled at" not in caplog.text

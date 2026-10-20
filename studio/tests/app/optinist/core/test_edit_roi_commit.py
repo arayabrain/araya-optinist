@@ -1,10 +1,19 @@
 import numpy as np
+import pytest
 
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
+from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi import (
+    commit_edit as caiman_commit_edit,
+)
+from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi import (
+    commit_edit as lccd_commit_edit,
+)
 from studio.app.optinist.core.edit_ROI.wrappers.vacant_roi_edit_roi import commit_edit
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData
 
-# vacant_roi, lccd and caiman share this commit implementation verbatim.
+# vacant_roi, lccd and caiman share this commit implementation; caiman also
+# carries its dff output.
 NUM_COMMITTED = 3
 FRAMES = 5
 SHAPE = (4, 4)
@@ -106,3 +115,88 @@ def test_a_retained_non_cell_is_not_resurrected_when_its_trace_is_recomputed(
 
     assert list(info["iscell"].data) == [CellType.NON_ROI] * 3 + [CellType.ROI]
     assert len(info["fluorescence"].data) == len(data.im)
+
+
+def _committed_dff():
+    return FluoData(np.arange(NUM_COMMITTED * FRAMES, dtype=float).reshape(-1, FRAMES))
+
+
+def _assert_dff_padded(info, dff):
+    new_dff = info["dff"].data
+    assert len(new_dff) == len(info["fluorescence"].data) == len(info["iscell"].data)
+    np.testing.assert_array_equal(new_dff[:NUM_COMMITTED], dff.data)
+    assert np.isnan(new_dff[NUM_COMMITTED:]).all()
+
+
+def test_caiman_dff_follows_a_merge_with_a_nan_row(tmp_path):
+    images, data, fluorescence, iscell = build_state(
+        [CellType.TEMP_DELETE, CellType.TEMP_DELETE, CellType.ROI, CellType.TEMP_ADD]
+    )
+    dff = _committed_dff()
+
+    info = caiman_commit_edit(
+        images, data, fluorescence, iscell, str(tmp_path), "caiman_cnmf", dff=dff
+    )
+
+    _assert_dff_padded(info, dff)
+
+
+def test_caiman_dff_follows_an_add_with_a_nan_row(tmp_path):
+    images, data, fluorescence, iscell = build_state(
+        [CellType.ROI, CellType.ROI, CellType.ROI, CellType.TEMP_ADD]
+    )
+    data.temp_merge_roi = {}
+    data.temp_add_roi = {NUM_COMMITTED: None}
+    dff = _committed_dff()
+
+    info = caiman_commit_edit(
+        images, data, fluorescence, iscell, str(tmp_path), "caiman_cnmf", dff=dff
+    )
+
+    _assert_dff_padded(info, dff)
+    assert data.add_roi == [NUM_COMMITTED]
+
+
+def test_caiman_dff_from_an_empty_run_gets_the_movie_time_axis(tmp_path):
+    images, data, _, iscell = build_state([CellType.NON_ROI] * 3 + [CellType.TEMP_ADD])
+
+    info = caiman_commit_edit(
+        images,
+        data,
+        FluoData(np.zeros((0, FRAMES))),
+        iscell,
+        str(tmp_path),
+        "caiman_cnmf",
+        dff=FluoData(np.zeros((0, FRAMES))),
+    )
+
+    assert info["dff"].data.shape == (len(data.im), FRAMES)
+    assert np.isnan(info["dff"].data).all()
+
+
+def test_a_caiman_pickle_without_dff_commits_without_one(tmp_path):
+    images, data, fluorescence, iscell = build_state(
+        [CellType.TEMP_DELETE, CellType.TEMP_DELETE, CellType.ROI, CellType.TEMP_ADD]
+    )
+
+    info = caiman_commit_edit(
+        images, data, fluorescence, iscell, str(tmp_path), "caiman_cnmf"
+    )
+
+    assert "dff" not in info
+
+
+@pytest.mark.parametrize("commit", [commit_edit, lccd_commit_edit])
+def test_a_commit_exports_the_rate_and_binary_masks_to_nwb(tmp_path, commit):
+    images, data, fluorescence, iscell = build_state(
+        [CellType.ROI, CellType.ROI, CellType.TEMP_DELETE, CellType.TEMP_DELETE]
+    )
+
+    info = commit(images, data, fluorescence, iscell, str(tmp_path), "node", rate=10.0)
+
+    nwbfile = info["nwbfile"]
+    assert nwbfile[NWBDATASET.FLUORESCENCE]["node"]["Fluorescence"]["rate"] == 10.0
+    mask = nwbfile[NWBDATASET.ROI]["node"]["roi_list"][0]["image_mask"]
+    expected = np.zeros(SHAPE)
+    expected[0, :] = 1
+    np.testing.assert_array_equal(mask, expected)
