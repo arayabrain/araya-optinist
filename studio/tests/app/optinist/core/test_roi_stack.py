@@ -1,9 +1,13 @@
 import copy
+import os
 import pickle
+import shutil
 
 import numpy as np
 import pytest
 
+from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
+from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass.roi import RoiStack
 from studio.app.optinist.wrappers.suite2p.roi import roi_label_images
 
@@ -76,3 +80,64 @@ def test_label_images_equal_nanmax_over_the_stack():
         np.testing.assert_array_equal(
             labels["non_cell"], np.nanmax(stack[iscell == 0], axis=0)
         )
+
+
+def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):
+    old_id, new_id = "0123abcd", "4567cdef"
+    node_dir = tmp_path / "ws" / old_id / "suite2p_roi_x"
+    node_dir.mkdir(parents=True)
+    im, expected = stack_on_disk(node_dir)
+    with open(node_dir / "suite2p_roi_x.pkl", "wb") as f:
+        pickle.dump({"nwbfile": {"all_roi_img": im}, "edit_roi_data": {"im": im}}, f)
+    # the data filter's backup of the unfiltered node, restored on reset
+    shutil.copy(node_dir / "suite2p_roi_x.pkl", node_dir / "suite2p_roi_x.pkl.orig")
+    copied = tmp_path / "ws" / new_id
+    shutil.copytree(tmp_path / "ws" / old_id, copied)
+    copied_stack = copied / "suite2p_roi_x" / "roi_mask_stack.npy"
+    stack_bytes = copied_stack.read_bytes()
+    os.utime(copied_stack, ns=(0, 0))
+
+    ExptDataWriter("", "ws", old_id)._ExptDataWriter__copy_data_replace_unique_id(
+        str(copied), old_id, new_id
+    )
+
+    assert copied_stack.stat().st_mtime_ns == 0  # not rewritten
+    assert copied_stack.read_bytes() == stack_bytes
+    for name in ("suite2p_roi_x.pkl", "suite2p_roi_x.pkl.orig"):
+        copied_pkl = copied / "suite2p_roi_x" / name
+        assert copied_pkl.stat().st_size < 1000
+        with open(copied_pkl, "rb") as f:
+            back = pickle.load(f)
+        a, b = back["nwbfile"]["all_roi_img"], back["edit_roi_data"]["im"]
+        assert a is b
+        assert type(a) is RoiStack and a._stack_path == str(copied_stack)
+        np.testing.assert_array_equal(a, expected)
+
+
+@pytest.mark.parametrize(
+    "derive", [lambda im: im, lambda im: im[[0, 2]], copy.deepcopy]
+)
+def test_nanmax_with_a_nan_initial_sees_the_stack(tmp_path, derive):
+    # numpy's fast path for initial= is for exact ndarrays; a subclass took the
+    # slow path and returned all NaN, blanking every ROI image a commit redrew
+    im, expected = stack_on_disk(tmp_path)
+    result = np.nanmax(derive(im), axis=0, initial=np.nan)
+    np.testing.assert_array_equal(
+        result, np.nanmax(derive(expected), axis=0, initial=np.nan)
+    )
+    assert type(result) is np.ndarray
+    assert np.isscalar(im.sum()) and np.isscalar(np.nanmax(im))
+
+
+def test_a_stack_under_the_output_dir_pickles_relative_to_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+    node_dir = tmp_path / "ws" / "0123" / "suite2p_roi_x"
+    node_dir.mkdir(parents=True)
+    im, expected = stack_on_disk(node_dir)
+    blob = pickle.dumps(im)
+    assert b"roi_mask_stack.npy" in blob and str(tmp_path).encode() not in blob
+    np.testing.assert_array_equal(pickle.loads(blob), expected)
+    moved = tmp_path / "moved"
+    shutil.move(str(tmp_path / "ws"), str(moved / "ws"))
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(moved))
+    np.testing.assert_array_equal(pickle.loads(blob), expected)

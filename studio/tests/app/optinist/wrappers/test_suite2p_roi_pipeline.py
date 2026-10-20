@@ -5,6 +5,7 @@ through the empty and failing paths. suite2p is stubbed.
 import copy
 import logging
 import os
+import pickle
 import sys
 import types
 
@@ -12,7 +13,9 @@ import numpy as np
 import pytest
 
 from studio.app.common.core.workflow.workflow_params import read_default_params
+from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass import Suite2pData
+from studio.app.optinist.dataclass.roi import RoiStack
 from studio.app.optinist.wrappers.suite2p.roi import suite2p_roi
 from studio.tests.app.optinist.suite2p_settings_1_1_0 import default_settings
 
@@ -201,6 +204,7 @@ def test_no_rois_gives_empty_outputs_and_keeps_the_detection_images(
     assert ops["stat"] == []
     assert ops["F"].shape == (0, FRAMES)
     assert info["iscell"].data.shape == (0,)
+    assert info["edit_roi_data"].im.shape == (0, LY, LX)
     np.testing.assert_array_equal(ops["max_proj"], np.ones((LY, LX)))
     assert np.isnan(info["cell_roi"].data).all()
 
@@ -352,3 +356,56 @@ def test_a_pre_upgrade_registration_pickle_is_accepted(
 
     assert "aspect" not in info["ops"].data
     assert info["edit_roi_data"].images.path == [str(tmp_path / "old.tif")]
+
+
+def _run(tmp_path, output_dir):
+    return suite2p_roi(
+        _registered_ops(tmp_path), output_dir, params=read_default_params("suite2p_roi")
+    )
+
+
+def test_the_node_references_the_stack_it_wrote(output_dir, tmp_path, suite2p_stub):
+    info = _run(tmp_path, output_dir)
+    im = info["edit_roi_data"].im
+    assert type(im) is RoiStack and im.shape == (len(CELLS), LY, LX)
+    (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
+    assert postprocess["all_roi_img"] is im
+
+
+def test_a_failed_stack_write_fails_the_node(
+    output_dir, tmp_path, suite2p_stub, monkeypatch
+):
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(RoiStack, "create", disk_full)
+    with pytest.raises(OSError, match="No space left"):
+        _run(tmp_path, output_dir)
+
+
+def test_a_rerun_replaces_the_file_so_an_open_stack_keeps_its_data(
+    output_dir, tmp_path, suite2p_stub
+):
+    first = _run(tmp_path, output_dir)["edit_roi_data"].im
+    before = np.array(first)
+    suite2p_stub["result"] = _found(stat=_stat()[:1])
+    second = _run(tmp_path, output_dir)["edit_roi_data"].im
+    assert second.shape[0] == 1
+    np.testing.assert_array_equal(first, before)
+    assert not os.path.exists(f"{output_dir}/roi_mask_stack.npy.tmp")
+
+
+def test_a_relative_output_dir_still_reopens_the_stack(
+    tmp_path, suite2p_stub, monkeypatch
+):
+    # the pickle path is OUTPUT_DIR-relative; the wrapper must not hand open()
+    # a relative path that would be prefixed with OUTPUT_DIR a second time
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", "ws")
+    os.makedirs("ws/0123abcd/suite2p_roi_x")
+    im = _run(tmp_path, "ws/0123abcd/suite2p_roi_x")["edit_roi_data"].im
+    assert type(im) is RoiStack and os.path.isabs(im._stack_path)
+    blob = pickle.dumps(im)
+    assert b"0123abcd/suite2p_roi_x/roi_mask_stack.npy" in blob
+    assert str(tmp_path).encode() not in blob
+    np.testing.assert_array_equal(pickle.loads(blob), im)
