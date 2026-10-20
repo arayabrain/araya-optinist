@@ -88,6 +88,7 @@ const imageItemInitialValue: ImageItem = {
   roiAlpha: 1.0,
   duration: 500,
   showRoiLabels: false,
+  roiOutline: false,
 }
 const timeSeriesItemInitialValue: TimeSeriesItem = {
   ...displayDataCommonInitialValue,
@@ -935,6 +936,18 @@ export const visualaizeItemSlice = createSlice({
         targetItem.showRoiLabels = action.payload.showRoiLabels
       }
     },
+    setImageItemRoiOutline: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        roiOutline: boolean
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isImageItem(targetItem)) {
+        targetItem.roiOutline = action.payload.roiOutline
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -1130,6 +1143,7 @@ export const {
   setPolartemItemSelectedIndex,
   setClickedData,
   setImageItemShowRoiLabels,
+  setImageItemRoiOutline,
   resetAllOrderList,
   reset,
   resetVisualizeLayout,

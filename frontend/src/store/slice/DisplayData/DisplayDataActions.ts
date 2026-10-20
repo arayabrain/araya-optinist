@@ -138,8 +138,11 @@ export const getTimeSeriesInitData = createAsyncThunk<
         reload.forEach((key, i) => {
           const record = records[bulk ? 0 : i]
           tried.add(key)
-          if (record.status === "rejected") failed.add(key)
-          const source = record.status === "fulfilled" ? record.value : kept
+          const got =
+            record.status === "fulfilled" &&
+            record.value.data[key] !== undefined
+          if (!got) failed.add(key)
+          const source = got ? record.value : kept
           data[key] = source.data[key]
           if (source.std[key] !== undefined) std[key] = source.std[key]
         })
