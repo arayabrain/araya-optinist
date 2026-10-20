@@ -37,6 +37,41 @@ def distribute_params_to_groups(flat_params: dict, groups: dict) -> dict:
     return pathed
 
 
+# Null-default params, so the parameter panel edits them as text
+TEXT_PARAM_TYPES = {
+    "K": int,
+    "rf": int,
+    "n_pixels_per_process": int,
+    "low_rank_background": bool,
+    "enclosed_thr": float,
+}
+
+
+def parse_text_params(flat_params: dict) -> dict:
+    parsed = dict(flat_params)
+    for key, cast in TEXT_PARAM_TYPES.items():
+        value = parsed.get(key)
+        if not isinstance(value, str):
+            continue
+        text = value.strip().lower()
+        try:
+            if text in ("", "none"):
+                parsed[key] = None
+            elif cast is bool:
+                parsed[key] = {"true": True, "false": False}[text]
+            else:
+                parsed[key] = cast(text)
+        except (KeyError, ValueError):
+            raise ValueError(
+                f"CaImAn param '{key}' must be {cast.__name__} or empty for None, "
+                f"got {value!r}"
+            ) from None
+    # a number field cannot be cleared, so rf 0 means None: the whole field of view
+    if type(parsed.get("rf")) is int and parsed["rf"] == 0:
+        parsed["rf"] = None
+    return parsed
+
+
 # The CaImAn releases whose save_memmap only adds C_ORDER_OFFSET to a single
 # memmap when border_to_0 is 0 (1.12's is the same code as 1.11.4's)
 SAVE_MEMMAP_VERIFIED_CAIMAN = ("1.11.", "1.12.")

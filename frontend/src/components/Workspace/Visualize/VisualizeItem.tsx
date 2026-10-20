@@ -43,6 +43,7 @@ import {
   selectRoiItemNodeId,
   selectSelectedVisualizeItemId,
   selectTimeSeriesItemRefImageItemId,
+  selectTimeSeriesItemShadeSourceItemId,
   selectVisualizeDataFilePath,
   selectVisualizeDataNodeId,
   selectVisualizeDataType,
@@ -50,12 +51,14 @@ import {
   selectVisualizeImageAndRoiItemIdList,
   selectVisualizeItemHeight,
   selectVisualizeItemWidth,
+  selectVisualizeTimeSeriesItemIdList,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
   selectItem,
   setItemSize,
   setHeatMapRefItemId,
   setRoiItemFilePath,
+  setTimeSeriesItemShadeSource,
   setTimeSeriesRefImageItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch, RootState } from "store/store"
@@ -230,6 +233,11 @@ const ItemHeader = memo(function ItemHeader({
           <RefImageItemIdSelect itemId={itemId} />
         </Box>
       )}
+      {dataType === DATA_TYPE_SET.TIME_SERIES && (
+        <Box flexGrow={1}>
+          <ShadeSourceSelect itemId={itemId} />
+        </Box>
+      )}
       {dataType === DATA_TYPE_SET.HEAT_MAP && (
         <Box flexGrow={1}>
           <HeatMapRefItemIdSelect itemId={itemId} />
@@ -375,21 +383,52 @@ const HeatMapRefItemIdSelect = memo(function HeatMapRefItemIdSelect({
   )
 })
 
+const ShadeSourceSelect = memo(function ShadeSourceSelect({
+  itemId,
+}: ItemIdProps) {
+  const dispatch = useDispatch()
+  const selected = useSelector(selectTimeSeriesItemShadeSourceItemId(itemId))
+  const itemIdList = useSelector(
+    selectVisualizeTimeSeriesItemIdList,
+    arrayEqualityFn,
+  )
+  const onChange = (event: SelectChangeEvent) => {
+    const value = Number(event.target.value)
+    dispatch(
+      setTimeSeriesItemShadeSource({
+        itemId,
+        shadeSourceItemId: isNaN(value) ? null : value,
+      }),
+    )
+  }
+
+  return (
+    <LinkToBoxSelect
+      label="Shade events from box (#)"
+      value={selected}
+      itemIdList={itemIdList.filter((id) => id !== itemId)}
+      onChange={onChange}
+    />
+  )
+})
+
 // Non-numeric on purpose: the change handlers turn Number(NO_LINK) into null.
 const NO_LINK = "none"
 
 const LinkToBoxSelect = memo(function LinkToBoxSelect({
+  label = "Link to box (#)",
   value,
   itemIdList,
   onChange,
 }: {
+  label?: string
   value: number | null
   itemIdList: number[]
   onChange: (event: SelectChangeEvent) => void
 }) {
   return (
     <FormControl fullWidth variant="standard">
-      <InputLabel>Link to box (#)</InputLabel>
+      <InputLabel>{label}</InputLabel>
       <Select
         value={value == null ? NO_LINK : String(value)}
         onChange={onChange}
