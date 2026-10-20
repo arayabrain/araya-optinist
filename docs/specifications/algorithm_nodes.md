@@ -97,9 +97,10 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 ###### suite2p_file_convert
 
 - **Description:** Convert to int16 (suite2p's binary, `data.bin`)
-  - Integer TIFFs with one frame per page are read in place, in batches. That includes integer HDF5 data.
+  - Integer TIFFs with one frame per page, stored in frame order, are read in place, in batches. That includes integer HDF5 data.
   - float32 TIFFs, including float32 / float64 HDF5 data, are first normalised to int16 into a copy in the node directory, also in batches.
-  - Everything else is first copied whole into the node directory: several series, RGB pages, ImageJ hyperstacks, other float types (float64 / float16 TIFFs, float16 HDF5 data), and a file that needs a different TIFF reader from the first file.
+  - Everything else is first copied whole into the node directory: several series, RGB pages, ImageJ hyperstacks, OME-TIFFs whose frames are stored out of order, other float types (float64 / float16 TIFFs, float16 HDF5 data), and a file that needs a different TIFF reader from the first file.
+  - An input file rewritten while it is read (for example, uploaded again under the same name) fails the node; run the workflow again.
 - **Input:** Image (Tiff), HDF5
 - **Output:** Suite2pData
 - **Parameters:**
