@@ -6,10 +6,13 @@ import {
   setNewDisplayDataPath,
 } from "store/slice/VisualizeItem/VisualizeItemActions"
 import {
+  selectImageItemRoiOutline,
   selectTimeSeriesItemKeys,
   selectTimeSeriesItemShadeSourceItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import reducer, {
+  addItemForWorkflowDialog,
+  setImageItemRoiOutline,
   setTimeSeriesItemShadeSource,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import {
@@ -78,6 +81,31 @@ describe("selectTimeSeriesItemKeys", () => {
     // eta and friends re-index onto the cells, so no non-cell id is present
     const state = buildState(["0", "2"], ["1", "3"])
     expect(selectTimeSeriesItemKeys(TIME_SERIES_ITEM_ID)(state)).toEqual([])
+  })
+})
+
+describe("selectImageItemRoiOutline", () => {
+  const asRoot = (visualaizeItem: ReturnType<typeof reducer>) =>
+    ({ visualaizeItem }) as unknown as RootState
+  const withImage = reducer(
+    undefined,
+    addItemForWorkflowDialog({
+      nodeId: "node",
+      filePath: "/output/ws/uid/suite2p_roi/images",
+      dataType: DATA_TYPE_SET.IMAGE,
+    }),
+  )
+
+  it("defaults to false on a new image item", () => {
+    expect(selectImageItemRoiOutline(0)(asRoot(withImage))).toBe(false)
+  })
+
+  it("is set by setImageItemRoiOutline", () => {
+    const on = reducer(
+      withImage,
+      setImageItemRoiOutline({ itemId: 0, roiOutline: true }),
+    )
+    expect(selectImageItemRoiOutline(0)(asRoot(on))).toBe(true)
   })
 })
 

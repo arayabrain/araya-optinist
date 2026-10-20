@@ -1,4 +1,9 @@
+import warnings
+from numbers import Integral, Real
+
 import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d, maximum_filter1d, minimum_filter1d
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass.base import BaseData
@@ -8,12 +13,13 @@ from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.wrappers.data_utils.data_utils_utils import return_as_data_type
 
-CELL_NORMALIZATION_OPTIONS = ("none", "zscore")
+CELL_NORMALIZATION_OPTIONS = ("none", "zscore", "dff")
 MEAN_NORMALIZATION_OPTIONS = ("none", "zscore", "minmax")
+F0_METHOD_OPTIONS = ("percentile", "maximin")
 
 
-def _option(params, key, options):
-    value = (params.get(key, "none") if params else "none") or "none"
+def _option(params, key, options, default="none"):
+    value = (params.get(key, default) if params else default) or default
     value = str(value).strip().lower()
     if value not in options:
         raise ValueError(f"Unknown {key} '{value}'; expected one of {options}")
@@ -31,6 +37,95 @@ def _zscore(values, axis):
     out = values - center
     out /= denom
     return out
+
+
+def _dff_params(params):
+    params = params or {}
+    method = _option(params, "f0_method", F0_METHOD_OPTIONS, default="percentile")
+    window = params.get("f0_window_frames", 0)
+    percentile = params.get("f0_percentile", 8)
+    sigma = params.get("f0_sigma_frames", 10)
+    if isinstance(window, bool) or not isinstance(window, Integral) or window < 0:
+        raise ValueError(f"f0_window_frames must be an integer >= 0, got {window!r}")
+    if (
+        isinstance(percentile, bool)
+        or not isinstance(percentile, Real)
+        or not 0 <= percentile <= 100
+    ):
+        raise ValueError(f"f0_percentile must be within 0..100, got {percentile!r}")
+    if (
+        isinstance(sigma, bool)
+        or not isinstance(sigma, Real)
+        or not 0 < sigma < float("inf")
+    ):
+        raise ValueError(f"f0_sigma_frames must be finite and > 0, got {sigma!r}")
+    if method == "maximin" and window == 0:
+        raise ValueError("maximin needs f0_window_frames > 0")
+    return method, int(window), float(percentile), float(sigma)
+
+
+def _dff(values, axis, method, window, percentile, sigma):
+    """(x - F0) / |F0| per row along axis; F0 near 0 gives NaN."""
+    logger = AppLogger.get_logger()
+    dtype = np.result_type(values.dtype, np.float32)
+    if values.size == 0:
+        return np.asarray(values, dtype=dtype)
+    x = np.moveaxis(np.asarray(values, dtype=dtype), axis, -1)
+    rows = x.reshape(-1, x.shape[-1])
+    n_time = rows.shape[-1]
+    if window >= n_time:
+        logger.warning(
+            f"f0_window_frames {window} >= trace length {n_time}; using {n_time}"
+        )
+        window = n_time
+    # SciPy sizes the Gaussian kernel from sigma before clipping it to the trace
+    if method == "maximin" and sigma > n_time:
+        logger.warning(
+            f"f0_sigma_frames {sigma:g} > trace length {n_time}; using {n_time}"
+        )
+        sigma = float(n_time)
+    finite = np.isfinite(rows)
+
+    if method == "maximin":
+        # Suite2p's dcnv.preprocess recipe, including its default reflect mode
+        f0 = gaussian_filter1d(rows, sigma, axis=-1)
+        minimum_filter1d(f0, window, axis=-1, output=f0)
+        maximum_filter1d(f0, window, axis=-1, output=f0)
+        for i in np.flatnonzero(~finite.all(axis=-1)):
+            ok = finite[i]
+            with np.errstate(invalid="ignore"):
+                sub = gaussian_filter1d(np.where(ok, rows[i], 0), sigma)
+                sub /= gaussian_filter1d(ok.astype(dtype), sigma)
+            low = pd.Series(sub).rolling(window, center=True, min_periods=1).min()
+            f0[i] = low.rolling(window, center=True, min_periods=1).max().to_numpy()
+    elif 0 < window < n_time:
+        half = window // 2
+        # pandas rolls in float64, so rows go one at a time to bound memory
+        f0 = np.empty_like(rows)
+        for i, row in enumerate(rows):
+            padded = pd.Series(np.pad(row, half, mode="edge"))
+            rolled = padded.rolling(window, center=True, min_periods=1)
+            f0[i] = rolled.quantile(percentile / 100).to_numpy()[half : half + n_time]
+    else:
+        # nanpercentile skips NaN but not inf; copy only when an inf is there
+        source = np.where(finite, rows, np.nan) if np.isinf(rows).any() else rows
+        f0 = np.nanpercentile(source, percentile, axis=-1, keepdims=True)
+        f0 = f0.astype(dtype, copy=False)
+
+    spread = np.max(rows, axis=-1, keepdims=True, initial=-np.inf, where=finite)
+    spread -= np.min(rows, axis=-1, keepdims=True, initial=np.inf, where=finite)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = rows - f0
+        out /= np.abs(f0, out=f0)
+    zero = np.broadcast_to(f0 <= 1e-6 * spread, rows.shape)
+    out[zero] = np.nan
+    out[~finite] = np.nan
+    n_zero = int(zero.any(axis=-1).sum())
+    if n_zero:
+        logger.warning(
+            f"dff baseline F0 is near 0 in {n_zero} row(s); those samples are NaN"
+        )
+    return np.moveaxis(out.reshape(x.shape), -1, axis)
 
 
 def _time_axis(data):
@@ -72,12 +167,20 @@ def data_slice(
                                  that selects no elements logs a warning, and a
                                  start:stop:step spec that appears to be in
                                  start:step:stop order logs a corrected hint.
-                               - 'cell_normalization': 'none' or 'zscore'. Z-scores
-                                 each row of an indexed input along its time axis
+                               - 'cell_normalization': 'none', 'zscore' or 'dff'.
+                                 Z-scores, or converts to (F - F0) / |F0|, each
+                                 row of an indexed input along its time axis
                                  before the mean is taken, so no single cell
                                  dominates mean_timeseries. Applied to sliced_data
                                  too; std and sem are dropped since their units
                                  no longer match.
+                               - 'f0_method': dff baseline, 'percentile' or
+                                 'maximin' (Suite2p: Gaussian of f0_sigma_frames,
+                                 then min and max filters of f0_window_frames).
+                               - 'f0_window_frames': dff sliding window in frames;
+                                 0 = the whole recording (percentile only).
+                               - 'f0_percentile': percentile for 'percentile'.
+                               - 'f0_sigma_frames': Gaussian s.d. for 'maximin'.
                                - 'mean_normalization': Normalisation applied to the
                                  mean_timeseries output: 'none', 'zscore', or 'minmax'.
 
@@ -100,6 +203,8 @@ def data_slice(
     mean_normalization = _option(
         params, "mean_normalization", MEAN_NORMALIZATION_OPTIONS
     )
+    if cell_normalization == "dff":
+        f0_method, f0_window, f0_percentile, f0_sigma = _dff_params(params)
 
     if slice_dims is None:
         slice_dims = []
@@ -291,13 +396,23 @@ def data_slice(
         eff_time_dim = (
             eff_index_dim if time_dim is not None and index_dim == time_dim else None
         )
-        if cell_normalization == "zscore" and eff_time_dim is None:
+        if cell_normalization != "none" and eff_time_dim is None:
             logger.warning(
                 f"cell_normalization is not applied to {type(data).__name__}: "
                 "it has no (rows, time) layout, or the time axis was sliced away"
             )
-        elif cell_normalization == "zscore":
-            sliced_data = _zscore(sliced_data, axis=eff_time_dim)
+        elif cell_normalization != "none":
+            if cell_normalization == "zscore":
+                sliced_data = _zscore(sliced_data, axis=eff_time_dim)
+            else:
+                sliced_data = _dff(
+                    sliced_data,
+                    eff_time_dim,
+                    f0_method,
+                    f0_window,
+                    f0_percentile,
+                    f0_sigma,
+                )
             sliced_std = None
             sliced_sem = None
 
@@ -310,7 +425,19 @@ def data_slice(
         mean_timeseries = None
         if eff_time_dim is not None:
             other_axes = tuple(i for i in range(sliced_data.ndim) if i != eff_time_dim)
-            if other_axes:
+            if other_axes and cell_normalization == "dff" and sliced_data.size:
+                rows = np.moveaxis(sliced_data, eff_time_dim, -1)
+                rows = rows.reshape(-1, rows.shape[-1])
+                empty = np.isnan(rows).all(axis=-1)
+                if empty.any():
+                    logger.warning(
+                        f"mean_timeseries leaves out {int(empty.sum())} "
+                        "all-NaN dff row(s)"
+                    )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    mean_timeseries = np.nanmean(rows, axis=0)
+            elif other_axes:
                 mean_timeseries = np.mean(sliced_data, axis=other_axes)
             else:
                 mean_timeseries = sliced_data.copy()
