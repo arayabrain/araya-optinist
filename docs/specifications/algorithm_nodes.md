@@ -37,7 +37,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Constrained nonnegative matrix factorization, find ROIs 2P data
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData, IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData
 - **Parameters:**
   - **decay_time** [float, default: 0.4] Length of typical transient in seconds. Dependent on fluorescent indicator dynamics.
   - **use_online** Provides faster processing and reduced memory requirements, slight reduction in accuracy. Good for large data.
@@ -50,37 +50,42 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **method_init** [‘greedy_roi’,’corr_pnr’, default: ‘greedy_roi’]: Use ‘greedy_roi’ for standard 2P, ‘corr_pnr’ for 1p (CNMF-E).
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
   - **p** [int, default: 2]: Order of the autoregression model.
-  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None, no patches are constructed and the whole FOV is processed jointly.
+  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None or 0, no patches are constructed and the whole FOV is processed jointly.
   - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
   - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
   - **n_processes** [int, default: 1, under advanced > patch_params]: CaImAn worker processes. The value is clamped to the CPUs available to the process minus one, so on a 2-CPU instance it always resolves to 1. Memory, not CPU, is the ceiling: each worker holds its own slice of the movie. With `rf: None` (the default) the whole field of view is one patch, so extra workers only parallelise preprocessing and residual computation; set `rf` as well to parallelise the patch-level fit.
+  - **dff** (output): CaImAn's own ΔF/F from `detrend_df_f(A, b, C, f, YrA)`: (F - F0) / (B0 + F0), where F0 is a running baseline of the trace at a percentile CaImAn picks per trace and B0 the same baseline of the background under the component. If the fit has no `b` and `f` (the ring background, `nb: 0`), B0 comes from the ring model's static background `b0`; its ring fluctuations `W` are not included. A fit with no background at all gives F - F0 only, with a warning. Rows are in the same order as fluorescence. A ROI added or merged with Edit ROI has no CaImAn ΔF/F, so its dff row is NaN. dff is not written to the NWB file. An invalid frames_window stops the node before CaImAn runs; if CaImAn itself fails, the node still finishes and dff is all NaN with the error in the log. It adds run time: about 1.5 to 4 minutes for 267 components x 39,616 frames single-threaded with frames_window 500.
+  - **frames_window** [int of at least 2, or null, default: 500, under advanced > dff_params]: Running baseline window in frames. null, or a window longer than the recording, uses one baseline for the whole recording and is the fast option. From the parameter form, which cannot set null, enter a window larger than the recording's frame count instead.
   - **advanced** (See [CaImAn documentation](https://caiman.readthedocs.io/en/latest/core_functions.html#))
 
 ###### caiman_cnmfe
 
 - **Description:** Constrained nonnegative matrix factorization-endoscope, find ROIs for 1P data.
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData, IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData
 - **Parameters:**
   - Additional information on CNMF-E can be found on [Inscopix github](https://github.com/inscopix/inscopix-cnmfe?tab=readme-ov-file#algorithm-parameters)
+  - The defaults follow CaImAn's own 1p demo (`demos/general/params_demo_pipeline_cnmfE.json`), except rf and stride, which are smaller so a long movie fits in about 5 GB. Under advanced, `use_cnn` is off because CaImAn's CNN classifier is trained on 2p data.
   - **decay_time** [float, default: 0.4] Length of typical transient in seconds. Dependent on fluorescent indicator dynamics
   - **do_refit** Refit reprocesses data after an initial fit, refining results by using the centres of components from the initial fit as seeds for another iteration.
-  - **K [int, default: 10]: Number of components to be found. This determines how many cells can be found** (per patch or whole FOV depending on whether rf=None)
-  - **gSig** [default: (4,4)]: Standard deviation of neuron size along x and y.
-  - **ssub** [float, default: 2]: Spatial downsampling factor.
-  - **tsub** [float, default 1, no downsampling]: temporal downsampling factor recommended for long datasets.
-  - **nb** [int, default: 2]: Number of global background components (noise complexity).
+  - **K [int or None, default: None]: Number of components to be found. This determines how many cells can be found** (per patch or whole FOV depending on whether rf=None). None lets CaImAn cap it at a fifth of the searched pixels.
+  - **gSig** [default: (3,3)]: Standard deviation of neuron size along x and y.
+  - **ssub** [float, default: 1]: Spatial downsampling factor.
+  - **tsub** [float, default: 2]: Temporal downsampling factor for initialisation, recommended for long datasets.
+  - **nb** [int, default: 0]: Background model. 0 is CNMF-E's exact ring model, which patch mode needs; a positive value approximates the background with that many low-rank components.
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
-  - **p** [int, default: 2]: Order of the autoregression model.
-  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None, no patches are constructed and the whole FOV is processed jointly.
-  - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
-  - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **p** [int, default: 1]: Order of the autoregression model.
+  - **rf** [int or None, default: 32]: Half-size of patch in pixels. Each patch is initialised on its own, so peak memory is about 24 bytes x (2 x rf + 1)^2 x frames plus about 1 GB: about 5 GB for rf 32 on a 40,000-frame movie. Halve rf for a movie four times longer. This holds for n_processes 1 (more workers multiply the per-patch term by their count) and a field of view up to about 140 x 140 pixels; above that the ring-background step after the patches needs about 5 bytes x pixels x frames whatever rf is, so crop or spatially downsample the movie first. 0 (None in a workflow file) processes the whole field of view at once, which holds about six float32 copies of the movie (more than 13 GB for 97 x 133 pixels x 40,000 frames) and only suits short movies.
+  - **stride** [int, default: 16]: Overlap between neighboring patches in pixels. Keep it at least gSiz.
+  - **merge_thr** [float, default: 0.7]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **dff** (output): CaImAn's own ΔF/F from `detrend_df_f(A, b, C, f, YrA)`: (F - F0) / (B0 + F0), where F0 is a running baseline of the trace at a percentile CaImAn picks per trace and B0 the same baseline of the background under the component. The ring model (`nb: 0`) leaves no `b` and `f`, so B0 comes from its static background `b0`; the ring fluctuations `W` are not included. Rows are in the same order as fluorescence. A ROI added or merged with Edit ROI has no CaImAn ΔF/F, so its dff row is NaN. dff is not written to the NWB file. An invalid frames_window stops the node before CaImAn runs; if CaImAn itself fails, the node still finishes and dff is all NaN with the error in the log. It adds run time: about 1.5 to 4 minutes for 267 components x 39,616 frames single-threaded with frames_window 500.
+  - **frames_window** [int of at least 2, or null, default: 500, under advanced > dff_params]: Running baseline window in frames. null, or a window longer than the recording, uses one baseline for the whole recording and is the fast option. From the parameter form, which cannot set null, enter a window larger than the recording's frame count instead.
 
 ###### caiman_cnmf_multisession
 
 - **Description:** Keep union of components found in multiple sessions
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData, IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData
 - **Parameters:** Same as caiman_cnmf with the addition of:
   - n_reg_files
   - reg_file_rate
@@ -91,6 +96,9 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **thresh_cost** [scalar, default: 0.7]: Maximum distance considered.
   - **max_dist** [scalar, default: 10]: Maximum distance between centroids.
   - **enclosed_thr** [float or none, default: None]: If not None, set distance to at most the specified value when ground truth is a subset of inferred.
+  - **fluorescence** (output): each session's CaImAn `C` trace of the union cell, concatenated in time. A union cell with no match in a session (possible with reg_file_rate below 1) has NaN fluorescence for that session, also in the NWB file.
+  - **ROIs** (cell_roi, Edit ROI and the NWB ROI table): each union cell's footprint is the one from the first session it was matched in. With reg_file_rate 1 every kept cell is in the first session, so all footprints come from it.
+  - **dff** (output): as in caiman_cnmf, computed per session with frames_window and concatenated in time like fluorescence, so each session has its own baseline. A union cell with no match in a session (possible with reg_file_rate below 1) has NaN dff for that session. With `nb: 0` the denominator uses each session's static ring background `b0` (not its `W` fluctuations). Not written to the NWB file.
 
 ##### [Suite2p](https://suite2p.readthedocs.io/en/latest/)
 
@@ -627,7 +635,11 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
     - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time).
   - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell of a FluoData input and downsample time, or `0:8152:2, :` for BehaviorData.
   - Unparsable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
-  - **cell_normalization** [str, default: `none`]: `none` or `zscore`. Z-scores each row of a FluoData or TimeSeriesData input along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Other inputs, and slices that remove the time axis, are left unchanged with a warning. NaN samples stay NaN and a constant row becomes zeros.
+  - **cell_normalization** [str, default: `none`]: `none`, `zscore` or `dff`. `zscore` z-scores each row of a FluoData or TimeSeriesData input along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries; a constant row becomes zeros. `dff` converts each row to `(F - F0) / |F0|` with the baseline F0 set by the `f0_` parameters below. `dff` is meant for raw fluorescence (Suite2p `F`, LCCD traces); CaImAn `C` and deconvolved traces have baselines at or near 0 and should not be fed to it. Samples where `|F0|` is at most 1e-6 times the row's range become NaN with a warning. mean_timeseries averages each sample over the rows that are not NaN there, so it is NaN only where every row is, and rows that end up entirely NaN are reported with a warning. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Other inputs, and slices that remove the time axis, are left unchanged with a warning. Non-finite samples (NaN, inf) come out NaN.
+  - **f0_method** [str, default: `percentile`]: baseline for `dff`. `percentile` takes the `f0_percentile` percentile (linear interpolation, NaN samples ignored) of each row over the whole recording or over a centred sliding window, with the edges padded by the first and last sample. `maximin` is Suite2p's `extraction.dcnv.preprocess` recipe with `f0_window_frames` as `win_baseline * fs` and `f0_sigma_frames` as `sig_baseline`: a Gaussian of s.d. `f0_sigma_frames`, then a minimum and a maximum filter of `f0_window_frames`; rows with NaN samples use a NaN-aware Gaussian and rolling windows truncated at the edges. Sosa et al. 2025 use maximin with a 20 s window and give no sigma: set `f0_window_frames` to 20 s times the frame rate, e.g. 310 at 15.5 Hz.
+  - **f0_window_frames** [int, default: 0]: sliding window length in frames. `0` uses the whole recording, which `percentile` supports and `maximin` rejects. A window at least as long as the trace is clamped to the trace length with a warning (for `percentile` that is the whole recording).
+  - **f0_percentile** [float, default: 8]: percentile (0 to 100) used by `percentile`.
+  - **f0_sigma_frames** [float, default: 10]: Gaussian s.d. in frames used by `maximin`, must be finite and > 0, and a value above the trace length is clamped to it with a warning; 10 is Suite2p's `sig_baseline` default.
   - **mean_normalization** [str, default: `none`]: `none`, `zscore` or `minmax`. Applied only to the mean_timeseries output. A NaN sample stays NaN, a constant trace becomes zeros, and an entirely non-finite trace is left unchanged with a warning.
 
 ###### microscope_to_img

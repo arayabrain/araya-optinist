@@ -6,6 +6,7 @@ import uuid
 import h5py
 import numpy as np
 
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -18,6 +19,8 @@ from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.dataclass.iscell import IscellData
 from studio.app.optinist.dataclass.microscope import MicroscopeData
 from studio.app.optinist.routers.mat import MatGetter
+
+logger = AppLogger.get_logger()
 
 
 def dataclass_for_rank(ndim: int):
@@ -81,6 +84,7 @@ class FileWriter:
         with h5py.File(rule_config.input, "r") as f:
             dataset, field = hdf5_dataset(f, rule_config.hdf5Path)
             n_rois = cls._sibling_roi_count(dataset)
+            cls._warn_on_rate_mismatch(dataset, nwbfile, rule_config.hdf5Path)
             cached = cls._cached_tiff(rule_config, rule_config.hdf5Path)
             if cached is None:
                 data = dataset[()] if field is None else dataset[field]
@@ -103,6 +107,23 @@ class FileWriter:
         if isinstance(rois, h5py.Dataset) and rois.ndim == 1:
             return rois.shape[0]
         return None
+
+    @staticmethod
+    def _warn_on_rate_mismatch(dataset, nwbfile, path):
+        """Nodes take the frame rate from the NWB settings, not from the input."""
+        start = dataset.parent.get("starting_time")
+        rate = start.attrs.get("rate") if isinstance(start, h5py.Dataset) else None
+        setting = (nwbfile or {}).get("imaging_plane", {}).get("imaging_rate")
+        try:
+            if rate is None or np.isclose(float(rate), float(setting)):
+                return
+        except (TypeError, ValueError):
+            return
+        logger.warning(
+            f"{path} is sampled at {float(rate):g} Hz but the NWB setting "
+            f"imaging_rate is {setting} Hz; nodes that use the frame rate, "
+            "such as CaImAn, read the setting"
+        )
 
     @classmethod
     def _orient_nwb_fluorescence(cls, fluo: FluoData, n_rois: int):
