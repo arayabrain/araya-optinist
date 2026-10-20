@@ -304,7 +304,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
   - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
 - **Output:** neural_data (FluoData), behaviors_data (BehaviorData)
-  - Both outputs keep the orientation of the inputs, so a downstream node uses the same transpose settings.
+  - neural_data keeps the orientation of its input; behaviors_data is always (time, columns), so a downstream node reads it with `transpose_y: false`.
 - **Parameters:**
   - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
   - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
@@ -632,7 +632,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
     - `start:stop`: range slice (Python semantics, `stop` excluded)
     - `start:stop:step`: strided slice, e.g. `0:8152:2` keeps every 2nd sample of the first 8152
     - `squeeze`: remove a dimension of size 1
-    - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time).
+    - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time). On the time axis of BehaviorData and CsvData, an integer or `squeeze` keeps the axis one sample long, e.g. `5, :` gives shape (1, columns).
   - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell of a FluoData input and downsample time, or `0:8152:2, :` for BehaviorData.
   - Unparsable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
   - **cell_normalization** [str, default: `none`]: `none`, `zscore` or `dff`. `zscore` z-scores each row of a FluoData or TimeSeriesData input along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries; a constant row becomes zeros. `dff` converts each row to `(F - F0) / |F0|` with the baseline F0 set by the `f0_` parameters below. `dff` is meant for raw fluorescence (Suite2p `F`, LCCD traces); CaImAn `C` and deconvolved traces have baselines at or near 0 and should not be fed to it. Samples where `|F0|` is at most 1e-6 times the row's range become NaN with a warning. mean_timeseries averages each sample over the rows that are not NaN there, so it is NaN only where every row is, and rows that end up entirely NaN are reported with a warning. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Other inputs, and slices that remove the time axis, are left unchanged with a warning. Non-finite samples (NaN, inf) come out NaN.

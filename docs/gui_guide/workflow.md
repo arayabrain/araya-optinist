@@ -93,6 +93,7 @@ The left side of the window displays all available analysis methods. ROI detecti
   - transpose
 
     You can use transposed the data as the input by checking this box.
+    For behavior data, rows must be time, so use transpose when the file has one row per channel.
 
     <p align="center">
     <img width="400px" src="../_static/workflow/csv_transpose.png" alt="CSV transpose" />
@@ -137,6 +138,9 @@ The left side of the window displays all available analysis methods. ROI detecti
   <img width="400px" src="../_static/workflow/hdf5_structure.png" alt="HDF5 node" />
   </p>
 
+  - Transpose flips a 2D dataset as it is loaded, and is ignored for 3D datasets and for NWB fluorescence that is oriented on load.
+  - Behavior data means rows are time, as for the BEHAVIOR node, and makes a 1D or 2D dataset behavior data for every node it feeds.
+
 There are some additional utility nodes for processing HDF5 data.
 For example, fluo_from_hdf5 extracts fluorescence data from HDF5 data or
 roi_fluo_from_hdf5 that extracts roi and fluorescence data from HDF5 data.
@@ -151,6 +155,9 @@ For more details, refer to the [Algorithm Nodes Documentation](../specifications
 
   This node accepts `.mat` files.
   Once a file is selected, you can search through the data structure and select the data to use.
+
+  - Transpose flips a 2D variable as it is loaded, and is ignored for 3D variables.
+  - Behavior data means rows are time, as for the BEHAVIOR node, and makes a 1D or 2D variable behavior data for every node it feeds.
 
   ```{eval-rst}
   .. note::
