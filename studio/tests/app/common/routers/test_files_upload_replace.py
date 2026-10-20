@@ -119,3 +119,30 @@ def test_a_url_upload_that_fails_midway_leaves_the_old_file(input_dir):
     assert "connection reset" in files.DOWNLOAD_STATUS[str(path)].error
     assert path.read_bytes() == OLD
     assert os.listdir(input_dir) == ["data.csv"]
+
+
+def test_a_url_upload_reports_finished_only_once_the_file_is_in_place(
+    input_dir, monkeypatch
+):
+    """The frontend reads current == total as finished and uses the file."""
+    path = input_dir / "data.csv"
+    at_replace = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        at_replace.append(files.DOWNLOAD_STATUS.get(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(files.os, "replace", replace)
+    response = url_response(NEW[:50], NEW[50:])
+    response.headers = {"content-length": str(len(NEW))}
+    with patch.object(
+        files.WorkspaceDataCapacityService, "is_available", return_value=False
+    ):
+        files.download(response, "data.csv", "1")
+
+    (status,) = at_replace
+    assert status is None or status.current != status.total
+    finished = files.DOWNLOAD_STATUS[str(path)]
+    assert (finished.current, finished.total) == (len(NEW), len(NEW))
+    assert path.read_bytes() == NEW

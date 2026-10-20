@@ -1031,8 +1031,13 @@ def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
             for data in res.iter_content(chunk_size=chunk_size):
                 size = file.write(data)
                 current += size
-                DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
+                # current == total reads as finished, so only once the file is in place
+                if current != total:
+                    DOWNLOAD_STATUS[filepath] = DownloadStatus(
+                        total=total, current=current
+                    )
                 bar.update(size)
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
     except Exception as e:
         DOWNLOAD_STATUS[filepath] = DownloadStatus(error=str(e))
 
