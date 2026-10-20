@@ -23,21 +23,34 @@ expected number of concurrent free-tier users is scheduled.
 
 ## Flow
 
+Rounded nodes are the triggers; each step's reason is in the table below.
+
 ```mermaid
 flowchart TD
-    T1(["An event is scheduled: U concurrent users expected"]) --> S["1. Size it: N = ceil(U / 5)<br/>why: one instance per 5 active users"]
-    S --> C{"N above MaxSize?"}
-    C -- yes --> M["2. Raise MaxSize to N<br/>why: the Free Manager clamps every target to MaxSize,<br/>and MinSize cannot exceed it"]
-    C -- no --> T2
-    M --> T2(["At least 30 minutes before the spike"])
-    T2 --> F["3. Raise MinSize to N, never desired capacity alone<br/>why: reactive scaling misses the first wave;<br/>desired capacity alone is a surplus the Free Manager removes"]
-    F --> K["4. Check: ASG desired = InService = all instances<br/>= ECS desired = ECS running = healthy targets<br/>why: every instance serving, not only running"]
-    K --> T3(["Spike in progress"])
-    T3 --> H["5. No terraform apply<br/>why: an apply returns both bounds to tfvars;<br/>a lower tfvars MaxSize makes the group terminate instances itself"]
-    H --> T4(["Spike over"])
-    T4 --> R["6. Lower MinSize first, leave desired capacity alone<br/>why: the Free Manager removes the surplus,<br/>choosing instances with no running workflow"]
-    R --> X["7. Lower MaxSize last, once desired capacity is at or below it<br/>why: a MaxSize below desired capacity forces desired down,<br/>and the group picks instances blind to workloads"]
+    E1(["Event scheduled"]) --> S1["<b>Step 1</b><br/>Size it: N"]
+    S1 --> Q{"N above<br/>MaxSize?"}
+    Q -- yes --> S2["<b>Step 2</b><br/>Raise MaxSize"]
+    Q -- no --> E2
+    S2 --> E2(["30+ min before the spike"])
+    E2 --> S3["<b>Step 3</b><br/>Raise MinSize"]
+    S3 --> S4["<b>Step 4</b><br/>Check it is serving"]
+    S4 --> E3(["Spike in progress"])
+    E3 --> S5["<b>Step 5</b><br/>No terraform apply"]
+    S5 --> E4(["Spike over"])
+    E4 --> S6["<b>Step 6</b><br/>Lower MinSize"]
+    S6 --> E5(["Desired capacity<br/>at or below max0"])
+    E5 --> S7["<b>Step 7</b><br/>Lower MaxSize,<br/>if step 2 raised it"]
 ```
+
+| Step | Action | Why |
+|---|---|---|
+| 1 | N = `ceil(U / 5)` for U expected concurrent users | One instance per 5 active users |
+| 2 | Raise `MaxSize` to N | The Free Manager clamps every target to `MaxSize`, and `MinSize` cannot exceed it |
+| 3 | Raise `MinSize` to N; never desired capacity alone | Reactive scaling misses the first wave; desired capacity alone is a surplus the Free Manager removes |
+| 4 | ASG desired = `InService` = all instances = ECS desired = ECS running = healthy targets | Every instance serving, not only running |
+| 5 | No `terraform apply` until step 7 is done | An apply returns both bounds to tfvars; a lower tfvars `MaxSize` makes the group terminate instances itself |
+| 6 | Lower `MinSize`; leave desired capacity alone | The Free Manager removes the surplus, choosing instances with no running workflow |
+| 7 | Lower `MaxSize` back to `<max0>` | A `MaxSize` below desired capacity forces desired down, and the group picks instances blind to workloads |
 
 ---
 
