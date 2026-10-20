@@ -6,6 +6,7 @@ from studio.app.optinist.wrappers.suite2p.utils import (
     binary_to_tiff,
     load_settings,
     pair,
+    positive,
 )
 
 logger = AppLogger.get_logger()
@@ -39,9 +40,12 @@ def suite2p_registration(
         )
         reg["nonrigid"] = False
     if reg["smooth_sigma_time"] > 0:
-        # the phase correlations are smoothed over each batch's frames, so the
-        # batch edges shape the shifts: keep suite2p_file_convert's batches
-        reg["batch_size"] = ops["batch_size"]
+        # 1.1.0 smooths in numpy and hands the result to torch.argmax
+        raise ValueError(
+            "suite2p 1.1.0 cannot smooth in time: set smooth_sigma_time to 0"
+        )
+    for key in ("nimg_init", "batch_size", "smooth_sigma", "spatial_taper"):
+        positive(reg[key], f"registration.{key}")
     device = _assign_torch_device(settings["torch_device"])
 
     logger.info("registering in batches of %s frames", reg["batch_size"])

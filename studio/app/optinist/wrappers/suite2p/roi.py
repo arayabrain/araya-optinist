@@ -14,7 +14,7 @@ from studio.app.optinist.dataclass import (
     Suite2pData,
 )
 from studio.app.optinist.dataclass.roi import RoiStack
-from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair
+from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
 
@@ -55,10 +55,27 @@ def suite2p_roi(
     if not settings["detection"]["max_overlap"] < 1:
         # suite2p omits stat["overlap"] otherwise, which ROI editing reads
         raise ValueError("detection.max_overlap must be below 1")
+    tau = positive(settings["tau"], "tau")
+    positive(fs, "NWB imaging_rate")
+    nbins = positive(settings["detection"]["nbins"], "detection.nbins")
+    # zero or below accepts every residual peak as an ROI, or runs no
+    # extraction batch and classifies flat traces, with no error either way
+    positive(settings["detection"]["threshold_scaling"], "detection.threshold_scaling")
+    positive(settings["extraction"]["batch_size"], "extraction.batch_size")
     device = _assign_torch_device(settings["torch_device"])
 
     ops = ops.data
     Ly, Lx, nframes = ops["Ly"], ops["Lx"], ops["nframes"]
+    # suite2p's detection bin, averaged within 500-frame batches of the good
+    # frames: a bin wider than a batch is a bare ZeroDivisionError in bin_movie
+    bin_size = int(max(1, nframes // nbins, np.round(tau * fs)))
+    n_good = nframes - int(np.sum(ops["badframes"])) if "badframes" in ops else nframes
+    if bin_size > min(500, n_good):
+        raise ValueError(
+            f"detection bins {bin_size} frames (tau x imaging_rate, or nframes / "
+            f"nbins) but only {n_good} usable frames of {nframes} fit a 500-frame "
+            "batch: lower tau or raise nbins"
+        )
 
     # pipeline() reads the registration step's frame range here and writes
     # copies of its outputs (F, Fneu, stat, ...) beside it; the pickle keeps them

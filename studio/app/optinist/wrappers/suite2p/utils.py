@@ -42,6 +42,13 @@ def pair(value, name: str, kind=int) -> list:
     return [kind(v) for v in value]
 
 
+def positive(value, name: str):
+    """A setting suite2p divides by, allocates with or thresholds on."""
+    if not value > 0:
+        raise ValueError(f"{name} must be above 0, got {value!r}")
+    return value
+
+
 def binary_to_tiff(binary, output_dir, file_name, batch_size=None):
     """
     Write an open suite2p BinaryFile to the TIFF path ImageData would use.

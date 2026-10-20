@@ -125,17 +125,34 @@ def test_params_without_a_key_take_the_shipped_yaml_not_suite2p_defaults(
     assert call["settings"]["run"]["do_regmetrics"] is False
 
 
-def test_temporal_smoothing_registers_with_the_input_batch_size(
-    output_dir, tmp_path, suite2p_stub
-):
-    # the phase correlations are smoothed over each batch, so a different batch
-    # size gives different shifts: suite2p_file_convert's 500 is kept
+def test_temporal_smoothing_is_refused_on_1_1_0(output_dir, tmp_path, suite2p_stub):
+    # 1.1.0's temporal_smooth returns numpy into torch.argmax: a TypeError
+    # deep in registration for any positive value
     params = copy.deepcopy(read_default_params("suite2p_registration"))
     params["registration"]["smooth_sigma_time"] = 2
 
-    suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+    with pytest.raises(ValueError, match="smooth_sigma_time"):
+        suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+    assert "pipeline" not in suite2p_stub
 
-    assert suite2p_stub["pipeline"]["settings"]["registration"]["batch_size"] == 500
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("nimg_init", 0),  # an empty reference stack
+        ("batch_size", 0),  # range() step of zero
+        ("smooth_sigma", 0),  # NaN kernel: NaN shifts, every frame bad, no error
+        ("spatial_taper", 0),  # NaN taper: same
+        ("spatial_taper", -1),
+    ],
+)
+def test_a_setting_suite2p_divides_by_must_be_positive(
+    output_dir, tmp_path, suite2p_stub, key, value
+):
+    params = copy.deepcopy(read_default_params("suite2p_registration"))
+    params["registration"][key] = value
+    with pytest.raises(ValueError, match=f"registration.{key}"):
+        suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
 
 
 @pytest.mark.parametrize("block_size", [[128], "128, 128", [128, 128, 128]])

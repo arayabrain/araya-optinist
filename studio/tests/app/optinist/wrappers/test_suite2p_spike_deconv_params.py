@@ -99,6 +99,40 @@ def test_no_rois_gives_no_spikes_without_calling_suite2p(output_dir, suite2p_stu
     assert "oasis" not in suite2p_stub
 
 
+@pytest.mark.parametrize(
+    "group, key, value, baseline",
+    [
+        ("extraction", "batch_size", 0, "maximin"),  # no batch runs: zero spikes
+        ("extraction", "batch_size", -1, "maximin"),
+        ("dcnv_preprocess", "sig_baseline", 0, "maximin"),  # NaN baseline
+        ("dcnv_preprocess", "sig_baseline", 0, "constant"),
+        ("dcnv_preprocess", "win_baseline", 0, "maximin"),  # 1-frame window
+    ],
+)
+def test_a_setting_that_zeroes_or_nans_the_spikes_is_refused(
+    output_dir, suite2p_stub, group, key, value, baseline
+):
+    params = copy.deepcopy(read_default_params("suite2p_spike_deconv"))
+    params["dcnv_preprocess"]["baseline"] = baseline
+    params[group][key] = value
+    with pytest.raises(ValueError, match=key):
+        suite2p_spike_deconv(
+            _ops(np.ones((N_ROI, FRAMES), np.float32)), output_dir, params=params
+        )
+    assert "oasis" not in suite2p_stub
+
+
+def test_prctile_baseline_does_not_read_the_smoothing_settings(
+    output_dir, suite2p_stub
+):
+    params = copy.deepcopy(read_default_params("suite2p_spike_deconv"))
+    params["dcnv_preprocess"].update(baseline="prctile", sig_baseline=0)
+    suite2p_spike_deconv(
+        _ops(np.ones((N_ROI, FRAMES), np.float32)), output_dir, params=params
+    )
+    assert suite2p_stub["preprocess"]["baseline"] == "prctile"
+
+
 def test_a_baseline_suite2p_would_silently_skip_is_refused(output_dir, suite2p_stub):
     params = copy.deepcopy(read_default_params("suite2p_spike_deconv"))
     params["dcnv_preprocess"]["baseline"] = "constant_prctile"

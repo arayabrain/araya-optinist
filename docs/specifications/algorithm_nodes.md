@@ -128,10 +128,10 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
   - **registration:**
 
-    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it. Results do not depend on it unless `smooth_sigma_time` is above 0: the phase correlations are then smoothed over each batch's frames, so the node registers in suite2p_file_convert's batches (default 500) to keep the batch edges where they were.
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it; results do not depend on it.
     - **nimg_init** [int, default: 400]: How many frames to use to compute the reference image.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
-    - **smooth_sigma_time** [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Might need this to be set to 1 or 2 for low SNR data.
+    - **smooth_sigma_time** [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Must stay 0: suite2p 1.1.0's time smoothing fails inside registration for any positive value, so the node refuses it with a message.
     - **maxregshift** [float, default: 0.1]: Maximum shift as a fraction of the frame size. If the frame is Ly pixels x Lx pixels, then the maximum pixel shift in pixels will be max(Ly,Lx) \* maxregshift.
     - **th_badframes** [float, default: 1.0]: Involved with setting threshold for excluding frames for cropping. Set this smaller to exclude more frames.
     - **norm_frames** [bool, default: True]: Normalize frames when detecting shifts.

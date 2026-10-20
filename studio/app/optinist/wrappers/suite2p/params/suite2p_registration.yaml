@@ -7,7 +7,7 @@ registration:
   batch_size: 100         # frames per registration batch (peak memory grows with it)
   nimg_init: 400          # frames used to compute the reference image
   smooth_sigma: 1.15      # gaussian smoothing in XY; ~1 for 2P, 3-5 may work for 1P
-  smooth_sigma_time: 0    # gaussian smoothing in time
+  smooth_sigma_time: 0    # gaussian smoothing in time; must stay 0, broken in suite2p 1.1.0
   maxregshift: 0.1        # max allowed registration shift, as a fraction of the frame size
   th_badframes: 1.0       # frames with a lower correlation than this are excluded from detection
   norm_frames: True       # normalize frames when detecting shifts

@@ -16,7 +16,7 @@ from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.wrappers.suite2p.roi import suite2p_roi
 from studio.tests.app.optinist.suite2p_settings_1_1_0 import default_settings
 
-FRAMES, LY, LX = 6, 10, 12
+FRAMES, LY, LX = 600, 10, 12  # 600 frames: the default tau x fs bin of 30 fits
 CELLS = [((2, 3), (4, 5)), ((7, 8), (9, 10))]  # (ypix, xpix) of two ROIs
 
 
@@ -255,6 +255,10 @@ def test_any_other_detection_error_fails_the_node(
         ("detection", "max_overlap", 1.0, "max_overlap"),
         (None, "diameter", [12], "diameter"),
         (None, "diameter", "12, 12", "diameter"),
+        (None, "tau", 0, "tau"),  # ZeroDivisionError two nodes later
+        ("detection", "nbins", 0, "nbins"),
+        ("detection", "threshold_scaling", 0, "threshold_scaling"),  # junk ROIs
+        ("extraction", "batch_size", -1, "batch_size"),  # all-zero traces
     ],
 )
 def test_settings_suite2p_would_misread_are_refused(
@@ -264,6 +268,40 @@ def test_settings_suite2p_would_misread_are_refused(
     (params[group] if group else params)[key] = value
     with pytest.raises(ValueError, match=match):
         suite2p_roi(_registered_ops(tmp_path), output_dir, params=params)
+    assert "pipeline" not in suite2p_stub
+
+
+def test_a_non_positive_imaging_rate_is_refused(output_dir, tmp_path, suite2p_stub):
+    with pytest.raises(ValueError, match="imaging_rate"):
+        suite2p_roi(
+            _registered_ops(tmp_path),
+            output_dir,
+            params=read_default_params("suite2p_roi"),
+            nwbfile={"imaging_plane": {"imaging_rate": 0}},
+        )
+
+
+@pytest.mark.parametrize(
+    "tau, fs, ops_extra",
+    [
+        (20, 30, {}),  # a 600-frame bin, above bin_movie's 500-frame batch
+        (1, 30, {"nframes": 20}),  # a movie shorter than one bin
+        (1, 30, {"badframes": np.ones(FRAMES, bool)}),  # registration left none
+    ],
+)
+def test_a_detection_bin_wider_than_the_usable_frames_is_refused(
+    output_dir, tmp_path, suite2p_stub, tau, fs, ops_extra
+):
+    # bin_movie divides by (batch // bin_size), a bare ZeroDivisionError
+    params = copy.deepcopy(read_default_params("suite2p_roi"))
+    params["tau"] = tau
+    with pytest.raises(ValueError, match="lower tau or raise nbins"):
+        suite2p_roi(
+            _registered_ops(tmp_path, **ops_extra),
+            output_dir,
+            params=params,
+            nwbfile={"imaging_plane": {"imaging_rate": fs}},
+        )
 
 
 def test_a_pre_upgrade_parameter_tree_is_refused(output_dir, tmp_path, suite2p_stub):

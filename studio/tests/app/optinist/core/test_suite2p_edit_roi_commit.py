@@ -326,7 +326,13 @@ def test_suite2p_roi_stores_a_reference_to_the_movie(tmp_path, monkeypatch):
     output_dir = tmp_path / "output" / "default" / "uid" / "suite2p_roi_x"
     output_dir.mkdir(parents=True)
     ops["file_list"] = [str(movie)]
-    info = suite2p_roi(Suite2pData(ops), str(output_dir), params={})
+    info = suite2p_roi(
+        Suite2pData(ops),
+        str(output_dir),
+        params={},
+        # a 1 Hz rate keeps the detection bin within the 6-frame movie
+        nwbfile={"imaging_plane": {"imaging_rate": 1.0}},
+    )
 
     assert len(info["fluorescence"].data) == len(CELLS)  # detection really ran
     images = info["edit_roi_data"].images

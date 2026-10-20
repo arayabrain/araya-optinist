@@ -2,7 +2,7 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import SpikingActivityData, Suite2pData
-from studio.app.optinist.wrappers.suite2p.utils import load_settings
+from studio.app.optinist.wrappers.suite2p.utils import load_settings, positive
 
 logger = AppLogger.get_logger()
 
@@ -20,15 +20,22 @@ def suite2p_spike_deconv(
     logger.info("start suite2_spike_deconv: %s", function_id)
 
     settings = load_settings(default_settings(), "suite2p_spike_deconv", params)
-    baseline = settings["dcnv_preprocess"]["baseline"]
+    preprocess = settings["dcnv_preprocess"]
+    baseline = preprocess["baseline"]
     if baseline not in BASELINES:
         # suite2p subtracts no baseline at all for any other value
         raise ValueError(f"baseline must be one of {BASELINES}, got '{baseline}'")
+    # a non-positive batch runs no batch at all and leaves the spikes at zero;
+    # a zero smoothing or window gives NaN baselines, with no error either way
+    batch_size = positive(settings["extraction"]["batch_size"], "extraction.batch_size")
+    if baseline != "prctile":
+        positive(preprocess["sig_baseline"], "dcnv_preprocess.sig_baseline")
+    if baseline == "maximin":
+        positive(preprocess["win_baseline"], "dcnv_preprocess.win_baseline")
 
     ops = ops.data
     # pre-upgrade roi pickles store tau flat
     tau = ops.get("settings", {}).get("tau", ops.get("tau", settings["tau"]))
-    batch_size = settings["extraction"]["batch_size"]
 
     dF = ops["F"].copy() - settings["extraction"]["neuropil_coefficient"] * ops["Fneu"]
     if dF.shape[0] == 0:
@@ -39,7 +46,7 @@ def suite2p_spike_deconv(
             fs=ops["fs"],
             batch_size=batch_size,
             device=torch.device("cpu"),
-            **settings["dcnv_preprocess"],
+            **preprocess,
         )
         spks = extraction.oasis(F=dF, batch_size=batch_size, tau=tau, fs=ops["fs"])
 
