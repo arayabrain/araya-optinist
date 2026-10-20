@@ -140,6 +140,13 @@ def test_legacy_1d_behaviour_pickle_is_one_column(with_std, json_dir):
     )
 
 
+def test_legacy_one_row_behaviour_pickle_is_read_as_a_1d_vector():
+    """A legacy one-sample table pickles exactly like a 1D vector, the common case"""
+    data = RNG.random((1, 3))
+
+    assert pickle.loads(_legacy_behaviour_pickle(data)).data.shape == (3, 1)
+
+
 def test_one_time_point_behaviour_survives_a_pickle_round_trip():
     saved = BehaviorData(RNG.random((1, N_COL)), index=[7])
 

@@ -27,7 +27,8 @@ class BehaviorData(TimeSeriesData):
         self.__dict__.update(state)
         if len(self.cell_numbers) == self.data.shape[1]:
             return
-        if len(self.data) == 1:  # a 1D input, stored as one row
+        # a 1D input stored as one row; a one-sample table pickles the same, rarer
+        if len(self.data) == 1:
             self.data = self.data.T
             if self.std is not None:
                 std = np.asarray(self.std)
