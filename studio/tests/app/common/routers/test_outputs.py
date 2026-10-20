@@ -104,6 +104,17 @@ def test_behaviour_output_previews_one_trace_per_column(client):
     assert [second["data"]["1"][str(t)] for t in range(50)] == list(table[:, 1])
 
 
+def test_empty_time_range_output_initialises_with_its_records(client):
+    node_dir = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/empty_slice_node"
+    BehaviorData(np.zeros((0, 2)), file_name="behaviors_data").save_json(node_dir)
+
+    response = client.get(f"/api/visualizations/inittimedata/{node_dir}/behaviors_data")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["xrange"] == []
+    assert response.json()["data"] == {"0": {}, "1": {}}
+
+
 # Test data for image test
 tif_workspace_id = "1"
 tif_filepath = "test.tif"

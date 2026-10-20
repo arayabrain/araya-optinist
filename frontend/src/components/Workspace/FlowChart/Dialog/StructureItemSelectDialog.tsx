@@ -63,9 +63,10 @@ export const StructureItemSelectDialog = memo(
 
     useEffect(() => {
       if (!open) return
+      setFileSelect(structureFileName ?? "")
       setTranspose(savedParam?.transpose ?? false)
       setBehavior(savedParam?.dataType === "behavior")
-    }, [open, savedParam])
+    }, [open, savedParam, structureFileName])
 
     const onClickOk = () => {
       dispatch(config.setStructurePath({ nodeId, path: fileSelect }))
