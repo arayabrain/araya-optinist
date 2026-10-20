@@ -593,10 +593,8 @@ def _call_create_file(db, background_tasks, over_quota=False):
         files, "get_effective_quota_bytes", return_value=1 if over_quota else 0
     ), patch.object(
         files, "create_directory"
-    ), patch(
-        "studio.app.common.routers.files.open", create=True
     ), patch.object(
-        files, "shutil"
+        files, "_write_file_atomic"
     ), patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=True
     ), patch.object(
