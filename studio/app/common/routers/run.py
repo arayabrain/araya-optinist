@@ -203,7 +203,8 @@ async def run_id(
         RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
         # An observer mid-save would record its result into the reset config
-        observe_lock = WorkflowResult(workspace_id, uid).observe_lock()
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
         try:
             observe_lock.acquire()
         except Timeout:
@@ -221,6 +222,9 @@ async def run_id(
                 await runner.ensure_input_data_local()
 
             runner.run_workflow(background_tasks)
+
+            # Last, so a failed start leaves no gate; the child starts after this
+            workflow_result.mark_plan_pending()
         finally:
             observe_lock.release()
 

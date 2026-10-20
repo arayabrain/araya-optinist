@@ -113,7 +113,8 @@ class ExptConfigWriter:
             auto_file_lock=auto_file_lock,
         )
 
-    def overwrite(self, update_params: dict) -> None:
+    def overwrite(self, update_params: dict, started_at: str = None) -> None:
+        """started_at: drop the write unless the config is still this run's"""
         expt_filepath = ExptConfigReader.get_config_yaml_path(
             self.workspace_id, self.unique_id
         )
@@ -123,6 +124,8 @@ class ExptConfigWriter:
         with FileLock(lock_path, ConfigWriter.FILE_LOCK_TIMEOUT):
             # Read experiment config
             config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+            if started_at is not None and config.started_at != started_at:
+                return
 
             # Merge overwrite params
             config_merged = differential_deep_merge(asdict(config), update_params)

@@ -76,15 +76,40 @@ class WorkflowResult:
             ]
         )
         self.monitor = WorkflowMonitor(workspace_id, unique_id)
+        self.plan_pending_path = join_filepath(
+            [self.workflow_dirpath, ".snakemake", "plan_pending"]
+        )
+
+    def mark_plan_pending(self) -> None:
+        """Until snakemake has planned a rerun, an old pickle may be about to rerun"""
+        os.makedirs(os.path.dirname(self.plan_pending_path), exist_ok=True)
+        open(self.plan_pending_path, "w").close()
+
+    def clear_plan_pending(self) -> None:
+        if os.path.exists(self.plan_pending_path):
+            os.remove(self.plan_pending_path)
+
+    def invalidate_planned_outputs(self, outputs: List[str]) -> None:
+        """Delete the old pickle of every job snakemake will run, then let polls in"""
+        with self.observe_lock(timeout=self.OBSERVE_LOCK_WAIT_SECONDS):
+            for output in outputs:
+                path = os.path.join(self.workflow_dirpath, output)
+                if path.endswith(".pkl") and os.path.exists(path):
+                    os.remove(path)
+            self.clear_plan_pending()
 
     async def observe(
-        self, observe_node_ids: List[str], save_wait: float = 0
+        self,
+        observe_node_ids: List[str],
+        save_wait: float = 0,
+        generation: str = None,
     ) -> Dict[str, Message]:
         """
         Perform the following operations for the specified workflow
           - Check and update the workflow execution status
           - Response with the confirmed workflow execution status
         save_wait: seconds to wait for the save slot; 0 leaves a node to the next poll
+        generation: the run's started_at; config writes are dropped once it changed
         """
         # validate args
         if not observe_node_ids:
@@ -108,14 +133,24 @@ class WorkflowResult:
             )
             return {}
 
+        generation = generation or expt_config.started_at
+
         # check for workflow errors
         workflow_error = SmkStatusLogger.get_error_content(
             self.workspace_id, self.unique_id
         )
 
+        # Until the plan lands, any pickle may be the previous run's
+        plan_pending = os.path.exists(self.plan_pending_path)
+
         # observe node list
         node_results, save_deferred = await self.__observe_nodes(
-            observe_node_ids, expt_config, workflow_error, save_wait
+            observe_node_ids,
+            expt_config,
+            workflow_error,
+            save_wait,
+            plan_pending,
+            generation,
         )
 
         # check workflow status
@@ -138,7 +173,12 @@ class WorkflowResult:
 
                 # re-run observe node list (reflects workflow error)
                 node_results, _ = await self.__observe_nodes(
-                    observe_node_ids, expt_config, workflow_error, save_wait
+                    observe_node_ids,
+                    expt_config,
+                    workflow_error,
+                    save_wait,
+                    plan_pending,
+                    generation,
                 )
 
         return node_results
@@ -150,10 +190,11 @@ class WorkflowResult:
         """
         return FileLock(FileLockUtils.get_lockfile_path(self.workflow_dirpath), timeout)
 
-    async def observe_overall(self) -> Dict[str, Message]:
+    async def observe_overall(self, generation: str = None) -> Dict[str, Message]:
         """
         Automatically observe all nodes
         Blocks on the observe lock, so not for the API loop
+        generation: the finishing run's started_at; nothing is observed once it changed
         """
         # Finalization waits out a poll mid-save rather than save alongside it
         lock = self.observe_lock(timeout=self.OBSERVE_LOCK_WAIT_SECONDS)
@@ -166,12 +207,23 @@ class WorkflowResult:
             )
         try:
             expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+            if generation and expt_config.started_at != generation:
+                logger.warning(
+                    f"Superseded by a rerun, not observing: "
+                    f"[{self.workspace_id}/{self.unique_id}]"
+                )
+                return {}
+
+            # Snakemake has exited, so every pickle left is this run's
+            self.clear_plan_pending()
 
             # Observe all nodes
             observe_node_ids = expt_config.function.keys() | expt_config.procs.keys()
 
             return await self.observe(
-                observe_node_ids, save_wait=self.OBSERVE_LOCK_WAIT_SECONDS
+                observe_node_ids,
+                save_wait=self.OBSERVE_LOCK_WAIT_SECONDS,
+                generation=generation,
             )
         finally:
             lock.release()
@@ -182,6 +234,8 @@ class WorkflowResult:
         expt_config: ExptConfig,
         workflow_error: WorkflowErrorInfo,
         save_wait: float,
+        plan_pending: bool,
+        generation: str,
     ) -> Tuple[Dict[str, Message], bool]:
         """
         Observe by Nodes; also whether a save was left to the next poll
@@ -207,6 +261,7 @@ class WorkflowResult:
                     self.unique_id,
                     node_id,
                     workflow_error=workflow_error,
+                    plan_pending=plan_pending,
                 )
             else:
                 node_result = NodeResult(
@@ -214,10 +269,13 @@ class WorkflowResult:
                     self.unique_id,
                     node_id,
                     workflow_error=workflow_error,
+                    plan_pending=plan_pending,
                 )
 
             if node_result.is_ready():
-                message = await node_result.observe(expt_function, save_wait)
+                message = await node_result.observe(
+                    expt_function, save_wait, generation
+                )
                 save_deferred |= node_result.save_deferred
                 if message is not None:
                     node_results[node_id] = message
@@ -225,11 +283,11 @@ class WorkflowResult:
         # If all nodes have already been processed, return here.
         if NodeResult.is_all_nodes_already_finished(expt_config):
             if not expt_config.hasNWB:  # latched before whole.nwb landed
-                self.__check_has_whole_nwb()
+                self.__check_has_whole_nwb(generation)
             return node_results, save_deferred
 
         # Check if whole.nwb file exists
-        self.__check_has_whole_nwb()
+        self.__check_has_whole_nwb(generation)
 
         # --------------------------------------------------
         # Postprocessing after all node processing is completed
@@ -300,7 +358,7 @@ class WorkflowResult:
 
         return is_ongoing
 
-    def __check_has_whole_nwb(self, node_id=None) -> None:
+    def __check_has_whole_nwb(self, generation: str) -> None:
         nwb_filepath_list = glob(join_filepath([self.workflow_dirpath, "*.nwb"]))
         nwb_filepath = nwb_filepath_list[0] if nwb_filepath_list else None
         hasNWB = os.path.exists(nwb_filepath) if nwb_filepath else False
@@ -320,7 +378,7 @@ class WorkflowResult:
 
         # Overwrite experiment config
         ExptConfigWriter(self.workspace_id, self.unique_id).overwrite(
-            update_expt_config_dict
+            update_expt_config_dict, started_at=generation
         )
 
 
@@ -345,6 +403,7 @@ class NodeResult(BaseNodeResult):
         unique_id: str,
         node_id: str,
         workflow_error: WorkflowErrorInfo = None,
+        plan_pending: bool = False,
     ):
         self.workspace_id = workspace_id
         self.unique_id = unique_id
@@ -365,7 +424,7 @@ class NodeResult(BaseNodeResult):
         self.info = None
         self.node_pickle_path = None
         self.save_deferred = False  # the save slot was busy; the next poll saves
-        if not self.workflow_has_error:
+        if not self.workflow_has_error and not plan_pending:
             node_pickle_path = PickleReader.search_node_pickle_path(self.node_dirpath)
             if node_pickle_path:
                 self.node_pickle_path = node_pickle_path.replace("\\", "/")
@@ -374,7 +433,7 @@ class NodeResult(BaseNodeResult):
                 )[0]
 
     async def observe(
-        self, expt_function: ExptFunction, save_wait: float = 0
+        self, expt_function: ExptFunction, save_wait: float = 0, generation: str = None
     ) -> Optional[Message]:
         """None while the node's pickle is not readable yet or the save slot is busy"""
         # Generate node process status (workflow.Message)
@@ -518,7 +577,7 @@ class NodeResult(BaseNodeResult):
 
         # Overwrite experiment config
         ExptConfigWriter(self.workspace_id, self.unique_id).overwrite(
-            update_expt_config_dict
+            update_expt_config_dict, started_at=generation
         )
 
         logger.debug(
@@ -609,14 +668,7 @@ class NodeResult(BaseNodeResult):
 
 
 class PostProcessResult(NodeResult):
-    def __init__(
-        self,
-        workspace_id: str,
-        unique_id: str,
-        node_id: str,
-        workflow_error: WorkflowErrorInfo = None,
-    ):
-        super().__init__(workspace_id, unique_id, node_id, workflow_error)
+    pass
 
 
 def _save_slot(timeout: float) -> FileLock:
