@@ -126,7 +126,7 @@ const App: FC = () => {
           <RouteChangeTracker />
           <Routes>
             {/* Landing page - outside Layout */}
-            <Route path="/" element={<LandingPage />} />
+            {!isStandalone && <Route path="/" element={<LandingPage />} />}
 
             {/* All other routes wrapped in Layout */}
             <Route

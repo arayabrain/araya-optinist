@@ -43,6 +43,15 @@ describe("rank based connection rule", () => {
     expect(handleTypeForRank(2, "HDF5Data")).toBe("FluoData")
     expect(handleTypeForRank(1, "HDF5Data")).toBe("IscellData")
     expect(handleTypeForRank(undefined, "HDF5Data")).toBe("HDF5Data")
+    expect(handleTypeForRank(2, "HDF5Data", "auto")).toBe("FluoData")
+  })
+
+  test.each([1, 2])("a rank %i behavior dataset is BehaviorData", (ndim) => {
+    expect(handleTypeForRank(ndim, "HDF5Data", "behavior")).toBe("BehaviorData")
+  })
+
+  test("a 3D behavior dataset stays ImageData for the validator to refuse", () => {
+    expect(handleTypeForRank(3, "MatlabData", "behavior")).toBe("ImageData")
   })
 
   test("only ImageData accepts 3D and only non-image accepts 1D/2D", () => {
