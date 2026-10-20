@@ -197,6 +197,10 @@ Default function parameters can be defined in the following file. The user can t
 - Explanation:
   - {algorithm_function_name} must match the actual function name.
 
+- Changing the yaml later:
+  - Workflows saved before the change follow the current yaml. When such a workflow is loaded, and again when it runs, a key the yaml gained is added with its yaml default, and a key the yaml no longer has is dropped. The GUI names the added and removed keys when a workflow is reproduced or imported.
+  - A saved workflow previously ran without the added key, i.e. on the library's own default. If the yaml default differs from it, re-running that workflow changes its result, so choose the yaml default with this in mind.
+
 ### NWB saving format
 
 Optinist uses NWB format for saving data, analysis and plots. Here are some examples of NWB saving formats.

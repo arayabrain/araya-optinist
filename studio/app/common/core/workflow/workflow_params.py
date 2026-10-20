@@ -62,22 +62,29 @@ def _nested_keys(default_params) -> set:
     return nested
 
 
-def check_types(params, default_params, name=""):
+def check_types(params, default_params, name="", prefix=""):
+    """
+    Align saved params with the current default yaml: drop keys it no longer
+    has, add the keys it gained with their yaml defaults, and cast types.
+    """
     for key in list(params):
+        path = f"{prefix}{key}"
         if key not in default_params:
             logger.warning(
-                f"Dropping saved param '{key}' for [{name}]: "
+                f"Dropping saved param '{path}' for [{name}]: "
                 f"not in the current default yaml. See {FAQ_URL}"
             )
             del params[key]
         elif isinstance(params[key], dict) != isinstance(default_params[key], dict):
             logger.warning(
-                f"Dropping saved param '{key}' for [{name}]: "
+                f"Dropping saved param '{path}' for [{name}]: "
                 f"its shape differs from the current default yaml. See {FAQ_URL}"
             )
             del params[key]
         elif isinstance(params[key], dict):
-            params[key] = check_types(params[key], default_params[key], name)
+            params[key] = check_types(
+                params[key], default_params[key], name, f"{path}/"
+            )
         else:
             if not isinstance(type(params[key]), type(default_params[key])):
                 data_type = type(default_params[key])
@@ -88,6 +95,14 @@ def check_types(params, default_params, name=""):
                     params[key] = float(p)
                 elif isinstance(data_type, int):
                     params[key] = int(p)
+
+    for key, value in default_params.items():
+        if key not in params:
+            logger.warning(
+                f"Adding param '{prefix}{key}' for [{name}]: not in the saved "
+                f"params, using the current default yaml value {value!r}"
+            )
+            params[key] = value
 
     return params
 
