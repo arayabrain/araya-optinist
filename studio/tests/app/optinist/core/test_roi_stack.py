@@ -115,7 +115,7 @@ def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):
     np.testing.assert_array_equal(a, expected)
 
 
-def run_suite2p_roi(monkeypatch, tmp_path, n_roi):
+def run_suite2p_roi(monkeypatch, tmp_path, n_roi, output_dir=None):
     stat = np.array(
         [
             {"ypix": np.array([i]), "xpix": np.array([i]), "lam": [1.0]}
@@ -141,7 +141,9 @@ def run_suite2p_roi(monkeypatch, tmp_path, n_roi):
         classify=lambda stat, classfile: np.ones((len(stat), 2)),
     )
     monkeypatch.setitem(sys.modules, "suite2p", suite2p)
-    output_dir = tmp_path / "ws" / "0123abcd" / "suite2p_roi_x"
+    output_dir = pathlib.Path(
+        output_dir or tmp_path / "ws" / "0123abcd" / "suite2p_roi_x"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     ops = {
         "Ly": LY,
@@ -217,3 +219,18 @@ def test_a_rerun_replaces_the_file_so_an_open_stack_keeps_its_data(
     assert not (
         tmp_path / "ws" / "0123abcd" / "suite2p_roi_x" / "roi_mask_stack.npy.tmp"
     ).exists()
+
+
+def test_a_relative_output_dir_still_reopens_the_stack(monkeypatch, tmp_path):
+    # the pickle path is OUTPUT_DIR-relative; the wrapper must not hand open()
+    # a relative path that would be prefixed with OUTPUT_DIR a second time
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", "ws")
+    im = run_suite2p_roi(
+        monkeypatch, tmp_path, n_roi=2, output_dir="ws/0123abcd/suite2p_roi_x"
+    )["edit_roi_data"].im
+    assert type(im) is RoiStack and os.path.isabs(im._stack_path)
+    blob = pickle.dumps(im)
+    assert b"0123abcd/suite2p_roi_x/roi_mask_stack.npy" in blob
+    assert str(tmp_path).encode() not in blob
+    np.testing.assert_array_equal(pickle.loads(blob), im)

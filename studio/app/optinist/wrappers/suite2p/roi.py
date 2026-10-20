@@ -91,7 +91,7 @@ def suite2p_roi(
     if len(iscell) > 0:
         # The per-ROI mask stack (NaN outside ROI i, i inside it), written
         # to disk one ROI at a time and referenced rather than held
-        stack_path = join_filepath([output_dir, "roi_mask_stack.npy"])
+        stack_path = os.path.abspath(join_filepath([output_dir, "roi_mask_stack.npy"]))
         stack, tmp_path = RoiStack.create(
             stack_path + ".tmp", (len(stat), ops["Ly"], ops["Lx"])
         )
