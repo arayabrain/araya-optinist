@@ -84,6 +84,35 @@ def test_yaml_and_the_roi_pickles_tau_reach_suite2p(output_dir, suite2p_stub):
     assert saved["extraction"]["neuropil_coefficient"] == 0.5
 
 
+def test_the_roi_nodes_extraction_settings_are_kept(output_dir, suite2p_stub):
+    # F and Fneu were extracted upstream with these; only the two deconvolution
+    # keys are this node's
+    upstream = {
+        "tau": 1.0,
+        "extraction": {
+            "allow_overlap": True,
+            "min_neuropil_pixels": 20,
+            "neuropil_coefficient": 0.7,
+            "batch_size": 500,
+        },
+    }
+    params = copy.deepcopy(read_default_params("suite2p_spike_deconv"))
+    params["extraction"].update(neuropil_coefficient=0.5, batch_size=100)
+
+    info = suite2p_spike_deconv(
+        _ops(np.ones((N_ROI, FRAMES), np.float32), settings=upstream),
+        output_dir,
+        params=params,
+    )
+
+    assert info["ops"].data["settings"]["extraction"] == {
+        "allow_overlap": True,
+        "min_neuropil_pixels": 20,
+        "neuropil_coefficient": 0.5,
+        "batch_size": 100,
+    }
+
+
 def test_a_pre_upgrade_roi_pickle_stores_tau_flat(output_dir, suite2p_stub):
     info = suite2p_spike_deconv(
         _ops(np.ones((N_ROI, FRAMES), np.float32), tau=0.7),

@@ -160,7 +160,7 @@ def test_suite2p_settings_matrix(request, overrides, expected, has_rois, movie):
     assert nframes == (2000 if movie == LONG_MOVIE else 1000)
 
     # every override, or the value a guard replaced it with, is what ran
-    for label in ("suite2p_registration", "suite2p_roi"):
+    for label in node_labels[1:]:  # file_convert keeps no settings tree
         want = deep_merge(
             copy.deepcopy(overrides.get(label, {})), (expected or {}).get(label, {})
         )

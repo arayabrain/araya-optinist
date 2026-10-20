@@ -37,7 +37,8 @@ def suite2p_spike_deconv(
     # pre-upgrade roi pickles store tau flat
     tau = ops.get("settings", {}).get("tau", ops.get("tau", settings["tau"]))
 
-    dF = ops["F"].copy() - settings["extraction"]["neuropil_coefficient"] * ops["Fneu"]
+    neuropil_coefficient = settings["extraction"]["neuropil_coefficient"]
+    dF = ops["F"].copy() - neuropil_coefficient * ops["Fneu"]
     if dF.shape[0] == 0:
         spks = np.zeros_like(dF)
     else:
@@ -51,13 +52,18 @@ def suite2p_spike_deconv(
         spks = extraction.oasis(F=dF, batch_size=batch_size, tau=tau, fs=ops["fs"])
 
     ops["spks"] = spks
-    # what this node ran with, over the roi node's tree
+    # what this node ran with, over the roi node's tree; the roi node's other
+    # extraction settings describe F and Fneu and stay as they were
     upstream = ops.get("settings", {})
     ops["settings"] = {
         **upstream,
         "tau": tau,
         "dcnv_preprocess": preprocess,
-        "extraction": {**upstream.get("extraction", {}), **settings["extraction"]},
+        "extraction": {
+            **upstream.get("extraction", {}),
+            "neuropil_coefficient": neuropil_coefficient,
+            "batch_size": batch_size,
+        },
     }
 
     # NWBを追加
