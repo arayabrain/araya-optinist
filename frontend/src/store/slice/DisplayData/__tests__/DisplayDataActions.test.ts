@@ -207,6 +207,33 @@ describe("getTimeSeriesInitData", () => {
     expect(jest.mocked(getTimeSeriesDataByIdApi)).toHaveBeenCalledTimes(4)
   })
 
+  it("keeps the held series when a refetch response lacks the record", async () => {
+    jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
+      data: { "0": record(1), "1": { "0": 1 }, "2": { "0": 1 } },
+      xrange,
+      std: {},
+    })
+    const store = configureStore({ reducer: { displayData: reducer } })
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockResolvedValueOnce({ data: { "1": record(4) }, xrange, std: {} })
+      .mockImplementationOnce(async () => {
+        await store.dispatch(getTimeSeriesDataById({ path, index: "2" }))
+        return { data: {}, xrange, std: {} }
+      })
+      .mockResolvedValueOnce({ data: { "2": record(5) }, xrange, std: {} })
+      .mockResolvedValueOnce({ data: { "2": record(7) }, xrange, std: {} })
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 0 }))
+    await store.dispatch(getTimeSeriesDataById({ path, index: "1" }))
+
+    await store.dispatch(getTimeSeriesInitData({ path, itemId: 1 }))
+
+    const entry = store.getState().displayData.timeSeries[path]
+    expect(entry.error).toBeNull()
+    expect(entry.data["1"]).toEqual(record(4))
+    expect(entry.data["2"]).toEqual(record(7))
+  })
+
   it("keeps a by-id result that lands a round after its refetch failed", async () => {
     jest.mocked(getTimeSeriesInitDataApi).mockResolvedValue({
       data: { "0": record(1), "1": { "0": 1 }, "2": { "0": 1 } },
