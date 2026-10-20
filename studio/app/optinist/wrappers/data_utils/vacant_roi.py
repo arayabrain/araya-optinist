@@ -24,7 +24,6 @@ def vacant_roi(
     logger.debug("params: %s", params)
 
     shape = movie_shape(mc_images)
-    assert len(shape) == 3, "input array should have dimensions (width, height, time)"
 
     num_cell = 0
     roi = np.zeros((shape[0] * shape[1], 0))  # Empty ROIs
