@@ -26,7 +26,7 @@ const state = {
 
 const select = async (x: number[], y: number[]) => {
   const action = await selectingImageArea({ itemId: 0, range: { x, y } })(
-    jest.fn(),
+    jest.fn() as never,
     () => state,
     undefined,
   )

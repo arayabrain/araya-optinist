@@ -365,7 +365,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
               case MERGE_ROI:
                 return [offset, "#e134eb"] // purple
               case ADD_ROI:
-                return [offset, "3483eb"] // red
+                return [offset, "#3483eb"] // blue
               case PROMOTE_ROI:
                 return [offset, "#32A919"] // green
             }
@@ -373,7 +373,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
           if (isDeleted || isMerged || isAdded || isPromoted) {
             if (isDeleted) return [offset, "#FFA500"]
             if (isMerged) return [offset, "#e134eb"]
-            if (isAdded) return [offset, "3483eb"]
+            if (isAdded) return [offset, "#3483eb"]
             if (isPromoted) return [offset, "#32A919"]
           }
           if (isClickPoint || !roiClicked.length) return [offset, hex]
