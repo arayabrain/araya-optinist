@@ -447,8 +447,10 @@ class ExptDataWriter:
                 "npy": glob.glob(
                     os.path.join(directory, "**", "*.npy"), recursive=True
                 ),
-                "pkl": glob.glob(
-                    os.path.join(directory, "**", "*.pkl"), recursive=True
+                # the data filter's backups are pickles too
+                "pkl": glob.glob(os.path.join(directory, "**", "*.pkl"), recursive=True)
+                + glob.glob(
+                    os.path.join(directory, "**", "*.pkl.orig"), recursive=True
                 ),
             }
 

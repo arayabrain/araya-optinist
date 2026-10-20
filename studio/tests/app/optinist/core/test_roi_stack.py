@@ -93,6 +93,8 @@ def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):
     im, expected = stack_on_disk(node_dir)
     with open(node_dir / "suite2p_roi_x.pkl", "wb") as f:
         pickle.dump({"nwbfile": {"all_roi_img": im}, "edit_roi_data": {"im": im}}, f)
+    # the data filter's backup of the unfiltered node, restored on reset
+    shutil.copy(node_dir / "suite2p_roi_x.pkl", node_dir / "suite2p_roi_x.pkl.orig")
     copied = tmp_path / "ws" / new_id
     shutil.copytree(tmp_path / "ws" / old_id, copied)
     copied_stack = copied / "suite2p_roi_x" / "roi_mask_stack.npy"
@@ -105,14 +107,15 @@ def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):
 
     assert copied_stack.stat().st_mtime_ns == 0  # not rewritten
     assert copied_stack.read_bytes() == stack_bytes
-    copied_pkl = copied / "suite2p_roi_x" / "suite2p_roi_x.pkl"
-    assert copied_pkl.stat().st_size < 1000
-    with open(copied_pkl, "rb") as f:
-        back = pickle.load(f)
-    a, b = back["nwbfile"]["all_roi_img"], back["edit_roi_data"]["im"]
-    assert a is b
-    assert type(a) is RoiStack and a._stack_path == str(copied_stack)
-    np.testing.assert_array_equal(a, expected)
+    for name in ("suite2p_roi_x.pkl", "suite2p_roi_x.pkl.orig"):
+        copied_pkl = copied / "suite2p_roi_x" / name
+        assert copied_pkl.stat().st_size < 1000
+        with open(copied_pkl, "rb") as f:
+            back = pickle.load(f)
+        a, b = back["nwbfile"]["all_roi_img"], back["edit_roi_data"]["im"]
+        assert a is b
+        assert type(a) is RoiStack and a._stack_path == str(copied_stack)
+        np.testing.assert_array_equal(a, expected)
 
 
 def run_suite2p_roi(monkeypatch, tmp_path, n_roi, output_dir=None):
