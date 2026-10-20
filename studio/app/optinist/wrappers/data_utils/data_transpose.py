@@ -2,6 +2,8 @@ import numpy as np
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass.base import BaseData
+from studio.app.common.dataclass.csv import CsvData
+from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.wrappers.data_utils.data_utils_utils import return_as_data_type
 
 
@@ -29,7 +31,8 @@ def data_transpose(
 
     Returns:
         dict: A dictionary containing the transposed data with preserved metadata
-              and proper data type conversion.
+              and proper data type conversion. A 2D BehaviorData or CsvData
+              comes back as (columns, time) TimeSeriesData.
     """
     logger = AppLogger.get_logger()
     logger.info("Starting data transposition")
@@ -91,13 +94,16 @@ def data_transpose(
         logger.info(f"Input data shape: {raw_data.shape}")
         logger.info(f"Transposed data shape: {tp_data.shape}")
 
-        # Use utility function to return the correct data type
+        # a flipped time-major table is (rows, time), which is TimeSeriesData
+        axes = [d % ndim for d in dims]
+        from_time_major = isinstance(data, (BehaviorData, CsvData)) and axes == [1, 0]
         output_data = return_as_data_type(
             data,
             tp_data,
             output_dir,
             file_name,
-            output_type=None,
+            output_type="timeseries_data" if from_time_major else None,
+            index=getattr(data, "index", None) if from_time_major else None,
         )
         data_object = list(output_data.values())[0]
         return {"transposed_data": data_object}
