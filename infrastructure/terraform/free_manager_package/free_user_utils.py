@@ -183,37 +183,84 @@ def count_active_free_users(activity_threshold_minutes: int = 10) -> int:
             return result["count"] if result else 0
 
 
-def get_users_per_instance(activity_threshold_minutes: int = 10) -> Dict[str, int]:
+def get_users_per_instance(
+    activity_threshold_minutes: int = 10, raise_on_error: bool = False
+) -> Dict[str, int]:
     """
     Get count of active users per instance.
 
     Args:
         activity_threshold_minutes: Minutes to consider a user active (default: 10)
+        raise_on_error: re-raise a database failure instead of returning an
+            empty map. Rebalancing can live with an empty map (it does
+            nothing); a scale-in choosing by user count cannot
 
     Returns:
         Dictionary mapping instance_id -> user count
     """
+    if raise_on_error:
+        return _users_per_instance(activity_threshold_minutes)
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                activity_cutoff = datetime.now(timezone.utc) - timedelta(
-                    minutes=activity_threshold_minutes
-                )
-
-                query = """
-                    SELECT instance_id, COUNT(*) as user_count
-                    FROM free_user_assignments
-                    WHERE last_activity >= %s
-                    GROUP BY instance_id
-                """
-                cursor.execute(query, (activity_cutoff,))
-                results = cursor.fetchall()
-
-                return {row["instance_id"]: row["user_count"] for row in results}
-
+        return _users_per_instance(activity_threshold_minutes)
     except Exception as e:
         print(f"Error getting users per instance: {e}")
         return {}
+
+
+def _users_per_instance(activity_threshold_minutes: int) -> Dict[str, int]:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            activity_cutoff = datetime.now(timezone.utc) - timedelta(
+                minutes=activity_threshold_minutes
+            )
+
+            query = """
+                SELECT instance_id, COUNT(*) as user_count
+                FROM free_user_assignments
+                WHERE last_activity >= %s
+                GROUP BY instance_id
+            """
+            cursor.execute(query, (activity_cutoff,))
+            results = cursor.fetchall()
+
+            return {row["instance_id"]: row["user_count"] for row in results}
+
+
+def get_workload_per_instance() -> Dict[str, int]:
+    """
+    Get the number of running workflows per instance.
+
+    Every assignment row counts, not only those inside the activity window:
+    a user who started a long workflow and closed the browser has no recent
+    request, but the workflow is still running on their instance.
+
+    ``instance_id`` names the host the workflow runs on: the app pins the
+    row to that host when the workflow starts and does not move it while
+    ``active_workflow_count`` is above 0, so a request served elsewhere in
+    the meantime does not unprotect the host.
+
+    Returns:
+        Dictionary mapping instance_id -> running workflow count, for
+        instances with at least one
+
+    Raises:
+        Exception: on any database failure. Not caught -- an empty result
+            here reads as "no workflow anywhere", and the caller would then
+            terminate an instance it cannot see into. Raising aborts the
+            scale-in and reaches the Lambda Errors metric instead.
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            query = """
+                SELECT instance_id, SUM(active_workflow_count) as workflow_count
+                FROM free_user_assignments
+                WHERE active_workflow_count > 0
+                GROUP BY instance_id
+            """
+            cursor.execute(query)
+            results = cursor.fetchall()
+
+            return {row["instance_id"]: int(row["workflow_count"]) for row in results}
 
 
 def trigger_experiment_sync(user_id: int) -> bool:

@@ -31,6 +31,10 @@ import Switch from "@mui/material/Switch"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
+import {
+  outlineRoi,
+  roiIdAt,
+} from "components/Workspace/Visualize/Plot/roiOutline"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { markDownstreamStale } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import {
@@ -44,6 +48,7 @@ import {
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
+  getDisplayErrorMessage,
   RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -82,6 +87,8 @@ import {
   selectImageItemAlpha,
   selectVisualizeItems,
   selectImageItemShowRoiLabels,
+  selectImageItemRoiAlpha,
+  selectImageItemRoiOutline,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
   incrementImageActiveIndex,
@@ -232,6 +239,12 @@ const ImagePlotChart = memo(function ImagePlotChart({
   const [action, setAction] = useState("")
   const [positionDrag, setChangeSize] = useState<PositionDrag | undefined>()
   const showRoiLabels = useSelector(selectImageItemShowRoiLabels(itemId))
+  const roiAlpha = useSelector(selectImageItemRoiAlpha(itemId))
+  const roiOutline = useSelector(selectImageItemRoiOutline(itemId))
+  const roiZ = useMemo(
+    () => (roiOutline ? outlineRoi(roiDataState) : roiDataState),
+    [roiOutline, roiDataState],
+  )
 
   const allowEditRoi = useMemo(
     () => roiFilePath?.includes(CELL_ROI),
@@ -330,7 +343,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
         zsmooth: zsmooth, // ["best", "fast", false]
       },
       {
-        z: roiDataState,
+        z: roiZ,
         type: "heatmap",
         name: "roi",
         hovertemplate: action === ADD_ROI ? "none" : "ROI: %{z}",
@@ -338,7 +351,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
         colorscale: [...Array(timeDataMaxIndex + 1)].map((_, i) => {
           const offset: number = i / timeDataMaxIndex
           const rgba = getRoiColor(i)
-          const hex = rgba2hex(rgba, 1)
+          const hex = rgba2hex(rgba, roiAlpha)
 
           const isClickPoint = roiClicked.some((point) => point === i)
           const isDeleted = statusRoi?.temp_delete_roi?.includes(i) || false
@@ -352,7 +365,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
               case MERGE_ROI:
                 return [offset, "#e134eb"] // purple
               case ADD_ROI:
-                return [offset, "3483eb"] // red
+                return [offset, "#3483eb"] // blue
               case PROMOTE_ROI:
                 return [offset, "#32A919"] // green
             }
@@ -360,11 +373,11 @@ const ImagePlotChart = memo(function ImagePlotChart({
           if (isDeleted || isMerged || isAdded || isPromoted) {
             if (isDeleted) return [offset, "#FFA500"]
             if (isMerged) return [offset, "#e134eb"]
-            if (isAdded) return [offset, "3483eb"]
+            if (isAdded) return [offset, "#3483eb"]
             if (isPromoted) return [offset, "#32A919"]
           }
           if (isClickPoint || !roiClicked.length) return [offset, hex]
-          return [offset, rgba2hex(rgba, 0.3)]
+          return [offset, rgba2hex(rgba, roiAlpha * 0.3)]
         }),
         zmin: 0,
         zmax: timeDataMaxIndex,
@@ -378,9 +391,10 @@ const ImagePlotChart = memo(function ImagePlotChart({
       colorscale,
       showscale,
       zsmooth,
-      roiDataState,
+      roiZ,
       timeDataMaxIndex,
       alpha,
+      roiAlpha,
       action,
       roiClicked,
       statusRoi,
@@ -515,6 +529,8 @@ const ImagePlotChart = memo(function ImagePlotChart({
         title: meta?.ylabel,
         automargin: true,
         autorange: "reversed",
+        // add ROI maps the overlay onto a stretched image
+        scaleanchor: action === ADD_ROI ? undefined : "x",
         showgrid: showgrid,
         showline: showline,
         zeroline: false,
@@ -557,11 +573,12 @@ const ImagePlotChart = memo(function ImagePlotChart({
   const onChartClick = (event: PlotMouseEvent) => {
     // use as unknown because original PlotDatum does not have z property
     const point: PlotDatum = event.points[0] as unknown as PlotDatum
-    if (point.curveNumber >= 1 && point.z >= 0) {
+    const roiId = roiIdAt(point, roiDataState)
+    if (roiId != null) {
       dispatch(
-        setImageItemClickedDataId({ itemId, clickedDataId: String(point.z) }),
+        setImageItemClickedDataId({ itemId, clickedDataId: String(roiId) }),
       )
-      setRoisClick(itemId, point.z)
+      setRoisClick(itemId, roiId)
     }
   }
 
@@ -771,7 +788,14 @@ const ImagePlotChart = memo(function ImagePlotChart({
         )
       }
     } catch (error) {
-      enqueueSnackbar("Failed to commit Edit ROI.", { variant: "error" })
+      // e.g. 409 when the movie this node read was removed or rewritten
+      enqueueSnackbar(
+        getDisplayErrorMessage(
+          error as RejectPayload | undefined,
+          "Failed to commit Edit ROI.",
+        ),
+        { variant: "error" },
+      )
     } finally {
       setEdit(false)
       setAction("")
@@ -1074,14 +1098,14 @@ interface PlotDatum {
   xaxis: LayoutAxis
   y: Datum
   yaxis: LayoutAxis
-  z: number
+  z: number | null | undefined
 }
 
 export function rgba2hex(rgba: number[], alpha: number) {
   const r = rgba[0]
   const g = rgba[1]
   const b = rgba[2]
-  const a = alpha
+  const a = Math.min(Math.max(alpha, 0), 1)
 
   const outParts = [
     r.toString(16),

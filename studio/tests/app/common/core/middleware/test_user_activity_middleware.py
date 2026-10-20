@@ -566,6 +566,59 @@ class TestLoggedOutUserTracking:
         assert result is False
 
 
+class TestFreeActivityUpdateKeepsAWorkflowHost:
+    """
+    ``instance_id`` follows the serving instance, except while the row has a
+    running workflow: then it names the host the workflow runs on, which the
+    free scale-in reads to spare that host. A request served elsewhere in the
+    meantime (a second tab, a new session after the sticky cookie lapsed)
+    must not move it.
+    """
+
+    def test_the_update_moves_instance_id_only_when_no_workflow_runs(self):
+        from unittest.mock import MagicMock, patch
+
+        from sqlalchemy.dialects import mysql
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_free_user_activity_sync,
+        )
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value.rowcount = 1
+
+        with patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_session_scope, patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware._get_instance_id",
+            return_value="i-0serving",
+        ), patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.is_user_logged_out",
+            return_value=False,
+        ):
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            result = _update_free_user_activity_sync(TEST_USER_ID)
+
+        assert result is True
+        compiled = (
+            mock_session.execute.call_args_list[0]
+            .args[0]
+            .compile(dialect=mysql.dialect())
+        )
+        sql = " ".join(str(compiled).split())
+        assert sql.startswith("UPDATE free_user_assignments SET ")
+        assert (
+            "instance_id=CASE WHEN (free_user_assignments.active_workflow_count > %s) "
+            "THEN free_user_assignments.instance_id ELSE %s END" in sql
+        )
+        assert "i-0serving" in compiled.params.values()
+        assert "last_activity=%s" in sql
+
+
 class TestClearFreeUserLoggedOutAt:
     """Test clearing logged_out_at on re-login"""
 

@@ -1,10 +1,9 @@
 import numpy as np
 
 from studio.app.common.dataclass.image import ImageData
-from studio.app.optinist.core.edit_ROI.wrappers.vacant_roi_edit_roi.utils import (
-    set_nwbfile,
-)
+from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi.utils import set_nwbfile
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import open_edit_images
 
 
 def commit_edit(
@@ -14,11 +13,17 @@ def commit_edit(
     iscell,
     node_dirpath,
     function_id,
+    rate=30,
 ):
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
     fluorescence = fluorescence.data
     num_cell = data.im.shape[0]
+    # Only new traces read the movie, so a commit that only deletes ROIs never
+    # opens it. A node without traces also takes its frame count from it
+    # (FluoData stores no traces as (0, 0)).
+    if num_cell > len(fluorescence) or fluorescence.size == 0:
+        images = open_edit_images(images, node_dirpath)
 
     if fluorescence.size > 0:
         new_fluorescences = np.zeros((num_cell, fluorescence.shape[1]))
@@ -46,6 +51,6 @@ def commit_edit(
         "fluorescence": FluoData(new_fluorescences, file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "edit_roi_data": data,
-        "nwbfile": set_nwbfile(data, iscell, function_id, new_fluorescences),
+        "nwbfile": set_nwbfile(data, iscell, function_id, rate, new_fluorescences),
     }
     return info

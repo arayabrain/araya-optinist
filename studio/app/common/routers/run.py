@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from filelock import Timeout
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
@@ -49,6 +51,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
+from studio.app.common.db.database import get_db, release_request_session
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 from studio.app.const import DATE_FORMAT
@@ -105,6 +108,7 @@ async def run(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
     try:
         await _check_storage_quota(current_user.id)
@@ -168,6 +172,10 @@ async def run(
             detail="Failed to run workflow.",
         )
 
+    finally:
+        # The run outlives the request; do not hold the guards' connection
+        release_request_session(db)
+
 
 @router.post(
     "/{workspace_id}/{uid}",
@@ -181,6 +189,7 @@ async def run_id(
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     try:
         await _check_storage_quota(current_user.id)
@@ -193,15 +202,27 @@ async def run_id(
         # on; refuse before the runner rewrites the experiment's config files
         RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
-        runner = WorkflowRunner(
-            remote_bucket_name, workspace_id, uid, runItem, current_user.id
-        )
+        # An observer mid-save would record its result into the reset config
+        observe_lock = WorkflowResult(workspace_id, uid).observe_lock()
+        try:
+            observe_lock.acquire()
+        except Timeout:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail="The previous run's results are still being saved.",
+            )
+        try:
+            runner = WorkflowRunner(
+                remote_bucket_name, workspace_id, uid, runItem, current_user.id
+            )
 
-        # Download any remote-only input files before workflow runs
-        if RemoteStorageController.is_available():
-            await runner.ensure_input_data_local()
+            # Download any remote-only input files before workflow runs
+            if RemoteStorageController.is_available():
+                await runner.ensure_input_data_local()
 
-        runner.run_workflow(background_tasks)
+            runner.run_workflow(background_tasks)
+        finally:
+            observe_lock.release()
 
         # Refresh storage cache in background
         background_tasks.add_task(
@@ -249,6 +270,10 @@ async def run_id(
                 detail="Failed to run workflow.",
             )
 
+    finally:
+        # The run outlives the request; do not hold the guards' connection
+        release_request_session(db)
+
 
 @router.post(
     "/result/{workspace_id}/{uid}",
@@ -261,7 +286,10 @@ async def run_result(
     nodeDict: NodeItem,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
+    # The save below is awaited; do not hold the guards' connection across it
+    release_request_session(db)
     try:
         # Ensure experiment yaml exists locally before accessing results.
         # Downloads from S3 if not present (handles multi-instance scenarios).
@@ -269,9 +297,18 @@ async def run_result(
             workspace_id, uid, remote_bucket_name
         )
 
-        node_results = await WorkflowResult(workspace_id, uid).observe(
-            nodeDict.pendingNodeIdList
-        )
+        # A poll overlapping one mid-save answers nothing rather than save again
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
+        try:
+            observe_lock.acquire()
+        except Timeout:
+            node_results = {}
+        else:
+            try:
+                node_results = await workflow_result.observe(nodeDict.pendingNodeIdList)
+            finally:
+                observe_lock.release()
         if node_results:
             background_tasks.add_task(
                 WorkspaceDataCapacityService.update_experiment_data_usage,
