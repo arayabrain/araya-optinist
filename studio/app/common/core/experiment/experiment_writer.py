@@ -51,6 +51,9 @@ logger = AppLogger.get_logger()
 S3_DELETION_MAX_RETRIES = 3
 S3_DELETION_BASE_DELAY_SECONDS = 1.0
 
+# bool, int, uint, float, complex: arrays of these cannot hold a unique_id
+NUMERIC_DTYPE_KINDS = "biufc"
+
 
 class ExptConfigWriter:
     def __init__(
@@ -444,8 +447,10 @@ class ExptDataWriter:
                 "npy": glob.glob(
                     os.path.join(directory, "**", "*.npy"), recursive=True
                 ),
-                "pkl": glob.glob(
-                    os.path.join(directory, "**", "*.pkl"), recursive=True
+                # the data filter's backups are pickles too
+                "pkl": glob.glob(os.path.join(directory, "**", "*.pkl"), recursive=True)
+                + glob.glob(
+                    os.path.join(directory, "**", "*.pkl.orig"), recursive=True
                 ),
             }
 
@@ -504,6 +509,16 @@ class ExptDataWriter:
         logger = AppLogger.get_logger()
         try:
             with open(file_path, "rb") as file:
+                major, _ = np.lib.format.read_magic(file)
+                read_header = (
+                    np.lib.format.read_array_header_1_0
+                    if major == 1
+                    else np.lib.format.read_array_header_2_0
+                )
+                _, _, dtype = read_header(file, max_header_size=2**64)
+                if dtype.kind in NUMERIC_DTYPE_KINDS:
+                    return
+                file.seek(0)
                 data = np.load(file, allow_pickle=True)
 
             updated_data = self.__replace_ids_recursive(data, old_id, new_id)
