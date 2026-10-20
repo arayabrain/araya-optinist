@@ -185,6 +185,9 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     paths = [f"{tmp_path}/{old_id}/suite2p_roi/data_{i}.tif" for i in range(2)]
     cycle = []
     cycle.append(cycle)
+    items = []
+    tuple_cycle = (items,)
+    items.append(tuple_cycle)
     self_array = np.empty((), dtype=object)
     self_array[()] = self_array
     stack_path = f"{tmp_path}/{old_id}/suite2p_roi/roi_mask_stack.npy"
@@ -196,6 +199,7 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
         "copied": list(paths),
         "grid": np.array([[p] for p in paths]),
         "cycle": cycle,
+        "tuple_cycle": tuple_cycle,
         "self_array": self_array,
         "stack": PathBackedStack.open(stack_path),
     }
@@ -227,6 +231,7 @@ def test_copy_data_rewrites_every_occurrence_of_a_shared_path(tmp_path, suffix, 
     assert loaded["grid"].ravel().tolist() == expected
     assert loaded["images"].path is loaded["ops"]["filelist"]
     assert loaded["cycle"][0] is loaded["cycle"]
+    assert loaded["tuple_cycle"][0][0] is loaded["tuple_cycle"]
     assert loaded["self_array"][()] is loaded["self_array"]
     assert loaded["stack"].stack_path == stack_path.replace(old_id, new_id)
     assert loaded["stack"].tolist() == np.arange(6.0).reshape(1, 2, 3).tolist()

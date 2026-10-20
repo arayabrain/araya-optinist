@@ -550,6 +550,8 @@ class ExptDataWriter:
             result = tuple(
                 self.__replace_ids_recursive(item, old_id, new_id, memo) for item in obj
             )
+            if obj_id in memo:  # a cycle through a child already copied this tuple
+                return memo[obj_id][1]
             memo[obj_id] = (obj, result)
             return result
         elif isinstance(obj, np.ndarray):
