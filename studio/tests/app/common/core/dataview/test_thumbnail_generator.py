@@ -1,6 +1,7 @@
 """Tests for ThumbnailGenerator HDF5/MAT thumbnail generation."""
 
 import os
+import tracemalloc
 
 import h5py
 import imageio.v3 as imageio
@@ -9,7 +10,10 @@ import pytest
 from scipy.io import savemat
 
 from studio.app.common.core.dataview.dataview import DatasetPaths
-from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
+from studio.app.common.core.dataview.thumbnail_generator import (
+    ThumbnailGenerator,
+    uint8_histogram,
+)
 
 
 @pytest.fixture
@@ -33,6 +37,91 @@ class TestRenderArrayAsThumbnail:
         img = imageio.imread(output_path)
         assert max(img.shape[:2]) <= 256
 
+    @pytest.mark.parametrize("keep_aspect, dim", [(True, 2), (False, 255)])
+    def test_only_matrices_are_scaled_by_percentile(
+        self, output_path, keep_aspect, dim
+    ):
+        arr = np.ones((64, 64), dtype=np.float32)
+        arr[:, 0] = 0.0
+        arr[0, 1] = 100.0
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=64, keep_aspect=keep_aspect
+        )
+        img = imageio.imread(output_path)
+        assert img[10, 10] == dim
+
+    def test_thin_matrix_keeps_at_least_one_pixel(self, output_path):
+        # A tall, 2-wide matrix used to resize to a 0-pixel-wide PNG
+        arr = np.random.rand(1025, 2).astype(np.float32)
+        ThumbnailGenerator._render_array_as_thumbnail(arr, output_path, max_size=256)
+        img = imageio.imread(output_path)
+        assert img.shape == (256, 1)
+
+    def test_sparse_events_are_not_flattened_to_grey(self, output_path):
+        arr = np.zeros((64, 64), dtype=np.float32)
+        arr[10, 10] = 5.0
+        ThumbnailGenerator._render_array_as_thumbnail(arr, output_path)
+        img = imageio.imread(output_path)
+        assert img.max() == 255 and img.min() == 0
+
+    def test_matrix_without_aspect_fills_a_square(self, output_path):
+        arr = np.random.rand(600, 40).astype(np.float32)
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=256, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert img.shape == (256, 256)
+
+    def test_sparse_matrix_keeps_its_events_when_downsampled(self, output_path):
+        arr = np.zeros((2000, 300), dtype=np.float32)
+        arr[::100, ::50] = 1.0  # 20 x 6 events, invisible to nearest-neighbour
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert (img == 255).sum() >= 100
+
+    def test_dense_noise_is_not_speckled_by_the_downsampling(self, output_path):
+        arr = np.random.default_rng(0).random((2000, 300)).astype(np.float32)
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert min((img <= 10).mean(), (img >= 245).mean()) < 0.01
+
+    def test_symmetric_noise_pools_the_same_way_whatever_the_seed(self, output_path):
+        bright = set()
+        for seed in range(30):
+            arr = np.random.default_rng(seed).random((2000, 3)).astype(np.float32)
+            ThumbnailGenerator._render_array_as_thumbnail(
+                arr, output_path, max_size=128, keep_aspect=False
+            )
+            bright.add(imageio.imread(output_path).mean() > 127)
+        assert len(bright) == 1
+
+    def test_sparse_negative_events_survive_the_downsampling(self, output_path):
+        arr = np.zeros((2000, 300), dtype=np.float32)
+        arr[::100, ::50] = -1.0
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert (img == 0).sum() >= 100 and img.max() == 255
+
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_nan_rows_render_as_background(self, output_path):
+        arr = np.zeros((2000, 300), dtype=np.float32)
+        arr[::100, ::50] = -1.0
+        arr[500:510] = np.nan
+        ThumbnailGenerator._render_array_as_thumbnail(
+            arr, output_path, max_size=128, keep_aspect=False
+        )
+        img = imageio.imread(output_path)
+        assert not (img == 0).all(axis=1).any()
+        # the signal survives: a white background and the dark negative events
+        assert (img == 255).mean() > 0.5
+        assert (img <= 10).any()
+
 
 class TestGenerateHdf5Thumbnail:
     def test_3d_dataset(self, tmp_path, output_path):
@@ -48,10 +137,11 @@ class TestGenerateHdf5Thumbnail:
         h5_path = str(tmp_path / "test.h5")
         with h5py.File(h5_path, "w") as f:
             f.create_dataset("matrix", data=np.random.rand(100, 50))
-        ThumbnailGenerator.generate_hdf5_thumbnail(h5_path, output_path, "/matrix")
-        assert os.path.exists(output_path)
+        ThumbnailGenerator.generate_hdf5_thumbnail(
+            h5_path, output_path, "/matrix", max_size=64
+        )
         img = imageio.imread(output_path)
-        assert img.ndim == 2
+        assert img.shape == (64, 64)
 
     def test_1d_dataset_raises(self, tmp_path, output_path):
         h5_path = str(tmp_path / "test.h5")
@@ -84,11 +174,12 @@ class TestGenerateHdf5Thumbnail:
 class TestGenerateMatThumbnail:
     def test_2d_dataset(self, tmp_path, output_path):
         mat_path_file = str(tmp_path / "test.mat")
-        savemat(mat_path_file, {"data": np.random.rand(64, 64)})
-        ThumbnailGenerator.generate_mat_thumbnail(mat_path_file, output_path, "data")
-        assert os.path.exists(output_path)
+        savemat(mat_path_file, {"data": np.random.rand(100, 50)})
+        ThumbnailGenerator.generate_mat_thumbnail(
+            mat_path_file, output_path, "data", max_size=64
+        )
         img = imageio.imread(output_path)
-        assert img.ndim == 2
+        assert img.shape == (64, 64)
 
     def test_3d_dataset(self, tmp_path, output_path):
         mat_path_file = str(tmp_path / "test.mat")
@@ -214,3 +305,15 @@ class TestEdgeCases:
         assert os.path.exists(output)
         img = imageio.imread(output)
         assert img.ndim == 3  # placeholder is RGB
+
+
+def test_the_histogram_counts_in_chunks_without_an_int64_copy():
+    values = np.random.default_rng(0).integers(0, 256, 1 << 24, dtype=np.uint8)
+
+    tracemalloc.start()
+    counts = uint8_histogram(values)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    assert np.array_equal(counts, np.bincount(values, minlength=256))
+    assert peak < 16 << 20  # one int64 copy of all 16M values would be 128 MB

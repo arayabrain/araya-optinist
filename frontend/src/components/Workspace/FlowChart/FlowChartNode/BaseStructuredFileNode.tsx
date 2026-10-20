@@ -17,7 +17,11 @@ import { TreeNodeType } from "components/Workspace/FlowChart/FlowChartNode/Struc
 import { HANDLE_STYLE } from "const/flowchart"
 import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
-import { selectInputNodeDefined } from "store/slice/InputNode/InputNodeSelectors"
+import {
+  selectInputNodeDefined,
+  selectInputNodeParam,
+} from "store/slice/InputNode/InputNodeSelectors"
+import { StructuredInputParamType } from "store/slice/InputNode/InputNodeType"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
 import { AppDispatch, RootState } from "store/store"
 
@@ -94,9 +98,13 @@ const FileNodeImple = memo(function FileNodeImple({
   const filePath = Array.isArray(filePathRaw) ? filePathRaw[0] : filePathRaw
   const [tree] = useStructuredTree(nodeId, config, false)
   const structurePath = useSelector(config.selectStructurePath(nodeId))
+  const param = useSelector(selectInputNodeParam(nodeId)) as
+    | Partial<StructuredInputParamType>
+    | undefined
   const resolvedType = handleTypeForRank(
     findDatasetShape(tree, structurePath)?.length,
     config.handleType,
+    param?.dataType,
   )
   const handleColor = useHandleColor(resolvedType)
 

@@ -2,10 +2,37 @@ import { OptionsObject, SnackbarKey } from "notistack"
 
 import { describe, expect, jest, test } from "@jest/globals"
 
+import { NODE_RESULT_STATUS } from "store/slice/Pipeline/PipelineType"
 import {
+  convertToRunResult,
   handleWorkflowYamlError,
   WORKFLOW_YAML_ERROR,
 } from "store/slice/Pipeline/PipelineUtils"
+
+describe("convertToRunResult", () => {
+  test("a success node with no outputPaths stays a success", () => {
+    const result = convertToRunResult({
+      slice_pos01: {
+        status: "success",
+        message: "data_slice success",
+        name: "data_slice",
+      },
+    })
+    expect(result.slice_pos01).toEqual({
+      status: NODE_RESULT_STATUS.SUCCESS,
+      message: "data_slice success",
+      name: "data_slice",
+      outputPaths: {},
+    })
+  })
+
+  test("an error node stays an error", () => {
+    const result = convertToRunResult({
+      n1: { status: "error", message: "boom", name: "suite2p" },
+    })
+    expect(result.n1.status).toBe(NODE_RESULT_STATUS.ERROR)
+  })
+})
 
 describe("handleWorkflowYamlError", () => {
   const enqueue = () =>

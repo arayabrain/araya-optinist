@@ -88,6 +88,7 @@ const imageItemInitialValue: ImageItem = {
   roiAlpha: 1.0,
   duration: 500,
   showRoiLabels: false,
+  roiOutline: false,
 }
 const timeSeriesItemInitialValue: TimeSeriesItem = {
   ...displayDataCommonInitialValue,
@@ -106,6 +107,7 @@ const timeSeriesItemInitialValue: TimeSeriesItem = {
   maxIndex: 0,
   drawOrderList: [],
   refImageItemId: null,
+  shadeSourceItemId: null,
 }
 const heatMapItemInitialValue: HeatMapItem = {
   ...displayDataCommonInitialValue,
@@ -752,6 +754,18 @@ export const visualaizeItemSlice = createSlice({
         targetItem.refImageItemId = refImageItemId ?? null
       }
     },
+    setTimeSeriesItemShadeSource: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        shadeSourceItemId: number | null
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isTimeSeriesItem(targetItem)) {
+        targetItem.shadeSourceItemId = action.payload.shadeSourceItemId
+      }
+    },
     setHeatMapRefItemId: (
       state,
       action: PayloadAction<{
@@ -922,6 +936,18 @@ export const visualaizeItemSlice = createSlice({
         targetItem.showRoiLabels = action.payload.showRoiLabels
       }
     },
+    setImageItemRoiOutline: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        roiOutline: boolean
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isImageItem(targetItem)) {
+        targetItem.roiOutline = action.payload.roiOutline
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -931,6 +957,9 @@ export const visualaizeItemSlice = createSlice({
         Object.values(state.items).forEach((item) => {
           if (isHeatMapItem(item) && item.refItemId === itemId) {
             item.refItemId = null
+          }
+          if (isTimeSeriesItem(item) && item.shadeSourceItemId === itemId) {
+            item.shadeSourceItemId = null
           }
         })
         if (isImageItem(state.items[itemId])) {
@@ -976,6 +1005,16 @@ export const visualaizeItemSlice = createSlice({
               Object.values(state.items).forEach((item) => {
                 if (isHeatMapItem(item) && item.refItemId === itemId) {
                   item.refItemId = null
+                }
+              })
+            }
+            if (!isTimeSeriesItem(newItem)) {
+              Object.values(state.items).forEach((item) => {
+                if (
+                  isTimeSeriesItem(item) &&
+                  item.shadeSourceItemId === itemId
+                ) {
+                  item.shadeSourceItemId = null
                 }
               })
             }
@@ -1089,6 +1128,7 @@ export const {
   setTimeSeriesItemDrawOrder,
   setTimeSeriesItemMaxIndex,
   setTimeSeriesRefImageItemId,
+  setTimeSeriesItemShadeSource,
   setHeatMapRefItemId,
   setHeatMapItemShowScale,
   setHeatMapItemColors,
@@ -1103,6 +1143,7 @@ export const {
   setPolartemItemSelectedIndex,
   setClickedData,
   setImageItemShowRoiLabels,
+  setImageItemRoiOutline,
   resetAllOrderList,
   reset,
   resetVisualizeLayout,

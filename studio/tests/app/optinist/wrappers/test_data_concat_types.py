@@ -74,9 +74,9 @@ def test_axis_1_stacks_1d_inputs_as_behaviour_columns(output_dir):
 
     assert type(two) is BehaviorData and type(three) is BehaviorData
     np.testing.assert_array_equal(three.data, np.column_stack([position, speed, trial]))
-    assert three.output_path.data_shape == [6, 3]
+    assert three.output_path.data_shape == [3, 6]
     np.testing.assert_array_equal(three_first.data[:, 0], trial)
-    assert three_first.output_path.data_shape == [6, 3]
+    assert three_first.output_path.data_shape == [3, 6]
 
 
 def test_1d_inputs_on_axis_0_are_still_appended(output_dir):
@@ -87,13 +87,14 @@ def test_1d_inputs_on_axis_0_are_still_appended(output_dir):
     assert type(out) is IscellData and out.data.shape == (12,)
 
 
-def test_behaviour_column_concat_rebuilds_the_index(output_dir):
-    a = BehaviorData(RNG.random((6, 2)), file_name="a")
+def test_behaviour_column_concat_keeps_the_time_index(output_dir):
+    a = BehaviorData(RNG.random((6, 2)), index=np.arange(10, 16), file_name="a")
     b = BehaviorData(RNG.random((6, 1)), file_name="b")
 
     out = _concat(a, b, output_dir)
 
-    assert out.data.shape == (6, 3) and list(out.index) == [0, 1, 2]
+    assert out.data.shape == (6, 3) and list(out.index) == list(range(10, 16))
+    assert out.output_path.data_shape == [3, 6]
 
 
 @pytest.mark.parametrize("cls", [BarData, HeatMapData])

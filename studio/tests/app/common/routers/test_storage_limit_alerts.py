@@ -102,6 +102,22 @@ async def test_get_me_no_alert(mock_current_user):
 
 
 @pytest.mark.asyncio
+async def test_get_me_without_a_user_has_no_alert():
+    from studio.app.common.routers.storage_limit_alerts import get_my_storage_alert
+
+    with patch(
+        "studio.app.common.core.cloud.storage_tracking.get_current_user_storage_usage"
+    ) as mock_get_usage, patch(
+        "studio.app.common.core.cloud.storage_tracking.get_user_storage_usage"
+    ) as mock_storage_info:
+        result = await get_my_storage_alert(current_user=None)
+
+    assert result == {"has_alert": False, "alert": None}
+    mock_get_usage.assert_not_called()
+    mock_storage_info.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_me_critical_alert(mock_current_user):
     """Test /me endpoint when user has critical storage alert (90%)"""
     with patch(

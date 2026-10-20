@@ -6,6 +6,7 @@ import uuid
 import h5py
 import numpy as np
 
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -14,10 +15,18 @@ from studio.app.common.core.utils.filepath_creater import (
 from studio.app.common.dataclass import CsvData, ImageData
 from studio.app.const import FILETYPE
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
+from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.dataclass.iscell import IscellData
 from studio.app.optinist.dataclass.microscope import MicroscopeData
 from studio.app.optinist.routers.mat import MatGetter
+
+logger = AppLogger.get_logger()
+
+
+def is_behavior_role(params: dict) -> bool:
+    """HDF5 and MAT inputs declared as behaviour load time-major."""
+    return (params or {}).get("dataType") == "behavior"
 
 
 def dataclass_for_rank(ndim: int):
@@ -81,6 +90,7 @@ class FileWriter:
         with h5py.File(rule_config.input, "r") as f:
             dataset, field = hdf5_dataset(f, rule_config.hdf5Path)
             n_rois = cls._sibling_roi_count(dataset)
+            cls._warn_on_rate_mismatch(dataset, nwbfile, rule_config.hdf5Path)
             cached = cls._cached_tiff(rule_config, rule_config.hdf5Path)
             if cached is None:
                 data = dataset[()] if field is None else dataset[field]
@@ -93,8 +103,14 @@ class FileWriter:
         info = cls.get_info_from_array_data(
             rule_config, nwbfile, data, source_key=rule_config.hdf5Path
         )
-        if n_rois is not None and data.ndim == 2:
-            cls._orient_nwb_fluorescence(info[rule_config.return_arg], n_rois)
+        fluo = info[rule_config.return_arg]
+        if n_rois is not None and type(fluo) is FluoData:
+            oriented = cls._orient_nwb_fluorescence(fluo, n_rois)
+            if oriented and (rule_config.params or {}).get("transpose"):
+                AppLogger.get_logger().warning(
+                    f"'{rule_config.hdf5Path}' is oriented by its rois sibling; "
+                    "the input Transpose setting is ignored"
+                )
         return info
 
     @staticmethod
@@ -104,17 +120,35 @@ class FileWriter:
             return rois.shape[0]
         return None
 
+    @staticmethod
+    def _warn_on_rate_mismatch(dataset, nwbfile, path):
+        """Nodes take the frame rate from the NWB settings, not from the input."""
+        start = dataset.parent.get("starting_time")
+        rate = start.attrs.get("rate") if isinstance(start, h5py.Dataset) else None
+        setting = (nwbfile or {}).get("imaging_plane", {}).get("imaging_rate")
+        try:
+            if rate is None or np.isclose(float(rate), float(setting)):
+                return
+        except (TypeError, ValueError):
+            return
+        logger.warning(
+            f"{path} is sampled at {float(rate):g} Hz but the NWB setting "
+            f"imaging_rate is {setting} Hz; nodes that use the frame rate, "
+            "such as CaImAn, read the setting"
+        )
+
     @classmethod
     def _orient_nwb_fluorescence(cls, fluo: FluoData, n_rois: int):
         """NWB RoiResponseSeries is (time, roi); FluoData is (roi, time)."""
         n_rows, n_cols = fluo.data.shape
         if (n_rows == n_rois) == (n_cols == n_rois):
-            return
+            return False
         if n_cols == n_rois:
             fluo.data = fluo.data.T
             fluo.index = np.arange(n_rows)
             fluo.cell_numbers = range(n_cols)
         fluo.nwb_oriented = True
+        return True
 
     @classmethod
     def mat(cls, rule_config: Rule):
@@ -195,10 +229,21 @@ class FileWriter:
     def get_info_from_array_data(
         cls, rule_config: Rule, nwbfile, data, source_key: str = None
     ):
+        params = rule_config.params or {}
+        transposed = bool(params.get("transpose")) and data.ndim == 2
+        if transposed:
+            data = data.T
         produced = dataclass_for_rank(data.ndim)
         if produced is None:
             raise ValueError(f"'{source_key}' is a scalar dataset; expected 1D or more")
-        if produced is ImageData:
+        if is_behavior_role(params) and produced is not ImageData:
+            info = {rule_config.return_arg: BehaviorData(data)}
+            nwbfile.setdefault(NWBDATASET.BEHAVIOR, {})[rule_config.return_arg] = info[
+                rule_config.return_arg
+            ]
+            nwbfile.pop("image_series", None)
+            info["nwbfile"] = {"input": nwbfile}
+        elif produced is ImageData:
             if data.dtype == np.float64:
                 # halves the tiff; astype peaks at ~1.5x the input in memory
                 data = data.astype(np.float32)
@@ -226,4 +271,6 @@ class FileWriter:
                 rule_config.return_arg
             ]
             info["nwbfile"] = {"input": nwbfile}
+        if transposed:
+            info[rule_config.return_arg].nwb_oriented = True
         return info

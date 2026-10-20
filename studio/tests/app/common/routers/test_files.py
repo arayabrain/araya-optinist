@@ -41,6 +41,22 @@ def test_create_files(client):
     assert len(data) > 0
 
 
+def test_upload_tiff_without_user(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")  # as a standalone deployment
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    tiff = tmp_path / "src.tif"
+    tifffile.imwrite(tiff, np.zeros((2, 4, 4), dtype=np.uint16))
+
+    with open(tiff, "rb") as f:
+        response = client.post(
+            f"/files/{workspace_id}/upload/upload.tif",
+            files={"file": ("upload.tif", f, "image/tiff")},
+        )
+
+    assert response.status_code == 200, response.text
+    assert (tmp_path / workspace_id / "upload.tif").read_bytes() == tiff.read_bytes()
+
+
 def test_DirTreeGetter_tif():
     output = DirTreeGetter.get_tree(
         workspace_id, [".tif", ".tiff", ".TIF", ".TIFF"], "files"

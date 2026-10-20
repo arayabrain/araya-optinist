@@ -70,13 +70,14 @@ class TimeSeriesData(BaseData):
         JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)
 
         record_ids = [str(cell_i) for cell_i in self.cell_numbers]
-        columns = {"data": self.data}
-        if self.std is not None and len(self.data):
+        rows = self._records(self.data)
+        columns = {"data": rows}
+        if self.std is not None and len(rows):
             # A 1D std holds one value per record, spread over its time points
-            std = np.asarray(self.std)[: len(self.data)]
+            std = np.asarray(self._records(self.std))[: len(rows)]
             if std.ndim == 1:
                 std = std[:, np.newaxis]
-            columns["std"] = np.broadcast_to(std, self.data.shape)
+            columns["std"] = np.broadcast_to(std, rows.shape)
 
         TimeSeriesChunkHandler.save_chunked_data(
             dirpath=self.json_path,
@@ -85,11 +86,16 @@ class TimeSeriesData(BaseData):
             index=self.index,
         )
 
+    def _records(self, array):
+        """The (records, time) view of `array` that the preview saves."""
+        return array
+
     @property
     def output_path(self) -> OutputPath:
+        rows = self._records(self.data)
         return OutputPath(
             path=self.json_path,
             type=OutputType.TIMESERIES,
-            max_index=len(self.data),
-            data_shape=list(self.data.shape),
+            max_index=len(rows),
+            data_shape=list(rows.shape),
         )

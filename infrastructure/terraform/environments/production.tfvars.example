@@ -84,6 +84,10 @@ asg_max_size = 3
 # image_builder.tf (local.custom_ami_version), not here.
 use_custom_ami = false
 
+# The NAT instance AMI is not set here: it is pinned in the SSM parameter
+# /subscr/optinist/nat-ami-id. See MAINTENANCE_PROCEDURES.md, NAT Instance
+# AMI Refresh.
+
 # Test user configuration
 test_users = []
 
