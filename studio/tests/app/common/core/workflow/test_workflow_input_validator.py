@@ -164,6 +164,40 @@ def test_basedata_arg_is_skipped(workspace):
     validate_input_edges(workspace, nodes, edges)
 
 
+def _behavior_graph(workspace, shape, target):
+    nodes, edges = _graph(workspace, shape, *target)
+    nodes["in"].data.param = {"dataType": "behavior"}
+    return nodes, edges
+
+
+BASEDATA_ARG = ("data_transpose", "utils/data_transpose", "data", "BaseData")
+IMAGE_ARG = (
+    "suite2p_file_convert",
+    "suite2p/suite2p_file_convert",
+    "image",
+    "ImageData",
+)
+
+
+@pytest.mark.parametrize("target", [BASEDATA_ARG, IMAGE_ARG], ids=["basedata", "image"])
+def test_3d_behaviour_dataset_is_refused_with_its_shape(workspace, target):
+    nodes, edges = _behavior_graph(workspace, [5, 4, 4], target)
+    with pytest.raises(WorkflowValidationError, match=r"\(5, 4, 4\); Behaviour data"):
+        validate_input_edges(workspace, nodes, edges)
+
+
+def test_behaviour_dataset_into_an_image_arg_is_refused(workspace):
+    nodes, edges = _behavior_graph(workspace, [50, 3], IMAGE_ARG)
+    with pytest.raises(WorkflowValidationError, match="expects ImageData"):
+        validate_input_edges(workspace, nodes, edges)
+
+
+@pytest.mark.parametrize("shape", [[50, 3], [50]])
+def test_1d_and_2d_behaviour_datasets_pass(workspace, shape):
+    nodes, edges = _behavior_graph(workspace, shape, BASEDATA_ARG)
+    validate_input_edges(workspace, nodes, edges)
+
+
 def test_unknown_function_and_maintenance_nodes_are_skipped(workspace):
     for path in ("nope/not_a_node", "maintenance/setup_conda/setup_conda_suite2p"):
         nodes, edges = _graph(workspace, [50, 7], "x", path, "image", "ImageData")

@@ -26,8 +26,9 @@ def condition_split(
     With margin > 0, a kept sample within margin samples of a rejected one is
     dropped too, which trims transitions where the behaviour stream and the
     imaging frames are not aligned to the sample.
-    Kept samples are concatenated in their original order and both outputs keep
-    the input orientation. Nothing else is filtered: there is no trial, run or
+    Kept samples are concatenated in their original order. neural_data keeps
+    the input orientation and behaviors_data is always (time, columns), like
+    every BehaviorData. Nothing else is filtered: there is no trial, run or
     modal-length inference, and a downstream window can span the join between
     two kept segments that were not adjacent in the recording.
     """
@@ -106,7 +107,5 @@ def condition_split(
         "neural_data": FluoData(
             X.transpose() if params["transpose_x"] else X, file_name="neural_data"
         ),
-        "behaviors_data": BehaviorData(
-            Y.transpose() if params["transpose_y"] else Y, file_name="behaviors_data"
-        ),
+        "behaviors_data": BehaviorData(Y, file_name="behaviors_data"),
     }
