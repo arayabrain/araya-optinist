@@ -83,6 +83,11 @@ TIFF_PREVIEW_MAX_DECODE_BYTES = 256 * 2**20
 class TiffPreviewTooLargeError(ValueError):
     """A requested preview would not fit the API process's memory."""
 
+    def __init__(self, message: str, max_frames: int):
+        super().__init__(message)
+        # Frames from the window's start that fit; 0 if no window of this file does
+        self.max_frames = max_frames
+
 
 def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
     """
@@ -105,10 +110,11 @@ def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
             return np.empty((0,) + frame_shape, dtype=series.dtype)
 
         frame_pixels = math.prod(frame_shape)
-        max_pixels = _max_preview_pixels(series.dtype)
-        if (stop - start) * frame_pixels > max_pixels:
+        max_frames = _max_preview_pixels(series.dtype) // frame_pixels
+        if stop - start > max_frames:
             raise TiffPreviewTooLargeError(
-                _too_many_frames_message(start, stop, frame_shape, max_pixels)
+                _too_many_frames_message(start, stop, frame_shape, max_frames),
+                max_frames,
             )
 
         if series.dataoffset is not None:
@@ -135,7 +141,8 @@ def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
         if series.nbytes > TIFF_PREVIEW_MAX_DECODE_BYTES:
             raise TiffPreviewTooLargeError(
                 "This image cannot be read frame by frame, and at "
-                f"{series.nbytes / 2**20:.0f} MiB it is too large to preview."
+                f"{series.nbytes / 2**20:.0f} MiB it is too large to preview.",
+                0,
             )
         return tif.asarray(series=0).reshape(shape)[start:stop].copy()
 
@@ -146,9 +153,8 @@ def _max_preview_pixels(dtype) -> int:
     return TIFF_PREVIEW_MAX_WIDE_PIXELS
 
 
-def _too_many_frames_message(start, stop, frame_shape, max_pixels) -> str:
+def _too_many_frames_message(start, stop, frame_shape, max_frames) -> str:
     size = " x ".join(str(n) for n in frame_shape)
-    max_frames = max_pixels // math.prod(frame_shape)
     if max_frames == 0:
         return f"A single {size} frame is too large to preview."
     return (

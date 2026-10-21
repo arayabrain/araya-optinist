@@ -6,7 +6,7 @@ import h5py
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
@@ -895,13 +895,16 @@ async def _read_tiff_preview(
     json_filepath: str,
     start_index: int,
     end_index: int,
-) -> OutputData:
+) -> OutputData | JSONResponse:
     """
     A TIFF preview's JSON, written first in a thread if missing.
 
     Builds and reads share the lock, so one preview at a time is in memory per
     process: a read on the event loop never overlaps a build in its thread, and
     FastAPI encodes the response before the loop runs another request.
+
+    A window too large to preview is answered 422 with `max_frames`, the frames
+    from its start that fit, so a view without a range control can fit itself.
     """
     try:
         async with asyncio.timeout(TIFF_PREVIEW_WAIT_SECONDS):
@@ -920,8 +923,9 @@ async def _read_tiff_preview(
             )
         return JsonReader.read_as_output(json_filepath)
     except TiffPreviewTooLargeError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": str(e), "max_frames": e.max_frames},
         )
     finally:
         _tiff_preview_lock.release()

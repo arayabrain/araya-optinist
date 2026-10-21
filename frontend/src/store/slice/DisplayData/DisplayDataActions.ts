@@ -15,6 +15,7 @@ import {
   BarData,
   HTMLData,
   ImageData,
+  ImagePreviewTooLarge,
   HeatMapData,
   HistogramData,
   LineData,
@@ -56,6 +57,8 @@ import {
 export interface RejectPayload {
   message: string
   status?: number
+  // Frames that fit, when an image preview was refused as too large
+  maxFrames?: number
 }
 
 export const SYNC_IN_PROGRESS_MESSAGE = "Syncing from cloud storage..."
@@ -73,11 +76,15 @@ export function getDisplayErrorMessage(
 function extractErrorPayload(e: unknown): RejectPayload {
   if (e instanceof AxiosError) {
     const status = e.response?.status
-    const detail = (e.response?.data as { detail?: string })?.detail
-    return {
-      message: detail ?? e.message ?? "Request failed",
+    const body = e.response?.data as Partial<ImagePreviewTooLarge> | undefined
+    const payload: RejectPayload = {
+      message: body?.detail ?? e.message ?? "Request failed",
       status,
     }
+    if (typeof body?.max_frames === "number") {
+      payload.maxFrames = body.max_frames
+    }
+    return payload
   }
   if (e instanceof Error) {
     return { message: e.message }

@@ -159,6 +159,7 @@ def test_a_window_over_the_pixel_budget_is_refused(tmp_path, monkeypatch):
     assert str(excinfo.value) == (
         "Frames 1-6 are too many to preview at 8 x 6; choose at most 5 frames."
     )
+    assert excinfo.value.max_frames == 5
     assert read_tiff_frames(path, 0, 5).shape == (5, 8, 6)
 
 
@@ -203,6 +204,7 @@ def test_a_frame_over_the_pixel_budget_is_refused(tmp_path, monkeypatch):
         read_tiff_frames(path, 0, 1)
 
     assert str(excinfo.value) == "A single 8 x 6 frame is too large to preview."
+    assert excinfo.value.max_frames == 0
 
 
 def test_a_layout_decoded_whole_is_refused_over_its_byte_budget(tmp_path, monkeypatch):
@@ -210,8 +212,9 @@ def test_a_layout_decoded_whole_is_refused_over_its_byte_budget(tmp_path, monkey
     tifffile.imwrite(path, **LAYOUTS["volumetric"])
     monkeypatch.setattr(json_writer, "TIFF_PREVIEW_MAX_DECODE_BYTES", VOLUME.nbytes - 1)
 
-    with pytest.raises(TiffPreviewTooLargeError, match="cannot be read frame by"):
+    with pytest.raises(TiffPreviewTooLargeError, match="cannot be read frame by") as e:
         read_tiff_frames(path, 0, 1)
+    assert e.value.max_frames == 0
 
 
 def test_a_frame_of_several_pages_is_read_without_a_whole_decode(tmp_path, monkeypatch):

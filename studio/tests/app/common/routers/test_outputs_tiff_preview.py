@@ -84,9 +84,11 @@ def test_a_window_over_the_budget_is_422_with_the_range_that_fits(
     response = get_preview(client, 1, 10)
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "Frames 1-10 are too many to preview at 8 x 6; choose at most 4 frames."
-    )
+    assert response.json() == {
+        "detail": "Frames 1-10 are too many to preview at 8 x 6; "
+        "choose at most 4 frames.",
+        "max_frames": 4,
+    }
     assert not os.path.exists(os.path.join(input_dir, "stack"))
     # the refusal released the lock
     assert get_preview(client, 1, 4).status_code == 200

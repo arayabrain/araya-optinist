@@ -44,7 +44,6 @@ import {
   deleteRoi,
   mergeRoi,
   promoteRoi,
-  getImageData,
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
@@ -63,6 +62,7 @@ import {
   selectStatusRoi,
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import {
+  getImageItemData,
   selectingImageArea,
   setImageItemClickedDataId,
 } from "store/slice/VisualizeItem/VisualizeItemActions"
@@ -143,8 +143,6 @@ export const ImagePlot = memo(function ImagePlot() {
   const { filePath: path, itemId } = useContext(DisplayDataContext)
 
   const workspaceId = useSelector(selectCurrentWorkspaceId)
-  const startIndex = useSelector(selectImageItemStartIndex(itemId))
-  const endIndex = useSelector(selectImageItemEndIndex(itemId))
   const isPending = useSelector(selectImageDataIsPending(path))
   const isInitialized = useSelector(selectImageDataIsInitialized(path))
   const isFulfilled = useSelector(selectImageDataIsFulfilled(path))
@@ -156,28 +154,13 @@ export const ImagePlot = memo(function ImagePlot() {
   useEffect(() => {
     if (workspaceId) {
       if (!isInitialized) {
-        dispatch(
-          getImageData({
-            path,
-            workspaceId,
-            startIndex: startIndex ?? 1,
-            endIndex: endIndex ?? 10,
-          }),
-        )
+        dispatch(getImageItemData({ itemId, path, workspaceId }))
       }
       if (roiFilePath != null) {
         dispatch(getRoiData({ path: roiFilePath, workspaceId }))
       }
     }
-  }, [
-    dispatch,
-    isInitialized,
-    path,
-    workspaceId,
-    startIndex,
-    endIndex,
-    roiFilePath,
-  ])
+  }, [dispatch, isInitialized, itemId, path, workspaceId, roiFilePath])
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {
