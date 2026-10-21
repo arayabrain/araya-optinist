@@ -53,7 +53,9 @@ async function addImagePlot(page: Page) {
 // a pixel grid whose values are the global ROI index, so the distinct non-null
 // values are exactly the ids the selected projection (cell_roi / non_cell_roi)
 // holds.
-async function roiIds(page: Page): Promise<number[]> {
+// z is [] while getRoiData is pending, a full pixel grid once it lands; rows
+// and ids come from one read so a refresh between them cannot mix two grids
+async function roiGrid(page: Page): Promise<{ rows: number; ids: number[] }> {
   return page.evaluate(() => {
     const plot = document.querySelector(".js-plotly-plot") as unknown as {
       data?: { name?: string; z?: (number | null)[][] }[]
@@ -61,18 +63,16 @@ async function roiIds(page: Page): Promise<number[]> {
     const z = plot?.data?.find((t) => t.name === "roi")?.z ?? []
     const ids = new Set<number>()
     for (const row of z) for (const v of row) if (v != null) ids.add(v)
-    return [...ids].sort((a, b) => a - b)
+    return { rows: z.length, ids: [...ids].sort((a, b) => a - b) }
   })
 }
 
-// z is [] while getRoiData is pending, a full pixel grid once it lands
+async function roiIds(page: Page): Promise<number[]> {
+  return (await roiGrid(page)).ids
+}
+
 async function roiRowCount(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const plot = document.querySelector(".js-plotly-plot") as unknown as {
-      data?: { name?: string; z?: unknown[] }[]
-    }
-    return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
-  })
+  return (await roiGrid(page)).rows
 }
 
 // Select an ROI by id. Plotly's own hit test needs the ROI's pixel coordinates,
@@ -596,16 +596,16 @@ test.describe("Visualize", () => {
 
     // The sources are cells, so a loaded grid without them is non_cell_roi
     await selectFromMui(page, "Select Roi", "non_cell_roi")
+    let grid = { rows: 0, ids: [] as number[] }
     await expect
       .poll(
-        async () =>
-          (await roiRowCount(page)) > 0 &&
-          !(await roiIds(page)).includes(first),
+        async () => {
+          grid = await roiGrid(page)
+          return grid.rows > 0 && !grid.ids.includes(first)
+        },
         { timeout: 60_000 },
       )
       .toBe(true)
-    expect(await roiIds(page), "the undone merge leaves no ROI").not.toContain(
-      merged[0],
-    )
+    expect(grid.ids, "the undone merge leaves no ROI").not.toContain(merged[0])
   })
 })
