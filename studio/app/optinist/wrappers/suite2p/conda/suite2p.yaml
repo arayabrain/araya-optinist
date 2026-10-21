@@ -11,3 +11,7 @@ dependencies:
     - cellpose==4.0.*
     - opencv-python-headless<4.12
     - tifffile==2026.3.*
+    - scipy==1.17.*
+    - numba==0.68.*
+    - scikit-learn==1.9.*
+    - imagecodecs==2026.1.*
