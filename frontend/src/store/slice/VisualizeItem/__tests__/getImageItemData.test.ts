@@ -5,7 +5,10 @@ import { configureStore } from "@reduxjs/toolkit"
 
 import { getImageDataApi } from "api/visualizations/Outputs"
 import { DATA_TYPE_SET } from "store/slice/DisplayData/DisplayDataType"
-import { getImageItemData } from "store/slice/VisualizeItem/VisualizeItemActions"
+import {
+  deleteWorkflowDialogItems,
+  getImageItemData,
+} from "store/slice/VisualizeItem/VisualizeItemActions"
 import {
   addItemForWorkflowDialog,
   pushInitialItemToNewRow,
@@ -92,5 +95,27 @@ describe("getImageItemData", () => {
     expect(requestedEndIndexes()).toEqual([10])
     expect(item().endIndex).toBe(10)
     expect(image().error).toBe(message)
+  })
+})
+
+describe("deleteWorkflowDialogItems", () => {
+  it("drops a dialog image item's frames, so a Visualize item fetches its own window", async () => {
+    jest.mocked(getImageDataApi).mockResolvedValueOnce({ data: [[[0]]] })
+    const store = configureStore({ reducer: rootReducer })
+    store.dispatch(pushInitialItemToNewRow())
+    store.dispatch(
+      addItemForWorkflowDialog({
+        nodeId: "node",
+        filePath: path,
+        dataType: DATA_TYPE_SET.IMAGE,
+      }),
+    )
+    await store.dispatch(getImageItemData({ itemId: 1, path, workspaceId: 1 }))
+    expect(store.getState().displayData.image[path].fulfilled).toBe(true)
+
+    await store.dispatch(deleteWorkflowDialogItems())
+
+    expect(Object.keys(store.getState().visualaizeItem.items)).toEqual(["0"])
+    expect(store.getState().displayData.image[path]).toBeUndefined()
   })
 })

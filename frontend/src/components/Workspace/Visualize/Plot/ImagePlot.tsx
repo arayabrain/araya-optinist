@@ -80,6 +80,7 @@ import {
   selectRoiItemIndex,
   selectRoiItemNodeId,
   selectImageItemDuration,
+  selectVisualizeItemIsWorkflowDialog,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
   selectVisualizeSaveFilename,
@@ -149,18 +150,36 @@ export const ImagePlot = memo(function ImagePlot() {
   const error = useSelector(selectImageDataError(path))
 
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const isWorkflowDialog = useSelector(
+    selectVisualizeItemIsWorkflowDialog(itemId),
+  )
 
   const dispatch = useDispatch<AppDispatch>()
+  // A dialog item fetches its own window when it mounts: frames cached for its
+  // path may be another item's window, or a refusal of one
+  useEffect(() => {
+    if (workspaceId && isWorkflowDialog) {
+      dispatch(getImageItemData({ itemId, path, workspaceId }))
+    }
+  }, [dispatch, isWorkflowDialog, itemId, path, workspaceId])
   useEffect(() => {
     if (workspaceId) {
-      if (!isInitialized) {
+      if (!isWorkflowDialog && !isInitialized) {
         dispatch(getImageItemData({ itemId, path, workspaceId }))
       }
       if (roiFilePath != null) {
         dispatch(getRoiData({ path: roiFilePath, workspaceId }))
       }
     }
-  }, [dispatch, isInitialized, itemId, path, workspaceId, roiFilePath])
+  }, [
+    dispatch,
+    isInitialized,
+    isWorkflowDialog,
+    itemId,
+    path,
+    workspaceId,
+    roiFilePath,
+  ])
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {

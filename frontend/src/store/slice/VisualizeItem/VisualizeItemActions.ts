@@ -12,6 +12,7 @@ import {
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
 import { selectVisualizeItems } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
+  deleteAllItemForWorkflowDialog,
   setClickedData,
   setImageItemEndIndex,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
@@ -151,6 +152,32 @@ type DeleteDisplayItemArgs = {
 export const deleteDisplayItem = createAction<DeleteDisplayItemArgs>(
   `${VISUALIZE_ITEM_SLICE_NAME}/deleteDisplayItem`,
 )
+
+/**
+ * Deletes the dialog items, with the frames of their image items: a dialog may
+ * have narrowed its window, and another item showing the same file fetches its
+ * own window instead.
+ */
+export const deleteWorkflowDialogItems = createAsyncThunk<
+  void,
+  void,
+  ThunkApiConfig
+>(`${VISUALIZE_ITEM_SLICE_NAME}/deleteWorkflowDialogItems`, (_, thunkAPI) => {
+  const items = selectVisualizeItems(thunkAPI.getState())
+  Object.entries(items).forEach(([itemId, item]) => {
+    if (item.isWorkflowDialog && isImageItem(item) && item.filePath != null) {
+      thunkAPI.dispatch(
+        deleteDisplayItem({
+          itemId: Number(itemId),
+          deleteData: true,
+          filePath: item.filePath,
+          dataType: item.dataType,
+        }),
+      )
+    }
+  })
+  thunkAPI.dispatch(deleteAllItemForWorkflowDialog())
+})
 
 type SetNewDisplayDataPathArgs = {
   itemId: number
