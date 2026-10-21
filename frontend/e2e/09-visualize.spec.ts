@@ -132,15 +132,17 @@ async function commitRoiEdit(page: Page) {
     (r) => r.request().method() === "POST" && /commit_edit/.test(r.url()),
     { timeout: 600_000 },
   )
+  // Starts on the commit response so an earlier action's refetch cannot match
+  const refetched = committed.then(() =>
+    page.waitForResponse(
+      (r) =>
+        r.request().method() === "GET" &&
+        /\/api\/visualizations\/image\/.*_roi\.json(\?|$)/i.test(r.url()),
+      { timeout: 60_000 },
+    ),
+  )
   await commitEdit.click()
   expect((await committed).status(), "commit_edit").toBe(200)
-  // Registered after the commit so an earlier action's refetch cannot match
-  const refetched = page.waitForResponse(
-    (r) =>
-      r.request().method() === "GET" &&
-      /\/api\/visualizations\/image\/.*_roi\.json(\?|$)/i.test(r.url()),
-    { timeout: 60_000 },
-  )
   await expect(
     page.getByText("Successfully committed to Edit ROI."),
   ).toBeVisible({ timeout: 120_000 })
