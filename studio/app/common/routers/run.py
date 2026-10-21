@@ -46,6 +46,7 @@ from studio.app.common.core.workflow.workflow_result import (
     await_despite_cancel,
 )
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
+from studio.app.common.core.workflow.workflow_tracking import decrement_workflow_count
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -221,18 +222,23 @@ async def run_id(
             )
         try:
             # A same-second rerun waits out the second for a new generation
-            runner = await await_despite_cancel(
-                asyncio.ensure_future(
-                    asyncio.to_thread(
-                        WorkflowRunner,
-                        remote_bucket_name,
-                        workspace_id,
-                        uid,
-                        runItem,
-                        user_id,
-                    )
+            build = asyncio.ensure_future(
+                asyncio.to_thread(
+                    WorkflowRunner,
+                    remote_bucket_name,
+                    workspace_id,
+                    uid,
+                    runItem,
+                    user_id,
                 )
             )
+            try:
+                runner = await await_despite_cancel(build)
+            except asyncio.CancelledError:
+                # The built runner counted a workflow that will never be scheduled
+                if build.exception() is None:
+                    decrement_workflow_count(user_id)
+                raise
 
             # Download any remote-only input files before workflow runs
             if RemoteStorageController.is_available():

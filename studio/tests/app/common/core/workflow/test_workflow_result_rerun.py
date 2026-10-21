@@ -457,13 +457,18 @@ async def test_a_cancelled_rerun_holds_the_lock_until_its_runner_is_built(
     previous_run,
 ):
     started, release = threading.Event(), threading.Event()
+    active_workflows = []
 
     def slow_runner(*args):
+        active_workflows.append(1)
         started.set()
         release.wait(10)
         return Mock()
 
-    with patch("studio.app.common.routers.run.WorkflowRunner", slow_runner):
+    with patch("studio.app.common.routers.run.WorkflowRunner", slow_runner), patch(
+        "studio.app.common.routers.run.decrement_workflow_count",
+        side_effect=lambda _: active_workflows.pop(),
+    ):
         request = asyncio.ensure_future(rerun())
         await asyncio.to_thread(started.wait, 10)
         request.cancel()
@@ -476,6 +481,7 @@ async def test_a_cancelled_rerun_holds_the_lock_until_its_runner_is_built(
         with pytest.raises(asyncio.CancelledError):
             await request
 
+    assert active_workflows == []
     with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
         pass
 
