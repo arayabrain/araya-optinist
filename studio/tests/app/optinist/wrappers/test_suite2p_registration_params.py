@@ -92,6 +92,7 @@ def test_yaml_lands_in_the_settings_tree_and_only_registration_runs(
 ):
     params = copy.deepcopy(read_default_params("suite2p_registration"))
     params["registration"]["maxregshift"] = 0.2  # not suite2p's default
+    params["registration"]["bidiphase"] = 1.0  # the form sends floats
     suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
 
     call = suite2p_stub["pipeline"]
@@ -107,6 +108,7 @@ def test_yaml_lands_in_the_settings_tree_and_only_registration_runs(
     assert settings["registration"]["maxregshift"] == 0.2
     assert settings["registration"]["spatial_taper"] == 3.45
     # suite2p slices with it
+    assert settings["registration"]["bidiphase"] == 1
     assert isinstance(settings["registration"]["bidiphase"], int)
 
 
