@@ -224,6 +224,10 @@ class EditROI:
         self.__drop_deleted_pending_rows()
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.ROI
 
+        # the same lookup the wrappers make for their series rate
+        nwb_input = self.output_info.get("nwbfile", {}).get("input", {})
+        rate = nwb_input.get("imaging_plane", {}).get("imaging_rate", 30)
+
         if "suite2p" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.suite2p_edit_roi import (
                 commit_edit as suite2p_commit,
@@ -248,6 +252,7 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                rate=rate,
             )
 
         elif "vacant_roi" in self.function_id:
@@ -262,9 +267,10 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                rate=rate,
             )
 
-        elif "caiman" in self.function_id:
+        elif "caiman" in self.function_id or "cnmf_multisession" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi import (
                 commit_edit as caiman_commit,
             )
@@ -276,6 +282,8 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                dff=self.output_info.get("dff"),
+                rate=rate,
             )
 
         iscell = info["iscell"].data

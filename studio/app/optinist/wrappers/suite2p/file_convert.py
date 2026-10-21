@@ -5,10 +5,7 @@ import tifffile
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.utils.filepath_creater import (
-    create_directory,
-    join_filepath,
-)
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.dataclass.roi import movie_fingerprint
@@ -19,36 +16,32 @@ logger = AppLogger.get_logger()
 def suite2p_file_convert(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData):
-    from suite2p import default_ops, io
+    from suite2p import default_db, default_settings, io
     from suite2p.io.tiff import open_tiff, use_sktiff_reader
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_file_convert: %s", function_id)
 
     # the reader rule reads force_sktiff / batch_size as tiff_to_binary will
-    ops = {**default_ops(), **params}
-    tiff_list, read_in_place = tiff_list_for_binary(
-        image.path, output_dir, ops, open_tiff, use_sktiff_reader
+    db = {**default_db(), **(params or {})}
+    file_list, read_in_place = tiff_list_for_binary(
+        image.path, output_dir, db, open_tiff, use_sktiff_reader
     )
-    data_path_list = [output_dir] * len(tiff_list)
 
-    logger.debug(data_path_list)
-    logger.debug(tiff_list)
-    # data pathと保存pathを指定
+    logger.debug(file_list)
     db = {
-        "data_path": data_path_list,
-        "tiff_list": tiff_list,
+        **db,
+        "data_path": [output_dir],
+        "file_list": file_list,
         "save_path0": output_dir,
         "save_folder": "suite2p",
     }
+    db["file_list"], db["first_files"] = io.get_file_list(db)
+    dbs = io.init_dbs(db)
 
-    ops = {**ops, **db}
-
-    # save folderを指定
-    create_directory(join_filepath([ops["save_path0"], ops["save_folder"]]))
-
-    # save ops.npy(parameter) and data.bin
-    ops = io.tiff_to_binary(ops.copy())
+    # write data.bin, db.npy and settings.npy under save_path0/suite2p/plane0
+    with open(dbs[0]["reg_file"], "wb") as reg_file:
+        ops = io.tiff_to_binary(dbs, default_settings(), [reg_file], None)[0]
     for path, version in read_in_place.items():
         check_unchanged(path, version)
 
@@ -90,16 +83,16 @@ def tiff_list_for_binary(paths, output_dir, ops, open_tiff, use_sktiff_reader):
     """
     Name each input file for tiff_to_binary, copying only what it cannot read as is.
 
-    tiff_to_binary joins each name to data_path[0] (output_dir); an absolute path
+    get_file_list joins each name to data_path[0] (output_dir); an absolute path
     replaces it, so an input read as is is listed by its own path. Per file:
     - integer pixels, plain layout, the reader tiff_to_binary will use: as is;
     - float32, plain layout: an int16 copy normalised to the file's own min / max,
       written in batches;
     - anything else: the whole-file copy (normalised if float32), as before.
     tiff_to_binary then sees the same frames either way, so data.bin and meanImg
-    do not change. `ops` is default_ops() with the node's params, as tiff_to_binary
-    gets them. `open_tiff` and `use_sktiff_reader` are suite2p.io.tiff's,
-    passed in because suite2p is imported lazily.
+    do not change. `ops` is default_db() with the node's params, the db
+    tiff_to_binary reads them from. `open_tiff` and `use_sktiff_reader` are
+    suite2p.io.tiff's, passed in because suite2p is imported lazily.
 
     Returns the list and, for the files read as is, the version each had before
     the read: tiff_to_binary reads them for the whole conversion, so the caller

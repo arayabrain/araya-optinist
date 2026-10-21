@@ -88,7 +88,7 @@ def test_integer_input_is_listed_by_its_own_path_and_not_copied(tmp_path, dtype,
     )
 
     assert tiff_list == [os.path.abspath(path)]
-    # tiff_to_binary joins it to data_path[0], which an absolute path replaces
+    # get_file_list joins it to data_path[0], which an absolute path replaces
     assert os.path.join(str(out), tiff_list[0]) == os.path.abspath(path)
     assert list(out.iterdir()) == []
 
@@ -371,33 +371,27 @@ def test_suite2p_file_convert_hands_tiff_to_binary_the_list(tmp_path, monkeypatc
     out.mkdir()
     seen = {}
 
-    def tiff_to_binary(ops):
-        seen.update(ops)
-        return {**ops, "meanImg": np.zeros((LY, LX), np.float32)}
+    def tiff_to_binary(db):
+        seen.update(db)
+        return {**db, "meanImg": np.zeros((LY, LX), np.float32)}
 
     use_sktiff_reader, _ = readers()
-    tiff = types.SimpleNamespace(
-        open_tiff=open_tiff, use_sktiff_reader=use_sktiff_reader
-    )
-    io = types.SimpleNamespace(tiff_to_binary=tiff_to_binary, tiff=tiff)
-    suite2p = types.SimpleNamespace(default_ops=lambda: {"nplanes": 1}, io=io)
-    monkeypatch.setitem(sys.modules, "suite2p", suite2p)
-    monkeypatch.setitem(sys.modules, "suite2p.io", io)
-    monkeypatch.setitem(sys.modules, "suite2p.io.tiff", tiff)
+    stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader)
 
     image = types.SimpleNamespace(path=paths)
     file_convert.suite2p_file_convert(image, str(out), params=dict(PARAMS))
 
-    assert seen["tiff_list"] == [os.path.abspath(paths[0]), "b.tif"]
+    # get_file_list joins each name to data_path[0], which an absolute path replaces
+    assert seen["file_list"] == [os.path.abspath(paths[0]), str(out / "b.tif")]
     # data_path[0] stays the node directory: copies resolve there, and
     # registration looks for bad_frames.npy there
-    assert seen["data_path"] == [str(out)] * 2
+    assert seen["data_path"] == [str(out)]
     assert seen["save_path0"] == str(out)
 
 
 def test_the_reader_rule_takes_the_defaults_tiff_to_binary_takes(tmp_path, monkeypatch):
     # a node saved without batch_size / force_sktiff: tiff_to_binary falls back
-    # to default_ops(), so the reader rule must probe with the same values
+    # to default_db(), so the reader rule must probe with the same values
     paths = [write(tmp_path / "in" / "a.tif", movie_of(np.uint16))]
     out = tmp_path / "out"
     out.mkdir()
@@ -407,18 +401,10 @@ def test_the_reader_rule_takes_the_defaults_tiff_to_binary_takes(tmp_path, monke
         probed.append(batch_size)
         return False
 
-    def tiff_to_binary(ops):
-        return {**ops, "meanImg": np.zeros((LY, LX), np.float32)}
+    def tiff_to_binary(db):
+        return {**db, "meanImg": np.zeros((LY, LX), np.float32)}
 
-    tiff = types.SimpleNamespace(
-        open_tiff=open_tiff, use_sktiff_reader=use_sktiff_reader
-    )
-    io = types.SimpleNamespace(tiff_to_binary=tiff_to_binary, tiff=tiff)
-    defaults = {"nplanes": 1, "batch_size": 500, "force_sktiff": False}
-    suite2p = types.SimpleNamespace(default_ops=lambda: dict(defaults), io=io)
-    monkeypatch.setitem(sys.modules, "suite2p", suite2p)
-    monkeypatch.setitem(sys.modules, "suite2p.io", io)
-    monkeypatch.setitem(sys.modules, "suite2p.io.tiff", tiff)
+    stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader)
 
     image = types.SimpleNamespace(path=paths)
     file_convert.suite2p_file_convert(image, str(out), params={})
@@ -427,12 +413,33 @@ def test_the_reader_rule_takes_the_defaults_tiff_to_binary_takes(tmp_path, monke
 
 
 def stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader):
+    """suite2p 1.1.0's file-list and conversion API; `tiff_to_binary` takes and
+    returns the one plane's db."""
     tiff = types.SimpleNamespace(
         open_tiff=open_tiff, use_sktiff_reader=use_sktiff_reader
     )
-    io = types.SimpleNamespace(tiff_to_binary=tiff_to_binary, tiff=tiff)
+
+    def get_file_list(db):
+        files = [os.path.join(db["data_path"][0], f) for f in db["file_list"]]
+        first = np.zeros(len(files), bool)
+        first[0] = True
+        return files, first
+
+    def init_dbs(db):
+        plane = os.path.join(db["save_path0"], db["save_folder"], "plane0")
+        os.makedirs(plane, exist_ok=True)
+        return [{**db, "reg_file": os.path.join(plane, "data.bin")}]
+
+    io = types.SimpleNamespace(
+        get_file_list=get_file_list,
+        init_dbs=init_dbs,
+        tiff_to_binary=lambda dbs, settings, reg_files, chan2: [tiff_to_binary(dbs[0])],
+        tiff=tiff,
+    )
     defaults = {"nplanes": 1, "batch_size": 500, "force_sktiff": False}
-    suite2p = types.SimpleNamespace(default_ops=lambda: dict(defaults), io=io)
+    suite2p = types.SimpleNamespace(
+        default_db=lambda: dict(defaults), default_settings=dict, io=io
+    )
     monkeypatch.setitem(sys.modules, "suite2p", suite2p)
     monkeypatch.setitem(sys.modules, "suite2p.io", io)
     monkeypatch.setitem(sys.modules, "suite2p.io.tiff", tiff)

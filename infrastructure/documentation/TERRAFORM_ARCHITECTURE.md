@@ -76,7 +76,7 @@ When you run `terraform destroy`, only the AWS resources managed by Terraform ar
 | Lambda functions and layers              | AWS IAM user credentials (if saved locally)                   |
 | Secrets Manager secrets                  |                                                               |
 | CloudWatch log groups, alarms, dashboard |                                                               |
-| IAM roles, policies, user                |                                                               |
+| IAM roles and policies                   |                                                               |
 | Security groups                          |                                                               |
 | Route53/ACM (production only)            |                                                               |
 
@@ -108,8 +108,8 @@ The ASG carries `ignore_changes = [desired_capacity]`, and
 written at runtime and Terraform must not fight them. The two are written by
 different things:
 
-- **ASG desired capacity** — by the Free Manager Lambda (user count) *and* the
-  CPU/memory alarms (instance load).
+- **ASG desired capacity** — by the Free Manager Lambda (user count, both
+  directions) *and* the `-high` CPU/memory alarms (instance load, adding only).
 - **ECS desired count** — by the Free Manager Lambda only, which syncs it to
   the ASG. That is why `sync_ecs_to_asg()` exists: the alarms move the group
   without telling ECS.
@@ -123,15 +123,25 @@ instances task-less and unhealthy.
 | `asg_max_size` | The real ceiling: the Lambda clamps its target to the group's bounds, so neither scaling path can exceed it |
 | `asg_desired_capacity` | Applied at creation, and re-applied on every `dev_scheduler` start in environments where that is enabled. Otherwise ignored |
 
-**Lowering `min_size` does not lower desired capacity** — nothing re-reads the
-ignored value. Set desired capacity explicitly when scaling back down.
+**Lowering `min_size` does not lower desired capacity by itself** — the group
+keeps it, and Terraform ignores it. The Free Manager does: its next run computes
+the target from the user count and removes the surplus, choosing instances with
+no running workflow. Leave desired capacity alone when scaling back down; set by
+hand, the group would choose the instances instead.
+
+**Lowering `max_size` below the current desired capacity does lower it** — the
+group sets desired capacity to the new maximum at once and terminates the
+difference by its termination policy, blind to workloads. Lower the maximum only
+once desired capacity is at or below it, whether by CLI or by apply: a restore
+through tfvars takes two applies, `asg_min_size` first.
 
 The Lambda reads both bounds off the live ASG rather than from its own
 environment, so they can also be changed on the group (console or CLI) without
-a redeploy. That is not persistent: `min_size` is not under `ignore_changes`,
-so the next apply restores the declared value. For sizing, lead time, checks
-and restore, see the pre-provisioning procedure in
-`FREE_MANAGER_ARCHITECTURE.md`.
+a redeploy. That is not persistent: neither bound is under `ignore_changes`, so
+the next apply restores both declared values — the floor goes, and a declared
+maximum below the current desired capacity takes instances with it, as above.
+For sizing, lead time, checks and restore, see
+[FREE_TIER_PREPROVISIONING_RUNBOOK.md](FREE_TIER_PREPROVISIONING_RUNBOOK.md).
 
 ### Database Username (`mysql_user`)
 
@@ -299,13 +309,7 @@ The failure mode therefore is not "wrong Firebase project", it is "no credential
 
 ECS containers authenticate to AWS using the **ECS Task Role**, delivered by the ECS agent via `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` — not static IAM user keys. (Earlier task definitions injected `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from Secrets Manager; that injection has since been removed in favor of the Task Role.)
 
-A separate IAM user (`${var.environment}-optinist-cloud-user`) and its access key still exist in Terraform but are no longer injected into any container. Its policy is scoped, for example:
-
-```hcl
-secretsmanager:GetSecretValue → ${var.environment}-optinist/*
-```
-
-This scoping ensures the development IAM user can only read development secrets, not production secrets.
+Terraform creates no IAM user or access key for the application. Every Secrets Manager grant names this environment's secrets by ARN: the task role reads the Firebase secrets and the routing HMAC key, and the ECS instance role reads the application secrets. A development role therefore cannot read production secrets. S3 access is scoped the same way; see [S3 Bucket Isolation](INFRA_SECURITY_MODEL.md#s3-bucket-isolation-iam-policy).
 
 ---
 
@@ -363,7 +367,7 @@ Subnets are derived automatically via `cidrsubnet(var.vpc_cidr, 4, N)`:
 | **Secrets**        | 5 Secrets Manager secrets (firebase, database, app, stripe config)                           | `${env}-optinist/firebase/config`, etc.                            |
 | **Monitoring**     | CloudWatch log groups, alarms, dashboard                                                     | `${env}-optinist-*`                                                |
 | **DNS/SSL**        | Route53 zone, ACM certificate (production only)                                              | `araya-optinist.com`                                               |
-| **IAM**            | Task execution role, task role, instance role, IAM user, Lambda roles                        | `${env}-optinist-*`, `${env}-*`                                    |
+| **IAM**            | Task execution role, task role, instance role, Lambda roles                                  | `${env}-optinist-*`, `${env}-*`                                    |
 | **Background**     | Background ECS service, launch template, ASG                                                 | `${env}-optinist-background-*`                                     |
 
 ---

@@ -1,9 +1,12 @@
 import os
+import shutil
 from collections import deque
+from glob import glob
 from typing import Dict, List
 
 from studio.app.common.core.utils.filepath_creater import get_pickle_file, join_filepath
 from studio.app.common.core.workflow.workflow import Edge, Node
+from studio.app.const import ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 
 
@@ -45,6 +48,10 @@ def delete_dependencies(
         targeted.append(pickle_filepath)
         if os.path.exists(pickle_filepath):
             os.remove(pickle_filepath)
+        # the data filter's backup of the previous run: a later filter adjust
+        # or reset would otherwise bring that run back over the new one
+        for backup in glob(f"{os.path.dirname(pickle_filepath)}/*{ORIGINAL_DATA_EXT}"):
+            shutil.rmtree(backup) if os.path.isdir(backup) else os.remove(backup)
 
         # 全てのedgeを見て、node_idがsourceならtargetをqueueに追加する
         for edge in edgeDict.values():
