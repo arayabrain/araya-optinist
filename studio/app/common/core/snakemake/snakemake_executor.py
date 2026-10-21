@@ -138,6 +138,7 @@ def _snakemake_execute_process(
     except Exception as e:
         # The gate stays up, so polls wait for finalization instead
         logger.warning(f"Could not invalidate the plan, results wait for its end: {e}")
+        current = not generation or _started_at(workspace_id, unique_id) == generation
     if not current:
         logger.warning(f"Superseded by a rerun before it ran: {unique_id}")
         return False

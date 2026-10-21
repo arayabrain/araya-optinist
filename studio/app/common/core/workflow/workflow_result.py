@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from functools import partial
 from glob import glob
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from fastapi import HTTPException, status
@@ -483,7 +483,7 @@ class NodeResult(BaseNodeResult):
                 # A worker process, so a large read and save hold neither the loop
                 # nor its GIL
                 with ProcessPoolExecutor(max_workers=1) as executor:
-                    message = await _await_despite_cancel(
+                    message = await await_despite_cancel(
                         asyncio.get_running_loop().run_in_executor(
                             executor,
                             partial(
@@ -695,8 +695,8 @@ def _save_slot(timeout: float) -> FileLock:
     )
 
 
-async def _await_despite_cancel(future: asyncio.Future) -> Message:
-    """Wait out the save when cancelled, so the caller's lock outlives the worker"""
+async def await_despite_cancel(future: asyncio.Future) -> Any:
+    """Wait out the work when cancelled, so the caller's lock outlives the worker"""
     cancelled = None
     while not future.done():
         try:

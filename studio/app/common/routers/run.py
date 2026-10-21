@@ -43,6 +43,7 @@ from studio.app.common.core.workflow.workflow_result import (
     NodeResult,
     WorkflowMonitor,
     WorkflowResult,
+    await_despite_cancel,
 )
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
@@ -220,8 +221,17 @@ async def run_id(
             )
         try:
             # A same-second rerun waits out the second for a new generation
-            runner = await asyncio.to_thread(
-                WorkflowRunner, remote_bucket_name, workspace_id, uid, runItem, user_id
+            runner = await await_despite_cancel(
+                asyncio.ensure_future(
+                    asyncio.to_thread(
+                        WorkflowRunner,
+                        remote_bucket_name,
+                        workspace_id,
+                        uid,
+                        runItem,
+                        user_id,
+                    )
+                )
             )
 
             # Download any remote-only input files before workflow runs

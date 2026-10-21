@@ -412,8 +412,13 @@ async def test_a_child_superseded_before_it_runs_touches_nothing(
 
 
 @pytest.mark.asyncio
-async def test_a_failed_gate_check_still_runs_the_workflow(previous_run):
+@pytest.mark.parametrize("superseded", [False, True])
+async def test_a_failed_gate_check_runs_the_workflow_unless_superseded(
+    previous_run, superseded
+):
     generation = await scheduled_generation()
+    if superseded:
+        await rerun()
 
     dag = Mock()
     with patch.object(
@@ -423,7 +428,7 @@ async def test_a_failed_gate_check_still_runs_the_workflow(previous_run):
     ), patch.object(
         snakemake_executor, "_observe_overall_with_lock_retry"
     ) as finalization:
-        await asyncio.to_thread(
+        succeeded = await asyncio.to_thread(
             snakemake_executor._snakemake_execute_process,
             WORKSPACE_ID,
             UNIQUE_ID,
@@ -431,8 +436,41 @@ async def test_a_failed_gate_check_still_runs_the_workflow(previous_run):
             generation,
         )
 
-    dag.execute_workflow.assert_called_once()
-    finalization.assert_called_once()
+    if superseded:
+        assert succeeded is False
+        dag.execute_workflow.assert_not_called()
+        finalization.assert_not_called()
+    else:
+        dag.execute_workflow.assert_called_once()
+        finalization.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_rerun_holds_the_lock_until_its_runner_is_built(
+    previous_run,
+):
+    started, release = threading.Event(), threading.Event()
+
+    def slow_runner(*args):
+        started.set()
+        release.wait(10)
+        return Mock()
+
+    with patch("studio.app.common.routers.run.WorkflowRunner", slow_runner):
+        request = asyncio.ensure_future(rerun())
+        await asyncio.to_thread(started.wait, 10)
+        request.cancel()
+        await asyncio.sleep(0.1)
+
+        with pytest.raises(Timeout):
+            WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock().acquire()
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+
+    with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
+        pass
 
 
 def test_snakemake_execute_hands_the_generation_to_its_child():
