@@ -169,11 +169,13 @@ def extract_traces(ops, stat, targets):
     nframes = int(ops["nframes"])
     mov = np.memmap(reg_file, dtype=np.int16, mode="r", shape=(nframes, Ly, Lx))
     cell_pix = cell_pix_map(stat, Ly, Lx)
+    # suite2p 1.1.0 ops nest these under settings; 0.10.3 ops hold them flat
+    ext = ops.get("settings", {}).get("extraction", ops)
 
     F = np.zeros((len(targets), nframes), np.float32)
     Fneu = np.zeros_like(F)
     for i, s in enumerate(targets):
-        keep = slice(None) if ops.get("allow_overlap", False) else ~s["overlap"]
+        keep = slice(None) if ext.get("allow_overlap", False) else ~s["overlap"]
         lam = s["lam"][keep].astype(np.float32)
         if lam.size > 0:
             pixels = mov[:, s["ypix"][keep], s["xpix"][keep]].astype(np.float32)
@@ -182,8 +184,8 @@ def extract_traces(ops, stat, targets):
             s["ypix"],
             s["xpix"],
             cell_pix,
-            ops.get("inner_neuropil_radius", 2),
-            ops.get("min_neuropil_pixels", 350),
+            ext.get("inner_neuropil_radius", 2),
+            ext.get("min_neuropil_pixels", 350),
         )
         Fneu[i] = mov[:, ny, nx].astype(np.float32).mean(axis=1)
     return F, Fneu

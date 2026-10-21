@@ -42,6 +42,7 @@ No access to NWB file
 info = {
     'refImg': ImageData(ops['refImg'], file_name='refImg'),
     'meanImgE': ImageData(ops['meanImgE'], file_name='meanImgE'),
+    'mc_images': ImageData(mc_images_tif_path, file_name='mc_images'),
     'ops': Suite2pData(ops, file_name='ops'),
 }
 
@@ -52,17 +53,17 @@ info = {
 - [ophys](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
   - [ImageSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.data_interfaces)
     - [PlaneSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation)
-      - [pixel_mask](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html#suite2p.extraction.extract.create_masks_and_extract)
+      - [pixel_mask](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html): ypix, xpix, lam of each `stat` entry from `extraction_wrapper`
       - [columns](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation): 'iscell'
         - [description]: 'two columns - iscell & probcell'
         - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.classification.html#suite2p.classification.classify.classify)
   - [Fluorescence](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.Fluorescence)
     - [Fluorescence](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.RoiResponseSeries)
-      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html#suite2p.extraction.extract.create_masks_and_extract):F
+      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html): F from `extraction_wrapper`
       - [rois](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation.create_roi_table_region)
   - [Neuropil](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.Fluorescence)
     - [Neuropil](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.RoiResponseSeries)
-      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html#suite2p.extraction.extract.create_masks_and_extract):F_neu
+      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html): Fneu from `extraction_wrapper`
       - [rois](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation.create_roi_table_region)
 
 #### Function Output
@@ -73,11 +74,14 @@ info = {
     'Vcorr': ImageData(ops['Vcorr'], file_name='Vcorr'),
     'fluorescence': FluoData(F, file_name='fluorescence'),
     'iscell': IscellData(iscell, file_name='iscell'),
-    'all_roi': RoiData(np.nanmax(im, axis=0), file_name='all_roi'),
-    'non_cell_roi': RoiData(np.nanmax(im[~iscell], axis=0), file_name='noncell_roi'),
-    'cell_roi': RoiData(np.nanmax(im[iscell], axis=0), file_name='cell_roi'),
+    'all_roi': RoiData(roi_images['all'], file_name='all_roi'),
+    'non_cell_roi': RoiData(roi_images['non_cell'], file_name='noncell_roi'),
+    'cell_roi': RoiData(roi_images['cell'], file_name='cell_roi'),
+    'edit_roi_data': EditRoiData(images=ImageData(ops['file_list']), im=im),
     'nwbfile': nwbfile,
 }
+
+`im` is the on-disk per-ROI mask stack (`RoiStack`), `roi_images` the all / cell / non-cell label images built from each ROI's pixel lists.
 
 ### suite2p_spike_deconv
 
@@ -95,7 +99,7 @@ info = {
 
 info = {
     'ops': Suite2pData(ops),
-    'spks': FluoData(spks, file_name='spks'),
+    'spks': SpikingActivityData(spks, file_name='spks'),
     'nwbfile': nwbfile
 }
 

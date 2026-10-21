@@ -77,92 +77,86 @@ nodeDict:
     data:
       label: suite2p_registration
       param:
-        I/O:
+        torch_device:
+          type: child
+          value: cpu
+          path: torch_device
+        run:
           type: parent
           children:
-            nplanes:
+            do_regmetrics:
               type: child
-              value: 1
-              path: I/O/nplanes
-            nchannels:
-              type: child
-              value: 1
-              path: I/O/nchannels
-            functional_chan:
-              type: child
-              value: 1
-              path: I/O/functional_chan
-            frames_include:
-              type: child
-              value: -1
-              path: I/O/frames_include
-        Registration:
+              value: false
+              path: run/do_regmetrics
+        registration:
           type: parent
           children:
+            batch_size:
+              type: child
+              value: 100
+              path: registration/batch_size
+            nimg_init:
+              type: child
+              value: 400
+              path: registration/nimg_init
             smooth_sigma:
               type: child
               value: 1.15
-              path: Registration/smooth_sigma
+              path: registration/smooth_sigma
             smooth_sigma_time:
               type: child
               value: 0
-              path: Registration/smooth_sigma_time
+              path: registration/smooth_sigma_time
             maxregshift:
               type: child
               value: 0.1
-              path: Registration/maxregshift
-            align_by_chan:
+              path: registration/maxregshift
+            th_badframes:
               type: child
-              value: 1
-              path: Registration/align_by_chan
+              value: 1.0
+              path: registration/th_badframes
+            norm_frames:
+              type: child
+              value: true
+              path: registration/norm_frames
+            subpixel:
+              type: child
+              value: 10
+              path: registration/subpixel
+            spatial_taper:
+              type: child
+              value: 3.45
+              path: registration/spatial_taper
+            do_bidiphase:
+              type: child
+              value: false
+              path: registration/do_bidiphase
+            bidiphase:
+              type: child
+              value: 0
+              path: registration/bidiphase
             reg_tif:
               type: child
               value: false
-              path: Registration/reg_tif
-            th_badframes:
-              type: child
-              value: 1
-              path: Registration/th_badframes
-        1P setting:
-          type: parent
-          children:
-            1Preg:
-              type: child
-              value: false
-              path: 1P setting/1Preg
-            spatial_hp_reg:
-              type: child
-              value: 42
-              path: 1P setting/spatial_hp_reg
-            pre_smooth:
-              type: child
-              value: 0
-              path: 1P setting/pre_smooth
-            spatial_taper:
-              type: child
-              value: 40
-              path: 1P setting/spatial_taper
-        Non-Rigid:
-          type: parent
-          children:
+              path: registration/reg_tif
             nonrigid:
               type: child
               value: true
-              path: Non-Rigid/nonrigid
+              path: registration/nonrigid
             block_size:
               type: child
               value:
               - 128
               - 128
-              path: Non-Rigid/block_size
+              path: registration/block_size
             snr_thresh:
               type: child
               value: 1.2
-              path: Non-Rigid/snr_thresh
+              path: registration/snr_thresh
             maxregshiftNR:
               type: child
               value: 5
-              path: Non-Rigid/maxregshiftNR
+              path: registration/maxregshiftNR
       path: suite2p/suite2p_registration
       type: algorithm
       fileType: null
@@ -185,75 +179,127 @@ nodeDict:
       param:
         tau:
           type: child
-          value: 1
+          value: 1.0
           path: tau
-        classification:
+        diameter:
+          type: child
+          value:
+          - 12
+          - 12
+          path: diameter
+        detection:
           type: parent
           children:
-            soma_crop:
+            algorithm:
               type: child
-              value: true
-              path: classification/soma_crop
-        cell_detection:
-          type: parent
-          children:
-            high_pass:
+              value: sparsery
+              path: detection/algorithm
+            highpass_time:
               type: child
               value: 100
-              path: cell_detection/high_pass
-            sparse_mode:
+              path: detection/highpass_time
+            nbins:
               type: child
-              value: true
-              path: cell_detection/sparse_mode
+              value: 5000
+              path: detection/nbins
+            denoise:
+              type: child
+              value: false
+              path: detection/denoise
+            block_size:
+              type: child
+              value:
+              - 64
+              - 64
+              path: detection/block_size
+            threshold_scaling:
+              type: child
+              value: 1.0
+              path: detection/threshold_scaling
             max_overlap:
               type: child
               value: 0.75
-              path: cell_detection/max_overlap
-            nbinned:
+              path: detection/max_overlap
+            soma_crop:
               type: child
-              value: 5000
-              path: cell_detection/nbinned
-            spatial_scale:
+              value: true
+              path: detection/soma_crop
+            npix_norm_min:
               type: child
-              value: 0
-              path: cell_detection/spatial_scale
-            threshold_scaling:
+              value: 0.0
+              path: detection/npix_norm_min
+            npix_norm_max:
               type: child
-              value: 1
-              path: cell_detection/threshold_scaling
-            max_iterations:
-              type: child
-              value: 20
-              path: cell_detection/max_iterations
-        1P:
-          type: parent
-          children:
-            spatial_hp_detect:
-              type: child
-              value: 25
-              path: 1P/spatial_hp_detect
-        Output:
-          type: parent
-          children:
-            preclassify:
-              type: child
-              value: 0
-              path: Output/preclassify
-        ROI_extraction:
+              value: 100
+              path: detection/npix_norm_max
+            sparsery_settings:
+              type: parent
+              children:
+                spatial_scale:
+                  type: child
+                  value: 0
+                  path: detection/sparsery_settings/spatial_scale
+                highpass_neuropil:
+                  type: child
+                  value: 25
+                  path: detection/sparsery_settings/highpass_neuropil
+                max_ROIs:
+                  type: child
+                  value: 5000
+                  path: detection/sparsery_settings/max_ROIs
+                active_percentile:
+                  type: child
+                  value: 0.0
+                  path: detection/sparsery_settings/active_percentile
+            sourcery_settings:
+              type: parent
+              children:
+                max_iterations:
+                  type: child
+                  value: 20
+                  path: detection/sourcery_settings/max_iterations
+                connected:
+                  type: child
+                  value: true
+                  path: detection/sourcery_settings/connected
+                smooth_masks:
+                  type: child
+                  value: false
+                  path: detection/sourcery_settings/smooth_masks
+        extraction:
           type: parent
           children:
             allow_overlap:
               type: child
               value: false
-              path: ROI_extraction/allow_overlap
+              path: extraction/allow_overlap
             inner_neuropil_radius:
               type: child
               value: 2
-              path: ROI_extraction/inner_neuropil_radius
+              path: extraction/inner_neuropil_radius
             min_neuropil_pixels:
               type: child
               value: 350
-              path: ROI_extraction/min_neuropil_pixels
+              path: extraction/min_neuropil_pixels
+            snr_threshold:
+              type: child
+              value: 0.0
+              path: extraction/snr_threshold
+            batch_size:
+              type: child
+              value: 500
+              path: extraction/batch_size
+        classification:
+          type: parent
+          children:
+            preclassify:
+              type: child
+              value: 0.0
+              path: classification/preclassify
+            use_builtin_classifier:
+              type: child
+              value: false
+              path: classification/use_builtin_classifier
       path: suite2p/suite2p_roi
       type: algorithm
       fileType: null

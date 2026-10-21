@@ -2,10 +2,7 @@ import os
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.utils.filepath_creater import (
-    create_directory,
-    join_filepath,
-)
+from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
 
@@ -17,20 +14,19 @@ def suite2p_file_convert(
 ) -> dict(ops=Suite2pData):
     import numpy as np
     import tifffile
-    from suite2p import default_ops, io
+    from suite2p import default_db, default_settings, io
     from suite2p.io.tiff import open_tiff, use_sktiff_reader
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_file_convert: %s", function_id)
 
-    data_path_list = []
+    params = params or {}
+    force_sktiff = bool(params.get("force_sktiff", False))
+    batch_size = params.get("batch_size", 500)
+
     data_name_list = []
     for file_path in image.path:
-        use_sktiff = (
-            True
-            if params.get("force_sktiff")
-            else use_sktiff_reader(file_path, batch_size=params.get("batch_size"))
-        )
+        use_sktiff = force_sktiff or use_sktiff_reader(file_path, batch_size=batch_size)
 
         tif, _ = open_tiff(file_path, use_sktiff)
         if use_sktiff:
@@ -44,27 +40,24 @@ def suite2p_file_convert(
 
         file_path = join_filepath([output_dir, os.path.basename(file_path)])
         tifffile.imwrite(file_path, im)
-
-        data_path_list.append(os.path.dirname(file_path))
         data_name_list.append(os.path.basename(file_path))
 
-    logger.debug(data_path_list)
     logger.debug(data_name_list)
-    # data pathと保存pathを指定
     db = {
-        "data_path": data_path_list,
-        "tiff_list": data_name_list,
+        **default_db(),
+        "data_path": [output_dir],
+        "file_list": data_name_list,
         "save_path0": output_dir,
         "save_folder": "suite2p",
+        "force_sktiff": force_sktiff,
+        "batch_size": batch_size,
     }
+    db["file_list"], db["first_files"] = io.get_file_list(db)
+    dbs = io.init_dbs(db)
 
-    ops = {**default_ops(), **params, **db}
-
-    # save folderを指定
-    create_directory(join_filepath([ops["save_path0"], ops["save_folder"]]))
-
-    # save ops.npy(parameter) and data.bin
-    ops = io.tiff_to_binary(ops.copy())
+    # write data.bin, db.npy and settings.npy under save_path0/suite2p/plane0
+    with open(dbs[0]["reg_file"], "wb") as reg_file:
+        ops = io.tiff_to_binary(dbs, default_settings(), [reg_file], None)[0]
 
     info = {
         "meanImg": ImageData(

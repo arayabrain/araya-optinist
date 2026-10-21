@@ -271,7 +271,7 @@ class RoiStack(np.memmap):
     def open(cls, path: str):
         absolute = path if os.path.isabs(path) else f"{DIRPATH.OUTPUT_DIR}/{path}"
         obj = np.load(absolute, mmap_mode="r").view(cls)
-        obj._stack_path = path
+        obj._stack_path = os.path.abspath(absolute)
         obj._whole_file = True
         return obj
 
