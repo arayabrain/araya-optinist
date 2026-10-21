@@ -651,16 +651,11 @@ async def get_inittimedata(
     # Load first record using common helper
     json_data = _load_timeseries_record(abs_dirpath, str_index)
 
-    data = {
-        str(i): {json_data.xrange[0]: json_data.data[json_data.xrange[0]]}
-        for i in file_numbers
-    }
+    first = json_data.xrange[:1]  # empty for a zero-length time range
+    data = {str(i): {x: json_data.data[x] for x in first} for i in file_numbers}
 
     if json_data.std is not None:
-        std = {
-            str(i): {json_data.xrange[0]: json_data.data[json_data.xrange[0]]}
-            for i in file_numbers
-        }
+        std = {str(i): {x: json_data.data[x] for x in first} for i in file_numbers}
 
     return_data = get_initial_timeseries_data(abs_dirpath)
     return_data.xrange = json_data.xrange
