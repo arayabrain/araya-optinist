@@ -74,7 +74,7 @@ class ExptConfigWriter:
         self.timezone = timezone  # User's browser timezone (IANA format)
         self.builder = ExptConfigBuilder()
 
-    def write(self) -> None:
+    def write(self) -> ExptConfig:
         expt_filepath = ExptConfigReader.get_config_yaml_path(
             self.workspace_id, self.unique_id
         )
@@ -102,9 +102,9 @@ class ExptConfigWriter:
         self.build_procs()
 
         # Write EXPERIMENT_YML
-        self._write_raw(
-            self.workspace_id, self.unique_id, config=asdict(self.builder.build())
-        )
+        expt_config = self.builder.build()
+        self._write_raw(self.workspace_id, self.unique_id, config=asdict(expt_config))
+        return expt_config
 
     @classmethod
     def _write_raw(

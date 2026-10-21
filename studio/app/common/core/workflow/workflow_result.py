@@ -89,14 +89,26 @@ class WorkflowResult:
         if os.path.exists(self.plan_pending_path):
             os.remove(self.plan_pending_path)
 
-    def invalidate_planned_outputs(self, outputs: List[str]) -> None:
-        """Delete the old pickle of every job snakemake will run, then let polls in"""
+    def invalidate_planned_outputs(
+        self, outputs: Optional[List[str]], generation: str = None
+    ) -> bool:
+        """Delete the old pickle of every job snakemake will run, then let polls in.
+
+        outputs: None when there is no plan, which keeps the gate up
+        Returns False, touching nothing, once a rerun has superseded generation
+        """
         with self.observe_lock(timeout=self.OBSERVE_LOCK_WAIT_SECONDS):
-            for output in outputs:
+            if generation is not None:
+                config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+                if config.started_at != generation:
+                    return False
+            for output in outputs or []:
                 path = os.path.join(self.workflow_dirpath, output)
                 if path.endswith(".pkl") and os.path.exists(path):
                     os.remove(path)
-            self.clear_plan_pending()
+            if outputs is not None:
+                self.clear_plan_pending()
+        return True
 
     async def observe(
         self,

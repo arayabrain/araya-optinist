@@ -10,15 +10,18 @@ import asyncio
 import os
 import pickle
 import shutil
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 import pytest
+from filelock import Timeout
 
 from studio.app.common.core.experiment import experiment_writer
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.snakemake import snakemake_executor
 from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.snakemake.smk_status_logger import SmkStatusLogger
@@ -41,6 +44,7 @@ UNIQUE_ID = "rerun-plan"
 NODES = ["func1", "func2"]
 PP = "post_process_0"
 WDIR = Path(DIRPATH.OUTPUT_DIR) / WORKSPACE_ID / UNIQUE_ID
+PARAMS = SmkParam(use_conda=False, cores=1, forceall=False)
 
 
 def pkl(node: str) -> Path:
@@ -84,7 +88,7 @@ def run_item() -> RunItem:
     return RunItem(nodeDict=nodes, edgeDict={"e1": edge}, forceRunList=[])
 
 
-async def rerun():
+async def rerun(background_tasks=None):
     """A same-uid run with nothing forced, as the frontend starts it"""
     with patch(
         "studio.app.common.routers.run._check_storage_quota", new=AsyncMock()
@@ -102,11 +106,21 @@ async def rerun():
             workspace_id=WORKSPACE_ID,
             uid=UNIQUE_ID,
             runItem=run_item(),
-            background_tasks=Mock(),
+            background_tasks=background_tasks or Mock(),
             remote_bucket_name="",
             current_user=Mock(id=None),
             db=Mock(),
         )
+
+
+async def scheduled_generation() -> str:
+    """Rerun, returning the generation run_id hands to the snakemake child"""
+    background_tasks = Mock()
+    await rerun(background_tasks)
+    (execute, *_, generation), _ = background_tasks.add_task.call_args
+    assert execute is snakemake_executor.snakemake_execute
+    assert generation == ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+    return generation
 
 
 def plan(nodes):
@@ -262,6 +276,8 @@ async def test_a_cancelled_runs_late_finalization_leaves_the_rerun_alone(
 
 @pytest.mark.asyncio
 async def test_a_child_superseded_by_a_rerun_skips_finalization(previous_run):
+    generation = await scheduled_generation()
+
     def rerun_while_snakemake_runs():
         asyncio.run(rerun())
         raise RuntimeError("job killed")
@@ -277,7 +293,8 @@ async def test_a_child_superseded_by_a_rerun_skips_finalization(previous_run):
             snakemake_executor._snakemake_execute_process,
             WORKSPACE_ID,
             UNIQUE_ID,
-            SmkParam(use_conda=False, cores=1, forceall=False),
+            PARAMS,
+            generation,
         )
 
     finalization.assert_not_called()
@@ -302,8 +319,7 @@ async def test_a_same_second_rerun_gets_a_new_generation(previous_run):
 
 @pytest.mark.asyncio
 async def test_a_rerun_during_finalization_skips_registration(previous_run):
-    await rerun()
-    generation = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+    generation = await scheduled_generation()
     observe_overall = WorkflowResult.observe_overall
 
     async def rerun_while_waiting_for_the_lock(self, generation):
@@ -328,7 +344,8 @@ async def test_a_rerun_during_finalization_skips_registration(previous_run):
             snakemake_executor._snakemake_execute_process,
             WORKSPACE_ID,
             UNIQUE_ID,
-            SmkParam(use_conda=False, cores=1, forceall=False),
+            PARAMS,
+            generation,
         )
 
     assert ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at != generation
@@ -338,7 +355,7 @@ async def test_a_rerun_during_finalization_skips_registration(previous_run):
 
 @pytest.mark.asyncio
 async def test_a_dag_that_fails_to_build_still_finalizes_the_rerun(previous_run):
-    await rerun()
+    generation = await scheduled_generation()
     with patch.object(
         snakemake_executor, "_dag", side_effect=RuntimeError("bad dag")
     ), patch.object(
@@ -350,12 +367,97 @@ async def test_a_dag_that_fails_to_build_still_finalizes_the_rerun(previous_run)
             snakemake_executor._snakemake_execute_process,
             WORKSPACE_ID,
             UNIQUE_ID,
-            SmkParam(use_conda=False, cores=1, forceall=False),
+            PARAMS,
+            generation,
         )
 
     assert succeeded is False
     finalization.assert_called_once()
     assert "bad dag" in (WDIR / SmkStatusLogger.ERROR_LOG_NAME).read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during_planning", [False, True])
+async def test_a_child_superseded_before_it_runs_touches_nothing(
+    previous_run, during_planning
+):
+    generation = await scheduled_generation()
+    if not during_planning:
+        await rerun()
+
+    def plan_the_superseded_run(*_):
+        if during_planning:
+            asyncio.run(rerun())
+        return [str(pkl(node)) for node in NODES + [PP]]
+
+    dag = Mock()
+    with patch.object(
+        snakemake_executor, "planned_outputs", side_effect=plan_the_superseded_run
+    ), patch.object(snakemake_executor, "_dag", return_value=dag), patch.object(
+        snakemake_executor, "_observe_overall_with_lock_retry"
+    ) as finalization:
+        succeeded = await asyncio.to_thread(
+            snakemake_executor._snakemake_execute_process,
+            WORKSPACE_ID,
+            UNIQUE_ID,
+            PARAMS,
+            generation,
+        )
+
+    assert succeeded is False
+    dag.execute_workflow.assert_not_called()
+    finalization.assert_not_called()
+    assert all(pkl(node).exists() for node in NODES)
+    assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_gate_check_still_runs_the_workflow(previous_run):
+    generation = await scheduled_generation()
+
+    dag = Mock()
+    with patch.object(
+        snakemake_executor, "planned_outputs", return_value=[]
+    ), patch.object(snakemake_executor, "_dag", return_value=dag), patch.object(
+        WorkflowResult, "invalidate_planned_outputs", side_effect=Timeout("lock")
+    ), patch.object(
+        snakemake_executor, "_observe_overall_with_lock_retry"
+    ) as finalization:
+        await asyncio.to_thread(
+            snakemake_executor._snakemake_execute_process,
+            WORKSPACE_ID,
+            UNIQUE_ID,
+            PARAMS,
+            generation,
+        )
+
+    dag.execute_workflow.assert_called_once()
+    finalization.assert_called_once()
+
+
+def test_snakemake_execute_hands_the_generation_to_its_child():
+    with patch.object(snakemake_executor, "ProcessPoolExecutor") as pool, patch.object(
+        snakemake_executor, "update_user_storage_after_workflow", new=AsyncMock()
+    ):
+        snakemake_executor.snakemake_execute(WORKSPACE_ID, UNIQUE_ID, PARAMS, None, "g")
+
+    submit = pool.return_value.__enter__.return_value.submit
+    assert submit.call_args.kwargs["generation"] == "g"
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_resets_the_config_off_the_event_loop(previous_run):
+    threads = []
+    add_run_info = ExptConfigWriter.add_run_info
+
+    def record_thread(self, *args):
+        threads.append(threading.get_ident())
+        return add_run_info(self, *args)
+
+    with patch.object(ExptConfigWriter, "add_run_info", record_thread):
+        await rerun()
+
+    assert threads and threading.get_ident() not in threads
 
 
 def test_a_failed_start_leaves_no_gate(previous_run):

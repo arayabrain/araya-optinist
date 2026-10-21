@@ -48,7 +48,11 @@ logger = AppLogger.get_logger()
 
 
 def snakemake_execute(
-    workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
+    workspace_id: str,
+    unique_id: str,
+    params: SmkParam,
+    user_id: int = None,
+    generation: str = None,
 ):
     """
     Main entry point for Snakemake execution.
@@ -58,6 +62,7 @@ def snakemake_execute(
         unique_id: Unique ID for the workflow
         params: Snakemake parameters
         user_id: User ID (for tracking free tier workflow counts)
+        generation: started_at of the run that scheduled this execution
     """
     client_id = get_client_id_for_subprocess()
 
@@ -71,6 +76,7 @@ def snakemake_execute(
                 workspace_id,
                 unique_id,
                 params,
+                generation=generation,
                 client_id=client_id,
             )
             future_result = future.result()
@@ -100,13 +106,13 @@ def _snakemake_execute_process(
     workspace_id: str,
     unique_id: str,
     params: SmkParam,
+    generation: str = None,
     client_id: str = None,
 ) -> bool:
     # ------------------------------------------------------------
     # Snakemake execution process
     # ------------------------------------------------------------
 
-    generation = _started_at(workspace_id, unique_id)
     smk_logger = SmkStatusLogger(workspace_id, unique_id)
     smk_workdir = join_filepath(
         [
@@ -118,13 +124,23 @@ def _snakemake_execute_process(
 
     # Snakemake deletes a job's old output only when the job starts; until
     # then a poll would take that old pickle for this run's result
+    planned = None
     try:
-        WorkflowResult(workspace_id, unique_id).invalidate_planned_outputs(
-            planned_outputs(smk_workdir, params)
+        planned = planned_outputs(smk_workdir, params)
+    except Exception as e:
+        logger.warning(f"Could not plan the run, results wait for its end: {e}")
+
+    current = True
+    try:
+        current = WorkflowResult(workspace_id, unique_id).invalidate_planned_outputs(
+            planned, generation
         )
     except Exception as e:
         # The gate stays up, so polls wait for finalization instead
-        logger.warning(f"Could not plan the run, results wait for its end: {e}")
+        logger.warning(f"Could not invalidate the plan, results wait for its end: {e}")
+    if not current:
+        logger.warning(f"Superseded by a rerun before it ran: {unique_id}")
+        return False
 
     # Use context manager for proper cleanup
     with SnakemakeApi(

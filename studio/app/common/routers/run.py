@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -218,8 +219,9 @@ async def run_id(
                 detail="The previous run's results are still being saved.",
             )
         try:
-            runner = WorkflowRunner(
-                remote_bucket_name, workspace_id, uid, runItem, user_id
+            # A same-second rerun waits out the second for a new generation
+            runner = await asyncio.to_thread(
+                WorkflowRunner, remote_bucket_name, workspace_id, uid, runItem, user_id
             )
 
             # Download any remote-only input files before workflow runs
