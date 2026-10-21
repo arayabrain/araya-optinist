@@ -382,12 +382,18 @@ async def test_a_child_superseded_before_it_runs_touches_nothing(
     previous_run, during_planning
 ):
     generation = await scheduled_generation()
+    error_log = WDIR / SmkStatusLogger.ERROR_LOG_NAME
+
+    def newer_run_fails():
+        asyncio.run(rerun())
+        error_log.write_text("newer run failed")
+
     if not during_planning:
-        await rerun()
+        await asyncio.to_thread(newer_run_fails)
 
     def plan_the_superseded_run(*_):
         if during_planning:
-            asyncio.run(rerun())
+            newer_run_fails()
         return [str(pkl(node)) for node in NODES + [PP]]
 
     dag = Mock()
@@ -409,6 +415,7 @@ async def test_a_child_superseded_before_it_runs_touches_nothing(
     finalization.assert_not_called()
     assert all(pkl(node).exists() for node in NODES)
     assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
+    assert error_log.read_text() == "newer run failed"
 
 
 @pytest.mark.asyncio

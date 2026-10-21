@@ -113,6 +113,10 @@ def _snakemake_execute_process(
     # Snakemake execution process
     # ------------------------------------------------------------
 
+    # The logger clears error.log, which a rerun's child may own by now
+    if generation and _started_at(workspace_id, unique_id) != generation:
+        logger.warning(f"Superseded by a rerun before it started: {unique_id}")
+        return False
     smk_logger = SmkStatusLogger(workspace_id, unique_id)
     smk_workdir = join_filepath(
         [
