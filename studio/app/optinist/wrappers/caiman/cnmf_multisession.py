@@ -67,7 +67,7 @@ def union_footprints(spatial, assignments):
 
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData, meanImg=ImageData):
     from caiman import load
     from caiman.base.rois import register_multisession
     from caiman.source_extraction.cnmf import cnmf
@@ -234,7 +234,7 @@ def caiman_cnmf_multisession(
     }
 
     images = images.data
-    Cn = correlation_image(images)
+    Cn, meanImg = correlation_image(images)
     Cn[np.isnan(Cn)] = 0
 
     info = {
@@ -242,6 +242,9 @@ def caiman_cnmf_multisession(
             np.array(Cn * 255, dtype=np.uint8),
             output_dir=output_dir,
             file_name="images",
+        ),
+        "meanImg": ImageData(
+            meanImg.astype(np.float32), output_dir=output_dir, file_name="meanImg"
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
         "dff": FluoData(dff, file_name="dff"),

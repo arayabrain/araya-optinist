@@ -386,7 +386,7 @@ def run_multisession(monkeypatch, tmp_path):
         "util_get_image_memmap": lambda *_: (None, None, "m.mmap"),
         "util_edit_roi_movie": lambda *_: None,
         "util_cleanup_image_memmap": lambda _: None,
-        "correlation_image": lambda _: np.zeros(MASK_DIMS),
+        "correlation_image": lambda _: (np.zeros(MASK_DIMS), np.zeros(MASK_DIMS)),
         "get_roi": lambda A, *_: [np.ones(MASK_DIMS)] * A.shape[1],
     }
     for name, stub in stubs.items():

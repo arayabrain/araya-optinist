@@ -58,7 +58,8 @@ def test_chunked_correlation_image_equals_caiman_on_the_whole_movie(monkeypatch)
 
     with np.errstate(invalid="ignore"):
         expected = caiman_local_correlations(movie.astype(np.float64))
-        actual = cnmf.correlation_image(movie)
+        actual, mean = cnmf.correlation_image(movie)
 
     np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(mean, movie.astype(np.float64).mean(axis=0), rtol=1e-12)
     assert np.isnan(actual[5, 6])
