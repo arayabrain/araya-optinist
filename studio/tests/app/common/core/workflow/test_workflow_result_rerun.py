@@ -166,7 +166,7 @@ def previous_run():
         for node in NODES + [PP]:
             write(node)
         finalize()
-        assert (function("func1").success, shape("func1")) == ("success", [3, 10])
+        assert (function("func1").success, shape("func1")) == ("success", [10, 3])
         yield
     shutil.rmtree(WDIR.parent, ignore_errors=True)
 
@@ -203,7 +203,7 @@ async def test_an_unforced_rerun_reports_and_keeps_this_runs_result(
     assert before_plan == before_its_turn == {}
     assert func1_done == {"func1": "success"}
     for node in NODES:
-        assert (function(node).success, shape(node)) == ("success", [5, 10])
+        assert (function(node).success, shape(node)) == ("success", [10, 5])
         assert json_matches_pickle(node, tmp_path / node)
 
 
@@ -217,7 +217,7 @@ async def test_a_cancelled_rerun_leaves_an_unreached_node_in_error(previous_run)
     (WDIR / SmkStatusLogger.ERROR_LOG_NAME).write_text("job did not complete\n")
     finalize()
 
-    assert (function("func1").success, shape("func1")) == ("success", [5, 10])
+    assert (function("func1").success, shape("func1")) == ("success", [10, 5])
     assert (function("func2").success, function("func2").outputPaths) == (
         "error",
         None,
