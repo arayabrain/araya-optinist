@@ -70,10 +70,12 @@ class JsonWriter:
             return obj
 
 
-# A preview request costs up to about 70 bytes per pixel end to end, whatever
-# the dtype, so a window is bounded by pixel count. Sized for the smallest
-# tier's API process: the viewer's default 10 frames at 1024 x 1024.
-TIFF_PREVIEW_MAX_PIXELS = 10 * 2**20
+# A preview request costs about 75 bytes per pixel end to end for integers up to
+# 16 bits and about 93 for floats, which print longer, so a window is bounded by
+# pixel count per kind. Sized for the smallest tier's API process.
+TIFF_PREVIEW_MAX_PIXELS = 8 * 2**20
+# Floats and integers wider than 16 bits
+TIFF_PREVIEW_MAX_WIDE_PIXELS = 6 * 2**20
 # Bound on decoding a whole series, for layouts with no frame-wise access
 TIFF_PREVIEW_MAX_DECODE_BYTES = 256 * 2**20
 
@@ -103,9 +105,10 @@ def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
             return np.empty((0,) + frame_shape, dtype=series.dtype)
 
         frame_pixels = math.prod(frame_shape)
-        if (stop - start) * frame_pixels > TIFF_PREVIEW_MAX_PIXELS:
+        max_pixels = _max_preview_pixels(series.dtype)
+        if (stop - start) * frame_pixels > max_pixels:
             raise TiffPreviewTooLargeError(
-                _too_many_frames_message(start, stop, frame_shape)
+                _too_many_frames_message(start, stop, frame_shape, max_pixels)
             )
 
         if series.dataoffset is not None:
@@ -137,9 +140,15 @@ def read_tiff_frames(tiff_filepath, start, stop) -> np.ndarray:
         return tif.asarray(series=0).reshape(shape)[start:stop].copy()
 
 
-def _too_many_frames_message(start, stop, frame_shape) -> str:
+def _max_preview_pixels(dtype) -> int:
+    if np.issubdtype(dtype, np.integer) and np.dtype(dtype).itemsize <= 2:
+        return TIFF_PREVIEW_MAX_PIXELS
+    return TIFF_PREVIEW_MAX_WIDE_PIXELS
+
+
+def _too_many_frames_message(start, stop, frame_shape, max_pixels) -> str:
     size = " x ".join(str(n) for n in frame_shape)
-    max_frames = TIFF_PREVIEW_MAX_PIXELS // math.prod(frame_shape)
+    max_frames = max_pixels // math.prod(frame_shape)
     if max_frames == 0:
         return f"A single {size} frame is too large to preview."
     return (
@@ -175,5 +184,6 @@ def save_tiff2json(tiff_filepath, save_dirpath, start_index=None, end_index=None
         join_filepath(
             [save_dirpath, f"{filename}_{str(start_index)}_{str(end_index)}.json"]
         ),
-        pd.DataFrame(tiffs).to_json(indent=4, orient="split"),
+        # No indent: indentation is most of the text, held twice while built
+        pd.DataFrame(tiffs).to_json(orient="split"),
     )

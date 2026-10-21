@@ -1,5 +1,6 @@
 """TIFF preview windows: ``read_tiff_frames`` and ``save_tiff2json``."""
 
+import json
 import os
 import tracemalloc
 from unittest.mock import patch
@@ -31,6 +32,7 @@ VOLUME = RNG.integers(0, 4000, (4, 16, 16), dtype=np.uint16)
 # The comment names the read each layout takes in read_tiff_frames
 LAYOUTS = {
     "contiguous": dict(data=STACK_3D),  # memory-mapped
+    "float32": dict(data=STACK_3D.astype(np.float32) / 7),  # memory-mapped
     "big_endian": dict(data=STACK_3D, byteorder=">"),  # memory-mapped
     "single_frame": dict(data=STACK_3D[0]),  # memory-mapped, 2D
     "imagej_hyperstack": dict(  # memory-mapped, 4D
@@ -66,7 +68,8 @@ def full_read(path):
 
 
 def reference_save_tiff2json(tiff_filepath, save_dirpath, start_index, end_index):
-    """save_tiff2json before windowed reads: decode the stack, keep the window."""
+    """save_tiff2json before windowed reads: decode the stack, keep the window,
+    write it indented."""
     tiffs = []
     image = tifffile.imread(tiff_filepath)
     if image.ndim == 2:
@@ -112,7 +115,7 @@ def test_a_packbits_stack_is_read_by_window():
 @pytest.mark.parametrize(
     "start_index, end_index", [(0, 10), (1, 10), (1, 1), (3, 5), (15, 40), (25, 30)]
 )
-def test_the_preview_json_is_byte_identical_to_a_full_read(
+def test_the_preview_json_parses_as_before_and_is_compact(
     tiff_path, tmp_path, start_index, end_index
 ):
     save_tiff2json(tiff_path, str(tmp_path / "new"), start_index, end_index)
@@ -121,7 +124,9 @@ def test_the_preview_json_is_byte_identical_to_a_full_read(
     name = os.path.splitext(os.path.basename(tiff_path))[0]
     json_name = f"{name}_{start_index}_{end_index}.json"
     new = (tmp_path / "new" / json_name).read_bytes()
-    assert new == (tmp_path / "old" / json_name).read_bytes()
+    old = (tmp_path / "old" / json_name).read_bytes()
+    assert json.loads(new) == json.loads(old)
+    assert b"\n" not in new
 
 
 @pytest.mark.parametrize("compression", [None, "zlib"])
@@ -155,6 +160,38 @@ def test_a_window_over_the_pixel_budget_is_refused(tmp_path, monkeypatch):
         "Frames 1-6 are too many to preview at 8 x 6; choose at most 5 frames."
     )
     assert read_tiff_frames(path, 0, 5).shape == (5, 8, 6)
+
+
+@pytest.mark.parametrize(
+    "dtype, max_frames",
+    [
+        (np.uint8, 5),
+        (np.uint16, 5),
+        (np.int16, 5),
+        (np.int32, 3),
+        (np.float32, 3),
+        (np.float64, 3),
+    ],
+)
+def test_floats_and_wide_integers_have_the_smaller_budget(
+    tmp_path, monkeypatch, dtype, max_frames
+):
+    path = str(tmp_path / "stack.tif")
+    tifffile.imwrite(path, STACK_3D.astype(dtype))
+    monkeypatch.setattr(json_writer, "TIFF_PREVIEW_MAX_PIXELS", 5 * 8 * 6)
+    monkeypatch.setattr(json_writer, "TIFF_PREVIEW_MAX_WIDE_PIXELS", 3 * 8 * 6)
+
+    with pytest.raises(TiffPreviewTooLargeError, match=f"at most {max_frames} frames"):
+        read_tiff_frames(path, 0, 6)
+    assert len(read_tiff_frames(path, 0, max_frames)) == max_frames
+
+
+@pytest.mark.parametrize("dtype", [np.uint16, np.float64])
+def test_the_default_window_at_512_fits_both_budgets(tmp_path, dtype):
+    path = str(tmp_path / "stack.tif")
+    tifffile.imwrite(path, np.zeros((10, 512, 512), dtype=dtype))
+
+    assert len(read_tiff_frames(path, 0, 10)) == 10
 
 
 def test_a_frame_over_the_pixel_budget_is_refused(tmp_path, monkeypatch):
