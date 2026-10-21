@@ -10,6 +10,9 @@ from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
 
+# Bytes of float64 frames LoadData reads at a time outside LCCD's own windows
+BATCH_BYTES = 64 << 20
+
 
 def lccd_detect(
     mc_images: ImageData, output_dir: str, params: dict = None, **kwargs
@@ -25,18 +28,21 @@ def lccd_detect(
 
     logger.debug("params: %s", params)
     lccd = LCCD(params)
-    D = LoadData(mc_images)
-    assert len(D.shape) == 3, "input array should have dimensions (width, height, time)"
-    try:
-        roi = lccd.apply(D)
-        num_cell = roi.shape[1]
-    except ValueError as e:
-        if "No roi region found" in str(e):
-            logger.warning("No ROIs found in LCCD detection")
-            num_cell = 0
-            roi = np.zeros((D.shape[0] * D.shape[1], 0))  # Empty ROIs
-        else:
-            raise e
+    with LoadData(mc_images) as D:
+        assert (
+            len(D.shape) == 3
+        ), "input array should have dimensions (width, height, time)"
+        try:
+            roi = lccd.apply(D)
+            num_cell = roi.shape[1]
+        except ValueError as e:
+            if "No roi region found" in str(e):
+                logger.warning("No ROIs found in LCCD detection")
+                num_cell = 0
+                roi = np.zeros((D.shape[0] * D.shape[1], 0))  # Empty ROIs
+            else:
+                raise e
+        timeseries = D.roi_means(roi)
 
     num_frames = D.shape[2]
 
@@ -45,20 +51,15 @@ def lccd_detect(
         empty_roi = np.full(D.shape[:2], np.nan)
         im = np.zeros((0, *D.shape[:2]))  # Empty stack of ROIs
         iscell = np.array([], dtype=int)
-        timeseries = np.zeros((0, num_frames))
         timeseries_dff = np.zeros((0, num_frames))
     else:
         dff_f0_frames = params["f0_frames"]
         dff_f0_percentile = params["f0_percentile"]
         iscell = np.ones(num_cell, dtype=int)
 
-        reshapedD = D.reshape([D.shape[0] * D.shape[1], D.shape[2]])
-        timeseries = np.zeros([num_cell, num_frames])
         roi_list = []
-
         for i in range(num_cell):
             roi_list.append((roi[:, i].reshape([D.shape[0], D.shape[1]])) * (i + 1))
-            timeseries[i, :] = np.mean(reshapedD[roi[:, i] > 0, :], axis=0)
 
         im = np.stack(roi_list)
         im = im.astype(np.float64)
@@ -131,20 +132,74 @@ def lccd_detect(
     return info
 
 
-def LoadData(mc_images):
-    from PIL import Image
+class LoadData:
+    """
+    The movie LCCD detects on: (X, Y, frames), float64, scaled to [0, 1] by its
+    min and max. Frames are read from the first TIFF of mc_images when sliced:
+    - LCCD.apply slices `[:, :, start:stop]`, one window at a time
+    - roi_means reads BATCH_BYTES of frames at a time
+    so the whole movie is never held.
+    """
 
-    img_pile = Image.open(mc_images.path[0])
-    num_page = img_pile.n_frames
+    def __init__(self, mc_images: ImageData):
+        from PIL import Image
 
-    imgs = np.zeros((img_pile.size[0], img_pile.size[1], num_page))
-    for i in range(num_page):
-        img_pile.seek(i)
-        imgs[:, :, i] = np.asarray(img_pile)
-    img_pile.close()
+        self._pile = Image.open(mc_images.path[0])
+        try:
+            self.shape = (*self._pile.size, self._pile.n_frames)
+            lows, highs = [], []
+            for start, stop in self._batches():
+                frames = self._read(range(start, stop))
+                lows.append(np.min(frames))
+                highs.append(np.max(frames))
+            self.minval, self.maxval = np.min(lows), np.max(highs)
+        except BaseException:
+            self._pile.close()
+            raise
 
-    maxval = np.max(imgs)
-    minval = np.min(imgs)
-    imgs = (imgs - minval) / (maxval - minval)
+    def __enter__(self):
+        return self
 
-    return imgs
+    def __exit__(self, *exc):
+        self._pile.close()
+
+    def __getitem__(self, key) -> np.ndarray:
+        rows, cols, frames = key
+        window = self._read(range(*frames.indices(self.shape[2])))
+        window -= self.minval
+        window /= self.maxval - self.minval
+        return window[rows, cols]
+
+    def roi_means(self, roi: np.ndarray) -> np.ndarray:
+        """Each ROI's (column of roi's) mean over its pixels, per frame."""
+        X, Y, T = self.shape
+        timeseries = np.zeros([roi.shape[1], T])
+        if roi.shape[1] == 0:
+            return timeseries
+        pixels = [np.flatnonzero(roi[:, i] > 0) for i in range(roi.shape[1])]
+        for start, stop in self._batches():
+            frames = self[:, :, start:stop].reshape(X * Y, stop - start)
+            for i, p in enumerate(pixels):
+                timeseries[i, start:stop] = np.mean(frames[p, :], axis=0)
+        return timeseries
+
+    def _read(self, frames: range) -> np.ndarray:
+        window = np.empty((*self.shape[:2], len(frames)))
+        for j, i in enumerate(frames):
+            self._pile.seek(i)
+            window[:, :, j] = np.asarray(self._pile)
+        return window
+
+    def _batches(self):
+        """
+        (start, stop) ranges of about BATCH_BYTES of float64 frames, each at
+        least 2 frames wide (unless the movie is 1 frame): a mean over a
+        1-frame-wide array sums pixels pairwise, not in order, so it can differ
+        in the last bit from the same frame in a wider array.
+        """
+        X, Y, T = self.shape
+        size = max(2, BATCH_BYTES // (X * Y * np.dtype(np.float64).itemsize))
+        edges = list(range(0, T, size)) + [T]
+        if len(edges) > 2 and edges[-1] - edges[-2] == 1:
+            del edges[-2]  # fold a 1-frame tail into the batch before it
+        return zip(edges[:-1], edges[1:])

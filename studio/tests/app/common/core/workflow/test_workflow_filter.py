@@ -8,12 +8,14 @@ import pytest
 import yaml
 
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.utils.pickle_handler import PickleWriter
+from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
 from studio.app.common.core.workflow.workflow import (
     DataFilterParam,
     DataFilterRangeParam,
 )
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.const import ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
@@ -157,3 +159,28 @@ def test_a_filter_reset_restores_every_json_the_run_wrote(ran_node_dir, with_dff
     assert {p: v for p, v in json_files(ran_node_dir).items() if p in ran} == ran
     assert os.path.isdir(f"{ran_node_dir}/dff") == with_dff
     assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}") == []
+
+
+@pytest.mark.parametrize("with_dff", [True])
+def test_a_rerun_voids_the_filter_backup_so_the_next_filter_starts_from_the_new_run(
+    ran_node_dir, with_dff
+):
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}")
+
+    workflow = WorkflowConfigReader.read(WORKSPACE, UNIQUE_ID)
+    delete_dependencies(
+        WORKSPACE, UNIQUE_ID, [NODE_ID], workflow.nodeDict, workflow.edgeDict
+    )
+    assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}") == []
+
+    # the rerun writes new traces; before, the stale backup was filtered instead
+    rerun = roi_node_output("caiman_cnmf", with_dff)
+    rerun["fluorescence"] = FluoData(
+        rerun["fluorescence"].data + 1000, file_name="fluorescence"
+    )
+    PickleWriter.write(f"{ran_node_dir}/caiman_cnmf.pkl", rerun)
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+
+    filtered = PickleReader.read(f"{ran_node_dir}/caiman_cnmf.pkl")
+    assert filtered["fluorescence"].data.min() >= 1000

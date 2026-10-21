@@ -54,26 +54,14 @@ nodeDict:
       hdf5Path: null
       label: suite2p_file_convert
       param:
-        batch_size:
-          path: batch_size
-          type: child
-          value: 500
-        do_registration:
-          path: do_registration
-          type: child
-          value: 1
         force_sktiff:
-          path: force_sktiff
           type: child
           value: false
-        nchannels:
-          path: nchannels
+          path: force_sktiff
+        batch_size:
           type: child
-          value: 1
-        nplanes:
-          path: nplanes
-          type: child
-          value: 1
+          value: 500
+          path: batch_size
       path: suite2p/suite2p_file_convert
       type: algorithm
     id: suite2p_file_convert_pi2bgrsd6m
@@ -93,70 +81,129 @@ nodeDict:
       hdf5Path: null
       label: suite2p_roi
       param:
-        allow_overlap:
-          path: allow_overlap
-          type: child
-          value: false
-        fs:
-          path: fs
-          type: child
-          value: 10
-        high_pass:
-          path: high_pass
-          type: child
-          value: 100
-        inner_neuropil_radius:
-          path: inner_neuropil_radius
-          type: child
-          value: 2
-        max_iterations:
-          path: max_iterations
-          type: child
-          value: 20
-        max_overlap:
-          path: max_overlap
-          type: child
-          value: 0.75
-        min_neuropil_pixels:
-          path: min_neuropil_pixels
-          type: child
-          value: 350
-        nbinned:
-          path: nbinned
-          type: child
-          value: 5000
-        neucoeff:
-          path: neucoeff
-          type: child
-          value: 0.7
-        preclassify:
-          path: preclassify
-          type: child
-          value: 0
-        soma_crop:
-          path: soma_crop
-          type: child
-          value: true
-        sparse_mode:
-          path: sparse_mode
-          type: child
-          value: true
-        spatial_hp_detect:
-          path: spatial_hp_detect
-          type: child
-          value: 25
-        spatial_scale:
-          path: spatial_scale
-          type: child
-          value: 0
         tau:
+          type: child
+          value: 1.0
           path: tau
+        diameter:
           type: child
-          value: 1
-        threshold_scaling:
-          path: threshold_scaling
-          type: child
-          value: 1
+          value:
+          - 12
+          - 12
+          path: diameter
+        detection:
+          type: parent
+          children:
+            algorithm:
+              type: child
+              value: sparsery
+              path: detection/algorithm
+            highpass_time:
+              type: child
+              value: 100
+              path: detection/highpass_time
+            nbins:
+              type: child
+              value: 5000
+              path: detection/nbins
+            denoise:
+              type: child
+              value: false
+              path: detection/denoise
+            block_size:
+              type: child
+              value:
+              - 64
+              - 64
+              path: detection/block_size
+            threshold_scaling:
+              type: child
+              value: 1.0
+              path: detection/threshold_scaling
+            max_overlap:
+              type: child
+              value: 0.75
+              path: detection/max_overlap
+            soma_crop:
+              type: child
+              value: true
+              path: detection/soma_crop
+            npix_norm_min:
+              type: child
+              value: 0.0
+              path: detection/npix_norm_min
+            npix_norm_max:
+              type: child
+              value: 100
+              path: detection/npix_norm_max
+            sparsery_settings:
+              type: parent
+              children:
+                spatial_scale:
+                  type: child
+                  value: 0
+                  path: detection/sparsery_settings/spatial_scale
+                highpass_neuropil:
+                  type: child
+                  value: 25
+                  path: detection/sparsery_settings/highpass_neuropil
+                max_ROIs:
+                  type: child
+                  value: 5000
+                  path: detection/sparsery_settings/max_ROIs
+                active_percentile:
+                  type: child
+                  value: 0.0
+                  path: detection/sparsery_settings/active_percentile
+            sourcery_settings:
+              type: parent
+              children:
+                max_iterations:
+                  type: child
+                  value: 20
+                  path: detection/sourcery_settings/max_iterations
+                connected:
+                  type: child
+                  value: true
+                  path: detection/sourcery_settings/connected
+                smooth_masks:
+                  type: child
+                  value: false
+                  path: detection/sourcery_settings/smooth_masks
+        extraction:
+          type: parent
+          children:
+            allow_overlap:
+              type: child
+              value: false
+              path: extraction/allow_overlap
+            inner_neuropil_radius:
+              type: child
+              value: 2
+              path: extraction/inner_neuropil_radius
+            min_neuropil_pixels:
+              type: child
+              value: 350
+              path: extraction/min_neuropil_pixels
+            snr_threshold:
+              type: child
+              value: 0.0
+              path: extraction/snr_threshold
+            batch_size:
+              type: child
+              value: 500
+              path: extraction/batch_size
+        classification:
+          type: parent
+          children:
+            preclassify:
+              type: child
+              value: 0.0
+              path: classification/preclassify
+            use_builtin_classifier:
+              type: child
+              value: false
+              path: classification/use_builtin_classifier
       path: suite2p/suite2p_roi
       type: algorithm
     id: suite2p_roi_m6v8o3dctg
