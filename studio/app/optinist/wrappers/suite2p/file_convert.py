@@ -22,8 +22,13 @@ def suite2p_file_convert(
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p_file_convert: %s", function_id)
 
-    # the reader rule reads force_sktiff / batch_size as tiff_to_binary will
-    db = {**default_db(), **(params or {})}
+    # only the two keys the conversion reads; the reader rule sees them as
+    # tiff_to_binary will
+    params = params or {}
+    db = {
+        **default_db(),
+        **{k: params[k] for k in ("force_sktiff", "batch_size") if k in params},
+    }
     file_list, read_in_place = tiff_list_for_binary(
         image.path, output_dir, db, open_tiff, use_sktiff_reader
     )
@@ -40,8 +45,14 @@ def suite2p_file_convert(
     dbs = io.init_dbs(db)
 
     # write data.bin, db.npy and settings.npy under save_path0/suite2p/plane0
-    with open(dbs[0]["reg_file"], "wb") as reg_file:
-        ops = io.tiff_to_binary(dbs, default_settings(), [reg_file], None)[0]
+    try:
+        with open(dbs[0]["reg_file"], "wb") as reg_file:
+            ops = io.tiff_to_binary(dbs, default_settings(), [reg_file], None)[0]
+    except OSError:
+        # an input deleted mid-read surfaces as tifffile's FileNotFoundError
+        for path, version in read_in_place.items():
+            check_unchanged(path, version)
+        raise
     for path, version in read_in_place.items():
         check_unchanged(path, version)
 
@@ -66,12 +77,20 @@ class InputChangedError(RuntimeError):
 
 
 def input_version(path):
-    """What tells an input rewritten in place (a same-name upload) mid-read."""
-    stat = os.stat(path)
-    return stat.st_size, stat.st_mtime_ns, movie_fingerprint([path])
+    """
+    What tells an input rewritten in place (a same-name upload) mid-read: its
+    size and sampled content. Not the mtime: the HDF5 / MAT input_tiff cache is
+    replaced with identical bytes when two runs fill it at once.
+    """
+    return os.path.getsize(path), movie_fingerprint([path])
 
 
 def check_unchanged(path, version):
+    if not os.path.exists(path):
+        raise InputChangedError(
+            f"{path} was deleted while suite2p_file_convert read it. "
+            "Run the workflow again."
+        )
     if input_version(path) != version:
         raise InputChangedError(
             f"{path} was rewritten while suite2p_file_convert read it. "
@@ -179,8 +198,9 @@ def plain_layout(path):
 
 
 def can_normalise_in_batches(shape, dtype):
-    # tifffile stores 3- / 4-frame and 3- / 4-column stacks as RGB, which
-    # 2022.3 cannot stream; those and single frames are copied whole
+    # tifffile stores 3- / 4-frame and 3- / 4-column stacks as RGB, and the
+    # whole-file copy keeps that result (tifffile 2022.3 could not stream them);
+    # those and single frames are copied whole
     return (
         dtype == np.float32
         and len(shape) == 3
@@ -214,8 +234,11 @@ def iter_batches(path, nframes, batch_size, use_sktiff, open_tiff):
                 yield tif.asarray(key=range(i, min(i + batch_size, nframes)))
     else:
         tif, _ = open_tiff(path, use_sktiff)
-        for i in range(0, nframes, batch_size):
-            yield tif.data(beg=i, end=min(i + batch_size, nframes))
+        try:
+            for i in range(0, nframes, batch_size):
+                yield tif.data(beg=i, end=min(i + batch_size, nframes))
+        finally:
+            tif.close()
 
 
 def write_normalised_copy(path, copy_path, shape, use_sktiff, open_tiff):

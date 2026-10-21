@@ -14,10 +14,18 @@ PARAMS = {"force_sktiff": False, "batch_size": 7}
 
 
 class FakeScanImageTiff:
-    """What file_convert uses of ScanImageTiffReader: data() and data(beg, end)."""
+    """What file_convert uses of ScanImageTiffReader: data(), data(beg, end),
+    close()."""
+
+    opened = []
 
     def __init__(self, path):
         self.path = path
+        self.closed = False
+        FakeScanImageTiff.opened.append(self)
+
+    def close(self):
+        self.closed = True
 
     def data(self, beg=None, end=None):
         im = tifffile.imread(self.path)
@@ -91,6 +99,27 @@ def test_integer_input_is_listed_by_its_own_path_and_not_copied(tmp_path, dtype,
     # get_file_list joins it to data_path[0], which an absolute path replaces
     assert os.path.join(str(out), tiff_list[0]) == os.path.abspath(path)
     assert list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("shape", [(3, LY, LX), (4, LY, LX), (FRAMES, LY, 3)])
+def test_integer_stacks_tifffile_would_copy_as_rgb_are_read_in_place(tmp_path, shape):
+    # stored as grey pages, one per frame. develop-main's whole-file copy
+    # (tifffile.imwrite) stored them as one RGB page, which suite2p reads as
+    # 1 frame; read in place, every frame is converted
+    path = write(
+        tmp_path / "in" / "movie.tif",
+        movie_of(np.uint16, shape),
+        photometric="minisblack",
+    )
+    use_sktiff_reader, _ = readers()
+
+    tiff_list, _ = tiff_list_for_binary(
+        [path], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
+    )
+
+    assert tiff_list == [os.path.abspath(path)]
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.pages) == shape[0]
 
 
 def test_a_relative_input_path_is_listed_as_an_absolute_one(tmp_path, monkeypatch):
@@ -500,3 +529,80 @@ def test_files_read_in_place_are_returned_with_their_version(tmp_path):
     # the copied file was checked already; only the in-place one is left
     assert list(read_in_place) == [tiff_list[0]]
     assert read_in_place[tiff_list[0]] == file_convert.input_version(paths[0])
+
+
+def test_only_force_sktiff_and_batch_size_reach_suite2p(tmp_path, monkeypatch):
+    # a hand-edited node may carry other suite2p keys; the conversion takes
+    # the defaults for everything else, as develop-main does
+    paths = [write(tmp_path / "in" / "a.tif", movie_of(np.uint16))]
+    out = tmp_path / "out"
+    out.mkdir()
+    seen = {}
+
+    def tiff_to_binary(db):
+        seen.update(db)
+        return {**db, "meanImg": np.zeros((LY, LX), np.float32)}
+
+    use_sktiff_reader, _ = readers()
+    stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader)
+
+    image = types.SimpleNamespace(path=paths)
+    params = {"force_sktiff": True, "batch_size": 7, "nplanes": 2, "nchannels": 2}
+    file_convert.suite2p_file_convert(image, str(out), params=params)
+
+    assert (seen["force_sktiff"], seen["batch_size"]) == (True, 7)
+    assert seen["nplanes"] == 1 and "nchannels" not in seen
+
+
+def test_an_input_replaced_by_identical_bytes_passes(tmp_path, monkeypatch):
+    # the HDF5 / MAT input_tiff cache is os.replace'd when two runs fill it
+    path = write(tmp_path / "in" / "a.tif", movie_of(np.uint16))
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def tiff_to_binary(db):
+        same = tmp_path / "same.tif"
+        same.write_bytes(open(path, "rb").read())
+        os.utime(same, ns=(1, 1))  # a different mtime, the same bytes
+        os.replace(same, path)
+        return {**db, "meanImg": np.zeros((LY, LX), np.float32)}
+
+    use_sktiff_reader, _ = readers()
+    stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader)
+
+    image = types.SimpleNamespace(path=[path])
+    file_convert.suite2p_file_convert(image, str(out), params=dict(PARAMS))
+
+
+def test_an_input_deleted_during_the_conversion_asks_to_run_again(
+    tmp_path, monkeypatch
+):
+    path = write(tmp_path / "in" / "a.tif", movie_of(np.uint16))
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def tiff_to_binary(db):
+        os.remove(path)
+        raise FileNotFoundError(path)  # tifffile reopens the file per batch
+
+    use_sktiff_reader, _ = readers()
+    stub_suite2p(monkeypatch, tiff_to_binary, use_sktiff_reader)
+
+    image = types.SimpleNamespace(path=[path])
+    with pytest.raises(
+        file_convert.InputChangedError, match="deleted.*Run the workflow"
+    ):
+        file_convert.suite2p_file_convert(image, str(out), params=dict(PARAMS))
+
+
+def test_the_scanimage_reader_is_closed_after_the_normalised_copy(tmp_path):
+    path = write(tmp_path / "in" / "movie.tif", movie_of(np.float32))
+    use_sktiff_reader, _ = readers()  # the ScanImageTiffReader path
+    FakeScanImageTiff.opened.clear()
+
+    tiff_list_for_binary(
+        [path], out_dir(tmp_path), PARAMS, open_tiff, use_sktiff_reader
+    )
+
+    assert FakeScanImageTiff.opened  # both passes read through it
+    assert all(tif.closed for tif in FakeScanImageTiff.opened)
