@@ -188,7 +188,7 @@ def test_a_caiman_pickle_without_dff_commits_without_one(tmp_path):
 
 
 @pytest.mark.parametrize("commit", [commit_edit, lccd_commit_edit])
-def test_a_commit_exports_the_rate_and_binary_masks_to_nwb(tmp_path, commit):
+def test_a_commit_exports_the_rate_and_pixel_masks_to_nwb(tmp_path, commit):
     images, data, fluorescence, iscell = build_state(
         [CellType.ROI, CellType.ROI, CellType.TEMP_DELETE, CellType.TEMP_DELETE]
     )
@@ -197,7 +197,10 @@ def test_a_commit_exports_the_rate_and_binary_masks_to_nwb(tmp_path, commit):
 
     nwbfile = info["nwbfile"]
     assert nwbfile[NWBDATASET.FLUORESCENCE]["node"]["Fluorescence"]["rate"] == 10.0
-    mask = nwbfile[NWBDATASET.ROI]["node"]["roi_list"][0]["image_mask"]
-    expected = np.zeros(SHAPE)
-    expected[0, :] = 1
+    mask = nwbfile[NWBDATASET.ROI]["node"]["roi_list"][0]["pixel_mask"]
+    # (row, column, weight) of ROI 0's footprint, the first image row
+    expected = [[0, col, 1.0] for col in range(SHAPE[1])]
     np.testing.assert_array_equal(mask, expected)
+    # and the label image of every ROI, after the edit
+    all_roi_img = nwbfile[NWBDATASET.POSTPROCESS]["node"]["all_roi_img"]
+    np.testing.assert_array_equal(all_roi_img, data.roi_masks.label_image()[None])

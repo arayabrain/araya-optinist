@@ -1,7 +1,7 @@
 import numpy as np
 
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
-from studio.app.optinist.dataclass.roi import EditRoiData
+from studio.app.optinist.dataclass.roi import EditRoiData, nwb_all_roi_img
 
 
 def set_nwbfile(
@@ -16,15 +16,14 @@ def set_nwbfile(
     n_cells = len(roi_masks)
     if n_cells == 0:
         # Add a dummy ROI entry if empty to maintain table structure
-        roi_list.append({"image_mask": np.full(roi_masks.shape, np.nan)})
+        roi_list.append({"pixel_mask": np.zeros((1, 3))})  # (row, column, weight)
         iscell = np.array([[0, 0]])  # [iscell, probcell]
     else:
         for i in range(n_cells):
             kargs = {}
-            # 1 on the ROI's footprint, 0 elsewhere
-            image_mask = np.zeros(roi_masks.shape, np.float32)
-            image_mask.flat[roi_masks.pixels(i)] = 1
-            kargs["image_mask"] = image_mask
+            # (row, column, weight): weight 1 on the ROI's footprint
+            rows, cols = roi_masks.coords(i)
+            kargs["pixel_mask"] = np.array([rows, cols, np.ones(rows.size)]).T
             roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
@@ -57,6 +56,7 @@ def set_nwbfile(
     # NWB追加
     nwbfile[NWBDATASET.POSTPROCESS] = {
         function_id: {
+            "all_roi_img": nwb_all_roi_img(roi_masks.label_image()),
             "add_roi": edit_roi_data.add_roi,
             "delete_roi": edit_roi_data.delete_roi,
             "merge_roi": edit_roi_data.merge_roi,

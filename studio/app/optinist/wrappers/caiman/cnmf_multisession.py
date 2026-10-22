@@ -8,7 +8,7 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import open_frames
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference
+from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference, nwb_all_roi_img
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -19,7 +19,7 @@ from studio.app.optinist.wrappers.caiman.cnmf import (
     correlation_image,
     dff_frames_window,
     get_roi,
-    nwb_image_mask,
+    nwb_pixel_mask,
     util_cleanup_image_memmap,
     util_download_model_files,
     util_edit_roi_movie,
@@ -227,11 +227,16 @@ def caiman_cnmf_multisession(
 
     iscell = np.ones(len(kept), dtype=int)
 
-    cell_ims = get_roi(spatial_filtered, roi_thr, thr_method, swap_dim, dims)
-    cell_ims = np.stack(cell_ims).astype(float)
-    cell_ims[cell_ims == 0] = np.nan
-    cell_ims -= 1
-    n_rois = len(cell_ims)
+    # one footprint at a time: no full-frame layer per cell is kept
+    roi_masks = RoiMasks.from_pixels(
+        dims,
+        (
+            np.flatnonzero(mask)
+            for mask in get_roi(spatial_filtered, roi_thr, thr_method, swap_dim, dims)
+        ),
+    )
+    n_rois = len(roi_masks)
+    all_roi = roi_masks.label_image()
 
     # NWBの追加
     nwbfile = {}
@@ -240,11 +245,13 @@ def caiman_cnmf_multisession(
     n_cells = spatial_filtered.shape[-1]
     for i in range(n_cells):
         kargs = {}
-        kargs["image_mask"] = nwb_image_mask(spatial_filtered, i, dims, swap_dim)
+        kargs["pixel_mask"] = nwb_pixel_mask(spatial_filtered, i, dims, swap_dim)
         roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": cell_ims}}
+    nwbfile[NWBDATASET.POSTPROCESS] = {
+        function_id: {"all_roi_img": nwb_all_roi_img(all_roi)}
+    }
 
     # iscellを追加
     nwbfile[NWBDATASET.COLUMN] = {
@@ -287,7 +294,7 @@ def caiman_cnmf_multisession(
         "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "cell_roi": RoiData(
-            np.nanmax(cell_ims[iscell != 0], axis=0),
+            roi_masks.label_image(iscell != 0),
             output_dir=output_dir,
             file_name="cell_roi",
         ),
@@ -299,7 +306,7 @@ def caiman_cnmf_multisession(
                 lambda: edit_reference(ImageData(split_image_paths), output_dir),
                 output_dir,
             ),
-            RoiMasks.from_stack(cell_ims),
+            roi_masks,
         ),
         "nwbfile": nwbfile,
     }

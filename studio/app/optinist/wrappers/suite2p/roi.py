@@ -13,7 +13,7 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
-from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
+from studio.app.optinist.dataclass.roi import RoiMasks, nwb_all_roi_img
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -92,7 +92,6 @@ def suite2p_roi(
 
     # Initialize default empty outputs
     empty_roi = np.full((Ly, Lx), np.nan)
-    im = np.zeros((0, Ly, Lx))
     F = np.zeros((0, nframes))
     Fneu = np.zeros((0, nframes))
     iscell = np.array([], dtype=int)
@@ -131,19 +130,7 @@ def suite2p_roi(
         stat, F, Fneu = list(stat_), F_, Fneu_
         iscell = iscell_[:, 0].astype(int)
 
-    # Outside the handler: a failed write must fail the node, not empty its images
     if len(iscell) > 0:
-        # The per-ROI mask stack (NaN outside ROI i, i inside it), written
-        # to disk one ROI at a time and referenced rather than held
-        stack_path = os.path.abspath(join_filepath([output_dir, "roi_mask_stack.npy"]))
-        stack, tmp_path = RoiStack.create(stack_path + ".tmp", (len(stat), Ly, Lx))
-        for i, s in enumerate(stat):
-            stack[i, s["ypix"], s["xpix"]] = i
-        stack.flush()
-        del stack
-        # a new inode, so a request still reading the previous stack keeps it
-        os.replace(tmp_path, stack_path)
-        im = RoiStack.open(stack_path)
         roi_images = roi_label_images(stat, iscell, Ly, Lx)
 
     # Create ROI list
@@ -158,7 +145,10 @@ def suite2p_roi(
     # Prepare NWB output
     nwbfile = {}
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
+    all_roi = roi_images["all"] if roi_images else empty_roi
+    nwbfile[NWBDATASET.POSTPROCESS] = {
+        function_id: {"all_roi_img": nwb_all_roi_img(all_roi)}
+    }
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {
             "name": "iscell",
@@ -235,9 +225,9 @@ def roi_label_images(stat, iscell, Ly, Lx):
     """
     The all / cell / non-cell ROI images, from the ROIs' pixel lists.
 
-    Each pixel holds the highest ROI index covering it, which is what nanmax
-    over the per-ROI stack gives (layer i is i on ROI i's pixels, NaN elsewhere)
-    without reading the stack.
+    Each pixel holds the highest ROI index covering it, as RoiMasks.label_image
+    gives it: nanmax over a per-ROI stack (layer i is i on ROI i's pixels, NaN
+    elsewhere), without building one.
     """
     import numpy as np
 

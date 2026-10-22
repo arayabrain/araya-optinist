@@ -15,13 +15,12 @@ LY, LX = 6, 5
 
 
 def stack_on_disk(tmp_path, n=4):
-    stack, path = RoiStack.create(str(tmp_path / "roi_mask_stack.npy"), (n, LY, LX))
+    """A stack file as suite2p_roi wrote it before RoiMasks."""
     expected = np.full((n, LY, LX), np.nan)
     for i in range(n):
-        stack[i, i, : i + 1] = i
         expected[i, i, : i + 1] = i
-    stack.flush()
-    del stack
+    path = str(tmp_path / "roi_mask_stack.npy")
+    np.save(path, expected)
     return RoiStack.open(path), expected
 
 

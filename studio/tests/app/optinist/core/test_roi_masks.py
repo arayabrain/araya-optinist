@@ -163,9 +163,7 @@ def test_a_legacy_stack_converts_when_first_needed(monkeypatch):
 
 def test_a_legacy_roi_stack_converts_from_disk(monkeypatch, tmp_path):
     stack = random_stack()
-    disk, path = RoiStack.create(str(tmp_path / "roi_mask_stack.npy"), stack.shape)
-    disk[:] = stack
-    disk.flush()
-    del disk
+    path = str(tmp_path / "roi_mask_stack.npy")
+    np.save(path, stack)
     back = pickle.loads(legacy_pickle(monkeypatch, RoiStack.open(path)))
     np.testing.assert_array_equal(back.roi_masks.label_image(), nanmax(stack))

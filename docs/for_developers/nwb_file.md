@@ -82,7 +82,7 @@ info = {
     'nwbfile': nwbfile,
 }
 
-`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_img` is the on-disk per-ROI mask stack (`RoiStack`).
+`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_img` is the all-ROI label image, as one (1, height, width) layer: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held one layer per ROI there.
 
 ### suite2p_spike_deconv
 
@@ -135,7 +135,7 @@ info = {
 - [ophys](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
   - [ImageSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.data_interfaces)
     - [PlaneSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation)
-      - [image_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates)
+      - [pixel_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates): (row, column, weight) of each component's non-zero pixels in `estimates.A`
       - [columns](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation): 'iscell'
         - [description]: 'two columns - iscell & probcell'
         - [data](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.cnmf.CNMF.fit)

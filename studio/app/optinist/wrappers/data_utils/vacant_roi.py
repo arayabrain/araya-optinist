@@ -5,7 +5,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_images
+from studio.app.optinist.dataclass.roi import RoiMasks, edit_images, nwb_all_roi_img
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -25,24 +25,21 @@ def vacant_roi(
 
     shape = movie_shape(mc_images)
 
-    num_cell = 0
-    roi = np.zeros((shape[0] * shape[1], 0))  # Empty ROIs
     num_frames = shape[2]
 
-    # Handle zero ROIs case (always)
-    if num_cell == 0:
-        empty_roi = np.full(shape[:2], np.nan)
-        im = np.zeros((0, *shape[:2]))  # Empty stack of ROIs
-        iscell = np.array([], dtype=int)
-        timeseries = np.zeros((0, num_frames))
-
-    # Create ROI list for NWB
-    roi_list = [{"image_mask": roi[:, i].reshape(shape[:2])} for i in range(num_cell)]
+    # No ROIs: they are all added by ROI editing
+    roi_masks = RoiMasks(shape[:2])
+    iscell = np.array([], dtype=int)
+    timeseries = np.zeros((0, num_frames))
+    empty_roi = roi_masks.label_image()
+    roi_list = []
 
     nwbfile = kwargs.get("nwbfile", {})
     logger.debug(f"nwbfile: {nwbfile}")
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
+    nwbfile[NWBDATASET.POSTPROCESS] = {
+        function_id: {"all_roi_img": nwb_all_roi_img(empty_roi)}
+    }
 
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {
@@ -69,12 +66,12 @@ def vacant_roi(
         "fluorescence": FluoData(timeseries, file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "all_roi": RoiData(
-            np.nanmax(im, axis=0) if len(im) > 0 else empty_roi,
+            empty_roi,
             output_dir=output_dir,
             file_name="all_roi",
         ),
         "cell_roi": RoiData(
-            np.nanmax(im[iscell != 0], axis=0) if len(im) > 0 else empty_roi,
+            empty_roi,
             output_dir=output_dir,
             file_name="cell_roi",
         ),
@@ -85,7 +82,7 @@ def vacant_roi(
         # editing opens it lazily
         "edit_roi_data": EditRoiData(
             images=edit_images(mc_images, output_dir),
-            roi_masks=RoiMasks.from_stack(im),
+            roi_masks=roi_masks,
         ),
         "nwbfile": nwbfile,
     }
