@@ -119,7 +119,8 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
 
 
 def correlation_image(movie):
-    """caiman.local_correlations(movie.transpose(1, 2, 0)) for a (T, d1, d2) movie.
+    """caiman.local_correlations(movie.transpose(1, 2, 0)) for a (T, d1, d2) movie,
+    and the movie's mean over time, from the same pass.
 
     The moments are accumulated in float64 over frame chunks, so memory stays near
     one chunk instead of the several whole-movie float32 copies caiman makes.
@@ -165,7 +166,7 @@ def correlation_image(movie):
     neighbors[[0, -1], :] -= 3
     neighbors[:, [0, -1]] -= 3
     neighbors[[0, 0, -1, -1], [0, -1, 0, -1]] += 1
-    return rho / neighbors
+    return rho / neighbors, mean
 
 
 # a mapped file larger than this is assigned a block of image columns at a time
@@ -512,7 +513,7 @@ def caiman_dff(estimates, rows, n_frames, frames_window):
 
 def caiman_cnmf(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData, meanImg=ImageData):
     from caiman.source_extraction.cnmf import cnmf, online_cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -599,7 +600,7 @@ def caiman_cnmf(
             idx_bad = []
 
     # contours plot
-    Cn = correlation_image(mmap_images)
+    Cn, meanImg = correlation_image(mmap_images)
     Cn[np.isnan(Cn)] = 0
 
     thr_method = "nrg"
@@ -664,6 +665,9 @@ def caiman_cnmf(
             np.array(Cn * 255, dtype=np.uint8),
             output_dir=output_dir,
             file_name="images",
+        ),
+        "meanImg": ImageData(
+            meanImg.astype(np.float32), output_dir=output_dir, file_name="meanImg"
         ),
         "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
         "dff": FluoData(dff, file_name="dff"),

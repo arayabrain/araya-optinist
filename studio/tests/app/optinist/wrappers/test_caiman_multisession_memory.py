@@ -71,7 +71,8 @@ def test_correlation_over_the_parts_equals_the_whole_movie(tmp_path, monkeypatch
         expected = cnmf.correlation_image(ImageData(path).data)
         actual = cnmf.correlation_image(ms.FrameStack(parts))
 
-    assert actual.tobytes() == expected.tobytes()
+    for got, want in zip(actual, expected):  # the image and the mean
+        assert got.tobytes() == want.tobytes()
     assert movie.dtype == tifffile.memmap(parts[0], mode="r").dtype
 
 
@@ -175,10 +176,11 @@ def test_multisession_reads_no_whole_movie_and_keeps_a_reference(
         assert template.tobytes() == caiman_load_mean(part).tobytes()
 
     with np.errstate(invalid="ignore"):
-        Cn = cnmf.correlation_image(movie)
+        Cn, mean = cnmf.correlation_image(movie)
     Cn[np.isnan(Cn)] = 0
     images = tifffile.imread(info["images"].path[0])
     assert images.tobytes() == np.array(Cn * 255, dtype=np.uint8).tobytes()
+    np.testing.assert_array_equal(info["meanImg"].data, mean.astype(np.float32))
 
     reference = info["edit_roi_data"].images
     assert isinstance(reference, ImageData) and reference.fingerprint

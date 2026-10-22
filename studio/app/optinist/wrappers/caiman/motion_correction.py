@@ -18,7 +18,7 @@ logger = AppLogger.get_logger()
 
 def caiman_mc(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(mc_images=ImageData):
+) -> dict(mc_images=ImageData, meanImg=ImageData, refImg=ImageData):
     import numpy as np
     from caiman import load_memmap, save_memmap
     from caiman.motion_correction import MotionCorrect
@@ -73,11 +73,13 @@ def caiman_mc(
 
     rois = __extract_rois(meanImg)
 
+    pw_rigid = opts.get("motion", "pw_rigid")
     xy_trans_data = (
         (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
-        if opts.get("motion", "pw_rigid")
+        if pw_rigid
         else np.array(mc.shifts_rig)
     )
+    refImg = mc.total_template_els if pw_rigid else mc.total_template_rig
 
     mc_images = ImageData(
         movie_to_tiff(frames, output_dir, "mc_images", offset=offset),
@@ -100,6 +102,7 @@ def caiman_mc(
     info = {
         "mc_images": mc_images,
         "meanImg": ImageData(meanImg, output_dir=output_dir, file_name="meanImg"),
+        "refImg": ImageData(refImg, output_dir=output_dir, file_name="refImg"),
         "rois": RoiData(rois, output_dir=output_dir, file_name="rois"),
         "nwbfile": nwbfile,
     }

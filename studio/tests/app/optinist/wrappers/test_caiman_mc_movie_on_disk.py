@@ -290,6 +290,7 @@ class StubCaiman:
                 F.flush()
                 self.mmap_file = [str(path)]
                 self.shifts_rig = np.zeros((T, 2))
+                self.total_template_rig = movie[0]
 
         class CNMFParams:
             def get_group(self, name):
@@ -372,3 +373,5 @@ def test_caiman_mc_writes_the_tiff_develop_main_wrote(
     C = np.ascontiguousarray(expected.transpose(1, 2, 0).reshape((-1, T), order="F"))
     develop_main = np.array(C.T.reshape((T, D1, D2), order="F"))
     np.testing.assert_array_equal(info["meanImg"].data, develop_main.mean(axis=0))
+    # rigid (the stub's pw_rigid is False): the rigid template
+    np.testing.assert_array_equal(info["refImg"].data, movie[0])

@@ -14,7 +14,7 @@ logger = AppLogger.get_logger()
 
 def suite2p_registration(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
-) -> dict(ops=Suite2pData, mc_images=ImageData):
+) -> dict(ops=Suite2pData, mc_images=ImageData, meanImg=ImageData, refImg=ImageData):
     from suite2p import default_settings, io, pipeline
     from suite2p.run_s2p import _assign_torch_device
 
@@ -71,6 +71,9 @@ def suite2p_registration(
     ops = {**ops, **reg_outputs, "settings": settings}
 
     info = {
+        "meanImg": ImageData(
+            ops["meanImg"], output_dir=output_dir, file_name="meanImg"
+        ),
         "refImg": ImageData(ops["refImg"], output_dir=output_dir, file_name="refImg"),
         "meanImgE": ImageData(
             ops["meanImgE"], output_dir=output_dir, file_name="meanImgE"
