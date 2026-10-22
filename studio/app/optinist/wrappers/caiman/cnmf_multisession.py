@@ -1,13 +1,14 @@
 import gc
 
-import imageio
 import numpy as np
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
+from studio.app.common.dataclass.image import open_frames
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -17,17 +18,62 @@ from studio.app.optinist.wrappers.caiman.cnmf import (
     caiman_dff,
     correlation_image,
     dff_frames_window,
-    edit_roi_dtype,
     get_roi,
     nwb_image_mask,
     util_cleanup_image_memmap,
     util_download_model_files,
     util_edit_roi_movie,
-    util_get_image_memmap,
+    util_get_image_memmap_from_files,
 )
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
+
+# frames per read for a session template, bounded in bytes
+BATCH_BYTES = 64 << 20
+
+
+class FrameStack:
+    """
+    The frames of TIFF stacks joined in time, as a (T, d1, d2) array-like that
+    reads them when sliced. Each file is memory-mapped where it can be, so a
+    slice within one file is a view, and a slice across files a copy of its
+    frames.
+    """
+
+    def __init__(self, paths: list):
+        self.files = [open_frames(path) for path in paths]
+        self.starts = np.cumsum([0] + [len(f) for f in self.files])
+        self.shape = (int(self.starts[-1]),) + self.files[0].shape[1:]
+
+    def __getitem__(self, key: slice):
+        start, stop, _ = key.indices(self.shape[0])
+        pieces = [
+            f[max(start, s) - s : min(stop, s + len(f)) - s]
+            for f, s in zip(self.files, self.starts)
+            if max(start, s) < min(stop, s + len(f))
+        ]
+        return pieces[0] if len(pieces) == 1 else np.concatenate(pieces)
+
+
+def session_template(path: str):
+    """
+    caiman.load(path).mean(0) read in batches: the frames as float32, added in
+    frame order as numpy reduces a C-order (T, d1, d2) array over its first
+    axis, then divided as np.mean divides, so the values are bit-identical.
+    """
+    frames = FrameStack([path])
+    T = frames.shape[0]
+    frame_bytes = int(np.prod(frames.shape[1:])) * np.dtype(np.float32).itemsize
+    batch_size = max(1, BATCH_BYTES // frame_bytes)
+    total = None
+    for t in range(0, T, batch_size):
+        for frame in np.asarray(frames[t : t + batch_size], dtype=np.float32):
+            if total is None:
+                total = frame.copy()
+            else:
+                total += frame
+    return np.true_divide(total, np.intp(T), out=total, casting="unsafe")
 
 
 def session_rows(session_estimates, assignments, rows):
@@ -68,18 +114,12 @@ def union_footprints(spatial, assignments):
 def caiman_cnmf_multisession(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
-    from caiman import load
     from caiman.base.rois import register_multisession
     from caiman.source_extraction.cnmf import cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info(f"start caiman_cnmf_multisession: {function_id}")
-
-    # ROI editing reads new traces from the input movie, opened lazily at
-    # commit time: EditRoiData keeps a reference to it when util_edit_roi_movie
-    # allows it, rather than a copy
-    images_ref = images
 
     # NOTE: evaluate_components requires cnn_model files in caiman_data directory.
     util_download_model_files()
@@ -138,18 +178,15 @@ def caiman_cnmf_multisession(
         ops.change_params(distribute_params_to_groups({**params, "fr": fr}, vars(ops)))
 
         for split_image_path in split_image_paths:
-            split_image = imageio.volread(split_image_path)
-            split_image_mmap, _, mmap_path = util_get_image_memmap(
-                function_id, split_image, split_image_path
+            split_image_mmap, _, mmap_path = util_get_image_memmap_from_files(
+                function_id, split_image_path, split_image_path
             )
             mmap_paths.append(mmap_path)
-            del split_image
-            gc.collect()
 
             cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
             cnm = cnm.fit(split_image_mmap)
             cnm_list.append(cnm)
-            templates.append(load(split_image_path).mean(0))
+            templates.append(session_template(split_image_path))
 
             del split_image_mmap
             gc.collect()
@@ -233,8 +270,8 @@ def caiman_cnmf_multisession(
         }
     }
 
-    images = images.data
-    Cn = correlation_image(images)
+    # the parts hold the movie's frames, in its dtype and C order
+    Cn = correlation_image(FrameStack(split_image_paths))
     Cn[np.isnan(Cn)] = 0
 
     info = {
@@ -251,10 +288,12 @@ def caiman_cnmf_multisession(
             output_dir=output_dir,
             file_name="cell_roi",
         ),
+        # ROI edits read new traces from a reference, opened at commit time: to
+        # the input when it lies in this experiment, else to the parts, which do
         "edit_roi_data": EditRoiData(
             util_edit_roi_movie(
-                images_ref,
-                lambda: images.astype(edit_roi_dtype(images.dtype), copy=False),
+                images,
+                lambda: edit_reference(ImageData(split_image_paths), output_dir),
                 output_dir,
             ),
             cell_ims,
