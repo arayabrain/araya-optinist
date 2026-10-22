@@ -54,92 +54,86 @@ nodeDict:
     data:
       label: suite2p_registration
       param:
-        I/O:
+        torch_device:
+          type: child
+          value: cpu
+          path: torch_device
+        run:
           type: parent
           children:
-            nplanes:
+            do_regmetrics:
               type: child
-              value: 1
-              path: I/O/nplanes
-            nchannels:
-              type: child
-              value: 1
-              path: I/O/nchannels
-            functional_chan:
-              type: child
-              value: 1
-              path: I/O/functional_chan
-            frames_include:
-              type: child
-              value: -1
-              path: I/O/frames_include
-        Registration:
+              value: false
+              path: run/do_regmetrics
+        registration:
           type: parent
           children:
+            batch_size:
+              type: child
+              value: 100
+              path: registration/batch_size
+            nimg_init:
+              type: child
+              value: 400
+              path: registration/nimg_init
             smooth_sigma:
               type: child
               value: 1.15
-              path: Registration/smooth_sigma
+              path: registration/smooth_sigma
             smooth_sigma_time:
               type: child
               value: 0
-              path: Registration/smooth_sigma_time
+              path: registration/smooth_sigma_time
             maxregshift:
               type: child
               value: 0.1
-              path: Registration/maxregshift
-            align_by_chan:
+              path: registration/maxregshift
+            th_badframes:
               type: child
-              value: 1
-              path: Registration/align_by_chan
+              value: 1.0
+              path: registration/th_badframes
+            norm_frames:
+              type: child
+              value: true
+              path: registration/norm_frames
+            subpixel:
+              type: child
+              value: 10
+              path: registration/subpixel
+            spatial_taper:
+              type: child
+              value: 3.45
+              path: registration/spatial_taper
+            do_bidiphase:
+              type: child
+              value: false
+              path: registration/do_bidiphase
+            bidiphase:
+              type: child
+              value: 0
+              path: registration/bidiphase
             reg_tif:
               type: child
               value: false
-              path: Registration/reg_tif
-            th_badframes:
-              type: child
-              value: 1
-              path: Registration/th_badframes
-        1P setting:
-          type: parent
-          children:
-            1Preg:
-              type: child
-              value: false
-              path: 1P setting/1Preg
-            spatial_hp_reg:
-              type: child
-              value: 42
-              path: 1P setting/spatial_hp_reg
-            pre_smooth:
-              type: child
-              value: 0
-              path: 1P setting/pre_smooth
-            spatial_taper:
-              type: child
-              value: 40
-              path: 1P setting/spatial_taper
-        Non-Rigid:
-          type: parent
-          children:
+              path: registration/reg_tif
             nonrigid:
               type: child
               value: true
-              path: Non-Rigid/nonrigid
+              path: registration/nonrigid
             block_size:
               type: child
               value:
               - 128
               - 128
-              path: Non-Rigid/block_size
+              path: registration/block_size
             snr_thresh:
               type: child
               value: 1.2
-              path: Non-Rigid/snr_thresh
+              path: registration/snr_thresh
             maxregshiftNR:
               type: child
               value: 5
-              path: Non-Rigid/maxregshiftNR
+              path: registration/maxregshiftNR
       path: suite2p/suite2p_registration
       type: algorithm
       fileType: null

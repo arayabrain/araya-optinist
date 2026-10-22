@@ -101,19 +101,23 @@ def test_lccd_passes_fluo_as_is(images, output_dir, lccd_stub):
 def test_spike_deconv_passes_fluo_as_is(output_dir, monkeypatch):
     F = np.random.default_rng(1).random((N_ROI, N_TIME))
     fake = types.ModuleType("suite2p")
-    fake.default_ops = lambda: {
-        "neucoeff": 0.0,
-        "baseline": "maximin",
-        "win_baseline": 60.0,
-        "sig_baseline": 10.0,
-        "prctile_baseline": 8.0,
-        "batch_size": 500,
+    fake.default_settings = lambda: {
         "tau": 1.0,
+        "extraction": {"neuropil_coefficient": 0.0, "batch_size": 500},
+        "dcnv_preprocess": {
+            "baseline": "maximin",
+            "win_baseline": 60.0,
+            "sig_baseline": 10.0,
+            "prctile_baseline": 8.0,
+        },
     }
     fake.extraction = types.SimpleNamespace(
         preprocess=lambda F, **kw: F, oasis=lambda F, **kw: F
     )
     monkeypatch.setitem(sys.modules, "suite2p", fake)
+    monkeypatch.setitem(
+        sys.modules, "torch", types.SimpleNamespace(device=lambda name: name)
+    )
 
     ops = Suite2pData({"F": F, "Fneu": np.zeros_like(F), "fs": 30.0, "stat": []})
     info = suite2p_spike_deconv(ops, output_dir, params={})
