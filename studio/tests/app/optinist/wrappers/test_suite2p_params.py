@@ -118,22 +118,22 @@ def test_a_pre_upgrade_tree_sharing_no_key_with_the_yaml_is_refused(node, tree):
         get_typecheck_params(_form(tree), node)
 
 
-@pytest.mark.parametrize(
-    "tree, kept, dropped",
-    [
-        (OLD_ROI, {"tau": 1.0, "classification": {}}, "cell_detection"),
-        (OLD_ROI_FLAT, {"tau": 1.0}, "high_pass"),
-    ],
-)
-def test_a_pre_upgrade_roi_tree_is_reduced_to_the_keys_it_shares(
-    caplog, tree, kept, dropped
-):
-    # tau (and classification) overlap the 1.1.0 yaml, so the type check drops
-    # the rest instead of refusing; the roi wrapper refuses what is left
+def test_a_pre_upgrade_roi_tree_is_refused_by_its_old_groups():
+    # tau and classification overlap the 1.1.0 yaml, but the 0.10.3 groups mark
+    # the tree as an older layout, refused before the yaml's keys are added
+    with pytest.raises(
+        KeyError, match="'1P', 'Output', 'ROI_extraction', 'cell_detection'"
+    ):
+        get_typecheck_params(_form(OLD_ROI), "suite2p_roi")
+
+
+def test_a_flat_v1_roi_tree_keeps_tau_and_takes_the_rest_from_the_yaml(caplog):
+    # without a group it cannot be told from a tree saved before the yaml gained
+    # its groups, so the type check drops the old keys and fills the 1.1.0 ones
     with caplog.at_level(logging.WARNING):
-        params = get_typecheck_params(_form(tree), "suite2p_roi")
-    assert params == kept
-    assert f"Dropping saved param '{dropped}'" in caplog.text
+        params = get_typecheck_params(_form(OLD_ROI_FLAT), "suite2p_roi")
+    assert params == {**read_default_params("suite2p_roi"), "tau": 1.0}
+    assert "Dropping saved param 'high_pass'" in caplog.text
 
 
 def test_none_params_leave_the_defaults_alone():

@@ -72,10 +72,17 @@ class WorkflowRunner:
         self.edgeDict = self.runItem.edgeDict
         self.logger = AppLogger.get_logger()
 
-        # A stale parameter tree is refused before any record is written
+        # A stale parameter tree is refused before any record is written. A node
+        # the check adds keys to is run again: outputs it already has lack them
+        self.params_added: List[ForceRun] = []
         for node in self.nodeDict.values():
             if NodeTypeUtil.check_nodetype(node.type) == NodeType.ALGO:
-                get_typecheck_params(node.data.param, node.data.label)
+                added: List[str] = []
+                get_typecheck_params(node.data.param, node.data.label, added)
+                if added:
+                    self.params_added.append(
+                        ForceRun(nodeId=node.id, name=node.data.label)
+                    )
 
         # Extract timezone from nwbParam before validation (not in default params).
         # Passed from browser in ParamChild format: {type: "child", value: "..."}
@@ -286,7 +293,10 @@ class WorkflowRunner:
                 self.runItem.snakemakeParam, "snakemake"
             )
             snakemake_params = SmkParamReader.read(snakemake_params)
-            snakemake_params.forcerun = self.runItem.forceRunList
+            forced = {p.nodeId for p in self.runItem.forceRunList}
+            snakemake_params.forcerun = self.runItem.forceRunList + [
+                p for p in self.params_added if p.nodeId not in forced
+            ]
 
             # delete dependencies for nodes
             if len(snakemake_params.forcerun) > 0:

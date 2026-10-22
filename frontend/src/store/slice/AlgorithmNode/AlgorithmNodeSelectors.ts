@@ -50,9 +50,11 @@ export const selectAlgorithmIsUpdated =
   (nodeId: string) => (state: RootState) => {
     const isUpdate = selectAlgorithmNodeById(nodeId)(state).isUpdate
     const originalValue = selectAlgorithmNodeById(nodeId)(state).originalValue
+    const paramsAdded = selectAlgorithmNodeById(nodeId)(state).paramsAdded
     const param = selectAlgorithmParams(nodeId)(state)
     return (
-      !(JSON.stringify(originalValue) === JSON.stringify(param)) && isUpdate
+      !!paramsAdded ||
+      (!(JSON.stringify(originalValue) === JSON.stringify(param)) && isUpdate)
     )
   }
 

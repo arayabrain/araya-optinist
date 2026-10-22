@@ -45,11 +45,29 @@ def test_retired_nested_key_dropped_from_full_saved_tree():
     assert params["merge_params"] == read_default_params("caiman_cnmf")["merge_params"]
 
 
-def test_missing_params_are_not_filled_with_defaults():
+def test_missing_scalar_is_filled_with_its_default(caplog):
     saved = _to_message(read_default_params("caiman_mc"))
     del saved["niter_rig"]
+    saved["border_nan"] = _child("min")
     params = get_typecheck_params(saved, "caiman_mc")
-    assert "niter_rig" not in params
+    assert params["niter_rig"] == read_default_params("caiman_mc")["niter_rig"]
+    assert params["border_nan"] == "min"
+    assert "Adding param 'niter_rig' for [caiman_mc]" in caplog.text
+
+
+def test_missing_nested_key_is_filled_with_its_default(caplog):
+    saved = _to_message(read_default_params("caiman_cnmf"))
+    del saved["merge_params"]["children"]["merge_thr"]
+    params = get_typecheck_params(saved, "caiman_cnmf")
+    assert params["merge_params"] == read_default_params("caiman_cnmf")["merge_params"]
+    assert "Adding param 'merge_params/merge_thr' for [caiman_cnmf]" in caplog.text
+
+
+def test_complete_saved_tree_adds_nothing(caplog):
+    saved = _to_message(read_default_params("caiman_mc"))
+    params = get_typecheck_params(saved, "caiman_mc")
+    assert params == read_default_params("caiman_mc")
+    assert "Adding param" not in caplog.text
 
 
 def test_v1_flat_tree_with_partial_overlap_still_raises():
@@ -97,7 +115,7 @@ def test_retired_key_dropped_when_a_newer_group_is_missing():
     saved["retired_key"] = _child(False)
     params = get_typecheck_params(saved, "caiman_mc")
     assert "retired_key" not in params
-    assert "advanced" not in params
+    assert params["advanced"] == read_default_params("caiman_mc")["advanced"]
 
 
 def test_retired_key_dropped_when_a_newer_scalar_is_missing():
@@ -106,26 +124,30 @@ def test_retired_key_dropped_when_a_newer_scalar_is_missing():
     saved["retired_key"] = _child(False)
     params = get_typecheck_params(saved, "caiman_mc")
     assert "retired_key" not in params
+    assert params["niter_rig"] == read_default_params("caiman_mc")["niter_rig"]
 
 
-def test_missing_group_without_unknown_keys_passes():
+def test_missing_group_is_filled_with_its_defaults(caplog):
     saved = _to_message(read_default_params("caiman_mc"))
     del saved["advanced"]
     params = get_typecheck_params(saved, "caiman_mc")
-    assert "advanced" not in params
-    assert params["niter_rig"] == read_default_params("caiman_mc")["niter_rig"]
+    assert params == read_default_params("caiman_mc")
+    assert "Adding param 'advanced' for [caiman_mc]" in caplog.text
 
 
 @pytest.mark.parametrize(
     "name,group,key",
     [("caiman_mc", None, "gSig_filt"), ("caiman_cnmf", "data_params", "decay_time")],
 )
-def test_a_key_saved_with_another_shape_is_dropped(name, group, key):
+def test_a_key_saved_with_another_shape_is_reset_to_its_default(name, group, key):
     saved = _to_message(read_default_params(name))
     target = saved[group]["children"] if group else saved
     target[key] = {"type": "parent", "children": {}}
     params = get_typecheck_params(saved, name)
-    assert key not in (params[group] if group else params)
+    defaults = read_default_params(name)
+    if group:
+        params, defaults = params[group], defaults[group]
+    assert params[key] == defaults[key]
 
 
 def test_no_yaml_returns_the_saved_params_unchecked():
@@ -146,3 +168,16 @@ def test_flat_key_that_now_lives_two_groups_deep_raises(monkeypatch):
     )
     with pytest.raises(KeyError, match="unknown parameters 'deep'"):
         get_typecheck_params({"a": _child(1), "deep": _child(3)}, "x")
+
+
+def test_a_group_the_yaml_no_longer_has_raises_before_any_fill(monkeypatch):
+    # a retired group marks another layout: its settings do not carry over, so
+    # the tree is refused rather than run on the defaults
+    monkeypatch.setattr(
+        workflow_params,
+        "read_default_params",
+        lambda name: {"a": 1, "g": {"b": 2}},
+    )
+    saved = {"a": _child(1), "old": {"type": "parent", "children": {"c": _child(3)}}}
+    with pytest.raises(KeyError, match="unknown parameters 'old'"):
+        get_typecheck_params(saved, "x")
