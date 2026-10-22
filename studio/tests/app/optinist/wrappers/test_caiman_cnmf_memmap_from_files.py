@@ -61,7 +61,15 @@ VOLUME = {"frame_shape": (3, 9, 7), "compression": "zlib"}  # pages are planes
         [("volume.tif", 5, np.uint16, VOLUME)],  # read in full
     ],
 )
-def test_same_memmap_as_reading_the_whole_movie(tmp_path, files):
+@pytest.mark.parametrize(
+    "block_bytes", [256 << 20, 1], ids=["mapped whole", "mapped a column at a time"]
+)
+def test_same_memmap_as_reading_the_whole_movie(
+    tmp_path, monkeypatch, files, block_bytes
+):
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    monkeypatch.setattr(cnmf, "FILL_BLOCK_BYTES", block_bytes)
     paths = [write(tmp_path / name, n, dt, **kw) for name, n, dt, kw in files]
     old_dir, new_dir = tmp_path / "old", tmp_path / "new"
     old_dir.mkdir()
@@ -127,26 +135,47 @@ def test_a_compressed_stack_is_never_read_whole(tmp_path, monkeypatch):
     np.testing.assert_array_equal(images, tifffile.imread(path))
 
 
-def test_a_failed_fill_leaves_no_memmap_and_keeps_its_error(tmp_path, monkeypatch):
-    path = write(tmp_path / "a.tif", 9, np.uint16)
-    mapped = tifffile.memmap
+def test_a_mapped_file_over_the_block_is_assigned_a_block_of_columns_at_a_time(
+    tmp_path,
+):
+    # assigned whole, it would be read once per image column, so it would have
+    # to fit the page cache; a block copied out reads it once per block
+    from studio.app.optinist.wrappers.caiman import cnmf
 
-    class FailsAfterOneBatch:
-        def __init__(self, source):
-            self.source, self.reads = source, 0
+    source = tifffile.memmap(write(tmp_path / "m.tif", 23, np.uint16), mode="r")
+    target = np.zeros(source.shape, np.float32)
+    assigned = []
 
-        def __len__(self):
-            return len(self.source)
+    class Recorder:
+        def __setitem__(self, key, value):
+            assigned.append((key[-1], type(value)))
+            target[key] = value
 
-        def __getitem__(self, key):
-            self.reads += 1
-            if self.reads > 1:
-                raise OSError("read error")
-            return self.source[key]
+    cnmf.assign_by_columns(Recorder(), source, block_bytes=3 * 23 * 9 * 2)
 
-    monkeypatch.setattr(
-        tifffile, "memmap", lambda *a, **k: FailsAfterOneBatch(mapped(*a, **k))
-    )
+    assert [key for key, _ in assigned] == [slice(0, 3), slice(3, 6), slice(6, 9)]
+    assert all(kind is np.ndarray for _, kind in assigned)  # copies, not the view
+    np.testing.assert_array_equal(target, source)
+
+
+@pytest.mark.parametrize("kwargs", [{}, ZLIB], ids=["mapped", "decoded"])
+def test_a_failed_fill_leaves_no_memmap_and_keeps_its_error(
+    tmp_path, monkeypatch, kwargs
+):
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    path = write(tmp_path / "a.tif", 9, np.uint16, **kwargs)
+
+    def fails_after_one_batch(path, frames, batch_size):
+        yield tifffile.imread(path)[:4]
+        raise OSError("read error")
+
+    def fails_after_one_column(target, source, block_bytes=None):
+        target[..., :1] = source[..., :1]
+        raise OSError("read error")
+
+    monkeypatch.setattr(cnmf, "iter_frame_batches", fails_after_one_batch)
+    monkeypatch.setattr(cnmf, "assign_by_columns", fails_after_one_column)
     out = tmp_path / "out"
     out.mkdir()
     with pytest.raises(OSError, match="read error"):

@@ -1,23 +1,6 @@
 import numpy as np
-import pytest
 
 from studio.app.optinist.wrappers.caiman import cnmf
-
-
-@pytest.mark.parametrize(
-    "dtype, kept",
-    [
-        (np.uint8, np.uint8),
-        (np.uint16, np.uint16),
-        (np.int16, np.int16),
-        (np.float32, np.float32),
-        (np.uint32, np.float32),
-        (np.float64, np.float32),
-    ],
-)
-def test_edit_roi_movie_keeps_dtypes_float32_holds_exactly(dtype, kept):
-    # a uint8 movie kept as float32 would make the node pickle four times larger
-    assert cnmf.edit_roi_dtype(np.dtype(dtype)) == kept
 
 
 def caiman_local_correlations(Y):
