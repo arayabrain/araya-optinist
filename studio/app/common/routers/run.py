@@ -220,6 +220,8 @@ async def run_id(
                 status_code=status.HTTP_423_LOCKED,
                 detail="The previous run's results are still being saved.",
             )
+        # The build below is awaited; do not hold the guards' connection across it
+        release_request_session(db)
         try:
             # A same-second rerun waits out the second for a new generation
             build = asyncio.ensure_future(
@@ -235,8 +237,10 @@ async def run_id(
             try:
                 runner = await await_despite_cancel(build)
             except asyncio.CancelledError:
-                # The built runner counted a workflow that will never be scheduled
+                # The built runner reset the config and counted a workflow that
+                # will never be scheduled, so no child replaces the old pickles
                 if build.exception() is None:
+                    workflow_result.mark_plan_pending()
                     await await_despite_cancel(
                         asyncio.ensure_future(
                             asyncio.to_thread(decrement_workflow_count, user_id)
@@ -244,14 +248,14 @@ async def run_id(
                     )
                 raise
 
+            # The config is reset, so its old pickles wait for the child's plan
+            workflow_result.mark_plan_pending()
+
             # Download any remote-only input files before workflow runs
             if RemoteStorageController.is_available():
                 await runner.ensure_input_data_local()
 
             runner.run_workflow(background_tasks)
-
-            # Last, so a failed start leaves no gate; the child starts after this
-            workflow_result.mark_plan_pending()
         finally:
             observe_lock.release()
 

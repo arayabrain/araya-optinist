@@ -548,12 +548,46 @@ async def test_a_rerun_resets_the_config_off_the_event_loop(previous_run):
     assert threads and threading.get_ident() not in threads
 
 
-def test_a_failed_start_leaves_no_gate(previous_run):
-    with patch.object(WorkflowRunner, "run_workflow", side_effect=RuntimeError):
+def test_a_start_refused_before_the_reset_leaves_no_gate(previous_run):
+    with patch.object(ExptConfigWriter, "write", side_effect=RuntimeError):
         with pytest.raises(Exception):
             asyncio.run(rerun())
 
     assert not os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
+
+
+def test_a_start_that_fails_after_the_reset_keeps_the_gate(previous_run):
+    generation = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+    with patch.object(WorkflowRunner, "run_workflow", side_effect=RuntimeError):
+        with pytest.raises(Exception):
+            asyncio.run(rerun())
+
+    assert ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at != generation
+    assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_cancelled_after_the_reset_keeps_the_gate(previous_run):
+    generation = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+    started, release = threading.Event(), threading.Event()
+    init = WorkflowRunner.__init__
+
+    def slow_init(self, *args):
+        started.set()
+        release.wait(10)
+        init(self, *args)
+
+    with patch.object(WorkflowRunner, "__init__", slow_init):
+        request = asyncio.ensure_future(rerun())
+        await asyncio.to_thread(started.wait, 10)
+        request.cancel()
+        await asyncio.sleep(0.1)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+
+    assert ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at != generation
+    assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
 
 
 def test_invalidation_resolves_outputs_against_the_workflow_dir(previous_run):
