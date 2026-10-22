@@ -237,7 +237,11 @@ async def run_id(
             except asyncio.CancelledError:
                 # The built runner counted a workflow that will never be scheduled
                 if build.exception() is None:
-                    decrement_workflow_count(user_id)
+                    await await_despite_cancel(
+                        asyncio.ensure_future(
+                            asyncio.to_thread(decrement_workflow_count, user_id)
+                        )
+                    )
                 raise
 
             # Download any remote-only input files before workflow runs
