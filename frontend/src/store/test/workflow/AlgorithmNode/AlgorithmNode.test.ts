@@ -18,7 +18,10 @@ import {
 import { deleteFlowNodeById } from "store/slice/FlowElement/FlowElementSlice"
 import { NODE_TYPE_SET } from "store/slice/FlowElement/FlowElementType"
 import { runByCurrentUid } from "store/slice/Pipeline/PipelineActions"
+import { selectRunPostData } from "store/slice/Run/RunSelectors"
+import { importWorkflowConfig } from "store/slice/Workflow/WorkflowActions"
 import { store, rootReducer } from "store/store"
+import { convertToParamMap } from "utils/param/ParamUtils"
 
 describe("AlgorithmNode", () => {
   const initialRootState = store.getState()
@@ -164,5 +167,82 @@ describe("AlgorithmNode", () => {
       markDownstreamStale({ nodeId }),
     )
     expect(selectAlgorithmNodeById(nodeId)(unknown)).toBeUndefined()
+  })
+
+  // Loading a workflow whose nodes were reconciled against the current yaml
+  test(importWorkflowConfig.fulfilled.type, () => {
+    const algoNode = (id: string, param: Record<string, unknown>) => ({
+      id,
+      type: nodeType,
+      position: { x: 0, y: 0 },
+      data: {
+        label,
+        type: nodeDataType,
+        path: functionPath,
+        param: convertToParamMap(param),
+      },
+    })
+    const loaded = rootReducer(initialRootState, {
+      type: importWorkflowConfig.fulfilled.type,
+      payload: {
+        nodeDict: {
+          gained: algoNode("gained", { a: 1, g: { b: 2, c: 3 } }),
+          dropped: algoNode("dropped", { a: 1 }),
+        },
+        edgeDict: {},
+        paramChanges: [
+          { nodeId: "gained", name: label, added: ["g/c"], removed: [] },
+          { nodeId: "dropped", name: label, added: [], removed: ["old"] },
+        ],
+      },
+    })
+
+    // gained keys: the last run had none of them, so a re-run runs it again
+    expect(selectAlgorithmIsUpdated("gained")(loaded)).toBe(true)
+    // dropped keys only: the backend ignored them, so the last run still holds
+    expect(selectAlgorithmIsUpdated("dropped")(loaded)).toBe(false)
+    expect(selectRunPostData(loaded).forceRunList).toEqual([
+      { nodeId: "gained", name: label },
+    ])
+    // descendants get the downstream highlight, as for an edited parameter
+    const withChild = (state: ReturnType<typeof rootReducer>) => ({
+      ...state,
+      flowElement: {
+        ...state.flowElement,
+        flowEdges: [{ id: "e", source: "gained", target: "child" }],
+      },
+    })
+    expect(isParentNodeUpdatedParams("child")(withChild(loaded))).toBe(true)
+
+    // an edit that is set back leaves the mark: the last run still lacks the keys
+    const edit = (value: number) =>
+      updateParam({
+        nodeId: "gained",
+        path: "a",
+        newValue: value,
+        initValue: 1,
+      })
+    const editedBack = rootReducer(rootReducer(loaded, edit(2)), edit(1))
+    expect(selectAlgorithmIsUpdated("gained")(editedBack)).toBe(true)
+    expect(selectRunPostData(editedBack).forceRunList).toEqual([
+      { nodeId: "gained", name: label },
+    ])
+
+    // a run clears it
+    const ran = rootReducer(editedBack, {
+      type: runByCurrentUid.fulfilled.type,
+      meta: {
+        arg: {
+          runPostData: {
+            nodeDict: {
+              gained: { id: "gained", data: { type: nodeDataType, label } },
+              dropped: { id: "dropped", data: { type: nodeDataType, label } },
+            },
+          },
+        },
+      },
+    })
+    expect(selectAlgorithmIsUpdated("gained")(ran)).toBe(false)
+    expect(isParentNodeUpdatedParams("child")(withChild(ran))).toBe(false)
   })
 })
