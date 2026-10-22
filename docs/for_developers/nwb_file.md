@@ -15,6 +15,8 @@
 - `FluoData` / `SpikingActivityData` in memory: `(roi, time)`, matching Suite2p `F` and CaImAn `C`.
 - `Fluorescence` / `RoiResponseSeries` written to NWB: `(time, roi)`, the NWB convention. Writers pass the `(roi, time)` array as is; `NWBCreater.fluorescence` transposes the axis whose length matches the `rois` region, so configs replayed from older pickles land in the same orientation. `fluo_from_hdf5` transposes back on load.
 - `ImageData`: `(time, y, x)`.
+- ROI tables (`PlaneSegmentation`): one `pixel_mask` row per pixel of each ROI, `(row, column, weight)`, for every ROI node. pynwb names these columns `x`, `y`, `weight`: `x` is the image's first axis (the row), as in the `(roi, row, column)` `image_mask` arrays that files written before held for CaImAn, LCCD and vacant ROI.
+- `<node>_all_roi_img`: the all-ROI label image, `(1, row, column)`: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held one layer per ROI, `(roi, row, column)`.
 
 ## Suite2p
 
