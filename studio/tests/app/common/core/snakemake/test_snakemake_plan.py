@@ -1,6 +1,7 @@
 """A rerun deletes the pickles snakemake plans to replace before any poll reads
 them, so a snakemake upgrade must keep its dry run naming them."""
 
+import logging
 import os
 import pickle
 import shutil
@@ -8,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+from snakemake.logging import logger_manager
 
 from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.snakemake.snakemake_executor import planned_outputs
@@ -64,3 +66,23 @@ def test_the_dry_run_names_the_pickles_an_input_change_replaces(workflow):
     result.invalidate_planned_outputs(planned)
     assert not any((workdir / output).exists() for output in OUTPUTS)
     assert not os.path.exists(result.plan_pending_path)
+
+
+def test_the_dry_run_leaves_snakemakes_logger_to_the_real_run(workflow, monkeypatch):
+    workdir, tif = workflow
+    os.utime(tif, None)
+    monkeypatch.setattr(logger_manager, "initialized", False)
+    smk_logger = logging.getLogger("snakemake.logging")
+    monkeypatch.setattr(smk_logger, "level", logging.DEBUG)
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    smk_logger.addHandler(handler)
+    try:
+        assert planned_outputs(str(workdir), PARAMS)
+    finally:
+        smk_logger.removeHandler(handler)
+
+    assert logger_manager.initialized is False
+    assert not smk_logger.disabled
+    assert records == []  # the plan is not printed

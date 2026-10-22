@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -14,7 +15,6 @@ from snakemake.api import (
     SnakemakeApi,
     StorageSettings,
 )
-from snakemake.settings.enums import Quietness
 
 from studio.app.common.core.cloud.storage_tracking import (
     update_user_storage_after_workflow,
@@ -304,10 +304,16 @@ def _dag(snakemake_api: SnakemakeApi, smk_workdir: str, params: SmkParam):
 def planned_outputs(smk_workdir: str, params: SmkParam) -> List[str]:
     """The outputs of every job a run with these params would execute"""
     planned = []
-    with SnakemakeApi(OutputSettings(quiet={Quietness.ALL})) as snakemake_api:
-        _dag(snakemake_api, smk_workdir, params).execute_workflow(
-            executor="dryrun", updated_files=planned
-        )
+    # snakemake sets its process-wide logger up once, so it is left to the real run
+    smk_logger = logging.getLogger("snakemake.logging")
+    was_disabled, smk_logger.disabled = smk_logger.disabled, True
+    try:
+        with SnakemakeApi(OutputSettings(keep_logger=True)) as snakemake_api:
+            _dag(snakemake_api, smk_workdir, params).execute_workflow(
+                executor="dryrun", updated_files=planned
+            )
+    finally:
+        smk_logger.disabled = was_disabled
     return [str(f) for f in planned]
 
 
