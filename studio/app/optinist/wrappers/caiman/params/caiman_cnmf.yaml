@@ -14,7 +14,7 @@ init_params:
   use_online: False  # If True, use CNMF Online instead of CNMF.
   do_refit: False
 
-  K: 10
+  K: 10  # components for the whole field of view when rf is null, else per patch
   gSig: [4, 4]
   ssub: 2
   tsub: 1
@@ -27,7 +27,7 @@ preprocess_params:
   p: 2
 
 patch_params:
-  rf: null
+  rf: null  # null: whole field of view at once; memory grows with pixels x frames
   stride: 6
 
 merge_params:
