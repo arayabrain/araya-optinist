@@ -11,7 +11,7 @@ data_params:
 
 init_params:
   # Ain: null  # TBD: need to support 2D array type.
-  K: 4
+  K: 4  # components for each session's whole field of view when rf is null, else per patch
   gSig: [4, 4]
   ssub: 1
   tsub: 1
@@ -24,7 +24,7 @@ preprocess_params:
   p: 1
 
 patch_params:
-  rf: null
+  rf: null  # null: whole field of view at once; memory grows with pixels x frames
   stride: 6
 
 merge_params:

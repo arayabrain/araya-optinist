@@ -361,7 +361,7 @@ def run_multisession(monkeypatch, tmp_path):
         return None, np.zeros((1, len(A))), None
 
     modules = {
-        "caiman": types.SimpleNamespace(load=lambda _: np.zeros((FRAMES, *MASK_DIMS))),
+        "caiman": types.ModuleType("caiman"),
         "caiman.base": types.ModuleType("caiman.base"),
         "caiman.base.rois": types.SimpleNamespace(
             register_multisession=register_multisession
@@ -382,19 +382,17 @@ def run_multisession(monkeypatch, tmp_path):
     stubs = {
         "util_download_model_files": lambda: None,
         "caiman_cluster": lambda _: contextlib.nullcontext((None, 1)),
-        "imageio": types.SimpleNamespace(volread=lambda _: None),
-        "util_get_image_memmap": lambda *_: (None, None, "m.mmap"),
+        "util_get_image_memmap_from_files": lambda *_: (None, None, "m.mmap"),
+        "session_template": lambda _: np.zeros(MASK_DIMS),
+        "FrameStack": lambda _: None,
         "util_edit_roi_movie": lambda *_: None,
         "util_cleanup_image_memmap": lambda _: None,
-        "correlation_image": lambda _: np.zeros(MASK_DIMS),
+        "correlation_image": lambda _: (np.zeros(MASK_DIMS), np.zeros(MASK_DIMS)),
         "get_roi": lambda A, *_: [np.ones(MASK_DIMS)] * A.shape[1],
     }
     for name, stub in stubs.items():
         monkeypatch.setattr(cnmf_multisession, name, stub)
-    images = types.SimpleNamespace(
-        split_image=lambda *_, **__: ["s0.tif", "s1.tif"],
-        data=np.zeros((2 * FRAMES, *MASK_DIMS)),
-    )
+    images = types.SimpleNamespace(split_image=lambda *_, **__: ["s0.tif", "s1.tif"])
 
     def run(params):
         info = cnmf_multisession.caiman_cnmf_multisession(
