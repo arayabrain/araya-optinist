@@ -119,6 +119,14 @@ describe("hasOutdatedShape", () => {
     expect(hasOutdatedShape(saved, defaults)).toBe(false)
   })
 
+  it("is true for a group the defaults no longer have", () => {
+    const saved = convertToParamMap({
+      border_nan: "copy",
+      cell_detection: { high_pass: 100 },
+    })
+    expect(hasOutdatedShape(saved, defaults)).toBe(true)
+  })
+
   it("is true for a flat key that now lives inside a default group (v1 layout)", () => {
     const saved = convertToParamMap({ border_nan: "copy", merge_thr: 0.9 })
     expect(hasOutdatedShape(saved, defaults)).toBe(true)

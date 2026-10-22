@@ -168,3 +168,16 @@ def test_flat_key_that_now_lives_two_groups_deep_raises(monkeypatch):
     )
     with pytest.raises(KeyError, match="unknown parameters 'deep'"):
         get_typecheck_params({"a": _child(1), "deep": _child(3)}, "x")
+
+
+def test_a_group_the_yaml_no_longer_has_raises_before_any_fill(monkeypatch):
+    # a retired group marks another layout: its settings do not carry over, so
+    # the tree is refused rather than run on the defaults
+    monkeypatch.setattr(
+        workflow_params,
+        "read_default_params",
+        lambda name: {"a": 1, "g": {"b": 2}},
+    )
+    saved = {"a": _child(1), "old": {"type": "parent", "children": {"c": _child(3)}}}
+    with pytest.raises(KeyError, match="unknown parameters 'old'"):
+        get_typecheck_params(saved, "x")

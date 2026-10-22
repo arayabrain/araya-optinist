@@ -156,13 +156,18 @@ export function formatParamsForDisplay(
   return formatted
 }
 
+// Mirrors the backend's has_outdated_shape: such a tree is left for the
+// backend to refuse, not filled with defaults
 export function hasOutdatedShape(saved: ParamMap, defaults: ParamMap): boolean {
   const savedKeys = Object.keys(saved)
   const unknown = savedKeys.filter((key) => !(key in defaults))
   if (unknown.length === 0) return false
   const noOverlap = unknown.length === savedKeys.length
   const nested = new Set(nestedKeys(defaults))
-  return noOverlap || unknown.some((key) => nested.has(key))
+  return (
+    noOverlap ||
+    unknown.some((key) => isParamParent(saved[key]) || nested.has(key))
+  )
 }
 
 function nestedKeys(map: ParamMap): string[] {

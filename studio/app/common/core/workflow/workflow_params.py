@@ -41,9 +41,11 @@ def get_typecheck_params(message_params, name):
 def has_outdated_shape(params, default_params):
     """
     True when the saved tree looks like it was written against a different
-    yaml layout (e.g. OptiNiSt v1): it has unknown top-level keys and either
-    shares no key with the defaults or has a key that today lives inside one
-    of the default groups (v2 nested the flat v1 keys into groups).
+    yaml layout (e.g. OptiNiSt v1, suite2p before 1.1.0): it has unknown
+    top-level keys and either shares no key with the defaults, has a key that
+    today lives inside one of the default groups (v2 nested the flat v1 keys
+    into groups), or has a whole group the defaults no longer have. Such a
+    tree is refused rather than filled with defaults.
     """
     if not params:
         return False
@@ -51,7 +53,8 @@ def has_outdated_shape(params, default_params):
     if not unknown:
         return False
     no_overlap = len(unknown) == len(params)
-    return no_overlap or bool(unknown & _nested_keys(default_params))
+    retired_group = any(isinstance(params[key], dict) for key in unknown)
+    return no_overlap or retired_group or bool(unknown & _nested_keys(default_params))
 
 
 def _nested_keys(default_params) -> set:
