@@ -250,7 +250,7 @@ def test_experiment_copy_keeps_the_reference_working(tmp_path, lccd_stub):
     writer._ExptDataWriter__copy_data_update_pickle(pickle_path, "aaaa1111", "bbbb2222")
     shutil.rmtree(old_exp)  # the copy must not depend on the source
 
-    for name in ["lccd.pkl", "lccd.pkl.orig"]:  # the copy does not rewrite .orig
+    for name in ["lccd.pkl", "lccd.pkl.orig"]:  # .orig left as is: relative either way
         with open(new_exp / "lccd_x" / name, "rb") as f:
             copied = pickle.load(f)["edit_roi_data"].images
         opened = open_edit_images(copied, str(new_exp / "lccd_x"))
