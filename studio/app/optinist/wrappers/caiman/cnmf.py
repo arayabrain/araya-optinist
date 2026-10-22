@@ -17,7 +17,7 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import CANNOT_MAP, iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import edit_reference
+from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -690,7 +690,8 @@ def caiman_cnmf(
             file_name="non_cell_roi",
         ),
         "edit_roi_data": EditRoiData(
-            util_edit_roi_movie(images_ref, mmap_images, output_dir), im
+            util_edit_roi_movie(images_ref, mmap_images, output_dir),
+            RoiMasks.from_stack(im),
         ),
         "nwbfile": nwbfile,
     }

@@ -38,7 +38,7 @@ def roi_node_output(node_type, with_dff=True):
         im[i, i, :] = i
     fluo = np.arange(3 * FRAMES, dtype=float).reshape(3, FRAMES)
     info = {
-        "edit_roi_data": EditRoiData(images=None, im=im),
+        "edit_roi_data": EditRoiData(images=None, roi_masks=im),
         "fluorescence": FluoData(fluo, file_name="fluorescence"),
         "iscell": IscellData(np.array([1, 0, 1])),
         "nwbfile": {node_type: {NWBDATASET.POSTPROCESS: {node_type: {}}}},
@@ -129,12 +129,12 @@ def ran_node_dir(monkeypatch, with_dff):
 
     output = roi_node_output("caiman_cnmf", with_dff)
     output["cell_roi"] = RoiData(
-        np.nanmax(output["edit_roi_data"].im[[0, 2]], axis=0),
+        output["edit_roi_data"].roi_masks.label_image([0, 2]),
         output_dir=node_dirpath,
         file_name="cell_roi",
     )
     output["non_cell_roi"] = RoiData(
-        np.nanmax(output["edit_roi_data"].im[[1]], axis=0),
+        output["edit_roi_data"].roi_masks.label_image([1]),
         output_dir=node_dirpath,
         file_name="non_cell_roi",
     )

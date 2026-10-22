@@ -23,7 +23,7 @@ def build_node_dir(tmp_path, iscell):
     PickleWriter.write(
         pickle_path=str(node_dirpath / "suite2p_roi.pkl"),
         info={
-            "edit_roi_data": EditRoiData(images=None, im=im),
+            "edit_roi_data": EditRoiData(images=None, roi_masks=im),
             "iscell": IscellData(np.array(iscell)),
             "fluorescence": FluoData(np.zeros((NUM_ROI, 10))),
         },

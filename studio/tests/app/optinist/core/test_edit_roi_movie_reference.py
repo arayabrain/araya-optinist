@@ -59,7 +59,7 @@ def node(request):
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
         info={
-            "edit_roi_data": EditRoiData(images=movie, im=im),
+            "edit_roi_data": EditRoiData(images=movie, roi_masks=im),
             "iscell": IscellData(np.array([CellType.ROI, CellType.ROI])),
             "fluorescence": FluoData(np.ones((2, NUM_FRAME))),
             "nwbfile": {},
