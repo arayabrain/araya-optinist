@@ -90,7 +90,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Description:** Keep union of components found in multiple sessions
 - **Input:**　 Image (Tiff), HDF5
 - **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
-- **Parameters:** Same as caiman_cnmf, but with rf None (the whole field of view, because patch mode's session registration below grows with components x pixels), tsub 1, and min_SNR 2.5, rval_thr 0.8, min_cnn_thr 0.9 under advanced. In addition:
+- **Parameters:** Those of caiman_cnmf without do_refit, use_online and the online parameters, and with rf None (the whole field of view, because patch mode's session registration below grows with components x pixels), tsub 1, and min_SNR 2.5, rval_thr 0.8, min_cnn_thr 0.9 under advanced. In addition:
   - **K**, **ssub**, **p** [default: 4, 1, 1]: as in caiman_cnmf. With rf None, K counts components for each session's whole field of view. At ssub 1 each session's fit needs about 33 bytes x pixels x the session's frames plus about 1 GB: about 14 GB per session for two sessions of 512 x 512 x 1,450 frames. In patch mode CaImAn's session registration holds both sessions' footprints as dense images, about 30 bytes x components per session x pixels: about 12 GB at 512 x 512 with rf 15, stride 6 and K 4, half that with K 2. Bound K when setting rf.
   - n_reg_files
   - reg_file_rate
