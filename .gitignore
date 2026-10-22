@@ -26,6 +26,8 @@ Pipfile.lock
 studio/test_data/*
 !studio/test_data/conda_envs/
 !studio/test_data/input/
+# the 2000-frame movie the suite2p matrix test generates from test.tif
+studio/test_data/input/1/test_x2.tif
 !studio/test_data/logs/
 !studio/test_data/output_test/
 !studio/test_data/test_workflow/
