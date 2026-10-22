@@ -136,7 +136,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
   - **registration:**
 
-    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it; results do not depend on it.
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it. The results also depend on it while it is below `nimg_init`: suite2p 1.1.0 ranks the reference candidates by the last batch only ([MouseLand/suite2p#1276](https://github.com/MouseLand/suite2p/issues/1276)), so changing the batch size changes the reference image and the registration. Keep the default unless memory requires a smaller batch.
     - **nimg_init** [int, default: 400]: How many frames to use to compute the reference image.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
     - **smooth_sigma_time** [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Must stay 0: suite2p 1.1.0's time smoothing fails inside registration for any positive value, so the node refuses it with a message.
