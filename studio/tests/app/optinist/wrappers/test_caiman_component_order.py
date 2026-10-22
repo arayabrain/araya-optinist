@@ -27,6 +27,19 @@ def labelled_masks(A, roi_thr, thr_method, swap_dim, dims):
     ]
 
 
+def layers(roi_masks):
+    """The per-ROI stack the masks stand for: i on ROI i's pixels, NaN elsewhere."""
+    return np.stack([roi_masks.label_image([i]) for i in range(len(roi_masks))])
+
+
+def image_mask(pixel_mask, dims):
+    """A (row, column, weight) pixel mask as the dense mask it replaces."""
+    mask = np.zeros(dims)
+    rows, cols = pixel_mask[:, 0].astype(int), pixel_mask[:, 1].astype(int)
+    mask[rows, cols] = pixel_mask[:, 2]
+    return mask
+
+
 def test_every_output_row_is_the_same_component(monkeypatch):
     monkeypatch.setattr(cnmf, "get_roi", labelled_masks)
     # component c occupies image row c; trace c is 10 c + t
@@ -42,7 +55,7 @@ def test_every_output_row_is_the_same_component(monkeypatch):
     idx_good, idx_bad = [2, 0], [1]  # deliberately not a prefix
 
     (
-        im,
+        roi_masks,
         iscell,
         roi_list,
         F,
@@ -64,6 +77,7 @@ def test_every_output_row_is_the_same_component(monkeypatch):
         n_frames=FRAMES,
     )
 
+    im = layers(roi_masks)
     assert len(F) == len(im) == len(roi_list) == 3
     assert list(iscell) == [1, 1, 0]
     for row, comp in enumerate(idx_good + idx_bad):
@@ -71,7 +85,9 @@ def test_every_output_row_is_the_same_component(monkeypatch):
         assert set(np.argwhere(~np.isnan(im[row]))[:, 0]) == {comp}
         assert np.nanmax(im[row]) == row
         expected_mask = A.toarray()[:, comp].reshape(DIMS, order="F")
-        assert np.array_equal(roi_list[row]["image_mask"], expected_mask)
+        assert np.array_equal(
+            image_mask(roi_list[row]["pixel_mask"], DIMS), expected_mask
+        )
     assert roi_list[0]["accepted"] and roi_list[2]["rejected"]
     assert (n_rois, n_noncell) == (2, 1)
     assert np.nanmax(non_cell_roi) == 2
@@ -109,17 +125,17 @@ def test_nwb_mask_puts_each_pixel_where_the_movie_has_it(monkeypatch):
     A = np.zeros((dims[0] * dims[1], 1))
     A[np.ravel_multi_index((1, 3), dims, order="F"), 0] = 1.0
 
-    im, _, roi_list, *_ = cnmf.component_outputs(
+    roi_masks, _, roi_list, *_ = cnmf.component_outputs(
         sp.csc_matrix(A), np.ones((1, FRAMES)), [0], [], dims, 0.9, "nrg", False
     )
 
-    assert np.argwhere(roi_list[0]["image_mask"]).tolist() == [[1, 3]]
-    assert np.argwhere(~np.isnan(im[0])).tolist() == [[1, 3]]
+    assert roi_list[0]["pixel_mask"].tolist() == [[1, 3, 1.0]]
+    assert np.argwhere(~np.isnan(layers(roi_masks)[0])).tolist() == [[1, 3]]
 
 
 def test_no_components_gives_empty_outputs_with_the_time_axis_kept():
     (
-        im,
+        roi_masks,
         iscell,
         roi_list,
         F,
@@ -131,7 +147,8 @@ def test_no_components_gives_empty_outputs_with_the_time_axis_kept():
         None, None, [], [], DIMS, 0.9, "nrg", False, n_frames=FRAMES
     )
 
-    assert im.shape == (0, *DIMS) and F.shape == (0, FRAMES)
+    assert len(roi_masks) == 0 and roi_masks.shape == DIMS
+    assert F.shape == (0, FRAMES)
     assert len(iscell) == 0 and roi_list == [] and (n_rois, n_noncell) == (0, 0)
     assert np.isnan(non_cell_roi).all()
 
@@ -143,10 +160,11 @@ def test_rejected_ids_follow_the_accepted_ones_on_a_nan_background(
     monkeypatch.setattr(cnmf, "get_roi", labelled_masks)
     A = sp.csc_matrix(np.eye(PIXELS)[:, :3])
 
-    im, _, _, _, non_cell_roi, *_ = cnmf.component_outputs(
+    roi_masks, _, _, _, non_cell_roi, *_ = cnmf.component_outputs(
         A, np.ones((3, FRAMES)), idx_good, idx_bad, DIMS, 0.9, "nrg", False
     )
 
+    im = layers(roi_masks)
     assert [np.nanmax(row) for row in im] == [0, 1, 2]
     np.testing.assert_array_equal(non_cell_roi, np.nanmax(im[len(idx_good) :], axis=0))
 
@@ -166,7 +184,7 @@ def test_get_roi_emits_an_empty_mask_for_an_empty_component():
     pytest.importorskip("skimage")
     dense = np.zeros((PIXELS, 2))
     dense[:4, 1] = 1.0  # component 0 has no pixels at all
-    ims = cnmf.get_roi(sp.csc_matrix(dense), 0.9, "nrg", False, DIMS)
+    ims = list(cnmf.get_roi(sp.csc_matrix(dense), 0.9, "nrg", False, DIMS))
 
     assert len(ims) == 2
     assert not ims[0].any() and ims[1].any()

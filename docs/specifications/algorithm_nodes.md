@@ -683,6 +683,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
 - **Output:** all_roi (RoiData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_img` is the all-ROI label image (one layer; each pixel holds the highest ROI covering it). cell_roi and non_cell_roi take the pixels whose ROI is in the group, so where a ROI of the other group lies on top, the pixel is empty. Files written by earlier releases hold one layer per ROI there, which is split by iscell as before.
 
 ###### roi_fluo_from_hdf5
 
@@ -699,6 +700,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
       - processing/ophys/suite2p_roi_UNIQUE-ID/Fluorescence/data
       - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
 - **Output:** all_roi (RoiData), fluorescence (FluoData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_img`: read as by roi_from_hdf5.
 - **Parameters:**
   - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
@@ -709,7 +711,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData
   - If using optinist nwb format:
     - cell_img:
-      - processing/ophys/ImageSegmentation/vacant_roi_UNIQUE-ID/image_mask
+      - processing/ophys/ImageSegmentation/vacant_roi_UNIQUE-ID/pixel_mask
     - fluorescence
       - processing/ophys/vacant_roi_UNIQUE-ID/Fluorescence/data
 - **Output** FluoData, IscellData

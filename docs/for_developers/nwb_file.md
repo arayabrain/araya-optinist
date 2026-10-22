@@ -15,6 +15,8 @@
 - `FluoData` / `SpikingActivityData` in memory: `(roi, time)`, matching Suite2p `F` and CaImAn `C`.
 - `Fluorescence` / `RoiResponseSeries` written to NWB: `(time, roi)`, the NWB convention. Writers pass the `(roi, time)` array as is; `NWBCreater.fluorescence` transposes the axis whose length matches the `rois` region, so configs replayed from older pickles land in the same orientation. `fluo_from_hdf5` transposes back on load.
 - `ImageData`: `(time, y, x)`.
+- ROI tables (`PlaneSegmentation`): one `pixel_mask` row per pixel of each ROI, `(row, column, weight)`, for every ROI node. pynwb names these columns `x`, `y`, `weight`: `x` is the image's first axis (the row), as in the `(roi, row, column)` `image_mask` arrays that files written before held for CaImAn, LCCD and vacant ROI.
+- `<node>_all_roi_img`: the all-ROI label image, `(1, row, column)`: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held one layer per ROI, `(roi, row, column)`.
 
 ## Suite2p
 
@@ -82,7 +84,7 @@ info = {
     'nwbfile': nwbfile,
 }
 
-`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_img` is the on-disk per-ROI mask stack (`RoiStack`).
+`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_img` is the all-ROI label image, as one (1, height, width) layer: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held one layer per ROI there.
 
 ### suite2p_spike_deconv
 
@@ -135,7 +137,7 @@ info = {
 - [ophys](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
   - [ImageSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.data_interfaces)
     - [PlaneSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation)
-      - [image_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates)
+      - [pixel_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates): (row, column, weight) of each component's non-zero pixels in `estimates.A`
       - [columns](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation): 'iscell'
         - [description]: 'two columns - iscell & probcell'
         - [data](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.cnmf.CNMF.fit)

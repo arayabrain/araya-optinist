@@ -65,19 +65,15 @@ def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
     im = np.full((NUM_ROI, *SHAPE), np.nan)
     for i in range(NUM_ROI):
         im[i, i, :] = i
-    if on_disk:  # as suite2p_roi stores it
-        stack, path = RoiStack.create(f"{node_dirpath}/roi_mask_stack.npy", im.shape)
-        stack[:] = im
-        stack.flush()
-        del stack
-        im = RoiStack.open(path)
+    data = EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=im)
+    if on_disk:  # as suite2p_roi stored it before RoiMasks: pickled as `im`
+        np.save(f"{node_dirpath}/roi_mask_stack.npy", im)
+        data.roi_masks = RoiStack.open(f"{node_dirpath}/roi_mask_stack.npy")
 
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
         info={
-            "edit_roi_data": EditRoiData(
-                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=im
-            ),
+            "edit_roi_data": data,
             "iscell": IscellData(np.array(iscell)),
             "fluorescence": FluoData(np.zeros((num_trace, NUM_FRAME))),
             "nwbfile": {},

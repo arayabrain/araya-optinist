@@ -252,6 +252,15 @@ class RoiMasks:
         return {"shape": self.shape, "indptr": self.indptr, "indices": self.indices}
 
 
+def nwb_all_roi_img(label_image: np.ndarray) -> np.ndarray:
+    """
+    The NWB all_roi_img: the all-ROI label image as one (1, H, W) layer. An HDF5
+    input reads a rank-3 dataset as ImageData, which roi_from_hdf5 takes; a 2D
+    one would read as FluoData.
+    """
+    return label_image[np.newaxis]
+
+
 class EditRoiData(BaseData):
     def __init__(self, images, roi_masks):
         """roi_masks: RoiMasks, or a per-ROI stack (n_roi x H x W) to convert."""
@@ -362,7 +371,8 @@ def _stack_path_for_pickle(path: str) -> str:
 class RoiStack(np.memmap):
     """
     A per-ROI mask stack (n_roi x Ly x Lx) kept in a .npy file next to the
-    node's outputs, rather than in memory and in the node pickle.
+    node's outputs, as suite2p_roi wrote it before RoiMasks. Nothing writes one
+    now; the class stays so that node pickles referencing one still load.
 
     It behaves as a read-only array. Pickling the whole stack stores only its
     path, so the node pickle, result polling, post-processing and ROI-edit
@@ -370,15 +380,6 @@ class RoiStack(np.memmap):
     (a slice, a fancy-indexed subset, a ufunc or reduction result) is a plain
     array as far as pickling goes, and is serialised with its data as before.
     """
-
-    @classmethod
-    def create(cls, path: str, shape: tuple, fill=np.nan, dtype=np.float64):
-        """A writable stack at `path`, filled with `fill` one layer at a time."""
-        out = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
-        for i in range(shape[0]):
-            out[i] = fill
-        out.flush()
-        return out, path
 
     @classmethod
     def open(cls, path: str):
