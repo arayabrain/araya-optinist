@@ -13,7 +13,11 @@ def read_default_params(name: str):
 FAQ_URL = "https://github.com/oist/optinist/wiki/FAQ"
 
 
-def get_typecheck_params(message_params, name):
+def get_typecheck_params(message_params, name, added=None):
+    """
+    The saved params checked against the node's default yaml. Paths of the
+    keys added from the yaml are appended to `added` when a list is given.
+    """
     default_params = read_default_params(name)
     if not isinstance(default_params, dict):
         default_params = {}
@@ -34,7 +38,7 @@ def get_typecheck_params(message_params, name):
                 f"Workflow yaml error, see FAQ: unknown parameters {unknown} for "
                 f"{name or 'this node'}; reset the node's parameters and run again"
             )
-        return check_types(params, default_params, name)
+        return check_types(params, default_params, name, added=added)
     return default_params
 
 
@@ -65,7 +69,7 @@ def _nested_keys(default_params) -> set:
     return nested
 
 
-def check_types(params, default_params, name="", prefix=""):
+def check_types(params, default_params, name="", prefix="", added=None):
     """
     Align saved params with the current default yaml: drop keys it no longer
     has, add the keys it gained with their yaml defaults, and cast types.
@@ -86,7 +90,7 @@ def check_types(params, default_params, name="", prefix=""):
             del params[key]
         elif isinstance(params[key], dict):
             params[key] = check_types(
-                params[key], default_params[key], name, f"{path}/"
+                params[key], default_params[key], name, f"{path}/", added
             )
         else:
             if not isinstance(type(params[key]), type(default_params[key])):
@@ -106,6 +110,8 @@ def check_types(params, default_params, name="", prefix=""):
                 f"params, using the current default yaml value {value!r}"
             )
             params[key] = value
+            if added is not None:
+                added.append(f"{prefix}{key}")
 
     return params
 
