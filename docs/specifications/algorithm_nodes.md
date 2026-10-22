@@ -133,11 +133,11 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
   - **run:**
 
-    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames.
+    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames. The PCA reads up to 2,000 frames, or 5,000 when the movie has at least 5,000 frames and neither side exceeds 700 pixels, and its memory can set the run's peak. Measured at 512 × 512 it adds about 3 GB at 2,908 frames and about 10 GB at 5,816 frames.
 
   - **registration:**
 
-    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it; results do not depend on it.
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it. The results also depend on it while it is below `nimg_init`: suite2p 1.1.0 ranks the reference candidates by the last batch only ([MouseLand/suite2p#1276](https://github.com/MouseLand/suite2p/issues/1276)), so changing the batch size changes the reference image and the registration. Keep the default unless memory requires a smaller batch.
     - **nimg_init** [int, default: 400]: How many frames to use to compute the reference image.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
     - **smooth_sigma_time** [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Must stay 0: suite2p 1.1.0's time smoothing fails inside registration for any positive value, so the node refuses it with a message.
@@ -173,8 +173,13 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
     - **algorithm** [string, default: sparsery]: `sparsery` (suite2p's default detector) or `sourcery` (the older detector). suite2p's cellpose mode is not available here.
     - **highpass_time** [int, default: 100]: Running mean subtraction across time with a window of this many bins. Values of less than 10 are recommended for 1P data where there are often large full-field changes in brightness.
-    - **nbins** [int, default: 5000]: Maximum number of binned frames to use for ROI detection.
+    - **nbins** [int, default: 5000]: Maximum number of binned frames to use for ROI detection. A bin is `tau` × the frame rate in frames, or the number of frames ÷ `nbins` when that is larger.
+      - Detection's memory grows with the number of binned frames: about 4.6 MB per binned frame at 512 × 512.
+      - At 30 Hz and `tau` 1.0, detection becomes the run's peak beyond about 10 minutes of recording. From there it adds about 0.28 GB per minute, up to the 5,000-frame cap (about 83 minutes).
+      - A lower `nbins` bounds that memory on long recordings, but it widens the bin and changes the detected ROIs. On a 13-minute recording, `nbins` 500 and 250 kept a half and a third of the ROIs.
     - **denoise** [bool, default: False]: PCA-denoise the binned movie before detection.
+      - It changes the detected ROIs substantially: measured at 512 × 512, it found 1.5 to 2.3 times as many, and kept about half of the ROIs found without it.
+      - Its memory grows with the number of binned frames: about +0.5 GB on an 8-minute recording at 30 Hz.
     - **block_size** [list of int, default: [64, 64]]: Block size for denoising, in pixels.
     - **threshold_scaling** [float, default: 1.0]: Controls the threshold at which to detect ROIs (how much the ROIs have to stand out from the noise to be detected). If higher, then fewer ROIs will be detected, and if lower, more ROIs will be detected.
     - **max_overlap** [float, default: 0.75]: Overlapping ROIs are allowed during cell detection. After detection, ROIs with more than this fraction of their pixels overlapping with other ROIs will be discarded. Must be below 1: ROI editing needs the overlap information suite2p only computes then.
