@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 import pytest
 from filelock import Timeout
+from snakemake.exceptions import LockException
 
 from studio.app.common.core.experiment import experiment_writer
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
@@ -416,6 +417,37 @@ async def test_a_child_superseded_before_it_runs_touches_nothing(
     assert all(pkl(node).exists() for node in NODES)
     assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
     assert error_log.read_text() == "newer run failed"
+
+
+@pytest.mark.asyncio
+async def test_a_locked_workdir_keeps_the_previous_results(previous_run):
+    generation = await scheduled_generation()
+    locks = WDIR / ".snakemake" / "locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    (locks / "0.output.lock").write_text(str(pkl(NODES[0])))
+
+    dag = Mock()
+    dag.execute_workflow.side_effect = LockException()
+    with patch.object(
+        snakemake_executor,
+        "planned_outputs",
+        return_value=[str(pkl(node)) for node in NODES + [PP]],
+    ), patch.object(snakemake_executor, "_dag", return_value=dag), patch.object(
+        snakemake_executor,
+        "_observe_overall_with_lock_retry",
+        return_value=(False, False, False),
+    ):
+        succeeded = await asyncio.to_thread(
+            snakemake_executor._snakemake_execute_process,
+            WORKSPACE_ID,
+            UNIQUE_ID,
+            PARAMS,
+            generation,
+        )
+
+    assert succeeded is False
+    assert all(pkl(node).exists() for node in NODES)
+    assert os.path.exists(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path)
 
 
 @pytest.mark.asyncio

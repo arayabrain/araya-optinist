@@ -102,6 +102,10 @@ class WorkflowResult:
                 config = ExptConfigReader.read(self.workspace_id, self.unique_id)
                 if config.started_at != generation:
                     return False
+            # Another snakemake holds the workdir, so this run's own start refuses
+            locks = os.path.join(self.workflow_dirpath, ".snakemake", "locks")
+            if glob(os.path.join(locks, "*.lock")):
+                return True
             for output in outputs or []:
                 path = os.path.join(self.workflow_dirpath, output)
                 if path.endswith(".pkl") and os.path.exists(path):
