@@ -56,7 +56,11 @@ def session_fixture():
 
     yield
 
-    shutil.rmtree(data_dir / "output", ignore_errors=True)
+
+def pytest_sessionfinish(session):
+    # Under xdist only the controller cleans up, after every worker is done
+    if not hasattr(session.config, "workerinput"):
+        shutil.rmtree(Path(DIRPATH.DATA_DIR).resolve() / "output", ignore_errors=True)
 
 
 @pytest.fixture(scope="module")

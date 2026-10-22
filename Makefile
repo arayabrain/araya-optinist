@@ -42,7 +42,15 @@ test_backend:
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
-	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing")
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing" -n auto --dist loadfile)
+
+# The tests test_backend leaves out, run by the weekly regression.
+.PHONY: test_backend_heavy
+test_backend_heavy:
+	# cleanup
+	@$(call cleanup_test_env, test_studio_backend)
+	# build/run
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "heavier_processing")
 
 # One file or one -k expression, same image and env as CI. Running pytest in the
 # dev container instead fails tests that pass in CI: it sets no STRIPE_* vars.
