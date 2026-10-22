@@ -11,7 +11,7 @@ from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
 )
-from studio.app.common.core.utils.pickle_handler import PickleWriter
+from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
@@ -61,7 +61,9 @@ def file_path(request):
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
         info={
-            "edit_roi_data": EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), im=im),
+            "edit_roi_data": EditRoiData(
+                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=im
+            ),
             "iscell": IscellData(
                 np.array([CellType.ROI, CellType.ROI, CellType.NON_ROI])
             ),
@@ -71,6 +73,11 @@ def file_path(request):
     )
     yield f"{node_dirpath}/cell_roi.json"
     shutil.rmtree(WORKSPACE, ignore_errors=True)
+
+
+def layer(data, i):
+    """ROI i as the per-ROI stack held it: i on its pixels, NaN elsewhere."""
+    return data.roi_masks.label_image([i])
 
 
 def committed(file_path):
@@ -89,7 +96,7 @@ async def test_a_deleted_pending_merge_leaves_no_row(file_path):
     await EditROI(file_path=file_path).commit()
 
     data, iscell, fluorescence = committed(file_path)
-    assert data.im.shape[0] == NUM_ROI
+    assert len(data.roi_masks) == NUM_ROI
     assert fluorescence.shape[0] == NUM_ROI
     assert iscell == [CellType.ROI, CellType.ROI, CellType.NON_ROI]
     assert data.merge_roi == [] and data.delete_roi == []
@@ -103,13 +110,14 @@ async def test_surviving_pending_rows_are_renumbered(file_path):
     await EditROI(file_path=file_path).commit()
 
     data, iscell, fluorescence = committed(file_path)
-    assert data.im.shape[0] == NUM_ROI + 1
+    assert len(data.roi_masks) == NUM_ROI + 1
     assert fluorescence.shape[0] == NUM_ROI + 1
     assert iscell == [CellType.ROI, CellType.ROI, CellType.NON_ROI, CellType.ROI]
     # the surviving add took the freed index, in its pixels too
-    drawn = data.im[NUM_ROI][~np.isnan(data.im[NUM_ROI])]
+    added = layer(data, NUM_ROI)
+    drawn = added[~np.isnan(added)]
     assert drawn.size > 0 and set(drawn) == {NUM_ROI}
-    assert np.isnan(data.im[NUM_ROI, 1, 1]) and not np.isnan(data.im[NUM_ROI, 4, 4])
+    assert np.isnan(added[1, 1]) and not np.isnan(added[4, 4])
     assert data.add_roi == [NUM_ROI]
 
 
@@ -121,7 +129,7 @@ async def test_a_source_of_a_surviving_pending_merge_is_kept(file_path):
     await EditROI(file_path=file_path).commit()
 
     data, iscell, fluorescence = committed(file_path)
-    assert data.im.shape[0] == NUM_ROI + 2
+    assert len(data.roi_masks) == NUM_ROI + 2
     assert fluorescence.shape[0] == NUM_ROI + 2
     assert iscell[NUM_ROI] == CellType.NON_ROI and iscell[NUM_ROI + 1] == CellType.ROI
     assert data.merge_roi == [float(NUM_ROI + 1), NUM_ROI, 0, -1.0]
@@ -137,7 +145,7 @@ async def test_a_merge_of_a_pending_merge_keeps_every_row(file_path):
     await EditROI(file_path=file_path).commit()
 
     data, iscell, fluorescence = committed(file_path)
-    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 3
+    assert len(data.roi_masks) == fluorescence.shape[0] == NUM_ROI + 3
     assert iscell == [CellType.NON_ROI] * (NUM_ROI + 2) + [CellType.ROI]
     assert data.add_roi == [NUM_ROI]
     assert data.merge_roi == [
@@ -151,7 +159,7 @@ async def test_a_merge_of_a_pending_merge_keeps_every_row(file_path):
         -1.0,
     ]
     # the first merge's mask is the added ROI plus cell 0, drawn under its own index
-    merged = data.im[NUM_ROI + 1]
+    merged = layer(data, NUM_ROI + 1)
     assert set(merged[~np.isnan(merged)]) == {NUM_ROI + 1}
     assert not np.isnan(merged[1, 1]) and not np.isnan(merged[0, 0])
 
@@ -164,7 +172,7 @@ async def test_several_operations_commit_together(file_path):
     await EditROI(file_path=file_path).commit()
 
     data, iscell, fluorescence = committed(file_path)
-    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 2
+    assert len(data.roi_masks) == fluorescence.shape[0] == NUM_ROI + 2
     assert iscell == [CellType.NON_ROI] * (NUM_ROI + 1) + [CellType.ROI]
     assert data.add_roi == [NUM_ROI]
     assert data.delete_roi == [1]
@@ -181,7 +189,7 @@ async def test_delete_all_add_delete_all_cycles_keep_rows_aligned(file_path):
     await EditROI(file_path=file_path).commit()
 
     data, iscell, fluorescence = committed(file_path)
-    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 1
+    assert len(data.roi_masks) == fluorescence.shape[0] == NUM_ROI + 1
     assert iscell == [CellType.NON_ROI] * (NUM_ROI + 1)
     assert data.add_roi == [NUM_ROI] and data.delete_roi == [0, 1, NUM_ROI]
 
@@ -209,7 +217,7 @@ async def test_a_failed_commit_is_retried_without_applying_the_edit_twice(
     # nothing published: the node is as it was and the edit is still pending
     data, iscell, fluorescence = committed(file_path)
     assert fluorescence.shape[0] == NUM_ROI
-    assert data.im.shape[0] == NUM_ROI + 1
+    assert len(data.roi_masks) == NUM_ROI + 1
     assert iscell[NUM_ROI] == CellType.TEMP_ADD
     assert os.path.exists(edit_roi.tmp_pickle_file_path)
 
@@ -219,7 +227,7 @@ async def test_a_failed_commit_is_retried_without_applying_the_edit_twice(
     data, iscell, fluorescence = committed(file_path)
     # the no-op commit must not have dropped the movie from the node pickle
     assert EditROI(file_path=file_path).images.shape == (NUM_FRAME, *SHAPE)
-    assert data.im.shape[0] == fluorescence.shape[0] == NUM_ROI + 1
+    assert len(data.roi_masks) == fluorescence.shape[0] == NUM_ROI + 1
     assert iscell == [CellType.ROI, CellType.ROI, CellType.NON_ROI, CellType.ROI]
     assert data.add_roi == [NUM_ROI]
     assert not os.path.exists(edit_roi.tmp_pickle_file_path)
@@ -231,7 +239,7 @@ def test_an_roi_covering_no_pixel_is_refused_at_add(file_path):
     with pytest.raises(HTTPException) as exc:
         EditROI(file_path=file_path).add(RoiPos(posx=50, posy=50, sizex=2, sizey=2))
     assert exc.value.status_code == 400
-    assert committed(file_path)[0].im.shape[0] == NUM_ROI
+    assert len(committed(file_path)[0].roi_masks) == NUM_ROI
 
 
 def saved_fluorescence(file_path):
@@ -263,4 +271,52 @@ async def test_cancel_after_a_failed_commit_restores_the_saved_outputs(
     EditROI(file_path=file_path).cancel()
 
     assert saved_fluorescence(file_path) == committed_outputs
-    assert committed(file_path)[0].im.shape[0] == NUM_ROI
+    assert len(committed(file_path)[0].roi_masks) == NUM_ROI
+
+
+def node_pickle_path(file_path):
+    return f"{os.path.dirname(file_path)}/vacant_roi.pkl"
+
+
+def write_as_before_roi_masks(file_path, monkeypatch):
+    """Rewrite the node pickle as releases before RoiMasks wrote it: the ROIs
+    as a per-ROI stack in EditRoiData.im."""
+    info = PickleReader.read(node_pickle_path(file_path))
+    data = info["edit_roi_data"]
+    state = {k: v for k, v in vars(data).items() if not k.startswith("_")}
+    state["im"] = np.stack([layer(data, i) for i in range(len(data.roi_masks))])
+    with monkeypatch.context() as m:
+        m.setattr(EditRoiData, "__getstate__", lambda self: state)
+        PickleWriter.write(pickle_path=node_pickle_path(file_path), info=info)
+
+
+@pytest.mark.asyncio
+async def test_a_node_pickled_before_roi_masks_edits_the_same(file_path, monkeypatch):
+    # a movie whose every pixel differs, so a trace tells which pixels it read
+    info = PickleReader.read(node_pickle_path(file_path))
+    info["edit_roi_data"].images = np.arange(
+        NUM_FRAME * SHAPE[0] * SHAPE[1], dtype=float
+    ).reshape(NUM_FRAME, *SHAPE)
+    PickleWriter.write(pickle_path=node_pickle_path(file_path), info=info)
+    with open(node_pickle_path(file_path), "rb") as f:
+        node = f.read()
+
+    async def edit():
+        EditROI(file_path=file_path).add(ROI_B)
+        EditROI(file_path=file_path).merge([0, NUM_ROI])
+        EditROI(file_path=file_path).delete([1])
+        await EditROI(file_path=file_path).commit()
+        data, iscell, fluorescence = committed(file_path)
+        cell_roi = EditROI(file_path=file_path).output_info["cell_roi"].data
+        return data.roi_masks.label_image(), iscell, fluorescence, cell_roi
+
+    want = await edit()
+    with open(node_pickle_path(file_path), "wb") as f:
+        f.write(node)
+    write_as_before_roi_masks(file_path, monkeypatch)
+    assert EditROI(file_path=file_path).tmp_data._roi_masks is None  # legacy
+    got = await edit()
+
+    for a, b in zip(got, want):
+        np.testing.assert_array_equal(a, b)
+    assert len(want[2]) == NUM_ROI + 2 and want[2][NUM_ROI].std() > 0

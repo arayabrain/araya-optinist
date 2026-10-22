@@ -45,7 +45,7 @@ def rois(ly, lx):
 
 def new_traces(images, im, tmp_path, name):
     # Every ROI is pending, so every trace is computed from the movie
-    data = EditRoiData(images=None, im=im)
+    data = EditRoiData(images=None, roi_masks=im)
     iscell = np.full(len(im), CellType.TEMP_ADD)
     info = commit_edit(
         images, data, FluoData(np.zeros((0, FRAMES))), iscell, str(tmp_path / name), "x"

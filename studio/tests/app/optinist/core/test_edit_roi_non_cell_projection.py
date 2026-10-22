@@ -75,7 +75,9 @@ def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
         info={
-            "edit_roi_data": EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), im=im),
+            "edit_roi_data": EditRoiData(
+                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=im
+            ),
             "iscell": IscellData(np.array(iscell)),
             "fluorescence": FluoData(np.zeros((num_trace, NUM_FRAME))),
             "nwbfile": {},
@@ -190,7 +192,7 @@ async def test_iscell_keeps_one_entry_per_im_row(node_dirpath):
     await EditROI(file_path=file_path).commit()
 
     edit_roi = EditROI(file_path=file_path)
-    assert len(edit_roi.tmp_iscell) == edit_roi.tmp_data.im.shape[0]
+    assert len(edit_roi.tmp_iscell) == len(edit_roi.tmp_data.roi_masks)
 
 
 @pytest.mark.asyncio

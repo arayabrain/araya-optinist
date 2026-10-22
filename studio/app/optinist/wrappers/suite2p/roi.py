@@ -13,7 +13,7 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
-from studio.app.optinist.dataclass.roi import RoiStack
+from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -219,7 +219,11 @@ def suite2p_roi(
         # A reference to the movie, not the movie: suite2p's ROI editing reads
         # traces from the registered binary (ops["reg_file"]), never from this
         "edit_roi_data": EditRoiData(
-            images=ImageData(ops.get("file_list") or ops["filelist"]), im=im
+            images=ImageData(ops.get("file_list") or ops["filelist"]),
+            roi_masks=RoiMasks.from_pixels(
+                (Ly, Lx),
+                (np.ravel_multi_index((s["ypix"], s["xpix"]), (Ly, Lx)) for s in stat),
+            ),
         ),
         "nwbfile": nwbfile,
     }

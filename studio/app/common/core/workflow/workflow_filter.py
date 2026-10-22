@@ -214,7 +214,7 @@ class WorkflowNodeDataFilter:
 
         # Deep copy all mutable data to avoid in-place modification
         filtered_output_info = copy.deepcopy(output_info)
-        im = filtered_output_info["edit_roi_data"].im
+        roi_masks = filtered_output_info["edit_roi_data"].roi_masks
         fluorescence = filtered_output_info["fluorescence"].data
         dff = (
             filtered_output_info["dff"].data
@@ -307,7 +307,7 @@ class WorkflowNodeDataFilter:
         info = {
             **filtered_output_info,
             "cell_roi": RoiData(
-                np.nanmax(im[iscell_filtered != 0], axis=0, initial=np.nan),
+                roi_masks.label_image(iscell_filtered != 0),
                 output_dir=output_dir,
                 file_name="cell_roi",
             ),
@@ -321,12 +321,12 @@ class WorkflowNodeDataFilter:
         # lccd_detect keeps its own all_roi and its always-empty non_cell_roi
         if "lccd" not in type:
             info["all_roi"] = RoiData(
-                np.nanmax(im, axis=0, initial=np.nan),
+                roi_masks.label_image(),
                 output_dir=output_dir,
                 file_name="all_roi",
             )
             info["non_cell_roi"] = RoiData(
-                np.nanmax(im[iscell_filtered == 0], axis=0, initial=np.nan),
+                roi_masks.label_image(iscell_filtered == 0),
                 output_dir=output_dir,
                 # suite2p names its file noncell_roi
                 file_name=getattr(

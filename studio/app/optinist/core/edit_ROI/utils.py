@@ -88,7 +88,9 @@ class EditRoiUtils:
         asyncio.run(EditROI(file_path=filepath).commit())
 
 
-def create_ellipse_mask(shape: Tuple[int, int], roi_pos: RoiPos):
+def ellipse_pixels(shape: Tuple[int, int], roi_pos: RoiPos) -> np.ndarray:
+    """Flat (row-major) indices of the pixels of a (rows, columns) frame inside
+    the ellipse centred on column posx, row posy, sizex wide and sizey high."""
     x, y, width, height = (
         round(roi_pos.posx),
         round(roi_pos.posy),
@@ -96,18 +98,11 @@ def create_ellipse_mask(shape: Tuple[int, int], roi_pos: RoiPos):
         round(roi_pos.sizey),
     )
 
-    x_coords = np.arange(0, shape[0])
-    y_coords = np.arange(0, shape[1])
-    xx, yy = np.meshgrid(x_coords, y_coords)
+    yy, xx = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
 
     # Calculate the distance of each pixel from the center of the ellipse
     a = width / 2
     b = height / 2
     distance = ((xx - x) / a) ** 2 + ((yy - y) / b) ** 2
 
-    # Set the pixels within the ellipse to 1 and the pixels outside to NaN
-    ellipse = np.empty(shape)
-    ellipse[:] = np.nan
-    ellipse[distance <= 1] = 1
-
-    return ellipse
+    return np.flatnonzero(distance <= 1)

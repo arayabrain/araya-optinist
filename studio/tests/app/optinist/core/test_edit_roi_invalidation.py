@@ -106,7 +106,7 @@ def build_experiment():
             "cell_roi": RoiData(
                 np.nanmax(im, axis=0), output_dir=roi_dir, file_name="cell_roi"
             ),
-            "edit_roi_data": EditRoiData(images=images, im=im),
+            "edit_roi_data": EditRoiData(images=images, roi_masks=im),
             "nwbfile": {"input": {"stub": True}, NODES["roi"][1]: {}},
         },
     )

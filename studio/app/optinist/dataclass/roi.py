@@ -178,16 +178,131 @@ def open_edit_images(images, node_dirpath: str):
     return np.concatenate([open_frames(path) for path in paths])
 
 
+class RoiMasks:
+    """
+    Each ROI's pixels in a frame of `shape`, CSR-style: ROI i covers the flat
+    (row-major) indices `indices[indptr[i]:indptr[i + 1]]`, sorted and unique.
+
+    It holds what the per-ROI stack (n_roi x H x W, i on ROI i's pixels and NaN
+    elsewhere) held, in nnz indices instead of n_roi x H x W values: every image
+    taken from the stack was a max-index projection, which label_image gives.
+    """
+
+    def __init__(self, shape, indptr=None, indices=None):
+        self.shape = tuple(int(n) for n in shape)
+        self.indptr = np.zeros(1, np.int64) if indptr is None else np.asarray(indptr)
+        self.indices = np.zeros(0, np.int64) if indices is None else np.asarray(indices)
+
+    @classmethod
+    def from_pixels(cls, shape, pixels):
+        """From each ROI's flat pixel indices, in any order, repeats allowed."""
+        rows = [np.unique(np.asarray(p, dtype=np.int64)) for p in pixels]
+        indptr = np.zeros(len(rows) + 1, np.int64)
+        indptr[1:] = np.cumsum([len(r) for r in rows])
+        indices = np.concatenate(rows) if rows else np.zeros(0, np.int64)
+        return cls(shape, indptr, indices)
+
+    @classmethod
+    def from_stack(cls, stack):
+        """From a per-ROI stack, one layer at a time: a ROI is its non-NaN pixels."""
+        pixels = (np.flatnonzero(~np.isnan(stack[i])) for i in range(len(stack)))
+        return cls.from_pixels(stack.shape[1:], pixels)
+
+    def __len__(self):
+        return len(self.indptr) - 1
+
+    def pixels(self, i) -> np.ndarray:
+        """ROI i's flat pixel indices, ascending."""
+        return self.indices[self.indptr[i] : self.indptr[i + 1]]
+
+    def coords(self, i):
+        """ROI i's (rows, columns), in the order a boolean mask selects them."""
+        return np.unravel_index(self.pixels(i), self.shape)
+
+    def append(self, pixels) -> int:
+        """Add a ROI of the given flat pixel indices; returns its row."""
+        row = np.unique(np.asarray(pixels, dtype=np.int64))
+        self.indices = np.concatenate((self.indices, row))
+        self.indptr = np.append(self.indptr, len(self.indices))
+        return len(self) - 1
+
+    def union(self, ids) -> np.ndarray:
+        """The pixels of any of the ROIs `ids`."""
+        rows = [self.pixels(i) for i in ids]
+        return np.unique(np.concatenate(rows)) if rows else np.zeros(0, np.int64)
+
+    def select(self, rows) -> "RoiMasks":
+        """The ROIs `rows` (indices or a boolean mask), renumbered from 0."""
+        rows = np.arange(len(self))[rows]
+        return RoiMasks.from_pixels(self.shape, (self.pixels(i) for i in rows))
+
+    def label_image(self, rows=None) -> np.ndarray:
+        """
+        Each pixel's highest ROI among `rows` (indices or a boolean mask; all
+        when None), NaN where none of them lies: nanmax over those stack layers.
+        """
+        selected = np.arange(len(self)) if rows is None else np.arange(len(self))[rows]
+        image = np.full(self.shape, np.nan)
+        flat = image.reshape(-1)
+        for i in np.sort(selected):  # ascending, so the highest ROI writes last
+            flat[self.pixels(i)] = i
+        return image
+
+    def state(self) -> dict:
+        return {"shape": self.shape, "indptr": self.indptr, "indices": self.indices}
+
+
 class EditRoiData(BaseData):
-    def __init__(self, images, im):
+    def __init__(self, images, roi_masks):
+        """roi_masks: RoiMasks, or a per-ROI stack (n_roi x H x W) to convert."""
         self.images: ImageData = images
-        self.im = im
+        self.roi_masks = (
+            roi_masks
+            if isinstance(roi_masks, RoiMasks)
+            else RoiMasks.from_stack(roi_masks)
+        )
         self.temp_add_roi: Dict[int, RoiPos] = {}
         self.temp_merge_roi: Dict[float, List[int]] = {}
         self.temp_delete_roi: Dict[float, None] = {}
         self.add_roi = []
         self.merge_roi = []
         self.delete_roi = []
+
+    @property
+    def roi_masks(self) -> RoiMasks:
+        # A pickle from before RoiMasks holds the stack as `im` (an array, or a
+        # RoiStack on disk): converted when first needed, so loading it for
+        # result polling or a downstream node costs nothing more than before
+        if self._roi_masks is None:
+            self._roi_masks = RoiMasks.from_stack(self._stack)
+            self._stack = None
+        return self._roi_masks
+
+    @roi_masks.setter
+    def roi_masks(self, value):
+        if isinstance(value, RoiMasks):
+            self._roi_masks, self._stack = value, None
+        else:
+            self._roi_masks, self._stack = None, value
+
+    def __getstate__(self):
+        # Plain arrays only, no RoiMasks class: an earlier release still loads
+        # the node pickle (it then cannot edit or filter this node's ROIs)
+        state = dict(self.__dict__)
+        roi_masks, stack = state.pop("_roi_masks"), state.pop("_stack")
+        if roi_masks is None:
+            state["im"] = stack  # never converted: written back as it was read
+        else:
+            state["roi_masks"] = roi_masks.state()
+        return state
+
+    def __setstate__(self, state):
+        state = dict(state)
+        if "roi_masks" in state:
+            self.roi_masks = RoiMasks(**state.pop("roi_masks"))
+        else:
+            self.roi_masks = state.pop("im")
+        self.__dict__.update(state)
 
     def save_json(self, json_dir):
         pass
