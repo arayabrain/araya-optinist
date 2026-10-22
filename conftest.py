@@ -16,6 +16,7 @@ runnable outside the container as well:
 Add new test environment variables here, not to `docker-compose.test.yml` alone.
 """
 
+import atexit
 import os
 import shutil
 import tempfile
@@ -29,8 +30,8 @@ _MOCK_STORAGE_DIR = "/tmp/studio/mock_storage"
 # Test files reuse workspace and run ids, so each xdist worker gets its own copy
 _WORKER = os.environ.get("PYTEST_XDIST_WORKER")
 if _WORKER:
-    _worker_dir = Path(tempfile.gettempdir()) / "optinist-xdist" / _WORKER
-    shutil.rmtree(_worker_dir, ignore_errors=True)
+    _worker_dir = Path(tempfile.mkdtemp(prefix=f"optinist-xdist-{_WORKER}-"))
+    atexit.register(shutil.rmtree, _worker_dir, ignore_errors=True)
     _source = _DATA_DIR
     _DATA_DIR = _worker_dir / "test_data"
     shutil.copytree(
@@ -38,7 +39,7 @@ if _WORKER:
         _DATA_DIR,
         ignore=lambda d, names: ["output"] if Path(d) == _source else [],
     )
-    _MOCK_STORAGE_DIR = f"{_MOCK_STORAGE_DIR}/{_WORKER}"
+    _MOCK_STORAGE_DIR = str(_worker_dir / "mock_storage")
 
 _TEST_ENV = {
     # Expirations round-trip through the DB as naive datetimes, so a non-UTC
