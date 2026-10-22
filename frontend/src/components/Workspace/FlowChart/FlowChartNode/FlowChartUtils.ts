@@ -40,9 +40,14 @@ export function findDatasetShape(
 // The handle advertises the single best-fit type for the rank; isRankCompatible
 // is deliberately looser, so a 2D handle labelled FluoData still accepts an
 // IscellData input. Rank is all the file tells us, so only 3D+ vs rest is refused.
-export function handleTypeForRank(ndim: number | undefined, fallback: string) {
+export function handleTypeForRank(
+  ndim: number | undefined,
+  fallback: string,
+  dataType?: string,
+) {
   if (ndim == null) return fallback
   if (ndim >= 3) return "ImageData"
+  if (dataType === "behavior") return "BehaviorData"
   if (ndim === 2) return "FluoData"
   return "IscellData"
 }

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 from glob import glob
@@ -7,13 +8,20 @@ import numpy as np
 import pytest
 import yaml
 
+from studio.app.common.core.experiment.experiment_writer import (
+    ExptConfigWriter,
+    ExptDataWriter,
+)
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.utils.pickle_handler import PickleWriter
+from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
+from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
 from studio.app.common.core.workflow.workflow import (
     DataFilterParam,
     DataFilterRangeParam,
 )
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.const import ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
@@ -95,6 +103,7 @@ def test_lccd_keeps_its_own_roi_images_and_trims_dff(tmp_path):
 
 
 WORKSPACE, UNIQUE_ID, NODE_ID = "filter_reset_ws", "00000000", "caiman_cnmf_0000"
+COPY_ID = "11111111"
 
 
 @pytest.fixture
@@ -157,3 +166,73 @@ def test_a_filter_reset_restores_every_json_the_run_wrote(ran_node_dir, with_dff
     assert {p: v for p, v in json_files(ran_node_dir).items() if p in ran} == ran
     assert os.path.isdir(f"{ran_node_dir}/dff") == with_dff
     assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}") == []
+
+
+@pytest.mark.parametrize("with_dff", [True])
+def test_a_rerun_voids_the_filter_backup_so_the_next_filter_starts_from_the_new_run(
+    ran_node_dir, with_dff
+):
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}")
+
+    workflow = WorkflowConfigReader.read(WORKSPACE, UNIQUE_ID)
+    delete_dependencies(
+        WORKSPACE, UNIQUE_ID, [NODE_ID], workflow.nodeDict, workflow.edgeDict
+    )
+    assert glob(f"{ran_node_dir}/*{ORIGINAL_DATA_EXT}") == []
+
+    # the rerun writes new traces; before, the stale backup was filtered instead
+    rerun = roi_node_output("caiman_cnmf", with_dff)
+    rerun["fluorescence"] = FluoData(
+        rerun["fluorescence"].data + 1000, file_name="fluorescence"
+    )
+    PickleWriter.write(f"{ran_node_dir}/caiman_cnmf.pkl", rerun)
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+
+    filtered = PickleReader.read(f"{ran_node_dir}/caiman_cnmf.pkl")
+    assert filtered["fluorescence"].data.min() >= 1000
+
+
+def reachable_strings(obj, seen=None):
+    """Every string, paths included, that an unpickled object graph holds."""
+    seen = set() if seen is None else seen
+    if isinstance(obj, (str, os.PathLike)):
+        yield os.fspath(obj)
+        return
+    if id(obj) in seen:
+        return
+    seen.add(id(obj))
+    if isinstance(obj, dict):
+        children = [*obj.keys(), *obj.values()]
+    elif isinstance(obj, (list, tuple, set)):
+        children = list(obj)
+    else:
+        is_text = isinstance(obj, np.ndarray) and obj.dtype.kind in "OU"
+        children = obj.ravel().tolist() if is_text else []
+        children += list(getattr(obj, "__dict__", {}).values())
+    for child in children:
+        yield from reachable_strings(child, seen)
+
+
+@pytest.mark.parametrize("with_dff", [True])
+def test_a_filter_reset_in_a_copied_experiment_reads_only_the_copy(
+    ran_node_dir, with_dff, monkeypatch
+):
+    """The reset restores the filter's backup, so experiment copy must rewrite
+    the backup's paths as it does the node pickle's."""
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", RemoteStorageType.NO_USE.value)
+    ExptConfigWriter(WORKSPACE, UNIQUE_ID, name="source").write()  # copy renames it
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    source = os.path.dirname(ran_node_dir)
+    copied = f"{os.path.dirname(source)}/{COPY_ID}"
+    writer = ExptDataWriter("bucket", WORKSPACE, UNIQUE_ID)
+    assert asyncio.run(writer.copy_data(COPY_ID, "copy"))
+    shutil.rmtree(source)  # the copy must not depend on the source
+
+    WorkflowNodeDataFilter(WORKSPACE, COPY_ID, NODE_ID).filter_node_data(None)
+
+    restored = PickleReader.read(f"{copied}/{NODE_ID}/caiman_cnmf.pkl")
+    for name in ["cell_roi", "non_cell_roi"]:
+        assert restored[name].path.startswith(f"{copied}/")
+    assert [s for s in reachable_strings(restored) if UNIQUE_ID in s] == []
+    assert glob(f"{copied}/{NODE_ID}/*{ORIGINAL_DATA_EXT}") == []

@@ -15,7 +15,7 @@ from studio.app.common.core.utils.filepath_creater import (
 from studio.app.common.core.utils.json_writer import JsonWriter
 from studio.app.common.core.workflow.workflow import OutputPath, OutputType
 from studio.app.common.dataclass.base import BaseData
-from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.image import ImageData, open_frames
 from studio.app.common.dataclass.utils import create_images_list
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
@@ -150,8 +150,10 @@ def open_edit_images(images, node_dirpath: str):
     node pickle need not hold a copy of the movie. The reference is opened here,
     when a commit needs it, relative to the node's experiment directory:
     memory-mapped when the TIFF allows it, so only the pixels a mask selects
-    are read, otherwise read in full once. Pickles that hold an array (written
-    before references were stored) are returned unchanged.
+    are read, otherwise read in full once. A reference to several files is
+    concatenated from their mapped frames, so the movie is held once. Pickles
+    that hold an array (written before references were stored) are returned
+    unchanged.
     """
     if not isinstance(images, ImageData):
         return images
@@ -170,14 +172,10 @@ def open_edit_images(images, node_dirpath: str):
             f"The movie ROI edits read new traces from ({names}) has changed "
             "since this node ran. Run the workflow again to add or merge ROIs."
         )
-    if len(paths) > 1:
-        logger.warning("ROI edit reads %d files in full", len(paths))
-        return ImageData(paths).data
-    try:
-        return tifffile.memmap(paths[0], mode="r")
-    except (ValueError, OSError) as e:  # compressed, tiled, or a mount that cannot map
-        logger.warning("ROI edit reads %s in full: %s", paths[0], e)
-        return np.asarray(imageio.volread(paths[0]))
+    if len(paths) == 1:
+        return open_frames(paths[0])
+    # each file mapped where it can be, so the movie is held once, concatenated
+    return np.concatenate([open_frames(path) for path in paths])
 
 
 class EditRoiData(BaseData):
@@ -227,3 +225,72 @@ class EditRoiData(BaseData):
         self.temp_add_roi = {}
         self.temp_merge_roi = {}
         self.temp_delete_roi = {}
+
+
+def _plain(value):
+    """RoiStack arguments as plain arrays, inside tuples and lists too."""
+    if isinstance(value, RoiStack):
+        return value.view(np.ndarray)
+    if isinstance(value, (list, tuple)):
+        return type(value)(_plain(v) for v in value)
+    return value
+
+
+def _stack_path_for_pickle(path: str) -> str:
+    """Relative to OUTPUT_DIR when under it, so the reference survives a move."""
+    output_dir = os.path.abspath(DIRPATH.OUTPUT_DIR)
+    if os.path.abspath(path).startswith(output_dir + os.sep):
+        return os.path.relpath(path, output_dir)
+    return path
+
+
+class RoiStack(np.memmap):
+    """
+    A per-ROI mask stack (n_roi x Ly x Lx) kept in a .npy file next to the
+    node's outputs, rather than in memory and in the node pickle.
+
+    It behaves as a read-only array. Pickling the whole stack stores only its
+    path, so the node pickle, result polling, post-processing and ROI-edit
+    requests do not carry n_roi x Ly x Lx x 8 bytes. Anything derived from it
+    (a slice, a fancy-indexed subset, a ufunc or reduction result) is a plain
+    array as far as pickling goes, and is serialised with its data as before.
+    """
+
+    @classmethod
+    def create(cls, path: str, shape: tuple, fill=np.nan, dtype=np.float64):
+        """A writable stack at `path`, filled with `fill` one layer at a time."""
+        out = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
+        for i in range(shape[0]):
+            out[i] = fill
+        out.flush()
+        return out, path
+
+    @classmethod
+    def open(cls, path: str):
+        absolute = path if os.path.isabs(path) else f"{DIRPATH.OUTPUT_DIR}/{path}"
+        obj = np.load(absolute, mmap_mode="r").view(cls)
+        obj._stack_path = os.path.abspath(absolute)
+        obj._whole_file = True
+        return obj
+
+    def __array_finalize__(self, obj):
+        super().__array_finalize__(obj)
+        # Views, subsets and results are not the file: they pickle their data
+        self._stack_path = getattr(obj, "_stack_path", None)
+        self._whole_file = False
+
+    def __array_function__(self, func, types, args, kwargs):
+        # numpy keeps fast paths (nanmax with initial, for one) for exact ndarrays
+        return func(*_plain(args), **{k: _plain(v) for k, v in kwargs.items()})
+
+    def __array_wrap__(self, arr, context=None, *args, **kwargs):
+        # Ufunc and reduction results are new data, not the file: plain arrays
+        arr = super().__array_wrap__(arr, context, *args, **kwargs)
+        if isinstance(arr, RoiStack) and not np.shares_memory(arr, self):
+            arr = arr.view(np.ndarray)
+        return arr[()] if arr.ndim == 0 else arr
+
+    def __reduce__(self):
+        if getattr(self, "_whole_file", False) and self._stack_path:
+            return (RoiStack.open, (_stack_path_for_pickle(self._stack_path),))
+        return np.array(self, subok=False).__reduce__()
