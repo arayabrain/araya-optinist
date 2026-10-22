@@ -42,7 +42,7 @@ test_backend:
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
-	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing" -n auto --dist loadfile)
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing" -n logical --dist loadfile)
 
 # The tests test_backend leaves out, run by the weekly regression.
 .PHONY: test_backend_heavy

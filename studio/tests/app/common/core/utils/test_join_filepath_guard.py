@@ -121,6 +121,7 @@ def test_result_is_normalised():
         ([OUT, ""], OUT),  # a trailing empty element loses its separator
         ([".", "output", "1"], "output/1"),  # a "." base is not an escape
     ],
+    # Default ids embed OUTPUT_DIR, which differs per xdist worker
     ids=["empty", "trailing-empty", "dot-base"],
 )
 def test_boundary_shapes_return_what_callers_now_get(parts, expected):

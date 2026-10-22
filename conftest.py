@@ -7,7 +7,9 @@ values, so the container lane is unchanged. Three differences make the suite
 runnable outside the container as well:
 
 - `OPTINIST_DIR` derives from this file's location, so it resolves to `/app` in
-  the container and to the checkout root anywhere else.
+  the container and to the checkout root anywhere else. Under xdist each worker
+  gets a temporary copy instead, so files reusing workspace and run ids cannot
+  collide.
 - Values are set unconditionally, so a shell configured for running the app
   natively cannot leak into a test run.
 - Stripe credentials are dummies. The suite never calls Stripe, and this drops
@@ -49,9 +51,8 @@ _TEST_ENV = {
     "IS_TEST": "True",
     "IS_STANDALONE": "True",
     "REMOTE_STORAGE_TYPE": "1",  # See studio/config/.env
-    # Based on the container's literal path rather than derived: concurrent runs
-    # from two checkouts already share `DIRPATH.LOCKFILE_DIR`, so deriving this
-    # one alone would suggest an isolation the lane does not have.
+    # The container's literal path, or under xdist one inside the worker's copy.
+    # `DIRPATH.LOCKFILE_DIR` stays shared; lock names hash the data path.
     "MOCK_STORAGE_DIR": _MOCK_STORAGE_DIR,  # See studio/config/.env
     "STRIPE_SECRET_KEY": "sk_test_dummy_123",
     "STRIPE_WEBHOOK_SECRET": "whsec_dummy_123",
