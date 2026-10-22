@@ -88,6 +88,9 @@ ASSIGN_CLAIM_POLL_INTERVAL_SECONDS = 1
 ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS = 30
 # Claim lifetime when the invocation deadline is unknown (Lambda maximum)
 ASSIGN_CLAIM_DEFAULT_SECONDS = 900
+# Session lock the previous release's assign held for its whole run. A claim
+# is not taken while it is in use, so a deploy cannot overlap the two.
+LEGACY_ASSIGN_LOCK_PREFIX = "assign_user_"
 MYSQL_ER_DUP_ENTRY = 1062
 MYSQL_ER_NO_SUCH_TABLE = 1146
 
@@ -339,18 +342,29 @@ def assign_claim(
 
     Yields True if acquired within ``wait_seconds`` (default
     ASSIGN_CLAIM_WAIT_SECONDS), False otherwise. A missing claims table
-    (migration not yet applied) yields False.
+    (migration not yet applied) yields False. While an invocation of the
+    previous release holds the legacy session lock, the claim is given back
+    and the attempt counts as not acquired.
     """
     if wait_seconds is None:
         wait_seconds = ASSIGN_CLAIM_WAIT_SECONDS
     token = uuid.uuid4().hex
     deadline = time.monotonic() + wait_seconds
+
+    def attempt() -> bool:
+        if not _try_acquire_assign_claim(user_id, token, lifetime_seconds):
+            return False
+        if is_creation_lock_held(f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}"):
+            _release_assign_claim(user_id, token)
+            return False
+        return True
+
     acquired = False
     try:
-        acquired = _try_acquire_assign_claim(user_id, token, lifetime_seconds)
+        acquired = attempt()
         while not acquired and time.monotonic() < deadline:
             time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
-            acquired = _try_acquire_assign_claim(user_id, token, lifetime_seconds)
+            acquired = attempt()
     except pymysql.err.ProgrammingError as e:
         if e.args[0] != MYSQL_ER_NO_SUCH_TABLE:
             raise

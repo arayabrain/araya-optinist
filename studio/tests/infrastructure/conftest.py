@@ -148,8 +148,9 @@ class FakeAssignClaimsDb:
 
     Mirrors the statements premium_manager's assign-claim helpers issue
     (INSERT / takeover UPDATE / SELECT / DELETE), including the duplicate-key
-    error, with a settable clock. Thread-safe. Any other statement is a no-op
-    returning no rows. The real-MySQL semantics are covered by
+    error, with a settable clock, and answers IS_FREE_LOCK from
+    ``session_locks``. Thread-safe. Any other statement is a no-op returning
+    no rows. The real-MySQL semantics are covered by
     test_premium_lock_integration.py.
     """
 
@@ -159,12 +160,16 @@ class FakeAssignClaimsDb:
         self.rows = {}  # user_id -> {"claim_token", "expires_at"}
         self.now = 0.0
         self.missing_table = missing_table
+        self.session_locks = set()  # GET_LOCK names held by other sessions
         self._guard = threading.Lock()
 
     def _execute(self, cursor, sql, params=()):
         import pymysql
 
         statement = " ".join(sql.split())
+        if "IS_FREE_LOCK" in statement:
+            cursor.result = {"is_free": 0 if params[0] in self.session_locks else 1}
+            return
         if "premium_assign_claims" not in statement:
             cursor.result = None
             return

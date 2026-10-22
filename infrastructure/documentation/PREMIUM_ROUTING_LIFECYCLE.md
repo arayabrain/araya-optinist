@@ -392,10 +392,11 @@ The claim is one row per user in `premium_assign_claims` (`user_id` primary key,
 | Connection | None held while the assignment runs |
 | Release | `DELETE` in a `finally` block; a claim left by a crashed invocation is taken over by the next assign once it expires |
 | Missing table | Treated as not acquired (200 / 409), so a Lambda deployed before the migration does not return 500. Unassigned users still get only 409s until the migration runs, so deploy the migration (studio image) before the Lambdas |
+| Previous release still running | The previous release's assign held `GET_LOCK('assign_user_<user_id>')` for its whole run. While that lock is in use (`IS_FREE_LOCK`), a new assign gives its claim back and counts as not acquired, so the two never run side by side during a deploy |
 
 **Different users remain fully parallel** — the claim is keyed by `user_id`, so concurrent assignments for different users do not contend.
 
-**Cleanup coordination:** `premium_cleanup` reads the unexpired claims between listing the ALB rules and reading its database keep-set. The orphan and duplicate rule sweeps skip a rule that forwards to `premium-<user_id>-tg` of a claimed user, and any rule that forwards to the shared autoscaling target group while a claim is live. If the claims cannot be read, both sweeps delete nothing in that run. The stale-assignment sweep and the instance reconcile do not read claims.
+**Cleanup coordination:** `premium_cleanup` reads the unexpired claims between listing the ALB rules and reading its database keep-set. The orphan and duplicate rule sweeps skip a rule that forwards to `premium-<user_id>-tg` of a claimed user, and, while any claim is live, any rule whose target names no user (the shared autoscaling target group of a pool user). The skip does not depend on `AUTOSCALING_TARGET_GROUP_ARN`; the cleanup Lambda still needs that variable to avoid deleting the shared target group itself. If the claims cannot be read, both sweeps delete nothing in that run. The stale-assignment sweep and the instance reconcile do not read claims.
 
 ### 2. 409 Conflict Handling
 
@@ -746,6 +747,7 @@ Circuit breaker state transitions are broadcast via `crossTabSync`:
 | `ASSIGN_CLAIM_POLL_INTERVAL_SECONDS` | `1` | Retry interval while waiting for the claim |
 | `ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS` | `30` | How long a claim outlives its holder's invocation deadline |
 | `ASSIGN_CLAIM_DEFAULT_SECONDS` | `900` | Claim lifetime when the invocation deadline is unknown |
+| `LEGACY_ASSIGN_LOCK_PREFIX` | `"assign_user_"` | Session lock of the previous release's assign; no claim is taken while it is in use |
 | `LOCK_TIMEOUT_SECONDS` | `60` | Default `GET_LOCK` timeout for the scaling / standby / migration locks |
 
 **File:** `infrastructure/aws_constants.py`

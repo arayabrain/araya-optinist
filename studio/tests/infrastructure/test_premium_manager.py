@@ -1782,6 +1782,26 @@ class TestAssignClaimRow:
         with assign_claim(7, 600, wait_seconds=0) as third:
             assert third is True
 
+    def test_claim_waits_for_a_previous_release_still_holding_the_session_lock(
+        self, claims
+    ):
+        """During a deploy an invocation of the previous release may still
+        run under GET_LOCK('assign_user_<id>'). The claim is given back while
+        that lock is in use, and taken once it is free."""
+        from premium_manager import LEGACY_ASSIGN_LOCK_PREFIX, assign_claim
+
+        claims.session_locks.add(f"{LEGACY_ASSIGN_LOCK_PREFIX}7")
+        with assign_claim(7, 600, wait_seconds=0) as during_old_run:
+            assert during_old_run is False
+        assert claims.rows == {}
+
+        def old_run_finishes(seconds):
+            claims.session_locks.clear()
+
+        with patch("premium_manager.time.sleep", side_effect=old_run_finishes):
+            with assign_claim(7, 600, wait_seconds=5) as after_old_run:
+                assert after_old_run is True
+
     def test_claims_of_different_users_do_not_block(self, claims):
         from premium_manager import assign_claim
 

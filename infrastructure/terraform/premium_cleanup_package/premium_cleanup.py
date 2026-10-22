@@ -228,24 +228,21 @@ _PREMIUM_TG_NAME_RE = re.compile(r":targetgroup/premium-(\d+)-tg/")
 def _rule_may_belong_to_inflight_assign(
     rule: Dict[str, Any],
     claimed_user_ids: Set[int],
-    autoscaling_tg_arn: str | None,
 ) -> bool:
     """Whether an in-flight assign may own this ALB rule.
 
-    A dedicated rule forwards to ``premium-<user_id>-tg``; a pool rule
-    forwards to the shared autoscaling TG and names no user, so it is kept
-    while any claim is live.
+    A dedicated rule forwards to ``premium-<user_id>-tg`` and names its
+    user. Any other target (the shared autoscaling TG of a pool user) names
+    no user, so such a rule is kept while any claim is live. This needs no
+    configured TG ARN.
     """
     if not claimed_user_ids:
         return False
     for action in rule.get("Actions", []):
         if action.get("Type") != "forward":
             continue
-        tg_arn = action.get("TargetGroupArn") or ""
-        if autoscaling_tg_arn and tg_arn == autoscaling_tg_arn:
-            return True
-        match = _PREMIUM_TG_NAME_RE.search(tg_arn)
-        if match and int(match.group(1)) in claimed_user_ids:
+        match = _PREMIUM_TG_NAME_RE.search(action.get("TargetGroupArn") or "")
+        if not match or int(match.group(1)) in claimed_user_ids:
             return True
     return False
 
@@ -538,9 +535,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
         for rule in premium_rules:
             if rule["RuleArn"] in db_rule_arns:
                 continue
-            if _rule_may_belong_to_inflight_assign(
-                rule, claimed_user_ids, autoscaling_tg_arn
-            ):
+            if _rule_may_belong_to_inflight_assign(rule, claimed_user_ids):
                 print(f"Keeping rule {rule['RuleArn']}: an assign is in flight")
                 continue
             orphaned_rules.append(rule)
@@ -675,7 +670,6 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                 "target_groups_deleted": 0,
                 "error": f"assign claims unavailable: {claim_error}",
             }
-        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
 
         # Get all active assignments from database to know which rules to keep
         with get_db_connection() as connection:
@@ -713,9 +707,7 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                 if rule_arn in db_rule_arns:
                     print(f"Keeping rule {rule_arn} (in database)")
                     continue
-                if _rule_may_belong_to_inflight_assign(
-                    rule, claimed_user_ids, autoscaling_tg_arn
-                ):
+                if _rule_may_belong_to_inflight_assign(rule, claimed_user_ids):
                     print(f"Keeping rule {rule_arn}: an assign is in flight")
                     continue
 

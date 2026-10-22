@@ -798,6 +798,32 @@ class TestAlbSweepsSkipInFlightAssign:
         # The shared pool TG itself is never deleted.
         assert not mock_elbv2.delete_target_group.called
 
+    def test_pool_rule_is_kept_without_the_pool_tg_configured(
+        self, mock_env_vars_premium
+    ):
+        """The skip must not depend on AUTOSCALING_TARGET_GROUP_ARN: a rule
+        whose target names no user is kept while any claim is live."""
+        env = dict(mock_env_vars_premium)
+        pool_tg = env.pop("AUTOSCALING_TARGET_GROUP_ARN")
+
+        with patch.dict("os.environ", env, clear=True), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect", return_value=setup_db_mock()
+        ), patch(
+            "premium_cleanup.get_assign_claimed_user_ids", return_value={99}
+        ):
+            mock_elbv2 = self._elbv2_with_rules(
+                mock_boto3,
+                [_premium_alb_rule("arn:aws:rule/pool-user", pool_tg, "rid-pool")],
+            )
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+
+        assert not mock_elbv2.delete_rule.called
+        assert "error" not in result, result
+
     def test_orphan_sweep_deletes_nothing_when_claims_are_unreadable(
         self, mock_env_vars_premium
     ):

@@ -281,6 +281,24 @@ def test_expired_claim_is_reclaimed_and_a_live_one_is_not(pm, claim_user_ids):
 
 
 @_opt_in
+def test_claim_is_not_taken_while_a_previous_release_holds_the_session_lock(
+    pm, claim_user_ids
+):
+    """Old holder, new contender: an invocation of the previous release
+    holds GET_LOCK('assign_user_<id>') on its own session for its whole run.
+    The new assign must not run beside it, and must leave no claim behind."""
+    user = claim_user_ids[0]
+    legacy_name = f"{pm.LEGACY_ASSIGN_LOCK_PREFIX}{user}"
+    with pm.distributed_lock(legacy_name, timeout=5) as old_holder:
+        assert old_holder is True
+        with pm.assign_claim(user, 600, wait_seconds=0) as new_contender:
+            assert new_contender is False
+        assert _claim_token(pm, user) is None
+    with pm.assign_claim(user, 600, wait_seconds=0) as after_old_run:
+        assert after_old_run is True
+
+
+@_opt_in
 def test_cleanup_reads_only_unexpired_claims(pm, claim_user_ids):
     import premium_cleanup
 
