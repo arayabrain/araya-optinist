@@ -26,7 +26,7 @@ jobs:
   unit:
     uses: ./.github/workflows/tests.yml
 
-  # Real MySQL GET_LOCK serialization. Opt-in by design (its own compose
+  # Real MySQL GET_LOCK and assign-claim serialization. Opt-in by design (its own compose
   # project and a throwaway DB), so no per-PR job runs it.
   premium_lock_it:
     runs-on: ubuntu-latest

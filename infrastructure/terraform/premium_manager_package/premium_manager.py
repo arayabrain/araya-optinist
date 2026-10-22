@@ -40,6 +40,8 @@ import json
 import os
 import re
 import time
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
@@ -77,11 +79,20 @@ CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
-ASSIGN_USER_LOCK_PREFIX = "assign_user_"
-ASSIGN_LOCK_TIMEOUT_SECONDS = (
-    10  # Short acquisition timeout so 409 fallback is reachable within Lambda timeout
-)
 LOCK_TIMEOUT_SECONDS = 60
+
+# Per-user assign claim (premium_assign_claims row)
+ASSIGN_CLAIM_WAIT_SECONDS = 10  # Bounded wait, then the 200 / 409 fallback
+ASSIGN_CLAIM_POLL_INTERVAL_SECONDS = 1
+# A claim outlives its holder's invocation deadline by this margin
+ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS = 30
+# Claim lifetime when the invocation deadline is unknown (Lambda maximum)
+ASSIGN_CLAIM_DEFAULT_SECONDS = 900
+# Session lock the previous release's assign held for its whole run. A claim
+# is not taken while it is in use, so a deploy cannot overlap the two.
+LEGACY_ASSIGN_LOCK_PREFIX = "assign_user_"
+MYSQL_ER_DUP_ENTRY = 1062
+MYSQL_ER_NO_SUCH_TABLE = 1146
 
 # Wait before first migration attempt to let instances boot
 MIGRATION_INITIAL_DELAY_SECONDS = 60
@@ -260,6 +271,124 @@ def distributed_lock(lock_name, timeout=LOCK_TIMEOUT_SECONDS):
                     pass
 
     return _lock_context()
+
+
+def _try_acquire_assign_claim(user_id: int, token: str, lifetime_seconds: int) -> bool:
+    """One non-blocking attempt to take the user's assign claim.
+
+    Inserts a fresh claim; when one exists, takes it over only if it has
+    expired. Ownership is read back by token, so the result does not depend
+    on rowcount semantics.
+    """
+    with get_db_connection(auto_commit=True) as connection:
+        with connection.cursor() as cursor:
+            try:
+                cursor.execute(
+                    """INSERT INTO premium_assign_claims
+                       (user_id, claim_token, claimed_at, expires_at)
+                       VALUES (%s, %s, NOW(), NOW() + INTERVAL %s SECOND)""",
+                    (user_id, token, lifetime_seconds),
+                )
+                return True
+            except pymysql.err.IntegrityError as e:
+                if e.args[0] != MYSQL_ER_DUP_ENTRY:
+                    raise
+
+            cursor.execute(
+                """UPDATE premium_assign_claims
+                   SET claim_token = %s, claimed_at = NOW(),
+                       expires_at = NOW() + INTERVAL %s SECOND
+                   WHERE user_id = %s AND expires_at < NOW()""",
+                (token, lifetime_seconds, user_id),
+            )
+            cursor.execute(
+                "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            owned = bool(row) and row["claim_token"] == token
+            if owned:
+                print(f"Reclaimed expired assign claim for user {user_id}")
+            return owned
+
+
+def _release_assign_claim(user_id: int, token: str) -> None:
+    """Delete the claim if this holder still owns it. Best-effort: a claim
+    left behind expires and is reclaimed by the next assign."""
+    try:
+        with get_db_connection(auto_commit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """DELETE FROM premium_assign_claims
+                       WHERE user_id = %s AND claim_token = %s""",
+                    (user_id, token),
+                )
+        print(f"Released assign claim for user {user_id}")
+    except Exception as e:
+        print(f"Failed to release assign claim for user {user_id}: {e}")
+
+
+@contextmanager
+def assign_claim(
+    user_id: int,
+    lifetime_seconds: int,
+    wait_seconds: Optional[float] = None,
+):
+    """Hold the per-user assign claim for the block's lifetime.
+
+    The claim is a committed row, not a session lock: no connection stays
+    open while the block runs, and a claim left by a crashed invocation is
+    reclaimable once its expires_at passes.
+
+    Yields True if acquired within ``wait_seconds`` (default
+    ASSIGN_CLAIM_WAIT_SECONDS), False otherwise. A missing claims table
+    (migration not yet applied) yields False. While an invocation of the
+    previous release holds the legacy session lock, the claim is given back
+    and the attempt counts as not acquired.
+    """
+    if wait_seconds is None:
+        wait_seconds = ASSIGN_CLAIM_WAIT_SECONDS
+    token = uuid.uuid4().hex
+    deadline = time.monotonic() + wait_seconds
+
+    def attempt() -> bool:
+        if not _try_acquire_assign_claim(user_id, token, lifetime_seconds):
+            return False
+        if is_creation_lock_held(f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}"):
+            _release_assign_claim(user_id, token)
+            return False
+        return True
+
+    acquired = False
+    try:
+        acquired = attempt()
+        while not acquired and time.monotonic() < deadline:
+            time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
+            acquired = attempt()
+    except pymysql.err.ProgrammingError as e:
+        if e.args[0] != MYSQL_ER_NO_SUCH_TABLE:
+            raise
+        print(f"premium_assign_claims is missing; assign claim not taken: {e}")
+
+    if acquired:
+        print(f"Acquired assign claim for user {user_id}")
+    else:
+        print(f"Assign claim for user {user_id} is held by another invocation")
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            _release_assign_claim(user_id, token)
+
+
+def assign_claim_lifetime_seconds(context: Any) -> int:
+    """Claim lifetime: the invocation's remaining time plus a margin, so a
+    claim cannot expire while its holder is still running."""
+    get_remaining = getattr(context, "get_remaining_time_in_millis", None)
+    remaining_ms = get_remaining() if callable(get_remaining) else None
+    if not isinstance(remaining_ms, (int, float)):
+        return ASSIGN_CLAIM_DEFAULT_SECONDS
+    return int(remaining_ms // 1000) + ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS
 
 
 def with_transaction(func):
@@ -2453,7 +2582,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
 
             if action == PremiumAssignment.ACTION_ASSIGN:
-                return assign_premium_user(user_id, body_data, user_uid)
+                return assign_premium_user(
+                    user_id,
+                    body_data,
+                    user_uid,
+                    claim_lifetime_seconds=assign_claim_lifetime_seconds(context),
+                )
             elif action == PremiumAssignment.ACTION_RELEASE:
                 hard = body_data.get("hard", False)
                 return release_premium_user(user_id, hard=hard)
@@ -2877,11 +3011,9 @@ def _assign_premium_user_impl(
 ) -> Dict[str, Any]:
     """Core premium user assignment logic.
 
-    Called from assign_premium_user UNDER the per-user distributed
-    lock to prevent concurrent calls from corrupting ALB resources
-    (issue #630).  The lock uses ASSIGN_LOCK_TIMEOUT_SECONDS (10 s)
-    so the 409 fallback is reliably reachable within the Lambda
-    invocation timeout (60 s).
+    Called from assign_premium_user while it holds the user's assign
+    claim, so concurrent calls for one user cannot corrupt each other's
+    ALB resources.
     """
     # Restore pending_release if user refreshed (beacon fired but user is back)
     try:
@@ -3812,6 +3944,7 @@ def assign_premium_user(
     user_id: int,
     event: Dict[str, Any],
     user_uid: Optional[str] = None,
+    claim_lifetime_seconds: int = ASSIGN_CLAIM_DEFAULT_SECONDS,
 ) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
@@ -3832,24 +3965,17 @@ def assign_premium_user(
             ),
         }
 
-    # Serialize concurrent assign calls for the same user_id.
-    # Without this lock, two concurrent calls can both pass the
-    # "existing assignment?" check and race through TG creation,
-    # causing the second call's orphan-cleanup to delete the first
-    # call's freshly-created target group (issue #630).
-    #
-    # The entire _assign_premium_user_impl runs under the lock.
-    # Lock timeout is short (ASSIGN_LOCK_TIMEOUT_SECONDS = 10) so
-    # the 409 fallback is reliably reachable within the Lambda
-    # invocation timeout (60 s).
-    lock_name = f"{ASSIGN_USER_LOCK_PREFIX}{user_id}"
-    with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
+    # Serialize concurrent assign calls for the same user_id. Without it,
+    # two calls can both pass the "existing assignment?" check and race
+    # through TG creation, and the second call's orphan-cleanup deletes the
+    # first call's fresh target group. The whole impl runs under the claim;
+    # premium_cleanup also skips ALB resources of users holding one.
+    with assign_claim(user_id, claim_lifetime_seconds) as acquired:
         if not acquired:
-            # Lock timed out -- another invocation held it.
-            # Check whether that call stored a valid assignment
-            # before giving up.
+            # Another invocation holds the claim. Return what it stored,
+            # if it has finished, before asking the caller to retry.
             print(
-                f"Per-user assign lock timed out for user {user_id}, "
+                f"Assign claim wait timed out for user {user_id}, "
                 f"checking for completed assignment"
             )
             try:
@@ -3888,7 +4014,7 @@ def assign_premium_user(
                 ),
             }
 
-        # ── Under lock: full assignment logic ──
+        # ── Under the claim: full assignment logic ──
         return _assign_premium_user_impl(
             user_id,
             event,

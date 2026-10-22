@@ -143,6 +143,99 @@ def mock_env_vars_common():
     return {**MOCK_ENV_VARS_COMMON}
 
 
+class FakeAssignClaimsDb:
+    """In-memory premium_assign_claims behind a fake get_db_connection.
+
+    Mirrors the statements premium_manager's assign-claim helpers issue
+    (INSERT / takeover UPDATE / SELECT / DELETE), including the duplicate-key
+    error, with a settable clock, and answers IS_FREE_LOCK from
+    ``session_locks``. Thread-safe. Any other statement is a no-op returning
+    no rows. The real-MySQL semantics are covered by
+    test_premium_lock_integration.py.
+    """
+
+    def __init__(self, missing_table=False):
+        import threading
+
+        self.rows = {}  # user_id -> {"claim_token", "expires_at"}
+        self.now = 0.0
+        self.missing_table = missing_table
+        self.session_locks = set()  # GET_LOCK names held by other sessions
+        self._guard = threading.Lock()
+
+    def _execute(self, cursor, sql, params=()):
+        import pymysql
+
+        statement = " ".join(sql.split())
+        if "IS_FREE_LOCK" in statement:
+            cursor.result = {"is_free": 0 if params[0] in self.session_locks else 1}
+            return
+        if "premium_assign_claims" not in statement:
+            cursor.result = None
+            return
+        if self.missing_table:
+            raise pymysql.err.ProgrammingError(
+                1146, "Table 'premium_assign_claims' doesn't exist"
+            )
+        with self._guard:
+            if statement.startswith("INSERT"):
+                user_id, token, lifetime = params
+                if user_id in self.rows:
+                    raise pymysql.err.IntegrityError(1062, "Duplicate entry")
+                self.rows[user_id] = {
+                    "claim_token": token,
+                    "expires_at": self.now + lifetime,
+                }
+            elif statement.startswith("UPDATE"):
+                token, lifetime, user_id = params
+                row = self.rows.get(user_id)
+                if row and row["expires_at"] < self.now:
+                    self.rows[user_id] = {
+                        "claim_token": token,
+                        "expires_at": self.now + lifetime,
+                    }
+            elif statement.startswith("SELECT"):
+                row = self.rows.get(params[0])
+                cursor.result = {"claim_token": row["claim_token"]} if row else None
+            elif statement.startswith("DELETE"):
+                user_id, token = params
+                row = self.rows.get(user_id)
+                if row and row["claim_token"] == token:
+                    del self.rows[user_id]
+
+    def get_db_connection(self, auto_commit=False):
+        from contextlib import contextmanager
+
+        db = self
+
+        class _Cursor:
+            result = None
+            rowcount = 0
+
+            def execute(self, sql, params=()):
+                db._execute(self, sql, params)
+
+            def fetchone(self):
+                return self.result
+
+            def fetchall(self):
+                return []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        @contextmanager
+        def _connection():
+            connection = MagicMock()
+            connection.cursor.side_effect = lambda *a, **k: _Cursor()
+            yield connection
+
+        return _connection()
+
+
 def setup_db_mock(fetchone_values=None, fetchall_values=None):
     """
     Create a properly configured database mock.
