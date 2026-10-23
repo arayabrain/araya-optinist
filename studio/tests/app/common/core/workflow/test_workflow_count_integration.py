@@ -13,6 +13,10 @@ show is that concurrent *connections* serialize on the row, which is what the
 two rows claim. Losing an increment is the dangerous direction: the count
 reaches zero while a workflow is still running, and the sweep reclaims the
 instance or the cleanup job deletes the workspace.
+
+The same holds for the run-start gate: only real connections show that two
+starts cannot both pass the limit, and only the database clock shows the
+lease expiring.
 """
 
 import os
@@ -133,3 +137,92 @@ class TestConcurrentWorkflowCountsOverRealConnections:
         _all_at_once(decrement_workflow_count, free_user)
 
         assert _stored_count(free_user) == 0
+
+
+def _set_row(user_id, count, heartbeat_age_seconds):
+    """Store a count and a lease renewed that many seconds ago (database clock)."""
+    from sqlalchemy import text
+
+    from studio.app.common.db.database import session_scope
+
+    with session_scope() as session:
+        session.execute(
+            text(
+                "UPDATE free_user_assignments SET active_workflow_count = :count, "
+                "last_workflow_heartbeat = NOW() - INTERVAL :age SECOND "
+                "WHERE user_id = :user_id"
+            ),
+            {"count": count, "age": heartbeat_age_seconds, "user_id": user_id},
+        )
+
+
+@_opt_in
+class TestTheGateOverRealConnections:
+    """Check and increment are one statement: of simultaneous starts, exactly
+    the limit's worth pass, whatever the interleaving. A lease expired on the
+    database clock lets a start past a count no live run holds."""
+
+    LIMIT = 2
+
+    @staticmethod
+    def _limited():
+        from studio.app.common.core.workflow.workflow_tracking import ConcurrencyLimit
+
+        return patch(
+            "studio.app.common.core.workflow.workflow_tracking._get_concurrency_limit",
+            return_value=ConcurrencyLimit("Free", TestTheGateOverRealConnections.LIMIT),
+        )
+
+    def test_exactly_the_limit_of_simultaneous_starts_passes(self, free_user):
+        from studio.app.common.core.workflow.workflow_tracking import (
+            TIER_FREE,
+            WorkflowConcurrencyLimitError,
+            increment_workflow_count,
+        )
+
+        outcomes = []
+
+        def start(user_id):
+            try:
+                outcomes.append(increment_workflow_count(user_id))
+            except WorkflowConcurrencyLimitError:
+                outcomes.append("refused")
+
+        with self._limited():
+            _all_at_once(start, free_user)
+
+        assert outcomes.count(TIER_FREE) == self.LIMIT
+        assert outcomes.count("refused") == CONCURRENCY - self.LIMIT
+        assert _stored_count(free_user) == self.LIMIT
+
+    def test_a_full_row_with_a_live_lease_refuses(self, free_user):
+        from studio.app.common.core.workflow.workflow_tracking import (
+            WorkflowConcurrencyLimitError,
+            increment_workflow_count,
+        )
+
+        _set_row(free_user, count=self.LIMIT, heartbeat_age_seconds=0)
+
+        with self._limited(), pytest.raises(WorkflowConcurrencyLimitError) as raised:
+            increment_workflow_count(free_user)
+
+        assert raised.value.active == self.LIMIT
+        assert _stored_count(free_user) == self.LIMIT
+
+    def test_a_full_row_with_an_expired_lease_admits_a_run(self, free_user):
+        from studio.app.common.core.workflow.workflow_tracking import (
+            TIER_FREE,
+            WORKFLOW_LEASE_TTL_SECONDS,
+            increment_workflow_count,
+        )
+
+        _set_row(
+            free_user,
+            count=self.LIMIT,
+            heartbeat_age_seconds=WORKFLOW_LEASE_TTL_SECONDS + 60,
+        )
+
+        with self._limited():
+            assert increment_workflow_count(free_user) == TIER_FREE
+
+        assert _stored_count(free_user) == 1

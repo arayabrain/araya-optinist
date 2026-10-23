@@ -2,9 +2,10 @@ import asyncio
 import logging
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from snakemake.api import (
     DAGSettings,
@@ -53,6 +54,7 @@ def snakemake_execute(
     params: SmkParam,
     user_id: int = None,
     generation: str = None,
+    counted_tier: Optional[str] = None,
 ):
     """
     Main entry point for Snakemake execution.
@@ -63,6 +65,7 @@ def snakemake_execute(
         params: Snakemake parameters
         user_id: User ID (for tracking free tier workflow counts)
         generation: started_at of the run that scheduled this execution
+        counted_tier: the tier the run start was counted on; None = not counted
     """
     client_id = get_client_id_for_subprocess()
 
@@ -79,7 +82,7 @@ def snakemake_execute(
                 generation=generation,
                 client_id=client_id,
             )
-            future_result = future.result()
+            future_result = _wait_renewing_lease(future, user_id, counted_tier)
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
@@ -89,16 +92,35 @@ def snakemake_execute(
     finally:
         # Decrement workflow count in finally block to ensure it ALWAYS runs
         # This prevents workflow count leaks when exceptions occur during execution
-        if user_id is not None:
+        if user_id is not None and counted_tier is not None:
             try:
                 from studio.app.common.core.workflow.workflow_tracking import (
                     decrement_workflow_count,
                 )
 
-                decrement_workflow_count(user_id)
+                decrement_workflow_count(user_id, tier=counted_tier)
                 logger.info(f"Decremented workflow count for user {user_id}")
             except Exception as e:
                 logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
+
+
+def _wait_renewing_lease(
+    future: Future, user_id: Optional[int], counted_tier: Optional[str]
+):
+    """The run's result; its workflow lease is renewed while the run lives."""
+    from studio.app.common.core.workflow.workflow_tracking import (
+        WORKFLOW_LEASE_RENEW_SECONDS,
+        renew_workflow_lease,
+    )
+
+    while True:
+        try:
+            return future.result(timeout=WORKFLOW_LEASE_RENEW_SECONDS)
+        except FutureTimeoutError:
+            # A TimeoutError raised by the run itself is its result
+            if future.done():
+                raise
+            renew_workflow_lease(user_id, counted_tier)
 
 
 @with_client_id_context  # Automatically set client_id for logging

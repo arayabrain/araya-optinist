@@ -489,22 +489,19 @@ async def test_a_cancelled_rerun_holds_the_lock_until_its_runner_is_built(
     previous_run,
 ):
     started, release = threading.Event(), threading.Event()
-    active_workflows, decrement_threads = [], []
+    active_workflows, release_threads = [], []
 
-    def decrement(_):
-        decrement_threads.append(threading.get_ident())
+    def release_slot():
+        release_threads.append(threading.get_ident())
         active_workflows.pop()
 
     def slow_runner(*args):
         active_workflows.append(1)
         started.set()
         release.wait(10)
-        return Mock()
+        return Mock(release_workflow_slot=Mock(side_effect=release_slot))
 
-    with patch("studio.app.common.routers.run.WorkflowRunner", slow_runner), patch(
-        "studio.app.common.routers.run.decrement_workflow_count",
-        side_effect=decrement,
-    ):
+    with patch("studio.app.common.routers.run.WorkflowRunner", slow_runner):
         request = asyncio.ensure_future(rerun())
         await asyncio.to_thread(started.wait, 10)
         request.cancel()
@@ -518,7 +515,7 @@ async def test_a_cancelled_rerun_holds_the_lock_until_its_runner_is_built(
             await request
 
     assert active_workflows == []
-    assert decrement_threads and threading.get_ident() not in decrement_threads
+    assert release_threads and threading.get_ident() not in release_threads
     with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
         pass
 

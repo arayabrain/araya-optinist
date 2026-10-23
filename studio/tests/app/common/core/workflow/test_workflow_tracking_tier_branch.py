@@ -52,12 +52,15 @@ def _run_with_tier(
     ``_get_user_tier`` is patched so each branch can be addressed directly. That
     makes the *routing* below the decision observable, not the decision itself.
     ``_execution_host`` is patched too: off EC2 it would try the metadata
-    service.
+    service. The plan has no concurrent-run limit here
+    (``test_workflow_concurrency_limit.py`` covers the gate).
     """
     with patch(f"{MODULE}._get_user_tier") as get_tier, patch(
         f"{MODULE}.session_scope"
     ) as mock_session, patch(f"{MODULE}.MODE") as mode, patch(
         f"{MODULE}._execution_host", return_value=host
+    ), patch(
+        f"{MODULE}._get_concurrency_limit", return_value=None
     ):
         mode.IS_STANDALONE = False
         get_tier.return_value = (tier, has_free_record, has_premium_record)
@@ -374,10 +377,13 @@ class TestDecrementSurvivesAnExecutionFailure:
     workflow does not leak the count. Without it, one failed run leaves the user
     permanently at count 1: the idle sweep never reclaims their instance and
     ``DataCleanupJob`` never cleans their workspace.
+
+    It releases the table the start was counted on (``counted_tier``), and
+    nothing for a start that was not counted.
     """
 
     @staticmethod
-    def _execute(raises=None):
+    def _execute(raises=None, counted_tier=TIER_FREE):
         from studio.app.common.core.snakemake import snakemake_executor
 
         executor = MagicMock()
@@ -401,7 +407,11 @@ class TestDecrementSurvivesAnExecutionFailure:
             error = None
             try:
                 outcome = snakemake_executor.snakemake_execute(
-                    "1", "exp1", MagicMock(), user_id=USER_ID
+                    "1",
+                    "exp1",
+                    MagicMock(),
+                    user_id=USER_ID,
+                    counted_tier=counted_tier,
                 )
             except Exception as raised:  # noqa: BLE001 - re-inspected below
                 error = raised
@@ -413,13 +423,26 @@ class TestDecrementSurvivesAnExecutionFailure:
 
         assert error is None
         assert outcome == "done"
-        decrement.assert_called_once_with(USER_ID)
+        decrement.assert_called_once_with(USER_ID, tier=TIER_FREE)
 
     def test_decrement_still_runs_when_execution_raises(self):
         decrement, _, error = self._execute(raises=RuntimeError("snakemake died"))
 
         assert isinstance(error, RuntimeError), "the failure must still propagate"
-        decrement.assert_called_once_with(USER_ID)
+        decrement.assert_called_once_with(USER_ID, tier=TIER_FREE)
+
+    def test_the_release_goes_to_the_table_the_start_was_counted_on(self):
+        decrement, _, _ = self._execute(counted_tier=TIER_PREMIUM)
+
+        decrement.assert_called_once_with(USER_ID, tier=TIER_PREMIUM)
+
+    def test_a_start_that_was_not_counted_releases_nothing(self):
+        """A count that was never taken (no assignment row, a database error at
+        the start) must not be taken from another run still counted."""
+        decrement, outcome, _ = self._execute(counted_tier=None)
+
+        assert outcome == "done"
+        decrement.assert_not_called()
 
     def test_the_original_failure_is_not_swallowed_by_the_decrement(self):
         """A ``finally`` that raises would replace the real error with a
@@ -443,7 +466,7 @@ class TestDecrementSurvivesAnExecutionFailure:
         ):
             with pytest.raises(RuntimeError) as excinfo:
                 snakemake_executor.snakemake_execute(
-                    "1", "exp1", MagicMock(), user_id=USER_ID
+                    "1", "exp1", MagicMock(), user_id=USER_ID, counted_tier=TIER_FREE
                 )
 
         assert "snakemake died" in str(excinfo.value)
@@ -464,7 +487,9 @@ class TestDecrementSurvivesAnExecutionFailure:
         ), patch(
             f"{MODULE}.decrement_workflow_count"
         ) as decrement:
-            snakemake_executor.snakemake_execute("1", "exp1", MagicMock(), user_id=None)
+            snakemake_executor.snakemake_execute(
+                "1", "exp1", MagicMock(), user_id=None, counted_tier=TIER_FREE
+            )
 
         decrement.assert_not_called()
 

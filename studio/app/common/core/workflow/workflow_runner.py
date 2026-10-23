@@ -105,31 +105,47 @@ class WorkflowRunner:
             f"at {time.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # Track workflow start for free tier users (for load balancing)
+        # Count the run against the plan's concurrent-run limit
+        # - refused → WorkflowConcurrencyLimitError, before any file is written
+        # - counted_tier: the table to release; None once handed to the executor
         from studio.app.common.core.workflow.workflow_tracking import (
             increment_workflow_count,
         )
 
-        increment_workflow_count(self.user_id)
+        self.counted_tier = increment_workflow_count(self.user_id)
 
-        WorkflowConfigWriter(
-            self.workspace_id,
-            self.unique_id,
-            self.nodeDict,
-            self.edgeDict,
-        ).write()
+        try:
+            WorkflowConfigWriter(
+                self.workspace_id,
+                self.unique_id,
+                self.nodeDict,
+                self.edgeDict,
+            ).write()
 
-        expt_config = ExptConfigWriter(
-            self.workspace_id,
-            self.unique_id,
-            self.runItem.name,
-            nwbfile=nwb_params,
-            snakemake=snakemake_params,
-            timezone=timezone,
-        ).write()
-        self.generation = expt_config.started_at
+            expt_config = ExptConfigWriter(
+                self.workspace_id,
+                self.unique_id,
+                self.runItem.name,
+                nwbfile=nwb_params,
+                snakemake=snakemake_params,
+                timezone=timezone,
+            ).write()
+            self.generation = expt_config.started_at
 
-        Runner.clear_pid_file(self.workspace_id, self.unique_id)
+            Runner.clear_pid_file(self.workspace_id, self.unique_id)
+        except BaseException:
+            self.release_workflow_slot()
+            raise
+
+    def release_workflow_slot(self) -> None:
+        """Release the run's count when it will not be scheduled (idempotent)."""
+        from studio.app.common.core.workflow.workflow_tracking import (
+            decrement_workflow_count,
+        )
+
+        tier, self.counted_tier = self.counted_tier, None
+        if tier is not None:
+            decrement_workflow_count(self.user_id, tier=tier)
 
     def log_workflow_completion(self, status: str = "completed"):
         """Log workflow completion with timing information."""
@@ -328,6 +344,13 @@ class WorkflowRunner:
                 )
             raise
 
+        # The input download may have outlasted part of the lease
+        from studio.app.common.core.workflow.workflow_tracking import (
+            renew_workflow_lease,
+        )
+
+        renew_workflow_lease(self.user_id, self.counted_tier)
+
         background_tasks.add_task(
             snakemake_execute,
             self.workspace_id,
@@ -335,7 +358,10 @@ class WorkflowRunner:
             snakemake_params,
             self.user_id,
             self.generation,
+            counted_tier=self.counted_tier,
         )
+        # The executor releases the count from here on
+        self.counted_tier = None
 
     def finish_workflow_without_run(
         self, status: WorkflowRunStatus = WorkflowRunStatus.SUCCESS
