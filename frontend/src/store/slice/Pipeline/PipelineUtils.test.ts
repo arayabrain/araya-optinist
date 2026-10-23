@@ -162,4 +162,18 @@ describe("handleWorkflowYamlError at the concurrent-run limit", () => {
     )
     expect(snackbar.mock.calls[0][0]).toBe("Failed to Run workflow")
   })
+
+  test("a 429 with another code is the generic failure", () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      {
+        response: {
+          status: 429,
+          data: { detail: { code: "other", message: "Slow down" } },
+        },
+      },
+      snackbar,
+    )
+    expect(snackbar.mock.calls[0][0]).toBe("Failed to Run workflow")
+  })
 })
