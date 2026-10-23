@@ -130,6 +130,7 @@ optional = true
 
 [tool.poetry.group.test.dependencies]
 pytest = "*"
+pytest-xdist = "^3.6"
 
 [tool.poetry.scripts]
 run_optinist = "studio.__main__:main"

@@ -49,9 +49,14 @@ def _collect_algos(nest_dict, algos):
         ("optinist/neural_decoding/svm", ["score"]),
         ("optinist/neural_decoding/lda", ["score"]),
         ("optinist/neural_decoding/glm", ["actual_predicted", "params"]),
-        ("caiman/caiman_cnmf", ["fluorescence", "dff", "iscell"]),
-        ("caiman/caiman_cnmfe", ["fluorescence", "dff", "iscell"]),
-        ("caiman/cnmf_multisession", ["fluorescence", "dff", "iscell"]),
+        ("caiman/caiman_mc", ["mc_images", "meanImg", "refImg"]),
+        ("caiman/caiman_cnmf", ["fluorescence", "dff", "iscell", "meanImg"]),
+        ("caiman/caiman_cnmfe", ["fluorescence", "dff", "iscell", "meanImg"]),
+        ("caiman/cnmf_multisession", ["fluorescence", "dff", "iscell", "meanImg"]),
+        (
+            "suite2p/suite2p_registration",
+            ["ops", "mc_images", "meanImg", "refImg"],
+        ),
     ],
 )
 def test_declared_returns(path, expected_returns):

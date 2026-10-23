@@ -54,6 +54,7 @@ def suite2p_stub(monkeypatch):
         n, Ly, Lx = f_reg.shape
         reg_outputs = {
             "refImg": np.ones((Ly, Lx), np.float32),
+            "meanImg": np.full((Ly, Lx), 2, np.float32),  # the input's is ones
             "meanImgE": np.ones((Ly, Lx), np.float32),
             "yoff": np.zeros(n),
             "xoff": np.zeros(n),
@@ -193,6 +194,16 @@ def test_output_ops_keep_the_flat_contract_and_carry_the_settings(
     assert ops["settings"]["version"] == "1.1.0"
     assert info["mc_images"].path == [f"{output_dir}/tiff/mc_images/mc_images.tif"]
     assert os.path.exists(info["mc_images"].path[0])
+
+
+def test_mean_image_output_is_the_registered_mean_not_the_input_mean(
+    output_dir, tmp_path, suite2p_stub
+):
+    params = read_default_params("suite2p_registration")
+    info = suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+
+    np.testing.assert_array_equal(info["meanImg"].data, np.full((H, W), 2))
+    np.testing.assert_array_equal(info["refImg"].data, np.ones((H, W)))
 
 
 def test_a_retired_parameter_fails_the_node_by_name(output_dir, tmp_path, suite2p_stub):
