@@ -236,98 +236,165 @@ variable "premium_instance_type" {
 }
 
 # Workflow task and host sizes per tier. A tfvars override names only the
-# fields it changes; the others keep these defaults. Host swap is the whole
+# fields it changes, e.g. premium_tier_sizing = { task_memory_mib = ... }; the
+# others keep these defaults. An unknown or null field fails the plan: an
+# object type would drop a misspelled field silently. Host swap is the whole
 # swap volume (ecs-user-data.sh runs mkswap on the device)
+locals {
+  free_tier_sizing_defaults = {
+    task_cpu                         = 2048
+    task_memory_mib                  = 7168
+    container_cpu                    = 1536
+    container_memory_mib             = 6656
+    container_memory_reservation_mib = 4096
+    container_max_swap_mib           = 32768
+    container_swappiness             = 20
+    root_volume_gib                  = 88
+    swap_volume_gib                  = 32
+  }
+
+  premium_tier_sizing_defaults = {
+    task_cpu                         = 2048
+    task_memory_mib                  = 7168
+    container_cpu                    = 1536
+    container_memory_mib             = 6656
+    container_memory_reservation_mib = 4096
+    container_max_swap_mib           = 32768
+    container_swappiness             = 20
+    root_volume_gib                  = 48
+    swap_volume_gib                  = 32
+  }
+
+  # Read by the resources. A validation cannot refer to these (they depend on
+  # the variable), so the rules below repeat the merge
+  free_tier_sizing    = merge(local.free_tier_sizing_defaults, var.free_tier_sizing)
+  premium_tier_sizing = merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing)
+}
+
 variable "free_tier_sizing" {
-  description = "Free-tier sizes: aws_ecs_task_definition.autoscaling and aws_launch_template.ecs"
-  type = object({
-    task_cpu                         = optional(number, 2048)
-    task_memory_mib                  = optional(number, 7168)
-    container_cpu                    = optional(number, 1536)
-    container_memory_mib             = optional(number, 6656)
-    container_memory_reservation_mib = optional(number, 4096)
-    container_max_swap_mib           = optional(number, 32768)
-    container_swappiness             = optional(number, 20)
-    root_volume_gib                  = optional(number, 88)
-    swap_volume_gib                  = optional(number, 32)
-  })
-  default  = {}
-  nullable = false
+  description = "Free-tier size overrides (aws_ecs_task_definition.autoscaling, aws_launch_template.ecs). Fields and defaults: local.free_tier_sizing_defaults"
+  type        = map(number)
+  default     = {}
+  nullable    = false
 
   validation {
-    condition     = var.free_tier_sizing.container_memory_mib <= var.free_tier_sizing.task_memory_mib
+    condition     = length(setsubtract(keys(var.free_tier_sizing), keys(local.free_tier_sizing_defaults))) == 0
+    error_message = "free_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.free_tier_sizing), keys(local.free_tier_sizing_defaults)))}; the fields are those of local.free_tier_sizing_defaults."
+  }
+
+  validation {
+    condition     = alltrue([for value in values(var.free_tier_sizing) : value != null])
+    error_message = "free_tier_sizing: a field must not be null; leave it out to keep its default."
+  }
+
+  validation {
+    condition = (
+      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_memory_mib
+      <= merge(local.free_tier_sizing_defaults, var.free_tier_sizing).task_memory_mib
+    )
     error_message = "free_tier_sizing: container_memory_mib must not exceed task_memory_mib."
   }
 
   validation {
-    condition     = var.free_tier_sizing.container_memory_reservation_mib < var.free_tier_sizing.container_memory_mib
+    condition = (
+      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_memory_reservation_mib
+      < merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_memory_mib
+    )
     error_message = "free_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
   }
 
   validation {
-    condition     = var.free_tier_sizing.container_cpu <= var.free_tier_sizing.task_cpu
+    condition = (
+      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_cpu
+      <= merge(local.free_tier_sizing_defaults, var.free_tier_sizing).task_cpu
+    )
     error_message = "free_tier_sizing: container_cpu must not exceed task_cpu."
   }
 
   validation {
-    condition     = var.free_tier_sizing.swap_volume_gib >= 1
+    condition = (
+      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).swap_volume_gib >= 1
+    )
     error_message = "free_tier_sizing: swap_volume_gib must be at least 1; running without a swap volume needs a change to the launch template."
   }
 
   validation {
-    condition     = var.free_tier_sizing.container_max_swap_mib <= var.free_tier_sizing.swap_volume_gib * 1024
+    condition = (
+      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_max_swap_mib
+      <= merge(local.free_tier_sizing_defaults, var.free_tier_sizing).swap_volume_gib * 1024
+    )
     error_message = "free_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
   }
 
   validation {
-    condition     = var.free_tier_sizing.container_swappiness >= 0 && var.free_tier_sizing.container_swappiness <= 100
+    condition = (
+      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_swappiness >= 0
+      && merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_swappiness <= 100
+    )
     error_message = "free_tier_sizing: container_swappiness must be between 0 and 100."
   }
 }
 
 variable "premium_tier_sizing" {
-  description = "Premium-tier sizes: aws_ecs_task_definition.premium and aws_launch_template.premium, which premium-dedicated instances launch from too"
-  type = object({
-    task_cpu                         = optional(number, 2048)
-    task_memory_mib                  = optional(number, 7168)
-    container_cpu                    = optional(number, 1536)
-    container_memory_mib             = optional(number, 6656)
-    container_memory_reservation_mib = optional(number, 4096)
-    container_max_swap_mib           = optional(number, 32768)
-    container_swappiness             = optional(number, 20)
-    root_volume_gib                  = optional(number, 48)
-    swap_volume_gib                  = optional(number, 32)
-  })
-  default  = {}
-  nullable = false
+  description = "Premium-tier size overrides (aws_ecs_task_definition.premium, aws_launch_template.premium, which premium-dedicated instances launch from too). Fields and defaults: local.premium_tier_sizing_defaults"
+  type        = map(number)
+  default     = {}
+  nullable    = false
 
   validation {
-    condition     = var.premium_tier_sizing.container_memory_mib <= var.premium_tier_sizing.task_memory_mib
+    condition     = length(setsubtract(keys(var.premium_tier_sizing), keys(local.premium_tier_sizing_defaults))) == 0
+    error_message = "premium_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.premium_tier_sizing), keys(local.premium_tier_sizing_defaults)))}; the fields are those of local.premium_tier_sizing_defaults."
+  }
+
+  validation {
+    condition     = alltrue([for value in values(var.premium_tier_sizing) : value != null])
+    error_message = "premium_tier_sizing: a field must not be null; leave it out to keep its default."
+  }
+
+  validation {
+    condition = (
+      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_memory_mib
+      <= merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).task_memory_mib
+    )
     error_message = "premium_tier_sizing: container_memory_mib must not exceed task_memory_mib."
   }
 
   validation {
-    condition     = var.premium_tier_sizing.container_memory_reservation_mib < var.premium_tier_sizing.container_memory_mib
+    condition = (
+      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_memory_reservation_mib
+      < merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_memory_mib
+    )
     error_message = "premium_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
   }
 
   validation {
-    condition     = var.premium_tier_sizing.container_cpu <= var.premium_tier_sizing.task_cpu
+    condition = (
+      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_cpu
+      <= merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).task_cpu
+    )
     error_message = "premium_tier_sizing: container_cpu must not exceed task_cpu."
   }
 
   validation {
-    condition     = var.premium_tier_sizing.swap_volume_gib >= 1
+    condition = (
+      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).swap_volume_gib >= 1
+    )
     error_message = "premium_tier_sizing: swap_volume_gib must be at least 1; running without a swap volume needs a change to the launch template."
   }
 
   validation {
-    condition     = var.premium_tier_sizing.container_max_swap_mib <= var.premium_tier_sizing.swap_volume_gib * 1024
+    condition = (
+      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_max_swap_mib
+      <= merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).swap_volume_gib * 1024
+    )
     error_message = "premium_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
   }
 
   validation {
-    condition     = var.premium_tier_sizing.container_swappiness >= 0 && var.premium_tier_sizing.container_swappiness <= 100
+    condition = (
+      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_swappiness >= 0
+      && merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_swappiness <= 100
+    )
     error_message = "premium_tier_sizing: container_swappiness must be between 0 and 100."
   }
 }

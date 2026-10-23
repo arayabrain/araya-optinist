@@ -160,7 +160,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = var.free_tier_sizing.root_volume_gib
+      volume_size = local.free_tier_sizing.root_volume_gib
       volume_type = "gp3"
       encrypted   = true
     }
@@ -171,7 +171,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = local.swap_device_name
     ebs {
-      volume_size           = var.free_tier_sizing.swap_volume_gib
+      volume_size           = local.free_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
       encrypted             = true
       delete_on_termination = true
@@ -191,7 +191,7 @@ resource "aws_launch_template" "ecs" {
     ecr_repository_url = local.ecr_repository_url
     efs_id             = aws_efs_file_system.snmk.id
     db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb       = var.free_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
+    swap_size_mb       = local.free_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
     swap_device_name   = local.swap_device_name
   }))
   tag_specifications {
@@ -417,7 +417,7 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = var.premium_tier_sizing.root_volume_gib
+      volume_size = local.premium_tier_sizing.root_volume_gib
       volume_type = "gp3"
       encrypted   = true
     }
@@ -428,7 +428,7 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = local.swap_device_name
     ebs {
-      volume_size           = var.premium_tier_sizing.swap_volume_gib
+      volume_size           = local.premium_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
       encrypted             = true
       delete_on_termination = true
@@ -448,7 +448,7 @@ resource "aws_launch_template" "premium" {
     ecr_repository_url = local.ecr_repository_url
     efs_id             = aws_efs_file_system.snmk.id
     db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb       = var.premium_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
+    swap_size_mb       = local.premium_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
     swap_device_name   = local.swap_device_name
   }))
 
@@ -622,8 +622,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
   family                   = "${local.env_prefix}-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = var.free_tier_sizing.task_cpu
-  memory                   = var.free_tier_sizing.task_memory_mib
+  cpu                      = local.free_tier_sizing.task_cpu
+  memory                   = local.free_tier_sizing.task_memory_mib
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -631,17 +631,17 @@ resource "aws_ecs_task_definition" "autoscaling" {
     {
       name              = "${local.env_prefix}-cloud-container"
       image             = "${local.ecr_repository_url}:latest"
-      cpu               = var.free_tier_sizing.container_cpu
-      memory            = var.free_tier_sizing.container_memory_mib
-      memoryReservation = var.free_tier_sizing.container_memory_reservation_mib
+      cpu               = local.free_tier_sizing.container_cpu
+      memory            = local.free_tier_sizing.container_memory_mib
+      memoryReservation = local.free_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = var.free_tier_sizing.container_max_swap_mib
-        swappiness = var.free_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
+        maxSwap    = local.free_tier_sizing.container_max_swap_mib
+        swappiness = local.free_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
       }
 
       portMappings = [
@@ -883,8 +883,8 @@ resource "aws_ecs_task_definition" "premium" {
   family                   = "${var.environment}-premium-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = var.premium_tier_sizing.task_cpu
-  memory                   = var.premium_tier_sizing.task_memory_mib
+  cpu                      = local.premium_tier_sizing.task_cpu
+  memory                   = local.premium_tier_sizing.task_memory_mib
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -892,17 +892,17 @@ resource "aws_ecs_task_definition" "premium" {
     {
       name              = "${var.environment}-premium-optinist-cloud-container"
       image             = "${local.ecr_repository_url}:latest"
-      cpu               = var.premium_tier_sizing.container_cpu
-      memory            = var.premium_tier_sizing.container_memory_mib
-      memoryReservation = var.premium_tier_sizing.container_memory_reservation_mib
+      cpu               = local.premium_tier_sizing.container_cpu
+      memory            = local.premium_tier_sizing.container_memory_mib
+      memoryReservation = local.premium_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = var.premium_tier_sizing.container_max_swap_mib
-        swappiness = var.premium_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
+        maxSwap    = local.premium_tier_sizing.container_max_swap_mib
+        swappiness = local.premium_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
       }
 
       portMappings = [

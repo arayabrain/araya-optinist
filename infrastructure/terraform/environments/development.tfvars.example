@@ -81,8 +81,9 @@ asg_min_size         = 1
 asg_max_size         = 2
 asg_desired_capacity = 1
 
-# Workflow task and host sizes per tier: defaults in main.tf (free_tier_sizing,
-# premium_tier_sizing). Set only the fields to change, e.g.
+# Workflow task and host sizes per tier: fields and defaults in main.tf
+# (local.free_tier_sizing_defaults, local.premium_tier_sizing_defaults). Set
+# only the fields to change; an unknown field name fails the plan, e.g.
 # premium_tier_sizing = { task_memory_mib = <MiB>, container_memory_mib = <MiB> }
 
 # EC2 Image Builder — Custom AMI (reduces instance boot from ~8 min to ~2 min)

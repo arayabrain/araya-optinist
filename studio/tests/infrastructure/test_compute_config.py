@@ -10,8 +10,8 @@
 - Base premium instance: termination protection, with Terraform still able
   to replace it.
 - Workflow tier sizing: each tier's task definition and launch template take
-  their sizes from that tier's variable in main.tf; its defaults, partial
-  overrides and validation rules.
+  their sizes from that tier's sizing in main.tf; its defaults, partial
+  overrides and validation rules, unknown fields included.
 """
 
 import re
@@ -195,7 +195,8 @@ class TestBasePremiumInstanceProtection:
         assert attribute(self.instance, "force_destroy") == "true"
 
 
-# Workflow tier: (sizing variable, task definition, launch template)
+# Workflow tier: (sizing name, task definition, launch template). The resources
+# read local.<name>, the tier's defaults merged with var.<name>
 WORKFLOW_TIERS = {
     "free": ("free_tier_sizing", "autoscaling", "ecs"),
     "premium": ("premium_tier_sizing", "premium", "premium"),
@@ -226,15 +227,23 @@ TIER_SIZING_DEFAULTS = {
     },
 }
 
-# Validation conditions, written once per tier variable ({v})
+# Validation conditions per tier variable, whitespace collapsed: {v} is the
+# variable, {m} its tier's defaults merged with it
 TIER_SIZING_RULES = [
-    "var.{v}.container_memory_mib <= var.{v}.task_memory_mib",
-    "var.{v}.container_memory_reservation_mib < var.{v}.container_memory_mib",
-    "var.{v}.container_cpu <= var.{v}.task_cpu",
-    "var.{v}.swap_volume_gib >= 1",
-    "var.{v}.container_max_swap_mib <= var.{v}.swap_volume_gib * 1024",
-    "var.{v}.container_swappiness >= 0 && var.{v}.container_swappiness <= 100",
+    "length(setsubtract(keys(var.{v}), keys(local.{v}_defaults))) == 0",
+    "alltrue([for value in values(var.{v}) : value != null])",
+    "{m}.container_memory_mib <= {m}.task_memory_mib",
+    "{m}.container_memory_reservation_mib < {m}.container_memory_mib",
+    "{m}.container_cpu <= {m}.task_cpu",
+    "{m}.swap_volume_gib >= 1",
+    "{m}.container_max_swap_mib <= {m}.swap_volume_gib * 1024",
+    "{m}.container_swappiness >= 0 && {m}.container_swappiness <= 100",
 ]
+
+# A validation condition: one line, or a parenthesised expression over several
+_CONDITION_RE = re.compile(
+    r"^\s*condition\s*=\s*(\(\n.*?\n\s*\)|.+?)\s*$", re.DOTALL | re.MULTILINE
+)
 
 # A sizing attribute of a task definition or launch template set to a number
 _SIZING_LITERAL_RE = re.compile(
@@ -249,18 +258,46 @@ _BLOCK_DEVICE_RE = re.compile(
 )
 
 
+def _conditions(block: str) -> list:
+    """The block's validation conditions, whitespace collapsed and the
+    parentheses around a multi-line one removed."""
+    conditions = []
+    for condition in _CONDITION_RE.findall(block):
+        condition = " ".join(condition.split())
+        if condition.startswith("( ") and condition.endswith(" )"):
+            condition = condition[2:-2]
+        conditions.append(condition)
+    return conditions
+
+
+def _local_numbers(tf: str, name: str) -> dict:
+    """``{key: value}`` of the number map assigned to local ``name``."""
+    match = re.search(
+        r"^\s*%s\s*=\s*\{(.*?)^\s*\}" % re.escape(name),
+        tf,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, f"local {name} not found"
+    return {
+        key: int(value)
+        for key, value in re.findall(
+            r"^\s*(\w+)\s*=\s*(\d+)\s*$", match.group(1), re.MULTILINE
+        )
+    }
+
+
 @pytest.mark.parametrize("tier", WORKFLOW_TIERS)
 class TestWorkflowTierSizing:
     """Each workflow tier's task definition and launch template take their
-    sizes from that tier's variable, so the two tiers can be sized apart."""
+    sizes from that tier's sizing, so the two tiers can be sized apart."""
 
     @pytest.fixture(autouse=True)
     def _load(self, tier):
-        variable, task_definition, launch_template = WORKFLOW_TIERS[tier]
+        name, task_definition, launch_template = WORKFLOW_TIERS[tier]
         tf = read(COMPUTE_TF)
-        self.var = f"var.{variable}"
-        self.other_variable = next(
-            other for other, _, _ in WORKFLOW_TIERS.values() if other != variable
+        self.sizing = f"local.{name}"
+        self.other_name = next(
+            other for other, _, _ in WORKFLOW_TIERS.values() if other != name
         )
         self.task_definition = resource_block(
             tf, "aws_ecs_task_definition", task_definition
@@ -273,25 +310,27 @@ class TestWorkflowTierSizing:
         # Task and container both set cpu / memory; the container's follow
         # container_definitions
         task, container = self.task_definition.split("container_definitions", 1)
-        assert attribute(task, "cpu") == f"{self.var}.task_cpu"
-        assert attribute(task, "memory") == f"{self.var}.task_memory_mib"
-        assert attribute(container, "cpu") == f"{self.var}.container_cpu"
-        assert attribute(container, "memory") == f"{self.var}.container_memory_mib"
+        assert attribute(task, "cpu") == f"{self.sizing}.task_cpu"
+        assert attribute(task, "memory") == f"{self.sizing}.task_memory_mib"
+        assert attribute(container, "cpu") == f"{self.sizing}.container_cpu"
+        assert attribute(container, "memory") == f"{self.sizing}.container_memory_mib"
         assert attribute(container, "memoryReservation") == (
-            f"{self.var}.container_memory_reservation_mib"
+            f"{self.sizing}.container_memory_reservation_mib"
         )
-        assert attribute(container, "maxSwap") == f"{self.var}.container_max_swap_mib"
+        assert attribute(container, "maxSwap") == (
+            f"{self.sizing}.container_max_swap_mib"
+        )
         assert attribute(container, "swappiness") == (
-            f"{self.var}.container_swappiness"
+            f"{self.sizing}.container_swappiness"
         )
 
     def test_launch_template_reads_its_tier(self):
         devices = dict(_BLOCK_DEVICE_RE.findall(self.launch_template))
         assert attribute(devices['"/dev/xvda"'], "volume_size") == (
-            f"{self.var}.root_volume_gib"
+            f"{self.sizing}.root_volume_gib"
         )
         assert attribute(devices["local.swap_device_name"], "volume_size") == (
-            f"{self.var}.swap_volume_gib"
+            f"{self.sizing}.swap_volume_gib"
         )
 
     def test_host_swap_is_the_whole_swap_volume(self):
@@ -300,7 +339,7 @@ class TestWorkflowTierSizing:
         cannot disagree with it. The script finds the device by the name the
         mapping attaches it under."""
         assert attribute(self.launch_template, "swap_size_mb") == (
-            f"{self.var}.swap_volume_gib * 1024"
+            f"{self.sizing}.swap_volume_gib * 1024"
         )
         assert attribute(self.launch_template, "swap_device_name") == (
             "local.swap_device_name"
@@ -309,44 +348,49 @@ class TestWorkflowTierSizing:
     def test_no_size_is_literal_or_from_the_other_tier(self):
         for source in (self.task_definition, self.launch_template):
             assert not _SIZING_LITERAL_RE.findall(source)
-            assert self.other_variable not in source
+            assert self.other_name not in source
 
 
 @pytest.mark.parametrize("variable", TIER_SIZING_DEFAULTS)
 class TestWorkflowTierSizingVariables:
-    """The per-tier sizing variables in main.tf."""
+    """The per-tier sizing variables and their defaults in main.tf."""
 
     @pytest.fixture(autouse=True)
     def _load(self, variable):
-        self.block = variable_block(read(MAIN_TF), variable)
+        self.main = read(MAIN_TF)
+        self.block = variable_block(self.main, variable)
 
     def test_defaults(self, variable):
         """A default applies to every environment whose tfvars leaves the
         field out, so changing one resizes them all at the next apply."""
-        defaults = re.findall(
-            r"^\s*(\w+)\s*=\s*optional\(number,\s*(\d+)\)", self.block, re.MULTILINE
-        )
-        assert {name: int(value) for name, value in defaults} == (
+        assert _local_numbers(self.main, f"{variable}_defaults") == (
             TIER_SIZING_DEFAULTS[variable]
         )
 
-    def test_a_partial_override_keeps_the_other_defaults(self):
+    def test_a_partial_override_keeps_the_other_defaults(self, variable):
         """``premium_tier_sizing = { task_memory_mib = ... }`` must leave the
-        other fields at their defaults: every field optional, and null
-        treated as the empty default."""
-        match = re.search(r"type\s*=\s*object\(\{(.*?)\}\)", self.block, re.DOTALL)
-        assert match, "object type not found"
-        fields = re.findall(r"^\s*\w+\s*=\s*(.+?)\s*$", match.group(1), re.MULTILINE)
-        assert fields and all(field.startswith("optional(") for field in fields)
+        other fields at their defaults: the resources read the defaults merged
+        with the override, and null is the empty override."""
+        assert attribute(self.main, variable) == (
+            f"merge(local.{variable}_defaults, var.{variable})"
+        )
         assert attribute(self.block, "default") == "{}"
         assert attribute(self.block, "nullable") == "false"
 
+    def test_an_unknown_field_reaches_the_rules(self):
+        """An object type drops an attribute it does not declare before
+        validation runs, so a misspelled field (``_mb`` for ``_mib``) would
+        leave its default in place without an error. A map keeps it for the
+        unknown-field rule."""
+        assert attribute(self.block, "type") == "map(number)"
+
     def test_validation_rules(self, variable):
-        """Plan fails on what ECS would reject at apply (container above the
-        task, reservation not below the hard limit), on a container swap
-        ceiling above the host's swap, and on a swap volume a launch template
-        cannot attach. Both tiers carry the same rules."""
-        conditions = re.findall(
-            r"^\s*condition\s*=\s*(.+?)\s*$", self.block, re.MULTILINE
-        )
-        assert conditions == [rule.format(v=variable) for rule in TIER_SIZING_RULES]
+        """Plan fails on an unknown or null field, on what ECS would reject
+        at apply (container above the task, reservation not below the hard
+        limit), on a container swap ceiling above the host's swap, and on a
+        swap volume a launch template cannot attach. Both tiers carry the
+        same rules."""
+        merged = f"merge(local.{variable}_defaults, var.{variable})"
+        assert _conditions(self.block) == [
+            rule.format(v=variable, m=merged) for rule in TIER_SIZING_RULES
+        ]
