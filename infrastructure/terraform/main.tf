@@ -177,9 +177,20 @@ variable "subscription_plans" {
       text      = string
       isPremium = bool
     })))
+    # Workflow runs a user of the plan may have at once; null = no limit
+    max_concurrent_workflows = optional(number)
   }))
   default   = []
   sensitive = true
+
+  validation {
+    condition = alltrue([
+      for plan in var.subscription_plans :
+      coalesce(plan.max_concurrent_workflows, 1) >= 1 &&
+      floor(coalesce(plan.max_concurrent_workflows, 1)) == coalesce(plan.max_concurrent_workflows, 1)
+    ])
+    error_message = "max_concurrent_workflows must be null (no limit) or a whole number of at least 1."
+  }
 }
 
 variable "git_repo" {

@@ -837,3 +837,59 @@ class TestSeededPlanValuesMatchTheConfig:
             for row in rows
             if row.stripe_product_id is None or row.stripe_price_id is None
         ] == []
+
+
+class TestSeedWritesTheConcurrencyLimit:
+    """``max_concurrent_workflows``: null means "no limit", so it is written
+    even when null. The seed's other fields skip a null and keep the row's
+    value; the limit must not, or a limit removed from the config would stay
+    enforced."""
+
+    PLAN = {
+        "id": 1,
+        "name": "Free",
+        "price": 0,
+        "billing_cycle": 1,
+        "currency": 1,
+        "status": 1,
+        "stripe_product_id": "prod_free",
+        "stripe_price_id": "price_free",
+    }
+
+    @staticmethod
+    def _seed(session, plans):
+        import json as json_module
+
+        module = TestSeededPlanValuesMatchTheConfig._seed_module()
+        with patch.dict(
+            "os.environ", {"SUBSCRIPTION_PLANS_CONFIG": json_module.dumps(plans)}
+        ), patch.object(module, "create_engine"), patch.object(
+            module, "sessionmaker", return_value=lambda: session
+        ), patch.object(
+            module, "get_database_url", return_value="sqlite://"
+        ), patch(
+            "studio.app.common.db.config.get_ssl_creator", return_value=None
+        ), patch.object(
+            session, "close"
+        ):
+            module.main()
+        session.expire_all()
+
+    @pytest.mark.parametrize("removed", ["null", "absent"])
+    def test_a_limit_removed_from_the_config_is_cleared(self, removed):
+        from studio.app.common.models.subscription import SubscriptionPlans
+        from studio.tests.app.common.sqlite_harness import sqlite_session
+
+        later = {**self.PLAN, "stripe_price_id": None}
+        if removed == "null":
+            later["max_concurrent_workflows"] = None
+
+        with sqlite_session([SubscriptionPlans.__table__]) as session:
+            self._seed(session, [{**self.PLAN, "max_concurrent_workflows": 2}])
+            assert session.get(SubscriptionPlans, 1).max_concurrent_workflows == 2
+
+            self._seed(session, [later])
+            row = session.get(SubscriptionPlans, 1)
+
+        assert row.max_concurrent_workflows is None
+        assert row.stripe_price_id == "price_free", "other nulls still keep the row"
