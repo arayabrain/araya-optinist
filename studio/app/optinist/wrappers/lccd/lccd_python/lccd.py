@@ -10,8 +10,8 @@ from studio.app.optinist.wrappers.lccd.lccd_python.roi_integration import RoiInt
 
 class LCCD:
     def __init__(self, config):
-        self.blob_detector = BlobDetector(**config)
-        self.roi_integration = RoiIntegration(**config)
+        self.blob_detector = BlobDetector(**config["blob_detector"])
+        self.roi_integration = RoiIntegration(**config["roi_integration"])
         self.frame_divider = config["frame_divider"]
 
     def apply(self, v):
@@ -19,7 +19,7 @@ class LCCD:
         # https://qiita.com/Hanjin_Liu/items/7a01c1c481161fe20a3e
         roi = None
         X, Y, T = v.shape
-        for m in range(0, T // self.frame_divider - 1):
+        for m in range(0, T // self.frame_divider):
             tm = v[:, :, m * self.frame_divider : (m + 1) * self.frame_divider]
             roi_tm = self.blob_detector.apply(tm)
             roi = self.roi_integration.apply(roi_tm, roi)

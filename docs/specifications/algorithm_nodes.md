@@ -238,24 +238,24 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
   - **blob_detector:** Initial step that identifies potential cells or "blobs" in each frame of the video.
 
-    - **filtersize1** [int (filtersize1 <= Time / 2), default: 100]: Size of the larger temporal filter for smoothing. The temporal filters run on chunks of frame_divider frames, so filtersize1 <= frame_divider is recommended; larger values degrade detection and log a warning.
+    - **filtersize1** [int (filtersize1 >= 1), default: 100]: Size of the larger temporal filter for smoothing. The temporal filters run on chunks of frame_divider frames, so filtersize1 <= frame_divider is recommended; larger values degrade detection and log a warning.
     - **filtersize2** [int (filtersize2 < filtersize1), default: 4]: Size of the smaller temporal filter for edge detection.
     - **sigma** [float (sigma > 0), default: 1.25]: Standard deviation for the Gaussian filter.
-    - **fsize** [int (odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
-    - **min_area** [int (min_area < max_area < X * Y), default: 16]: Define the acceptable size range for detected blobs. Currently shares one value with roi_integration's min_area; when they differ, a warning is logged reporting the value actually used.
-    - **max_area** [int, (max_area < X * Y), default: 100]: Define the acceptable size range for detected blobs. Currently shares one value with roi_integration's max_area; when they differ, a warning is logged reporting the value actually used.
-    - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations. Currently shares one value with roi_integration's sparse; when they differ, a warning is logged reporting the value actually used.
+    - **fsize** [int (1 <= fsize <= the frame's shorter side, odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
+    - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for detected blobs.
+    - **max_area** [number, default: 100]: Define the acceptable size range for detected blobs.
+    - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
 
   - **roi_integration:** Takes blobs detected across all frames and integrates them into coherent ROI that represent consistent cell locations over time.
 
-    - **overlap_threshold** [float (0 < overlap_threshold < 1), default: 0.25]: Threshold for determining significant overlap between ROIs
-    - **min_area** [int (min_area < max_area < X * Y), default: 16]: Define the acceptable size range for integrated ROIs.
-    - **max_area** [int (max_area < X * Y), default: 100]: Maximum acceptable size for integrated ROIs.
+    - **overlap_threshold** [float (0 <= overlap_threshold <= 1), default: 0.25]: Threshold for determining significant overlap between ROIs
+    - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for integrated ROIs.
+    - **max_area** [number, default: 100]: Maximum acceptable size for integrated ROIs.
     - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
 
   - **lccd:**
 
-    - **frame_divider** [int (Time / frame_divider >= 2), default: 100]: Divides the time dimension into segments for faster processing.
+    - **frame_divider** [int (1 <= frame_divider <= Time), default: 100]: Divides the time dimension into segments for faster processing. Frames after the last full segment are not used for detection.
 
   - **dff:**
     - **f0_frames** [int (f0_frames >= 1), default: 100]: Number of frames used to calculate the baseline fluorescence. The dff at frame k uses the window [k - f0_frames, k + f0_frames), so dff is entirely NaN unless 2 \* f0_frames < Time.

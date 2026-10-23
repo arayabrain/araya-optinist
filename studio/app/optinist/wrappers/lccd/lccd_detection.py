@@ -15,177 +15,139 @@ logger = AppLogger.get_logger()
 # Bytes of float64 frames LoadData reads at a time outside LCCD's own windows
 BATCH_BYTES = 64 << 20
 
-INT_PARAMS = (
-    "filtersize1",
-    "filtersize2",
-    "fsize",
-    "min_area",
-    "max_area",
-    "frame_divider",
-    "f0_frames",
-)
-FLOAT_PARAMS = ("sigma", "overlap_threshold", "f0_percentile")
-# blob_detector and roi_integration keys collide when params are flattened,
-# so a single value (the last one flattened) feeds both stages.
-SHARED_SECTION_PARAMS = ("min_area", "max_area", "sparse")
+INT_PARAMS = ("filtersize1", "filtersize2", "fsize", "frame_divider", "f0_frames")
+NUMBER_PARAMS = ("sigma", "overlap_threshold", "f0_percentile")
+STAGES = ("blob_detector", "roi_integration")
+
+
+def lccd_config(params):
+    """The flattened params, plus each stage's own section on top of them, so
+    blob_detector and roi_integration keep their own min_area, max_area and
+    sparse (flattening alone lets one section's values overwrite the other's).
+    """
+    flat = {}
+    recursive_flatten_params(params, flat)
+    sections = {s: {**flat, **(params.get(s) or {})} for s in STAGES}
+    return {**flat, **sections}
+
+
+def typed(name, value, kind, errors):
+    """value if it is an "integer" or a finite "number", else None and an error."""
+    ok = not isinstance(value, bool) and (
+        isinstance(value, int)
+        or (kind == "number" and isinstance(value, float) and math.isfinite(value))
+    )
+    if not ok:
+        expected = "an integer" if kind == "integer" else "a finite number"
+        errors.append(f"{name} must be {expected}, got {value!r:.100}")
+    return value if ok else None
 
 
 def validate_params(params, video_shape):
-    """Check LCCD parameters against the video dimensions (X, Y, T).
+    """Check LCCD parameters against the movie's (rows, columns, frames).
 
     Only keys present in params are checked. All violations are collected and
     raised together as one ValueError so the user can fix everything at once.
     """
-    X, Y, T = video_shape
+    rows, cols, T = video_shape
     params = params or {}
+    config = lccd_config(params)
     errors = []
 
-    p = {}
-    recursive_flatten_params(params, p)
+    v = {k: typed(k, config[k], "integer", errors) for k in INT_PARAMS if k in config}
+    for k in NUMBER_PARAMS:
+        if k in config:
+            v[k] = typed(k, config[k], "number", errors)
 
-    blob, roi = params.get("blob_detector"), params.get("roi_integration")
-    if isinstance(blob, dict) and isinstance(roi, dict):
-        for key in SHARED_SECTION_PARAMS:
-            if key in blob and key in roi and blob[key] != roi[key]:
-                logger.warning(
-                    "blob_detector.%s (%r) and roi_integration.%s (%r) "
-                    "differ; the pipeline currently shares one value for %s "
-                    "and uses %r for both stages",
-                    key,
-                    blob[key],
-                    key,
-                    roi[key],
-                    key,
-                    p[key],
-                )
-
-    typed = {}
-    for key in INT_PARAMS:
-        if key in p:
-            if isinstance(p[key], int) and not isinstance(p[key], bool):
-                typed[key] = p[key]
-            else:
-                errors.append(f"{key} must be an integer, got {p[key]!r:.100}")
-    for key in FLOAT_PARAMS:
-        if key in p:
-            if (
-                isinstance(p[key], (int, float))
-                and not isinstance(p[key], bool)
-                and math.isfinite(p[key])
-            ):
-                typed[key] = p[key]
-            else:
-                errors.append(f"{key} must be a finite number, got {p[key]!r:.100}")
-
-    frame_divider = typed.get("frame_divider")
+    frame_divider = v.get("frame_divider")
     if frame_divider is not None:
         if frame_divider < 1:
             errors.append(f"frame_divider must be >= 1, got {frame_divider}")
-        elif T / frame_divider < 2:
-            if T < 2:
-                errors.append(
-                    f"the video loaded by LCCD has only {T} frame(s); "
-                    f"LCCD requires at least 2 frames"
-                )
-            else:
-                errors.append(
-                    f"frame_divider ({frame_divider}) is too large: the video "
-                    f"loaded by LCCD has {T} frames and Time / frame_divider "
-                    f"must be >= 2, so set frame_divider <= {T // 2}"
-                )
-        elif T // frame_divider == 2:
-            logger.warning(
-                "frame_divider (%d) yields a single chunk for %d frames: "
-                "only the first %d frames are processed and ROI integration "
-                "never runs",
-                frame_divider,
-                T,
-                frame_divider,
+        elif frame_divider > T:
+            errors.append(
+                f"frame_divider ({frame_divider}) is larger than the movie's "
+                f"{T} frames, so no chunk is processed: set frame_divider <= {T}"
             )
 
-    filtersize1 = typed.get("filtersize1")
+    filtersize1 = v.get("filtersize1")
     if filtersize1 is not None:
         if filtersize1 < 1:
             errors.append(f"filtersize1 must be >= 1, got {filtersize1}")
-        else:
-            if filtersize1 > T / 2:
-                errors.append(
-                    f"filtersize1 ({filtersize1}) must be <= Time / 2: the "
-                    f"video loaded by LCCD has {T} frames, so set "
-                    f"filtersize1 <= {T // 2}"
-                )
-            elif (
-                frame_divider is not None
-                and frame_divider >= 1
-                and filtersize1 > frame_divider
-            ):
-                logger.warning(
-                    "filtersize1 (%d) is larger than frame_divider (%d): the "
-                    "temporal filters run on chunks of frame_divider frames, "
-                    "which degrades detection; set filtersize1 <= "
-                    "frame_divider",
-                    filtersize1,
-                    frame_divider,
-                )
+        elif frame_divider is not None and 1 <= frame_divider < filtersize1:
+            logger.warning(
+                "filtersize1 (%d) is larger than frame_divider (%d): the "
+                "temporal filters run on chunks of frame_divider frames, which "
+                "degrades detection; set filtersize1 <= frame_divider",
+                filtersize1,
+                frame_divider,
+            )
 
-    filtersize2 = typed.get("filtersize2")
+    filtersize2 = v.get("filtersize2")
     if filtersize2 is not None:
         if filtersize2 < 1:
             errors.append(f"filtersize2 must be >= 1, got {filtersize2}")
-        elif filtersize1 is not None and filtersize2 >= filtersize1:
+        elif filtersize1 is not None and filtersize2 >= filtersize1 >= 1:
             errors.append(
-                f"filtersize2 ({filtersize2}) must be < filtersize1 " f"({filtersize1})"
+                f"filtersize2 ({filtersize2}) must be < filtersize1 ({filtersize1})"
             )
 
-    sigma = typed.get("sigma")
+    sigma = v.get("sigma")
     if sigma is not None and sigma <= 0:
         errors.append(f"sigma must be > 0, got {sigma}")
 
-    fsize = typed.get("fsize")
+    fsize = v.get("fsize")
     if fsize is not None:
-        if fsize < 1:
-            errors.append(f"fsize must be >= 1, got {fsize}")
+        if not 1 <= fsize <= min(rows, cols):
+            errors.append(
+                f"fsize ({fsize}) must be between 1 and the frame's shorter "
+                f"side ({min(rows, cols)} pixels)"
+            )
         elif fsize % 2 == 0:
             logger.warning("fsize (%d) is even; an odd size is recommended", fsize)
 
-    min_area, max_area = typed.get("min_area"), typed.get("max_area")
-    if min_area is not None and max_area is not None and min_area >= max_area:
-        errors.append(f"min_area ({min_area}) must be < max_area ({max_area})")
-    if max_area is not None and max_area >= X * Y:
+    for stage in STAGES:
+        prefix = f"{stage}." if stage in params else ""
+        area = {
+            k: typed(prefix + k, config[stage][k], "number", errors)
+            for k in ("min_area", "max_area")
+            if k in config[stage]
+        }
+        min_area, max_area = area.get("min_area"), area.get("max_area")
+        if min_area is not None and max_area is not None and min_area >= max_area:
+            errors.append(
+                f"{prefix}min_area ({min_area}) must be < "
+                f"{prefix}max_area ({max_area})"
+            )
+
+    overlap_threshold = v.get("overlap_threshold")
+    if overlap_threshold is not None and not 0 <= overlap_threshold <= 1:
         errors.append(
-            f"max_area ({max_area}) must be < X * Y "
-            f"({X} * {Y} = {X * Y} pixels per frame)"
+            f"overlap_threshold must be between 0 and 1, got {overlap_threshold}"
         )
 
-    overlap_threshold = typed.get("overlap_threshold")
-    if overlap_threshold is not None and not 0 < overlap_threshold < 1:
-        errors.append(
-            f"overlap_threshold must be between 0 and 1 (exclusive), "
-            f"got {overlap_threshold}"
-        )
-
-    f0_frames = typed.get("f0_frames")
+    f0_frames = v.get("f0_frames")
     if f0_frames is not None:
         if f0_frames < 1:
             errors.append(f"f0_frames must be >= 1, got {f0_frames}")
         elif 2 * f0_frames >= T:
             logger.warning(
                 "f0_frames (%d) leaves no frame with a full dff window "
-                "[k - f0_frames, k + f0_frames) inside the %d-frame video: "
+                "[k - f0_frames, k + f0_frames) inside the %d-frame movie: "
                 "dff will be entirely NaN; set f0_frames < %d",
                 f0_frames,
                 T,
                 (T + 1) // 2,
             )
 
-    f0_percentile = typed.get("f0_percentile")
+    f0_percentile = v.get("f0_percentile")
     if f0_percentile is not None and not 0 <= f0_percentile <= 100:
         errors.append(f"f0_percentile must be between 0 and 100, got {f0_percentile}")
 
     if errors:
+        # dict.fromkeys: flat params put the same area error in both stages
         raise ValueError(
-            f"invalid LCCD parameters for video of {X} x {Y} pixels x {T} "
-            f"frames:\n- " + "\n- ".join(errors)
+            f"invalid LCCD parameters for a movie of {rows} x {cols} pixels "
+            f"(rows x columns) and {T} frames:\n- " + "\n- ".join(dict.fromkeys(errors))
         )
 
 
@@ -202,16 +164,13 @@ def lccd_detect(
 
     from studio.app.optinist.wrappers.lccd.lccd_python.lccd import LCCD
 
-    flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
-    params = flattened_params
-
+    params = lccd_config(params)
     logger.debug("params: %s", params)
     lccd = LCCD(params)
     with LoadData(mc_images) as D:
         assert (
             len(D.shape) == 3
-        ), "input array should have dimensions (width, height, time)"
+        ), "input array should have dimensions (rows, columns, time)"
         try:
             roi = lccd.apply(D)
             num_cell = roi.shape[1]
@@ -314,7 +273,7 @@ def lccd_detect(
 
 class LoadData:
     """
-    The movie LCCD detects on: (X, Y, frames), float64, scaled to [0, 1] by its
+    The movie LCCD detects on: (rows, columns, frames), float64, scaled to [0, 1] by its
     min and max. Frames are read from the first TIFF of mc_images when sliced:
     - LCCD.apply slices `[:, :, start:stop]`, one window at a time
     - roi_means reads BATCH_BYTES of frames at a time
@@ -326,7 +285,8 @@ class LoadData:
 
         self._pile = Image.open(mc_images.path[0])
         try:
-            self.shape = (*self._pile.size, self._pile.n_frames)
+            width, height = self._pile.size
+            self.shape = (height, width, self._pile.n_frames)
             lows, highs = [], []
             for start, stop in self._batches():
                 frames = self._read(range(start, stop))

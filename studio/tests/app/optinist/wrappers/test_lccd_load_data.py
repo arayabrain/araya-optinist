@@ -120,12 +120,13 @@ def test_batches_smaller_than_one_frame_are_2_frames_wide(tmp_path, monkeypatch)
     assert actual.tobytes() == whole_movie_means(expected_movie, roi).tobytes()
 
 
-def test_non_square_frames_fail_as_before(tmp_path):
+def test_non_square_frames_are_rows_by_columns(tmp_path):
     path = write(tmp_path / "m.tif", 5, np.uint16, shape=(16, 12))
-    with pytest.raises(ValueError):
-        whole_movie(path)
-    with pytest.raises(ValueError):
-        LoadData(ImageData([path]))
+    movie = np.moveaxis(tifffile.imread(path).astype(np.float64), 0, -1)
+    expected = (movie - movie.min()) / (movie.max() - movie.min())
+    with LoadData(ImageData([path])) as D:
+        assert D.shape == (16, 12, 5)
+        assert D[:, :, 0:5].tobytes() == expected.tobytes()
 
 
 @pytest.fixture
@@ -151,8 +152,12 @@ def test_the_file_is_closed_after_the_block(tmp_path, opened):
     assert [f.closed for f in opened] == [True]
 
 
-def test_the_file_is_closed_when_the_scan_fails(tmp_path, opened):
-    path = write(tmp_path / "m.tif", 5, np.uint16, shape=(16, 12))
+def test_the_file_is_closed_when_the_scan_fails(tmp_path, opened, monkeypatch):
+    def fail(self, frames):
+        raise ValueError
+
+    monkeypatch.setattr(LoadData, "_read", fail)
+    path = write(tmp_path / "m.tif", 5, np.uint16)
     with pytest.raises(ValueError):
         LoadData(ImageData([path]))
     assert [f.closed for f in opened] == [True]
@@ -169,7 +174,7 @@ def lccd_stub(monkeypatch):
 
         def apply(self, v):
             X, Y, T = v.shape
-            for m in range(0, T // FRAME_DIVIDER - 1):
+            for m in range(0, T // FRAME_DIVIDER):
                 window = v[:, :, m * FRAME_DIVIDER : (m + 1) * FRAME_DIVIDER]
                 seen.append((m * FRAME_DIVIDER, window.tobytes()))
             return random_rois((X, Y), 5, np.random.default_rng(2))
@@ -191,7 +196,7 @@ def test_lccd_detect_matches_the_whole_movie(tmp_path, small_batches, lccd_stub)
     )
 
     D = whole_movie(path)
-    assert [start for start, _ in lccd_stub] == [0, 10]
+    assert [start for start, _ in lccd_stub] == [0, 10, 20]
     for start, window in lccd_stub:
         assert window == D[:, :, start : start + FRAME_DIVIDER].tobytes()
     roi = random_rois(D.shape[:2], 5, np.random.default_rng(2))
@@ -209,7 +214,7 @@ def test_the_file_is_closed_when_lccd_raises(tmp_path, opened, monkeypatch, lccd
     output_dir.mkdir(parents=True)
     with pytest.raises(MemoryError):
         lccd_detect(ImageData([path]), str(output_dir), params={})
-    assert opened and all(f.closed for f in opened)
+    assert [f.closed for f in opened] == [True, True]  # the header, the movie
 
 
 def test_vacant_roi_decodes_no_frame(tmp_path, monkeypatch):
