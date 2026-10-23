@@ -162,7 +162,7 @@ The solution is a **dedicated EBS block device** for swap. `mkswap` on a raw blo
 
 The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 
-1. **Dedicated swap volume** (free and premium tiers): A 32GB gp3 EBS volume is attached at `/dev/xvds` via the launch template. The script runs `mkswap` + `swapon` on the block device, which takes <1 second (writes only a header). On Nitro instances (t3, m5, etc.), the device may appear as an NVMe path; the script falls back to `ebsnvme-id` scanning to locate the correct device.
+1. **Dedicated swap volume** (free and premium tiers): A gp3 EBS volume is attached at `/dev/xvds` via the launch template; its size is per tier, `swap_volume_gib` in `free_tier_sizing` / `premium_tier_sizing` (`main.tf`, 32 GB by default). The script runs `mkswap` + `swapon` on the block device, which takes <1 second (writes only a header). On Nitro instances (t3, m5, etc.), the device may appear as an NVMe path; the script falls back to `ebsnvme-id` scanning to locate the correct device.
 
 2. **File-based swap fallback** (background tier or instances without dedicated volume): Creates a swap file via `dd if=/dev/zero` on the root volume. Used for the background tier where 1.5GB swap takes only ~1 second to create.
 

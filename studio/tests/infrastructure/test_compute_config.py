@@ -9,14 +9,25 @@
   instance has booted.
 - Base premium instance: termination protection, with Terraform still able
   to replace it.
+- Workflow tier sizing: each tier's task definition and launch template take
+  their sizes from that tier's variable in main.tf; its defaults, partial
+  overrides and validation rules.
 """
 
 import re
 
 import pytest
-from terraform_source import TERRAFORM_DIR, attribute, read, resource_block, string_list
+from terraform_source import (
+    TERRAFORM_DIR,
+    attribute,
+    read,
+    resource_block,
+    string_list,
+    variable_block,
+)
 
 COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
+MAIN_TF = TERRAFORM_DIR / "main.tf"
 
 EXPECTED_MOUNT_PATH = "/app/.snakemake"
 
@@ -182,3 +193,160 @@ class TestBasePremiumInstanceProtection:
         """Without force_destroy, a Terraform replace or destroy of a
         protected instance fails."""
         assert attribute(self.instance, "force_destroy") == "true"
+
+
+# Workflow tier: (sizing variable, task definition, launch template)
+WORKFLOW_TIERS = {
+    "free": ("free_tier_sizing", "autoscaling", "ecs"),
+    "premium": ("premium_tier_sizing", "premium", "premium"),
+}
+
+TIER_SIZING_DEFAULTS = {
+    "free_tier_sizing": {
+        "task_cpu": 2048,
+        "task_memory_mib": 7168,
+        "container_cpu": 1536,
+        "container_memory_mib": 6656,
+        "container_memory_reservation_mib": 4096,
+        "container_max_swap_mib": 32768,
+        "container_swappiness": 20,
+        "root_volume_gib": 88,
+        "swap_volume_gib": 32,
+    },
+    "premium_tier_sizing": {
+        "task_cpu": 2048,
+        "task_memory_mib": 7168,
+        "container_cpu": 1536,
+        "container_memory_mib": 6656,
+        "container_memory_reservation_mib": 4096,
+        "container_max_swap_mib": 32768,
+        "container_swappiness": 20,
+        "root_volume_gib": 48,
+        "swap_volume_gib": 32,
+    },
+}
+
+# Validation conditions, written once per tier variable ({v})
+TIER_SIZING_RULES = [
+    "var.{v}.container_memory_mib <= var.{v}.task_memory_mib",
+    "var.{v}.container_memory_reservation_mib < var.{v}.container_memory_mib",
+    "var.{v}.container_cpu <= var.{v}.task_cpu",
+    "var.{v}.swap_volume_gib >= 1",
+    "var.{v}.container_max_swap_mib <= var.{v}.swap_volume_gib * 1024",
+    "var.{v}.container_swappiness >= 0 && var.{v}.container_swappiness <= 100",
+]
+
+# A sizing attribute of a task definition or launch template set to a number
+_SIZING_LITERAL_RE = re.compile(
+    r"^\s*(cpu|memory|memoryReservation|maxSwap|swappiness|volume_size"
+    r"|swap_size_mb)\s*=\s*\d",
+    re.MULTILINE,
+)
+
+_BLOCK_DEVICE_RE = re.compile(
+    r"block_device_mappings\s*\{\s*device_name\s*=\s*(\S+)\s*ebs\s*\{(.*?)\}",
+    re.DOTALL,
+)
+
+
+@pytest.mark.parametrize("tier", WORKFLOW_TIERS)
+class TestWorkflowTierSizing:
+    """Each workflow tier's task definition and launch template take their
+    sizes from that tier's variable, so the two tiers can be sized apart."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self, tier):
+        variable, task_definition, launch_template = WORKFLOW_TIERS[tier]
+        tf = read(COMPUTE_TF)
+        self.var = f"var.{variable}"
+        self.other_variable = next(
+            other for other, _, _ in WORKFLOW_TIERS.values() if other != variable
+        )
+        self.task_definition = resource_block(
+            tf, "aws_ecs_task_definition", task_definition
+        )
+        self.launch_template = resource_block(
+            tf, "aws_launch_template", launch_template
+        )
+
+    def test_task_definition_reads_its_tier(self):
+        # Task and container both set cpu / memory; the container's follow
+        # container_definitions
+        task, container = self.task_definition.split("container_definitions", 1)
+        assert attribute(task, "cpu") == f"{self.var}.task_cpu"
+        assert attribute(task, "memory") == f"{self.var}.task_memory_mib"
+        assert attribute(container, "cpu") == f"{self.var}.container_cpu"
+        assert attribute(container, "memory") == f"{self.var}.container_memory_mib"
+        assert attribute(container, "memoryReservation") == (
+            f"{self.var}.container_memory_reservation_mib"
+        )
+        assert attribute(container, "maxSwap") == f"{self.var}.container_max_swap_mib"
+        assert attribute(container, "swappiness") == (
+            f"{self.var}.container_swappiness"
+        )
+
+    def test_launch_template_reads_its_tier(self):
+        devices = dict(_BLOCK_DEVICE_RE.findall(self.launch_template))
+        assert attribute(devices['"/dev/xvda"'], "volume_size") == (
+            f"{self.var}.root_volume_gib"
+        )
+        assert attribute(devices["local.swap_device_name"], "volume_size") == (
+            f"{self.var}.swap_volume_gib"
+        )
+
+    def test_host_swap_is_the_whole_swap_volume(self):
+        """ecs-user-data.sh runs mkswap on the device, so swap_size_mb only
+        gates swap and sizes the fallback file. Derived from the volume, it
+        cannot disagree with it. The script finds the device by the name the
+        mapping attaches it under."""
+        assert attribute(self.launch_template, "swap_size_mb") == (
+            f"{self.var}.swap_volume_gib * 1024"
+        )
+        assert attribute(self.launch_template, "swap_device_name") == (
+            "local.swap_device_name"
+        )
+
+    def test_no_size_is_literal_or_from_the_other_tier(self):
+        for source in (self.task_definition, self.launch_template):
+            assert not _SIZING_LITERAL_RE.findall(source)
+            assert self.other_variable not in source
+
+
+@pytest.mark.parametrize("variable", TIER_SIZING_DEFAULTS)
+class TestWorkflowTierSizingVariables:
+    """The per-tier sizing variables in main.tf."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self, variable):
+        self.block = variable_block(read(MAIN_TF), variable)
+
+    def test_defaults(self, variable):
+        """A default applies to every environment whose tfvars leaves the
+        field out, so changing one resizes them all at the next apply."""
+        defaults = re.findall(
+            r"^\s*(\w+)\s*=\s*optional\(number,\s*(\d+)\)", self.block, re.MULTILINE
+        )
+        assert {name: int(value) for name, value in defaults} == (
+            TIER_SIZING_DEFAULTS[variable]
+        )
+
+    def test_a_partial_override_keeps_the_other_defaults(self):
+        """``premium_tier_sizing = { task_memory_mib = ... }`` must leave the
+        other fields at their defaults: every field optional, and null
+        treated as the empty default."""
+        match = re.search(r"type\s*=\s*object\(\{(.*?)\}\)", self.block, re.DOTALL)
+        assert match, "object type not found"
+        fields = re.findall(r"^\s*\w+\s*=\s*(.+?)\s*$", match.group(1), re.MULTILINE)
+        assert fields and all(field.startswith("optional(") for field in fields)
+        assert attribute(self.block, "default") == "{}"
+        assert attribute(self.block, "nullable") == "false"
+
+    def test_validation_rules(self, variable):
+        """Plan fails on what ECS would reject at apply (container above the
+        task, reservation not below the hard limit), on a container swap
+        ceiling above the host's swap, and on a swap volume a launch template
+        cannot attach. Both tiers carry the same rules."""
+        conditions = re.findall(
+            r"^\s*condition\s*=\s*(.+?)\s*$", self.block, re.MULTILINE
+        )
+        assert conditions == [rule.format(v=variable) for rule in TIER_SIZING_RULES]
