@@ -168,8 +168,8 @@ The swap section of `ecs-user-data.sh` uses a two-strategy approach:
 
 | Tier | Swap Method | Volume | Setup Time |
 |------|-------------|--------|------------|
-| Free | Block device | 32GB gp3 at `/dev/xvds` | <1 second |
-| Premium | Block device | 32GB gp3 at `/dev/xvds` | <1 second |
+| Free | Block device | gp3 at `/dev/xvds`, 32GB by default | <1 second |
+| Premium | Block device | gp3 at `/dev/xvds`, 32GB by default | <1 second |
 | Background | File-based (dd) | 1.5GB on root volume | ~1 second |
 
 ### 3. Build Component (`optinist-packages.yml`)
