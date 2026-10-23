@@ -9,6 +9,7 @@
   instance has booted.
 - Base premium instance: termination protection, with Terraform still able
   to replace it.
+- Uvicorn workers: each workflow task definition sets its own count.
 """
 
 import re
@@ -182,3 +183,21 @@ class TestBasePremiumInstanceProtection:
         """Without force_destroy, a Terraform replace or destroy of a
         protected instance fails."""
         assert attribute(self.instance, "force_destroy") == "true"
+
+
+class TestUvicornWorkers:
+    """The workflow task definitions set their uvicorn worker count."""
+
+    @pytest.mark.parametrize(
+        "task_definition,workers", [("autoscaling", "3"), ("premium", "2")]
+    )
+    def test_worker_count_is_explicit(self, task_definition, workers):
+        """Unset, cloud-startup.sh's default would apply; each worker holds a
+        full app process out of the memory the workflows share."""
+        block = resource_block(
+            read(COMPUTE_TF), "aws_ecs_task_definition", task_definition
+        )
+        values = re.findall(
+            r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
+        )
+        assert values == [workers]

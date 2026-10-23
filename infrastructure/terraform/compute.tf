@@ -819,6 +819,13 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
         },
+        # Each worker is a full app process (~0.3 GiB), and above one the
+        # supervisor is another, all from the memory the workflows use. One
+        # more than premium for page-load bursts from users sharing an instance.
+        {
+          name  = "UVICORN_WORKERS"
+          value = "3"
+        },
       ]
       mountPoints = [
         {
@@ -1069,6 +1076,13 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "1"
+        },
+        # Each worker is a full app process (~0.3 GiB), and above one the
+        # supervisor is another, all from the memory the workflows use. Two, not
+        # one, so /health is answered while a worker's event loop is blocked.
+        {
+          name  = "UVICORN_WORKERS"
+          value = "2"
         },
       ]
 
