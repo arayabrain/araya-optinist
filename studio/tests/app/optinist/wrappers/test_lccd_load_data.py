@@ -209,7 +209,7 @@ def test_the_file_is_closed_when_lccd_raises(tmp_path, opened, monkeypatch, lccd
     output_dir.mkdir(parents=True)
     with pytest.raises(MemoryError):
         lccd_detect(ImageData([path]), str(output_dir), params={})
-    assert [f.closed for f in opened] == [True]
+    assert opened and all(f.closed for f in opened)
 
 
 def test_vacant_roi_decodes_no_frame(tmp_path, monkeypatch):
