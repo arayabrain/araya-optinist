@@ -33,6 +33,10 @@ TIER_PREMIUM = "premium"
 _TABLE_OF_TIER = {TIER_FREE: FreeUserAssignment, TIER_PREMIUM: PremiumUserAssignment}
 _TIER_OF_TABLE = {table: tier for tier, table in _TABLE_OF_TIER.items()}
 
+# The premium manager's assign moves a free row's count to the new premium row
+# and deletes the free row; premium rows are deleted without a hand-over
+_COUNT_HANDED_OVER_TO = {FreeUserAssignment: PremiumUserAssignment}
+
 # Workflow lease (last_workflow_heartbeat):
 # - renewed every WORKFLOW_LEASE_RENEW_SECONDS while any counted run is alive
 # - older than WORKFLOW_LEASE_TTL_SECONDS → no run alive; the gate does not count
@@ -380,12 +384,50 @@ def increment_workflow_count(user_id: Optional[int]) -> Optional[str]:
     raise WorkflowConcurrencyLimitError(limit, active)
 
 
+def _update_counted_row(session, table: type, user_id: int, statement_for):
+    """Execute statement_for(table, user_id) on the row holding the run's count.
+
+    - the counted table's row, while it exists
+    - free row gone: the premium row its count was handed over to
+
+    Returns:
+        The table written; None when neither row exists
+    """
+    for candidate in (table, _COUNT_HANDED_OVER_TO.get(table)):
+        if candidate is None:
+            break
+        if session.execute(statement_for(candidate, user_id)).rowcount > 0:
+            return candidate
+    return None
+
+
+def _renew_statement(table: type, user_id: int):
+    return (
+        update(table)
+        .where(table.user_id == user_id)
+        .values(last_workflow_heartbeat=func.now())
+    )
+
+
+def _decrement_statement(table: type, user_id: int):
+    count = table.active_workflow_count
+    return (
+        update(table)
+        .where(table.user_id == user_id)
+        .values(
+            active_workflow_count=func.greatest(0, count - 1),
+            last_workflow_end=func.now(),
+        )
+    )
+
+
 def renew_workflow_lease(user_id: Optional[int], tier: Optional[str]) -> None:
     """
     Mark the user's counted runs alive (see WORKFLOW_LEASE_TTL_SECONDS).
 
-    Errors are logged, not raised: a missed renewal can only let the gate
-    admit a run early.
+    Written to the row holding the run's count (_update_counted_row). Errors
+    are logged, not raised: a missed renewal can only let the gate admit a run
+    early.
 
     Args:
         user_id: User ID of the running workflow's user
@@ -397,11 +439,7 @@ def renew_workflow_lease(user_id: Optional[int], tier: Optional[str]) -> None:
 
     try:
         with session_scope() as session:
-            session.execute(
-                update(table)
-                .where(table.user_id == user_id)
-                .values(last_workflow_heartbeat=func.now())
-            )
+            _update_counted_row(session, table, user_id, _renew_statement)
     except Exception as e:
         logger.warning(f"Failed to renew the workflow lease for user {user_id}: {e}")
 
@@ -416,8 +454,10 @@ def decrement_workflow_count(
     start is not scheduled.
 
     - tier given (what increment_workflow_count returned): that table, so a
-      plan change during the run cannot move the release to the other table
+      plan lapse during the run cannot move the release to the other row
     - tier None: the table _counted_table picks now
+    - either way, the row holding the count (_update_counted_row): after an
+      upgrade during the run, the premium row the count was handed over to
 
     Uses SQLAlchemy's update() with func.greatest() to ensure count never
     goes below 0, preventing race conditions.
@@ -449,23 +489,13 @@ def decrement_workflow_count(
             )
             return
 
-        count = table.active_workflow_count
-        statement = (
-            update(table)
-            .where(table.user_id == user_id)
-            .values(
-                active_workflow_count=func.greatest(0, count - 1),
-                last_workflow_end=func.now(),
-            )
-        )
-
         with session_scope() as session:
-            result = session.execute(statement)
-            if result.rowcount > 0:
+            written = _update_counted_row(session, table, user_id, _decrement_statement)
+            if written is not None:
                 session.commit()
                 logger.debug(
                     f"Decremented workflow count for user {user_id} "
-                    f"({table.__tablename__})"
+                    f"({written.__tablename__})"
                 )
             else:
                 logger.warning(

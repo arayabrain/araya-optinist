@@ -226,3 +226,83 @@ class TestTheGateOverRealConnections:
             assert increment_workflow_count(free_user) == TIER_FREE
 
         assert _stored_count(free_user) == 1
+
+
+def _hand_over_to_premium(user_id):
+    """What the premium manager's assign does on an upgrade: the free row's
+    count moves to a new premium row, and the free row is deleted."""
+    from sqlalchemy import text
+
+    from studio.app.common.db.database import session_scope
+
+    with session_scope() as session:
+        session.execute(
+            text(
+                "INSERT INTO premium_user_assignments (user_id, instance_id, "
+                "target_group_arn, alb_rule_arn, active_workflow_count) "
+                "SELECT user_id, 'it-premium', 'it', 'it', active_workflow_count "
+                "FROM free_user_assignments WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id},
+        )
+        session.execute(
+            text("DELETE FROM free_user_assignments WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        )
+
+
+def _premium_row(user_id):
+    from sqlalchemy import text
+
+    from studio.app.common.db.database import session_scope
+
+    with session_scope() as session:
+        return (
+            session.execute(
+                text(
+                    "SELECT active_workflow_count, last_workflow_heartbeat "
+                    "FROM premium_user_assignments WHERE user_id = :user_id"
+                ),
+                {"user_id": user_id},
+            )
+            .mappings()
+            .one()
+        )
+
+
+@_opt_in
+class TestTheReleaseFollowsAnUpgradeOverRealConnections:
+    """A run counted on the free row, then an upgrade during the run: its
+    renewals and its release reach the premium row the count moved to, so
+    that row does not keep the count after the run."""
+
+    def test_the_count_returns_to_zero_on_the_premium_row(self, free_user):
+        from sqlalchemy import text
+
+        from studio.app.common.core.workflow.workflow_tracking import (
+            TIER_FREE,
+            decrement_workflow_count,
+            increment_workflow_count,
+            renew_workflow_lease,
+        )
+        from studio.app.common.db.database import session_scope
+
+        assert increment_workflow_count(free_user) == TIER_FREE
+        _hand_over_to_premium(free_user)
+        try:
+            assert _premium_row(free_user)["last_workflow_heartbeat"] is None
+
+            renew_workflow_lease(free_user, TIER_FREE)
+            assert _premium_row(free_user)["last_workflow_heartbeat"] is not None
+
+            decrement_workflow_count(free_user, tier=TIER_FREE)
+            assert _premium_row(free_user)["active_workflow_count"] == 0
+        finally:
+            with session_scope() as session:
+                session.execute(
+                    text(
+                        "DELETE FROM premium_user_assignments "
+                        "WHERE user_id = :user_id"
+                    ),
+                    {"user_id": free_user},
+                )

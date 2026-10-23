@@ -27,7 +27,8 @@
    - `_get_user_tier()` determines subscription tier via `SubscriptionService`
    - Updates the matching assignment table (free or premium)
    - Falls back to the other table if primary has no record
-   - The release goes to the table the start was counted on, even if the plan changed during the run
+   - The release and the lease renewal go to the row the start was counted on, even if the plan lapsed during the run
+   - An upgrade during the run moves the free row's count to the new premium row and deletes the free row (Premium Manager's assign); the release and renewal then follow it there
 
 4. **Crash Recovery**
    - Common User Manager runs every 10 minutes
@@ -101,7 +102,7 @@ With a limit, the `UPDATE` matches only while `active_workflow_count < limit` or
 
 **File:** `studio/app/common/core/workflow/workflow_tracking.py`
 **Purpose:** Atomically decrement active workflow count, ensuring count never goes below 0
-**Input:** `user_id` (from workflow context, `None` or standalone mode skipped); `tier` = what the increment returned (`None`: resolved now)
+**Input:** `user_id` (from workflow context, `None` or standalone mode skipped); `tier` = what the increment returned (`None`: resolved now). A free row gone since the start means its count was handed over: the premium row is decremented
 **Output:** Side effect - decrements `active_workflow_count` using `func.greatest(0, count - 1)` and sets `last_workflow_end`
 **Calls:** `_get_user_tier()` (only without `tier`) -> SQLAlchemy `update()` on `FreeUserAssignment` or `PremiumUserAssignment`
 

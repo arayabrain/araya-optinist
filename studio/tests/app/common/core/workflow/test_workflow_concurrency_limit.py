@@ -361,45 +361,101 @@ class TestThePlanLimit:
 
 
 class TestReleaseAndRenewTargetTheCountedTable:
+    """The release and the renewal follow the run's count.
+
+    - a lapse during the run: the tier now reads free, but the count is on
+      the premium row it was counted on
+    - an upgrade during the run: the premium manager moved the free row's
+      count to a new premium row and deleted the free row
+    """
+
     @staticmethod
-    def _run(operation, *args, **kwargs):
+    def _run(operation, *args, tier_now=TIER_FREE, rowcounts=(1,), **kwargs):
+        """Run operation; each UPDATE matches the next of ``rowcounts`` rows.
+
+        Returns (get_tier, session, tables written in order).
+        """
         with patch(f"{MODULE}._get_user_tier") as get_tier, patch(
             f"{MODULE}.session_scope"
         ) as session_scope, patch(f"{MODULE}.MODE") as mode:
             mode.IS_STANDALONE = False
-            # The tier as it reads now: the user upgraded during the run
-            get_tier.return_value = (TIER_PREMIUM, True, True)
+            get_tier.return_value = (tier_now, True, True)
             session = MagicMock()
-            session.execute.return_value.rowcount = 1
+            session.execute.side_effect = [MagicMock(rowcount=n) for n in rowcounts]
             session_scope.return_value.__enter__.return_value = session
 
             operation(*args, **kwargs)
 
-        return get_tier, session
+        tables = [call.args[0].table.name for call in session.execute.call_args_list]
+        return get_tier, session, tables
 
-    def test_a_release_with_its_tier_ignores_a_plan_change_during_the_run(self):
-        get_tier, session = self._run(decrement_workflow_count, USER_ID, tier=TIER_FREE)
+    def test_a_lapsed_plan_releases_the_row_the_run_was_counted_on(self):
+        get_tier, _, tables = self._run(
+            decrement_workflow_count, USER_ID, tier=TIER_PREMIUM
+        )
 
-        statement = session.execute.call_args.args[0]
-        assert statement.table.name == FreeUserAssignment.__tablename__
+        assert tables == [PremiumUserAssignment.__tablename__]
         get_tier.assert_not_called()
 
-    def test_a_release_without_a_tier_resolves_it_as_before(self):
-        get_tier, session = self._run(decrement_workflow_count, USER_ID)
+    def test_a_release_follows_the_count_handed_over_on_an_upgrade(self):
+        _, session, tables = self._run(
+            decrement_workflow_count,
+            USER_ID,
+            tier=TIER_FREE,
+            tier_now=TIER_PREMIUM,
+            rowcounts=(0, 1),
+        )
 
-        statement = session.execute.call_args.args[0]
-        assert statement.table.name == PremiumUserAssignment.__tablename__
+        assert tables == [
+            FreeUserAssignment.__tablename__,
+            PremiumUserAssignment.__tablename__,
+        ]
+        session.commit.assert_called_once()
+
+    def test_a_premium_count_never_moves_to_the_free_row(self):
+        """Premium rows are deleted without a hand-over."""
+        _, session, tables = self._run(
+            decrement_workflow_count, USER_ID, tier=TIER_PREMIUM, rowcounts=(0,)
+        )
+
+        assert tables == [PremiumUserAssignment.__tablename__]
+        session.commit.assert_not_called()
+
+    def test_a_release_with_no_row_left_writes_nothing(self):
+        _, session, tables = self._run(
+            decrement_workflow_count, USER_ID, tier=TIER_FREE, rowcounts=(0, 0)
+        )
+
+        assert len(tables) == 2
+        session.commit.assert_not_called()
+
+    def test_a_release_without_a_tier_resolves_it_as_before(self):
+        get_tier, _, tables = self._run(
+            decrement_workflow_count, USER_ID, tier_now=TIER_PREMIUM
+        )
+
+        assert tables == [PremiumUserAssignment.__tablename__]
         get_tier.assert_called_once()
 
     def test_a_renewal_writes_the_lease_of_the_counted_table(self):
-        _, session = self._run(renew_workflow_lease, USER_ID, TIER_FREE)
+        _, session, tables = self._run(renew_workflow_lease, USER_ID, TIER_FREE)
 
         sql = _sql(session.execute.call_args.args[0])
-        assert sql.startswith(f"UPDATE {FreeUserAssignment.__tablename__} ")
+        assert tables == [FreeUserAssignment.__tablename__]
         assert "SET last_workflow_heartbeat=now()" in sql
 
+    def test_a_renewal_follows_the_count_handed_over_on_an_upgrade(self):
+        _, _, tables = self._run(
+            renew_workflow_lease, USER_ID, TIER_FREE, rowcounts=(0, 1)
+        )
+
+        assert tables == [
+            FreeUserAssignment.__tablename__,
+            PremiumUserAssignment.__tablename__,
+        ]
+
     def test_an_uncounted_run_renews_nothing(self):
-        _, session = self._run(renew_workflow_lease, USER_ID, None)
+        _, session, _ = self._run(renew_workflow_lease, USER_ID, None)
 
         session.execute.assert_not_called()
 
