@@ -244,6 +244,80 @@ def test_lccd_detect_runs_on_non_square_frames(images, output_dir, lccd_stub):
     assert info["edit_roi_data"].im.shape == (3, ROWS, COLS)
 
 
+@pytest.fixture
+def real_lccd(monkeypatch):
+    """The real LCCD.apply and RoiIntegration over scripted blob detector
+    results, one per chunk (skimage is not installed here)."""
+    package = f"{lccd_detection.__package__}.lccd_python"
+
+    def build(chunks, blob_sparse=False, roi_sparse=False, roi_area=(1, 100)):
+        class ScriptedBlobDetector:
+            def __init__(self, **kwargs):
+                self.chunks = iter(chunks)
+
+            def apply(self, tm):
+                roi = next(self.chunks)
+                if roi is None:
+                    raise ValueError("No roi region found. Revise config and input.")
+                return scipy.sparse.csc_matrix(roi) if blob_sparse else roi
+
+        fake = types.ModuleType("blob_detector")
+        fake.BlobDetector = ScriptedBlobDetector
+        monkeypatch.setitem(sys.modules, f"{package}.blob_detector", fake)
+        monkeypatch.delitem(sys.modules, f"{package}.lccd", raising=False)
+        from studio.app.optinist.wrappers.lccd.lccd_python.lccd import LCCD
+
+        config = {
+            "blob_detector": {},
+            "roi_integration": {
+                "overlap_threshold": 0.25,
+                "min_area": roi_area[0],
+                "max_area": roi_area[1],
+                "sparse": roi_sparse,
+            },
+            "frame_divider": 10,
+        }
+        return LCCD(config).apply(np.zeros((4, 4, 10 * len(chunks))))
+
+    return build
+
+
+def mask(*pixel_ranges):
+    roi = np.zeros((16, len(pixel_ranges)))
+    for i, (start, stop) in enumerate(pixel_ranges):
+        roi[start:stop, i] = 1
+    return roi
+
+
+def test_an_empty_last_chunk_keeps_earlier_rois(real_lccd):
+    roi = real_lccd([mask((0, 4)), None])
+    assert roi.shape == (16, 1)
+    assert roi[:4, 0].all()
+
+
+def test_an_empty_movie_reports_no_roi(real_lccd):
+    with pytest.raises(ValueError, match="No roi region found"):
+        real_lccd([None, None])
+
+
+@pytest.mark.parametrize("blob_sparse, roi_sparse", [(False, True), (True, False)])
+@pytest.mark.parametrize("n_chunks", [1, 2])
+def test_mismatched_sparse_settings_give_a_dense_result(
+    real_lccd, blob_sparse, roi_sparse, n_chunks
+):
+    chunks = [mask((0, 4)), mask((8, 12))][:n_chunks]
+    roi = real_lccd(chunks, blob_sparse=blob_sparse, roi_sparse=roi_sparse)
+    assert isinstance(roi, np.ndarray)
+    assert roi.shape == (16, n_chunks)
+
+
+@pytest.mark.parametrize("roi_sparse", [False, True])
+def test_one_chunk_applies_the_integration_area_limits(real_lccd, roi_sparse):
+    roi = real_lccd([mask((0, 3), (4, 12))], roi_sparse=roi_sparse, roi_area=(2, 4))
+    assert roi.shape == (16, 1)
+    assert roi[:3, 0].all()
+
+
 @pytest.mark.parametrize("sparse", [False, True])
 def test_filter_roi_by_area_returns_empty_when_all_filtered(sparse):
     roi = np.ones((16, 2))
