@@ -40,6 +40,7 @@ No access to NWB file
 #### Function Output
 
 info = {
+    'meanImg': ImageData(ops['meanImg'], file_name='meanImg'),
     'refImg': ImageData(ops['refImg'], file_name='refImg'),
     'meanImgE': ImageData(ops['meanImgE'], file_name='meanImgE'),
     'mc_images': ImageData(mc_images_tif_path, file_name='mc_images'),
@@ -122,6 +123,7 @@ info = {
 info = {
     'mc_images': mc_images,
     'meanImg': ImageData(meanImg, file_name='meanImg'),
+    'refImg': ImageData(refImg, file_name='refImg'),
     'rois': RoiData(rois, file_name='rois'),
     'nwbfile': nwbfile,
 }
@@ -150,6 +152,7 @@ info = {
 
 info = {
     'images': ImageData(np.array(Cn * 255, dtype=np.uint8), file_name='images'),
+    'meanImg': ImageData(meanImg.astype(np.float32), file_name='meanImg'),
     'fluorescence': FluoData(fluorescence, file_name='fluorescence'),
     'iscell': IscellData(iscell, file_name='iscell'),
     'all_roi': RoiData(all_roi, file_name='all_roi'),

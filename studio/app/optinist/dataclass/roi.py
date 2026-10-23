@@ -15,7 +15,7 @@ from studio.app.common.core.utils.filepath_creater import (
 from studio.app.common.core.utils.json_writer import JsonWriter
 from studio.app.common.core.workflow.workflow import OutputPath, OutputType
 from studio.app.common.dataclass.base import BaseData
-from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.image import ImageData, open_frames
 from studio.app.common.dataclass.utils import create_images_list
 from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
@@ -150,8 +150,10 @@ def open_edit_images(images, node_dirpath: str):
     node pickle need not hold a copy of the movie. The reference is opened here,
     when a commit needs it, relative to the node's experiment directory:
     memory-mapped when the TIFF allows it, so only the pixels a mask selects
-    are read, otherwise read in full once. Pickles that hold an array (written
-    before references were stored) are returned unchanged.
+    are read, otherwise read in full once. A reference to several files is
+    concatenated from their mapped frames, so the movie is held once. Pickles
+    that hold an array (written before references were stored) are returned
+    unchanged.
     """
     if not isinstance(images, ImageData):
         return images
@@ -170,14 +172,10 @@ def open_edit_images(images, node_dirpath: str):
             f"The movie ROI edits read new traces from ({names}) has changed "
             "since this node ran. Run the workflow again to add or merge ROIs."
         )
-    if len(paths) > 1:
-        logger.warning("ROI edit reads %d files in full", len(paths))
-        return ImageData(paths).data
-    try:
-        return tifffile.memmap(paths[0], mode="r")
-    except (ValueError, OSError) as e:  # compressed, tiled, or a mount that cannot map
-        logger.warning("ROI edit reads %s in full: %s", paths[0], e)
-        return np.asarray(imageio.volread(paths[0]))
+    if len(paths) == 1:
+        return open_frames(paths[0])
+    # each file mapped where it can be, so the movie is held once, concatenated
+    return np.concatenate([open_frames(path) for path in paths])
 
 
 class EditRoiData(BaseData):

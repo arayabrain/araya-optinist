@@ -5,6 +5,7 @@ import shutil
 import sys
 import types
 
+import imageio
 import numpy as np
 import pytest
 import tifffile
@@ -249,7 +250,7 @@ def test_experiment_copy_keeps_the_reference_working(tmp_path, lccd_stub):
     writer._ExptDataWriter__copy_data_update_pickle(pickle_path, "aaaa1111", "bbbb2222")
     shutil.rmtree(old_exp)  # the copy must not depend on the source
 
-    for name in ["lccd.pkl", "lccd.pkl.orig"]:  # the copy does not rewrite .orig
+    for name in ["lccd.pkl", "lccd.pkl.orig"]:  # .orig left as is: relative either way
         with open(new_exp / "lccd_x" / name, "rb") as f:
             copied = pickle.load(f)["edit_roi_data"].images
         opened = open_edit_images(copied, str(new_exp / "lccd_x"))
@@ -333,6 +334,29 @@ def test_a_reference_to_several_files_reads_them_all(output_dir, lccd_stub):
     tifffile.imwrite(paths[1], frames[25:][::-1].copy())
     with pytest.raises(EditImagesUnavailableError, match="has changed"):
         open_edit_images(stored, output_dir)
+
+
+def test_several_files_are_mapped_and_concatenated_once(tmp_path, monkeypatch):
+    # reading each file whole and then concatenating held the movie twice
+    frames = np.random.default_rng(1).integers(0, 4000, (12, LY, LX)).astype(np.int16)
+    paths = [str(tmp_path / name) for name in ["a.tif", "b.tif", "c.tif"]]
+    tifffile.imwrite(paths[0], frames[:5])
+    tifffile.imwrite(paths[1], frames[5:7], compression="zlib")  # cannot be mapped
+    tifffile.imwrite(paths[2], frames[7:])
+    read_whole = []
+    volread = imageio.volread
+
+    def recorded(path, *args, **kwargs):
+        read_whole.append(os.path.basename(path))
+        return volread(path, *args, **kwargs)
+
+    monkeypatch.setattr(imageio, "volread", recorded)
+    monkeypatch.setattr(
+        ImageData, "data", property(lambda self: pytest.fail("ImageData.data"))
+    )
+    opened = open_edit_images(ImageData(paths), str(tmp_path / "node"))
+    np.testing.assert_array_equal(opened, frames)
+    assert read_whole == ["b.tif"]
 
 
 def test_paths_on_another_drive_keep_the_frames(output_dir, lccd_stub, monkeypatch):

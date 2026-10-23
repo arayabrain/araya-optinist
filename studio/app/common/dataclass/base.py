@@ -1,4 +1,3 @@
-import gc
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -16,7 +15,3 @@ class BaseData(ABC):
     @property
     def output_path(self) -> Optional[OutputPath]:
         return None
-
-    def __del__(self):
-        del self
-        gc.collect()
