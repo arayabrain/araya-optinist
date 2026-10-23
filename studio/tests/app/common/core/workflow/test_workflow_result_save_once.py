@@ -35,6 +35,7 @@ from studio.app.common.core.workflow.workflow import (
     RunItem,
 )
 from studio.app.common.core.workflow.workflow_result import (
+    NodeResult,
     WorkflowMonitor,
     WorkflowResult,
     _save_slot,
@@ -445,3 +446,103 @@ async def test_finalization_past_the_lock_wait_still_saves(finished_node):
     assert any(
         "Observe lock still held" in call.args[0] for call in log.warning.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_finalization_past_the_lock_wait_writes_nothing_into_a_rerun(
+    finished_node,
+):
+    held, release = threading.Event(), threading.Event()
+    started, finish = threading.Event(), threading.Event()
+
+    def stuck_poll():
+        with WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_lock():
+            held.set()
+            release.wait(10)
+
+    def slow_save(self, json_dir):
+        started.set()
+        finish.wait(10)
+        save_json(self, json_dir)
+
+    poller = threading.Thread(target=stuck_poll)
+    poller.start()
+    held.wait()
+    generation = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).started_at
+    with patch.object(WorkflowResult, "OBSERVE_LOCK_WAIT_SECONDS", 0.1), patch.object(
+        TimeSeriesData, "save_json", autospec=True, side_effect=slow_save
+    ), patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        ThreadPoolExecutor,
+    ), patch.object(
+        WorkflowMonitor, "search_process", return_value=object()
+    ), patch(
+        "studio.app.common.routers.run._check_storage_quota", new=AsyncMock()
+    ), patch(
+        "studio.app.common.routers.run.ensure_structure_caches", new=AsyncMock()
+    ), patch(
+        "studio.app.common.routers.run.validate_input_edges"
+    ), patch(
+        "studio.app.common.routers.run.get_current_user_storage_usage",
+        new=AsyncMock(),
+    ), patch.object(
+        RemoteStorageController, "is_available", return_value=False
+    ), patch.object(
+        WorkflowRunner, "set_smk_config"
+    ):
+        finalization = asyncio.create_task(
+            WorkflowResult(WORKSPACE_ID, UNIQUE_ID).observe_overall(generation)
+        )
+        try:
+            assert await asyncio.to_thread(started.wait, 10)
+            release.set()
+            await asyncio.to_thread(poller.join)
+            assert await rerun() == UNIQUE_ID
+        finally:
+            release.set()
+            finish.set()
+            await finalization
+
+    func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+    assert (func1.success, func1.outputPaths) == ("running", None)
+    assert Path(WorkflowResult(WORKSPACE_ID, UNIQUE_ID).plan_pending_path).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snakemake_did", ["delete", "error"])
+async def test_a_pickle_swapped_before_the_worker_reads_it_never_fails_the_poll(
+    finished_node, snakemake_did
+):
+    pkl = finished_node / "func1" / "func1.pkl"
+    locate = NodeResult.__init__
+    swapped = []
+
+    def locate_then_swap(self, *args, **kwargs):
+        locate(self, *args, **kwargs)
+        if self.node_id == "func1" and self.node_pickle_path and not swapped:
+            swapped.append(snakemake_did)
+            if snakemake_did == "delete":
+                pkl.unlink()
+            else:
+                PickleWriter.write_error(str(pkl), ValueError("rerun failed"))
+
+    with patch.object(NodeResult, "__init__", locate_then_swap), patch(
+        "studio.app.common.core.workflow.workflow_result.ProcessPoolExecutor",
+        ThreadPoolExecutor,
+    ), patch(
+        "studio.app.common.routers.run.ExptConfigReader.ensure_synced_async",
+        new=AsyncMock(),
+    ), patch(
+        "studio.app.common.routers.run.ExperimentRecordService.is_available",
+        return_value=False,
+    ):
+        results = (await poll()).nodeResults
+
+    assert swapped == [snakemake_did]
+    func1 = ExptConfigReader.read(WORKSPACE_ID, UNIQUE_ID).function["func1"]
+    if snakemake_did == "delete":
+        assert "func1" not in results
+        assert func1.success == "running"
+    else:
+        assert results["func1"].status == "error"
+        assert func1.success == "error"
