@@ -3,8 +3,9 @@ import json
 import os
 import shutil
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import PurePath
 from typing import Callable, Dict, List
 from urllib.parse import urlparse
@@ -291,6 +292,34 @@ def _locked_json_edit(
         data = _read_json_dict(filepath)
         edit(data)
         _write_json_atomic(filepath, data)
+
+
+@contextmanager
+def _atomic_replace(filepath: str):
+    """
+    A file to write instead of filepath, which then replaces filepath:
+    - a reader that has the old file open, such as a running workflow, keeps
+      reading the old file to the end;
+    - a failed write leaves the old file in place.
+    The temporary file sits beside filepath, as `.<hex>.tmp`: hidden from the
+    file tree, its name independent of filepath's length, and created with the
+    default permissions (mkstemp would make it 0600).
+    """
+    tmp_path = os.path.join(os.path.dirname(filepath), f".{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp_path, "xb") as f:
+            yield f
+        os.replace(tmp_path, filepath)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+def _write_file_atomic(filepath: str, source) -> None:
+    """Copy source (a file object) to filepath through _atomic_replace."""
+    with _atomic_replace(filepath) as f:
+        shutil.copyfileobj(source, f)
 
 
 def _write_json_atomic(filepath: str, data: dict) -> None:
@@ -775,8 +804,7 @@ async def create_file(
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-        with open(filepath, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        _write_file_atomic(filepath, file.file)
 
         # Update metadata caches based on file type
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
@@ -994,7 +1022,7 @@ def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
 
     try:
         with (
-            open(filepath, "wb") as file,
+            _atomic_replace(filepath) as file,
             tqdm(
                 desc=filepath,
                 total=total,
@@ -1006,8 +1034,13 @@ def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
             for data in res.iter_content(chunk_size=chunk_size):
                 size = file.write(data)
                 current += size
-                DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
+                # current == total reads as finished, so only once the file is in place
+                if current != total:
+                    DOWNLOAD_STATUS[filepath] = DownloadStatus(
+                        total=total, current=current
+                    )
                 bar.update(size)
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
     except Exception as e:
         DOWNLOAD_STATUS[filepath] = DownloadStatus(error=str(e))
 
