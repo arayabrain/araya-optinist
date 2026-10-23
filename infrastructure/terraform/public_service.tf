@@ -328,6 +328,10 @@ resource "aws_ecs_service" "public" {
     container_port   = 8000
   }
 
+  # Default is 0 with a load balancer; cloud-startup.sh waits up to 10 min for
+  # RDS before the app listens. Matches the ASG grace and the free service.
+  health_check_grace_period_seconds = 900
+
   depends_on = [
     aws_autoscaling_group.public,
     aws_db_instance.main,

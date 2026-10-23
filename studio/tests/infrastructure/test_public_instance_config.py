@@ -498,6 +498,20 @@ class TestPublicServicePlacement:
         assert attribute(self.constraint, "expression") == '"attribute:tier == public"'
 
 
+class TestPublicServiceHealthCheckGrace:
+    """The public ECS service ignores health checks while a task boots.
+
+    A service behind a load balancer defaults to a zero grace period, and the
+    container waits up to 10 minutes for RDS before the app listens. Without
+    the grace, the ALB marks the task unhealthy within 90 seconds and ECS
+    replaces it in a loop until the database is up.
+    """
+
+    def test_service_grace_period_covers_a_cold_boot(self):
+        service = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
+        assert int(attribute(service, "health_check_grace_period_seconds")) == 900
+
+
 class TestPublishedDataEfsLifecycle:
     """The published-data EFS transitions to IA after 7 days.
 
