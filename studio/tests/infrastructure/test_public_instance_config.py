@@ -499,17 +499,18 @@ class TestPublicServicePlacement:
 
 
 class TestPublicServiceHealthCheckGrace:
-    """The public ECS service ignores health checks while a task boots.
+    """The public ECS service ignores health checks while a task starts.
 
-    A service behind a load balancer defaults to a zero grace period, and the
-    container waits up to 10 minutes for RDS before the app listens. Without
-    the grace, the ALB marks the task unhealthy within 90 seconds and ECS
-    replaces it in a loop until the database is up.
+    ECS defaults the grace period to zero, so the target group and container
+    checks count from the moment a task starts. The free service and the
+    public ASG both allow 900 seconds, and the public service matches them.
     """
 
-    def test_service_grace_period_covers_a_cold_boot(self):
-        service = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
-        assert int(attribute(service, "health_check_grace_period_seconds")) == 900
+    def test_service_grace_period_matches_the_free_service(self):
+        grace = "health_check_grace_period_seconds"
+        public = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
+        free = resource_block(read(COMPUTE_TF), "aws_ecs_service", "autoscaling")
+        assert int(attribute(public, grace)) == int(attribute(free, grace)) == 900
 
 
 class TestPublishedDataEfsLifecycle:
