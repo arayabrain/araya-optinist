@@ -10,11 +10,20 @@ Frontend interfaces are defined in:
 Tested endpoints:
   - POST /run/{workspace_id}                    -> str (unique_id)
   - POST /run/{workspace_id}/{uid}              -> str (unique_id)
+    (both: 429 {"detail": WorkflowConcurrencyLimitDetail} at the plan's limit)
   - POST /run/result/{workspace_id}/{uid}       -> RunResultDTO
   - POST /run/cancel/{workspace_id}/{uid}       -> RunResultDTO
   - POST /run/filter/{workspace_id}/{uid}/{node_id} -> str
 """
 
+import re
+from pathlib import Path
+
+from studio.app.common.core.workflow.workflow_tracking import (
+    WORKFLOW_CONCURRENCY_LIMIT_CODE,
+    ConcurrencyLimit,
+    WorkflowConcurrencyLimitError,
+)
 from studio.app.common.schemas.workflow import CompleteStatus
 
 # ============================================================================
@@ -62,6 +71,18 @@ RUN_POST_DATA_REQUIRED_FIELDS = {
 
 # Valid run statuses
 VALID_RUN_STATUSES = {"success", "error", "running", "pending", "skipped"}
+
+# WorkflowConcurrencyLimitDetail (429 detail of a run start at the plan's limit)
+CONCURRENCY_LIMIT_DETAIL_REQUIRED_FIELDS = {
+    "code": str,
+    "message": str,
+    "plan": str,
+    "limit": int,
+    "active": int,
+    "upgrade_available": bool,
+}
+
+RUN_TS = Path(__file__).parents[5] / "frontend" / "src" / "api" / "run" / "Run.ts"
 
 
 # ============================================================================
@@ -326,6 +347,40 @@ def test_contract_run_status_running():
     }
 
     assert result_item["status"] == "running"
+
+
+# ============================================================================
+# Contract Tests: Concurrent-run limit (429)
+# ============================================================================
+
+
+def test_contract_concurrency_limit_detail_structure():
+    """
+    Contract test: the 429 detail matches WorkflowConcurrencyLimitDetail.
+    """
+    for upgrade in ("Premium", None):
+        detail = WorkflowConcurrencyLimitError(
+            ConcurrencyLimit("Free", 1, upgrade), 1
+        ).to_detail()
+
+        validate_contract(
+            detail,
+            CONCURRENCY_LIMIT_DETAIL_REQUIRED_FIELDS,
+            context=f"WorkflowConcurrencyLimitDetail (upgrade={upgrade})",
+        )
+        assert set(detail) == set(CONCURRENCY_LIMIT_DETAIL_REQUIRED_FIELDS)
+
+
+def test_contract_concurrency_limit_code_matches_the_frontend():
+    """
+    Contract test: the frontend keys on this code, not on the status alone.
+    """
+    declared = re.search(
+        r'export const WORKFLOW_CONCURRENCY_LIMIT = "(\w+)"', RUN_TS.read_text()
+    )
+
+    assert declared, "WORKFLOW_CONCURRENCY_LIMIT not found in Run.ts"
+    assert declared.group(1) == WORKFLOW_CONCURRENCY_LIMIT_CODE
 
 
 # ============================================================================
