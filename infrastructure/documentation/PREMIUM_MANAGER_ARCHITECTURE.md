@@ -791,6 +791,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 **Input:** None (reads from AWS EC2 and database)
 **Output:** Updates DB records; cleans terminated entries
 **Calls:** get_all_premium_instances_with_states()
+**Fails closed:** Deletes nothing if EC2 cannot be asked, or if it reports no premium instance while assignments point at real instances; the EC2 state-change reconciliation still cleans each terminated instance
 
 **Frequency:** Runs hourly to keep DB accurate
 

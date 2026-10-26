@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from aws_constants import (
     ECSTaskStatus,
     PremiumAssignment,
@@ -709,13 +710,20 @@ class TestReconcileInstanceStates:
     """reconcile_instance_states tests."""
 
     def test_cleans_terminated_instance(self, mock_env_vars_premium):
-        """Terminated instance assignment cleaned."""
+        """Terminated instance assignment cleaned while others are discovered."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_cleanup" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("boto3.client") as mock_boto3, patch(
             "pymysql.connect"
         ) as mock_pymysql:
-            mock_aws.return_value = []
+            mock_aws.return_value = [
+                {
+                    "instance_id": "i-live",
+                    "instance_type": "t3.large",
+                    "state": "running",
+                    "launch_time": None,
+                }
+            ]
 
             mock_elbv2 = MagicMock()
 
@@ -866,6 +874,89 @@ class TestReconcileInstanceStates:
             result = reconcile_instance_states()
             assert result["cleanup_count"] == 0
             assert result["update_count"] == 0
+
+    @staticmethod
+    def _reconcile_live_rows(mock_env_vars_premium, describe):
+        """Run reconcile_instance_states through the real discovery over a
+        user row and a standby row whose instances are alive."""
+        rows = [
+            MockRow(
+                {
+                    "id": 1,
+                    "user_id": 100,
+                    "instance_id": "i-user",
+                    "instance_state": "running",
+                    "status": "active",
+                    "target_group_arn": "arn:aws:tg/u100",
+                    "alb_rule_arn": "arn:aws:rule/u100",
+                }
+            ),
+            MockRow(
+                {
+                    "id": 2,
+                    "user_id": None,
+                    "instance_id": "i-standby",
+                    "instance_state": "stopped",
+                    "status": "active",
+                    "target_group_arn": PremiumAssignment.STANDBY,
+                    "alb_rule_arn": PremiumAssignment.STANDBY,
+                }
+            ),
+        ]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch("pymysql.connect") as mock_pymysql:
+            mock_ec2 = MagicMock()
+            mock_ec2.describe_instances.side_effect = describe
+            mock_elbv2 = MagicMock()
+            mock_boto3.side_effect = lambda service: {
+                "ec2": mock_ec2,
+                "elbv2": mock_elbv2,
+            }.get(service, MagicMock())
+            mock_connection = setup_db_mock(fetchall_values=[rows])
+            mock_pymysql.return_value = mock_connection
+
+            from premium_cleanup import reconcile_instance_states
+
+            result = reconcile_instance_states()
+
+        cursor = mock_connection.cursor.return_value.__enter__.return_value
+        writes = [
+            c.args[0].split()[0]
+            for c in cursor.execute.call_args_list
+            if not c.args[0].lstrip().startswith("SELECT")
+        ]
+        return result, writes, mock_elbv2
+
+    def test_ec2_error_deletes_nothing(self, mock_env_vars_premium):
+        """A failed DescribeInstances must not read as "no instance exists":
+        no row and no ALB rule or target group is deleted."""
+        from botocore.exceptions import ClientError
+
+        def describe(**kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DescribeInstances")
+
+        result, writes, mock_elbv2 = self._reconcile_live_rows(
+            mock_env_vars_premium, describe
+        )
+
+        assert writes == []
+        mock_elbv2.delete_rule.assert_not_called()
+        mock_elbv2.delete_target_group.assert_not_called()
+        assert "AccessDenied" in result["error"]
+
+    def test_no_instances_discovered_deletes_nothing(self, mock_env_vars_premium):
+        """An empty discovery while rows point at real instances skips the
+        sweep instead of deleting every assignment."""
+        result, writes, mock_elbv2 = self._reconcile_live_rows(
+            mock_env_vars_premium, lambda **kwargs: {"Reservations": []}
+        )
+
+        assert writes == []
+        mock_elbv2.delete_rule.assert_not_called()
+        mock_elbv2.delete_target_group.assert_not_called()
+        assert result["skipped"] is True
+        assert result["cleanup_count"] == 0
 
 
 class TestReconcileSingleInstance:
@@ -1368,6 +1459,26 @@ class TestGetAllPremiumInstancesEnvFilter:
 
             result = get_all_premium_instances_with_states()
             assert len(result) == 0
+
+    def test_ec2_error_raises_only_when_asked(self, mock_env_vars_premium):
+        """Callers that only count instances keep getting []; a sweep that
+        deletes on absence gets the error."""
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+            mock_ec2.describe_instances.side_effect = ClientError(
+                {"Error": {"Code": "AccessDenied"}}, "DescribeInstances"
+            )
+
+            from premium_cleanup import get_all_premium_instances_with_states
+
+            assert get_all_premium_instances_with_states() == []
+            with pytest.raises(ClientError):
+                get_all_premium_instances_with_states(raise_on_error=True)
 
 
 class TestGetEcsContainerInstanceArnPrefersLive:
