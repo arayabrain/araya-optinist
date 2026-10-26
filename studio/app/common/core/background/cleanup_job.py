@@ -341,6 +341,7 @@ class DataCleanupJob:
             from studio.app.common.core.storage.remote_storage_controller import (
                 InputFileLock,
             )
+            from studio.app.common.routers.files import is_atomic_replace_tmp
 
             s3 = boto3.client("s3")
             s3_prefix = (
@@ -352,6 +353,10 @@ class DataCleanupJob:
                 # Skip the per-file flock working dir; it is never uploaded.
                 dirs[:] = [d for d in dirs if d != InputFileLock.LOCKS_DIRNAME]
                 for filename in files:
+                    # A killed upload's temporary file: never uploaded, and
+                    # deleted with the directory
+                    if is_atomic_replace_tmp(filename):
+                        continue
                     rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
                     s3_key = f"{s3_prefix}{rel_path}"
                     try:

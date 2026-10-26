@@ -4,6 +4,8 @@ Unit tests for data cleanup job.
 Tests cleanup logic with S3 verification and orphaned data handling.
 """
 
+import os
+import tempfile
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -761,6 +763,36 @@ class TestVerifyS3InputBackup:
                         "user-bucket", "workspace1"
                     )
         assert result is False
+
+    def test_a_killed_uploads_temporary_file_does_not_need_a_backup(self):
+        """It is never uploaded, so requiring an S3 copy would keep the
+        workspace's input forever."""
+        from botocore.exceptions import ClientError
+
+        from studio.app.common.routers.files import _atomic_replace
+
+        with tempfile.TemporaryDirectory() as d:
+            with _atomic_replace(os.path.join(d, "a.h5")):
+                (orphan,) = os.listdir(d)
+
+        def head_object(Bucket, Key):
+            if Key.endswith("/a.h5"):
+                return {}
+            raise ClientError({"Error": {"Code": "404"}}, "head_object")
+
+        with patch("boto3.client") as mock_boto:
+            mock_s3 = MagicMock()
+            mock_boto.return_value = mock_s3
+            mock_s3.head_object.side_effect = head_object
+            with patch("os.path.isdir", return_value=True):
+                with patch(
+                    "os.walk", return_value=[("/in/workspace1", [], ["a.h5", orphan])]
+                ):
+                    result = DataCleanupJob._verify_s3_input_backup_exists(
+                        "user-bucket", "workspace1"
+                    )
+        assert result is True
+        assert mock_s3.head_object.call_count == 1
 
     def test_empty_input_dir_returns_true(self):
         """Nothing to verify (no files) → safe to delete the empty dir."""

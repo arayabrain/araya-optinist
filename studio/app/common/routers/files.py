@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -291,6 +292,14 @@ def _locked_json_edit(
         data = _read_json_dict(filepath)
         edit(data)
         _write_json_atomic(filepath, data)
+
+
+_ATOMIC_TMP_NAME = re.compile(r"\.[0-9a-f]{32}\.tmp")
+
+
+def is_atomic_replace_tmp(filename: str) -> bool:
+    """A temporary file of _atomic_replace, e.g. one a killed process left."""
+    return _ATOMIC_TMP_NAME.fullmatch(filename) is not None
 
 
 @contextmanager
