@@ -10,7 +10,6 @@ from pathlib import PurePath
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-import requests
 import tifffile
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from requests.models import Response
@@ -38,6 +37,7 @@ from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
+from studio.app.common.core.utils.public_url import open_public_url
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -804,7 +804,7 @@ async def create_file(
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-        _write_file_atomic(filepath, file.file)
+        await asyncio.to_thread(_write_file_atomic, filepath, file.file)
 
         # Update metadata caches based on file type
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
@@ -1005,8 +1005,7 @@ async def download_file(
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         try:
-            res = requests.get(file.url, stream=True)
-            res.raise_for_status()
+            res = await asyncio.to_thread(open_public_url, file.url)
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
 
@@ -1025,6 +1024,9 @@ async def download_file(
         release_request_session(db)
 
 
+URL_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
 def _content_length(res: Response) -> int:
     """The response's Content-Length, or 0 when it is missing or invalid."""
     try:
@@ -1038,7 +1040,7 @@ def download(
     file_name: str,
     workspace_id: str,
     upload_id: Optional[str] = None,
-    chunk_size=1024,
+    chunk_size=URL_UPLOAD_CHUNK_SIZE,
 ):
     total = _content_length(res)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
@@ -1070,6 +1072,8 @@ def download(
         DOWNLOAD_STATUS[filepath] = DownloadStatus(
             total=total, current=current, error=str(e), upload_id=upload_id
         )
+    finally:
+        res.close()
 
     if WorkspaceDataCapacityService.is_available():
         _update_workspace_data_usage(workspace_id)

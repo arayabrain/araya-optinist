@@ -5,6 +5,7 @@ place."""
 import asyncio
 import io
 import os
+import threading
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -173,7 +174,7 @@ def test_a_same_name_url_upload_does_not_read_as_done_before_its_file(
     )
     background_tasks = BackgroundTasks()
     response = url_response(NEW, content_length=len(NEW))
-    with patch.object(files.requests, "get", return_value=response):
+    with patch.object(files, "open_public_url", return_value=response):
         result = asyncio.run(
             files.download_file(
                 workspace_id="1",
@@ -197,6 +198,54 @@ def test_a_same_name_url_upload_does_not_read_as_done_before_its_file(
     assert not status.done
     assert files.DOWNLOAD_STATUS[str(path)].done
     assert path.read_bytes() == NEW
+
+
+def test_the_upload_routes_fetch_and_copy_off_the_event_loop(input_dir):
+    """Blocking work on the loop would stall every request on that worker."""
+    threads = {}
+
+    def fetch(url):
+        threads["fetch"] = threading.current_thread()
+        return url_response(NEW, content_length=len(NEW))
+
+    def copy(filepath, source):
+        threads["copy"] = threading.current_thread()
+
+    with patch.object(files, "open_public_url", side_effect=fetch), patch.object(
+        files, "_write_file_atomic", side_effect=copy
+    ), patch.object(
+        files, "get_current_user_storage_usage", new=AsyncMock(return_value=0)
+    ), patch.object(
+        files, "get_user_storage_usage"
+    ), patch.object(
+        files, "get_effective_quota_bytes", return_value=0
+    ), patch.object(
+        files.WorkspaceDataCapacityService, "is_available", return_value=False
+    ), patch.object(
+        files.RemoteStorageController, "is_available", return_value=False
+    ):
+        asyncio.run(
+            files.download_file(
+                workspace_id="1",
+                file=files.DownloadFileRequest(url="https://example.com/data.csv"),
+                background_tasks=BackgroundTasks(),
+                db=Mock(),
+            )
+        )
+        asyncio.run(
+            files.create_file(
+                workspace_id="1",
+                filename="data.csv",
+                background_tasks=BackgroundTasks(),
+                file=Mock(file=io.BytesIO(NEW)),
+                current_user=Mock(id=1),
+                remote_bucket_name="bucket",
+                db=Mock(),
+            )
+        )
+    # asyncio.run runs the loop in this (the main) thread
+    assert threads["fetch"] is not threading.main_thread()
+    assert threads["copy"] is not threading.main_thread()
 
 
 def test_the_status_route_answers_only_for_the_upload_asked_about(input_dir):

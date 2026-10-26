@@ -461,7 +461,9 @@ def test_run_releases_the_request_session_on_failure(endpoint):
 def test_download_file_releases_the_request_session():
     db = Mock()
     background_tasks = BackgroundTasks()
-    with patch.object(files, "create_directory"), patch.object(files.requests, "get"):
+    with patch.object(files, "create_directory"), patch.object(
+        files, "open_public_url"
+    ):
         result = asyncio.run(
             files.download_file(
                 workspace_id="1",
