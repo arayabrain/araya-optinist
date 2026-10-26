@@ -72,6 +72,30 @@ class WorkflowRunner:
         self.edgeDict = self.runItem.edgeDict
         self.logger = AppLogger.get_logger()
 
+        # A stale parameter tree is refused before any record is written
+        for node in self.nodeDict.values():
+            if NodeTypeUtil.check_nodetype(node.type) == NodeType.ALGO:
+                get_typecheck_params(node.data.param, node.data.label)
+
+        # Extract timezone from nwbParam before validation (not in default params).
+        # Passed from browser in ParamChild format: {type: "child", value: "..."}
+        timezone = None
+        raw_nwb_param = self.runItem.nwbParam
+        if raw_nwb_param and isinstance(raw_nwb_param, dict):
+            timezone_param = raw_nwb_param.pop(TIMEZONE_KEY, None)
+            if timezone_param and isinstance(timezone_param, dict):
+                timezone = timezone_param.get("value")
+
+        nwb_params = get_typecheck_params(raw_nwb_param, "nwb")
+
+        # Re-add timezone to nwb_params for passing to snakemake config
+        if timezone and nwb_params:
+            nwb_params[TIMEZONE_KEY] = timezone
+
+        snakemake_params = get_typecheck_params(
+            self.runItem.snakemakeParam, "snakemake"
+        )
+
         # Log workflow start with timing
         self.workflow_start_time = time.time()
         self.logger.info(
@@ -95,29 +119,15 @@ class WorkflowRunner:
             self.edgeDict,
         ).write()
 
-        # Extract timezone from nwbParam before validation (not in default params).
-        # Passed from browser in ParamChild format: {type: "child", value: "..."}
-        timezone = None
-        raw_nwb_param = self.runItem.nwbParam
-        if raw_nwb_param and isinstance(raw_nwb_param, dict):
-            timezone_param = raw_nwb_param.pop(TIMEZONE_KEY, None)
-            if timezone_param and isinstance(timezone_param, dict):
-                timezone = timezone_param.get("value")
-
-        nwb_params = get_typecheck_params(raw_nwb_param, "nwb")
-
-        # Re-add timezone to nwb_params for passing to snakemake config
-        if timezone and nwb_params:
-            nwb_params[TIMEZONE_KEY] = timezone
-
-        ExptConfigWriter(
+        expt_config = ExptConfigWriter(
             self.workspace_id,
             self.unique_id,
             self.runItem.name,
             nwbfile=nwb_params,
-            snakemake=get_typecheck_params(self.runItem.snakemakeParam, "snakemake"),
+            snakemake=snakemake_params,
             timezone=timezone,
         ).write()
+        self.generation = expt_config.started_at
 
         Runner.clear_pid_file(self.workspace_id, self.unique_id)
 
@@ -324,6 +334,7 @@ class WorkflowRunner:
             self.unique_id,
             snakemake_params,
             self.user_id,
+            self.generation,
         )
 
     def finish_workflow_without_run(

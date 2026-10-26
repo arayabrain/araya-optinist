@@ -19,24 +19,22 @@ rules:
     return_arg:
       ops@suite2p_file_convert_tlri58d268: ops
     params:
-      I/O:
-        nplanes: 1
-        nchannels: 1
-        functional_chan: 1
-        frames_include: -1
-      Registration:
+      torch_device: cpu
+      run:
+        do_regmetrics: false
+      registration:
+        batch_size: 100
+        nimg_init: 400
         smooth_sigma: 1.15
         smooth_sigma_time: 0
         maxregshift: 0.1
-        align_by_chan: 1
+        th_badframes: 1.0
+        norm_frames: true
+        subpixel: 10
+        spatial_taper: 3.45
+        do_bidiphase: false
+        bidiphase: 0
         reg_tif: false
-        th_badframes: 1
-      1P setting:
-        1Preg: false
-        spatial_hp_reg: 42
-        pre_smooth: 0
-        spatial_taper: 40
-      Non-Rigid:
         nonrigid: true
         block_size:
         - 128
@@ -55,25 +53,41 @@ rules:
     return_arg:
       ops@suite2p_registration_xq4pexs8o7: ops
     params:
-      tau: 1
-      classification:
-        soma_crop: true
-      cell_detection:
-        high_pass: 100
-        sparse_mode: true
+      tau: 1.0
+      diameter:
+      - 12
+      - 12
+      detection:
+        algorithm: sparsery
+        highpass_time: 100
+        nbins: 5000
+        denoise: false
+        block_size:
+        - 64
+        - 64
+        threshold_scaling: 1.0
         max_overlap: 0.75
-        nbinned: 5000
-        spatial_scale: 0
-        threshold_scaling: 1
-        max_iterations: 20
-      1P:
-        spatial_hp_detect: 25
-      Output:
-        preclassify: 0
-      ROI_extraction:
+        soma_crop: true
+        npix_norm_min: 0.0
+        npix_norm_max: 100
+        sparsery_settings:
+          spatial_scale: 0
+          highpass_neuropil: 25
+          max_ROIs: 5000
+          active_percentile: 0.0
+        sourcery_settings:
+          max_iterations: 20
+          connected: true
+          smooth_masks: false
+      extraction:
         allow_overlap: false
         inner_neuropil_radius: 2
         min_neuropil_pixels: 350
+        snr_threshold: 0.0
+        batch_size: 500
+      classification:
+        preclassify: 0.0
+        use_builtin_classifier: false
     output: 1/tutorial4/suite2p_roi_yvqcdmsg0r/suite2p_roi.pkl
     type: suite2p_roi
     nwbfile: null

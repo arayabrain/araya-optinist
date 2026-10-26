@@ -5,7 +5,7 @@ from studio.app.optinist.wrappers.caiman.cnmf import caiman_cnmf
 
 def caiman_cnmfe(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData):
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData, meanImg=ImageData):
     cnmfe_fixed_params = {
         "center_psf": True,
         "method_init": "corr_pnr",  # use this for 1 photon

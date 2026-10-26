@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -42,8 +43,10 @@ from studio.app.common.core.workflow.workflow_result import (
     NodeResult,
     WorkflowMonitor,
     WorkflowResult,
+    await_despite_cancel,
 )
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
+from studio.app.common.core.workflow.workflow_tracking import decrement_workflow_count
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -208,7 +211,8 @@ async def run_id(
         RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
         # An observer mid-save would record its result into the reset config
-        observe_lock = WorkflowResult(workspace_id, uid).observe_lock()
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
         try:
             observe_lock.acquire()
         except Timeout:
@@ -216,10 +220,36 @@ async def run_id(
                 status_code=status.HTTP_423_LOCKED,
                 detail="The previous run's results are still being saved.",
             )
+        # The build below is awaited; do not hold the guards' connection across it
+        release_request_session(db)
         try:
-            runner = WorkflowRunner(
-                remote_bucket_name, workspace_id, uid, runItem, user_id
+            # A same-second rerun waits out the second for a new generation
+            build = asyncio.ensure_future(
+                asyncio.to_thread(
+                    WorkflowRunner,
+                    remote_bucket_name,
+                    workspace_id,
+                    uid,
+                    runItem,
+                    user_id,
+                )
             )
+            try:
+                runner = await await_despite_cancel(build)
+            except asyncio.CancelledError:
+                # The built runner reset the config and counted a workflow that
+                # will never be scheduled, so no child replaces the old pickles
+                if build.exception() is None:
+                    workflow_result.mark_plan_pending()
+                    await await_despite_cancel(
+                        asyncio.ensure_future(
+                            asyncio.to_thread(decrement_workflow_count, user_id)
+                        )
+                    )
+                raise
+
+            # The config is reset, so its old pickles wait for the child's plan
+            workflow_result.mark_plan_pending()
 
             # Download any remote-only input files before workflow runs
             if RemoteStorageController.is_available():

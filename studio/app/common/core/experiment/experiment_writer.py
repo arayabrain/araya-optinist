@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import shutil
+import time
 from dataclasses import asdict
 from typing import Dict
 
@@ -73,7 +74,7 @@ class ExptConfigWriter:
         self.timezone = timezone  # User's browser timezone (IANA format)
         self.builder = ExptConfigBuilder()
 
-    def write(self) -> None:
+    def write(self) -> ExptConfig:
         expt_filepath = ExptConfigReader.get_config_yaml_path(
             self.workspace_id, self.unique_id
         )
@@ -81,7 +82,7 @@ class ExptConfigWriter:
             try:
                 expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
                 self.builder.set_config(expt_config)
-                self.add_run_info()
+                self.add_run_info(expt_config.started_at)
             # A rejected path is a security refusal, not corrupt data: it must not
             # be downgraded to "no data" by the broad clause below.
             except InvalidPathError:
@@ -101,9 +102,9 @@ class ExptConfigWriter:
         self.build_procs()
 
         # Write EXPERIMENT_YML
-        self._write_raw(
-            self.workspace_id, self.unique_id, config=asdict(self.builder.build())
-        )
+        expt_config = self.builder.build()
+        self._write_raw(self.workspace_id, self.unique_id, config=asdict(expt_config))
+        return expt_config
 
     @classmethod
     def _write_raw(
@@ -116,7 +117,8 @@ class ExptConfigWriter:
             auto_file_lock=auto_file_lock,
         )
 
-    def overwrite(self, update_params: dict) -> None:
+    def overwrite(self, update_params: dict, started_at: str = None) -> None:
+        """started_at: drop the write unless the config is still this run's"""
         expt_filepath = ExptConfigReader.get_config_yaml_path(
             self.workspace_id, self.unique_id
         )
@@ -126,6 +128,8 @@ class ExptConfigWriter:
         with FileLock(lock_path, ConfigWriter.FILE_LOCK_TIMEOUT):
             # Read experiment config
             config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+            if started_at is not None and config.started_at != started_at:
+                return
 
             # Merge overwrite params
             config_merged = differential_deep_merge(asdict(config), update_params)
@@ -150,11 +154,15 @@ class ExptConfigWriter:
             .build()
         )
 
-    def add_run_info(self) -> ExptConfig:
+    def add_run_info(self, previous_started_at: str = None) -> ExptConfig:
+        started_at = get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+        # started_at is the run's generation, so a same-second rerun takes the next
+        while started_at == previous_started_at:
+            time.sleep(0.05)
+            started_at = get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+
         return (
-            self.builder.set_started_at(
-                get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
-            )  # Update time
+            self.builder.set_started_at(started_at)  # Update time
             .set_success(WorkflowRunStatus.RUNNING.value)
             # rewritten with started_at above, or the pair disagrees on a rerun
             .set_timezone(self.timezone)
