@@ -2,7 +2,9 @@ import pytest
 
 from studio.app.common.core.workflow import workflow_params
 from studio.app.common.core.workflow.workflow_params import (
+    dict2nest,
     get_typecheck_params,
+    nest2dict,
     read_default_params,
 )
 
@@ -11,13 +13,10 @@ def _child(value):
     return {"type": "child", "value": value}
 
 
-def _to_message(params: dict) -> dict:
-    return {
-        key: {"type": "parent", "children": _to_message(value)}
-        if isinstance(value, dict)
-        else _child(value)
-        for key, value in params.items()
-    }
+def test_dict2nest_is_the_inverse_of_nest2dict():
+    tree = read_default_params("caiman_cnmf")
+    assert nest2dict(dict2nest(tree)) == tree
+    assert dict2nest({"g": {"b": 1}})["g"]["children"]["b"]["path"] == "g/b"
 
 
 def test_no_known_params_raises_named_yaml_error():
@@ -30,7 +29,7 @@ def test_no_known_params_raises_named_yaml_error():
 
 
 def test_retired_top_level_key_dropped_from_full_saved_tree():
-    saved = _to_message(read_default_params("caiman_mc"))
+    saved = dict2nest(read_default_params("caiman_mc"))
     saved["border_nan"] = _child("min")
     saved["retired_key"] = _child(False)
     params = get_typecheck_params(saved, "caiman_mc")
@@ -39,34 +38,42 @@ def test_retired_top_level_key_dropped_from_full_saved_tree():
 
 
 def test_retired_nested_key_dropped_from_full_saved_tree():
-    saved = _to_message(read_default_params("caiman_cnmf"))
+    saved = dict2nest(read_default_params("caiman_cnmf"))
     saved["merge_params"]["children"]["retired_key"] = _child(None)
     params = get_typecheck_params(saved, "caiman_cnmf")
     assert params["merge_params"] == read_default_params("caiman_cnmf")["merge_params"]
 
 
 def test_missing_scalar_is_filled_with_its_default(caplog):
-    saved = _to_message(read_default_params("caiman_mc"))
+    saved = dict2nest(read_default_params("caiman_mc"))
     del saved["niter_rig"]
     saved["border_nan"] = _child("min")
-    params = get_typecheck_params(saved, "caiman_mc")
-    assert params["niter_rig"] == read_default_params("caiman_mc")["niter_rig"]
+    added = []
+    params = get_typecheck_params(saved, "caiman_mc", added)
+    defaults = read_default_params("caiman_mc")
+    assert params["niter_rig"] == defaults["niter_rig"]
     assert params["border_nan"] == "min"
+    assert list(params) == list(defaults)  # yaml order, as the frontend keeps it
+    assert added == ["niter_rig"]
     assert "Adding param 'niter_rig' for [caiman_mc]" in caplog.text
 
 
 def test_missing_nested_key_is_filled_with_its_default(caplog):
-    saved = _to_message(read_default_params("caiman_cnmf"))
+    saved = dict2nest(read_default_params("caiman_cnmf"))
     del saved["merge_params"]["children"]["merge_thr"]
-    params = get_typecheck_params(saved, "caiman_cnmf")
+    added = []
+    params = get_typecheck_params(saved, "caiman_cnmf", added)
     assert params["merge_params"] == read_default_params("caiman_cnmf")["merge_params"]
+    assert added == ["merge_params/merge_thr"]
     assert "Adding param 'merge_params/merge_thr' for [caiman_cnmf]" in caplog.text
 
 
 def test_complete_saved_tree_adds_nothing(caplog):
-    saved = _to_message(read_default_params("caiman_mc"))
-    params = get_typecheck_params(saved, "caiman_mc")
+    saved = dict2nest(read_default_params("caiman_mc"))
+    added = []
+    params = get_typecheck_params(saved, "caiman_mc", added)
     assert params == read_default_params("caiman_mc")
+    assert added == []
     assert "Adding param" not in caplog.text
 
 
@@ -88,7 +95,7 @@ def test_v1_flat_tree_with_partial_overlap_still_raises():
 
 
 def test_unknown_key_dropped_when_all_groups_present():
-    saved = _to_message(read_default_params("suite2p_roi"))
+    saved = dict2nest(read_default_params("suite2p_roi"))
     saved["retired_key"] = _child(False)
     params = get_typecheck_params(saved, "suite2p_roi")
     assert "retired_key" not in params
@@ -102,7 +109,7 @@ def test_no_overlap_raises_for_group_less_defaults():
 
 
 def test_flat_key_that_now_lives_in_a_group_raises():
-    saved = _to_message(read_default_params("caiman_mc"))
+    saved = dict2nest(read_default_params("caiman_mc"))
     saved["use_cuda"] = _child(False)  # today under advanced
     with pytest.raises(KeyError, match="unknown parameters 'use_cuda'"):
         get_typecheck_params(saved, "caiman_mc")
@@ -110,7 +117,7 @@ def test_flat_key_that_now_lives_in_a_group_raises():
 
 def test_retired_key_dropped_when_a_newer_group_is_missing():
     # A record saved before the yaml gained a group, carrying a retired key
-    saved = _to_message(read_default_params("caiman_mc"))
+    saved = dict2nest(read_default_params("caiman_mc"))
     del saved["advanced"]
     saved["retired_key"] = _child(False)
     params = get_typecheck_params(saved, "caiman_mc")
@@ -119,7 +126,7 @@ def test_retired_key_dropped_when_a_newer_group_is_missing():
 
 
 def test_retired_key_dropped_when_a_newer_scalar_is_missing():
-    saved = _to_message(read_default_params("caiman_mc"))
+    saved = dict2nest(read_default_params("caiman_mc"))
     del saved["niter_rig"]
     saved["retired_key"] = _child(False)
     params = get_typecheck_params(saved, "caiman_mc")
@@ -128,10 +135,12 @@ def test_retired_key_dropped_when_a_newer_scalar_is_missing():
 
 
 def test_missing_group_is_filled_with_its_defaults(caplog):
-    saved = _to_message(read_default_params("caiman_mc"))
+    saved = dict2nest(read_default_params("caiman_mc"))
     del saved["advanced"]
-    params = get_typecheck_params(saved, "caiman_mc")
+    added = []
+    params = get_typecheck_params(saved, "caiman_mc", added)
     assert params == read_default_params("caiman_mc")
+    assert added == ["advanced"]
     assert "Adding param 'advanced' for [caiman_mc]" in caplog.text
 
 
@@ -140,7 +149,7 @@ def test_missing_group_is_filled_with_its_defaults(caplog):
     [("caiman_mc", None, "gSig_filt"), ("caiman_cnmf", "data_params", "decay_time")],
 )
 def test_a_key_saved_with_another_shape_is_reset_to_its_default(name, group, key):
-    saved = _to_message(read_default_params(name))
+    saved = dict2nest(read_default_params(name))
     target = saved[group]["children"] if group else saved
     target[key] = {"type": "parent", "children": {}}
     params = get_typecheck_params(saved, name)
@@ -170,14 +179,25 @@ def test_flat_key_that_now_lives_two_groups_deep_raises(monkeypatch):
         get_typecheck_params({"a": _child(1), "deep": _child(3)}, "x")
 
 
-def test_a_group_the_yaml_no_longer_has_raises_before_any_fill(monkeypatch):
-    # a retired group marks another layout: its settings do not carry over, so
-    # the tree is refused rather than run on the defaults
+def _old_group(**children):
+    return {
+        "type": "parent",
+        "children": {key: _child(value) for key, value in children.items()},
+    }
+
+
+def test_a_group_replaced_by_another_raises_before_any_fill(monkeypatch):
+    # its settings do not carry over: refused rather than run on the defaults
     monkeypatch.setattr(
-        workflow_params,
-        "read_default_params",
-        lambda name: {"a": 1, "g": {"b": 2}},
+        workflow_params, "read_default_params", lambda name: {"a": 1, "g": {"b": 2}}
     )
-    saved = {"a": _child(1), "old": {"type": "parent", "children": {"c": _child(3)}}}
     with pytest.raises(KeyError, match="unknown parameters 'old'"):
-        get_typecheck_params(saved, "x")
+        get_typecheck_params({"a": _child(1), "old": _old_group(c=3)}, "x")
+
+
+def test_a_retired_group_alone_is_dropped(monkeypatch):
+    monkeypatch.setattr(
+        workflow_params, "read_default_params", lambda name: {"a": 1, "g": {"b": 2}}
+    )
+    saved = {"a": _child(1), "g": _old_group(b=5), "old": _old_group(c=3)}
+    assert get_typecheck_params(saved, "x") == {"a": 1, "g": {"b": 5}}

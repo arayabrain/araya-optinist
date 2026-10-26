@@ -44,8 +44,16 @@ function answerThunks(...results: unknown[]) {
 }
 
 const notices = () =>
-  mockEnqueue.mock.calls.filter(([message]) =>
-    String(message).startsWith("Parameters updated to the current version"),
+  mockEnqueue.mock.calls
+    .map(([message]) => String(message))
+    .filter((message) =>
+      message.startsWith("Parameters updated to the current version"),
+    )
+const ETA_NOTICE =
+  "Parameters updated to the current version: eta (added: ETA/sort_by_peak)"
+const standalone = () =>
+  mockUseSelector.mockImplementation(
+    (selector) => selector === selectModeStandalone,
   )
 
 describe("useRunPipeline: opening a workspace", () => {
@@ -56,16 +64,11 @@ describe("useRunPipeline: opening a workspace", () => {
   })
 
   test("standalone: names the params added on load", async () => {
-    mockUseSelector.mockImplementation(
-      (selector) => selector === selectModeStandalone,
-    )
+    standalone()
     answerThunks(fetched(added))
     const { unmount } = renderHook(() => useRunPipeline())
 
-    await waitFor(() => expect(notices()).toHaveLength(1))
-    expect(notices()[0][0]).toBe(
-      "Parameters updated to the current version: eta (added: ETA/sort_by_peak)",
-    )
+    await waitFor(() => expect(notices()).toEqual([ETA_NOTICE]))
     unmount()
   })
 
@@ -74,27 +77,22 @@ describe("useRunPipeline: opening a workspace", () => {
     answerThunks({ unwrap: () => Promise.resolve({}) }, fetched(added))
     const { unmount } = renderHook(() => useRunPipeline())
 
-    await waitFor(() => expect(notices()).toHaveLength(1))
+    await waitFor(() => expect(notices()).toEqual([ETA_NOTICE]))
     unmount()
   })
 
-  test("stays quiet when nothing changed or the load failed", async () => {
-    mockUseSelector.mockImplementation(
-      (selector) => selector === selectModeStandalone,
+  test.each([
+    ["nothing changed", fetched([])],
+    ["the load failed", Promise.resolve({ type: fetchWorkflow.rejected.type })],
+  ])("stays quiet when %s", async (_, result) => {
+    standalone()
+    answerThunks(result)
+    const { unmount } = renderHook(() => useRunPipeline())
+    await waitFor(() =>
+      expect(mockDispatch).toHaveBeenCalledWith(expect.any(Function)),
     )
-    for (const result of [
-      fetched([]),
-      Promise.resolve({ type: fetchWorkflow.rejected.type }),
-    ]) {
-      answerThunks(result)
-      const { unmount } = renderHook(() => useRunPipeline())
-      await waitFor(() =>
-        expect(mockDispatch).toHaveBeenCalledWith(expect.any(Function)),
-      )
-      await result
-      unmount()
-      mockDispatch.mockReset()
-    }
-    expect(notices()).toHaveLength(0)
+    await result
+    unmount()
+    expect(notices()).toEqual([])
   })
 })

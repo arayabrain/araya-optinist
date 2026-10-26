@@ -156,18 +156,20 @@ export function formatParamsForDisplay(
   return formatted
 }
 
-// Mirrors the backend's has_outdated_shape: such a tree is left for the
-// backend to refuse, not filled with defaults
+// The backend's has_outdated_shape: such a tree is left for it to refuse
 export function hasOutdatedShape(saved: ParamMap, defaults: ParamMap): boolean {
   const savedKeys = Object.keys(saved)
   const unknown = savedKeys.filter((key) => !(key in defaults))
   if (unknown.length === 0) return false
   const noOverlap = unknown.length === savedKeys.length
   const nested = new Set(nestedKeys(defaults))
-  return (
-    noOverlap ||
-    unknown.some((key) => isParamParent(saved[key]) || nested.has(key))
-  )
+  const movedKey = unknown.some((key) => nested.has(key))
+  const replacedGroup =
+    unknown.some((key) => isParamParent(saved[key])) &&
+    Object.entries(defaults).some(
+      ([key, param]) => isParamParent(param) && !(key in saved),
+    )
+  return noOverlap || movedKey || replacedGroup
 }
 
 function nestedKeys(map: ParamMap): string[] {
@@ -178,11 +180,7 @@ function nestedKeys(map: ParamMap): string[] {
   )
 }
 
-/**
- * Align saved params with the current defaults: drop keys the defaults no
- * longer have, and add the keys they gained with their default values.
- * The result follows the defaults' key order.
- */
+/** Drop the keys the defaults lost and add the ones they gained, in their order */
 export function reconcileParamMap(
   saved: ParamMap,
   defaults: ParamMap,

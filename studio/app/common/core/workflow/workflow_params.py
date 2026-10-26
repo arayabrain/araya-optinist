@@ -14,10 +14,7 @@ FAQ_URL = "https://github.com/oist/optinist/wiki/FAQ"
 
 
 def get_typecheck_params(message_params, name, added=None):
-    """
-    The saved params checked against the node's default yaml. Paths of the
-    keys added from the yaml are appended to `added` when a list is given.
-    """
+    """The saved params checked against the node's yaml; added paths go to `added`."""
     default_params = read_default_params(name)
     if not isinstance(default_params, dict):
         default_params = {}
@@ -43,22 +40,20 @@ def get_typecheck_params(message_params, name, added=None):
 
 
 def has_outdated_shape(params, default_params):
-    """
-    True when the saved tree looks like it was written against a different
-    yaml layout (e.g. OptiNiSt v1, suite2p before 1.1.0): it has unknown
-    top-level keys and either shares no key with the defaults, has a key that
-    today lives inside one of the default groups (v2 nested the flat v1 keys
-    into groups), or has a whole group the defaults no longer have. Such a
-    tree is refused rather than filled with defaults.
-    """
+    """True for a saved tree from another yaml layout: refused, not filled."""
     if not params:
         return False
     unknown = params.keys() - default_params.keys()
     if not unknown:
         return False
+    # nothing shared, a flat key now in a group (v1), or a group replaced by another
     no_overlap = len(unknown) == len(params)
-    retired_group = any(isinstance(params[key], dict) for key in unknown)
-    return no_overlap or retired_group or bool(unknown & _nested_keys(default_params))
+    moved_key = bool(unknown & _nested_keys(default_params))
+    replaced_group = any(isinstance(params[key], dict) for key in unknown) and any(
+        isinstance(value, dict) and key not in params
+        for key, value in default_params.items()
+    )
+    return no_overlap or moved_key or replaced_group
 
 
 def _nested_keys(default_params) -> set:
@@ -70,10 +65,7 @@ def _nested_keys(default_params) -> set:
 
 
 def check_types(params, default_params, name="", prefix="", added=None):
-    """
-    Align saved params with the current default yaml: drop keys it no longer
-    has, add the keys it gained with their yaml defaults, and cast types.
-    """
+    """Drop keys the yaml lost, add the ones it gained, cast types; in yaml order."""
     for key in list(params):
         path = f"{prefix}{key}"
         if key not in default_params:
@@ -113,7 +105,7 @@ def check_types(params, default_params, name="", prefix="", added=None):
             if added is not None:
                 added.append(f"{prefix}{key}")
 
-    return params
+    return {key: params[key] for key in default_params}
 
 
 def nest2dict(value):
@@ -125,3 +117,15 @@ def nest2dict(value):
             nwb_dict[_k] = nest2dict(_v["children"])
 
     return nwb_dict
+
+
+def dict2nest(params, prefix=""):
+    """The parameter form's tree of plain params: the inverse of nest2dict."""
+    return {
+        key: (
+            {"type": "parent", "children": dict2nest(value, f"{prefix}{key}/")}
+            if isinstance(value, dict)
+            else {"type": "child", "value": value, "path": f"{prefix}{key}"}
+        )
+        for key, value in params.items()
+    }

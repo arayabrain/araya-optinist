@@ -48,9 +48,8 @@ export const selectAlgorithmDataFilterParamObject =
 
 export const selectAlgorithmIsUpdated =
   (nodeId: string) => (state: RootState) => {
-    const isUpdate = selectAlgorithmNodeById(nodeId)(state).isUpdate
-    const originalValue = selectAlgorithmNodeById(nodeId)(state).originalValue
-    const paramsAdded = selectAlgorithmNodeById(nodeId)(state).paramsAdded
+    const { isUpdate, originalValue, paramsAdded } =
+      selectAlgorithmNodeById(nodeId)(state)
     const param = selectAlgorithmParams(nodeId)(state)
     return (
       !!paramsAdded ||

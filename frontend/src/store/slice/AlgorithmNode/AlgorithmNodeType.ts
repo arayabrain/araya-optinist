@@ -23,8 +23,7 @@ type AlgorithmNodeType = {
   isUpdate: boolean
   // an ROI edit was committed: the descendants need a RUN, the node does not
   downstreamStale?: boolean
-  // keys were added to the saved params on load: the last run lacks them, so
-  // the node and its descendants need a RUN
+  // keys were added on load: the node and its descendants need a RUN
   paramsAdded?: boolean
   loadingFilterParamApi?: boolean
 }

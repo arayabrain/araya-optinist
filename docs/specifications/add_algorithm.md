@@ -200,7 +200,7 @@ Default function parameters can be defined in the following file. The user can t
 - Changing the yaml later:
   - Workflows saved before the change follow the current yaml. When such a workflow is loaded, and again when it runs, a key the yaml gained is added with its yaml default, and a key the yaml no longer has is dropped. The GUI names the added and removed keys when a workflow is opened, reproduced or imported.
   - A saved workflow previously ran without the added key, i.e. on the library's own default. If the yaml default differs from it, re-running that workflow changes its result, so choose the yaml default with this in mind.
-  - Moving top-level keys into groups, or removing a whole group, is a layout change, not an added key. A saved node in the old layout is not filled: its run stops with an error naming the old keys, and the node has to be deleted and added again.
+  - Moving top-level keys into groups, or replacing a group with another, is a layout change, not an added key. A saved node in the old layout is not filled: its run stops with an error naming the old keys, and the node has to be deleted and added again. A group removed with nothing in its place is only dropped.
 
 ### NWB saving format
 

@@ -7,6 +7,7 @@ import pytest
 
 from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.workflow.workflow_params import (
+    dict2nest,
     get_typecheck_params,
     read_default_params,
 )
@@ -77,16 +78,6 @@ def test_a_group_landing_on_a_value_is_refused():
         merge_settings(default_settings(), {"tau": {"value": 1.0}})
 
 
-def _form(tree):
-    # the shape the parameter form saves a tree in
-    return {
-        key: {"type": "parent", "children": _form(value)}
-        if isinstance(value, dict)
-        else {"type": "child", "value": value}
-        for key, value in tree.items()
-    }
-
-
 # the parameter trees of the 0.10.3 yamls, as a saved workflow carries them
 OLD_REGISTRATION = {
     "I/O": {"nplanes": 1, "nchannels": 1, "functional_chan": 1, "frames_include": -1},
@@ -115,23 +106,21 @@ OLD_SPIKE_DECONV = {"neucoeff": 0.7, "baseline": "maximin", "win_baseline": 60.0
 )
 def test_a_pre_upgrade_tree_sharing_no_key_with_the_yaml_is_refused(node, tree):
     with pytest.raises(KeyError, match="Workflow yaml error"):
-        get_typecheck_params(_form(tree), node)
+        get_typecheck_params(dict2nest(tree), node)
 
 
 def test_a_pre_upgrade_roi_tree_is_refused_by_its_old_groups():
-    # tau and classification overlap the 1.1.0 yaml, but the 0.10.3 groups mark
-    # the tree as an older layout, refused before the yaml's keys are added
+    # tau and classification overlap, but 0.10.3 groups stand where 1.1.0 ones go
     with pytest.raises(
         KeyError, match="'1P', 'Output', 'ROI_extraction', 'cell_detection'"
     ):
-        get_typecheck_params(_form(OLD_ROI), "suite2p_roi")
+        get_typecheck_params(dict2nest(OLD_ROI), "suite2p_roi")
 
 
 def test_a_flat_v1_roi_tree_keeps_tau_and_takes_the_rest_from_the_yaml(caplog):
-    # without a group it cannot be told from a tree saved before the yaml gained
-    # its groups, so the type check drops the old keys and fills the 1.1.0 ones
+    # no group, so it reads as a tree saved before the yaml gained its groups
     with caplog.at_level(logging.WARNING):
-        params = get_typecheck_params(_form(OLD_ROI_FLAT), "suite2p_roi")
+        params = get_typecheck_params(dict2nest(OLD_ROI_FLAT), "suite2p_roi")
     assert params == {**read_default_params("suite2p_roi"), "tau": 1.0}
     assert "Dropping saved param 'high_pass'" in caplog.text
 

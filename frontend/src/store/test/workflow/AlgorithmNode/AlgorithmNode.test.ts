@@ -170,7 +170,7 @@ describe("AlgorithmNode", () => {
   })
 
   // Loading a workflow whose nodes were reconciled against the current yaml
-  test(importWorkflowConfig.fulfilled.type, () => {
+  describe(importWorkflowConfig.fulfilled.type, () => {
     const algoNode = (id: string, param: Record<string, unknown>) => ({
       id,
       type: nodeType,
@@ -196,15 +196,6 @@ describe("AlgorithmNode", () => {
         ],
       },
     })
-
-    // gained keys: the last run had none of them, so a re-run runs it again
-    expect(selectAlgorithmIsUpdated("gained")(loaded)).toBe(true)
-    // dropped keys only: the backend ignored them, so the last run still holds
-    expect(selectAlgorithmIsUpdated("dropped")(loaded)).toBe(false)
-    expect(selectRunPostData(loaded).forceRunList).toEqual([
-      { nodeId: "gained", name: label },
-    ])
-    // descendants get the downstream highlight, as for an edited parameter
     const withChild = (state: ReturnType<typeof rootReducer>) => ({
       ...state,
       flowElement: {
@@ -212,37 +203,50 @@ describe("AlgorithmNode", () => {
         flowEdges: [{ id: "e", source: "gained", target: "child" }],
       },
     })
-    expect(isParentNodeUpdatedParams("child")(withChild(loaded))).toBe(true)
+    const forced = [{ nodeId: "gained", name: label }]
 
-    // an edit that is set back leaves the mark: the last run still lacks the keys
-    const edit = (value: number) =>
-      updateParam({
-        nodeId: "gained",
-        path: "a",
-        newValue: value,
-        initValue: 1,
-      })
-    const editedBack = rootReducer(rootReducer(loaded, edit(2)), edit(1))
-    expect(selectAlgorithmIsUpdated("gained")(editedBack)).toBe(true)
-    expect(selectRunPostData(editedBack).forceRunList).toEqual([
-      { nodeId: "gained", name: label },
-    ])
+    test("a node that gained keys is updated and force-run", () => {
+      expect(selectAlgorithmIsUpdated("gained")(loaded)).toBe(true)
+      expect(selectRunPostData(loaded).forceRunList).toEqual(forced)
+    })
 
-    // a run clears it
-    const ran = rootReducer(editedBack, {
-      type: runByCurrentUid.fulfilled.type,
-      meta: {
-        arg: {
-          runPostData: {
-            nodeDict: {
-              gained: { id: "gained", data: { type: nodeDataType, label } },
-              dropped: { id: "dropped", data: { type: nodeDataType, label } },
+    test("a node that only lost keys is not: the backend ignored them", () => {
+      expect(selectAlgorithmIsUpdated("dropped")(loaded)).toBe(false)
+    })
+
+    test("the descendants of a node that gained keys are highlighted", () => {
+      expect(isParentNodeUpdatedParams("child")(withChild(loaded))).toBe(true)
+    })
+
+    test("an edit that is set back keeps the mark", () => {
+      const edit = (value: number) =>
+        updateParam({
+          nodeId: "gained",
+          path: "a",
+          newValue: value,
+          initValue: 1,
+        })
+      const editedBack = rootReducer(rootReducer(loaded, edit(2)), edit(1))
+      expect(selectAlgorithmIsUpdated("gained")(editedBack)).toBe(true)
+      expect(selectRunPostData(editedBack).forceRunList).toEqual(forced)
+    })
+
+    test("a run clears the mark", () => {
+      const ran = rootReducer(loaded, {
+        type: runByCurrentUid.fulfilled.type,
+        meta: {
+          arg: {
+            runPostData: {
+              nodeDict: {
+                gained: { id: "gained", data: { type: nodeDataType, label } },
+                dropped: { id: "dropped", data: { type: nodeDataType, label } },
+              },
             },
           },
         },
-      },
+      })
+      expect(selectAlgorithmIsUpdated("gained")(ran)).toBe(false)
+      expect(isParentNodeUpdatedParams("child")(withChild(ran))).toBe(false)
     })
-    expect(selectAlgorithmIsUpdated("gained")(ran)).toBe(false)
-    expect(isParentNodeUpdatedParams("child")(withChild(ran))).toBe(false)
   })
 })
