@@ -13,7 +13,7 @@ Tested endpoints:
   - POST /files/{workspace_id}/sync/{filename}    -> FilePath
   - POST /files/{workspace_id}/upload/{filename}  -> FilePath
   - DELETE /files/{workspace_id}/delete/{filename} -> bool
-  - POST /files/{workspace_id}/download           -> { file_name: string }
+  - POST /files/{workspace_id}/download           -> { file_name, upload_id }
   - GET  /files/{workspace_id}/download/status    -> GetStatusViaUrl
 """
 
@@ -62,10 +62,12 @@ FILE_PATH_REQUIRED_FIELDS = {
 DOWNLOAD_STATUS_REQUIRED_FIELDS = {
     "total": int,
     "current": int,
+    "done": bool,
 }
 
 DOWNLOAD_STATUS_OPTIONAL_FIELDS = {
     "error": str,
+    "upload_id": str,
 }
 
 # Valid sync status values
@@ -362,6 +364,8 @@ def test_contract_download_status_response():
         total=1000000,
         current=500000,
         error=None,
+        done=False,
+        upload_id="0123abcd",
     )
 
     result = status.__dict__

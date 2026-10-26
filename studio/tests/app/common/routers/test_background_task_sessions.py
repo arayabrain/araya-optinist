@@ -470,7 +470,7 @@ def test_download_file_releases_the_request_session():
                 db=db,
             )
         )
-    assert result == {"file_name": "data.csv"}
+    assert result["file_name"] == "data.csv"
     db.close.assert_called_once()
     task = background_tasks.tasks[0]
     assert task.func is files.download

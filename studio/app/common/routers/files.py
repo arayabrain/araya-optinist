@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from pathlib import PurePath
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -976,12 +976,15 @@ async def delete_file(
     response_model=DownloadStatus,
     dependencies=[Depends(is_workspace_available)],
 )
-async def get_download_status(workspace_id: str, file_name: str):
+async def get_download_status(
+    workspace_id: str, file_name: str, upload_id: Optional[str] = None
+):
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
-    try:
-        return DOWNLOAD_STATUS[filepath]
-    except:  # noqa
+    status = DOWNLOAD_STATUS.get(filepath)
+    # Another upload's entry, e.g. an earlier one this worker ran, is not this one's
+    if status is None or upload_id not in (None, status.upload_id):
         raise HTTPException(status_code=404)
+    return status
 
 
 @router.post(
@@ -1006,17 +1009,38 @@ async def download_file(
             res.raise_for_status()
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
-        background_tasks.add_task(download, res, path.name, workspace_id)
+
+        upload_id = uuid.uuid4().hex
+        filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, path.name])
+        # Replaces the previous same-name upload's entry, which reads as done
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(
+            total=_content_length(res), upload_id=upload_id
+        )
+        background_tasks.add_task(download, res, path.name, workspace_id, upload_id)
         # Only update image shape for TIFF files
         if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
             background_tasks.add_task(update_image_shape, workspace_id, path.name)
-        return {"file_name": path.name}
+        return {"file_name": path.name, "upload_id": upload_id}
     finally:
         release_request_session(db)
 
 
-def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
-    total = int(res.headers.get("content-length", 0))
+def _content_length(res: Response) -> int:
+    """The response's Content-Length, or 0 when it is missing or invalid."""
+    try:
+        return int(res.headers.get("content-length", 0))
+    except ValueError:
+        return 0
+
+
+def download(
+    res: Response,
+    file_name: str,
+    workspace_id: str,
+    upload_id: Optional[str] = None,
+    chunk_size=1024,
+):
+    total = _content_length(res)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
     current = 0
 
@@ -1034,15 +1058,18 @@ def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
             for data in res.iter_content(chunk_size=chunk_size):
                 size = file.write(data)
                 current += size
-                # current == total reads as finished, so only once the file is in place
-                if current != total:
-                    DOWNLOAD_STATUS[filepath] = DownloadStatus(
-                        total=total, current=current
-                    )
+                DOWNLOAD_STATUS[filepath] = DownloadStatus(
+                    total=total, current=current, upload_id=upload_id
+                )
                 bar.update(size)
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
+        # done only once the file is in place: the frontend then uses it
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(
+            total=total, current=current, done=True, upload_id=upload_id
+        )
     except Exception as e:
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(error=str(e))
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(
+            total=total, current=current, error=str(e), upload_id=upload_id
+        )
 
     if WorkspaceDataCapacityService.is_available():
         _update_workspace_data_usage(workspace_id)

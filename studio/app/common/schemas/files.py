@@ -48,3 +48,5 @@ class DownloadStatus:
     total: int = 0
     current: int = 0
     error: Optional[str] = None
+    done: bool = False  # the file is in place
+    upload_id: Optional[str] = None

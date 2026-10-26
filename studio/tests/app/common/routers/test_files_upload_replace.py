@@ -50,6 +50,7 @@ def test_a_long_file_name_still_works(tmp_path):
 @pytest.fixture
 def input_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(files.DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files, "DOWNLOAD_STATUS", {})
     (tmp_path / "1").mkdir()
     return tmp_path / "1"
 
@@ -85,14 +86,28 @@ def test_the_upload_route_replaces_the_file_under_an_open_reader(input_dir):
     assert os.listdir(input_dir) == ["data.csv"]
 
 
-def url_response(*chunks):
+def url_response(*chunks, content_length=None):
     def iter_content(chunk_size):
         for chunk in chunks:
             if isinstance(chunk, Exception):
                 raise chunk
             yield chunk
 
-    return Mock(headers={"content-length": "0"}, iter_content=iter_content)
+    headers = {} if content_length is None else {"content-length": str(content_length)}
+    return Mock(headers=headers, iter_content=iter_content)
+
+
+def record_status_at_replace(monkeypatch):
+    """The download status each os.replace sees, i.e. just before the file lands."""
+    at_replace = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        at_replace.append(files.DOWNLOAD_STATUS.get(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(files.os, "replace", replace)
+    return at_replace
 
 
 def test_a_url_upload_replaces_the_file_under_an_open_reader(input_dir):
@@ -105,6 +120,8 @@ def test_a_url_upload_replaces_the_file_under_an_open_reader(input_dir):
         assert reader.read() == OLD
     assert path.read_bytes() == NEW
     assert os.listdir(input_dir) == ["data.csv"]
+    # Without Content-Length the total is unknown; done still ends the upload
+    assert files.DOWNLOAD_STATUS[str(path)].done
 
 
 def test_a_url_upload_that_fails_midway_leaves_the_old_file(input_dir):
@@ -116,33 +133,84 @@ def test_a_url_upload_that_fails_midway_leaves_the_old_file(input_dir):
         files.download(
             url_response(NEW[:50], ConnectionError("connection reset")), "data.csv", "1"
         )
-    assert "connection reset" in files.DOWNLOAD_STATUS[str(path)].error
+    status = files.DOWNLOAD_STATUS[str(path)]
+    assert "connection reset" in status.error
+    assert not status.done
     assert path.read_bytes() == OLD
     assert os.listdir(input_dir) == ["data.csv"]
 
 
-def test_a_url_upload_reports_finished_only_once_the_file_is_in_place(
-    input_dir, monkeypatch
-):
-    """The frontend reads current == total as finished and uses the file."""
+def test_a_url_upload_is_done_only_once_the_file_is_in_place(input_dir, monkeypatch):
+    """The frontend finishes on done and uses the file."""
     path = input_dir / "data.csv"
-    at_replace = []
-    real_replace = os.replace
-
-    def replace(src, dst):
-        at_replace.append(files.DOWNLOAD_STATUS.get(dst))
-        real_replace(src, dst)
-
-    monkeypatch.setattr(files.os, "replace", replace)
-    response = url_response(NEW[:50], NEW[50:])
-    response.headers = {"content-length": str(len(NEW))}
+    at_replace = record_status_at_replace(monkeypatch)
+    response = url_response(NEW[:50], NEW[50:], content_length=len(NEW))
     with patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=False
     ):
-        files.download(response, "data.csv", "1")
+        files.download(response, "data.csv", "1", "id")
 
     (status,) = at_replace
-    assert status is None or status.current != status.total
+    assert (status.current, status.total, status.done) == (len(NEW), len(NEW), False)
     finished = files.DOWNLOAD_STATUS[str(path)]
-    assert (finished.current, finished.total) == (len(NEW), len(NEW))
+    assert (finished.current, finished.done, finished.upload_id) == (
+        len(NEW),
+        True,
+        "id",
+    )
     assert path.read_bytes() == NEW
+
+
+def test_a_same_name_url_upload_does_not_read_as_done_before_its_file(
+    input_dir, monkeypatch
+):
+    """A one-chunk download writes no progress before the replace, so the
+    previous upload's done entry must be gone when the route returns."""
+    path = input_dir / "data.csv"
+    path.write_bytes(OLD)
+    files.DOWNLOAD_STATUS[str(path)] = files.DownloadStatus(
+        total=len(OLD), current=len(OLD), done=True, upload_id="earlier"
+    )
+    background_tasks = BackgroundTasks()
+    response = url_response(NEW, content_length=len(NEW))
+    with patch.object(files.requests, "get", return_value=response):
+        result = asyncio.run(
+            files.download_file(
+                workspace_id="1",
+                file=files.DownloadFileRequest(url="https://example.com/data.csv"),
+                background_tasks=background_tasks,
+                db=Mock(),
+            )
+        )
+    upload_id = result["upload_id"]
+    assert upload_id != "earlier"
+    queued = files.DOWNLOAD_STATUS[str(path)]
+    assert (queued.done, queued.current, queued.upload_id) == (False, 0, upload_id)
+
+    at_replace = record_status_at_replace(monkeypatch)
+    task = background_tasks.tasks[0]
+    with patch.object(
+        files.WorkspaceDataCapacityService, "is_available", return_value=False
+    ):
+        task.func(*task.args, **task.kwargs)
+    (status,) = at_replace
+    assert not status.done
+    assert files.DOWNLOAD_STATUS[str(path)].done
+    assert path.read_bytes() == NEW
+
+
+def test_the_status_route_answers_only_for_the_upload_asked_about(input_dir):
+    """Another worker may still hold an earlier upload's done entry."""
+    path = str(input_dir / "data.csv")
+    files.DOWNLOAD_STATUS[path] = files.DownloadStatus(done=True, upload_id="earlier")
+
+    def status(**kwargs):
+        return asyncio.run(
+            files.get_download_status(workspace_id="1", file_name="data.csv", **kwargs)
+        )
+
+    with pytest.raises(files.HTTPException) as raised:
+        status(upload_id="this")
+    assert raised.value.status_code == 404
+    assert status(upload_id="earlier").done
+    assert status().done  # a caller that sends no id
