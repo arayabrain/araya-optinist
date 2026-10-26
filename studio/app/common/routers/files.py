@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import shutil
-import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
@@ -296,19 +295,15 @@ def _locked_json_edit(
 
 @contextmanager
 def _atomic_replace(filepath: str):
-    """
-    A file to write instead of filepath, which then replaces filepath:
-    - a reader that has the old file open, such as a running workflow, keeps
-      reading the old file to the end;
-    - a failed write leaves the old file in place.
-    The temporary file sits beside filepath, as `.<hex>.tmp`: hidden from the
-    file tree, its name independent of filepath's length, and created with the
-    default permissions (mkstemp would make it 0600).
-    """
+    """Yield a file that replaces filepath once the block ends without an error.
+    A reader of the old file keeps reading it; a failed write leaves it in place."""
+    # Hidden, a fixed length whatever filepath's, default permissions (not 0600)
     tmp_path = os.path.join(os.path.dirname(filepath), f".{uuid.uuid4().hex}.tmp")
     try:
         with open(tmp_path, "xb") as f:
             yield f
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, filepath)
     except BaseException:
         with suppress(OSError):
@@ -317,21 +312,13 @@ def _atomic_replace(filepath: str):
 
 
 def _write_file_atomic(filepath: str, source) -> None:
-    """Copy source (a file object) to filepath through _atomic_replace."""
     with _atomic_replace(filepath) as f:
         shutil.copyfileobj(source, f)
 
 
 def _write_json_atomic(filepath: str, data: dict) -> None:
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(filepath), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except BaseException:
-        with suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    with _atomic_replace(filepath) as f:
+        f.write(json.dumps(data, indent=2).encode())
 
 
 # Maps each file to its entry's format version; cache iterators must skip this key

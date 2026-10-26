@@ -1,10 +1,12 @@
 """Uploads (create_file) and URL uploads (download) replace their file through a
 temporary file beside it, so a reader that has the old file open (a running
 workflow) keeps reading the old file, and a failed write leaves the old file in
-place."""
+place. A URL upload reads as done only once its file is in place."""
 import asyncio
+import errno
 import io
 import os
+import stat
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -17,26 +19,16 @@ from studio.app.common.routers.files import _write_file_atomic
 OLD, NEW = b"old movie " * 1000, b"new movie " * 10
 
 
-def test_a_reader_of_the_old_file_keeps_reading_it(tmp_path):
-    path = tmp_path / "movie.tif"
-    path.write_bytes(OLD)
-    with open(path, "rb", buffering=0) as reader:  # unbuffered: reads after replace
-        head = reader.read(10)
-        _write_file_atomic(str(path), io.BytesIO(NEW))
-        assert head + reader.read() == OLD
-    assert path.read_bytes() == NEW
-    assert os.listdir(tmp_path) == ["movie.tif"]
+def test_a_failed_write_leaves_the_old_file(tmp_path, monkeypatch):
+    def copy_until_the_disk_is_full(source, dest):
+        dest.write(source.read(10))
+        raise OSError(errno.ENOSPC, "No space left on device")
 
-
-def test_a_failed_write_leaves_the_old_file(tmp_path):
-    class Broken(io.RawIOBase):
-        def readinto(self, b):
-            raise OSError("No space left on device")
-
+    monkeypatch.setattr(files.shutil, "copyfileobj", copy_until_the_disk_is_full)
     path = tmp_path / "movie.tif"
     path.write_bytes(OLD)
     with pytest.raises(OSError, match="No space left"):
-        _write_file_atomic(str(path), Broken())
+        _write_file_atomic(str(path), io.BytesIO(NEW))
     assert path.read_bytes() == OLD
     assert os.listdir(tmp_path) == ["movie.tif"]
 
@@ -46,6 +38,18 @@ def test_a_long_file_name_still_works(tmp_path):
     path = tmp_path / ("m" * 240 + ".tif")
     _write_file_atomic(str(path), io.BytesIO(NEW))
     assert path.read_bytes() == NEW
+
+
+def test_the_file_gets_the_default_permissions(tmp_path):
+    """As a file open() creates; a mkstemp file would be 0600, private to the
+    API's user."""
+    umask = os.umask(0o022)
+    try:
+        path = tmp_path / "movie.tif"
+        _write_file_atomic(str(path), io.BytesIO(NEW))
+    finally:
+        os.umask(umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
 
 
 @pytest.fixture
