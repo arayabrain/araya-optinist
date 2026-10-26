@@ -85,7 +85,7 @@ def vacant_roi(
         # editing opens it lazily
         "edit_roi_data": EditRoiData(
             images=edit_images(mc_images, output_dir),
-            roi_masks=RoiMasks.from_stack(im),
+            roi_masks=RoiMasks.from_pixels(shape[:2], []),
         ),
         "nwbfile": nwbfile,
     }

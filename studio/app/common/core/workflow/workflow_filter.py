@@ -71,10 +71,10 @@ class WorkflowNodeDataFilter:
             if not os.path.exists(self.original_pkl_filepath):
                 self._backup_original_data()
 
+            # filter_data works on a copy of its own
             original_output_info = PickleReader.read(self.original_pkl_filepath)
-            filtered_output_info = copy.deepcopy(original_output_info)
             filtered_output_info = self.filter_data(
-                filtered_output_info,
+                original_output_info,
                 params,
                 type=self.workflow_config.nodeDict[self.node_id].data.label,
                 output_dir=self.node_dirpath,
@@ -212,9 +212,10 @@ class WorkflowNodeDataFilter:
     ) -> dict:
         logger = AppLogger.get_logger()
 
+        # read first, so an older node's stack is converted, not copied
+        roi_masks = output_info["edit_roi_data"].roi_masks
         # Deep copy all mutable data to avoid in-place modification
         filtered_output_info = copy.deepcopy(output_info)
-        roi_masks = filtered_output_info["edit_roi_data"].roi_masks
         fluorescence = filtered_output_info["fluorescence"].data
         dff = (
             filtered_output_info["dff"].data

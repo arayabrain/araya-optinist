@@ -11,6 +11,7 @@ from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi import (
 from studio.app.optinist.core.edit_ROI.wrappers.vacant_roi_edit_roi import commit_edit
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 # vacant_roi, lccd and caiman share this commit implementation; caiman also
 # carries its dff output.
@@ -26,7 +27,7 @@ def build_state(iscell):
         im[i, i, :] = i
     im[NUM_COMMITTED, 0:2, :] = NUM_COMMITTED
 
-    data = EditRoiData(images=None, roi_masks=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     data.temp_merge_roi[float(NUM_COMMITTED)] = [0, 1]
 
     images = np.arange(FRAMES * SHAPE[0] * SHAPE[1], dtype=float).reshape(

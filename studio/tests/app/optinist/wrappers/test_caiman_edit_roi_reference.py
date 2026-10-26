@@ -11,7 +11,7 @@ from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi.commit import (
     commit_edit,
 )
 from studio.app.optinist.dataclass import EditRoiData, FluoData
-from studio.app.optinist.dataclass.roi import open_edit_images
+from studio.app.optinist.dataclass.roi import RoiMasks, open_edit_images
 from studio.app.optinist.wrappers.caiman.cnmf import util_edit_roi_movie
 
 FRAMES = 31
@@ -45,7 +45,7 @@ def rois(ly, lx):
 
 def new_traces(images, im, tmp_path, name):
     # Every ROI is pending, so every trace is computed from the movie
-    data = EditRoiData(images=None, roi_masks=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     iscell = np.full(len(im), CellType.TEMP_ADD)
     info = commit_edit(
         images, data, FluoData(np.zeros((0, FRAMES))), iscell, str(tmp_path / name), "x"

@@ -102,7 +102,8 @@ def test_merge_averages_traces_and_unions_pixels(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     ops["reg_file"] = str(tmp_path / "missing.bin")  # a merge reads no movie
     data = EditRoiData(
-        images=None, roi_masks=np.vstack((im, np.nanmax(im, axis=0)[None]))
+        images=None,
+        roi_masks=RoiMasks.from_stack(np.vstack((im, np.nanmax(im, axis=0)[None]))),
     )
     data.temp_merge_roi[2.0] = [0, 1]
     iscell = np.array([CellType.TEMP_DELETE, CellType.TEMP_DELETE, CellType.TEMP_ADD])
@@ -127,7 +128,7 @@ def test_merge_averages_traces_and_unions_pixels(tmp_path):
 def test_delete_only_touches_flags_and_not_the_movie(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     ops["reg_file"] = str(tmp_path / "missing.bin")
-    data = EditRoiData(images=None, roi_masks=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     data.temp_delete_roi[0] = None
     iscell = np.array([CellType.TEMP_DELETE, CellType.ROI])
 
@@ -145,7 +146,7 @@ def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
     ops, im = build(tmp_path, movie)
 
     # every ROI deleted, then committed
-    data = EditRoiData(images=None, roi_masks=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     for i in range(len(CELLS)):
         data.temp_delete_roi[i] = None
     iscell = np.array([CellType.TEMP_DELETE] * len(CELLS))

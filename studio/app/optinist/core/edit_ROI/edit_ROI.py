@@ -135,6 +135,12 @@ class EditROI:
         self.__save_json(info)
 
     def merge(self, ids: List[int]):
+        self.__check_ids(ids)
+        if len(set(ids)) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"a merge needs two ROIs or more: {ids}",
+            )
         roi_masks = self.tmp_data.roi_masks
         self.tmp_data.temp_merge_roi[float(self.num_cell)] = ids
         roi_masks.append(roi_masks.union(ids))
@@ -156,6 +162,7 @@ class EditROI:
         self.__save_json(info)
 
     def delete(self, ids: List[int]):
+        self.__check_ids(ids)
         # Deleting a still pending merge undoes it: its sources go back to what
         # they were before the merge marked them for deletion. The temp_merge_roi
         # entry stays so commit still appends the merged ROI's trace and keeps
@@ -345,8 +352,9 @@ class EditROI:
 
     def cancel(self):
         original_num_cell = len(self.output_info.get("fluorescence").data)
-        roi_masks = self.tmp_data.roi_masks
-        self.tmp_data.roi_masks = roi_masks.select(slice(original_num_cell))
+        self.tmp_data.roi_masks = self.tmp_data.roi_masks.select(
+            slice(original_num_cell)
+        )
         self.tmp_iscell = self.tmp_iscell[:original_num_cell]
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.NON_ROI
         self.tmp_data.cancel()
@@ -369,6 +377,15 @@ class EditROI:
             if os.path.exists(self.tmp_pickle_file_path)
             else None
         )
+
+    def __check_ids(self, ids: List[int]):
+        """Refuse ROI ids outside the node before the pending edit changes."""
+        unknown = [id for id in ids if not 0 <= id < self.num_cell]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"no such ROIs: {unknown}",
+            )
 
     def __drop_deleted_pending_rows(self):
         """A pending add or merge deleted before commit leaves no row behind.

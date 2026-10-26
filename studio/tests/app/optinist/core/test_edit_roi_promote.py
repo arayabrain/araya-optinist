@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from studio.app.common.core.utils.pickle_handler import PickleWriter
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 # im[i] labels ROI i on its own row, NaN elsewhere - the shape EditROI expects.
 NUM_ROI = 3
@@ -23,7 +24,9 @@ def build_node_dir(tmp_path, iscell):
     PickleWriter.write(
         pickle_path=str(node_dirpath / "suite2p_roi.pkl"),
         info={
-            "edit_roi_data": EditRoiData(images=None, roi_masks=im),
+            "edit_roi_data": EditRoiData(
+                images=None, roi_masks=RoiMasks.from_stack(im)
+            ),
             "iscell": IscellData(np.array(iscell)),
             "fluorescence": FluoData(np.zeros((NUM_ROI, 10))),
         },

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import pickle
 import shutil
 from glob import glob
 from pathlib import Path
@@ -26,6 +27,7 @@ from studio.app.const import ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 SHAPE = (3, 4)
 FRAMES = 6
@@ -38,7 +40,7 @@ def roi_node_output(node_type, with_dff=True):
         im[i, i, :] = i
     fluo = np.arange(3 * FRAMES, dtype=float).reshape(3, FRAMES)
     info = {
-        "edit_roi_data": EditRoiData(images=None, roi_masks=im),
+        "edit_roi_data": EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im)),
         "fluorescence": FluoData(fluo, file_name="fluorescence"),
         "iscell": IscellData(np.array([1, 0, 1])),
         "nwbfile": {node_type: {NWBDATASET.POSTPROCESS: {node_type: {}}}},
@@ -100,6 +102,27 @@ def test_lccd_keeps_its_own_roi_images_and_trims_dff(tmp_path):
 
     assert "all_roi" not in info and "non_cell_roi" not in info
     np.testing.assert_array_equal(info["dff"].data, output["dff"].data[:, 1:4])
+
+
+def test_a_node_pickled_before_roi_masks_filters_the_same(tmp_path):
+    want = WorkflowNodeDataFilter.filter_data(
+        roi_node_output("caiman_cnmf"), PARAM, "caiman_cnmf", str(tmp_path / "new")
+    )
+    # an older pickle holds the stack as `im`
+    output = roi_node_output("caiman_cnmf")
+    data = output["edit_roi_data"]
+    data.roi_masks = np.stack([data.roi_masks.label_image([i]) for i in range(3)])
+    output["edit_roi_data"] = pickle.loads(pickle.dumps(data))
+
+    info = WorkflowNodeDataFilter.filter_data(
+        output, PARAM, "caiman_cnmf", str(tmp_path / "old")
+    )
+
+    for key in ("cell_roi", "non_cell_roi", "all_roi"):
+        np.testing.assert_array_equal(info[key].data, want[key].data)
+    np.testing.assert_array_equal(info["iscell"].data, want["iscell"].data)
+    # converted before the copy, so the copy was made of pixel lists
+    assert output["edit_roi_data"]._stack is None
 
 
 WORKSPACE, UNIQUE_ID, NODE_ID = "filter_reset_ws", "00000000", "caiman_cnmf_0000"

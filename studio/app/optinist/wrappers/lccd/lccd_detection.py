@@ -127,7 +127,9 @@ def lccd_detect(
         # editing opens it lazily
         "edit_roi_data": EditRoiData(
             images=edit_images(mc_images, output_dir),
-            roi_masks=RoiMasks.from_stack(im),
+            roi_masks=RoiMasks.from_pixels(
+                D.shape[:2], (np.flatnonzero(roi[:, i]) for i in range(num_cell))
+            ),
         ),
         "nwbfile": nwbfile,
     }

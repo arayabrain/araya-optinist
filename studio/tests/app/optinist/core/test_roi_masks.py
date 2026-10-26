@@ -31,13 +31,23 @@ def nanmax(stack, rows=slice(None)):
 
 
 @pytest.mark.parametrize(
-    "rows", [None, [0, 2, 5], np.arange(12) % 3 == 0, np.zeros(12, bool), [7, 1]]
+    "rows", [None, [0, 2, 5], np.arange(12) % 3 == 0, np.zeros(12, bool), [9, 0]]
 )
 def test_label_image_is_nanmax_over_the_stack(rows):
     stack = random_stack()
     masks = RoiMasks.from_stack(stack)
     want = nanmax(stack, slice(None) if rows is None else rows)
     np.testing.assert_array_equal(masks.label_image(rows), want)
+
+
+@pytest.mark.parametrize("rows", [[1, 0], [0, 1], np.array([True, True])])
+def test_the_highest_roi_wins_where_rois_overlap(rows):
+    stack = np.full((2, LY, LX), np.nan)
+    stack[0, 1:4, 1:4] = 0
+    stack[1, 3:5, 3:5] = 1  # covers (3, 3) of ROI 0
+    image = RoiMasks.from_stack(stack).label_image(rows)
+    assert image[3, 3] == 1
+    np.testing.assert_array_equal(image, nanmax(stack))
 
 
 def test_pixels_select_what_the_boolean_mask_selected():
@@ -59,7 +69,8 @@ def test_append_union_and_select_match_the_stack_operations():
     # merge, as EditROI.merge did: the union of the rows, valued as the new row
     merged = np.where(np.isnan(stack[[2, 4, 6]]).all(axis=0), np.nan, len(stack))
     stack = np.vstack((stack, merged[None]))
-    assert masks.append(masks.union([2, 4, 6])) == len(stack) - 1
+    masks.append(masks.union([2, 4, 6]))
+    assert len(masks) == len(stack)
     np.testing.assert_array_equal(masks.label_image(), nanmax(stack))
 
     # drop rows, as EditROI's pending-row cleanup did: keep, then renumber
@@ -115,7 +126,7 @@ def pickled_globals(blob):
 
 
 def test_the_pickle_names_no_class_an_earlier_release_lacks():
-    data = EditRoiData(images=None, roi_masks=random_stack())
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(random_stack()))
     blob = pickle.dumps(data)
     allowed_modules = {"builtins", "copyreg", "_codecs"}
     for module, name in pickled_globals(blob):
@@ -124,12 +135,18 @@ def test_the_pickle_names_no_class_an_earlier_release_lacks():
             or module in allowed_modules
             or (module, name) == ("studio.app.optinist.dataclass.roi", "EditRoiData")
         ), (module, name)
-    assert len(blob) < 4000  # pixel lists, not 12 x 7 x 5 float64s and up
+    state = data.__getstate__()
+    assert "roi_masks" in state and "im" not in state
+
+
+def test_edit_roi_data_takes_roi_masks_only():
+    with pytest.raises(TypeError, match="not RoiMasks"):
+        EditRoiData(images=None, roi_masks=random_stack())
 
 
 def test_pickling_round_trips_the_masks_and_the_edit_state():
     stack = random_stack()
-    data = EditRoiData(images=None, roi_masks=stack)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(stack))
     data.temp_add_roi = {12: RoiPos(posx=1, posy=1, sizex=2, sizey=2)}
     back = pickle.loads(pickle.dumps(data))
     np.testing.assert_array_equal(back.roi_masks.label_image(), nanmax(stack))
@@ -140,7 +157,9 @@ def test_pickling_round_trips_the_masks_and_the_edit_state():
 
 def legacy_pickle(monkeypatch, im):
     """A node pickle's EditRoiData as releases before RoiMasks wrote it."""
-    legacy = EditRoiData(images=None, roi_masks=np.zeros((0, LY, LX)))
+    legacy = EditRoiData(
+        images=None, roi_masks=RoiMasks.from_stack(np.zeros((0, LY, LX)))
+    )
     state = {k: v for k, v in vars(legacy).items() if not k.startswith("_")}
     state["im"] = im
     with monkeypatch.context() as m:

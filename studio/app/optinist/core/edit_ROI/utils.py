@@ -89,8 +89,7 @@ class EditRoiUtils:
 
 
 def ellipse_pixels(shape: Tuple[int, int], roi_pos: RoiPos) -> np.ndarray:
-    """Flat (row-major) indices of the pixels of a (rows, columns) frame inside
-    the ellipse centred on column posx, row posy, sizex wide and sizey high."""
+    """Flat indices of the ellipse at column posx, row posy, sizex x sizey."""
     x, y, width, height = (
         round(roi_pos.posx),
         round(roi_pos.posy),
