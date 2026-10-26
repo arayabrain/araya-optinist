@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
-from urllib3.util.connection import allowed_gai_family
+from urllib3.util.connection import allowed_gai_family, create_connection
 
 # (connect, read) seconds. The read timeout bounds each wait for data, so a
 # server that stalls mid-body also ends the read, with an error
@@ -35,6 +35,8 @@ def is_public_address(address: str) -> bool:
 
 class _PublicAddressOnly:
     def _new_conn(self):
+        # Opens the socket itself: host (the Host header, TLS's server name) and
+        # the name urllib3 resolves are one attribute, which must stay the name
         host = self._dns_host
         try:
             infos = socket.getaddrinfo(
@@ -50,12 +52,21 @@ class _PublicAddressOnly:
 
         error = None
         for address in addresses:
-            # The connection uses _dns_host; TLS still checks the name in host
-            self._dns_host = address
             try:
-                return super()._new_conn()
-            except ConnectTimeoutError as e:  # NewConnectionError included
-                error = e
+                return create_connection(
+                    (address, self.port),
+                    self.timeout,
+                    source_address=self.source_address,
+                    socket_options=self.socket_options,
+                )
+            except socket.timeout:
+                error = ConnectTimeoutError(
+                    self, f"Connection to {host} timed out ({self.timeout} s)"
+                )
+            except OSError as e:
+                error = NewConnectionError(
+                    self, f"Failed to establish a new connection: {e}"
+                )
         raise error
 
 

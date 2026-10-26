@@ -1,12 +1,18 @@
 """open_public_url: a user-supplied URL is fetched from public addresses only, on
 every redirect hop, and a server that stops answering ends in an error."""
+import datetime
 import socket
+import ssl
 import threading
 import time
 from contextlib import contextmanager
 
 import pytest
 import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from studio.app.common.core.utils import public_url
 from studio.app.common.core.utils.public_url import is_public_address, open_public_url
@@ -48,9 +54,10 @@ def redirect_to(location):
 
 
 @contextmanager
-def server(respond):
-    """A server on 127.0.0.1 that answers each connection with respond.
-    Yields its port and the requests it received."""
+def server(respond, tls=None):
+    """A server on 127.0.0.1 that answers each connection with respond, over
+    TLS with the tls context if given. Yields its port and the requests it
+    received."""
     listener = socket.create_server(("127.0.0.1", 0))
     listener.settimeout(0.1)
     port = listener.getsockname()[1]
@@ -63,8 +70,14 @@ def server(respond):
                 conn, _ = listener.accept()
             except socket.timeout:
                 continue
+            conn.settimeout(5)
+            try:
+                if tls:
+                    conn = tls.wrap_socket(conn, server_side=True)
+            except ssl.SSLError:
+                conn.close()
+                continue
             with conn:
-                conn.settimeout(5)
                 request = conn.recv(65536)
                 received.append(request)
                 respond(conn, request, port, released)
@@ -81,9 +94,49 @@ def server(respond):
 
 @pytest.fixture
 def loopback_is_public(monkeypatch):
-    """The test server stands in for a public host; other loopback addresses
-    stay private."""
-    monkeypatch.setattr(public_url, "is_public_address", lambda a: a == "127.0.0.1")
+    """The test server stands in for a public host, at the addresses localhost
+    resolves to; other loopback addresses stay private."""
+    monkeypatch.setattr(
+        public_url, "is_public_address", lambda a: a in ("127.0.0.1", "::1")
+    )
+
+
+@pytest.fixture(scope="module")
+def localhost_tls(tmp_path_factory):
+    """Server and client TLS contexts for a self-signed certificate that names
+    localhost only."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False
+        )
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    directory = tmp_path_factory.mktemp("tls")
+    cert_path, key_path = directory / "cert.pem", directory / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    server_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_tls.load_cert_chain(cert_path, key_path)
+    client_tls = ssl.create_default_context(cafile=str(cert_path))
+    client_tls.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    return server_tls, client_tls
 
 
 @pytest.fixture
@@ -126,6 +179,23 @@ def test_a_public_address_is_fetched_uncompressed(loopback_is_public):
         res = open_public_url(f"http://127.0.0.1:{port}/data.csv")
         assert read_all(res) == BODY
     assert b"accept-encoding: identity" in received[0].lower()
+
+
+def test_the_request_names_the_host_not_the_address(loopback_is_public):
+    """Virtual hosts serve by name; the checked address is only for the socket."""
+    with server(ok) as (port, received):
+        read_all(open_public_url(f"http://localhost:{port}/data.csv"))
+    assert f"host: localhost:{port}".encode() in received[0].lower()
+
+
+def test_tls_checks_the_host_name_not_the_address(loopback_is_public, localhost_tls):
+    server_tls, client_tls = localhost_tls
+    with server(ok, tls=server_tls) as (port, _):
+        pool = public_url._PublicHTTPSConnectionPool(
+            "localhost", port, ssl_context=client_tls, retries=False
+        )
+        res = pool.request("GET", "/data.csv")
+    assert (res.status, res.data) == (200, BODY)
 
 
 def test_a_host_that_resolves_to_a_private_address_is_refused():
