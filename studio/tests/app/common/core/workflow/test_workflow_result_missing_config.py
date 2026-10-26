@@ -14,7 +14,7 @@ failure and should surface.
 """
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -108,7 +108,7 @@ class TestPollingAnAbsentConfig:
         function that always returns {}."""
         sentinel = {"some_node_id": "observed"}
         with patch.object(
-            ExptConfigReader, "read", return_value=object()
+            ExptConfigReader, "read", return_value=Mock(started_at=None)
         ), patch.object(
             WorkflowResult,
             "_WorkflowResult__observe_nodes",

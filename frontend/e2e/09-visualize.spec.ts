@@ -53,7 +53,9 @@ async function addImagePlot(page: Page) {
 // a pixel grid whose values are the global ROI index, so the distinct non-null
 // values are exactly the ids the selected projection (cell_roi / non_cell_roi)
 // holds.
-async function roiIds(page: Page): Promise<number[]> {
+// z is [] while getRoiData is pending, a full pixel grid once it lands; rows
+// and ids come from one read so a refresh between them cannot mix two grids
+async function roiGrid(page: Page): Promise<{ rows: number; ids: number[] }> {
   return page.evaluate(() => {
     const plot = document.querySelector(".js-plotly-plot") as unknown as {
       data?: { name?: string; z?: (number | null)[][] }[]
@@ -61,8 +63,16 @@ async function roiIds(page: Page): Promise<number[]> {
     const z = plot?.data?.find((t) => t.name === "roi")?.z ?? []
     const ids = new Set<number>()
     for (const row of z) for (const v of row) if (v != null) ids.add(v)
-    return [...ids].sort((a, b) => a - b)
+    return { rows: z.length, ids: [...ids].sort((a, b) => a - b) }
   })
+}
+
+async function roiIds(page: Page): Promise<number[]> {
+  return (await roiGrid(page)).ids
+}
+
+async function roiRowCount(page: Page): Promise<number> {
+  return (await roiGrid(page)).rows
 }
 
 // Select an ROI by id. Plotly's own hit test needs the ROI's pixel coordinates,
@@ -113,7 +123,8 @@ async function runRoiAction(
 }
 
 // Commit Edit renders only once statusRoi has entries after the getStatus
-// round-trip, and runs the recompute in-request.
+// round-trip, and runs the recompute in-request. The success snackbar shows
+// before the ROI refetch, whose pending state empties the plot until it lands.
 async function commitRoiEdit(page: Page) {
   const commitEdit = page.getByTestId("roi-commit-edit")
   await expect(commitEdit).toBeVisible({ timeout: 60_000 })
@@ -121,11 +132,24 @@ async function commitRoiEdit(page: Page) {
     (r) => r.request().method() === "POST" && /commit_edit/.test(r.url()),
     { timeout: 600_000 },
   )
+  // Starts on the commit response so an earlier action's refetch cannot match
+  const refetched = committed.then(() =>
+    page.waitForResponse(
+      (r) =>
+        r.request().method() === "GET" &&
+        /\/api\/visualizations\/image\/.*_roi\.json(\?|$)/i.test(r.url()),
+      { timeout: 60_000 },
+    ),
+  )
   await commitEdit.click()
   expect((await committed).status(), "commit_edit").toBe(200)
   await expect(
     page.getByText("Successfully committed to Edit ROI."),
   ).toBeVisible({ timeout: 120_000 })
+  expect((await refetched).status(), "ROI refetch").toBe(200)
+  await expect
+    .poll(() => roiRowCount(page), { timeout: 60_000 })
+    .toBeGreaterThan(0)
 }
 
 async function editRoiAndCommit(
@@ -250,14 +274,7 @@ test.describe("Visualize", () => {
     // Trace *count* is no good either: ImagePlot always builds a fixed two-trace
     // array ("images" then "roi"), with the roi trace's z starting as []. So the
     // ROI-specific artefact is that trace's z gaining rows.
-    const roiRowCount = () =>
-      page.evaluate(() => {
-        const plot = document.querySelector(".js-plotly-plot") as unknown as {
-          data?: { name?: string; z?: unknown[] }[]
-        }
-        return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
-      })
-    expect(await roiRowCount()).toBe(0)
+    expect(await roiRowCount(page)).toBe(0)
 
     // getRoiData GETs /api/visualizations/image/<path>/cell_roi.json while
     // getStatus POSTs .../cell_roi.json/status on the same prefix, so matching
@@ -271,7 +288,9 @@ test.describe("Visualize", () => {
     await selectFromMui(page, "Select Roi", "cell_roi")
     expect((await roiResponse).status()).toBe(200)
 
-    await expect.poll(roiRowCount, { timeout: 60_000 }).toBeGreaterThan(0)
+    await expect
+      .poll(() => roiRowCount(page), { timeout: 60_000 })
+      .toBeGreaterThan(0)
 
     // Both selectors keep their values after the plot re-renders
     await expect(
@@ -539,7 +558,7 @@ test.describe("Visualize", () => {
   // The un-merge half that has to happen before a commit: merge two ROIs, then
   // delete the merged ROI while it is still pending. Its temp_merge_roi entry
   // used to force it back to a cell at commit, so the delete was silently
-  // ignored; now it stays demoted and its sources are promotable.
+  // ignored; now the commit drops it and its sources are cell ROIs again.
   test("VIS-09 - deleting a pending merge before commit really removes it @slow", async ({
     page,
   }) => {
@@ -575,9 +594,18 @@ test.describe("Visualize", () => {
     )
     expect(afterCommit).toContain(second)
 
-    await selectRoiProjection(page, "non_cell_roi")
-    expect(await roiIds(page), "the undone merge is a non-cell ROI").toContain(
-      merged[0],
-    )
+    // The sources are cells, so a loaded grid without them is non_cell_roi
+    await selectFromMui(page, "Select Roi", "non_cell_roi")
+    let grid = { rows: 0, ids: [] as number[] }
+    await expect
+      .poll(
+        async () => {
+          grid = await roiGrid(page)
+          return grid.rows > 0 && !grid.ids.includes(first)
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(true)
+    expect(grid.ids, "the undone merge leaves no ROI").not.toContain(merged[0])
   })
 })
