@@ -2,16 +2,17 @@
 
 Opt-in. The DB tests are skipped unless RUN_PREMIUM_LOCK_IT=1 with RDS_* env
 pointing at a reachable MySQL (see docker-compose.premium-lock-it.yml). The
-per-PR lambda lane collects this module but skips them (no DB there), so it
-never hangs CI.
+per-PR lambda lane collects this module but skips them (no DB there); the
+premium-lock-it workflow runs them on PRs that touch the premium Lambdas.
 
 Scope:
 - distributed_lock (MySQL GET_LOCK, still used by the scaling / standby /
   migration locks) serializes concurrent sessions: mutual exclusion,
   serialization under contention, per-name isolation.
 - assign_claim (a premium_assign_claims row) gives the same exclusion across
-  sessions with the real INSERT / takeover UPDATE / DELETE statements, lets an
-  expired claim be reclaimed, and premium_cleanup reads only unexpired claims.
+  sessions with the real INSERT / takeover UPDATE / renewal / DELETE
+  statements, lets an expired claim be reclaimed, keeps a renewed one, and
+  premium_cleanup reads only unexpired claims.
   The mocked per-PR tests run the same helpers against an in-memory table;
   this pins the SQL semantics on MySQL.
 What this does NOT do is run the real assign_premium_user against a real DB:
@@ -203,15 +204,15 @@ def test_assign_claim_excludes_a_second_session(pm, claim_user_ids):
     """A held claim refuses a second claimant until it is released; another
     user's claim is unaffected."""
     user, other = claim_user_ids[0], claim_user_ids[1]
-    with pm.assign_claim(user, 600, wait_seconds=0) as first:
+    with pm.assign_claim(user, wait_seconds=0) as first:
         assert first is True
         assert _claim_token(pm, user) is not None
-        with pm.assign_claim(user, 600, wait_seconds=0) as second:
+        with pm.assign_claim(user, wait_seconds=0) as second:
             assert second is False
-        with pm.assign_claim(other, 600, wait_seconds=0) as unrelated:
+        with pm.assign_claim(other, wait_seconds=0) as unrelated:
             assert unrelated is True
     assert _claim_token(pm, user) is None
-    with pm.assign_claim(user, 600, wait_seconds=0) as third:
+    with pm.assign_claim(user, wait_seconds=0) as third:
         assert third is True
 
 
@@ -228,7 +229,7 @@ def test_concurrent_claimants_are_serialized(pm, claim_user_ids):
 
     def worker():
         try:
-            with pm.assign_claim(user, 600, wait_seconds=30) as acquired:
+            with pm.assign_claim(user, wait_seconds=30) as acquired:
                 assert acquired is True
                 with guard:
                     live["n"] += 1
@@ -266,11 +267,11 @@ def test_expired_claim_is_reclaimed_and_a_live_one_is_not(pm, claim_user_ids):
         (expired_user, live_user),
     )
 
-    with pm.assign_claim(live_user, 600, wait_seconds=0) as taken:
+    with pm.assign_claim(live_user, wait_seconds=0) as taken:
         assert taken is False
     assert _claim_token(pm, live_user) == "running"
 
-    with pm.assign_claim(expired_user, 600, wait_seconds=0) as reclaimed:
+    with pm.assign_claim(expired_user, wait_seconds=0) as reclaimed:
         assert reclaimed is True
         token = _claim_token(pm, expired_user)
         assert token not in (None, "crashed")
@@ -278,6 +279,24 @@ def test_expired_claim_is_reclaimed_and_a_live_one_is_not(pm, claim_user_ids):
         pm._release_assign_claim(expired_user, "crashed")
         assert _claim_token(pm, expired_user) == token
     assert _claim_token(pm, expired_user) is None
+
+
+@_opt_in
+def test_a_held_claim_is_renewed_past_its_ttl(pm, claim_user_ids):
+    """With a 2 s TTL renewed every 0.5 s, a claim held for 4 s is never
+    reclaimable by another session; after release it is free at once."""
+    user = claim_user_ids[0]
+    with patch.object(pm, "ASSIGN_CLAIM_TTL_SECONDS", 2), patch.object(
+        pm, "ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS", 0.5
+    ):
+        with pm.assign_claim(user, wait_seconds=0) as held:
+            assert held is True
+            for _ in range(8):
+                time.sleep(0.5)
+                with pm.assign_claim(user, wait_seconds=0) as contender:
+                    assert contender is False
+        with pm.assign_claim(user, wait_seconds=0) as after_release:
+            assert after_release is True
 
 
 @_opt_in
@@ -291,10 +310,10 @@ def test_claim_is_not_taken_while_a_previous_release_holds_the_session_lock(
     legacy_name = f"{pm.LEGACY_ASSIGN_LOCK_PREFIX}{user}"
     with pm.distributed_lock(legacy_name, timeout=5) as old_holder:
         assert old_holder is True
-        with pm.assign_claim(user, 600, wait_seconds=0) as new_contender:
+        with pm.assign_claim(user, wait_seconds=0) as new_contender:
             assert new_contender is False
         assert _claim_token(pm, user) is None
-    with pm.assign_claim(user, 600, wait_seconds=0) as after_old_run:
+    with pm.assign_claim(user, wait_seconds=0) as after_old_run:
         assert after_old_run is True
 
 

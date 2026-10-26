@@ -208,18 +208,14 @@ def with_transaction(func):
 
 
 def get_assign_claimed_user_ids() -> Set[int]:
-    """User ids holding an unexpired assign claim (an assign in flight).
-
-    Raises on DB error so callers skip deletion rather than reap resources
-    an assign may be creating.
-    """
+    """User ids with an assign in flight; raises on DB error (callers fail closed)."""
     with get_db_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT user_id FROM premium_assign_claims
                    WHERE expires_at >= NOW()"""
             )
-            return {int(row["user_id"]) for row in cursor.fetchall()}
+            return {row["user_id"] for row in cursor.fetchall()}
 
 
 _PREMIUM_TG_NAME_RE = re.compile(r":targetgroup/premium-(\d+)-tg/")
@@ -229,13 +225,7 @@ def _rule_may_belong_to_inflight_assign(
     rule: Dict[str, Any],
     claimed_user_ids: Set[int],
 ) -> bool:
-    """Whether an in-flight assign may own this ALB rule.
-
-    A dedicated rule forwards to ``premium-<user_id>-tg`` and names its
-    user. Any other target (the shared autoscaling TG of a pool user) names
-    no user, so such a rule is kept while any claim is live. This needs no
-    configured TG ARN.
-    """
+    """A claimed user's premium-<id>-tg rule, or a user-less rule during any claim."""
     if not claimed_user_ids:
         return False
     for action in rule.get("Actions", []):
@@ -481,9 +471,7 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
-        # Read claims after the rule listing and before the keep-set: an
-        # assign finishing in between has committed its row before dropping
-        # its claim, so each of its rules is seen in one set or the other.
+        # Claims before the keep-set: an assign stores its row before dropping its claim
         try:
             claimed_user_ids = get_assign_claimed_user_ids()
         except Exception as claim_error:
@@ -657,7 +645,7 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                     rules_by_routing_id[routing_id] = []
                 rules_by_routing_id[routing_id].append(rule)
 
-        # Same ordering as the orphan sweep: claims before the keep-set.
+        # Claims before the keep-set: an assign stores its row before dropping its claim
         try:
             claimed_user_ids = get_assign_claimed_user_ids()
         except Exception as claim_error:

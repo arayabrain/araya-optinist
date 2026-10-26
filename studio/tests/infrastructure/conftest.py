@@ -1,9 +1,12 @@
 """Shared fixtures and path setup for Lambda infrastructure tests."""
 
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pymysql
 import pytest
 
 # Compute project root from conftest location:
@@ -146,27 +149,26 @@ def mock_env_vars_common():
 class FakeAssignClaimsDb:
     """In-memory premium_assign_claims behind a fake get_db_connection.
 
-    Mirrors the statements premium_manager's assign-claim helpers issue
-    (INSERT / takeover UPDATE / SELECT / DELETE), including the duplicate-key
-    error, with a settable clock, and answers IS_FREE_LOCK from
-    ``session_locks``. Thread-safe. Any other statement is a no-op returning
-    no rows. The real-MySQL semantics are covered by
-    test_premium_lock_integration.py.
+    Mirrors the assign-claim statements (INSERT, takeover UPDATE, renewal
+    UPDATE, SELECT, DELETE) with a settable clock, and answers IS_FREE_LOCK
+    from ``session_locks``. Other statements are no-ops returning no rows.
+    It does not parse SQL: the predicates themselves are pinned by the
+    real-MySQL tests in test_premium_lock_integration.py.
     """
 
     def __init__(self, missing_table=False):
-        import threading
-
         self.rows = {}  # user_id -> {"claim_token", "expires_at"}
         self.now = 0.0
         self.missing_table = missing_table
         self.session_locks = set()  # GET_LOCK names held by other sessions
+        self.fail_on = None  # (statement substring, exception to raise)
         self._guard = threading.Lock()
 
     def _execute(self, cursor, sql, params=()):
-        import pymysql
-
         statement = " ".join(sql.split())
+        cursor.rowcount = 0
+        if self.fail_on and self.fail_on[0] in statement:
+            raise self.fail_on[1]
         if "IS_FREE_LOCK" in statement:
             cursor.result = {"is_free": 0 if params[0] in self.session_locks else 1}
             return
@@ -179,21 +181,26 @@ class FakeAssignClaimsDb:
             )
         with self._guard:
             if statement.startswith("INSERT"):
-                user_id, token, lifetime = params
+                user_id, token, ttl = params
                 if user_id in self.rows:
                     raise pymysql.err.IntegrityError(1062, "Duplicate entry")
                 self.rows[user_id] = {
                     "claim_token": token,
-                    "expires_at": self.now + lifetime,
+                    "expires_at": self.now + ttl,
                 }
-            elif statement.startswith("UPDATE"):
-                token, lifetime, user_id = params
+            elif statement.startswith("UPDATE") and "SET claim_token" in statement:
+                token, ttl, user_id = params
                 row = self.rows.get(user_id)
                 if row and row["expires_at"] < self.now:
                     self.rows[user_id] = {
                         "claim_token": token,
-                        "expires_at": self.now + lifetime,
+                        "expires_at": self.now + ttl,
                     }
+            elif statement.startswith("UPDATE"):
+                ttl, user_id, token = params
+                row = self.rows.get(user_id)
+                if row and row["claim_token"] == token:
+                    row["expires_at"] = self.now + ttl
             elif statement.startswith("SELECT"):
                 row = self.rows.get(params[0])
                 cursor.result = {"claim_token": row["claim_token"]} if row else None
@@ -202,10 +209,9 @@ class FakeAssignClaimsDb:
                 row = self.rows.get(user_id)
                 if row and row["claim_token"] == token:
                     del self.rows[user_id]
+                    cursor.rowcount = 1
 
     def get_db_connection(self, auto_commit=False):
-        from contextlib import contextmanager
-
         db = self
 
         class _Cursor:

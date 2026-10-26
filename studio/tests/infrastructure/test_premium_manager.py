@@ -1,10 +1,12 @@
 """Tests for premium_manager Lambda function."""
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pymysql
 import pytest
 from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
 
@@ -1506,9 +1508,8 @@ class TestConcurrentAssignClaim:
             assert body["instance_id"] == "i-winner"
             assert body["assignment_source"] == "existing"
 
-    def test_claim_is_per_user_with_the_given_lifetime(self, mock_env_vars_premium):
-        """The claim is keyed by user_id, so different users do not block each
-        other, and lasts as long as the caller's invocation may run."""
+    def test_claim_is_per_user(self, mock_env_vars_premium):
+        """The claim is keyed by user_id, so different users do not block each other."""
         claim_mock = self._claim_ctx(True)
         impl_response = {
             "statusCode": 200,
@@ -1526,48 +1527,9 @@ class TestConcurrentAssignClaim:
         ):
             from premium_manager import assign_premium_user
 
-            assign_premium_user(
-                42, {"tier": "premium"}, "uid_42", claim_lifetime_seconds=123
-            )
+            assign_premium_user(42, {"tier": "premium"}, "uid_42")
 
-            claim_mock.assert_called_once_with(42, 123)
-
-    def test_handler_sizes_the_claim_from_the_invocation_deadline(
-        self, mock_env_vars_premium
-    ):
-        """The claim must not expire while its holder can still run: the
-        handler passes the remaining invocation time plus the margin."""
-        event = {
-            "httpMethod": "POST",
-            "body": json.dumps({"action": "assign", "user_id": "uid_42"}),
-        }
-        context = MagicMock()
-        context.get_remaining_time_in_millis.return_value = 599_500
-
-        with patch.dict("os.environ", mock_env_vars_premium), patch(
-            "premium_manager.pymysql.connect",
-            return_value=setup_db_mock(fetchone_values=[MockRow({"id": 42})]),
-        ), patch(
-            "premium_manager.assign_premium_user", return_value={"statusCode": 200}
-        ) as mock_assign:
-            from premium_manager import ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS, handler
-
-            handler(event, context)
-
-        assert mock_assign.call_args.kwargs["claim_lifetime_seconds"] == (
-            599 + ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS
-        )
-
-    @pytest.mark.parametrize("context", [None, MagicMock()])
-    def test_claim_lifetime_defaults_without_a_deadline(self, context):
-        """No context (or one without a numeric deadline) gets the Lambda
-        maximum, which no invocation can outlive."""
-        from premium_manager import (
-            ASSIGN_CLAIM_DEFAULT_SECONDS,
-            assign_claim_lifetime_seconds,
-        )
-
-        assert assign_claim_lifetime_seconds(context) == ASSIGN_CLAIM_DEFAULT_SECONDS
+            claim_mock.assert_called_once_with(42)
 
     def test_claim_acquired_does_not_consult_the_existing_assignment(
         self, mock_env_vars_premium
@@ -1613,7 +1575,7 @@ class TestConcurrentAssignClaim:
         events = []
 
         @contextmanager
-        def tracking_claim(user_id, lifetime_seconds):
+        def tracking_claim(user_id):
             events.append(("enter", user_id))
             try:
                 yield True
@@ -1774,12 +1736,12 @@ class TestAssignClaimRow:
     def test_second_holder_is_refused_until_the_first_releases(self, claims):
         from premium_manager import assign_claim
 
-        with assign_claim(7, 600) as first:
+        with assign_claim(7) as first:
             assert first is True
-            with assign_claim(7, 600, wait_seconds=0) as second:
+            with assign_claim(7, wait_seconds=0) as second:
                 assert second is False
         assert claims.rows == {}
-        with assign_claim(7, 600, wait_seconds=0) as third:
+        with assign_claim(7, wait_seconds=0) as third:
             assert third is True
 
     def test_claim_waits_for_a_previous_release_still_holding_the_session_lock(
@@ -1791,7 +1753,7 @@ class TestAssignClaimRow:
         from premium_manager import LEGACY_ASSIGN_LOCK_PREFIX, assign_claim
 
         claims.session_locks.add(f"{LEGACY_ASSIGN_LOCK_PREFIX}7")
-        with assign_claim(7, 600, wait_seconds=0) as during_old_run:
+        with assign_claim(7, wait_seconds=0) as during_old_run:
             assert during_old_run is False
         assert claims.rows == {}
 
@@ -1799,13 +1761,13 @@ class TestAssignClaimRow:
             claims.session_locks.clear()
 
         with patch("premium_manager.time.sleep", side_effect=old_run_finishes):
-            with assign_claim(7, 600, wait_seconds=5) as after_old_run:
+            with assign_claim(7, wait_seconds=5) as after_old_run:
                 assert after_old_run is True
 
     def test_claims_of_different_users_do_not_block(self, claims):
         from premium_manager import assign_claim
 
-        with assign_claim(7, 600) as a, assign_claim(8, 600, wait_seconds=0) as b:
+        with assign_claim(7) as a, assign_claim(8, wait_seconds=0) as b:
             assert (a, b) == (True, True)
 
     def test_expired_claim_is_reclaimed_and_its_late_release_is_harmless(self, claims):
@@ -1815,12 +1777,12 @@ class TestAssignClaimRow:
 
         claims.rows[7] = {"claim_token": "crashed", "expires_at": 100.0}
         claims.now = 50.0
-        with assign_claim(7, 600, wait_seconds=0) as live_refused:
+        with assign_claim(7, wait_seconds=0) as live_refused:
             assert live_refused is False
         assert claims.rows[7]["claim_token"] == "crashed"
 
         claims.now = 101.0
-        with assign_claim(7, 600, wait_seconds=0) as reclaimed:
+        with assign_claim(7, wait_seconds=0) as reclaimed:
             assert reclaimed is True
             token = claims.rows[7]["claim_token"]
             assert token != "crashed"
@@ -1840,7 +1802,7 @@ class TestAssignClaimRow:
             claims.rows.pop(7, None)
 
         with patch("premium_manager.time.sleep", side_effect=holder_finishes):
-            with assign_claim(7, 600, wait_seconds=5) as acquired:
+            with assign_claim(7, wait_seconds=5) as acquired:
                 assert acquired is True
         assert len(sleeps) == 1
 
@@ -1848,9 +1810,60 @@ class TestAssignClaimRow:
         from premium_manager import assign_claim
 
         with pytest.raises(RuntimeError):
-            with assign_claim(7, 600):
+            with assign_claim(7):
                 raise RuntimeError("impl failed")
         assert claims.rows == {}
+
+    def test_a_crashed_holder_blocks_the_user_only_for_the_short_ttl(self, claims):
+        """The row a hard-crashed holder leaves expires ASSIGN_CLAIM_TTL_SECONDS
+        after its last write, not after the whole invocation timeout."""
+        from premium_manager import ASSIGN_CLAIM_TTL_SECONDS, assign_claim
+
+        claims.now = 1000.0
+        with assign_claim(7):
+            assert claims.rows[7]["expires_at"] == 1000.0 + ASSIGN_CLAIM_TTL_SECONDS
+        assert ASSIGN_CLAIM_TTL_SECONDS <= 120
+
+    def test_a_held_claim_is_renewed_past_its_ttl(self, claims):
+        """A long assign keeps its claim: the background renewal moves
+        expires_at forward, so a contender cannot take it over."""
+        from premium_manager import ASSIGN_CLAIM_TTL_SECONDS, assign_claim
+
+        with patch("premium_manager.ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS", 0.01):
+            with assign_claim(7) as held:
+                assert held is True
+                claims.now = 10_000.0  # far past the first expiry
+                renewed_to = claims.now + ASSIGN_CLAIM_TTL_SECONDS
+                deadline = time.monotonic() + 5
+                while claims.rows[7]["expires_at"] != renewed_to:
+                    assert time.monotonic() < deadline, "claim was not renewed"
+                    time.sleep(0.01)
+                with assign_claim(7, wait_seconds=0) as contender:
+                    assert contender is False
+        assert claims.rows == {}
+
+    def test_a_failed_attempt_leaves_no_claim_behind(self, claims):
+        """The row is inserted before the session-lock check; if that check
+        fails, the exit still deletes the row by token."""
+        claims.fail_on = (
+            "IS_FREE_LOCK",
+            pymysql.err.OperationalError(2013, "Lost connection"),
+        )
+        from premium_manager import assign_claim
+
+        with pytest.raises(pymysql.err.OperationalError):
+            with assign_claim(7, wait_seconds=0):
+                pass
+        assert claims.rows == {}
+
+    def test_only_a_missing_table_is_swallowed(self, claims):
+        """Any other ProgrammingError (here a syntax error) reaches the handler."""
+        claims.fail_on = ("INSERT", pymysql.err.ProgrammingError(1064, "syntax"))
+        from premium_manager import assign_claim
+
+        with pytest.raises(pymysql.err.ProgrammingError):
+            with assign_claim(7, wait_seconds=0):
+                pass
 
     def test_missing_claims_table_is_not_acquired(self, mock_env_vars_premium):
         """Before the migration lands, assign answers 200 / 409, not 500."""
@@ -1860,7 +1873,7 @@ class TestAssignClaimRow:
         ), patch("premium_manager.time.sleep") as mock_sleep:
             from premium_manager import assign_claim
 
-            with assign_claim(7, 600) as acquired:
+            with assign_claim(7) as acquired:
                 assert acquired is False
         mock_sleep.assert_not_called()
 

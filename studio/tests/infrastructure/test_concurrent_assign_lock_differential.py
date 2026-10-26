@@ -1,8 +1,10 @@
 """Differential concurrency test for the per-user assign claim (case 6204).
 
 Runs the REAL ``assign_premium_user`` for a single user on two threads against
-a shared in-memory fake DB and fake ELBv2. The only thing that differs between
-the two test cases is the assign claim:
+a shared in-memory fake DB and fake ELBv2. The two cases differ in the assign
+claim and, as a side effect, in the DB stub behind the impl's few direct SQL
+statements (the claims fake turns them into no-ops, the no-op case keeps
+``setup_db_mock``); neither stub decides the outcome:
 
   * the real ``assign_claim`` over an in-memory premium_assign_claims table ->
     the second assign waits for the first's claim, then observes its stored
@@ -12,8 +14,8 @@ the two test cases is the assign claim:
     deletes the first's live target group, and the first's returned assignment
     is left pointing at a deleted target group (ALB routing corruption).
 
-Pass/fail therefore flips solely on whether the claim serializes: the no-op
-case reproduces the corruption, the real claim does not.
+Pass/fail therefore flips on whether the claim serializes: the no-op case
+reproduces the corruption, the real claim does not.
 
 Determinism: a barrier gates critical-section entry. When both threads are
 concurrently inside the section (no-op claim) the barrier trips and
@@ -63,7 +65,7 @@ def _noop_claim_patches(premium_manager):
     """An assign_claim that grants immediately with no exclusion."""
 
     @contextmanager
-    def _claim(user_id, lifetime_seconds):
+    def _claim(user_id):
         yield True
 
     return [patch.object(premium_manager, "assign_claim", new=_claim)]

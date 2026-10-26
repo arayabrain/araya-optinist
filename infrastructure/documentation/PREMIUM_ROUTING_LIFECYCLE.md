@@ -366,7 +366,7 @@ Cross-tab coordination uses three mechanisms:
 When `POST /premium/assign` is called, the Lambda takes the user's assign claim before executing the assignment logic:
 
 ```python
-with assign_claim(user_id, claim_lifetime_seconds) as acquired:
+with assign_claim(user_id) as acquired:
     if acquired:
         return _assign_premium_user_impl(user_id, event, user_uid, ...)
     else:
@@ -378,7 +378,11 @@ with assign_claim(user_id, claim_lifetime_seconds) as acquired:
             return {statusCode: 409, body: "retry"}
 ```
 
-The claim is one row per user in `premium_assign_claims` (`user_id` primary key, `claim_token`, `claimed_at`, `expires_at`). Taking it is an `INSERT`; if a row exists, an `UPDATE … WHERE expires_at < NOW()` takes over an expired one; ownership is then read back by token. Releasing it is a `DELETE … WHERE claim_token = <own token>`.
+The claim is one row per user in `premium_assign_claims` (`user_id` primary key, `claim_token`, `claimed_at`, `expires_at`). Each attempt runs on one short connection:
+1. An `INSERT`. If a row exists, an `UPDATE … WHERE expires_at < NOW()` takes over an expired one, and ownership is read back by token.
+2. An `IS_FREE_LOCK` check of the previous release's session lock.
+
+While the claim is held, a background thread renews `expires_at` by token. Releasing it is a `DELETE … WHERE claim_token = <own token>`.
 
 **Claim properties:**
 
@@ -386,11 +390,11 @@ The claim is one row per user in `premium_assign_claims` (`user_id` primary key,
 |----------|-------|
 | Backend | Committed row in `premium_assign_claims` (no session lock) |
 | Key | `user_id` (per user, within the environment's own database) |
-| Wait | Up to 10 seconds (`ASSIGN_CLAIM_WAIT_SECONDS`), retried every second on a short connection |
-| Lifetime | Remaining invocation time + 30 seconds (`ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS`); 900 seconds without a deadline |
+| Wait | Up to 10 seconds (`ASSIGN_CLAIM_WAIT_SECONDS`), retried every second. Polling gives no order: with three or more concurrent assigns for one user, one may still get 409 and retry |
+| Lifetime | 90 seconds (`ASSIGN_CLAIM_TTL_SECONDS`) after the last renewal; renewed every 20 seconds (`ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS`) while held. A hard-crashed holder (no `finally`) blocks the user for at most 90 seconds. Four consecutive failed renewals would let another assign take the claim over |
 | Scope | Entire `_assign_premium_user_impl` |
 | Connection | None held while the assignment runs |
-| Release | `DELETE` in a `finally` block; a claim left by a crashed invocation is taken over by the next assign once it expires |
+| Release | `DELETE` by token in a `finally` block, also after a failed attempt; a claim left by a crashed invocation is taken over by the next assign once it expires |
 | Missing table | Treated as not acquired (200 / 409), so a Lambda deployed before the migration does not return 500. Unassigned users still get only 409s until the migration runs, so deploy the migration (studio image) before the Lambdas |
 | Previous release still running | The previous release's assign held `GET_LOCK('assign_user_<user_id>')` for its whole run. While that lock is in use (`IS_FREE_LOCK`), a new assign gives its claim back and counts as not acquired, so the two never run side by side during a deploy |
 
@@ -745,8 +749,8 @@ Circuit breaker state transitions are broadcast via `crossTabSync`:
 |----------|-------|---------|
 | `ASSIGN_CLAIM_WAIT_SECONDS` | `10` | How long a second assign waits for the user's claim before the 200 / 409 fallback |
 | `ASSIGN_CLAIM_POLL_INTERVAL_SECONDS` | `1` | Retry interval while waiting for the claim |
-| `ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS` | `30` | How long a claim outlives its holder's invocation deadline |
-| `ASSIGN_CLAIM_DEFAULT_SECONDS` | `900` | Claim lifetime when the invocation deadline is unknown |
+| `ASSIGN_CLAIM_TTL_SECONDS` | `90` | How long a claim stays valid after its last write |
+| `ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS` | `20` | Renewal interval while a claim is held |
 | `LEGACY_ASSIGN_LOCK_PREFIX` | `"assign_user_"` | Session lock of the previous release's assign; no claim is taken while it is in use |
 | `LOCK_TIMEOUT_SECONDS` | `60` | Default `GET_LOCK` timeout for the scaling / standby / migration locks |
 

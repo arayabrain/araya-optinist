@@ -39,6 +39,7 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -60,6 +61,7 @@ from aws_constants import (
     RoutingHeaders,
 )
 from botocore.exceptions import ClientError
+from pymysql.constants import ER
 
 if TYPE_CHECKING:
     from mypy_boto3_cloudwatch import CloudWatchClient
@@ -84,15 +86,10 @@ LOCK_TIMEOUT_SECONDS = 60
 # Per-user assign claim (premium_assign_claims row)
 ASSIGN_CLAIM_WAIT_SECONDS = 10  # Bounded wait, then the 200 / 409 fallback
 ASSIGN_CLAIM_POLL_INTERVAL_SECONDS = 1
-# A claim outlives its holder's invocation deadline by this margin
-ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS = 30
-# Claim lifetime when the invocation deadline is unknown (Lambda maximum)
-ASSIGN_CLAIM_DEFAULT_SECONDS = 900
-# Session lock the previous release's assign held for its whole run. A claim
-# is not taken while it is in use, so a deploy cannot overlap the two.
+ASSIGN_CLAIM_TTL_SECONDS = 90  # Reclaimable this long after the last renewal
+ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS = 20
+# Previous release's assign session lock; remove once no deployed release takes it
 LEGACY_ASSIGN_LOCK_PREFIX = "assign_user_"
-MYSQL_ER_DUP_ENTRY = 1062
-MYSQL_ER_NO_SUCH_TABLE = 1146
 
 # Wait before first migration attempt to let instances boot
 MIGRATION_INITIAL_DELAY_SECONDS = 60
@@ -273,13 +270,9 @@ def distributed_lock(lock_name, timeout=LOCK_TIMEOUT_SECONDS):
     return _lock_context()
 
 
-def _try_acquire_assign_claim(user_id: int, token: str, lifetime_seconds: int) -> bool:
-    """One non-blocking attempt to take the user's assign claim.
-
-    Inserts a fresh claim; when one exists, takes it over only if it has
-    expired. Ownership is read back by token, so the result does not depend
-    on rowcount semantics.
-    """
+def _try_acquire_assign_claim(user_id: int, token: str) -> bool:
+    """One attempt on one connection: insert, or take over an expired claim;
+    then give it back if the previous release's session lock is in use."""
     with get_db_connection(auto_commit=True) as connection:
         with connection.cursor() as cursor:
             try:
@@ -287,34 +280,74 @@ def _try_acquire_assign_claim(user_id: int, token: str, lifetime_seconds: int) -
                     """INSERT INTO premium_assign_claims
                        (user_id, claim_token, claimed_at, expires_at)
                        VALUES (%s, %s, NOW(), NOW() + INTERVAL %s SECOND)""",
-                    (user_id, token, lifetime_seconds),
+                    (user_id, token, ASSIGN_CLAIM_TTL_SECONDS),
                 )
-                return True
             except pymysql.err.IntegrityError as e:
-                if e.args[0] != MYSQL_ER_DUP_ENTRY:
+                if e.args[0] != ER.DUP_ENTRY:
                     raise
+                cursor.execute(
+                    """UPDATE premium_assign_claims
+                       SET claim_token = %s, claimed_at = NOW(),
+                           expires_at = NOW() + INTERVAL %s SECOND
+                       WHERE user_id = %s AND expires_at < NOW()""",
+                    (token, ASSIGN_CLAIM_TTL_SECONDS, user_id),
+                )
+                cursor.execute(
+                    "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                if not row or row["claim_token"] != token:
+                    return False
+                print(f"Reclaimed expired assign claim for user {user_id}")
 
+            # IS_FREE_LOCK: 1 free, 0 in use, NULL error (treated as in use)
+            cursor.execute(
+                "SELECT IS_FREE_LOCK(%s) AS is_free",
+                (f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}",),
+            )
+            if cursor.fetchone()["is_free"] == 1:
+                return True
+            print(f"Previous release still assigning user {user_id}; claim given back")
+            cursor.execute(
+                """DELETE FROM premium_assign_claims
+                   WHERE user_id = %s AND claim_token = %s""",
+                (user_id, token),
+            )
+            return False
+
+
+def _renew_assign_claim(user_id: int, token: str) -> bool:
+    """Push the claim's expiry forward; False once another holder owns it."""
+    with get_db_connection(auto_commit=True) as connection:
+        with connection.cursor() as cursor:
             cursor.execute(
                 """UPDATE premium_assign_claims
-                   SET claim_token = %s, claimed_at = NOW(),
-                       expires_at = NOW() + INTERVAL %s SECOND
-                   WHERE user_id = %s AND expires_at < NOW()""",
-                (token, lifetime_seconds, user_id),
+                   SET expires_at = NOW() + INTERVAL %s SECOND
+                   WHERE user_id = %s AND claim_token = %s""",
+                (ASSIGN_CLAIM_TTL_SECONDS, user_id, token),
             )
             cursor.execute(
                 "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
                 (user_id,),
             )
             row = cursor.fetchone()
-            owned = bool(row) and row["claim_token"] == token
-            if owned:
-                print(f"Reclaimed expired assign claim for user {user_id}")
-            return owned
+            return bool(row) and row["claim_token"] == token
+
+
+def _keep_assign_claim_alive(user_id: int, token: str, stop: threading.Event):
+    """Renew the claim until ``stop`` is set or the claim is lost."""
+    while not stop.wait(ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS):
+        try:
+            if not _renew_assign_claim(user_id, token):
+                print(f"Assign claim for user {user_id} was lost; renewal stopped")
+                return
+        except Exception as e:
+            print(f"Failed to renew assign claim for user {user_id}: {e}")
 
 
 def _release_assign_claim(user_id: int, token: str) -> None:
-    """Delete the claim if this holder still owns it. Best-effort: a claim
-    left behind expires and is reclaimed by the next assign."""
+    """Best-effort delete by token; a claim left behind expires."""
     try:
         with get_db_connection(auto_commit=True) as connection:
             with connection.cursor() as cursor:
@@ -323,72 +356,51 @@ def _release_assign_claim(user_id: int, token: str) -> None:
                        WHERE user_id = %s AND claim_token = %s""",
                     (user_id, token),
                 )
-        print(f"Released assign claim for user {user_id}")
+                if cursor.rowcount:
+                    print(f"Released assign claim for user {user_id}")
     except Exception as e:
         print(f"Failed to release assign claim for user {user_id}: {e}")
 
 
 @contextmanager
-def assign_claim(
-    user_id: int,
-    lifetime_seconds: int,
-    wait_seconds: Optional[float] = None,
-):
-    """Hold the per-user assign claim for the block's lifetime.
-
-    The claim is a committed row, not a session lock: no connection stays
-    open while the block runs, and a claim left by a crashed invocation is
-    reclaimable once its expires_at passes.
-
-    Yields True if acquired within ``wait_seconds`` (default
-    ASSIGN_CLAIM_WAIT_SECONDS), False otherwise. A missing claims table
-    (migration not yet applied) yields False. While an invocation of the
-    previous release holds the legacy session lock, the claim is given back
-    and the attempt counts as not acquired.
-    """
+def assign_claim(user_id: int, wait_seconds: Optional[float] = None):
+    """Yield True while holding the user's assign claim, renewed in the background."""
     if wait_seconds is None:
         wait_seconds = ASSIGN_CLAIM_WAIT_SECONDS
     token = uuid.uuid4().hex
     deadline = time.monotonic() + wait_seconds
-
-    def attempt() -> bool:
-        if not _try_acquire_assign_claim(user_id, token, lifetime_seconds):
-            return False
-        if is_creation_lock_held(f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}"):
-            _release_assign_claim(user_id, token)
-            return False
-        return True
-
     acquired = False
+    stop = threading.Event()
+    renewer = None
     try:
-        acquired = attempt()
-        while not acquired and time.monotonic() < deadline:
-            time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
-            acquired = attempt()
-    except pymysql.err.ProgrammingError as e:
-        if e.args[0] != MYSQL_ER_NO_SUCH_TABLE:
-            raise
-        print(f"premium_assign_claims is missing; assign claim not taken: {e}")
-
-    if acquired:
-        print(f"Acquired assign claim for user {user_id}")
-    else:
-        print(f"Assign claim for user {user_id} is held by another invocation")
-    try:
+        try:
+            acquired = _try_acquire_assign_claim(user_id, token)
+            # Polling gives no order: with 3+ contenders one may still get 409
+            while not acquired and time.monotonic() < deadline:
+                time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
+                acquired = _try_acquire_assign_claim(user_id, token)
+        except pymysql.err.ProgrammingError as e:
+            if e.args[0] != ER.NO_SUCH_TABLE:
+                raise
+            print(f"premium_assign_claims is missing; assign claim not taken: {e}")
+        else:
+            if acquired:
+                print(f"Acquired assign claim for user {user_id}")
+                renewer = threading.Thread(
+                    target=_keep_assign_claim_alive,
+                    args=(user_id, token, stop),
+                    daemon=True,
+                )
+                renewer.start()
+            else:
+                print(f"Assign claim for user {user_id} is held by another invocation")
         yield acquired
     finally:
-        if acquired:
-            _release_assign_claim(user_id, token)
-
-
-def assign_claim_lifetime_seconds(context: Any) -> int:
-    """Claim lifetime: the invocation's remaining time plus a margin, so a
-    claim cannot expire while its holder is still running."""
-    get_remaining = getattr(context, "get_remaining_time_in_millis", None)
-    remaining_ms = get_remaining() if callable(get_remaining) else None
-    if not isinstance(remaining_ms, (int, float)):
-        return ASSIGN_CLAIM_DEFAULT_SECONDS
-    return int(remaining_ms // 1000) + ASSIGN_CLAIM_EXPIRY_MARGIN_SECONDS
+        stop.set()
+        if renewer:
+            renewer.join(timeout=5)
+        # Also clears a row a failed attempt may have left
+        _release_assign_claim(user_id, token)
 
 
 def with_transaction(func):
@@ -2582,12 +2594,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
 
             if action == PremiumAssignment.ACTION_ASSIGN:
-                return assign_premium_user(
-                    user_id,
-                    body_data,
-                    user_uid,
-                    claim_lifetime_seconds=assign_claim_lifetime_seconds(context),
-                )
+                return assign_premium_user(user_id, body_data, user_uid)
             elif action == PremiumAssignment.ACTION_RELEASE:
                 hard = body_data.get("hard", False)
                 return release_premium_user(user_id, hard=hard)
@@ -3944,7 +3951,6 @@ def assign_premium_user(
     user_id: int,
     event: Dict[str, Any],
     user_uid: Optional[str] = None,
-    claim_lifetime_seconds: int = ASSIGN_CLAIM_DEFAULT_SECONDS,
 ) -> Dict[str, Any]:
     """Enhanced assignment with standby pool support -
     prefer stopped instances for fast startup"""
@@ -3965,15 +3971,10 @@ def assign_premium_user(
             ),
         }
 
-    # Serialize concurrent assign calls for the same user_id. Without it,
-    # two calls can both pass the "existing assignment?" check and race
-    # through TG creation, and the second call's orphan-cleanup deletes the
-    # first call's fresh target group. The whole impl runs under the claim;
-    # premium_cleanup also skips ALB resources of users holding one.
-    with assign_claim(user_id, claim_lifetime_seconds) as acquired:
+    # One assign per user at a time, or concurrent ones delete each other's TG
+    with assign_claim(user_id) as acquired:
         if not acquired:
-            # Another invocation holds the claim. Return what it stored,
-            # if it has finished, before asking the caller to retry.
+            # Return what the holder stored, if it has finished; else 409
             print(
                 f"Assign claim wait timed out for user {user_id}, "
                 f"checking for completed assignment"
