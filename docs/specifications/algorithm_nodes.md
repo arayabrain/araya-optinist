@@ -12,7 +12,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Motion Correction ([NoRMCorre](https://caiman.readthedocs.io/en/latest/CaImAn_features_and_references.html#normcorre)). The function will perform either rigid or piecewise rigid motion correction depending on the attribute self.pw_rigid and will perform high pass spatial filtering for determining the motion (used in 1p data) if the attribute self.gSig_filt is not None.
 - **Input:** ImageData (Tiff), HDF5
-- **Output:** ImageData
+- **Output:** mc_images (ImageData), meanImg (ImageData: mean of the motion-corrected movie), refImg (ImageData: the template frames were aligned to, high-pass filtered when gSig_filt is set)
 - **Parameters:**
   - **border_nan** [true, false, copy, default: copy]: flag for allowing NaN in the boundaries. True allows NaN, whereas ‘copy’ copies the value of the nearest data point.
   - **g_Sig_filt**　[int or None, default: None]:　 Size of kernel for high-pass spatial filtering in 1P data. If None no spatial filtering is performed.
@@ -37,12 +37,12 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Constrained nonnegative matrix factorization, find ROIs 2P data
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData (fluorescence, dff), IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
 - **Parameters:**
   - **decay_time** [float, default: 0.4] Length of typical transient in seconds. Dependent on fluorescent indicator dynamics.
   - **use_online** Provides faster processing and reduced memory requirements, slight reduction in accuracy. Good for large data.
   - **do_refit** Refit reprocesses data after an initial fit, refining results by using the centres of components from the initial fit as seeds for another iteration.
-  - **K [int, default: 10]: Number of components to be found. This determines how many cells can be found** (per patch or whole FOV depending on whether rf=None)
+  - **K** [int, default: 10]: Number of components to be found, which bounds how many cells can be found. With rf None (the default) it counts components for the whole field of view, so the node returns at most K; with rf set it counts them per patch.
   - **gSig** [default: (4,4)]: Standard deviation of neuron size along x and y.
   - **ssub** [float, default: 2]: Spatial downsampling factor.
   - **tsub** [float, default 1, no downsampling]: temporal downsampling factor recommended for long datasets.
@@ -50,9 +50,12 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **method_init** [‘greedy_roi’,’corr_pnr’, default: ‘greedy_roi’]: Use ‘greedy_roi’ for standard 2P, ‘corr_pnr’ for 1p (CNMF-E).
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
   - **p** [int, default: 2]: Order of the autoregression model.
-  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None or 0, no patches are constructed and the whole FOV is processed jointly.
+  - **rf** [int or None, default: None]: Half-size of patch in pixels.
+    - None or 0 processes the whole field of view at once. With only_init (default true, under advanced > patch_params) the node then runs CaImAn's initialisation only: greedy ROI and HALS, no CNMF iterations (do_refit adds them). Its peak memory is about 13 bytes x pixels x frames plus about 1 GB, in the initialisation's seed search (ssub 2): about 11 GB for 512 x 512 x 2,900 frames, twice that for twice the frames.
+    - A number fits each patch of (2 x rf + 1) x (2 x rf + 1) pixels on its own, so the fit takes about 16 bytes x (2 x rf + 1)^2 x frames per patch plus about 1.5 GB, whatever the field of view. K then counts per patch, so the node finds many more components (about 1,250 to 1,600 on a 512 x 512 movie at CaImAn's 2p demo density of one per 144 pixels, e.g. rf 15, stride 6, K 4, or rf 32, stride 16, K 16), deconvolves their traces (p) and returns different results.
+    - With many components, patch mode can need more memory than None: each component is kept as a dense image mask, so the outputs need about 30 bytes x components x pixels (about 12 GB for 1,500 components at 512 x 512) and about 8 MB of disk per component at 512 x 512. CaImAn's CNN evaluation (use_cnn, under advanced > quality_evaluation_params) also holds about 8 bytes x components x pixels until it finishes.
   - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
-  - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **merge_thr** [float, default: 0.85]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
   - **n_processes** [int, default: 1, under advanced > patch_params]: CaImAn worker processes. The value is clamped to the CPUs available to the process minus one, so on a 2-CPU instance it always resolves to 1. Memory, not CPU, is the ceiling: each worker holds its own slice of the movie. With `rf: None` (the default) the whole field of view is one patch, so extra workers only parallelise preprocessing and residual computation; set `rf` as well to parallelise the patch-level fit.
   - **dff** (output): CaImAn's own ΔF/F from `detrend_df_f(A, b, C, f, YrA)`: (F - F0) / (B0 + F0), where F0 is a running baseline of the trace at a percentile CaImAn picks per trace and B0 the same baseline of the background under the component. If the fit has no `b` and `f` (the ring background, `nb: 0`), B0 comes from the ring model's static background `b0`; its ring fluctuations `W` are not included. A fit with no background at all gives F - F0 only, with a warning. Rows are in the same order as fluorescence. A ROI added or merged with Edit ROI has no CaImAn ΔF/F, so its dff row is NaN. dff is not written to the NWB file. An invalid frames_window stops the node before CaImAn runs; if CaImAn itself fails, the node still finishes and dff is all NaN with the error in the log. It adds run time: about 1.5 to 4 minutes for 267 components x 39,616 frames single-threaded with frames_window 500.
   - **frames_window** [int of at least 2, or null, default: 500, under advanced > dff_params]: Running baseline window in frames. null, or a window longer than the recording, uses one baseline for the whole recording and is the fast option. From the parameter form, which cannot set null, enter a window larger than the recording's frame count instead.
@@ -62,7 +65,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Constrained nonnegative matrix factorization-endoscope, find ROIs for 1P data.
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData (fluorescence, dff), IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
 - **Parameters:**
   - Additional information on CNMF-E can be found on [Inscopix github](https://github.com/inscopix/inscopix-cnmfe?tab=readme-ov-file#algorithm-parameters)
   - The defaults follow CaImAn's own 1p demo (`demos/general/params_demo_pipeline_cnmfE.json`), except rf and stride, which are smaller so a long movie fits in about 5 GB. Under advanced, `use_cnn` is off because CaImAn's CNN classifier is trained on 2p data.
@@ -85,8 +88,9 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Keep union of components found in multiple sessions
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData (fluorescence, dff), IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
 - **Parameters:** Same as caiman_cnmf with the addition of:
+  - **K**, **ssub**, **p** [default: 4, 1, 1]: as in caiman_cnmf. With rf None, K counts components for each session's whole field of view. At ssub 1 each session's fit needs about 33 bytes x pixels x the session's frames plus about 1 GB: about 14 GB per session for two sessions of 512 x 512 x 1,450 frames. In patch mode CaImAn's session registration holds both sessions' footprints as dense images, about 30 bytes x components per session x pixels: about 12 GB at 512 x 512 with rf 15, stride 6 and K 4, half that with K 2. Bound K when setting rf.
   - n_reg_files
   - reg_file_rate
   - **session_lengths** [list of int, default: empty]: Frames per session. If set, the input movie is split at these boundaries instead of into n_reg_files equal parts (use when sessions have unequal length). The lengths must sum exactly to the number of frames; otherwise the run fails with a message naming both numbers.
@@ -121,18 +125,18 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
 - **Description:** Motion correction. suite2p computes its own reference image from `nimg_init` frames and registers the binary written by suite2p_file_convert in place, so re-running only this node registers an already registered movie. The 1P pre-filtering of suite2p 0.10.3 (`1Preg`, `spatial_hp_reg`, `pre_smooth`) was removed upstream; raise `smooth_sigma` and `spatial_taper` for 1P data instead.
 - **Input:** Suite2pData
-- **Output:** Suite2pData, ImageData
+- **Output:** ops (Suite2pData), mc_images (ImageData), meanImg (ImageData: mean of the registered movie; suite2p_file_convert's meanImg is the unregistered one), refImg (ImageData: the reference frames were aligned to)
 - **Parameters:**
 
   - **torch_device** [string, default: cpu]: `cpu`, `cuda` or `mps`. Falls back to cpu when the device is unavailable.
 
   - **run:**
 
-    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames.
+    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames. The PCA reads up to 2,000 frames, or 5,000 when the movie has at least 5,000 frames and neither side exceeds 700 pixels, and its memory can set the run's peak. Measured at 512 × 512 it adds about 3 GB at 2,908 frames and about 10 GB at 5,816 frames.
 
   - **registration:**
 
-    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it; results do not depend on it.
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it. The results also depend on it while it is below `nimg_init`: suite2p 1.1.0 ranks the reference candidates by the last batch only ([MouseLand/suite2p#1276](https://github.com/MouseLand/suite2p/issues/1276)), so changing the batch size changes the reference image and the registration. Keep the default unless memory requires a smaller batch.
     - **nimg_init** [int, default: 400]: How many frames to use to compute the reference image.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
     - **smooth_sigma_time** [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Must stay 0: suite2p 1.1.0's time smoothing fails inside registration for any positive value, so the node refuses it with a message.
@@ -168,8 +172,13 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
     - **algorithm** [string, default: sparsery]: `sparsery` (suite2p's default detector) or `sourcery` (the older detector). suite2p's cellpose mode is not available here.
     - **highpass_time** [int, default: 100]: Running mean subtraction across time with a window of this many bins. Values of less than 10 are recommended for 1P data where there are often large full-field changes in brightness.
-    - **nbins** [int, default: 5000]: Maximum number of binned frames to use for ROI detection.
+    - **nbins** [int, default: 5000]: Maximum number of binned frames to use for ROI detection. A bin is `tau` × the frame rate in frames, or the number of frames ÷ `nbins` when that is larger.
+      - Detection's memory grows with the number of binned frames: about 4.6 MB per binned frame at 512 × 512.
+      - At 30 Hz and `tau` 1.0, detection becomes the run's peak beyond about 10 minutes of recording. From there it adds about 0.28 GB per minute, up to the 5,000-frame cap (about 83 minutes).
+      - A lower `nbins` bounds that memory on long recordings, but it widens the bin and changes the detected ROIs. On a 13-minute recording, `nbins` 500 and 250 kept a half and a third of the ROIs.
     - **denoise** [bool, default: False]: PCA-denoise the binned movie before detection.
+      - It changes the detected ROIs substantially: measured at 512 × 512, it found 1.5 to 2.3 times as many, and kept about half of the ROIs found without it.
+      - Its memory grows with the number of binned frames: about +0.5 GB on an 8-minute recording at 30 Hz.
     - **block_size** [list of int, default: [64, 64]]: Block size for denoising, in pixels.
     - **threshold_scaling** [float, default: 1.0]: Controls the threshold at which to detect ROIs (how much the ROIs have to stand out from the noise to be detected). If higher, then fewer ROIs will be detected, and if lower, more ROIs will be detected.
     - **max_overlap** [float, default: 0.75]: Overlapping ROIs are allowed during cell detection. After detection, ROIs with more than this fraction of their pixels overlapping with other ROIs will be discarded. Must be below 1: ROI editing needs the overlap information suite2p only computes then.

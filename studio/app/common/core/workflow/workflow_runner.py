@@ -126,7 +126,7 @@ class WorkflowRunner:
             self.edgeDict,
         ).write()
 
-        ExptConfigWriter(
+        expt_config = ExptConfigWriter(
             self.workspace_id,
             self.unique_id,
             self.runItem.name,
@@ -134,6 +134,7 @@ class WorkflowRunner:
             snakemake=snakemake_params,
             timezone=timezone,
         ).write()
+        self.generation = expt_config.started_at
 
         Runner.clear_pid_file(self.workspace_id, self.unique_id)
 
@@ -343,6 +344,7 @@ class WorkflowRunner:
             self.unique_id,
             snakemake_params,
             self.user_id,
+            self.generation,
         )
 
     def finish_workflow_without_run(
