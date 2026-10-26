@@ -1482,7 +1482,18 @@ export async function reproduceTutorial(page: Page, tutorialName: string) {
     .locator("tr")
     .filter({ has: page.getByText(tutorialName, { exact: true }) })
     .first()
-  await expect(row).toBeVisible({ timeout: 15_000 })
+  // Records sort newest first, so each run pushes the tutorials off page 1
+  const showRow = async () => {
+    await expect(
+      page.locator('[data-testid="reproduce-button"]').first(),
+    ).toBeVisible({ timeout: 15_000 })
+    const nextPage = page.getByRole("button", { name: "Go to next page" })
+    while (!(await row.isVisible()) && (await nextPage.isEnabled())) {
+      await nextPage.click()
+    }
+    await expect(row).toBeVisible({ timeout: 15_000 })
+  }
+  await showRow()
   // Disabled while a previous run is still settling — wait, then reload
   // once (a fresh fetch clears stale running state)
   const reproduceButton = row.locator('[data-testid="reproduce-button"]')
@@ -1493,7 +1504,7 @@ export async function reproduceTutorial(page: Page, tutorialName: string) {
   if (!enabled) {
     await page.reload()
     await page.locator('button[role="tab"]:has-text("Record")').click()
-    await expect(row).toBeVisible({ timeout: 15_000 })
+    await showRow()
     await expect(reproduceButton).toBeEnabled({ timeout: 60_000 })
   }
   await reproduceButton.click()

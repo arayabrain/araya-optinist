@@ -1,8 +1,10 @@
 import os
+import pickle
 import shutil
 
 import numpy as np
 import pytest
+import tifffile
 import yaml
 
 from studio.app.common.core.rules.runner import Runner
@@ -10,11 +12,13 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
 )
 from studio.app.common.core.utils.pickle_handler import PickleWriter
+from studio.app.common.dataclass import ImageData
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.core.edit_ROI.utils import EditRoiUtils
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
+from studio.app.optinist.dataclass.roi import EditImagesUnavailableError, edit_reference
 from studio.app.optinist.schemas.roi import RoiPos
 
 # Unlike caiman_cnmf's, a cnmf_multisession node id has no "caiman" in it.
@@ -106,3 +110,46 @@ async def test_a_commit_exports_binary_footprints_as_nwb_masks(file_path):
         expected = np.zeros(SHAPE)
         expected[i, :] = 1
         np.testing.assert_array_equal(masks[i], expected)
+
+
+@pytest.fixture
+def parts_file_path(file_path, tmp_path):
+    """The node of file_path, its EditRoiData referencing the movie's split
+    parts, as cnmf_multisession stores it for an input outside the experiment."""
+    node_dirpath = os.path.dirname(file_path)
+    movie = np.random.default_rng(0).integers(0, 4000, (NUM_FRAME, *SHAPE))
+    movie = movie.astype(np.uint16)
+    tifffile.imwrite(tmp_path / "movie.tif", movie, photometric="minisblack")
+    parts = ImageData(str(tmp_path / "movie.tif")).split_image(
+        node_dirpath, lengths=[2, NUM_FRAME - 2]
+    )
+    pickle_path = f"{node_dirpath}/cnmf_multisession.pkl"
+    with open(pickle_path, "rb") as f:
+        info = pickle.load(f)
+    info["edit_roi_data"].images = edit_reference(ImageData(parts), node_dirpath)
+    PickleWriter.write(pickle_path=pickle_path, info=info)
+    return file_path, movie
+
+
+@pytest.mark.asyncio
+async def test_a_commit_reads_new_traces_from_the_split_parts(parts_file_path):
+    file_path, movie = parts_file_path
+    EditROI(file_path=file_path).add(RoiPos(posx=4, posy=4, sizex=2, sizey=2))
+    await EditROI(file_path=file_path).commit()
+
+    committed = EditROI(file_path=file_path).output_info
+    mask = ~np.isnan(committed["edit_roi_data"].im[NUM_ROI])
+    np.testing.assert_array_equal(
+        committed["fluorescence"].data[NUM_ROI],
+        np.mean(movie[:, mask], axis=1, dtype=np.float32),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_commit_without_the_split_parts_is_refused(parts_file_path):
+    # the commit route answers this error with 409
+    file_path, _ = parts_file_path
+    shutil.rmtree(f"{os.path.dirname(file_path)}/image_split")
+    EditROI(file_path=file_path).add(RoiPos(posx=4, posy=4, sizex=2, sizey=2))
+    with pytest.raises(EditImagesUnavailableError, match="movie_0.tif"):
+        await EditROI(file_path=file_path).commit()

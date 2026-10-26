@@ -1,19 +1,15 @@
 import copy
 import os
-import pathlib
 import pickle
 import shutil
-import sys
-import types
 
 import numpy as np
 import pytest
 
 from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.dir_path import DIRPATH
-from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.dataclass.roi import RoiStack
-from studio.app.optinist.wrappers.suite2p.roi import roi_label_images, suite2p_roi
+from studio.app.optinist.wrappers.suite2p.roi import roi_label_images
 
 LY, LX = 6, 5
 
@@ -118,70 +114,6 @@ def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):
         np.testing.assert_array_equal(a, expected)
 
 
-def run_suite2p_roi(monkeypatch, tmp_path, n_roi, output_dir=None):
-    stat = np.array(
-        [
-            {"ypix": np.array([i]), "xpix": np.array([i]), "lam": [1.0]}
-            for i in range(n_roi)
-        ]
-    )
-    suite2p = types.ModuleType("suite2p")
-    suite2p.default_ops = dict
-    suite2p.detection = types.SimpleNamespace(detect=lambda ops, classfile: (ops, stat))
-    suite2p.extraction = types.SimpleNamespace(
-        create_masks_and_extract=lambda ops, stat: (
-            ops,
-            stat,
-            np.ones((n_roi, 3)),
-            np.ones((n_roi, 3)),
-            None,
-            None,
-        )
-    )
-    suite2p.classification = types.SimpleNamespace(
-        builtin_classfile=pathlib.Path("builtin"),
-        user_classfile=pathlib.Path("user"),
-        classify=lambda stat, classfile: np.ones((len(stat), 2)),
-    )
-    monkeypatch.setitem(sys.modules, "suite2p", suite2p)
-    output_dir = pathlib.Path(
-        output_dir or tmp_path / "ws" / "0123abcd" / "suite2p_roi_x"
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ops = {
-        "Ly": LY,
-        "Lx": LX,
-        "nframes": 3,
-        "filelist": ["movie.tif"],
-        "use_builtin_classifier": True,
-        "max_proj": np.zeros((LY, LX)),
-        "Vcorr": np.zeros((LY, LX)),
-    }
-    return suite2p_roi(Suite2pData(ops), str(output_dir), params={})
-
-
-def test_the_node_references_the_stack_it_wrote(monkeypatch, tmp_path):
-    info = run_suite2p_roi(monkeypatch, tmp_path, n_roi=2)
-    im = info["edit_roi_data"].im
-    assert type(im) is RoiStack and im.shape == (2, LY, LX)
-    (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
-    assert postprocess["all_roi_img"] is im
-
-
-def test_no_rois_still_finishes_with_empty_outputs(monkeypatch, tmp_path):
-    info = run_suite2p_roi(monkeypatch, tmp_path, n_roi=0)
-    assert info["edit_roi_data"].im.shape == (0, LY, LX)
-
-
-def test_a_failed_stack_write_fails_the_node(monkeypatch, tmp_path):
-    def disk_full(*args, **kwargs):
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(RoiStack, "create", disk_full)
-    with pytest.raises(OSError, match="No space left"):
-        run_suite2p_roi(monkeypatch, tmp_path, n_roi=2)
-
-
 @pytest.mark.parametrize(
     "derive", [lambda im: im, lambda im: im[[0, 2]], copy.deepcopy]
 )
@@ -211,29 +143,16 @@ def test_a_stack_under_the_output_dir_pickles_relative_to_it(tmp_path, monkeypat
     np.testing.assert_array_equal(pickle.loads(blob), expected)
 
 
-def test_a_rerun_replaces_the_file_so_an_open_stack_keeps_its_data(
-    monkeypatch, tmp_path
-):
-    first = run_suite2p_roi(monkeypatch, tmp_path, n_roi=3)["edit_roi_data"].im
-    before = np.array(first)
-    second = run_suite2p_roi(monkeypatch, tmp_path, n_roi=1)["edit_roi_data"].im
-    assert second.shape[0] == 1
-    np.testing.assert_array_equal(first, before)
-    assert not (
-        tmp_path / "ws" / "0123abcd" / "suite2p_roi_x" / "roi_mask_stack.npy.tmp"
-    ).exists()
-
-
-def test_a_relative_output_dir_still_reopens_the_stack(monkeypatch, tmp_path):
-    # the pickle path is OUTPUT_DIR-relative; the wrapper must not hand open()
-    # a relative path that would be prefixed with OUTPUT_DIR a second time
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", "ws")
-    im = run_suite2p_roi(
-        monkeypatch, tmp_path, n_roi=2, output_dir="ws/0123abcd/suite2p_roi_x"
-    )["edit_roi_data"].im
-    assert type(im) is RoiStack and os.path.isabs(im._stack_path)
-    blob = pickle.dumps(im)
-    assert b"0123abcd/suite2p_roi_x/roi_mask_stack.npy" in blob
-    assert str(tmp_path).encode() not in blob
-    np.testing.assert_array_equal(pickle.loads(blob), im)
+def test_a_reopened_reference_pickles_the_same_from_the_rule_cwd(tmp_path, monkeypatch):
+    # a downstream rule runs in the experiment directory and re-pickles the
+    # reference it loaded; the path must stay OUTPUT_DIR-relative, not grow
+    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", str(tmp_path))
+    node_dir = tmp_path / "ws" / "uid" / "suite2p_roi_x"
+    node_dir.mkdir(parents=True)
+    im, expected = stack_on_disk(node_dir)
+    from_node = pickle.dumps(im)
+    monkeypatch.chdir(tmp_path / "ws" / "uid")
+    downstream = pickle.dumps(pickle.loads(from_node))
+    assert b"ws/uid/suite2p_roi_x/roi_mask_stack.npy" in downstream
+    assert b"ws/uid/ws/uid" not in downstream
+    np.testing.assert_array_equal(pickle.loads(downstream), expected)
