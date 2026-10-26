@@ -9,7 +9,6 @@ import pytest
 from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass.roi import RoiStack
-from studio.app.optinist.wrappers.suite2p.roi import roi_label_images
 
 LY, LX = 6, 5
 
@@ -53,32 +52,6 @@ def test_reductions_return_plain_arrays(tmp_path):
     assert type(result) is np.ndarray
     with pytest.warns(RuntimeWarning):
         np.testing.assert_array_equal(result, np.nanmax(expected, axis=0))
-
-
-def test_label_images_equal_nanmax_over_the_stack():
-    rng = np.random.default_rng(1)
-    stat = []
-    for _ in range(12):  # overlapping ROIs, as suite2p can return
-        y0, x0 = rng.integers(0, LY - 2), rng.integers(0, LX - 2)
-        yy, xx = np.mgrid[y0 : y0 + 3, x0 : x0 + 3]
-        stat.append({"ypix": yy.ravel(), "xpix": xx.ravel()})
-    iscell = rng.integers(0, 2, len(stat))
-    stack = np.full((len(stat), LY, LX), np.nan)
-    for i, s in enumerate(stat):
-        stack[i, s["ypix"], s["xpix"]] = i
-
-    labels = roi_label_images(stat, iscell, LY, LX)
-
-    with pytest.warns(RuntimeWarning):
-        np.testing.assert_array_equal(labels["all"], np.nanmax(stack, axis=0))
-    with pytest.warns(RuntimeWarning):
-        np.testing.assert_array_equal(
-            labels["cell"], np.nanmax(stack[iscell != 0], axis=0)
-        )
-    with pytest.warns(RuntimeWarning):
-        np.testing.assert_array_equal(
-            labels["non_cell"], np.nanmax(stack[iscell == 0], axis=0)
-        )
 
 
 def test_copying_an_experiment_remaps_the_stack_without_reading_it(tmp_path):

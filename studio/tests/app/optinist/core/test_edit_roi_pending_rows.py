@@ -15,6 +15,7 @@ from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWrit
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
+from studio.app.optinist.dataclass.roi import RoiMasks
 from studio.app.optinist.schemas.roi import RoiPos
 
 # A pending add or merge that is deleted again before commit used to be committed
@@ -62,7 +63,7 @@ def file_path(request):
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
         info={
             "edit_roi_data": EditRoiData(
-                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=im
+                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=RoiMasks.from_stack(im)
             ),
             "iscell": IscellData(
                 np.array([CellType.ROI, CellType.ROI, CellType.NON_ROI])
@@ -320,3 +321,38 @@ async def test_a_node_pickled_before_roi_masks_edits_the_same(file_path, monkeyp
     for a, b in zip(got, want):
         np.testing.assert_array_equal(a, b)
     assert len(want[2]) == NUM_ROI + 2 and want[2][NUM_ROI].std() > 0
+
+
+def pending_state(file_path):
+    edit_roi = EditROI(file_path=file_path)
+    data = edit_roi.tmp_data
+    return (
+        len(data.roi_masks),
+        list(edit_roi.tmp_iscell),
+        dict(data.temp_add_roi),
+        dict(data.temp_merge_roi),
+        dict(data.temp_delete_roi),
+    )
+
+
+def test_a_merge_of_unknown_or_too_few_rois_is_refused(file_path):
+    EditROI(file_path=file_path).add(ROI_A)  # a pending row, NUM_ROI
+    before = pending_state(file_path)
+
+    # negative, past the end, one, repeated, none
+    for ids in ([0, -1], [0, NUM_ROI + 1], [0], [1, 1], []):
+        with pytest.raises(HTTPException) as exc:
+            EditROI(file_path=file_path).merge(ids)
+        assert exc.value.status_code == 400, ids
+        assert pending_state(file_path) == before, ids
+
+
+def test_a_delete_of_unknown_rois_is_refused(file_path):
+    EditROI(file_path=file_path).add(ROI_A)
+    before = pending_state(file_path)
+
+    for ids in ([-1], [1, NUM_ROI + 1]):
+        with pytest.raises(HTTPException) as exc:
+            EditROI(file_path=file_path).delete(ids)
+        assert exc.value.status_code == 400, ids
+        assert pending_state(file_path) == before, ids

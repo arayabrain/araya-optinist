@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -18,6 +19,7 @@ from snakemake.api import (
 from studio.app.common.core.cloud.storage_tracking import (
     update_user_storage_after_workflow,
 )
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
@@ -46,7 +48,11 @@ logger = AppLogger.get_logger()
 
 
 def snakemake_execute(
-    workspace_id: str, unique_id: str, params: SmkParam, user_id: int = None
+    workspace_id: str,
+    unique_id: str,
+    params: SmkParam,
+    user_id: int = None,
+    generation: str = None,
 ):
     """
     Main entry point for Snakemake execution.
@@ -56,6 +62,7 @@ def snakemake_execute(
         unique_id: Unique ID for the workflow
         params: Snakemake parameters
         user_id: User ID (for tracking free tier workflow counts)
+        generation: started_at of the run that scheduled this execution
     """
     client_id = get_client_id_for_subprocess()
 
@@ -69,6 +76,7 @@ def snakemake_execute(
                 workspace_id,
                 unique_id,
                 params,
+                generation=generation,
                 client_id=client_id,
             )
             future_result = future.result()
@@ -98,12 +106,17 @@ def _snakemake_execute_process(
     workspace_id: str,
     unique_id: str,
     params: SmkParam,
+    generation: str = None,
     client_id: str = None,
 ) -> bool:
     # ------------------------------------------------------------
     # Snakemake execution process
     # ------------------------------------------------------------
 
+    # The logger clears error.log, which a rerun's child may own by now
+    if generation and _started_at(workspace_id, unique_id) != generation:
+        logger.warning(f"Superseded by a rerun before it started: {unique_id}")
+        return False
     smk_logger = SmkStatusLogger(workspace_id, unique_id)
     smk_workdir = join_filepath(
         [
@@ -113,12 +126,26 @@ def _snakemake_execute_process(
         ]
     )
 
-    # Use context manager for proper cleanup
-    cores = getattr(params, "cores", 1)
+    # Snakemake deletes a job's old output only when the job starts; until
+    # then a poll would take that old pickle for this run's result
+    planned = None
+    try:
+        planned = planned_outputs(smk_workdir, params)
+    except Exception as e:
+        logger.warning(f"Could not plan the run, results wait for its end: {e}")
 
-    deployment_methods = []
-    if getattr(params, "use_conda", True):
-        deployment_methods.append(DeploymentMethod.CONDA)
+    current = True
+    try:
+        current = WorkflowResult(workspace_id, unique_id).invalidate_planned_outputs(
+            planned, generation
+        )
+    except Exception as e:
+        # The gate stays up, so polls wait for finalization instead
+        logger.warning(f"Could not invalidate the plan, results wait for its end: {e}")
+        current = not generation or _started_at(workspace_id, unique_id) == generation
+    if not current:
+        logger.warning(f"Superseded by a rerun before it ran: {unique_id}")
+        return False
 
     # Use context manager for proper cleanup
     with SnakemakeApi(
@@ -129,35 +156,16 @@ def _snakemake_execute_process(
             printshellcmds=True,  # Show shell commands
         ),
     ) as snakemake_api:
-        workflow_api = snakemake_api.workflow(
-            snakefile=Path(DIRPATH.SNAKEMAKE_FILEPATH),
-            workdir=Path(smk_workdir),
-            storage_settings=StorageSettings(),
-            resource_settings=ResourceSettings(cores=cores),
-            deployment_settings=DeploymentSettings(
-                deployment_method=deployment_methods,
-                conda_frontend="conda",
-                conda_prefix=DIRPATH.SNAKEMAKE_CONDA_ENV_DIR,
-            ),
-        )
-
-        logger.debug("Workflow API created successfully")
-        logger.debug("Creating DAG...")
-
-        forceall = getattr(params, "forceall", False)
-
-        dag_api = workflow_api.dag(
-            dag_settings=DAGSettings(
-                forceall=forceall,
-            )
-        )
-
-        logger.info("DAG created successfully")
-        logger.info("Starting workflow execution...")
-
         snakemake_result = False
 
         try:
+            logger.debug("Creating DAG...")
+
+            dag_api = _dag(snakemake_api, smk_workdir, params)
+
+            logger.info("DAG created successfully")
+            logger.info("Starting workflow execution...")
+
             dag_api.execute_workflow()
 
             snakemake_result = True
@@ -190,61 +198,64 @@ def _snakemake_execute_process(
     if snakemake_result and RemoteStorageController.is_available():
         RemoteSyncLockFileUtil.wait_for_lock_release(workspace_id, unique_id)
 
-    try:
-        # Finalize workflow results. Reaching the upload lock proves the local
-        # ExptConfig is finalized, so a lock conflict (idempotent upload handled
-        # by the concurrent observe path) still finalizes the DB. Finalization is
-        # skipped only when observe never succeeded and never reached the lock.
-        (
-            observe_success,
-            observe_lock_conflict,
-            upload_confirmed,
-        ) = _observe_overall_with_lock_retry(workspace_id, unique_id)
-        should_finalize = observe_success or observe_lock_conflict
+    if generation and _started_at(workspace_id, unique_id) != generation:
+        logger.warning(f"Superseded by a rerun, skipping finalization: {unique_id}")
+    else:
+        try:
+            # Finalize workflow results. Reaching the upload lock proves the local
+            # ExptConfig is finalized, so a lock conflict (idempotent upload handled
+            # by the concurrent observe path) still finalizes the DB. Finalization is
+            # skipped only when observe never succeeded and never reached the lock.
+            (
+                observe_success,
+                observe_lock_conflict,
+                upload_confirmed,
+            ) = _observe_overall_with_lock_retry(workspace_id, unique_id, generation)
+            should_finalize = observe_success or observe_lock_conflict
 
-        # Update experiment database record
-        if should_finalize and ExperimentRecordService.is_available():
-            ExperimentRecordService.regist_record_on_workflow_completed(
-                workspace_id, unique_id
-            )
+            # Update experiment database record
+            if should_finalize and ExperimentRecordService.is_available():
+                ExperimentRecordService.regist_record_on_workflow_completed(
+                    workspace_id, unique_id
+                )
 
-        # Data usage calculation
-        if should_finalize:
-            WorkspaceDataCapacityService.update_experiment_data_usage(
-                workspace_id, unique_id
-            )
+            # Data usage calculation
+            if should_finalize:
+                WorkspaceDataCapacityService.update_experiment_data_usage(
+                    workspace_id, unique_id
+                )
 
-        if observe_lock_conflict and not observe_success and upload_confirmed:
-            logger.warning(
-                "observe_overall() upload stayed locked; finalized DB "
-                "registration and data usage regardless "
-                "(upload completed by the concurrent observe path, verified "
-                "via remote sync status). [workspace: %s] [unique_id: %s]",
-                workspace_id,
-                unique_id,
-            )
-        elif observe_lock_conflict and not observe_success:
-            # Local ExptConfig is finalized (DB is correct), but the redundant
-            # remote upload is unconfirmed; the periodic re-sync reconciles it.
-            logger.warning(
-                "observe_overall() upload stayed locked and the concurrent "
-                "observe path has not reported sync success; finalized DB "
-                "registration and data usage from the finalized local "
-                "ExptConfig, but the remote upload is unconfirmed and will be "
-                "reconciled by the periodic re-sync. "
-                "[workspace: %s] [unique_id: %s]",
-                workspace_id,
-                unique_id,
-            )
-        elif not should_finalize:
-            logger.warning(
-                "Skipped experiment record registration and data usage update "
-                "due to observe_overall() failure. [workspace: %s] [unique_id: %s]",
-                workspace_id,
-                unique_id,
-            )
-    except Exception as e:
-        logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
+            if observe_lock_conflict and not observe_success and upload_confirmed:
+                logger.warning(
+                    "observe_overall() upload stayed locked; finalized DB "
+                    "registration and data usage regardless "
+                    "(upload completed by the concurrent observe path, verified "
+                    "via remote sync status). [workspace: %s] [unique_id: %s]",
+                    workspace_id,
+                    unique_id,
+                )
+            elif observe_lock_conflict and not observe_success:
+                # Local ExptConfig is finalized (DB is correct), but the redundant
+                # remote upload is unconfirmed; the periodic re-sync reconciles it.
+                logger.warning(
+                    "observe_overall() upload stayed locked and the concurrent "
+                    "observe path has not reported sync success; finalized DB "
+                    "registration and data usage from the finalized local "
+                    "ExptConfig, but the remote upload is unconfirmed and will be "
+                    "reconciled by the periodic re-sync. "
+                    "[workspace: %s] [unique_id: %s]",
+                    workspace_id,
+                    unique_id,
+                )
+            elif not should_finalize:
+                logger.warning(
+                    "Skipped experiment record registration and data usage update "
+                    "due to observe_overall() failure. [workspace: %s] [unique_id: %s]",
+                    workspace_id,
+                    unique_id,
+                )
+        except Exception as e:
+            logger.error(f"snakemake_execute post process failed: {e}", exc_info=True)
 
     # result error handling
     if not snakemake_result:
@@ -265,7 +276,50 @@ def _snakemake_execute_process(
     return snakemake_result
 
 
-def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple:
+def _started_at(workspace_id: str, unique_id: str):
+    try:
+        return ExptConfigReader.read(workspace_id, unique_id).started_at
+    except Exception:
+        return None
+
+
+def _dag(snakemake_api: SnakemakeApi, smk_workdir: str, params: SmkParam):
+    deployment_methods = []
+    if getattr(params, "use_conda", True):
+        deployment_methods.append(DeploymentMethod.CONDA)
+
+    return snakemake_api.workflow(
+        snakefile=Path(DIRPATH.SNAKEMAKE_FILEPATH),
+        workdir=Path(smk_workdir),
+        storage_settings=StorageSettings(),
+        resource_settings=ResourceSettings(cores=getattr(params, "cores", 1)),
+        deployment_settings=DeploymentSettings(
+            deployment_method=deployment_methods,
+            conda_frontend="conda",
+            conda_prefix=DIRPATH.SNAKEMAKE_CONDA_ENV_DIR,
+        ),
+    ).dag(dag_settings=DAGSettings(forceall=getattr(params, "forceall", False)))
+
+
+def planned_outputs(smk_workdir: str, params: SmkParam) -> List[str]:
+    """The outputs of every job a run with these params would execute"""
+    planned = []
+    # snakemake sets its process-wide logger up once, so it is left to the real run
+    smk_logger = logging.getLogger("snakemake.logging")
+    was_disabled, smk_logger.disabled = smk_logger.disabled, True
+    try:
+        with SnakemakeApi(OutputSettings(keep_logger=True)) as snakemake_api:
+            _dag(snakemake_api, smk_workdir, params).execute_workflow(
+                executor="dryrun", updated_files=planned
+            )
+    finally:
+        smk_logger.disabled = was_disabled
+    return [str(f) for f in planned]
+
+
+def _observe_overall_with_lock_retry(
+    workspace_id: str, unique_id: str, generation: str = None
+) -> tuple:
     """Run observe_overall() at finalization, tolerating upload-lock conflicts.
 
     observe_overall() finalizes the local ExptConfig (node statuses) first, then
@@ -297,7 +351,9 @@ def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple
 
     for attempt in range(1, retry_max + 1):
         try:
-            asyncio.run(WorkflowResult(workspace_id, unique_id).observe_overall())
+            asyncio.run(
+                WorkflowResult(workspace_id, unique_id).observe_overall(generation)
+            )
             observe_success = True
             upload_confirmed = True
             break
@@ -333,6 +389,11 @@ def _observe_overall_with_lock_retry(workspace_id: str, unique_id: str) -> tuple
                 exc_info=True,
             )
             break
+
+    # observe_overall() observed nothing if a rerun reset the config meanwhile
+    if generation and _started_at(workspace_id, unique_id) != generation:
+        logger.warning(f"Superseded by a rerun, skipping finalization: {unique_id}")
+        return False, False, False
 
     # The winner may have completed between our last attempt and now.
     if observe_lock_conflict and not upload_confirmed:

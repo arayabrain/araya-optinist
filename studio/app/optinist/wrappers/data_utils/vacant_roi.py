@@ -28,7 +28,7 @@ def vacant_roi(
     num_frames = shape[2]
 
     # No ROIs: they are all added by ROI editing
-    roi_masks = RoiMasks(shape[:2])
+    roi_masks = RoiMasks.from_pixels(shape[:2], [])
     iscell = np.array([], dtype=int)
     timeseries = np.zeros((0, num_frames))
     empty_roi = roi_masks.label_image()

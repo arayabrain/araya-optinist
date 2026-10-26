@@ -16,7 +16,7 @@ from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi.utils import set
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.nwb_creater import save_nwb
 from studio.app.optinist.dataclass import EditRoiData
-from studio.app.optinist.dataclass.roi import nwb_all_roi_img
+from studio.app.optinist.dataclass.roi import RoiMasks, nwb_all_roi_img
 from studio.app.optinist.wrappers.caiman import cnmf
 from studio.app.optinist.wrappers.data_utils.vacant_roi import vacant_roi
 from studio.app.optinist.wrappers.lccd import lccd_detection
@@ -176,7 +176,7 @@ def test_an_roi_edit_commit_writes_binary_pixel_masks(tmp_path, images):
     stack = np.full((2, H, W), np.nan)
     stack[0, 1:3, 1:4] = 0
     stack[1, 5, 5:8] = 1
-    data = EditRoiData(images=None, roi_masks=stack)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(stack))
 
     config = set_nwbfile(
         data, np.array([1, 0]), "caiman_cnmf_x", 30.0, np.ones((2, N_TIME))

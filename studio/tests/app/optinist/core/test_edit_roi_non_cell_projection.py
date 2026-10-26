@@ -13,8 +13,8 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.utils.pickle_handler import PickleWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
-from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
-from studio.app.optinist.dataclass.roi import RoiStack
+from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, Suite2pData
+from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
 
 # non_cell_roi is rebuilt on every commit, for all four wrappers and all four
 # operations. vacant_roi is the one wrapper importable in CI, so it stands in.
@@ -65,7 +65,7 @@ def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
     im = np.full((NUM_ROI, *SHAPE), np.nan)
     for i in range(NUM_ROI):
         im[i, i, :] = i
-    data = EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=im)
+    data = EditRoiData(np.ones((NUM_FRAME, *SHAPE)), RoiMasks.from_stack(im))
     if on_disk:  # as suite2p_roi stored it before RoiMasks: pickled as `im`
         np.save(f"{node_dirpath}/roi_mask_stack.npy", im)
         data.roi_masks = RoiStack.open(f"{node_dirpath}/roi_mask_stack.npy")
@@ -213,3 +213,56 @@ def test_cancel_redraws_cell_roi_from_a_stack_on_disk(node_dirpath):
     EditROI(file_path=file_path).cancel()
 
     assert drawn_ids(node_dirpath, "cell_roi") == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_suite2p_node_draws_only_rows_with_a_fluorescence_record(
+    node_dirpath,
+):
+    # vacant_roi's commit fills a missing trace, suite2p's keeps ops["F"] as it
+    # is, so a suite2p node is where rows without a trace survive a commit
+    node_dirpath = f"{os.path.dirname(node_dirpath)}/suite2p_roi_00000000000"
+    os.makedirs(node_dirpath)
+    node_id = os.path.basename(node_dirpath)
+    node = {
+        "type": "AlgorithmNode",
+        "data": {
+            "label": "suite2p_roi",
+            "param": {},
+            "path": "suite2p/suite2p_roi",
+            "type": "algorithm",
+        },
+        "position": {"x": 0, "y": 0},
+        "style": {},
+    }
+    with open(f"{os.path.dirname(node_dirpath)}/workflow.yaml", "w") as f:
+        yaml.dump({"nodeDict": {node_id: node}, "edgeDict": {}}, f)
+    stat = []
+    for i in range(NUM_ROI):
+        ypix, xpix = np.full(SHAPE[1], i), np.arange(SHAPE[1])
+        stat.append({"ypix": ypix, "xpix": xpix, "lam": np.ones(SHAPE[1])})
+    traces = np.zeros((NUM_ROI - 1, NUM_FRAME))  # one row short, as an old commit
+    ops = {"stat": stat, "F": traces, "Fneu": traces, "fs": 30.0}
+    pixels = [np.ravel_multi_index((s["ypix"], s["xpix"]), SHAPE) for s in stat]
+    PickleWriter.write(
+        pickle_path=f"{node_dirpath}/suite2p_roi.pkl",
+        info={
+            "ops": Suite2pData(ops),
+            "edit_roi_data": EditRoiData(None, RoiMasks.from_pixels(SHAPE, pixels)),
+            "iscell": IscellData(
+                np.array([CellType.ROI, CellType.ROI, CellType.NON_ROI])
+            ),
+            "fluorescence": FluoData(traces),
+            "nwbfile": {},
+        },
+    )
+    with open(f"{node_dirpath}/non_cell_roi.json", "w") as f:
+        json.dump({"columns": [], "index": [], "data": []}, f)
+    file_path = f"{node_dirpath}/cell_roi.json"
+
+    # the traceless row stays a non-cell: deleted, it would be dropped as a
+    # pending row before the commit draws anything
+    EditROI(file_path=file_path).delete([0, 1])
+    await EditROI(file_path=file_path).commit()
+
+    assert drawn_ids(node_dirpath, "non_cell_roi") == [0, 1]

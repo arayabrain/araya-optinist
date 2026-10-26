@@ -1,9 +1,9 @@
 name: Weekly Regression
 
 # Everything that is not a per-PR gate, run once a week against the default
-# branch: the Playwright release suite, the two opt-in real-database lanes, and
-# a re-run of the per-PR unit lanes so a merge that broke them without opening a
-# PR is still caught.
+# branch: the Playwright release suite, the two opt-in real-database lanes, the
+# heavier_processing backend tests, and a re-run of the per-PR unit lanes so a
+# merge that broke them without opening a PR is still caught.
 # The e2e job runs the LOCAL docker stack in the runner (db + backend via docker
 # compose, frontend via yarn start) — it does NOT test the deployed AWS
 # environment. Scheduled runs fire only from the default branch (develop-main)
@@ -25,6 +25,16 @@ jobs:
   # The per-PR suites (backend, lambda, frontend), reused rather than copied.
   unit:
     uses: ./.github/workflows/tests.yml
+
+  # Real snakemake runs and full-size data, too slow for every PR.
+  backend_heavy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the heavier_processing backend tests
+        run: make test_backend_heavy
 
   # Real MySQL GET_LOCK serialization. Opt-in by design (its own compose
   # project and a throwaway DB), so no per-PR job runs it.
