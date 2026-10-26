@@ -178,7 +178,7 @@ def test_a_same_name_url_upload_does_not_read_as_done_before_its_file(
     )
     background_tasks = BackgroundTasks()
     response = url_response(NEW, content_length=len(NEW))
-    with patch.object(files, "open_public_url", return_value=response):
+    with patch.object(files, "open_url", return_value=response):
         result = asyncio.run(
             files.download_file(
                 workspace_id="1",
@@ -204,18 +204,37 @@ def test_a_same_name_url_upload_does_not_read_as_done_before_its_file(
     assert path.read_bytes() == NEW
 
 
+@pytest.mark.parametrize("standalone", [False, True])
+def test_a_url_upload_is_limited_to_public_addresses_in_multi_user_mode(
+    input_dir, monkeypatch, standalone
+):
+    """Standalone: the user owns the server, and may fetch from their LAN."""
+    monkeypatch.setattr(files.MODE, "IS_STANDALONE", standalone)
+    response = url_response(NEW, content_length=len(NEW))
+    with patch.object(files, "open_url", return_value=response) as open_url:
+        asyncio.run(
+            files.download_file(
+                workspace_id="1",
+                file=files.DownloadFileRequest(url="https://example.com/data.csv"),
+                background_tasks=BackgroundTasks(),
+                db=Mock(),
+            )
+        )
+    assert open_url.call_args.kwargs["public_only"] is not standalone
+
+
 def test_the_upload_routes_fetch_and_copy_off_the_event_loop(input_dir):
     """Blocking work on the loop would stall every request on that worker."""
     threads = {}
 
-    def fetch(url):
+    def fetch(url, public_only):
         threads["fetch"] = threading.current_thread()
         return url_response(NEW, content_length=len(NEW))
 
     def copy(filepath, source):
         threads["copy"] = threading.current_thread()
 
-    with patch.object(files, "open_public_url", side_effect=fetch), patch.object(
+    with patch.object(files, "open_url", side_effect=fetch), patch.object(
         files, "_write_file_atomic", side_effect=copy
     ), patch.object(
         files, "get_current_user_storage_usage", new=AsyncMock(return_value=0)

@@ -1,7 +1,8 @@
 """
-GET a user-supplied URL from the server, connecting to public addresses only.
+GET a user-supplied URL from the server, with timeouts and, where users must not
+reach the server's network, from public addresses only.
 
-Each connection resolves its host once, refuses it unless every address is
+Each connection then resolves its host once, refuses it unless every address is
 global, and connects to the checked address. Redirects are followed through the
 same connections, so every hop is checked.
 """
@@ -95,16 +96,18 @@ class _PublicAddressAdapter(HTTPAdapter):
         }
 
 
-def open_public_url(url: str) -> requests.Response:
-    """GET url as a stream; the caller reads the body and closes the response."""
+def open_url(url: str, public_only: bool = True) -> requests.Response:
+    """GET url as a stream; the caller reads the body and closes the response.
+    public_only: connect to public addresses only, on every redirect hop."""
     with requests.Session() as session:
-        # Environment proxies would make the connections instead, and .netrc
-        # credentials would go to the user's host
-        session.trust_env = False
         session.max_redirects = MAX_REDIRECTS
-        adapter = _PublicAddressAdapter()
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
+        if public_only:
+            # Environment proxies would make the connections instead, and
+            # .netrc credentials would go to the user's host
+            session.trust_env = False
+            adapter = _PublicAddressAdapter()
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
         # identity: the bytes read are the bytes Content-Length gives
         res = session.get(
             url,

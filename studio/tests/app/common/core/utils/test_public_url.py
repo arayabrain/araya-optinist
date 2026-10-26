@@ -1,5 +1,6 @@
-"""open_public_url: a user-supplied URL is fetched from public addresses only, on
-every redirect hop, and a server that stops answering ends in an error."""
+"""open_url: a user-supplied URL is fetched from public addresses only, on every
+redirect hop, unless asked otherwise; a server that stops answering ends in an
+error."""
 import datetime
 import socket
 import ssl
@@ -15,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from studio.app.common.core.utils import public_url
-from studio.app.common.core.utils.public_url import is_public_address, open_public_url
+from studio.app.common.core.utils.public_url import is_public_address, open_url
 
 BODY = b"t,v\n" * 1000
 
@@ -176,7 +177,7 @@ def test_only_global_addresses_are_public(address, public):
 
 def test_a_public_address_is_fetched_uncompressed(loopback_is_public):
     with server(ok) as (port, received):
-        res = open_public_url(f"http://127.0.0.1:{port}/data.csv")
+        res = open_url(f"http://127.0.0.1:{port}/data.csv")
         assert read_all(res) == BODY
     assert b"accept-encoding: identity" in received[0].lower()
 
@@ -184,7 +185,7 @@ def test_a_public_address_is_fetched_uncompressed(loopback_is_public):
 def test_the_request_names_the_host_not_the_address(loopback_is_public):
     """Virtual hosts serve by name; the checked address is only for the socket."""
     with server(ok) as (port, received):
-        read_all(open_public_url(f"http://localhost:{port}/data.csv"))
+        read_all(open_url(f"http://localhost:{port}/data.csv"))
     assert f"host: localhost:{port}".encode() in received[0].lower()
 
 
@@ -201,8 +202,15 @@ def test_tls_checks_the_host_name_not_the_address(loopback_is_public, localhost_
 def test_a_host_that_resolves_to_a_private_address_is_refused():
     with server(ok) as (port, received):
         with pytest.raises(requests.ConnectionError, match="not public"):
-            open_public_url(f"http://localhost:{port}/data.csv")
+            open_url(f"http://localhost:{port}/data.csv")
     assert received == []
+
+
+def test_any_address_is_fetched_when_not_limited_to_public_ones():
+    """Standalone: the user owns the server, and may fetch from their LAN."""
+    with server(ok) as (port, _):
+        res = open_url(f"http://localhost:{port}/data.csv", public_only=False)
+        assert read_all(res) == BODY
 
 
 def test_a_host_with_any_private_address_is_refused(monkeypatch):
@@ -214,19 +222,19 @@ def test_a_host_with_any_private_address_is_refused(monkeypatch):
 
     monkeypatch.setattr(public_url.socket, "getaddrinfo", getaddrinfo)
     with pytest.raises(requests.ConnectionError, match="not public"):
-        open_public_url("http://data.example.com/data.csv")
+        open_url("http://data.example.com/data.csv")
 
 
 def test_a_redirect_to_a_private_address_is_refused(loopback_is_public):
     with server(redirect_to("http://127.0.0.2:{port}/final")) as (port, received):
         with pytest.raises(requests.ConnectionError, match="not public"):
-            open_public_url(f"http://127.0.0.1:{port}/data.csv")
+            open_url(f"http://127.0.0.1:{port}/data.csv")
     assert len(received) == 1
 
 
 def test_a_redirect_to_a_public_address_is_followed(loopback_is_public):
     with server(redirect_to("http://127.0.0.1:{port}/final")) as (port, received):
-        res = open_public_url(f"http://127.0.0.1:{port}/data.csv")
+        res = open_url(f"http://127.0.0.1:{port}/data.csv")
         assert read_all(res) == BODY
     assert len(received) == 2
 
@@ -235,13 +243,13 @@ def test_a_server_that_never_answers_times_out(loopback_is_public, short_timeout
     with server(silent) as (port, _):
         started = time.monotonic()
         with pytest.raises(requests.ReadTimeout):
-            open_public_url(f"http://127.0.0.1:{port}/data.csv")
+            open_url(f"http://127.0.0.1:{port}/data.csv")
     assert time.monotonic() - started < 3
 
 
 def test_a_body_that_stalls_ends_in_an_error(loopback_is_public, short_timeout):
     with server(stall_mid_body) as (port, _):
-        res = open_public_url(f"http://127.0.0.1:{port}/data.csv")
+        res = open_url(f"http://127.0.0.1:{port}/data.csv")
         started = time.monotonic()
         with pytest.raises(requests.ConnectionError, match="timed out"):
             read_all(res)

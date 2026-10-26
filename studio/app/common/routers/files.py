@@ -26,6 +26,7 @@ from studio.app.common.core.cloud.storage_tracking import (
     get_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import (
     InputFileLock,
     RemoteStorageController,
@@ -37,7 +38,7 @@ from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
-from studio.app.common.core.utils.public_url import open_public_url
+from studio.app.common.core.utils.public_url import open_url
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -1001,7 +1002,10 @@ async def download_file(
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         try:
-            res = await asyncio.to_thread(open_public_url, file.url)
+            # Standalone: the user owns the server, and may fetch from their LAN
+            res = await asyncio.to_thread(
+                open_url, file.url, public_only=MODE.IS_MULTIUSER
+            )
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
 
