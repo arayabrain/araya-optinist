@@ -4,6 +4,7 @@ Unit tests for POST /log-report/frontend-errors endpoint.
 Tests the endpoint handler, rate limiting, and stale entry cleanup.
 """
 
+import json
 import time
 from unittest.mock import MagicMock, patch
 
@@ -11,10 +12,13 @@ import pytest
 
 from studio.app.common.core.utils.log_reader import FRONTEND_LOG_PREFIX
 from studio.app.common.routers.log_report import (
+    _CSP_REPORTS_PER_WINDOW,
     FrontendErrorBatch,
     FrontendErrorItem,
     _cleanup_stale_rate_limits,
+    _csp_report_timestamps,
     _frontend_error_timestamps,
+    log_csp_report,
     log_frontend_errors,
 )
 
@@ -30,8 +34,10 @@ def mock_user():
 @pytest.fixture(autouse=True)
 def clear_rate_limiter():
     _frontend_error_timestamps.clear()
+    _csp_report_timestamps.clear()
     yield
     _frontend_error_timestamps.clear()
+    _csp_report_timestamps.clear()
 
 
 def _make_batch(count=1, level="error"):
@@ -202,3 +208,56 @@ class TestFrontendErrorValidation:
             ]
         )
         assert len(batch.errors) == 20
+
+
+def _csp_request(body: bytes):
+    request = MagicMock()
+
+    async def stream():
+        yield body
+
+    request.stream = stream
+    return request
+
+
+def _csp_body(**report) -> bytes:
+    return json.dumps({"csp-report": report}).encode()
+
+
+class TestLogCspReport:
+    @pytest.mark.asyncio
+    async def test_logs_the_violation_without_query_strings(self):
+        body = _csp_body(
+            **{
+                "effective-directive": "script-src-elem",
+                "blocked-uri": "https://evil.example/x.js?token=1",
+                "document-uri": "https://www.araya-optinist.com/a?email=a@b.c",
+                "line-number": 3,
+            }
+        )
+        with patch("studio.app.common.routers.log_report.logger") as log:
+            response = await log_csp_report(_csp_request(body))
+
+        assert response.status_code == 204
+        message = log.warning.call_args.args[1]
+        assert "script-src-elem" in message
+        assert "https://evil.example/x.js'" in message
+        assert "email" not in message and "token" not in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"other": 1}', b"x" * 9000])
+    async def test_malformed_or_oversized_reports_are_dropped(self, body):
+        with patch("studio.app.common.routers.log_report.logger") as log:
+            response = await log_csp_report(_csp_request(body))
+
+        assert response.status_code == 204
+        log.warning.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reports_past_the_window_cap_are_dropped(self):
+        body = _csp_body(**{"violated-directive": "img-src"})
+        with patch("studio.app.common.routers.log_report.logger") as log:
+            for _ in range(_CSP_REPORTS_PER_WINDOW + 5):
+                await log_csp_report(_csp_request(body))
+
+        assert log.warning.call_count == _CSP_REPORTS_PER_WINDOW

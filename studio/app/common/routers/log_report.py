@@ -1,7 +1,10 @@
+import json
 import time
+from collections import deque
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
@@ -10,6 +13,8 @@ from studio.app.common.core.utils.log_reader import FRONTEND_LOG_PREFIX
 from studio.app.common.schemas.users import User
 
 router = APIRouter(prefix="/log-report", tags=["logs"])
+# Browsers send CSP reports without credentials, so this one is unauthenticated.
+csp_router = APIRouter(prefix="/log-report", tags=["logs"])
 
 logger = AppLogger.get_logger()
 
@@ -100,3 +105,57 @@ async def log_frontend_errors(
 
     _frontend_error_timestamps[user_id] = timestamps
     return {"count": count}
+
+
+_MAX_CSP_REPORT_BYTES = 8192
+_MAX_CSP_FIELD_LENGTH = 300
+# Process-wide, not per client: behind the ALB every request shares its address.
+_CSP_REPORTS_PER_WINDOW = 60
+_csp_report_timestamps: deque = deque()
+
+
+def _csp_field(value) -> str:
+    """Query strings can carry personal data (``/account-manager?email=``)."""
+    text = str(value)
+    if "://" in text:
+        text = urlsplit(text)._replace(query="", fragment="").geturl()
+    return text[:_MAX_CSP_FIELD_LENGTH]
+
+
+@csp_router.post("/csp", status_code=status.HTTP_204_NO_CONTENT)
+async def log_csp_report(request: Request):
+    """Log Content-Security-Policy violation reports sent by the browser."""
+    no_content = Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    now = time.time()
+    while _csp_report_timestamps and now - _csp_report_timestamps[0] >= (
+        _RATE_LIMIT_WINDOW
+    ):
+        _csp_report_timestamps.popleft()
+    if len(_csp_report_timestamps) >= _CSP_REPORTS_PER_WINDOW:
+        return no_content
+    _csp_report_timestamps.append(now)
+
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > _MAX_CSP_REPORT_BYTES:
+            return no_content
+    try:
+        report = json.loads(body)["csp-report"]
+        fields = {
+            "directive": report.get("effective-directive")
+            or report.get("violated-directive"),
+            "blocked": report.get("blocked-uri"),
+            "document": report.get("document-uri"),
+            "source": report.get("source-file"),
+            "line": report.get("line-number"),
+        }
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return no_content
+
+    logger.warning(
+        "[CSP] %s",
+        " ".join(f"{k}={_csp_field(v)!r}" for k, v in fields.items() if v),
+    )
+    return no_content
