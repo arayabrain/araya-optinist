@@ -1,6 +1,8 @@
 import copy
 import io
 import pickle
+import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -110,6 +112,33 @@ def test_ellipse_pixels_match_the_dense_mask_on_square_frames():
     np.testing.assert_array_equal(
         ellipse_pixels(shape, pos), np.flatnonzero(distance <= 1)
     )
+
+
+def full_frame_ellipse(shape, x, y, width, height):
+    """The ellipse over the whole frame, as EditROI computed it before."""
+    yy, xx = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    distance = ((xx - x) / (width / 2)) ** 2 + ((yy - y) / (height / 2)) ** 2
+    return np.flatnonzero(distance <= 1)
+
+
+@pytest.mark.parametrize("shape", [(7, 5), (6, 9)])
+def test_ellipse_pixels_equal_the_full_frame_computation(shape):
+    rng = np.random.default_rng(3)
+    for _ in range(300):  # inside, across the edges and outside the frame
+        x, y = (int(v) for v in rng.integers(-5, 13, 2))
+        width, height = (int(v) for v in rng.integers(1, 9, 2))
+        pos = RoiPos(posx=x, posy=y, sizex=width, sizey=height)
+        np.testing.assert_array_equal(
+            ellipse_pixels(shape, pos), full_frame_ellipse(shape, x, y, width, height)
+        )
+
+
+def test_an_ellipse_below_one_pixel_has_no_pixels():
+    # RoiPos refuses sizes below 1; a caller passing its own object can not
+    pos = SimpleNamespace(posx=2, posy=2, sizex=0.4, sizey=3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no divide-by-zero warning either
+        assert ellipse_pixels((LY, LX), pos).size == 0
 
 
 def pickled_globals(blob):

@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
@@ -97,11 +98,18 @@ def ellipse_pixels(shape: Tuple[int, int], roi_pos: RoiPos) -> np.ndarray:
         round(roi_pos.sizey),
     )
 
-    yy, xx = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
-
-    # Calculate the distance of each pixel from the center of the ellipse
+    if width < 1 or height < 1:
+        return np.zeros(0, np.int64)
     a = width / 2
     b = height / 2
-    distance = ((xx - x) / a) ** 2 + ((yy - y) / b) ** 2
 
-    return np.flatnonzero(distance <= 1)
+    # only the ellipse's bounding box, clipped to the frame, can hold its pixels
+    rows = np.arange(max(0, math.floor(y - b)), min(shape[0], math.ceil(y + b) + 1))
+    cols = np.arange(max(0, math.floor(x - a)), min(shape[1], math.ceil(x + a) + 1))
+    yy, xx = np.meshgrid(rows, cols, indexing="ij")
+
+    # Calculate the distance of each pixel from the center of the ellipse
+    distance = ((xx - x) / a) ** 2 + ((yy - y) / b) ** 2
+    inside = distance <= 1
+
+    return np.ravel_multi_index((yy[inside], xx[inside]), shape)

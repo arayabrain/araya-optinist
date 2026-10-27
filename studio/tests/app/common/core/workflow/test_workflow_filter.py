@@ -216,6 +216,43 @@ def test_a_rerun_voids_the_filter_backup_so_the_next_filter_starts_from_the_new_
     assert filtered["fluorescence"].data.min() >= 1000
 
 
+@pytest.mark.parametrize("with_dff", [True])
+def test_a_filter_converts_an_older_node_backup_once(
+    ran_node_dir, with_dff, monkeypatch
+):
+    # the node's pickle as an older release wrote it: the stack in `im`
+    pkl = f"{ran_node_dir}/caiman_cnmf.pkl"
+    output = PickleReader.read(pkl)
+    data = output["edit_roi_data"]
+    rois = data.roi_masks.label_image()
+    data.roi_masks = np.stack([data.roi_masks.label_image([i]) for i in range(3)])
+    PickleWriter.write(pkl, output)
+
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    first = PickleReader.read(pkl)
+
+    # the backup holds pixel lists from then on: no second conversion
+    backup = PickleReader.read(f"{pkl}{ORIGINAL_DATA_EXT}")
+    assert backup["edit_roi_data"]._stack is None
+    assert glob(f"{ran_node_dir}/*.tmp") == []
+
+    def converted_again(cls, stack):
+        pytest.fail("the backup's stack was converted again")
+
+    monkeypatch.setattr(RoiMasks, "from_stack", classmethod(converted_again))
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    second = PickleReader.read(pkl)
+    for key in ("cell_roi", "non_cell_roi", "all_roi"):
+        np.testing.assert_array_equal(second[key].data, first[key].data)
+
+    # a reset restores the backup: the same ROIs, as pixel lists
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(None)
+    restored = PickleReader.read(pkl)
+    np.testing.assert_array_equal(
+        restored["edit_roi_data"].roi_masks.label_image(), rois
+    )
+
+
 def reachable_strings(obj, seen=None):
     """Every string, paths included, that an unpickled object graph holds."""
     seen = set() if seen is None else seen

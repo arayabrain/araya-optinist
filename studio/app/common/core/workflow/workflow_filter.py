@@ -1,5 +1,6 @@
 import copy
 import os
+import pickle
 import shutil
 from glob import glob
 from typing import Optional
@@ -73,6 +74,8 @@ class WorkflowNodeDataFilter:
 
             # filter_data works on a copy of its own
             original_output_info = PickleReader.read(self.original_pkl_filepath)
+            if original_output_info["edit_roi_data"].convert_legacy_stack():
+                self._rewrite_backup(original_output_info)
             filtered_output_info = self.filter_data(
                 original_output_info,
                 params,
@@ -127,6 +130,17 @@ class WorkflowNodeDataFilter:
             shutil.copytree(
                 self.dff_dirpath, self.original_dff_dirpath, dirs_exist_ok=True
             )
+
+    def _rewrite_backup(self, output_info):
+        """Replace the backup in one step, so a failed write keeps the old one."""
+        tmp_path = f"{self.original_pkl_filepath}.tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                pickle.dump(output_info, f)
+            os.replace(tmp_path, self.original_pkl_filepath)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def _recover_original_data(self):
         logger = AppLogger.get_logger()
