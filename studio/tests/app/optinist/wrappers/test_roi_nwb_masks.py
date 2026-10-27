@@ -13,8 +13,13 @@ from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.dataclass import ImageData
 from studio.app.dir_path import CORE_PARAM_PATH
 from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi.utils import set_nwbfile
+from studio.app.optinist.core.nwb import nwb_creater
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
-from studio.app.optinist.core.nwb.nwb_creater import save_nwb
+from studio.app.optinist.core.nwb.nwb_creater import (
+    overwrite_nwb,
+    overwrite_nwbfile,
+    save_nwb,
+)
 from studio.app.optinist.dataclass import EditRoiData
 from studio.app.optinist.dataclass.roi import (
     RoiMasks,
@@ -74,7 +79,11 @@ def write_and_read(tmp_path, images, nwb_config, image_mask=False):
     input_config["image_series"]["external_file"] = images
     path = str(tmp_path / "func.nwb")
     save_nwb(path, input_config, nwb_config)
+    return read_back(path, nwb_config, image_mask)
 
+
+def read_back(path, nwb_config, image_mask=False):
+    """Validate the NWB file at path and read it back as write_and_read does."""
     errors, status = validate(paths=[path])
     assert status == 0
     assert [str(e) for e in errors if any(k in str(e) for k in CHECKED)] == []
@@ -216,6 +225,65 @@ def test_the_setting_adds_caimans_dense_image_masks(
         expected = A[:, comp].reshape((H, W), order="F").astype(np.float32)
         np.testing.assert_array_equal(image_masks[row], expected)
     assert len(masks) == len(CAIMAN_ROWS)  # pixel masks are kept beside them
+
+
+def test_image_masks_are_drawn_a_buffer_at_a_time(tmp_path, images, monkeypatch):
+    # more ROIs than the buffer: every frame lands in its row, while no draw
+    # holds more than the buffer (a list of every frame doubles the masks' size)
+    monkeypatch.setattr(nwb_creater, "IMAGE_MASK_BUFFER", 2)
+    drawn = []
+    get_data = nwb_creater.ImageMasks._get_data
+
+    def recording(self, selection):
+        frames = get_data(self, selection)
+        drawn.append(len(frames))
+        return frames
+
+    monkeypatch.setattr(nwb_creater.ImageMasks, "_get_data", recording)
+    rng = np.random.default_rng(3)
+    pixels = [rng.choice(H * W, size=5, replace=False) for _ in range(5)]
+    roi_masks = RoiMasks.from_pixels((H, W), pixels)
+    roi_list, expected = [], np.zeros((5, H, W), np.float32)
+    for i in range(5):
+        rows, cols = roi_masks.coords(i)
+        weights = rng.random(rows.size) + 0.1
+        roi_list.append({"pixel_mask": np.array([rows, cols, weights]).T})
+        expected[i, rows, cols] = weights
+    config = caiman_config(
+        "caiman_cnmf_x",
+        roi_masks,
+        roi_list,
+        np.ones(5, int),
+        np.zeros((5, N_TIME)),
+        SAVE_IMAGE_MASK,
+    )
+
+    _, _, image_masks = write_and_read(tmp_path, images, config, image_mask=True)
+
+    np.testing.assert_array_equal(image_masks, expected)
+    assert sum(drawn) == 5 and max(drawn) <= 2
+
+
+@pytest.mark.parametrize("rewrite", ["whole_nwb", "commit_or_filter"])
+def test_image_masks_survive_an_nwb_rewrite(
+    tmp_path, images, caiman_components, rewrite
+):
+    A, roi_masks, iscell, roi_list, F = caiman_components
+    config = caiman_config(
+        "caiman_cnmf_x", roi_masks, roi_list, iscell, F, SAVE_IMAGE_MASK
+    )
+    write_and_read(tmp_path, images, config, image_mask=True)
+    path = str(tmp_path / "func.nwb")
+
+    if rewrite == "whole_nwb":  # an existing whole.nwb: exported with the new tables
+        overwrite_nwbfile(path, config)
+    else:  # an ROI-edit commit or the data filter: written anew from its acquisition
+        overwrite_nwb(config, str(tmp_path), "func.nwb")
+    _, _, image_masks = read_back(path, config, image_mask=True)
+
+    for row, comp in enumerate(CAIMAN_ROWS):
+        expected = A[:, comp].reshape((H, W), order="F").astype(np.float32)
+        np.testing.assert_array_equal(image_masks[row], expected)
 
 
 def test_the_setting_adds_lccds_dense_image_masks(

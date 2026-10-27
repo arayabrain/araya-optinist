@@ -3,6 +3,7 @@ import os
 import shutil
 
 import numpy as np
+from hdmf.data_utils import GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -25,6 +26,9 @@ from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
+# ROI frames an image_mask column holds in memory while it is written
+IMAGE_MASK_BUFFER = 16
+
 
 def _time_first(data, n_roi):
     # a square array counts as (roi, time); its axes cannot be told apart
@@ -34,16 +38,39 @@ def _time_first(data, n_roi):
     return data
 
 
-def _with_image_mask(roi: dict, shape) -> dict:
-    """The ROI row with a dense float32 image_mask drawn from its pixel_mask,
-    (row, column, weight); a row that has no pixel_mask or has an image_mask
-    already is kept as it is."""
-    if "pixel_mask" not in roi or "image_mask" in roi:
-        return roi
-    pixels = np.asarray(roi["pixel_mask"], dtype=float).reshape(-1, 3)
-    image_mask = np.zeros(shape, dtype=np.float32)
-    image_mask[pixels[:, 0].astype(int), pixels[:, 1].astype(int)] = pixels[:, 2]
-    return {**roi, "image_mask": image_mask}
+class ImageMasks(GenericDataChunkIterator):
+    """
+    A dense float32 image_mask per ROI, drawn from its (row, column, weight)
+    pixel_mask only as its chunk is written: the file gets ROIs x H x W, while
+    memory holds a buffer of IMAGE_MASK_BUFFER frames.
+    """
+
+    def __init__(self, pixel_masks: list, shape):
+        self._pixel_masks = pixel_masks
+        self._shape = tuple(shape)
+        buffer = min(IMAGE_MASK_BUFFER, len(pixel_masks))
+        super().__init__(
+            chunk_shape=(1, *self._shape), buffer_shape=(buffer, *self._shape)
+        )
+
+    def __len__(self):
+        # DynamicTable.add_column checks the column's length against the rows
+        return len(self._pixel_masks)
+
+    def _get_data(self, selection):
+        rois = range(len(self._pixel_masks))[selection[0]]
+        frames = np.zeros((len(rois), *self._shape), dtype=np.float32)
+        for k, i in enumerate(rois):
+            pixels = np.asarray(self._pixel_masks[i], dtype=float).reshape(-1, 3)
+            rows, cols = pixels[:, 0].astype(int), pixels[:, 1].astype(int)
+            frames[k, rows, cols] = pixels[:, 2]
+        return frames[(slice(None), *selection[1:])]
+
+    def _get_maxshape(self):
+        return (len(self._pixel_masks), *self._shape)
+
+    def _get_dtype(self):
+        return np.dtype("float32")
 
 
 class NWBCreater:
@@ -230,9 +257,6 @@ class NWBCreater:
         image_seg = nwbfile.processing["ophys"].data_interfaces["ImageSegmentation"]
         plane_seg = image_seg.plane_segmentations[function_id]
 
-        if image_mask_shape is not None:
-            roi_list = [_with_image_mask(roi, image_mask_shape) for roi in roi_list]
-
         if roi_list:
             for col in roi_list[0]:
                 if col != "pixel_mask" and col not in plane_seg.colnames:
@@ -240,6 +264,21 @@ class NWBCreater:
 
         for col in roi_list:
             plane_seg.add_roi(**col)
+
+        # dense masks for every row, unless the rows carry their own (older configs)
+        if (
+            image_mask_shape is not None
+            and roi_list
+            and all("pixel_mask" in roi and "image_mask" not in roi for roi in roi_list)
+        ):
+            plane_seg.add_column(
+                name="image_mask",
+                description="Image masks for each ROI",
+                data=ImageMasks(
+                    [roi["pixel_mask"] for roi in roi_list], image_mask_shape
+                ),
+                check_ragged=False,
+            )
 
         return nwbfile
 
