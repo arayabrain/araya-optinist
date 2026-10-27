@@ -9,7 +9,8 @@
   instance has booted.
 - Base premium instance: termination protection, with Terraform still able
   to replace it.
-- Uvicorn workers: each workflow task definition sets its own count.
+- Uvicorn workers: every task definition that starts cloud-startup.sh sets
+  its own count (the public and background ones live in their own files).
 """
 
 import re
@@ -186,16 +187,22 @@ class TestBasePremiumInstanceProtection:
 
 
 class TestUvicornWorkers:
-    """The workflow task definitions set their uvicorn worker count."""
+    """Every task definition that starts cloud-startup.sh sets its worker count."""
 
     @pytest.mark.parametrize(
-        "task_definition,workers", [("autoscaling", "3"), ("premium", "2")]
+        "tf_file,task_definition,workers",
+        [
+            ("compute.tf", "autoscaling", "3"),
+            ("compute.tf", "premium", "2"),
+            ("public_service.tf", "public", "1"),
+            ("background_service.tf", "background", "1"),
+        ],
     )
-    def test_worker_count_is_explicit(self, task_definition, workers):
+    def test_worker_count_is_explicit(self, tf_file, task_definition, workers):
         """Unset, cloud-startup.sh's default would apply; each worker holds a
-        full app process out of the memory the workflows share."""
+        full app process out of the memory the instance shares."""
         block = resource_block(
-            read(COMPUTE_TF), "aws_ecs_task_definition", task_definition
+            read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
         )
         values = re.findall(
             r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
