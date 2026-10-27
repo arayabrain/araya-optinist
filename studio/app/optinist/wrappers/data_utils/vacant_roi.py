@@ -5,7 +5,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_images, nwb_all_roi_img
+from studio.app.optinist.dataclass.roi import RoiMasks, edit_images, nwb_roi_label_image
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -37,9 +37,7 @@ def vacant_roi(
     nwbfile = kwargs.get("nwbfile", {})
     logger.debug(f"nwbfile: {nwbfile}")
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {
-        function_id: {"all_roi_img": nwb_all_roi_img(empty_roi)}
-    }
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(empty_roi)}
 
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {

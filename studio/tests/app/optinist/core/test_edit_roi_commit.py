@@ -203,5 +203,5 @@ def test_a_commit_exports_the_rate_and_pixel_masks_to_nwb(tmp_path, commit):
     expected = [[0, col, 1.0] for col in range(SHAPE[1])]
     np.testing.assert_array_equal(mask, expected)
     # and the label image of every ROI, after the edit
-    all_roi_img = nwbfile[NWBDATASET.POSTPROCESS]["node"]["all_roi_img"]
-    np.testing.assert_array_equal(all_roi_img, data.roi_masks.label_image()[None])
+    label_img = nwbfile[NWBDATASET.POSTPROCESS]["node"]["all_roi_label_img"]
+    np.testing.assert_array_equal(label_img, data.roi_masks.label_image()[None])

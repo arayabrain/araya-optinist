@@ -17,7 +17,11 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import CANNOT_MAP, iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference, nwb_all_roi_img
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    edit_reference,
+    nwb_roi_label_image,
+)
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     cnn_crops_copied,
@@ -625,9 +629,7 @@ def caiman_cnmf(
     nwbfile = {}
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
     all_roi = roi_masks.label_image()
-    nwbfile[NWBDATASET.POSTPROCESS] = {
-        function_id: {"all_roi_img": nwb_all_roi_img(all_roi)}
-    }
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 
     # Add iscell to NWB
     nwbfile[NWBDATASET.COLUMN] = {

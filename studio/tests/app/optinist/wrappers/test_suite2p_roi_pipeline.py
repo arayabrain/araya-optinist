@@ -357,9 +357,9 @@ def test_a_pre_upgrade_registration_pickle_is_accepted(
     assert info["edit_roi_data"].images.path == [str(tmp_path / "old.tif")]
 
 
-def _all_roi_img(info):
+def _label_img(info):
     (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
-    return postprocess["all_roi_img"]
+    return postprocess["all_roi_label_img"]
 
 
 def _run(tmp_path, output_dir):
@@ -382,6 +382,6 @@ def test_the_rois_are_kept_as_pixel_lists_and_no_stack_is_written(
     for i in range(len(stat)):
         np.testing.assert_array_equal(roi_masks.label_image([i]), stack[i])
     all_roi = np.nanmax(stack, axis=0, initial=np.nan)
-    np.testing.assert_array_equal(_all_roi_img(info), all_roi[np.newaxis])
+    np.testing.assert_array_equal(_label_img(info), all_roi[np.newaxis])
     np.testing.assert_array_equal(info["all_roi"].data, all_roi)
     assert not os.path.exists(f"{output_dir}/roi_mask_stack.npy")

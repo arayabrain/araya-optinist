@@ -8,7 +8,11 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import open_frames
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference, nwb_all_roi_img
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    edit_reference,
+    nwb_roi_label_image,
+)
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -249,9 +253,7 @@ def caiman_cnmf_multisession(
         roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {
-        function_id: {"all_roi_img": nwb_all_roi_img(all_roi)}
-    }
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 
     # iscellを追加
     nwbfile[NWBDATASET.COLUMN] = {

@@ -12,9 +12,9 @@ def max_projection(rois):
 
 def all_roi_image(rois):
     """
-    The all-ROI image of an NWB all_roi_img: a label image (each pixel its
-    highest ROI; one (1, H, W) layer, or 2D), or the per-ROI stack files
-    written before label images hold, max-projected.
+    The all-ROI image of an NWB all_roi_label_img, a label image (each pixel its
+    highest ROI; one (1, H, W) layer, or 2D), or of the per-ROI all_roi_img
+    stack that files written before hold, max-projected.
     """
     return rois if rois.ndim == 2 else np.nanmax(rois, axis=0)
 

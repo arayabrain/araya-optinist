@@ -244,13 +244,13 @@ class RoiMasks:
         return {"shape": self.shape, "indptr": self.indptr, "indices": self.indices}
 
 
-def nwb_all_roi_img(label_image: np.ndarray) -> np.ndarray:
+def nwb_roi_label_image(label_image: np.ndarray) -> dict:
     """
-    The NWB all_roi_img: the all-ROI label image as one (1, H, W) layer. An HDF5
-    input reads a rank-3 dataset as ImageData, which roi_from_hdf5 takes; a 2D
-    one would read as FluoData.
+    The NWB postprocess entry of the all-ROI label image, all_roi_label_img, as
+    one (1, H, W) layer. An HDF5 input reads a rank-3 dataset as ImageData, which
+    roi_from_hdf5 takes; a 2D one would read as FluoData.
     """
-    return label_image[np.newaxis]
+    return {"all_roi_label_img": label_image[np.newaxis]}
 
 
 class EditRoiData(BaseData):

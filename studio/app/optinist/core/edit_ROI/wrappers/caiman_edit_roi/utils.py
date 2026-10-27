@@ -1,7 +1,7 @@
 import numpy as np
 
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
-from studio.app.optinist.dataclass.roi import EditRoiData, nwb_all_roi_img
+from studio.app.optinist.dataclass.roi import EditRoiData, nwb_roi_label_image
 
 
 def set_nwbfile(
@@ -56,7 +56,7 @@ def set_nwbfile(
     # NWB追加
     nwbfile[NWBDATASET.POSTPROCESS] = {
         function_id: {
-            "all_roi_img": nwb_all_roi_img(roi_masks.label_image()),
+            **nwb_roi_label_image(roi_masks.label_image()),
             "add_roi": edit_roi_data.add_roi,
             "delete_roi": edit_roi_data.delete_roi,
             "merge_roi": edit_roi_data.merge_roi,
