@@ -1,246 +1,239 @@
-"""The run-start gate against the plan's concurrent-run limit, and its lease.
+"""The plan's concurrent-run limit, and the release rules of the run count.
 
-- the gate is one conditional UPDATE: check and increment cannot be split by
-  a second start (the two-connection race is in the opt-in
-  ``test_workflow_count_integration.py``)
-- a row whose lease has expired has no run alive, so its count never keeps a
-  user out
-- a count is released from the table it was taken on, and only once
+- a start takes a slot under its user's row lock; at the limit it is refused
+  (the two-connection race is in the opt-in ``test_workflow_count_integration.py``)
+- a slot not renewed within the TTL belongs to a dead run and is not counted
+- a run renews and deletes only its own slot; ``active_workflow_count``, which
+  cleanup and scale-in read, is never reset by the gate
+- the count's release goes to the row the run was counted on, following the
+  upgrade hand-over
 - the limit comes from the user's plan (NULL = no limit), failing open
 """
 
+import asyncio
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.dialects import mysql
 
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
+from studio.app.common.core.workflow.workflow_concurrency import (
+    WORKFLOW_CONCURRENCY_LIMIT_CODE,
+    WORKFLOW_SLOT_TTL_SECONDS,
+    ConcurrencyLimit,
+    WorkflowConcurrencyLimitError,
+    _delete_stale_slots,
+    _get_concurrency_limit,
+    acquire_workflow_slot,
+    release_workflow_slot,
+    renew_workflow_slot,
+)
 from studio.app.common.core.workflow.workflow_tracking import (
     TIER_FREE,
     TIER_PREMIUM,
-    WORKFLOW_CONCURRENCY_LIMIT_CODE,
-    WORKFLOW_LEASE_TTL_SECONDS,
-    ConcurrencyLimit,
-    WorkflowConcurrencyLimitError,
-    _get_concurrency_limit,
     decrement_workflow_count,
     increment_workflow_count,
-    renew_workflow_lease,
 )
 from studio.app.common.models import FreeUserAssignment, PremiumUserAssignment
 
-MODULE = "studio.app.common.core.workflow.workflow_tracking"
+CONCURRENCY = "studio.app.common.core.workflow.workflow_concurrency"
+TRACKING = "studio.app.common.core.workflow.workflow_tracking"
 
 USER_ID = 4321
-HOST = "i-0abc123def4567890"
+SLOT_ID = 77
 FREE_LIMIT = ConcurrencyLimit("Free", 2, "Premium")
 
 
+def _compiled(statement):
+    return statement.compile(dialect=mysql.dialect())
+
+
 def _sql(statement):
-    return " ".join(str(statement.compile(dialect=mysql.dialect())).split())
+    return " ".join(str(_compiled(statement)).split())
 
 
-def _start(
-    limit=FREE_LIMIT,
-    tier=TIER_FREE,
-    has_free_record=True,
-    has_premium_record=False,
-    rowcount=1,
-    active=2,
-    execute_error=None,
-):
-    """Run increment_workflow_count against a mock session.
+def _statements(session):
+    return [call.args[0] for call in session.execute.call_args_list]
 
-    Returns (outcome, raised, session): outcome is the returned tier, raised
-    the exception, if any.
+
+def _acquire(limit=FREE_LIMIT, active=0, execute_error=None, user_id=USER_ID):
+    """Run acquire_workflow_slot against a mock session.
+
+    Returns (outcome, raised, session, delete_stale).
     """
-    with patch(f"{MODULE}._get_user_tier") as get_tier, patch(
-        f"{MODULE}.session_scope"
-    ) as session_scope, patch(f"{MODULE}.MODE") as mode, patch(
-        f"{MODULE}._execution_host", return_value=HOST
+    with patch(f"{CONCURRENCY}.session_scope") as session_scope, patch(
+        f"{CONCURRENCY}.MODE"
+    ) as mode, patch(
+        f"{CONCURRENCY}._get_concurrency_limit", return_value=limit
     ), patch(
-        f"{MODULE}._get_concurrency_limit", return_value=limit
-    ):
+        f"{CONCURRENCY}._delete_stale_slots"
+    ) as delete_stale:
         mode.IS_STANDALONE = False
-        get_tier.return_value = (tier, has_free_record, has_premium_record)
-
         session = MagicMock()
-        update_result = MagicMock(rowcount=rowcount)
-        read_back = MagicMock()
-        read_back.scalar_one_or_none.return_value = active
-        session.execute.side_effect = execute_error or [update_result, read_back]
+        count = MagicMock()
+        count.scalar_one.return_value = active
+        inserted = MagicMock(inserted_primary_key=[SLOT_ID])
+        session.execute.side_effect = execute_error or [MagicMock(), count, inserted]
         session_scope.return_value.__enter__.return_value = session
 
         outcome, raised = None, None
         try:
-            outcome = increment_workflow_count(USER_ID)
+            outcome = acquire_workflow_slot(user_id, "1", "exp1")
         except Exception as e:  # noqa: BLE001 - inspected by the caller
             raised = e
 
-    return outcome, raised, session
+    return outcome, raised, session, delete_stale
 
 
-def _update_sql(session):
-    return _sql(session.execute.call_args_list[0].args[0])
+class TestTheGate:
+    def test_the_start_locks_its_users_row_first(self):
+        _, _, session, _ = _acquire()
 
+        lock = _statements(session)[0]
+        sql = _sql(lock)
+        assert sql.startswith("SELECT users.id FROM users WHERE users.id = ")
+        assert sql.endswith("FOR UPDATE")
+        assert USER_ID in _compiled(lock).params.values()
 
-def _where(sql):
-    return sql[sql.upper().index(" WHERE ") :].strip()
+    def test_the_count_is_the_users_live_slots_on_the_database_clock(self):
+        _, _, session, _ = _acquire()
 
-
-def _set(sql):
-    upper = sql.upper()
-    return sql[upper.index(" SET ") : upper.index(" WHERE ")]
-
-
-class TestTheGateStatement:
-    def test_with_a_limit_the_update_matches_only_below_it_or_with_a_stale_lease(
-        self,
-    ):
-        _, _, session = _start()
-
-        where = _where(_update_sql(session))
-        assert "free_user_assignments.active_workflow_count < " in where
-        assert "free_user_assignments.last_workflow_heartbeat IS NULL" in where
-        assert "free_user_assignments.last_workflow_heartbeat < date_sub(now()" in (
-            where
-        )
-        compiled = (
-            session.execute.call_args_list[0].args[0].compile(dialect=mysql.dialect())
-        )
-        assert FREE_LIMIT.limit in compiled.params.values()
-
-    def test_the_lease_is_judged_on_the_database_clock_with_the_ttl(self):
-        _, _, session = _start()
-
-        assert f"INTERVAL {WORKFLOW_LEASE_TTL_SECONDS} SECOND" in _update_sql(session)
-
-    def test_a_stale_lease_restarts_the_count_at_this_run(self):
-        _, _, session = _start()
-
-        values = _set(_update_sql(session))
-        count = values.split("active_workflow_count=", 1)[1]
-        assert count.startswith(
-            "CASE WHEN (free_user_assignments.last_workflow_heartbeat IS NULL"
-        )
-        assert "THEN %s ELSE free_user_assignments.active_workflow_count + %s" in (
-            count
-        )
-
-    def test_the_start_renews_the_lease(self):
-        _, _, session = _start()
-
-        assert "last_workflow_heartbeat=now()" in _set(_update_sql(session))
-
-    def test_each_case_is_assigned_before_the_columns_it_reads(self):
-        """MySQL assigns SET left to right; a CASE placed after the count or the
-        heartbeat would read this run's own new values."""
-        _, _, session = _start()
-
-        values = _set(_update_sql(session))
+        sql = _sql(_statements(session)[1])
+        assert "count(*)" in sql
+        assert "FROM workflow_run_slots" in sql
+        assert "workflow_run_slots.user_id = " in sql
         assert (
-            values.index("instance_id=")
-            < values.index("active_workflow_count=")
-            < values.index("last_workflow_heartbeat=")
+            "workflow_run_slots.heartbeat_at >= "
+            f"date_sub(now(), INTERVAL {WORKFLOW_SLOT_TTL_SECONDS} SECOND)" in sql
         )
 
-    def test_the_pin_moves_to_this_host_when_the_lease_is_stale(self):
-        _, _, session = _start()
+    def test_the_count_takes_no_lock(self):
+        """A locking read takes gap locks that other users' starts could
+        deadlock on; the users row lock already serialises this user."""
+        _, _, session, _ = _acquire()
 
-        pin = _set(_update_sql(session)).split("instance_id=", 1)[1]
-        assert pin.startswith(
-            "CASE WHEN (free_user_assignments.active_workflow_count > %s AND NOT "
-            "(free_user_assignments.last_workflow_heartbeat IS NULL"
-        )
+        sql = _sql(_statements(session)[1]).upper()
+        assert "FOR UPDATE" not in sql
+        assert "SHARE" not in sql
 
-    def test_without_a_limit_nothing_is_refused(self):
-        _, _, session = _start(limit=None)
-
-        sql = _update_sql(session)
-        assert _where(sql) == "WHERE free_user_assignments.user_id = %s"
-        assert "active_workflow_count=(free_user_assignments" in sql
-        assert "last_workflow_heartbeat=now()" in sql
-
-    def test_the_premium_table_is_gated_the_same_way(self):
-        _, _, session = _start(
-            tier=TIER_PREMIUM, has_free_record=False, has_premium_record=True
-        )
-
-        sql = _update_sql(session)
-        assert sql.startswith(f"UPDATE {PremiumUserAssignment.__tablename__} ")
-        assert "premium_user_assignments.active_workflow_count < " in _where(sql)
-
-
-class TestTheGateOutcome:
-    def test_a_counted_start_returns_its_tier(self):
-        outcome, raised, session = _start()
+    def test_below_the_limit_a_slot_is_inserted_and_returned(self):
+        outcome, raised, session, delete_stale = _acquire(active=1)
 
         assert raised is None
-        assert outcome == TIER_FREE
-        session.commit.assert_called_once()
-
-    def test_a_premium_start_returns_the_premium_tier(self):
-        outcome, _, _ = _start(
-            tier=TIER_PREMIUM, has_free_record=False, has_premium_record=True
-        )
-
-        assert outcome == TIER_PREMIUM
+        assert outcome == SLOT_ID
+        insert = _statements(session)[2]
+        assert _sql(insert).startswith("INSERT INTO workflow_run_slots ")
+        assert {USER_ID, "1", "exp1"} <= set(_compiled(insert).params.values())
+        delete_stale.assert_called_once_with(USER_ID)
 
     def test_at_the_limit_the_start_is_refused_with_the_running_count(self):
-        _, raised, session = _start(rowcount=0, active=2)
+        outcome, raised, session, delete_stale = _acquire(active=2)
 
         assert isinstance(raised, WorkflowConcurrencyLimitError)
         assert raised.active == 2
         assert raised.limit == FREE_LIMIT
-        session.commit.assert_not_called()
+        assert len(_statements(session)) == 2, "nothing inserted"
+        delete_stale.assert_not_called()
 
-    def test_a_refused_start_never_falls_back_to_the_other_table(self):
-        """Counting on the other row would step around the limit."""
-        _, raised, session = _start(
-            rowcount=0, has_free_record=True, has_premium_record=True
-        )
-
-        assert isinstance(raised, WorkflowConcurrencyLimitError)
-        tables = [
-            call.args[0].table.name
-            for call in session.execute.call_args_list
-            if hasattr(call.args[0], "table")
-        ]
-        assert PremiumUserAssignment.__tablename__ not in tables
-
-    def test_a_row_gone_without_a_limit_is_not_a_refusal(self):
-        outcome, raised, _ = _start(limit=None, rowcount=0, active=None)
-
-        assert raised is None
-        assert outcome is None
-
-    def test_a_database_error_lets_the_run_start_uncounted(self):
-        outcome, raised, _ = _start(execute_error=RuntimeError("db unreachable"))
-
-        assert raised is None
-        assert outcome is None
-
-    def test_a_user_without_an_assignment_row_is_not_gated(self):
-        with patch(f"{MODULE}._get_concurrency_limit") as lookup:
-            outcome, raised, session = _start(
-                has_free_record=False, has_premium_record=False
-            )
+    def test_without_a_limit_no_slot_is_taken(self):
+        outcome, raised, session, _ = _acquire(limit=None)
 
         assert (outcome, raised) == (None, None)
         session.execute.assert_not_called()
+
+    def test_a_database_error_lets_the_run_start_without_a_slot(self):
+        outcome, raised, _, _ = _acquire(execute_error=RuntimeError("db down"))
+
+        assert (outcome, raised) == (None, None)
+
+    def test_a_start_without_a_user_takes_no_slot(self):
+        outcome, raised, session, _ = _acquire(user_id=None)
+
+        assert (outcome, raised) == (None, None)
+        session.execute.assert_not_called()
+
+    def test_standalone_takes_no_slot(self):
+        with patch(f"{CONCURRENCY}.MODE") as mode, patch(
+            f"{CONCURRENCY}._get_concurrency_limit"
+        ) as lookup:
+            mode.IS_STANDALONE = True
+            assert acquire_workflow_slot(USER_ID, "1", "exp1") is None
+
         lookup.assert_not_called()
 
-    def test_standalone_is_not_gated(self):
-        with patch(f"{MODULE}.MODE") as mode, patch(
-            f"{MODULE}.session_scope"
-        ) as session_scope:
-            mode.IS_STANDALONE = True
-            assert increment_workflow_count(USER_ID) is None
+
+def _slot_session(operation, *args, execute_error=None):
+    with patch(f"{CONCURRENCY}.session_scope") as session_scope:
+        session = MagicMock()
+        if execute_error:
+            session.execute.side_effect = execute_error
+        session_scope.return_value.__enter__.return_value = session
+        operation(*args)
+    return session
+
+
+class TestASlotIsRenewedAndReleasedByItsRunOnly:
+    def test_a_renewal_writes_its_own_slot(self):
+        session = _slot_session(renew_workflow_slot, SLOT_ID)
+
+        (statement,) = _statements(session)
+        sql = _sql(statement)
+        assert sql.startswith("UPDATE workflow_run_slots SET heartbeat_at=now()")
+        assert sql.endswith("WHERE workflow_run_slots.id = %s")
+        assert SLOT_ID in _compiled(statement).params.values()
+
+    def test_a_release_deletes_its_own_slot(self):
+        session = _slot_session(release_workflow_slot, SLOT_ID)
+
+        (statement,) = _statements(session)
+        assert _sql(statement) == (
+            "DELETE FROM workflow_run_slots WHERE workflow_run_slots.id = %s"
+        )
+        assert SLOT_ID in _compiled(statement).params.values()
+
+    @pytest.mark.parametrize("operation", [renew_workflow_slot, release_workflow_slot])
+    def test_no_slot_writes_nothing(self, operation):
+        with patch(f"{CONCURRENCY}.session_scope") as session_scope:
+            operation(None)
 
         session_scope.assert_not_called()
+
+    @pytest.mark.parametrize("operation", [renew_workflow_slot, release_workflow_slot])
+    def test_a_database_error_does_not_raise(self, operation):
+        _slot_session(operation, SLOT_ID, execute_error=RuntimeError("db down"))
+
+    def test_stale_slots_of_the_user_are_deleted_by_primary_key(self):
+        with patch(f"{CONCURRENCY}.session_scope") as session_scope:
+            session = MagicMock()
+            stale = MagicMock()
+            stale.scalars.return_value.all.return_value = [5, 6]
+            session.execute.side_effect = [stale, MagicMock()]
+            session_scope.return_value.__enter__.return_value = session
+
+            _delete_stale_slots(USER_ID)
+
+        select_stale, delete = _statements(session)
+        assert _sql(select_stale).endswith(
+            "WHERE workflow_run_slots.user_id = %s AND workflow_run_slots.heartbeat_at"
+            f" < date_sub(now(), INTERVAL {WORKFLOW_SLOT_TTL_SECONDS} SECOND)"
+        )
+        assert _sql(delete) == (
+            "DELETE FROM workflow_run_slots WHERE workflow_run_slots.id IN "
+            "(__[POSTCOMPILE_id_1])"
+        )
+
+    def test_no_stale_slot_deletes_nothing(self):
+        with patch(f"{CONCURRENCY}.session_scope") as session_scope:
+            session = MagicMock()
+            session.execute.return_value.scalars.return_value.all.return_value = []
+            session_scope.return_value.__enter__.return_value = session
+
+            _delete_stale_slots(USER_ID)
+
+        assert len(_statements(session)) == 1
 
 
 class TestTheRefusal:
@@ -268,7 +261,7 @@ class TestTheRefusal:
         assert "1 workflow running" in message
         assert "Free plan allows 1 at once" in message
         assert "Wait for one to finish or cancel one" in message
-        assert f"within about {WORKFLOW_LEASE_TTL_SECONDS // 60} minutes" in message
+        assert f"within about {WORKFLOW_SLOT_TTL_SECONDS // 60} minutes" in message
         assert "The Premium plan allows more workflows at once." in message
 
     def test_the_count_is_pluralised(self):
@@ -298,7 +291,7 @@ def _lookup(subscribed_plan=None, plans=(), error=None):
     session = MagicMock()
     session.get.side_effect = lambda _model, plan_id: rows.get(plan_id)
 
-    with patch(f"{MODULE}.session_scope") as session_scope, patch(
+    with patch(f"{CONCURRENCY}.session_scope") as session_scope, patch(
         "studio.app.common.core.subscription.subscription_service."
         "SubscriptionService.get_user_subscription",
         side_effect=error,
@@ -360,8 +353,53 @@ class TestThePlanLimit:
         assert _lookup(error=RuntimeError("db unreachable")) is None
 
 
-class TestReleaseAndRenewTargetTheCountedTable:
-    """The release and the renewal follow the run's count.
+class TestTheCountIsNeverGated:
+    """The gate keeps its state in slots; the count stays plain +1 / -1."""
+
+    @staticmethod
+    def _increment(rowcount=1):
+        with patch(f"{TRACKING}._get_user_tier") as get_tier, patch(
+            f"{TRACKING}.session_scope"
+        ) as session_scope, patch(f"{TRACKING}.MODE") as mode, patch(
+            f"{TRACKING}._execution_host", return_value="i-0abc123def4567890"
+        ):
+            mode.IS_STANDALONE = False
+            get_tier.return_value = (TIER_FREE, True, False)
+            session = MagicMock()
+            session.execute.return_value.rowcount = rowcount
+            session_scope.return_value.__enter__.return_value = session
+            outcome = increment_workflow_count(USER_ID)
+        return outcome, session
+
+    def test_the_increment_returns_its_tier(self):
+        outcome, _ = self._increment()
+
+        assert outcome == TIER_FREE
+
+    def test_the_increment_has_no_condition_beyond_the_user(self):
+        _, session = self._increment()
+
+        sql = _sql(_statements(session)[0])
+        assert sql.endswith("WHERE free_user_assignments.user_id = %s")
+        assert "active_workflow_count=(free_user_assignments.active_workflow_count" in (
+            sql
+        )
+
+    def test_the_pin_is_assigned_before_the_count_it_reads(self):
+        """MySQL assigns SET left to right."""
+        _, session = self._increment()
+
+        sql = _sql(_statements(session)[0])
+        assert sql.index("instance_id=CASE") < sql.index("active_workflow_count=")
+
+    def test_a_row_gone_is_not_counted(self):
+        outcome, _ = self._increment(rowcount=0)
+
+        assert outcome is None
+
+
+class TestTheCountIsReleasedOnTheRowItWasCountedOn:
+    """The release follows the run's count.
 
     - a lapse during the run: the tier now reads free, but the count is on
       the premium row it was counted on
@@ -370,40 +408,32 @@ class TestReleaseAndRenewTargetTheCountedTable:
     """
 
     @staticmethod
-    def _run(operation, *args, tier_now=TIER_FREE, rowcounts=(1,), **kwargs):
-        """Run operation; each UPDATE matches the next of ``rowcounts`` rows.
-
-        Returns (get_tier, session, tables written in order).
-        """
-        with patch(f"{MODULE}._get_user_tier") as get_tier, patch(
-            f"{MODULE}.session_scope"
-        ) as session_scope, patch(f"{MODULE}.MODE") as mode:
+    def _release(*args, tier_now=TIER_FREE, rowcounts=(1,), **kwargs):
+        """decrement_workflow_count; each UPDATE matches the next of
+        ``rowcounts`` rows. Returns (get_tier, session, tables written)."""
+        with patch(f"{TRACKING}._get_user_tier") as get_tier, patch(
+            f"{TRACKING}.session_scope"
+        ) as session_scope, patch(f"{TRACKING}.MODE") as mode:
             mode.IS_STANDALONE = False
             get_tier.return_value = (tier_now, True, True)
             session = MagicMock()
             session.execute.side_effect = [MagicMock(rowcount=n) for n in rowcounts]
             session_scope.return_value.__enter__.return_value = session
 
-            operation(*args, **kwargs)
+            decrement_workflow_count(*args, **kwargs)
 
-        tables = [call.args[0].table.name for call in session.execute.call_args_list]
+        tables = [statement.table.name for statement in _statements(session)]
         return get_tier, session, tables
 
     def test_a_lapsed_plan_releases_the_row_the_run_was_counted_on(self):
-        get_tier, _, tables = self._run(
-            decrement_workflow_count, USER_ID, tier=TIER_PREMIUM
-        )
+        get_tier, _, tables = self._release(USER_ID, tier=TIER_PREMIUM)
 
         assert tables == [PremiumUserAssignment.__tablename__]
         get_tier.assert_not_called()
 
     def test_a_release_follows_the_count_handed_over_on_an_upgrade(self):
-        _, session, tables = self._run(
-            decrement_workflow_count,
-            USER_ID,
-            tier=TIER_FREE,
-            tier_now=TIER_PREMIUM,
-            rowcounts=(0, 1),
+        _, session, tables = self._release(
+            USER_ID, tier=TIER_FREE, tier_now=TIER_PREMIUM, rowcounts=(0, 1)
         )
 
         assert tables == [
@@ -414,100 +444,112 @@ class TestReleaseAndRenewTargetTheCountedTable:
 
     def test_a_premium_count_never_moves_to_the_free_row(self):
         """Premium rows are deleted without a hand-over."""
-        _, session, tables = self._run(
-            decrement_workflow_count, USER_ID, tier=TIER_PREMIUM, rowcounts=(0,)
-        )
+        _, session, tables = self._release(USER_ID, tier=TIER_PREMIUM, rowcounts=(0,))
 
         assert tables == [PremiumUserAssignment.__tablename__]
         session.commit.assert_not_called()
 
     def test_a_release_with_no_row_left_writes_nothing(self):
-        _, session, tables = self._run(
-            decrement_workflow_count, USER_ID, tier=TIER_FREE, rowcounts=(0, 0)
-        )
+        _, session, tables = self._release(USER_ID, tier=TIER_FREE, rowcounts=(0, 0))
 
         assert len(tables) == 2
         session.commit.assert_not_called()
 
     def test_a_release_without_a_tier_resolves_it_as_before(self):
-        get_tier, _, tables = self._run(
-            decrement_workflow_count, USER_ID, tier_now=TIER_PREMIUM
-        )
+        get_tier, _, tables = self._release(USER_ID, tier_now=TIER_PREMIUM)
 
         assert tables == [PremiumUserAssignment.__tablename__]
         get_tier.assert_called_once()
 
-    def test_a_renewal_writes_the_lease_of_the_counted_table(self):
-        _, session, tables = self._run(renew_workflow_lease, USER_ID, TIER_FREE)
 
-        sql = _sql(session.execute.call_args.args[0])
-        assert tables == [FreeUserAssignment.__tablename__]
-        assert "SET last_workflow_heartbeat=now()" in sql
-
-    def test_a_renewal_follows_the_count_handed_over_on_an_upgrade(self):
-        _, _, tables = self._run(
-            renew_workflow_lease, USER_ID, TIER_FREE, rowcounts=(0, 1)
-        )
-
-        assert tables == [
-            FreeUserAssignment.__tablename__,
-            PremiumUserAssignment.__tablename__,
-        ]
-
-    def test_an_uncounted_run_renews_nothing(self):
-        _, session, _ = self._run(renew_workflow_lease, USER_ID, None)
-
-        session.execute.assert_not_called()
-
-    def test_a_failed_renewal_does_not_raise(self):
-        with patch(f"{MODULE}.session_scope") as session_scope, patch(
-            f"{MODULE}.MODE"
-        ) as mode:
-            mode.IS_STANDALONE = False
-            session_scope.return_value.__enter__.side_effect = RuntimeError("down")
-
-            renew_workflow_lease(USER_ID, TIER_FREE)
-
-
-class TestTheExecutorRenewsTheLeaseWhileTheRunLives:
+class TestTheExecutorRenewsTheSlotWhileTheRunLives:
     @staticmethod
     def _wait(results, done=False):
         from studio.app.common.core.snakemake.snakemake_executor import (
-            _wait_renewing_lease,
+            _wait_renewing_slot,
         )
 
         future = MagicMock()
         future.result.side_effect = results
         future.done.return_value = done
-        with patch(f"{MODULE}.renew_workflow_lease") as renew:
+        with patch(f"{CONCURRENCY}.renew_workflow_slot") as renew:
             outcome, raised = None, None
             try:
-                outcome = _wait_renewing_lease(future, USER_ID, TIER_FREE)
+                outcome = _wait_renewing_slot(future, SLOT_ID)
             except Exception as e:  # noqa: BLE001 - inspected by the caller
                 raised = e
         return outcome, raised, renew
 
-    def test_each_wait_that_times_out_renews_the_lease(self):
+    def test_each_wait_that_times_out_renews_the_slot(self):
         outcome, _, renew = self._wait(
             [FutureTimeoutError(), FutureTimeoutError(), "done"]
         )
 
         assert outcome == "done"
         assert renew.call_count == 2
-        renew.assert_called_with(USER_ID, TIER_FREE)
+        renew.assert_called_with(SLOT_ID)
+
+    def test_a_run_finished_after_the_wait_timed_out_keeps_its_result(self):
+        """The future can complete between the timeout and the done() check."""
+        outcome, raised, renew = self._wait([FutureTimeoutError(), "done"], done=True)
+
+        assert raised is None
+        assert outcome == "done"
+        renew.assert_not_called()
 
     def test_a_timeout_raised_by_the_run_itself_is_its_result(self):
-        """Not a wait timeout: looping on it would never end."""
         error = FutureTimeoutError("raised inside the run")
-        _, raised, renew = self._wait([error, "unreachable"], done=True)
+        _, raised, renew = self._wait([error, error], done=True)
 
         assert raised is error
         renew.assert_not_called()
 
-
-class TestTheRunnerReleasesWhatItCounted:
     @staticmethod
-    def _construct(config_error=None, counted=TIER_FREE):
+    def _execute(raises=None):
+        from studio.app.common.core.snakemake import snakemake_executor
+
+        executor = MagicMock()
+        future = executor.__enter__.return_value.submit.return_value
+        if raises:
+            future.result.side_effect = raises
+        else:
+            future.result.return_value = "done"
+
+        with patch.object(
+            snakemake_executor, "ProcessPoolExecutor", return_value=executor
+        ), patch.object(
+            snakemake_executor, "update_user_storage_after_workflow"
+        ), patch.object(
+            snakemake_executor, "get_client_id_for_subprocess", return_value="client"
+        ), patch(
+            f"{CONCURRENCY}.release_workflow_slot"
+        ) as release, patch(
+            f"{TRACKING}.decrement_workflow_count"
+        ):
+            try:
+                snakemake_executor.snakemake_execute(
+                    "1", "exp1", MagicMock(), user_id=USER_ID, slot_id=SLOT_ID
+                )
+            except RuntimeError:
+                pass
+        return release
+
+    def test_the_slot_is_released_when_the_run_ends(self):
+        self._execute().assert_called_once_with(SLOT_ID)
+
+    def test_the_slot_is_released_when_the_run_raises(self):
+        self._execute(raises=RuntimeError("snakemake died")).assert_called_once_with(
+            SLOT_ID
+        )
+
+
+class TestTheRunnerReleasesWhatItTook:
+    @staticmethod
+    def _construct(config_error=None, slot=SLOT_ID, counted=TIER_FREE, refusal=None):
+        """Construct a runner, then release it twice.
+
+        Returns (raised, release_slot, decrement, writer, increment).
+        """
         from studio.app.common.core.workflow import workflow_runner as module
 
         run_item = MagicMock()
@@ -524,64 +566,72 @@ class TestTheRunnerReleasesWhatItCounted:
             )
             stack.enter_context(patch.object(module, "Runner"))
             stack.enter_context(
-                patch(f"{MODULE}.increment_workflow_count", return_value=counted)
+                patch(
+                    f"{CONCURRENCY}.acquire_workflow_slot",
+                    return_value=slot,
+                    side_effect=refusal,
+                )
             )
-            decrement = stack.enter_context(patch(f"{MODULE}.decrement_workflow_count"))
+            increment = stack.enter_context(
+                patch(f"{TRACKING}.increment_workflow_count", return_value=counted)
+            )
+            release_slot = stack.enter_context(
+                patch(f"{CONCURRENCY}.release_workflow_slot")
+            )
+            decrement = stack.enter_context(
+                patch(f"{TRACKING}.decrement_workflow_count")
+            )
             runner, raised = None, None
             try:
                 runner = module.WorkflowRunner("bucket", "1", "exp1", run_item, USER_ID)
             except Exception as e:  # noqa: BLE001 - inspected by the caller
                 raised = e
             if runner is not None:
-                runner.release_workflow_slot()
-                runner.release_workflow_slot()
-        return raised, decrement, writer
+                runner.release_unscheduled()
+                runner.release_unscheduled()
+        return raised, release_slot, decrement, writer, increment
 
-    def test_a_refused_start_writes_nothing_of_the_run(self):
+    def test_a_refused_start_writes_nothing_and_counts_nothing(self):
         """A refused re-run must leave the existing experiment untouched."""
-        from studio.app.common.core.workflow import workflow_runner as module
-
         refusal = WorkflowConcurrencyLimitError(FREE_LIMIT, 2)
-        with patch.object(module, "WorkflowConfigWriter") as writer, patch.object(
-            module, "ExptConfigWriter"
-        ) as expt_writer, patch.object(
-            module, "get_typecheck_params", return_value={}
-        ), patch(
-            f"{MODULE}.increment_workflow_count", side_effect=refusal
-        ):
-            run_item = MagicMock()
-            run_item.nwbParam = None
-            with pytest.raises(WorkflowConcurrencyLimitError):
-                module.WorkflowRunner("bucket", "1", "exp1", run_item, USER_ID)
+        raised, _, _, writer, increment = self._construct(refusal=refusal)
 
+        assert raised is refusal
         writer.assert_not_called()
-        expt_writer.assert_not_called()
+        increment.assert_not_called()
 
-    def test_a_failure_after_counting_releases_the_count(self):
-        raised, decrement, _ = self._construct(config_error=OSError("disk full"))
+    def test_a_failure_after_counting_releases_the_slot_and_the_count(self):
+        raised, release_slot, decrement, _, _ = self._construct(
+            config_error=OSError("disk full")
+        )
 
         assert isinstance(raised, OSError)
+        release_slot.assert_called_once_with(SLOT_ID)
         decrement.assert_called_once_with(USER_ID, tier=TIER_FREE)
 
     def test_a_release_happens_once(self):
-        _, decrement, _ = self._construct()
+        _, release_slot, decrement, _, _ = self._construct()
 
+        release_slot.assert_called_once_with(SLOT_ID)
         decrement.assert_called_once_with(USER_ID, tier=TIER_FREE)
 
-    def test_an_uncounted_start_releases_nothing(self):
-        _, decrement, _ = self._construct(counted=None)
+    def test_a_start_without_a_slot_or_a_count_releases_nothing(self):
+        _, release_slot, decrement, _, _ = self._construct(slot=None, counted=None)
 
+        release_slot.assert_not_called()
         decrement.assert_not_called()
 
-    def test_scheduling_hands_the_count_to_the_executor(self):
+    def test_scheduling_hands_the_slot_and_the_count_to_the_executor(self):
         """After scheduling, the executor releases; the request must not."""
         from studio.app.common.core.workflow import workflow_runner as module
 
         runner = module.WorkflowRunner.__new__(module.WorkflowRunner)
         runner.user_id = USER_ID
+        runner.slot_id = SLOT_ID
         runner.counted_tier = TIER_PREMIUM
         runner.workspace_id, runner.unique_id, runner.generation = "1", "e", "g"
         runner.runItem = MagicMock(forceRunList=[])
+        runner.forced_by_fill = []
         tasks = MagicMock()
 
         with patch.object(
@@ -593,13 +643,74 @@ class TestTheRunnerReleasesWhatItCounted:
         ), patch.object(
             module, "delete_procs_dependencies"
         ), patch(
-            f"{MODULE}.renew_workflow_lease"
+            f"{CONCURRENCY}.renew_workflow_slot"
         ) as renew, patch(
-            f"{MODULE}.decrement_workflow_count"
+            f"{CONCURRENCY}.release_workflow_slot"
+        ) as release_slot, patch(
+            f"{TRACKING}.decrement_workflow_count"
         ) as decrement:
             runner.run_workflow(tasks)
-            runner.release_workflow_slot()
+            runner.release_unscheduled()
 
-        assert tasks.add_task.call_args.kwargs["counted_tier"] == TIER_PREMIUM
-        renew.assert_called_once_with(USER_ID, TIER_PREMIUM)
+        kwargs = tasks.add_task.call_args.kwargs
+        assert (kwargs["slot_id"], kwargs["counted_tier"]) == (SLOT_ID, TIER_PREMIUM)
+        renew.assert_called_once_with(SLOT_ID)
+        release_slot.assert_not_called()
         decrement.assert_not_called()
+
+
+class TestTheSlotStaysAliveWhileTheInputDownloads:
+    @staticmethod
+    async def _download(slot=SLOT_ID, duration=0.05, error=None):
+        """ensure_input_data_local over a download of ``duration`` seconds, with
+        a renewal interval of 10 ms. Returns (renewals during, after, raised)."""
+        from studio.app.common.core.workflow import workflow_runner as module
+
+        runner = module.WorkflowRunner.__new__(module.WorkflowRunner)
+        runner.slot_id = slot
+
+        async def download():
+            await asyncio.sleep(duration)
+            if error:
+                raise error
+
+        runner._ensure_input_data_local = AsyncMock(side_effect=download)
+        raised = None
+        with patch(f"{CONCURRENCY}.WORKFLOW_SLOT_RENEW_SECONDS", 0.01), patch(
+            f"{CONCURRENCY}.renew_workflow_slot"
+        ) as renew:
+            try:
+                await runner.ensure_input_data_local()
+            except Exception as e:  # noqa: BLE001 - inspected by the caller
+                raised = e
+            during = renew.call_count
+            await asyncio.sleep(0.05)
+            after = renew.call_count
+            if during:
+                renew.assert_called_with(slot)
+        return during, after, raised
+
+    @pytest.mark.asyncio
+    async def test_a_long_download_renews_the_slot(self):
+        during, _, _ = await self._download()
+
+        assert during >= 2
+
+    @pytest.mark.asyncio
+    async def test_the_renewal_stops_once_the_download_ends(self):
+        during, after, _ = await self._download()
+
+        assert after == during
+
+    @pytest.mark.asyncio
+    async def test_the_renewal_stops_when_the_download_fails(self):
+        during, after, raised = await self._download(error=OSError("S3 down"))
+
+        assert isinstance(raised, OSError)
+        assert after == during
+
+    @pytest.mark.asyncio
+    async def test_no_slot_renews_nothing(self):
+        during, after, _ = await self._download(slot=None)
+
+        assert (during, after) == (0, 0)

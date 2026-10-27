@@ -19,7 +19,7 @@ Tested endpoints:
 import re
 from pathlib import Path
 
-from studio.app.common.core.workflow.workflow_tracking import (
+from studio.app.common.core.workflow.workflow_concurrency import (
     WORKFLOW_CONCURRENCY_LIMIT_CODE,
     ConcurrencyLimit,
     WorkflowConcurrencyLimitError,

@@ -29,16 +29,6 @@ def _off_ec2():
         yield
 
 
-@pytest.fixture(autouse=True)
-def _no_plan_limit():
-    """No concurrent-run limit (test_workflow_concurrency_limit.py has the gate)."""
-    with patch(
-        "studio.app.common.core.workflow.workflow_tracking._get_concurrency_limit",
-        return_value=None,
-    ):
-        yield
-
-
 @pytest.fixture
 def mock_session():
     """Mock database session with tier detection for free tier user"""

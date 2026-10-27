@@ -55,6 +55,7 @@ def snakemake_execute(
     user_id: int = None,
     generation: str = None,
     counted_tier: Optional[str] = None,
+    slot_id: Optional[int] = None,
 ):
     """
     Main entry point for Snakemake execution.
@@ -66,6 +67,7 @@ def snakemake_execute(
         user_id: User ID (for tracking free tier workflow counts)
         generation: started_at of the run that scheduled this execution
         counted_tier: the tier the run start was counted on; None = not counted
+        slot_id: the run's slot in its plan's concurrent-run limit; None = none
     """
     client_id = get_client_id_for_subprocess()
 
@@ -82,7 +84,7 @@ def snakemake_execute(
                 generation=generation,
                 client_id=client_id,
             )
-            future_result = _wait_renewing_lease(future, user_id, counted_tier)
+            future_result = _wait_renewing_slot(future, slot_id)
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
@@ -90,6 +92,13 @@ def snakemake_execute(
         return future_result
 
     finally:
+        if slot_id is not None:
+            from studio.app.common.core.workflow.workflow_concurrency import (
+                release_workflow_slot,
+            )
+
+            release_workflow_slot(slot_id)
+
         # Decrement workflow count in finally block to ensure it ALWAYS runs
         # This prevents workflow count leaks when exceptions occur during execution
         if user_id is not None and counted_tier is not None:
@@ -104,23 +113,22 @@ def snakemake_execute(
                 logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
 
 
-def _wait_renewing_lease(
-    future: Future, user_id: Optional[int], counted_tier: Optional[str]
-):
-    """The run's result; its workflow lease is renewed while the run lives."""
-    from studio.app.common.core.workflow.workflow_tracking import (
-        WORKFLOW_LEASE_RENEW_SECONDS,
-        renew_workflow_lease,
+def _wait_renewing_slot(future: Future, slot_id: Optional[int]):
+    """The run's result; its slot is renewed while the run lives."""
+    from studio.app.common.core.workflow.workflow_concurrency import (
+        WORKFLOW_SLOT_RENEW_SECONDS,
+        renew_workflow_slot,
     )
 
     while True:
         try:
-            return future.result(timeout=WORKFLOW_LEASE_RENEW_SECONDS)
+            return future.result(timeout=WORKFLOW_SLOT_RENEW_SECONDS)
         except FutureTimeoutError:
-            # A TimeoutError raised by the run itself is its result
+            # Done by now (it may have finished after the wait timed out): its
+            # own result or exception, including a TimeoutError it raised
             if future.done():
-                raise
-            renew_workflow_lease(user_id, counted_tier)
+                return future.result()
+            renew_workflow_slot(slot_id)
 
 
 @with_client_id_context  # Automatically set client_id for logging

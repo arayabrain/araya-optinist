@@ -15,8 +15,8 @@ reaches zero while a workflow is still running, and the sweep reclaims the
 instance or the cleanup job deletes the workspace.
 
 The same holds for the run-start gate: only real connections show that two
-starts cannot both pass the limit, and only the database clock shows the
-lease expiring.
+starts cannot both pass the limit, and only the database clock shows a slot
+expiring.
 """
 
 import os
@@ -139,8 +139,8 @@ class TestConcurrentWorkflowCountsOverRealConnections:
         assert _stored_count(free_user) == 0
 
 
-def _set_row(user_id, count, heartbeat_age_seconds):
-    """Store a count and a lease renewed that many seconds ago (database clock)."""
+def _add_slot(user_id, heartbeat_age_seconds):
+    """A slot last renewed that many seconds ago (database clock)."""
     from sqlalchemy import text
 
     from studio.app.common.db.database import session_scope
@@ -148,84 +148,123 @@ def _set_row(user_id, count, heartbeat_age_seconds):
     with session_scope() as session:
         session.execute(
             text(
-                "UPDATE free_user_assignments SET active_workflow_count = :count, "
-                "last_workflow_heartbeat = NOW() - INTERVAL :age SECOND "
-                "WHERE user_id = :user_id"
+                "INSERT INTO workflow_run_slots "
+                "(user_id, workspace_id, unique_id, heartbeat_at) "
+                "VALUES (:user_id, 'it', :unique_id, NOW() - INTERVAL :age SECOND)"
             ),
-            {"count": count, "age": heartbeat_age_seconds, "user_id": user_id},
+            {
+                "user_id": user_id,
+                "unique_id": uuid.uuid4().hex[:8],
+                "age": heartbeat_age_seconds,
+            },
         )
+
+
+def _slot_count(user_id):
+    from sqlalchemy import text
+
+    from studio.app.common.db.database import session_scope
+
+    with session_scope() as session:
+        return session.execute(
+            text("SELECT COUNT(*) FROM workflow_run_slots WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        ).scalar_one()
 
 
 @_opt_in
 class TestTheGateOverRealConnections:
-    """Check and increment are one statement: of simultaneous starts, exactly
-    the limit's worth pass, whatever the interleaving. A lease expired on the
-    database clock lets a start past a count no live run holds."""
+    """A user's starts serialise on their users row: of simultaneous starts,
+    exactly the limit's worth take a slot, whatever the interleaving. A slot
+    not renewed within the TTL, on the database clock, is not counted. The gate
+    never touches the run count."""
 
     LIMIT = 2
 
     @staticmethod
     def _limited():
-        from studio.app.common.core.workflow.workflow_tracking import ConcurrencyLimit
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            ConcurrencyLimit,
+        )
 
         return patch(
-            "studio.app.common.core.workflow.workflow_tracking._get_concurrency_limit",
+            "studio.app.common.core.workflow.workflow_concurrency."
+            "_get_concurrency_limit",
             return_value=ConcurrencyLimit("Free", TestTheGateOverRealConnections.LIMIT),
         )
 
-    def test_exactly_the_limit_of_simultaneous_starts_passes(self, free_user):
-        from studio.app.common.core.workflow.workflow_tracking import (
-            TIER_FREE,
+    @staticmethod
+    def _start(user_id):
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            acquire_workflow_slot,
+        )
+
+        return acquire_workflow_slot(user_id, "it", uuid.uuid4().hex[:8])
+
+    def test_exactly_the_limit_of_simultaneous_starts_takes_a_slot(self, free_user):
+        from studio.app.common.core.workflow.workflow_concurrency import (
             WorkflowConcurrencyLimitError,
-            increment_workflow_count,
         )
 
         outcomes = []
 
         def start(user_id):
             try:
-                outcomes.append(increment_workflow_count(user_id))
+                outcomes.append(self._start(user_id))
             except WorkflowConcurrencyLimitError:
                 outcomes.append("refused")
 
         with self._limited():
             _all_at_once(start, free_user)
 
-        assert outcomes.count(TIER_FREE) == self.LIMIT
+        slots = [outcome for outcome in outcomes if outcome != "refused"]
+        assert len(slots) == self.LIMIT
+        assert all(isinstance(slot, int) for slot in slots)
         assert outcomes.count("refused") == CONCURRENCY - self.LIMIT
-        assert _stored_count(free_user) == self.LIMIT
+        assert _slot_count(free_user) == self.LIMIT
+        assert _stored_count(free_user) == 0
 
-    def test_a_full_row_with_a_live_lease_refuses(self, free_user):
-        from studio.app.common.core.workflow.workflow_tracking import (
+    def test_live_slots_at_the_limit_refuse(self, free_user):
+        from studio.app.common.core.workflow.workflow_concurrency import (
             WorkflowConcurrencyLimitError,
-            increment_workflow_count,
         )
 
-        _set_row(free_user, count=self.LIMIT, heartbeat_age_seconds=0)
+        for _ in range(self.LIMIT):
+            _add_slot(free_user, heartbeat_age_seconds=0)
 
         with self._limited(), pytest.raises(WorkflowConcurrencyLimitError) as raised:
-            increment_workflow_count(free_user)
+            self._start(free_user)
 
         assert raised.value.active == self.LIMIT
-        assert _stored_count(free_user) == self.LIMIT
+        assert _slot_count(free_user) == self.LIMIT
 
-    def test_a_full_row_with_an_expired_lease_admits_a_run(self, free_user):
-        from studio.app.common.core.workflow.workflow_tracking import (
-            TIER_FREE,
-            WORKFLOW_LEASE_TTL_SECONDS,
-            increment_workflow_count,
+    def test_slots_past_the_ttl_are_not_counted_and_are_removed(self, free_user):
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            WORKFLOW_SLOT_TTL_SECONDS,
         )
 
-        _set_row(
-            free_user,
-            count=self.LIMIT,
-            heartbeat_age_seconds=WORKFLOW_LEASE_TTL_SECONDS + 60,
+        for _ in range(self.LIMIT):
+            _add_slot(free_user, heartbeat_age_seconds=WORKFLOW_SLOT_TTL_SECONDS + 60)
+
+        with self._limited():
+            assert isinstance(self._start(free_user), int)
+
+        assert _slot_count(free_user) == 1
+
+    def test_a_released_slot_frees_its_place(self, free_user):
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            WorkflowConcurrencyLimitError,
+            release_workflow_slot,
         )
 
         with self._limited():
-            assert increment_workflow_count(free_user) == TIER_FREE
+            first = self._start(free_user)
+            self._start(free_user)
+            with pytest.raises(WorkflowConcurrencyLimitError):
+                self._start(free_user)
 
-        assert _stored_count(free_user) == 1
+            release_workflow_slot(first)
+            assert isinstance(self._start(free_user), int)
 
 
 def _hand_over_to_premium(user_id):
@@ -251,30 +290,26 @@ def _hand_over_to_premium(user_id):
         )
 
 
-def _premium_row(user_id):
+def _premium_count(user_id):
     from sqlalchemy import text
 
     from studio.app.common.db.database import session_scope
 
     with session_scope() as session:
-        return (
-            session.execute(
-                text(
-                    "SELECT active_workflow_count, last_workflow_heartbeat "
-                    "FROM premium_user_assignments WHERE user_id = :user_id"
-                ),
-                {"user_id": user_id},
-            )
-            .mappings()
-            .one()
-        )
+        return session.execute(
+            text(
+                "SELECT active_workflow_count FROM premium_user_assignments "
+                "WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id},
+        ).scalar_one()
 
 
 @_opt_in
 class TestTheReleaseFollowsAnUpgradeOverRealConnections:
     """A run counted on the free row, then an upgrade during the run: its
-    renewals and its release reach the premium row the count moved to, so
-    that row does not keep the count after the run."""
+    release reaches the premium row the count moved to, so that row does not
+    keep the count after the run."""
 
     def test_the_count_returns_to_zero_on_the_premium_row(self, free_user):
         from sqlalchemy import text
@@ -283,20 +318,16 @@ class TestTheReleaseFollowsAnUpgradeOverRealConnections:
             TIER_FREE,
             decrement_workflow_count,
             increment_workflow_count,
-            renew_workflow_lease,
         )
         from studio.app.common.db.database import session_scope
 
         assert increment_workflow_count(free_user) == TIER_FREE
         _hand_over_to_premium(free_user)
         try:
-            assert _premium_row(free_user)["last_workflow_heartbeat"] is None
-
-            renew_workflow_lease(free_user, TIER_FREE)
-            assert _premium_row(free_user)["last_workflow_heartbeat"] is not None
+            assert _premium_count(free_user) == 1
 
             decrement_workflow_count(free_user, tier=TIER_FREE)
-            assert _premium_row(free_user)["active_workflow_count"] == 0
+            assert _premium_count(free_user) == 0
         finally:
             with session_scope() as session:
                 session.execute(

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
-from studio.app.common.core.workflow.workflow_tracking import (
+from studio.app.common.core.workflow.workflow_concurrency import (
     ConcurrencyLimit,
     WorkflowConcurrencyLimitError,
 )
@@ -92,7 +92,7 @@ async def test_a_scheduled_start_keeps_its_count(endpoint):
     with _stubs() as (runner_cls, _):
         assert await _call(endpoint) == "uid"
 
-    runner_cls.return_value.release_workflow_slot.assert_not_called()
+    runner_cls.return_value.release_unscheduled.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_a_failed_input_download_releases_the_count(endpoint):
             await _call(endpoint)
 
     assert raised.value.status_code == 500
-    runner.release_workflow_slot.assert_called_once_with()
+    runner.release_unscheduled.assert_called_once_with()
     runner.run_workflow.assert_not_called()
 
 
@@ -119,7 +119,7 @@ async def test_a_held_sync_lock_releases_the_count(endpoint):
             await _call(endpoint)
 
     assert raised.value.status_code == 423
-    runner.release_workflow_slot.assert_called_once_with()
+    runner.release_unscheduled.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -131,4 +131,4 @@ async def test_a_client_gone_during_the_download_releases_the_count(endpoint):
         with pytest.raises(asyncio.CancelledError):
             await _call(endpoint)
 
-    runner.release_workflow_slot.assert_called_once_with()
+    runner.release_unscheduled.assert_called_once_with()

@@ -52,15 +52,12 @@ def _run_with_tier(
     ``_get_user_tier`` is patched so each branch can be addressed directly. That
     makes the *routing* below the decision observable, not the decision itself.
     ``_execution_host`` is patched too: off EC2 it would try the metadata
-    service. The plan has no concurrent-run limit here
-    (``test_workflow_concurrency_limit.py`` covers the gate).
+    service.
     """
     with patch(f"{MODULE}._get_user_tier") as get_tier, patch(
         f"{MODULE}.session_scope"
     ) as mock_session, patch(f"{MODULE}.MODE") as mode, patch(
         f"{MODULE}._execution_host", return_value=host
-    ), patch(
-        f"{MODULE}._get_concurrency_limit", return_value=None
     ):
         mode.IS_STANDALONE = False
         get_tier.return_value = (tier, has_free_record, has_premium_record)

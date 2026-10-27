@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import os
 import time
 import uuid
@@ -60,6 +62,10 @@ from studio.app.dir_path import DIRPATH
 
 
 class WorkflowRunner:
+    # What the start holds until it is handed to the executor (see __init__)
+    slot_id: Optional[int] = None
+    counted_tier: Optional[str] = None
+
     def __init__(
         self,
         remote_bucket_name: str,
@@ -126,16 +132,26 @@ class WorkflowRunner:
             f"at {time.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # Count the run against the plan's concurrent-run limit
-        # - refused → WorkflowConcurrencyLimitError, before any file is written
-        # - counted_tier: the table to release; None once handed to the executor
+        # Count the run, before any file of it is written
+        # - slot_id: its place in the plan's concurrent-run limit; refused →
+        #   WorkflowConcurrencyLimitError
+        # - counted_tier: the active_workflow_count table it is counted on
+        # - both None once handed to the executor, which releases them
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            acquire_workflow_slot,
+        )
         from studio.app.common.core.workflow.workflow_tracking import (
             increment_workflow_count,
         )
 
-        self.counted_tier = increment_workflow_count(self.user_id)
+        self.slot_id = acquire_workflow_slot(
+            self.user_id, self.workspace_id, self.unique_id
+        )
+        self.counted_tier = None
 
         try:
+            self.counted_tier = increment_workflow_count(self.user_id)
+
             WorkflowConfigWriter(
                 self.workspace_id,
                 self.unique_id,
@@ -155,18 +171,50 @@ class WorkflowRunner:
 
             Runner.clear_pid_file(self.workspace_id, self.unique_id)
         except BaseException:
-            self.release_workflow_slot()
+            self.release_unscheduled()
             raise
 
-    def release_workflow_slot(self) -> None:
-        """Release the run's count when it will not be scheduled (idempotent)."""
+    def release_unscheduled(self) -> None:
+        """Release the run's slot and count when it will not be scheduled
+        (idempotent)."""
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            release_workflow_slot,
+        )
         from studio.app.common.core.workflow.workflow_tracking import (
             decrement_workflow_count,
         )
 
+        slot_id, self.slot_id = self.slot_id, None
+        if slot_id is not None:
+            release_workflow_slot(slot_id)
         tier, self.counted_tier = self.counted_tier, None
         if tier is not None:
             decrement_workflow_count(self.user_id, tier=tier)
+
+    @contextlib.asynccontextmanager
+    async def _slot_kept_alive(self):
+        """Renew the run's slot while the request prepares it (input download),
+        so a long download does not let the slot expire."""
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            WORKFLOW_SLOT_RENEW_SECONDS,
+            renew_workflow_slot,
+        )
+
+        async def renew_periodically():
+            while True:
+                await asyncio.sleep(WORKFLOW_SLOT_RENEW_SECONDS)
+                await asyncio.to_thread(renew_workflow_slot, self.slot_id)
+
+        if self.slot_id is None:
+            yield
+            return
+        renewal = asyncio.ensure_future(renew_periodically())
+        try:
+            yield
+        finally:
+            renewal.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await renewal
 
     def log_workflow_completion(self, status: str = "completed"):
         """Log workflow completion with timing information."""
@@ -300,8 +348,10 @@ class WorkflowRunner:
         """Download any remote-only input files before workflow runs.
 
         Public method to be called from async context (e.g., router endpoints).
+        The run's slot stays alive meanwhile.
         """
-        await self._ensure_input_data_local()
+        async with self._slot_kept_alive():
+            await self._ensure_input_data_local()
 
     def run_workflow(self, background_tasks: BackgroundTasks):
         lock_token = None
@@ -368,12 +418,12 @@ class WorkflowRunner:
                 )
             raise
 
-        # The input download may have outlasted part of the lease
-        from studio.app.common.core.workflow.workflow_tracking import (
-            renew_workflow_lease,
+        # The executor renews the slot once it runs; bridge the gap until then
+        from studio.app.common.core.workflow.workflow_concurrency import (
+            renew_workflow_slot,
         )
 
-        renew_workflow_lease(self.user_id, self.counted_tier)
+        renew_workflow_slot(self.slot_id)
 
         background_tasks.add_task(
             snakemake_execute,
@@ -383,8 +433,10 @@ class WorkflowRunner:
             self.user_id,
             self.generation,
             counted_tier=self.counted_tier,
+            slot_id=self.slot_id,
         )
-        # The executor releases the count from here on
+        # The executor releases the slot and the count from here on
+        self.slot_id = None
         self.counted_tier = None
 
     def finish_workflow_without_run(

@@ -125,11 +125,3 @@ class PremiumUserAssignment(SQLModel, table=True):
         ),
         default=None,
     )
-    last_workflow_heartbeat: Optional[datetime] = Field(
-        sa_column=Column(
-            TIMESTAMP,
-            nullable=True,
-            comment="Last renewal by a live workflow; stale = no run alive",
-        ),
-        default=None,
-    )

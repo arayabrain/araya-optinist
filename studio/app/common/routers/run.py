@@ -33,6 +33,9 @@ from studio.app.common.core.utils.datetime_utils import (
 )
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
+from studio.app.common.core.workflow.workflow_concurrency import (
+    WorkflowConcurrencyLimitError,
+)
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_input_validator import (
     WorkflowValidationError,
@@ -46,9 +49,6 @@ from studio.app.common.core.workflow.workflow_result import (
     await_despite_cancel,
 )
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
-from studio.app.common.core.workflow.workflow_tracking import (
-    WorkflowConcurrencyLimitError,
-)
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -107,7 +107,7 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
 async def _release_unscheduled(runner: WorkflowRunner) -> None:
     """Release a counted run that will not be scheduled, off the event loop."""
     await await_despite_cancel(
-        asyncio.ensure_future(asyncio.to_thread(runner.release_workflow_slot))
+        asyncio.ensure_future(asyncio.to_thread(runner.release_unscheduled))
     )
 
 

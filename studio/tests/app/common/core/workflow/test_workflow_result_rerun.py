@@ -499,7 +499,7 @@ async def test_a_cancelled_rerun_holds_the_lock_until_its_runner_is_built(
         active_workflows.append(1)
         started.set()
         release.wait(10)
-        return Mock(release_workflow_slot=Mock(side_effect=release_slot))
+        return Mock(release_unscheduled=Mock(side_effect=release_slot))
 
     with patch("studio.app.common.routers.run.WorkflowRunner", slow_runner):
         request = asyncio.ensure_future(rerun())
