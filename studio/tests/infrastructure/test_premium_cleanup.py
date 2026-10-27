@@ -825,6 +825,37 @@ class TestAlbSweepsSkipInFlightAssign:
         assert not mock_elbv2.delete_rule.called
         assert "error" not in result, result
 
+    def test_the_managers_target_group_maps_its_rule_to_its_user(
+        self, mock_env_vars_premium
+    ):
+        """The sweep reads the user from the TG name the manager creates.
+        A name the pattern misses would read as a pool rule, kept for any
+        other user's claim, so the other-user case is the one that fails."""
+
+        def create_target_group(Name, **kwargs):
+            arn = (
+                "arn:aws:elasticloadbalancing:region:account:"
+                f"targetgroup/{Name}/0123456789abcdef"
+            )
+            return {"TargetGroups": [{"TargetGroupArn": arn}]}
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_boto3.return_value.create_target_group.side_effect = (
+                create_target_group
+            )
+            import premium_manager
+
+            with patch.object(premium_manager, "_ensure_premium_tg_unhealthy_alarm"):
+                tg_arn = premium_manager.create_or_get_target_group(12, "vpc-test")
+
+        from premium_cleanup import _rule_may_belong_to_inflight_assign
+
+        rule = _premium_alb_rule("arn:aws:rule/user-12", tg_arn, "rid-12")
+        assert _rule_may_belong_to_inflight_assign(rule, {12})
+        assert not _rule_may_belong_to_inflight_assign(rule, {13})
+
     @pytest.mark.parametrize(
         "sweep, deleted_key",
         [
