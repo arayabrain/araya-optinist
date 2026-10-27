@@ -16,6 +16,7 @@ import {
   addItemForWorkflowDialog,
   deleteAllItemForWorkflowDialog,
   pushInitialItemToNewRow,
+  setImageItemFilePath,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { ImageItem } from "store/slice/VisualizeItem/VisualizeItemType"
 import { setCurrentWorkspace } from "store/slice/Workspace/WorkspaceSlice"
@@ -118,6 +119,9 @@ describe("ImagePlot", () => {
       .mockResolvedValueOnce(eightFrames)
     const store = newStore()
     store.dispatch(pushInitialItemToNewRow())
+    store.dispatch(
+      setImageItemFilePath({ itemId: 0, filePath: path, nodeId: null }),
+    )
     await store.dispatch(getImageItemData({ itemId: 0, path, workspaceId: 1 }))
     expect(store.getState().displayData.image[path].error).toBe(
       "too many frames",

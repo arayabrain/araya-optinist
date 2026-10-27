@@ -42,6 +42,17 @@ export const getImageItemData = createAsyncThunk<
       getImageData({ path, workspaceId, startIndex, endIndex }),
     )
     if (!item.isWorkflowDialog || !getImageData.rejected.match(result)) return
+    // The dialog may have closed meanwhile, and its id gone to another item
+    const current = selectVisualizeItems(thunkAPI.getState())[itemId]
+    if (
+      current == null ||
+      !isImageItem(current) ||
+      !current.isWorkflowDialog ||
+      current.filePath !== path ||
+      current.startIndex !== startIndex ||
+      current.endIndex !== endIndex
+    )
+      return
 
     const maxFrames = (result.payload as RejectPayload | undefined)?.maxFrames
     const firstFrame = Math.max(startIndex, 1)

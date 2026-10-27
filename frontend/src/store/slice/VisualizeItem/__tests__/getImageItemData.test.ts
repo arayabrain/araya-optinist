@@ -12,6 +12,7 @@ import {
 import {
   addItemForWorkflowDialog,
   pushInitialItemToNewRow,
+  setImageItemFilePath,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { ImageItem } from "store/slice/VisualizeItem/VisualizeItemType"
 import { rootReducer } from "store/store"
@@ -36,24 +37,46 @@ function tooLarge(maxFrames: number) {
 
 function setUp(addItem: "dialog" | "visualize") {
   const store = configureStore({ reducer: rootReducer })
-  store.dispatch(
-    addItem === "dialog"
-      ? addItemForWorkflowDialog({
-          nodeId: "node",
-          filePath: path,
-          dataType: DATA_TYPE_SET.IMAGE,
-        })
-      : pushInitialItemToNewRow(),
-  )
+  if (addItem === "dialog") {
+    store.dispatch(
+      addItemForWorkflowDialog({
+        nodeId: "node",
+        filePath: path,
+        dataType: DATA_TYPE_SET.IMAGE,
+      }),
+    )
+  } else {
+    store.dispatch(pushInitialItemToNewRow())
+    store.dispatch(
+      setImageItemFilePath({ itemId: 0, filePath: path, nodeId: null }),
+    )
+  }
   const fetch = () =>
     store.dispatch(getImageItemData({ itemId: 0, path, workspaceId: 1 }))
   const item = () => store.getState().visualaizeItem.items[0] as ImageItem
   const image = () => store.getState().displayData.image[path]
-  return { fetch, item, image }
+  return { store, fetch, item, image }
 }
 
 const requestedEndIndexes = () =>
   jest.mocked(getImageDataApi).mock.calls.map(([, params]) => params.endIndex)
+
+// A response the test settles itself, after the request was made
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined
+  let reject: (reason: unknown) => void = () => undefined
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+async function requestsMade(count: number) {
+  while (jest.mocked(getImageDataApi).mock.calls.length < count) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+}
 
 describe("getImageItemData", () => {
   beforeEach(() => {
@@ -95,6 +118,47 @@ describe("getImageItemData", () => {
     expect(requestedEndIndexes()).toEqual([10])
     expect(item().endIndex).toBe(10)
     expect(image().error).toBe(message)
+  })
+
+  it("does not narrow another item that took a closed dialog's id", async () => {
+    const refusal = deferred<never>()
+    jest.mocked(getImageDataApi).mockReturnValueOnce(refusal.promise)
+    const { store, fetch, item } = setUp("dialog")
+
+    const fetching = fetch()
+    await requestsMade(1)
+    await store.dispatch(deleteWorkflowDialogItems())
+    store.dispatch(
+      addItemForWorkflowDialog({
+        nodeId: "other",
+        filePath: "/other.tif",
+        dataType: DATA_TYPE_SET.IMAGE,
+      }),
+    )
+    refusal.reject(tooLarge(8))
+    await fetching
+
+    expect(item().filePath).toBe("/other.tif")
+    expect(item().endIndex).toBe(10)
+    expect(requestedEndIndexes()).toEqual([10])
+  })
+
+  it("does not keep frames that arrive after the dialog closed", async () => {
+    const fitted = deferred<{ data: number[][][] }>()
+    jest
+      .mocked(getImageDataApi)
+      .mockRejectedValueOnce(tooLarge(8))
+      .mockReturnValueOnce(fitted.promise)
+    const { store, fetch, image } = setUp("dialog")
+
+    const fetching = fetch()
+    await requestsMade(2)
+    await store.dispatch(deleteWorkflowDialogItems())
+    fitted.resolve({ data: [[[0]]] })
+    await fetching
+
+    expect(requestedEndIndexes()).toEqual([10, 8])
+    expect(image()).toBeUndefined()
   })
 })
 
