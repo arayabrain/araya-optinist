@@ -78,11 +78,11 @@ info = {
     'all_roi': RoiData(roi_images['all'], file_name='all_roi'),
     'non_cell_roi': RoiData(roi_images['non_cell'], file_name='noncell_roi'),
     'cell_roi': RoiData(roi_images['cell'], file_name='cell_roi'),
-    'edit_roi_data': EditRoiData(images=ImageData(ops['file_list']), im=im),
+    'edit_roi_data': EditRoiData(images=ImageData(ops['file_list']), roi_masks=roi_masks),
     'nwbfile': nwbfile,
 }
 
-`im` is the on-disk per-ROI mask stack (`RoiStack`), `roi_images` the all / cell / non-cell label images built from each ROI's pixel lists.
+`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_img` is the on-disk per-ROI mask stack (`RoiStack`).
 
 ### suite2p_spike_deconv
 
