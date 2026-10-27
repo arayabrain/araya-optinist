@@ -135,16 +135,16 @@ function isConcurrencyLimitDetail(
   return code === WORKFLOW_CONCURRENCY_LIMIT && typeof message === "string"
 }
 
+// A native link: focusable, and opened by Enter as well as by a click
 function linkAction(label: string, url: string) {
   return function LinkAction(_key: SnackbarKey) {
     return createElement(
-      "span",
+      "a",
       {
-        role: "button",
-        onMouseDown: (e: MouseEvent<HTMLSpanElement>) => {
-          e.stopPropagation()
-          window.open(url, "_blank")
-        },
+        href: url,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        onMouseDown: (e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation(),
         style: {
           cursor: "pointer",
           textDecoration: "underline",

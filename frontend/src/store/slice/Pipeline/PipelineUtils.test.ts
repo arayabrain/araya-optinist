@@ -3,6 +3,8 @@ import { ReactElement } from "react"
 import { OptionsObject, SnackbarKey } from "notistack"
 
 import { describe, expect, jest, test } from "@jest/globals"
+import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 
 import {
   WORKFLOW_CONCURRENCY_LIMIT,
@@ -14,6 +16,17 @@ import {
   handleWorkflowYamlError,
   WORKFLOW_YAML_ERROR,
 } from "store/slice/Pipeline/PipelineUtils"
+
+type EnqueueMock = { mock: { calls: [string, OptionsObject?][] } }
+
+// Render the snackbar's action and return its link
+const renderedLink = (snackbar: EnqueueMock, name: string) => {
+  const action = snackbar.mock.calls[0][1]?.action as (
+    key: SnackbarKey,
+  ) => ReactElement
+  render(action("key"))
+  return screen.getByRole("link", { name })
+}
 
 describe("convertToRunResult", () => {
   test("a success node with no outputPaths stays a success", () => {
@@ -72,19 +85,15 @@ describe("handleWorkflowYamlError", () => {
     expect(snackbar.mock.calls[0][1]).toHaveProperty("action")
   })
 
-  test("the FAQ action opens the FAQ entry", () => {
+  test("the FAQ action links to the FAQ entry in a new tab", () => {
     const snackbar = enqueue()
-    const open = jest.spyOn(window, "open").mockImplementation(() => null)
     handleWorkflowYamlError({ response: { status: 422 } }, snackbar)
-    const action = snackbar.mock.calls[0][1]?.action as (
-      key: SnackbarKey,
-    ) => ReactElement
-    action("key").props.onMouseDown({ stopPropagation: jest.fn() })
-    expect(open).toHaveBeenCalledWith(
+    const link = renderedLink(snackbar, "Click here")
+    expect(link.getAttribute("href")).toBe(
       "https://github.com/oist/optinist/wiki/FAQ#error-yaml-file-error",
-      "_blank",
     )
-    open.mockRestore()
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
   })
 
   test("a 422 without detail keeps the FAQ snackbar", () => {
@@ -141,17 +150,34 @@ describe("handleWorkflowYamlError at the concurrent-run limit", () => {
 
   test("offers the plan page when another plan allows more runs", () => {
     const snackbar = enqueue()
-    const open = jest.spyOn(window, "open").mockImplementation(() => null)
     handleWorkflowYamlError(
       { response: { status: 429, data: { detail: limitDetail(true) } } },
       snackbar,
     )
-    const action = snackbar.mock.calls[0][1]?.action as (
-      key: SnackbarKey,
-    ) => ReactElement
-    action("key").props.onMouseDown({ stopPropagation: jest.fn() })
-    expect(open).toHaveBeenCalledWith("/subscription", "_blank")
-    open.mockRestore()
+    const link = renderedLink(snackbar, "See plans")
+    expect(link.getAttribute("href")).toBe("/subscription")
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+  })
+
+  test("the plan link is reached and opened from the keyboard", async () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      { response: { status: 429, data: { detail: limitDetail(true) } } },
+      snackbar,
+    )
+    const link = renderedLink(snackbar, "See plans")
+    const opened = jest.fn()
+    link.addEventListener("click", (e) => {
+      e.preventDefault()
+      opened()
+    })
+    const user = userEvent.setup()
+
+    await user.tab()
+    expect(document.activeElement).toBe(link)
+    await user.keyboard("{Enter}")
+    expect(opened).toHaveBeenCalledTimes(1)
   })
 
   test("a 429 without the limit's code is the generic failure", () => {
