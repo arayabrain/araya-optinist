@@ -5,7 +5,7 @@ import pytest
 from studio.app.common.core.middleware.cors_config import get_cors_allow_origins
 
 
-@pytest.mark.parametrize("raw", ["", "*", " * ", "https://a.example, *"])
+@pytest.mark.parametrize("raw", ["", "*", " * ", '"*"', "'*'", "https://a.example, *"])
 def test_wildcard_when_unset_or_star(raw):
     assert get_cors_allow_origins(raw) == ["*"]
 
@@ -29,3 +29,13 @@ def test_defaults_to_wildcard_without_environment(monkeypatch):
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
 
     assert get_cors_allow_origins() == ["*"]
+
+
+def test_quotes_and_trailing_slash_are_removed():
+    """Browsers send Origin without them, so they would never match."""
+    raw = "\"https://app.example.org/\", 'https://admin.example.org'"
+
+    assert get_cors_allow_origins(raw) == [
+        "https://app.example.org",
+        "https://admin.example.org",
+    ]

@@ -28,26 +28,44 @@ logger = AppLogger.get_logger()
 RECOMMENDED_MIN_SECRET_LENGTH = 32
 
 
+# Values published in this repository: the code defaults, studio/config/
+# .env.example, and the "<PLACEHOLDER-...>" markers in the Terraform
+# *.tfvars.example files.
+PUBLISHED_PLACEHOLDERS = frozenset(
+    {INSECURE_DEFAULT_SECRET_KEY, DEFAULT_ROUTING_SECRET_KEY, "12345678"}
+)
+PLACEHOLDER_MARKER_PREFIX = "<PLACEHOLDER"
+
+
 class SecretFindings(NamedTuple):
-    # Placeholder or empty values: forgeable tokens.
+    # Unset, empty or published values: forgeable tokens.
     blocking: List[str]
-    # Usable but weaker than recommended.
+    # Usable but shorter than recommended.
     warnings: List[str]
+
+
+def is_placeholder(value: str) -> bool:
+    value = value.strip()
+    return (
+        not value
+        or value in PUBLISHED_PLACEHOLDERS
+        or value.upper().startswith(PLACEHOLDER_MARKER_PREFIX)
+    )
 
 
 def find_weak_secrets() -> SecretFindings:
     blocking: List[str] = []
     warnings: List[str] = []
 
-    secret_key = AUTH_CONFIG.SECRET_KEY or ""
-    if secret_key in ("", INSECURE_DEFAULT_SECRET_KEY):
-        blocking.append("SECRET_KEY")
-    elif len(secret_key) < RECOMMENDED_MIN_SECRET_LENGTH:
-        warnings.append("SECRET_KEY")
-
-    routing_key = os.environ.get("ROUTING_SECRET_KEY", "")
-    if routing_key in ("", DEFAULT_ROUTING_SECRET_KEY):
-        blocking.append("ROUTING_SECRET_KEY")
+    secrets = {
+        "SECRET_KEY": AUTH_CONFIG.SECRET_KEY or "",
+        "ROUTING_SECRET_KEY": os.environ.get("ROUTING_SECRET_KEY", ""),
+    }
+    for name, value in secrets.items():
+        if is_placeholder(value):
+            blocking.append(name)
+        elif len(value) < RECOMMENDED_MIN_SECRET_LENGTH:
+            warnings.append(name)
 
     return SecretFindings(blocking=blocking, warnings=warnings)
 
@@ -80,7 +98,7 @@ def validate_signing_secrets() -> None:
     names = ", ".join(findings.blocking)
     if is_cloud_deployment():
         message = (
-            f"Refusing to start: {names} is unset or a built-in placeholder. "
+            f"Refusing to start: unset or placeholder value in {names}. "
             "Set a random value of at least "
             f"{RECOMMENDED_MIN_SECRET_LENGTH} characters."
         )
@@ -88,7 +106,6 @@ def validate_signing_secrets() -> None:
         raise RuntimeError(message)
 
     logger.warning(
-        "%s is unset or a built-in placeholder. "
-        "Acceptable for local development only.",
+        "Unset or placeholder value in %s. Acceptable for local development only.",
         names,
     )

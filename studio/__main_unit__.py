@@ -105,6 +105,11 @@ async def lifespan(app: FastAPI):
 
     logger = AppLogger.get_logger()
 
+    # Fail fast, before anything reports startup or starts background work.
+    # main() runs the same check before uvicorn.run; this one covers other
+    # launchers (e.g. `uvicorn studio.__main_unit__:app`).
+    validate_signing_secrets()
+
     logger.info(
         f'"Studio" application startup complete.\n'
         f"    # Platform: {platform.platform()}\n"
@@ -117,9 +122,6 @@ async def lifespan(app: FastAPI):
         f"    # Mode: {mode}\n"
         f"    # REMOTE_STORAGE_TYPE: {remote_storage_type}\n"
     )
-
-    # Fail fast before any scheduler or sync task starts.
-    validate_signing_secrets()
 
     # Initialize background job scheduler
     # Can be disabled with DISABLE_BACKGROUND_SCHEDULER=1 env var
@@ -433,6 +435,10 @@ def main(develop_mode: bool = False):
         logging_config = LoggingConfigHelper._apply_log_level_override(
             logging_config, args.log_level
         )
+
+    # With workers > 1, uvicorn's supervisor does not exit when a worker's
+    # lifespan startup fails, so check before forking any worker.
+    validate_signing_secrets()
 
     effective_level = logging_config.get("root", {}).get("level", "INFO")
     logger.info(

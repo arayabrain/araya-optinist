@@ -1,10 +1,11 @@
 """Startup refuses a cloud deployment that signs tokens with a placeholder key.
 
-Tokens signed with a key published in this repository can be forged by anyone,
-including the beacon token that the unauthenticated release endpoint accepts.
+Tokens signed with a key published in this repository can be forged by anyone.
 Cloud deployments are recognised by S3 remote storage; elsewhere the same
 findings are only logged so local multiuser development keeps working.
 """
+
+from unittest.mock import patch
 
 import pytest
 
@@ -34,7 +35,16 @@ def test_cloud_with_strong_secrets_starts(multiuser):
     secret_validation.validate_signing_secrets()
 
 
-@pytest.mark.parametrize("value", [INSECURE_DEFAULT_SECRET_KEY, ""])
+@pytest.mark.parametrize(
+    "value",
+    [
+        INSECURE_DEFAULT_SECRET_KEY,
+        "",
+        "   ",
+        "12345678",  # studio/config/.env.example
+        "<PLACEHOLDER-generate-with-openssl-rand-hex-32>",  # *.tfvars.example
+    ],
+)
 def test_cloud_refuses_placeholder_secret_key(multiuser, value):
     multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", value)
 
@@ -42,7 +52,9 @@ def test_cloud_refuses_placeholder_secret_key(multiuser, value):
         secret_validation.validate_signing_secrets()
 
 
-@pytest.mark.parametrize("value", [DEFAULT_ROUTING_SECRET_KEY, ""])
+@pytest.mark.parametrize(
+    "value", [DEFAULT_ROUTING_SECRET_KEY, "", "<PLACEHOLDER-generate-new>"]
+)
 def test_cloud_refuses_placeholder_routing_key(multiuser, value):
     multiuser.setenv("ROUTING_SECRET_KEY", value)
 
@@ -95,3 +107,18 @@ def test_standalone_is_not_checked(multiuser):
     multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", INSECURE_DEFAULT_SECRET_KEY)
 
     secret_validation.validate_signing_secrets()
+
+
+def test_main_checks_before_starting_uvicorn(multiuser, monkeypatch):
+    """With several workers, uvicorn's supervisor keeps running when a worker's
+    lifespan fails, so main() must refuse before uvicorn.run is ever called."""
+    from studio import __main_unit__
+
+    multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", INSECURE_DEFAULT_SECRET_KEY)
+    monkeypatch.setattr("sys.argv", ["main.py", "--workers", "3"])
+
+    with patch.object(__main_unit__.uvicorn, "run") as uvicorn_run:
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            __main_unit__.main()
+
+    uvicorn_run.assert_not_called()
