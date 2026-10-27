@@ -48,7 +48,8 @@ import {
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
-  getDisplayErrorMessage,
+  getEditRoiErrorMessage,
+  EDIT_ROI_LOCKED_MESSAGE,
   RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -292,10 +293,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       .unwrap()
       .catch((error: RejectPayload) => {
         if (error?.status === 423) {
-          enqueueSnackbar(
-            "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes.",
-            { variant: "warning" },
-          )
+          enqueueSnackbar(EDIT_ROI_LOCKED_MESSAGE, { variant: "warning" })
         }
       })
     //eslint-disable-next-line react-hooks/exhaustive-deps
@@ -678,6 +676,14 @@ const ImagePlotChart = memo(function ImagePlotChart({
     refPageYSize.current = pageY
   }
 
+  // the server's reason for a refused edit, e.g. an ROI that is not a cell
+  const reportEditError = (error: unknown, fallback: string) => {
+    enqueueSnackbar(
+      getEditRoiErrorMessage(error as RejectPayload | undefined, fallback),
+      { variant: "error" },
+    )
+  }
+
   const addOrSelectRoi = async () => {
     if (!roiFilePath || !workspaceId || !statusRoi) return
     if (action === ADD_ROI) {
@@ -695,33 +701,45 @@ const ImagePlotChart = memo(function ImagePlotChart({
         sizey: yAdd,
       }
       await dispatch(resetAllOrderList())
-      await dispatch(
-        addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
-      )
+      try {
+        await dispatch(
+          addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to add the ROI.")
+      }
       onCancelAdd()
     }
     if (action === MERGE_ROI) {
       if (roiClicked.length < 2) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        mergeRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          mergeRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to merge the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === DELETE_ROI) {
       if (!roiClicked.length) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        deleteRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          deleteRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to delete the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === PROMOTE_ROI) {
@@ -736,10 +754,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
           }),
         ).unwrap()
       } catch (error) {
-        const message = (error as { message?: string })?.message
-        enqueueSnackbar(message ?? "Failed to set the ROIs as cell ROIs.", {
-          variant: "error",
-        })
+        reportEditError(error, "Failed to set the ROIs as cell ROIs.")
       }
     }
     setAction("")
@@ -789,13 +804,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       }
     } catch (error) {
       // e.g. 409 when the movie this node read was removed or rewritten
-      enqueueSnackbar(
-        getDisplayErrorMessage(
-          error as RejectPayload | undefined,
-          "Failed to commit Edit ROI.",
-        ),
-        { variant: "error" },
-      )
+      reportEditError(error, "Failed to commit Edit ROI.")
     } finally {
       setEdit(false)
       setAction("")
