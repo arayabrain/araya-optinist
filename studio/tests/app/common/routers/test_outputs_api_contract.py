@@ -13,10 +13,20 @@ Tested endpoints:
   - GET /api/visualizations/alltimedata/{path}  -> TimeSeriesData response
   - GET /api/visualizations/data/{path}     -> HeatMapData/ScatterData/BarData response
   - GET /api/visualizations/image/{path}        -> ImageData response
+  - GET /api/visualizations/image/{path}        -> 422 ImagePreviewTooLarge
   - GET /api/visualizations/csv/{path}          -> CsvData response
   - GET /api/visualizations/matlab/{path}       -> MatlabData response
   - GET /api/visualizations/html/{path}         -> HTMLData response
 """
+
+import os
+import shutil
+
+import numpy as np
+import tifffile
+
+from studio.app.common.core.utils import json_writer
+from studio.app.dir_path import DIRPATH
 
 # ============================================================================
 # Frontend Contract Definitions
@@ -52,6 +62,12 @@ IMAGE_RESPONSE_REQUIRED_FIELDS = {
 
 IMAGE_RESPONSE_OPTIONAL_FIELDS = {
     "meta": dict,
+}
+
+# ImagePreviewTooLarge: the image route's 422 for a window too large to preview
+IMAGE_PREVIEW_TOO_LARGE_REQUIRED_FIELDS = {
+    "detail": str,
+    "max_frames": int,
 }
 
 # CsvData/MatlabData response structure
@@ -300,6 +316,34 @@ def test_contract_image_response_with_meta():
         IMAGE_RESPONSE_OPTIONAL_FIELDS,
         context="ImageData response (with meta)",
     )
+
+
+def test_contract_image_preview_too_large_response(client, tmp_path, monkeypatch):
+    """
+    Contract test: the image route's 422 carries a string detail and max_frames.
+    """
+    workspace_id = "test_contract_preview"
+    input_dir = os.path.join(DIRPATH.INPUT_DIR, workspace_id)
+    os.makedirs(input_dir, exist_ok=True)
+    tifffile.imwrite(
+        os.path.join(input_dir, "stack.tif"), np.zeros((5, 8, 6), np.uint16)
+    )
+    monkeypatch.setattr(json_writer, "TIFF_PREVIEW_MAX_PIXELS", 2 * 8 * 6)
+    try:
+        response = client.get(
+            "/api/visualizations/image/stack.tif",
+            params={"workspace_id": workspace_id, "start_index": 1, "end_index": 5},
+        )
+    finally:
+        shutil.rmtree(input_dir, ignore_errors=True)
+
+    assert response.status_code == 422
+    validate_contract(
+        response.json(),
+        IMAGE_PREVIEW_TOO_LARGE_REQUIRED_FIELDS,
+        context="ImagePreviewTooLarge response",
+    )
+    assert response.json()["max_frames"] == 2
 
 
 # ============================================================================
