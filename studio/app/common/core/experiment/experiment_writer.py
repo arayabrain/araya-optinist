@@ -581,14 +581,6 @@ class ExptDataWriter:
             return result
         elif isinstance(obj, np.ndarray):
             if obj.dtype.kind not in "OU":  # only object and str arrays can hold an id
-                # but subclass attributes can, such as a pickled backing-file path
-                memo[obj_id] = (obj, obj)
-                for attr, value in getattr(obj, "__dict__", {}).items():
-                    setattr(
-                        obj,
-                        attr,
-                        self.__replace_ids_recursive(value, old_id, new_id, memo),
-                    )
                 return obj
             memo[obj_id] = (obj, obj)
             if obj.ndim == 0:  # Handle 0D (scalar-like) arrays

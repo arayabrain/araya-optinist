@@ -9,7 +9,7 @@ import pytest
 
 from studio.app.optinist.core.edit_ROI.utils import ellipse_pixels
 from studio.app.optinist.dataclass import EditRoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
+from studio.app.optinist.dataclass.roi import RoiMasks
 from studio.app.optinist.schemas.roi import RoiPos
 
 LY, LX = 7, 5
@@ -207,11 +207,3 @@ def test_a_legacy_stack_converts_when_first_needed(monkeypatch):
     np.testing.assert_array_equal(back.roi_masks.label_image(), nanmax(stack))
     # once converted, the masks are what is written
     assert pickle.loads(pickle.dumps(back))._stack is None
-
-
-def test_a_legacy_roi_stack_converts_from_disk(monkeypatch, tmp_path):
-    stack = random_stack()
-    path = str(tmp_path / "roi_mask_stack.npy")
-    np.save(path, stack)
-    back = pickle.loads(legacy_pickle(monkeypatch, RoiStack.open(path)))
-    np.testing.assert_array_equal(back.roi_masks.label_image(), nanmax(stack))

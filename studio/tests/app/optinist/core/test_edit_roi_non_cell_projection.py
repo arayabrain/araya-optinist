@@ -14,7 +14,7 @@ from studio.app.common.core.utils.pickle_handler import PickleWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, Suite2pData
-from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 # non_cell_roi is rebuilt on every commit, for all four wrappers and all four
 # operations. vacant_roi is the one wrapper importable in CI, so it stands in.
@@ -42,7 +42,7 @@ def node_dirpath(request):
     shutil.rmtree(WORKSPACE, ignore_errors=True)
 
 
-def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
+def build_node(node_dirpath, iscell, num_trace=NUM_ROI, legacy_stack=False):
     os.makedirs(node_dirpath, exist_ok=True)
 
     # commit() reads workflow.yaml to find the nodes downstream of this one; a
@@ -66,9 +66,8 @@ def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
     for i in range(NUM_ROI):
         im[i, i, :] = i
     data = EditRoiData(np.ones((NUM_FRAME, *SHAPE)), RoiMasks.from_stack(im))
-    if on_disk:  # as suite2p_roi stored it before RoiMasks: pickled as `im`
-        np.save(f"{node_dirpath}/roi_mask_stack.npy", im)
-        data.roi_masks = RoiStack.open(f"{node_dirpath}/roi_mask_stack.npy")
+    if legacy_stack:  # as nodes stored it before RoiMasks: pickled as `im`
+        data.roi_masks = im
 
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
@@ -192,9 +191,9 @@ async def test_iscell_keeps_one_entry_per_im_row(node_dirpath):
 
 
 @pytest.mark.asyncio
-async def test_a_delete_only_commit_redraws_from_a_stack_on_disk(node_dirpath):
+async def test_a_delete_only_commit_redraws_from_a_legacy_stack(node_dirpath):
     file_path = build_node(
-        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], on_disk=True
+        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], legacy_stack=True
     )
 
     EditROI(file_path=file_path).delete([1])
@@ -204,9 +203,9 @@ async def test_a_delete_only_commit_redraws_from_a_stack_on_disk(node_dirpath):
     assert drawn_ids(node_dirpath, "cell_roi") == [0]
 
 
-def test_cancel_redraws_cell_roi_from_a_stack_on_disk(node_dirpath):
+def test_cancel_redraws_cell_roi_from_a_legacy_stack(node_dirpath):
     file_path = build_node(
-        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], on_disk=True
+        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], legacy_stack=True
     )
 
     EditROI(file_path=file_path).delete([1])
