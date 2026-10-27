@@ -1528,7 +1528,7 @@ test("PREM-10 - Terminating a premium instance reconciles its database row away 
 })
 
 // Row 6204: two premium users assigning at the same moment must not corrupt the
-// pool. TestConcurrentAssignLock and the GET_LOCK integration lane pin the lock
+// pool. TestConcurrentAssignClaim and the real-MySQL claim lane pin the claim
 // itself; what is unproven is the end state on the real cascade, where every
 // contended assign now falls through to a tier the row's literal "same instance,
 // one shared" outcome never describes (the sheet's own [FLAG: codebase]). So

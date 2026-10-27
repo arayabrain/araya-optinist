@@ -328,6 +328,11 @@ resource "aws_ecs_service" "public" {
     container_port   = 8000
   }
 
+  # Sized for cloud-startup.sh's DB wait (up to 600 s) plus app start; ECS
+  # defaults to 0. Cold starts only: past the ASG's own grace, its ELB check
+  # replaces the instance of a task that goes unhealthy.
+  health_check_grace_period_seconds = 900
+
   depends_on = [
     aws_autoscaling_group.public,
     aws_db_instance.main,

@@ -8,7 +8,7 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import open_frames
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import edit_reference
+from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     distribute_params_to_groups,
@@ -299,7 +299,7 @@ def caiman_cnmf_multisession(
                 lambda: edit_reference(ImageData(split_image_paths), output_dir),
                 output_dir,
             ),
-            cell_ims,
+            RoiMasks.from_stack(cell_ims),
         ),
         "nwbfile": nwbfile,
     }
