@@ -34,6 +34,18 @@ def _time_first(data, n_roi):
     return data
 
 
+def _with_image_mask(roi: dict, shape) -> dict:
+    """The ROI row with a dense float32 image_mask drawn from its pixel_mask,
+    (row, column, weight); a row that has no pixel_mask or has an image_mask
+    already is kept as it is."""
+    if "pixel_mask" not in roi or "image_mask" in roi:
+        return roi
+    pixels = np.asarray(roi["pixel_mask"], dtype=float).reshape(-1, 3)
+    image_mask = np.zeros(shape, dtype=np.float32)
+    image_mask[pixels[:, 0].astype(int), pixels[:, 1].astype(int)] = pixels[:, 2]
+    return {**roi, "image_mask": image_mask}
+
+
 class NWBCreater:
     @classmethod
     def acquisition(cls, config: dict):
@@ -213,10 +225,13 @@ class NWBCreater:
         return nwbfile
 
     @classmethod
-    def roi(cls, nwbfile, function_id, roi_list):
+    def roi(cls, nwbfile, function_id, roi_list, image_mask_shape=None):
         nwbfile = cls.plane_segmentation(nwbfile, function_id)
         image_seg = nwbfile.processing["ophys"].data_interfaces["ImageSegmentation"]
         plane_seg = image_seg.plane_segmentations[function_id]
+
+        if image_mask_shape is not None:
+            roi_list = [_with_image_mask(roi, image_mask_shape) for roi in roi_list]
 
         if roi_list:
             for col in roi_list[0]:
@@ -441,9 +456,12 @@ def set_nwbconfig(nwbfile, config):
             )
 
     if NWBDATASET.ROI in config:
-        for function_key in config[NWBDATASET.ROI]:
+        for function_key, entry in config[NWBDATASET.ROI].items():
             nwbfile = NWBCreater.roi(
-                nwbfile, function_key, config[NWBDATASET.ROI][function_key]["roi_list"]
+                nwbfile,
+                function_key,
+                entry["roi_list"],
+                entry.get("image_mask_shape"),
             )
 
     if NWBDATASET.COLUMN in config:

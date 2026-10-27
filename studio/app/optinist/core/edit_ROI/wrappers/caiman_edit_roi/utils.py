@@ -1,11 +1,20 @@
 import numpy as np
 
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
-from studio.app.optinist.dataclass.roi import EditRoiData, nwb_roi_label_image
+from studio.app.optinist.dataclass.roi import (
+    EditRoiData,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
 
 
 def set_nwbfile(
-    edit_roi_data: EditRoiData, iscell, function_id, rate, fluorescence=None
+    edit_roi_data: EditRoiData,
+    iscell,
+    function_id,
+    rate,
+    fluorescence=None,
+    nwb_settings=None,
 ):
     # NWBの追加
     nwbfile = {}
@@ -26,7 +35,9 @@ def set_nwbfile(
             kargs["pixel_mask"] = np.array([rows, cols, np.ones(rows.size)]).T
             roi_list.append(kargs)
 
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, nwb_settings)
+    }
 
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {

@@ -12,6 +12,7 @@ from studio.app.optinist.dataclass.roi import (
     RoiMasks,
     edit_reference,
     nwb_roi_label_image,
+    nwb_roi_table,
 )
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
@@ -252,7 +253,9 @@ def caiman_cnmf_multisession(
         kargs["pixel_mask"] = nwb_pixel_mask(spatial_filtered, i, dims, swap_dim)
         roi_list.append(kargs)
 
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
     nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 
     # iscellを追加

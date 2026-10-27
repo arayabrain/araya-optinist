@@ -5,7 +5,7 @@ from scipy.ndimage import percentile_filter
 
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData
-from studio.app.optinist.dataclass.roi import nwb_roi_label_image
+from studio.app.optinist.dataclass.roi import nwb_roi_label_image, nwb_roi_table
 
 # numpy ports of what suite2p's extraction does for a manually added ROI
 # (create_cell_pix, extendROI, create_neuropil_masks, extract_traces), so a
@@ -192,7 +192,9 @@ def extract_traces(ops, stat, targets):
     return F, Fneu
 
 
-def set_nwbfile(ops, iscell, edit_roi_data: EditRoiData, function_id):
+def set_nwbfile(
+    ops, iscell, edit_roi_data: EditRoiData, function_id, nwb_settings=None
+):
     stat = ops.get("stat", [])  # Default to empty
     F = ops.get("F", np.zeros((1, 1)))  # Default to minimum
     Fneu = ops.get("Fneu", np.zeros((1, 1)))
@@ -213,7 +215,11 @@ def set_nwbfile(ops, iscell, edit_roi_data: EditRoiData, function_id):
             roi_list.append(kargs)
     nwbfile = {}
 
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(
+            roi_list, edit_roi_data.roi_masks.shape, nwb_settings
+        )
+    }
 
     # iscellを追加
     nwbfile[NWBDATASET.COLUMN] = {

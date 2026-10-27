@@ -253,6 +253,20 @@ def nwb_roi_label_image(label_image: np.ndarray) -> dict:
     return {"all_roi_label_img": label_image[np.newaxis]}
 
 
+def nwb_roi_table(roi_list: list, shape, nwb_settings: dict = None) -> dict:
+    """
+    The NWB ROI entry of a node. With the NWB setting
+    ophys.plane_segmentation.save_image_mask on, it carries the frame shape, and
+    the file also gets a dense image_mask per ROI, drawn from the pixel masks only
+    as the file is written: node pickles keep the pixel lists alone.
+    """
+    entry = {"roi_list": roi_list}
+    ophys = (nwb_settings or {}).get("ophys") or {}
+    if (ophys.get("plane_segmentation") or {}).get("save_image_mask", False):
+        entry["image_mask_shape"] = tuple(int(n) for n in shape)
+    return entry
+
+
 class EditRoiData(BaseData):
     def __init__(self, images, roi_masks: RoiMasks):
         if not isinstance(roi_masks, RoiMasks):

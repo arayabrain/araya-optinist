@@ -21,6 +21,7 @@ from studio.app.optinist.dataclass.roi import (
     RoiMasks,
     edit_reference,
     nwb_roi_label_image,
+    nwb_roi_table,
 )
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
@@ -627,7 +628,9 @@ def caiman_cnmf(
 
     # NWB additions
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
     all_roi = roi_masks.label_image()
     nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 

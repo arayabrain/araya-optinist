@@ -17,7 +17,14 @@ from studio.app.optinist.dataclass import (
 from studio.app.optinist.schemas.roi import RoiPos
 
 
-def commit_edit(data: EditRoiData, ops: Suite2pData, iscell, node_dirpath, function_id):
+def commit_edit(
+    data: EditRoiData,
+    ops: Suite2pData,
+    iscell,
+    node_dirpath,
+    function_id,
+    nwb_settings=None,
+):
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
     ops = ops.data
@@ -67,6 +74,6 @@ def commit_edit(data: EditRoiData, ops: Suite2pData, iscell, node_dirpath, funct
             file_name="cell_roi",
         ),
         "edit_roi_data": data,
-        "nwbfile": set_nwbfile(ops, iscell, data, function_id),
+        "nwbfile": set_nwbfile(ops, iscell, data, function_id, nwb_settings),
     }
     return info

@@ -362,10 +362,23 @@ def _label_img(info):
     return postprocess["all_roi_label_img"]
 
 
-def _run(tmp_path, output_dir):
+def _run(tmp_path, output_dir, nwbfile=None):
     return suite2p_roi(
-        _registered_ops(tmp_path), output_dir, params=read_default_params("suite2p_roi")
+        _registered_ops(tmp_path),
+        output_dir,
+        params=read_default_params("suite2p_roi"),
+        nwbfile=nwbfile or {},
     )
+
+
+def test_the_image_mask_setting_asks_the_roi_table_for_the_frame_shape(
+    output_dir, tmp_path, suite2p_stub
+):
+    settings = {"ophys": {"plane_segmentation": {"save_image_mask": True}}}
+    (entry,) = _run(tmp_path, output_dir, settings)["nwbfile"]["ROI"].values()
+    assert entry["image_mask_shape"] == (LY, LX)
+    # the pickle keeps pixel lists: the dense masks are drawn as the file is written
+    assert all(set(roi) == {"pixel_mask"} for roi in entry["roi_list"])
 
 
 def test_the_rois_are_kept_as_pixel_lists_and_no_stack_is_written(

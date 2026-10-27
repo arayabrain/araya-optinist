@@ -13,7 +13,11 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
-from studio.app.optinist.dataclass.roi import RoiMasks, nwb_roi_label_image
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -144,7 +148,9 @@ def suite2p_roi(
 
     # Prepare NWB output
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
     all_roi = roi_masks.label_image()
     nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
     nwbfile[NWBDATASET.COLUMN] = {
