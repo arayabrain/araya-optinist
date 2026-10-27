@@ -1,5 +1,6 @@
 import asyncio
 import os
+import pickle
 import shutil
 from glob import glob
 from pathlib import Path
@@ -26,6 +27,7 @@ from studio.app.const import ORIGINAL_DATA_EXT
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 SHAPE = (3, 4)
 FRAMES = 6
@@ -38,7 +40,7 @@ def roi_node_output(node_type, with_dff=True):
         im[i, i, :] = i
     fluo = np.arange(3 * FRAMES, dtype=float).reshape(3, FRAMES)
     info = {
-        "edit_roi_data": EditRoiData(images=None, im=im),
+        "edit_roi_data": EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im)),
         "fluorescence": FluoData(fluo, file_name="fluorescence"),
         "iscell": IscellData(np.array([1, 0, 1])),
         "nwbfile": {node_type: {NWBDATASET.POSTPROCESS: {node_type: {}}}},
@@ -102,6 +104,27 @@ def test_lccd_keeps_its_own_roi_images_and_trims_dff(tmp_path):
     np.testing.assert_array_equal(info["dff"].data, output["dff"].data[:, 1:4])
 
 
+def test_a_node_pickled_before_roi_masks_filters_the_same(tmp_path):
+    want = WorkflowNodeDataFilter.filter_data(
+        roi_node_output("caiman_cnmf"), PARAM, "caiman_cnmf", str(tmp_path / "new")
+    )
+    # an older pickle holds the stack as `im`
+    output = roi_node_output("caiman_cnmf")
+    data = output["edit_roi_data"]
+    data.roi_masks = np.stack([data.roi_masks.label_image([i]) for i in range(3)])
+    output["edit_roi_data"] = pickle.loads(pickle.dumps(data))
+
+    info = WorkflowNodeDataFilter.filter_data(
+        output, PARAM, "caiman_cnmf", str(tmp_path / "old")
+    )
+
+    for key in ("cell_roi", "non_cell_roi", "all_roi"):
+        np.testing.assert_array_equal(info[key].data, want[key].data)
+    np.testing.assert_array_equal(info["iscell"].data, want["iscell"].data)
+    # converted before the copy, so the copy was made of pixel lists
+    assert output["edit_roi_data"]._stack is None
+
+
 WORKSPACE, UNIQUE_ID, NODE_ID = "filter_reset_ws", "00000000", "caiman_cnmf_0000"
 COPY_ID = "11111111"
 
@@ -129,12 +152,12 @@ def ran_node_dir(monkeypatch, with_dff):
 
     output = roi_node_output("caiman_cnmf", with_dff)
     output["cell_roi"] = RoiData(
-        np.nanmax(output["edit_roi_data"].im[[0, 2]], axis=0),
+        output["edit_roi_data"].roi_masks.label_image([0, 2]),
         output_dir=node_dirpath,
         file_name="cell_roi",
     )
     output["non_cell_roi"] = RoiData(
-        np.nanmax(output["edit_roi_data"].im[[1]], axis=0),
+        output["edit_roi_data"].roi_masks.label_image([1]),
         output_dir=node_dirpath,
         file_name="non_cell_roi",
     )
@@ -191,6 +214,43 @@ def test_a_rerun_voids_the_filter_backup_so_the_next_filter_starts_from_the_new_
 
     filtered = PickleReader.read(f"{ran_node_dir}/caiman_cnmf.pkl")
     assert filtered["fluorescence"].data.min() >= 1000
+
+
+@pytest.mark.parametrize("with_dff", [True])
+def test_a_filter_converts_an_older_node_backup_once(
+    ran_node_dir, with_dff, monkeypatch
+):
+    # the node's pickle as an older release wrote it: the stack in `im`
+    pkl = f"{ran_node_dir}/caiman_cnmf.pkl"
+    output = PickleReader.read(pkl)
+    data = output["edit_roi_data"]
+    rois = data.roi_masks.label_image()
+    data.roi_masks = np.stack([data.roi_masks.label_image([i]) for i in range(3)])
+    PickleWriter.write(pkl, output)
+
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    first = PickleReader.read(pkl)
+
+    # the backup holds pixel lists from then on: no second conversion
+    backup = PickleReader.read(f"{pkl}{ORIGINAL_DATA_EXT}")
+    assert backup["edit_roi_data"]._stack is None
+    assert glob(f"{ran_node_dir}/*.tmp") == []
+
+    def converted_again(cls, stack):
+        pytest.fail("the backup's stack was converted again")
+
+    monkeypatch.setattr(RoiMasks, "from_stack", classmethod(converted_again))
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(PARAM)
+    second = PickleReader.read(pkl)
+    for key in ("cell_roi", "non_cell_roi", "all_roi"):
+        np.testing.assert_array_equal(second[key].data, first[key].data)
+
+    # a reset restores the backup: the same ROIs, as pixel lists
+    WorkflowNodeDataFilter(WORKSPACE, UNIQUE_ID, NODE_ID).filter_node_data(None)
+    restored = PickleReader.read(pkl)
+    np.testing.assert_array_equal(
+        restored["edit_roi_data"].roi_masks.label_image(), rois
+    )
 
 
 def reachable_strings(obj, seen=None):

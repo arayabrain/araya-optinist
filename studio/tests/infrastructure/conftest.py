@@ -1,9 +1,12 @@
 """Shared fixtures and path setup for Lambda infrastructure tests."""
 
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pymysql
 import pytest
 
 # Compute project root from conftest location:
@@ -141,6 +144,102 @@ def mock_env_vars_free():
 @pytest.fixture
 def mock_env_vars_common():
     return {**MOCK_ENV_VARS_COMMON}
+
+
+class FakeAssignClaimsDb:
+    """In-memory premium_assign_claims behind a fake get_db_connection.
+
+    Mirrors the assign-claim statements (INSERT, takeover UPDATE, renewal
+    UPDATE, SELECT, DELETE) with a settable clock, and answers IS_FREE_LOCK
+    from ``session_locks``. Other statements are no-ops returning no rows.
+    It does not parse SQL: the predicates themselves are pinned by the
+    real-MySQL tests in test_premium_lock_integration.py.
+    """
+
+    def __init__(self, missing_table=False):
+        self.rows = {}  # user_id -> {"claim_token", "expires_at"}
+        self.now = 0.0
+        self.missing_table = missing_table
+        self.session_locks = set()  # GET_LOCK names held by other sessions
+        self.fail_on = None  # (statement substring, exception to raise)
+        self._guard = threading.Lock()
+
+    def _execute(self, cursor, sql, params=()):
+        statement = " ".join(sql.split())
+        cursor.rowcount = 0
+        if self.fail_on and self.fail_on[0] in statement:
+            raise self.fail_on[1]
+        if "IS_FREE_LOCK" in statement:
+            cursor.result = {"is_free": 0 if params[0] in self.session_locks else 1}
+            return
+        if "premium_assign_claims" not in statement:
+            cursor.result = None
+            return
+        if self.missing_table:
+            raise pymysql.err.ProgrammingError(
+                1146, "Table 'premium_assign_claims' doesn't exist"
+            )
+        with self._guard:
+            if statement.startswith("INSERT"):
+                user_id, token, ttl = params
+                if user_id in self.rows:
+                    raise pymysql.err.IntegrityError(1062, "Duplicate entry")
+                self.rows[user_id] = {
+                    "claim_token": token,
+                    "expires_at": self.now + ttl,
+                }
+            elif statement.startswith("UPDATE") and "SET claim_token" in statement:
+                token, ttl, user_id = params
+                row = self.rows.get(user_id)
+                if row and row["expires_at"] < self.now:
+                    self.rows[user_id] = {
+                        "claim_token": token,
+                        "expires_at": self.now + ttl,
+                    }
+            elif statement.startswith("UPDATE"):
+                ttl, user_id, token = params
+                row = self.rows.get(user_id)
+                if row and row["claim_token"] == token:
+                    row["expires_at"] = self.now + ttl
+            elif statement.startswith("SELECT"):
+                row = self.rows.get(params[0])
+                cursor.result = {"claim_token": row["claim_token"]} if row else None
+            elif statement.startswith("DELETE"):
+                user_id, token = params
+                row = self.rows.get(user_id)
+                if row and row["claim_token"] == token:
+                    del self.rows[user_id]
+                    cursor.rowcount = 1
+
+    def get_db_connection(self, auto_commit=False):
+        db = self
+
+        class _Cursor:
+            result = None
+            rowcount = 0
+
+            def execute(self, sql, params=()):
+                db._execute(self, sql, params)
+
+            def fetchone(self):
+                return self.result
+
+            def fetchall(self):
+                return []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        @contextmanager
+        def _connection():
+            connection = MagicMock()
+            connection.cursor.side_effect = lambda *a, **k: _Cursor()
+            yield connection
+
+        return _connection()
 
 
 def setup_db_mock(fetchone_values=None, fetchall_values=None):

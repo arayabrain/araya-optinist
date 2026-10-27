@@ -61,6 +61,17 @@ def data_block(tf: str, data_type: str, name: str) -> str:
     return match.group()
 
 
+def variable_block(tf: str, name: str) -> str:
+    """Return the source of one ``variable "<name>"`` block."""
+    match = re.search(
+        r'^variable\s+"%s"\s*\{.*?%s' % (re.escape(name), NEXT_TOP_LEVEL_BLOCK),
+        tf,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, f'variable "{name}" not found'
+    return match.group()
+
+
 def check_block(tf: str, name: str) -> str:
     """Return the source of one ``check "<name>"`` block."""
     match = re.search(

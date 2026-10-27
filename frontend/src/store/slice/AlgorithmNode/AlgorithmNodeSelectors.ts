@@ -48,11 +48,12 @@ export const selectAlgorithmDataFilterParamObject =
 
 export const selectAlgorithmIsUpdated =
   (nodeId: string) => (state: RootState) => {
-    const isUpdate = selectAlgorithmNodeById(nodeId)(state).isUpdate
-    const originalValue = selectAlgorithmNodeById(nodeId)(state).originalValue
+    const { isUpdate, originalValue, paramsAdded } =
+      selectAlgorithmNodeById(nodeId)(state)
     const param = selectAlgorithmParams(nodeId)(state)
     return (
-      !(JSON.stringify(originalValue) === JSON.stringify(param)) && isUpdate
+      !!paramsAdded ||
+      (!(JSON.stringify(originalValue) === JSON.stringify(param)) && isUpdate)
     )
   }
 
