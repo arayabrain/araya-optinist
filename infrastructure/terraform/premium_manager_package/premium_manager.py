@@ -877,8 +877,9 @@ def get_all_premium_instances_with_states(raise_on_error: bool = False):
     contamination (e.g., development Lambda discovering production instances).
 
     On an EC2 error, returns [] unless raise_on_error is set. A caller that
-    deletes rows for instances missing from the result must set it: [] would
-    read as "no premium instance exists".
+    deletes rows for instances missing from the result, or launches instances
+    for capacity it does not see, must set it: [] would read as "no premium
+    instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = EnvironmentConfig.get_env_prefix()
@@ -3996,8 +3997,9 @@ def scale_premium_instances_if_needed():
         # Get dynamic capacity limits based on premium users
         max_capacity = get_dynamic_max_capacity()
 
-        # Get all premium instances with their states
-        all_instances = get_all_premium_instances_with_states()
+        # Get all premium instances with their states. Raises on an EC2 error:
+        # [] would read as no instance running and launch new ones.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
         active_users = count_active_premium_users()
 
         running_instances = [
