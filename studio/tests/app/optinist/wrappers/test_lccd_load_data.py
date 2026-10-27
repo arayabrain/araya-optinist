@@ -228,5 +228,6 @@ def test_vacant_roi_outputs_follow_the_frame_orientation(tmp_path):
     output_dir.mkdir(parents=True)
     info = vacant_roi(ImageData([path]), str(output_dir), params={})
 
-    assert info["edit_roi_data"].im.shape == (0, 16, 12)
+    roi_masks = info["edit_roi_data"].roi_masks
+    assert len(roi_masks) == 0 and roi_masks.shape == (16, 12)
     assert info["all_roi"].data.shape == (16, 12)
