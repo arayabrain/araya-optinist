@@ -259,10 +259,7 @@ class EditRoiData(BaseData):
 
     @property
     def roi_masks(self) -> RoiMasks:
-        # a pickle from before RoiMasks holds a stack as `im`: converted on first use
-        if self._roi_masks is None:
-            self._roi_masks = RoiMasks.from_stack(self._stack)
-            self._stack = None
+        self.convert_legacy_stack()
         return self._roi_masks
 
     @roi_masks.setter
@@ -271,6 +268,13 @@ class EditRoiData(BaseData):
             self._roi_masks, self._stack = value, None
         else:
             self._roi_masks, self._stack = None, value
+
+    def convert_legacy_stack(self) -> bool:
+        """Convert the stack an older pickle held as `im`; True if there was one."""
+        if self._roi_masks is not None:
+            return False
+        self.roi_masks = RoiMasks.from_stack(self._stack)
+        return True
 
     def __getstate__(self):
         # plain arrays, no RoiMasks class, so an earlier release still loads it

@@ -356,3 +356,21 @@ def test_a_delete_of_unknown_rois_is_refused(file_path):
             EditROI(file_path=file_path).delete(ids)
         assert exc.value.status_code == 400, ids
         assert pending_state(file_path) == before, ids
+
+
+def test_a_merge_of_rois_that_are_not_cells_is_refused(file_path):
+    # 0 and 1 become pending deletions, the merge's ROI NUM_ROI a pending add
+    EditROI(file_path=file_path).merge([0, 1])
+
+    def refused(ids):
+        before = pending_state(file_path)
+        with pytest.raises(HTTPException) as exc:
+            EditROI(file_path=file_path).merge(ids)
+        assert exc.value.status_code == 400, ids
+        assert "not cells" in exc.value.detail, ids
+        assert pending_state(file_path) == before, ids
+
+    refused([1, NUM_ROI])  # a source of the pending merge
+    refused([2, NUM_ROI])  # a non-cell
+    EditROI(file_path=file_path).promote([2])
+    refused([2, NUM_ROI])  # a pending promotion

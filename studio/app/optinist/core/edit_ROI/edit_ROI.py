@@ -141,6 +141,17 @@ class EditROI:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"a merge needs two ROIs or more: {ids}",
             )
+        # a deleted or merged ROI, or a non-cell, is not merged again
+        not_cells = [
+            id
+            for id in ids
+            if self.tmp_iscell[id] not in (CellType.ROI, CellType.TEMP_ADD)
+        ]
+        if not_cells:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ROIs are not cells: {not_cells}",
+            )
         roi_masks = self.tmp_data.roi_masks
         self.tmp_data.temp_merge_roi[float(self.num_cell)] = ids
         roi_masks.append(roi_masks.union(ids))
