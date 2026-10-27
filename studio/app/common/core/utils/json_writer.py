@@ -70,8 +70,8 @@ class JsonWriter:
             return obj
 
 
-# A preview request costs about 75 bytes per pixel end to end for integers up to
-# 16 bits and about 93 for floats, which print longer, so a window is bounded by
+# A preview request costs about 50 bytes per pixel end to end for integers up to
+# 16 bits and about 76 for floats, which print longer, so a window is bounded by
 # pixel count per kind. Sized for the smallest tier's API process.
 TIFF_PREVIEW_MAX_PIXELS = 8 * 2**20
 # Floats and integers wider than 16 bits
