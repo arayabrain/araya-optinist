@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from fastapi import HTTPException, status
 from filelock import FileLock, Timeout
-from psutil import AccessDenied, NoSuchProcess, Process, ZombieProcess, process_iter
+from psutil import AccessDenied, NoSuchProcess, Process, process_iter
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
@@ -838,10 +838,8 @@ class WorkflowMonitor:
                     else:
                         continue  # skip that process
 
-                except AccessDenied:
-                    continue  # skip that process
-                except ZombieProcess:
-                    continue  # skip that process
+                except (AccessDenied, NoSuchProcess):
+                    continue  # skip that process, also one that exited mid-read
 
         # Rescue action when process not found
         if process_data is None:
