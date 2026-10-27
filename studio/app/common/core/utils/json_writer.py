@@ -85,6 +85,8 @@ class TiffPreviewTooLargeError(ValueError):
 
     def __init__(self, message: str, max_frames: int):
         super().__init__(message)
+        # The message for the client
+        self.detail = message
         # Frames from the window's start that fit; 0 if no window of this file does
         self.max_frames = max_frames
 

@@ -1,12 +1,13 @@
 import asyncio
 import os
+import threading
 from typing import Optional
 
 import h5py
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
@@ -56,6 +57,8 @@ logger = AppLogger.get_logger()
 # bounded; a request waiting longer than this is answered 429
 TIFF_PREVIEW_WAIT_SECONDS = 30
 _tiff_preview_lock = asyncio.Lock()
+# Also held by the thread, which outlives a cancelled request's await
+_tiff_preview_thread_lock = threading.Lock()
 
 
 async def get_or_generate_thumbnail(
@@ -889,22 +892,30 @@ async def get_image(
     return JsonReader.read_as_output(json_filepath)
 
 
+def _tiff_preview_body(
+    tiff_filepath: str,
+    save_dirpath: str,
+    json_filepath: str,
+    start_index: int,
+    end_index: int,
+) -> bytes:
+    with _tiff_preview_thread_lock:
+        # A request queued behind the same window finds it written
+        if not os.path.exists(json_filepath):
+            save_tiff2json(tiff_filepath, save_dirpath, start_index, end_index)
+        return JsonReader.read_as_output_bytes(json_filepath)
+
+
 async def _read_tiff_preview(
     tiff_filepath: str,
     save_dirpath: str,
     json_filepath: str,
     start_index: int,
     end_index: int,
-) -> OutputData | JSONResponse:
+) -> Response:
     """
-    A TIFF preview's JSON, written first in a thread if missing.
-
-    Builds and reads share the lock, so one preview at a time is in memory per
-    process: a read on the event loop never overlaps a build in its thread, and
-    FastAPI encodes the response before the loop runs another request.
-
-    A window too large to preview is answered 422 with `max_frames`, the frames
-    from its start that fit, so a view without a range control can fit itself.
+    A TIFF preview's JSON, built if missing, one at a time per process; 422 with
+    max_frames for a window too large.
     """
     try:
         async with asyncio.timeout(TIFF_PREVIEW_WAIT_SECONDS):
@@ -916,19 +927,23 @@ async def _read_tiff_preview(
             headers={"Retry-After": "5"},
         )
     try:
-        # A request queued behind the same window finds it written
-        if not os.path.exists(json_filepath):
-            await asyncio.to_thread(
-                save_tiff2json, tiff_filepath, save_dirpath, start_index, end_index
-            )
-        return JsonReader.read_as_output(json_filepath)
+        body = await asyncio.to_thread(
+            _tiff_preview_body,
+            tiff_filepath,
+            save_dirpath,
+            json_filepath,
+            start_index,
+            end_index,
+        )
     except TiffPreviewTooLargeError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"detail": str(e), "max_frames": e.max_frames},
+            content={"detail": e.detail, "max_frames": e.max_frames},
         )
     finally:
         _tiff_preview_lock.release()
+    # Served as written: parsing and encoding it again would hold the event loop
+    return Response(content=body, media_type="application/json")
 
 
 @router.get("/csv/{filepath:path}", response_model=OutputData)

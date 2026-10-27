@@ -5,9 +5,12 @@ route: the window bound as an HTTP answer, and how previews share the process.
 """
 
 import asyncio
+import json
 import os
 import shutil
+import threading
 import time
+from dataclasses import asdict
 
 import numpy as np
 import pytest
@@ -16,6 +19,7 @@ from fastapi import HTTPException
 
 from studio.app.common.core.utils import json_writer
 from studio.app.common.routers import outputs
+from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
 
 WORKSPACE_ID = "test_tiff_preview"
@@ -46,9 +50,9 @@ def reads(monkeypatch):
 
     def read(filepath):
         paths.append(filepath)
-        return filepath
+        return b"{}"
 
-    monkeypatch.setattr(outputs.JsonReader, "read_as_output", read)
+    monkeypatch.setattr(outputs.JsonReader, "read_as_output_bytes", read)
     return paths
 
 
@@ -74,6 +78,18 @@ def test_a_window_is_served_from_the_frames_it_names(client, input_dir):
 
     assert response.status_code == 200, response.text
     assert response.json()["data"] == STACK[2:7].tolist()
+
+
+def test_a_cached_preview_is_served_as_written(client, input_dir):
+    get_preview(client, 3, 7)
+    with open(os.path.join(input_dir, "stack", "stack_3_7.json"), "rb") as f:
+        cached = f.read()
+
+    response = get_preview(client, 3, 7)
+
+    assert response.status_code == 200, response.text
+    meta = json.dumps(asdict(PlotMetaData())).encode()
+    assert response.content == b'{"meta":' + meta + b"," + cached[1:]
 
 
 def test_a_window_over_the_budget_is_422_with_the_range_that_fits(
@@ -126,10 +142,10 @@ async def test_a_cached_preview_is_not_read_during_another_build(
 
     def read(filepath):
         read_while_building.append(bool(building))
-        return filepath
+        return b"{}"
 
     monkeypatch.setattr(outputs, "save_tiff2json", build)
-    monkeypatch.setattr(outputs.JsonReader, "read_as_output", read)
+    monkeypatch.setattr(outputs.JsonReader, "read_as_output_bytes", read)
     (tmp_path / "cached.json").write_text("{}")
 
     async def read_cached_once_the_build_runs():
@@ -141,6 +157,38 @@ async def test_a_cached_preview_is_not_read_during_another_build(
     )
 
     assert read_while_building == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_keeps_the_next_build_waiting(
+    preview_lock, reads, tmp_path, monkeypatch
+):
+    first_build_may_end = threading.Event()
+    running, overlap = [], []
+
+    def build(tiff_filepath, save_dirpath, start_index, end_index):
+        running.append(start_index)
+        overlap.append(len(running))
+        if start_index == 1:
+            first_build_may_end.wait(5)
+        running.remove(start_index)
+
+    monkeypatch.setattr(outputs, "save_tiff2json", build)
+
+    first = asyncio.create_task(read_preview(tmp_path, "1.json", 1, 10))
+    try:
+        await asyncio.sleep(0.1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(read_preview(tmp_path, "11.json", 11, 20))
+        await asyncio.sleep(0.1)
+    finally:
+        first_build_may_end.set()
+    await second
+
+    # the cancelled request's build was still running when the next one was due
+    assert overlap == [1, 1]
 
 
 @pytest.mark.asyncio
