@@ -48,7 +48,8 @@ import {
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
-  getDisplayErrorMessage,
+  getEditRoiErrorMessage,
+  EDIT_ROI_LOCKED_MESSAGE,
   RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -292,10 +293,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       .unwrap()
       .catch((error: RejectPayload) => {
         if (error?.status === 423) {
-          enqueueSnackbar(
-            "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes.",
-            { variant: "warning" },
-          )
+          enqueueSnackbar(EDIT_ROI_LOCKED_MESSAGE, { variant: "warning" })
         }
       })
     //eslint-disable-next-line react-hooks/exhaustive-deps
@@ -681,7 +679,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
   // the server's reason for a refused edit, e.g. an ROI that is not a cell
   const reportEditError = (error: unknown, fallback: string) => {
     enqueueSnackbar(
-      getDisplayErrorMessage(error as RejectPayload | undefined, fallback),
+      getEditRoiErrorMessage(error as RejectPayload | undefined, fallback),
       { variant: "error" },
     )
   }
@@ -756,10 +754,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
           }),
         ).unwrap()
       } catch (error) {
-        const message = (error as { message?: string })?.message
-        enqueueSnackbar(message ?? "Failed to set the ROIs as cell ROIs.", {
-          variant: "error",
-        })
+        reportEditError(error, "Failed to set the ROIs as cell ROIs.")
       }
     }
     setAction("")
@@ -809,13 +804,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       }
     } catch (error) {
       // e.g. 409 when the movie this node read was removed or rewritten
-      enqueueSnackbar(
-        getDisplayErrorMessage(
-          error as RejectPayload | undefined,
-          "Failed to commit Edit ROI.",
-        ),
-        { variant: "error" },
-      )
+      reportEditError(error, "Failed to commit Edit ROI.")
     } finally {
       setEdit(false)
       setAction("")
