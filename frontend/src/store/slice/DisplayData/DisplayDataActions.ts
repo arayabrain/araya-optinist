@@ -338,7 +338,7 @@ export const addRoi = createAsyncThunk<
       await dispatch(getRoiData({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -355,7 +355,7 @@ export const mergeRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -372,7 +372,7 @@ export const deleteRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )

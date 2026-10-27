@@ -4,20 +4,26 @@ import { describe, expect, it, jest } from "@jest/globals"
 import { configureStore } from "@reduxjs/toolkit"
 
 import {
+  addRoiApi,
   commitRoiApi,
+  deleteRoiApi,
   getStatusRoi,
   getTimeSeriesAllDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesInitDataApi,
+  mergeRoiApi,
 } from "api/visualizations/Outputs"
 import {
+  addRoi,
   commitRoi,
+  deleteRoi,
   getDisplayErrorMessage,
   getStatus,
   getTimeSeriesAllData,
   getTimeSeriesDataById,
   getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  mergeRoi,
   RejectPayload,
   retryRejectedTimeSeries,
 } from "store/slice/DisplayData/DisplayDataActions"
@@ -671,6 +677,73 @@ describe("commitRoi", () => {
         "Failed to commit Edit ROI.",
       ),
     ).toBe(detail)
+    expect(store.getState().displayData.loading).toBe(false)
+  })
+})
+
+describe("ROI edits the server refuses", () => {
+  const refusal = (detail: string) => {
+    const error = new AxiosError("Request failed with status code 400")
+    error.response = {
+      status: 400,
+      statusText: "Bad Request",
+      headers: {},
+      config: { headers: new AxiosHeaders() },
+      data: { detail },
+    }
+    return error
+  }
+
+  const newStore = () => configureStore({ reducer: { displayData: reducer } })
+
+  const expectRefusal = (payload: unknown, detail: string) => {
+    expect(payload).toEqual({ status: 400, message: detail })
+    // what ImagePlot's snackbar shows
+    expect(getDisplayErrorMessage(payload as RejectPayload, "Failed.")).toBe(
+      detail,
+    )
+  }
+
+  it("addRoi rejects with the server's reason", async () => {
+    const detail = "the ROI covers no pixel"
+    jest.mocked(addRoiApi).mockRejectedValue(refusal(detail))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      addRoi({
+        path: "/p",
+        workspaceId: 1,
+        data: { posx: 900, posy: 900, sizex: 2, sizey: 2 },
+      }),
+    )
+
+    expectRefusal(result.payload, detail)
+    expect(store.getState().displayData.loading).toBe(false)
+  })
+
+  it("mergeRoi rejects with the server's reason", async () => {
+    const detail = "ROIs are not cells: [1]"
+    jest.mocked(mergeRoiApi).mockRejectedValue(refusal(detail))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      mergeRoi({ path: "/p", workspaceId: 1, data: { ids: [1, 3] } }),
+    )
+
+    expectRefusal(result.payload, detail)
+    expect(store.getState().displayData.loading).toBe(false)
+  })
+
+  it("deleteRoi rejects with the server's reason", async () => {
+    const detail = "no such ROIs: [-1]"
+    jest.mocked(deleteRoiApi).mockRejectedValue(refusal(detail))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      deleteRoi({ path: "/p", workspaceId: 1, data: { ids: [-1] } }),
+    )
+
+    expectRefusal(result.payload, detail)
     expect(store.getState().displayData.loading).toBe(false)
   })
 })

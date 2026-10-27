@@ -678,6 +678,14 @@ const ImagePlotChart = memo(function ImagePlotChart({
     refPageYSize.current = pageY
   }
 
+  // the server's reason for a refused edit, e.g. an ROI that is not a cell
+  const reportEditError = (error: unknown, fallback: string) => {
+    enqueueSnackbar(
+      getDisplayErrorMessage(error as RejectPayload | undefined, fallback),
+      { variant: "error" },
+    )
+  }
+
   const addOrSelectRoi = async () => {
     if (!roiFilePath || !workspaceId || !statusRoi) return
     if (action === ADD_ROI) {
@@ -695,33 +703,45 @@ const ImagePlotChart = memo(function ImagePlotChart({
         sizey: yAdd,
       }
       await dispatch(resetAllOrderList())
-      await dispatch(
-        addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
-      )
+      try {
+        await dispatch(
+          addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to add the ROI.")
+      }
       onCancelAdd()
     }
     if (action === MERGE_ROI) {
       if (roiClicked.length < 2) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        mergeRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          mergeRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to merge the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === DELETE_ROI) {
       if (!roiClicked.length) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        deleteRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          deleteRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to delete the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === PROMOTE_ROI) {
