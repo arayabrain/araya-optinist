@@ -31,12 +31,21 @@ def lccd_config(params):
     return {**flat, **sections}
 
 
+def is_finite_float(value):
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def typed(name, value, kind, errors):
-    """value if it is an "integer" or a finite "number", else None and an error."""
-    ok = not isinstance(value, bool) and (
-        isinstance(value, int)
-        or (kind == "number" and isinstance(value, float) and math.isfinite(value))
-    )
+    """value if it is an "integer", or a "number" that is a finite float, else
+    None and an error."""
+    if kind == "integer":
+        ok = isinstance(value, int)
+    else:
+        ok = isinstance(value, (int, float)) and is_finite_float(value)
+    ok = ok and not isinstance(value, bool)
     if not ok:
         expected = "an integer" if kind == "integer" else "a finite number"
         errors.append(f"{name} must be {expected}, got {value!r:.100}")

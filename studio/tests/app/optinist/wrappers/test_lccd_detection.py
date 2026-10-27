@@ -130,6 +130,7 @@ def test_none_params_pass():
         ("lccd", "frame_divider", None, "must be an integer"),
         ("blob_detector", "sigma", "1.25", "sigma must be a finite number"),
         ("blob_detector", "sigma", float("nan"), "sigma must be a finite number"),
+        ("blob_detector", "sigma", 10**400, "sigma must be a finite number"),
         ("roi_integration", "overlap_threshold", True, "must be a finite number"),
         (
             "blob_detector",
@@ -161,7 +162,6 @@ def test_single_rule_violations(section, key, value, expected):
         ("blob_detector", "max_area", ROWS * COLS * 10),
         ("blob_detector", "min_area", 4.5),
         ("lccd", "frame_divider", N_TIME),
-        ("blob_detector", "sigma", 10**400),
     ],
 )
 def test_values_that_run_are_accepted(section, key, value):
@@ -241,7 +241,9 @@ def test_lccd_detect_builds_lccd_per_stage(images, output_dir, lccd_stub):
 def test_lccd_detect_runs_on_non_square_frames(images, output_dir, lccd_stub):
     info = lccd_detect(images, output_dir, params=valid_params())
     assert info["fluorescence"].data.shape == (3, N_TIME)
-    assert info["edit_roi_data"].im.shape == (3, ROWS, COLS)
+    roi_masks = info["edit_roi_data"].roi_masks
+    assert len(roi_masks) == 3
+    assert roi_masks.shape == (ROWS, COLS)
 
 
 @pytest.fixture
