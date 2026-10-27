@@ -237,9 +237,10 @@ variable "premium_instance_type" {
 
 # Workflow task and host sizes per tier. A tfvars override names only the
 # fields it changes, e.g. premium_tier_sizing = { task_memory_mib = ... }; the
-# others keep these defaults. An unknown or null field fails the plan: an
-# object type would drop a misspelled field silently. Host swap is the whole
-# swap volume (ecs-user-data.sh runs mkswap on the device)
+# others keep these defaults. An unknown, null, fractional or too-small field
+# fails the plan: an object type would drop a misspelled field silently. Rules
+# across fields are preconditions on the task definitions (compute.tf). Host
+# swap is the whole swap volume (ecs-user-data.sh runs mkswap on the device)
 locals {
   free_tier_sizing_defaults = {
     task_cpu                         = 2048
@@ -265,10 +266,30 @@ locals {
     swap_volume_gib                  = 32
   }
 
-  # Read by the resources. A validation cannot refer to these (they depend on
-  # the variable), so the rules below repeat the merge
-  free_tier_sizing    = merge(local.free_tier_sizing_defaults, var.free_tier_sizing)
-  premium_tier_sizing = merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing)
+  # Smallest whole value per field: 0 where ECS accepts none, the AMI
+  # snapshot size (stock and custom) for the root volume
+  tier_sizing_minimums = {
+    task_cpu                         = 1
+    task_memory_mib                  = 1
+    container_cpu                    = 0
+    container_memory_mib             = 1
+    container_memory_reservation_mib = 1
+    container_max_swap_mib           = 0
+    container_swappiness             = 0
+    root_volume_gib                  = 30
+    swap_volume_gib                  = 1
+  }
+
+  # Read by the resources. A null field is dropped here so that only the
+  # variable's own rule reports it
+  free_tier_sizing = merge(
+    local.free_tier_sizing_defaults,
+    { for field, value in var.free_tier_sizing : field => value if value != null }
+  )
+  premium_tier_sizing = merge(
+    local.premium_tier_sizing_defaults,
+    { for field, value in var.premium_tier_sizing : field => value if value != null }
+  )
 }
 
 variable "free_tier_sizing" {
@@ -288,50 +309,21 @@ variable "free_tier_sizing" {
   }
 
   validation {
-    condition = (
-      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_memory_mib
-      <= merge(local.free_tier_sizing_defaults, var.free_tier_sizing).task_memory_mib
-    )
-    error_message = "free_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    condition     = alltrue([for value in values(var.free_tier_sizing) : value == null || value == floor(value)])
+    error_message = "free_tier_sizing: fields must be whole numbers."
   }
 
   validation {
-    condition = (
-      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_memory_reservation_mib
-      < merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_memory_mib
-    )
-    error_message = "free_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    condition = alltrue([
+      for field, value in var.free_tier_sizing :
+      value == null || !contains(keys(local.tier_sizing_minimums), field) || value >= local.tier_sizing_minimums[field]
+    ])
+    error_message = "free_tier_sizing: below the minimum in local.tier_sizing_minimums: ${join(", ", [for field, value in var.free_tier_sizing : field if value != null && value < lookup(local.tier_sizing_minimums, field, value)])}. A swap volume of 0 needs a change to the launch template."
   }
 
   validation {
-    condition = (
-      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_cpu
-      <= merge(local.free_tier_sizing_defaults, var.free_tier_sizing).task_cpu
-    )
-    error_message = "free_tier_sizing: container_cpu must not exceed task_cpu."
-  }
-
-  validation {
-    condition = (
-      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).swap_volume_gib >= 1
-    )
-    error_message = "free_tier_sizing: swap_volume_gib must be at least 1; running without a swap volume needs a change to the launch template."
-  }
-
-  validation {
-    condition = (
-      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_max_swap_mib
-      <= merge(local.free_tier_sizing_defaults, var.free_tier_sizing).swap_volume_gib * 1024
-    )
-    error_message = "free_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
-  }
-
-  validation {
-    condition = (
-      merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_swappiness >= 0
-      && merge(local.free_tier_sizing_defaults, var.free_tier_sizing).container_swappiness <= 100
-    )
-    error_message = "free_tier_sizing: container_swappiness must be between 0 and 100."
+    condition     = lookup(var.free_tier_sizing, "container_swappiness", null) == null || lookup(var.free_tier_sizing, "container_swappiness", 0) <= 100
+    error_message = "free_tier_sizing: container_swappiness must not exceed 100."
   }
 }
 
@@ -352,50 +344,21 @@ variable "premium_tier_sizing" {
   }
 
   validation {
-    condition = (
-      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_memory_mib
-      <= merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).task_memory_mib
-    )
-    error_message = "premium_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    condition     = alltrue([for value in values(var.premium_tier_sizing) : value == null || value == floor(value)])
+    error_message = "premium_tier_sizing: fields must be whole numbers."
   }
 
   validation {
-    condition = (
-      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_memory_reservation_mib
-      < merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_memory_mib
-    )
-    error_message = "premium_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    condition = alltrue([
+      for field, value in var.premium_tier_sizing :
+      value == null || !contains(keys(local.tier_sizing_minimums), field) || value >= local.tier_sizing_minimums[field]
+    ])
+    error_message = "premium_tier_sizing: below the minimum in local.tier_sizing_minimums: ${join(", ", [for field, value in var.premium_tier_sizing : field if value != null && value < lookup(local.tier_sizing_minimums, field, value)])}. A swap volume of 0 needs a change to the launch template."
   }
 
   validation {
-    condition = (
-      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_cpu
-      <= merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).task_cpu
-    )
-    error_message = "premium_tier_sizing: container_cpu must not exceed task_cpu."
-  }
-
-  validation {
-    condition = (
-      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).swap_volume_gib >= 1
-    )
-    error_message = "premium_tier_sizing: swap_volume_gib must be at least 1; running without a swap volume needs a change to the launch template."
-  }
-
-  validation {
-    condition = (
-      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_max_swap_mib
-      <= merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).swap_volume_gib * 1024
-    )
-    error_message = "premium_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
-  }
-
-  validation {
-    condition = (
-      merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_swappiness >= 0
-      && merge(local.premium_tier_sizing_defaults, var.premium_tier_sizing).container_swappiness <= 100
-    )
-    error_message = "premium_tier_sizing: container_swappiness must be between 0 and 100."
+    condition     = lookup(var.premium_tier_sizing, "container_swappiness", null) == null || lookup(var.premium_tier_sizing, "container_swappiness", 0) <= 100
+    error_message = "premium_tier_sizing: container_swappiness must not exceed 100."
   }
 }
 

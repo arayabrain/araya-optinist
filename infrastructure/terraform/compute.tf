@@ -875,6 +875,30 @@ resource "aws_ecs_task_definition" "autoscaling" {
   tags = {
     Name = "${local.env_prefix}-cloud-taskdef"
   }
+
+  # Rules across free_tier_sizing's fields (main.tf). Preconditions fail the
+  # plan too, and unlike a variable validation can read the merged sizes
+  lifecycle {
+    precondition {
+      condition     = local.free_tier_sizing.container_memory_mib <= local.free_tier_sizing.task_memory_mib
+      error_message = "free_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_memory_reservation_mib < local.free_tier_sizing.container_memory_mib
+      error_message = "free_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_cpu <= local.free_tier_sizing.task_cpu
+      error_message = "free_tier_sizing: container_cpu must not exceed task_cpu."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_max_swap_mib <= local.free_tier_sizing.swap_volume_gib * 1024
+      error_message = "free_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
+  }
 }
 
 
@@ -1123,6 +1147,30 @@ resource "aws_ecs_task_definition" "premium" {
   tags = {
     Name = "${var.environment}-premium-optinist-cloud-taskdef"
     Tier = "premium"
+  }
+
+  # Rules across premium_tier_sizing's fields (main.tf); see the free task
+  # definition
+  lifecycle {
+    precondition {
+      condition     = local.premium_tier_sizing.container_memory_mib <= local.premium_tier_sizing.task_memory_mib
+      error_message = "premium_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_memory_reservation_mib < local.premium_tier_sizing.container_memory_mib
+      error_message = "premium_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_cpu <= local.premium_tier_sizing.task_cpu
+      error_message = "premium_tier_sizing: container_cpu must not exceed task_cpu."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_max_swap_mib <= local.premium_tier_sizing.swap_volume_gib * 1024
+      error_message = "premium_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
   }
 }
 

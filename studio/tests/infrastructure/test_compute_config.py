@@ -227,23 +227,38 @@ TIER_SIZING_DEFAULTS = {
     },
 }
 
-# Validation conditions per tier variable, whitespace collapsed: {v} is the
-# variable, {m} its tier's defaults merged with it
+TIER_SIZING_MINIMUMS = {
+    "task_cpu": 1,
+    "task_memory_mib": 1,
+    "container_cpu": 0,
+    "container_memory_mib": 1,
+    "container_memory_reservation_mib": 1,
+    "container_max_swap_mib": 0,
+    "container_swappiness": 0,
+    "root_volume_gib": 30,
+    "swap_volume_gib": 1,
+}
+
+# Single-field rules, as validations of each tier variable ({v})
 TIER_SIZING_RULES = [
     "length(setsubtract(keys(var.{v}), keys(local.{v}_defaults))) == 0",
     "alltrue([for value in values(var.{v}) : value != null])",
-    "{m}.container_memory_mib <= {m}.task_memory_mib",
-    "{m}.container_memory_reservation_mib < {m}.container_memory_mib",
-    "{m}.container_cpu <= {m}.task_cpu",
-    "{m}.swap_volume_gib >= 1",
-    "{m}.container_max_swap_mib <= {m}.swap_volume_gib * 1024",
-    "{m}.container_swappiness >= 0 && {m}.container_swappiness <= 100",
+    "alltrue([for value in values(var.{v}) : value == null || value == floor(value)])",
+    "alltrue([for field, value in var.{v} : value == null"
+    " || !contains(keys(local.tier_sizing_minimums), field)"
+    " || value >= local.tier_sizing_minimums[field]])",
+    'lookup(var.{v}, "container_swappiness", null) == null'
+    ' || lookup(var.{v}, "container_swappiness", 0) <= 100',
 ]
 
-# A validation condition: one line, or a parenthesised expression over several
-_CONDITION_RE = re.compile(
-    r"^\s*condition\s*=\s*(\(\n.*?\n\s*\)|.+?)\s*$", re.DOTALL | re.MULTILINE
-)
+# Rules across fields, as preconditions of each tier's task definition, on the
+# merged sizes ({s})
+TIER_SIZING_PRECONDITIONS = [
+    "{s}.container_memory_mib <= {s}.task_memory_mib",
+    "{s}.container_memory_reservation_mib < {s}.container_memory_mib",
+    "{s}.container_cpu <= {s}.task_cpu",
+    "{s}.container_max_swap_mib <= {s}.swap_volume_gib * 1024",
+]
 
 # A sizing attribute of a task definition or launch template set to a number
 _SIZING_LITERAL_RE = re.compile(
@@ -258,16 +273,20 @@ _BLOCK_DEVICE_RE = re.compile(
 )
 
 
-def _conditions(block: str) -> list:
-    """The block's validation conditions, whitespace collapsed and the
-    parentheses around a multi-line one removed."""
-    conditions = []
-    for condition in _CONDITION_RE.findall(block):
-        condition = " ".join(condition.split())
-        if condition.startswith("( ") and condition.endswith(" )"):
-            condition = condition[2:-2]
-        conditions.append(condition)
-    return conditions
+def _values(source: str, name: str) -> list:
+    """Every ``<name> = <value>`` right-hand side in ``source``. A value runs
+    to the end of the line its brackets close on; whitespace is collapsed, and
+    dropped inside the brackets' ends."""
+    values = []
+    for match in re.finditer(r"^\s*%s\s*=[ \t]*" % re.escape(name), source, re.M):
+        depth, end = 0, match.end()
+        while end < len(source) and not (source[end] == "\n" and depth == 0):
+            depth += (source[end] in "([{") - (source[end] in ")]}")
+            end += 1
+        value = " ".join(source[match.end() : end].split())
+        value = re.sub(r"([(\[{]) ", r"\1", re.sub(r" ([)\]}])", r"\1", value))
+        values.append(value)
+    return values
 
 
 def _local_numbers(tf: str, name: str) -> dict:
@@ -350,6 +369,16 @@ class TestWorkflowTierSizing:
             assert not _SIZING_LITERAL_RE.findall(source)
             assert self.other_name not in source
 
+    def test_rules_across_fields_are_task_definition_preconditions(self):
+        """Plan fails on what ECS would reject at apply (container above the
+        task, reservation not below the hard limit) and on a container swap
+        ceiling above the host's swap. A variable validation cannot read the
+        merged sizes (Terraform reports a cycle); a precondition can, and also
+        fails the plan. Both tiers carry the same rules."""
+        assert _values(self.task_definition, "condition") == [
+            rule.format(s=self.sizing) for rule in TIER_SIZING_PRECONDITIONS
+        ]
+
 
 @pytest.mark.parametrize("variable", TIER_SIZING_DEFAULTS)
 class TestWorkflowTierSizingVariables:
@@ -370,10 +399,13 @@ class TestWorkflowTierSizingVariables:
     def test_a_partial_override_keeps_the_other_defaults(self, variable):
         """``premium_tier_sizing = { task_memory_mib = ... }`` must leave the
         other fields at their defaults: the resources read the defaults merged
-        with the override, and null is the empty override."""
-        assert attribute(self.main, variable) == (
-            f"merge(local.{variable}_defaults, var.{variable})"
-        )
+        with the override, and null is the empty override. A null field is
+        dropped from the merge, so only the null rule reports it."""
+        assert _values(self.main, variable) == [
+            f"merge(local.{variable}_defaults,"
+            f" {{for field, value in var.{variable} :"
+            " field => value if value != null})"
+        ]
         assert attribute(self.block, "default") == "{}"
         assert attribute(self.block, "nullable") == "false"
 
@@ -384,13 +416,19 @@ class TestWorkflowTierSizingVariables:
         unknown-field rule."""
         assert attribute(self.block, "type") == "map(number)"
 
+    def test_every_field_has_a_minimum_its_default_meets(self, variable):
+        """Zero where ECS accepts none; the AMI snapshot size for the root
+        volume, below which every launch fails after the template is
+        accepted."""
+        minimums = _local_numbers(self.main, "tier_sizing_minimums")
+        assert minimums == TIER_SIZING_MINIMUMS
+        defaults = TIER_SIZING_DEFAULTS[variable]
+        assert minimums.keys() == defaults.keys()
+        assert all(defaults[field] >= minimums[field] for field in defaults)
+
     def test_validation_rules(self, variable):
-        """Plan fails on an unknown or null field, on what ECS would reject
-        at apply (container above the task, reservation not below the hard
-        limit), on a container swap ceiling above the host's swap, and on a
-        swap volume a launch template cannot attach. Both tiers carry the
-        same rules."""
-        merged = f"merge(local.{variable}_defaults, var.{variable})"
-        assert _conditions(self.block) == [
-            rule.format(v=variable, m=merged) for rule in TIER_SIZING_RULES
+        """Plan fails on an unknown, null, fractional or too-small field and
+        on a swappiness above 100. Both tiers carry the same rules."""
+        assert _values(self.block, "condition") == [
+            rule.format(v=variable) for rule in TIER_SIZING_RULES
         ]
