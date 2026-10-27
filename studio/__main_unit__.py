@@ -17,6 +17,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_outputs_remote_bucket_name,
     get_user_remote_bucket_name,
 )
+from studio.app.common.core.auth.secret_validation import validate_signing_secrets
 from studio.app.common.core.instance_mode import (
     INSTANCE_MODE_DEFAULT,
     INSTANCE_MODE_ENV,
@@ -29,6 +30,7 @@ from studio.app.common.core.middleware import (
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
+from studio.app.common.core.middleware.cors_config import get_cors_allow_origins
 from studio.app.common.core.middleware.spa_routing_middleware import (
     INDEX_HTML_CACHE_HEADERS,
 )
@@ -115,6 +117,9 @@ async def lifespan(app: FastAPI):
         f"    # Mode: {mode}\n"
         f"    # REMOTE_STORAGE_TYPE: {remote_storage_type}\n"
     )
+
+    # Fail fast before any scheduler or sync task starts.
+    validate_signing_secrets()
 
     # Initialize background job scheduler
     # Can be disabled with DISABLE_BACKGROUND_SCHEDULER=1 env var
@@ -338,7 +343,7 @@ app.add_middleware(SecureRoutingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
