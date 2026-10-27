@@ -272,21 +272,22 @@ resource "aws_lambda_function" "premium_cleanup" {
 
   environment {
     variables = {
-      VPC_ID                     = aws_vpc.main.id
-      SUBNET_IDS                 = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
-      SECURITY_GROUP_ID          = aws_security_group.ecs.id
-      ALB_ARN                    = aws_lb.autoscaling.arn
-      ALB_LISTENER_ARN           = aws_lb_listener.autoscaling_https.arn
-      PREMIUM_INSTANCE_IDS       = join(",", aws_instance.premium[*].id)
-      PREMIUM_LAUNCH_TEMPLATE_ID = aws_launch_template.premium.id
-      CLUSTER_NAME               = aws_ecs_cluster.main.name
-      PREMIUM_SERVICE_NAME       = aws_ecs_service.premium.name
-      RDS_HOST                   = aws_db_proxy.main.endpoint
-      RDS_USER                   = var.mysql_user
-      RDS_PASSWORD               = var.mysql_password
-      RDS_DATABASE               = var.mysql_database
-      ENV_PREFIX                 = var.environment
-      BACKEND_PORT               = tostring(var.premium_backend_port)
+      VPC_ID                       = aws_vpc.main.id
+      SUBNET_IDS                   = "${aws_subnet.private1.id},${aws_subnet.private2.id}"
+      SECURITY_GROUP_ID            = aws_security_group.ecs.id
+      ALB_ARN                      = aws_lb.autoscaling.arn
+      ALB_LISTENER_ARN             = aws_lb_listener.autoscaling_https.arn
+      AUTOSCALING_TARGET_GROUP_ARN = aws_lb_target_group.autoscaling.arn
+      PREMIUM_INSTANCE_IDS         = join(",", aws_instance.premium[*].id)
+      PREMIUM_LAUNCH_TEMPLATE_ID   = aws_launch_template.premium.id
+      CLUSTER_NAME                 = aws_ecs_cluster.main.name
+      PREMIUM_SERVICE_NAME         = aws_ecs_service.premium.name
+      RDS_HOST                     = aws_db_proxy.main.endpoint
+      RDS_USER                     = var.mysql_user
+      RDS_PASSWORD                 = var.mysql_password
+      RDS_DATABASE                 = var.mysql_database
+      ENV_PREFIX                   = var.environment
+      BACKEND_PORT                 = tostring(var.premium_backend_port)
       # Cleanup-specific settings
       PREMIUM_IDLE_TIMEOUT_HOURS = "3"
     }

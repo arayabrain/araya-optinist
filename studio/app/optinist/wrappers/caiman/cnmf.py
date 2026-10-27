@@ -17,9 +17,10 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import CANNOT_MAP, iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import edit_reference
+from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
+    cnn_crops_copied,
     distribute_params_to_groups,
     parse_text_params,
 )
@@ -586,8 +587,10 @@ def caiman_cnmf(
         n_components = cnm.estimates.A.shape[1] if hasattr(cnm.estimates, "A") else 0
 
         if n_components > 0:
-            # Only evaluate components if we found some
-            cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
+            # Only evaluate components if we found some; the CNN's crops are
+            # copied, so they do not keep a dense frame per component
+            with cnn_crops_copied():
+                cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
             idx_good = cnm.estimates.idx_components
             idx_bad = cnm.estimates.idx_components_bad
             if not isinstance(idx_good, list):
@@ -690,7 +693,8 @@ def caiman_cnmf(
             file_name="non_cell_roi",
         ),
         "edit_roi_data": EditRoiData(
-            util_edit_roi_movie(images_ref, mmap_images, output_dir), im
+            util_edit_roi_movie(images_ref, mmap_images, output_dir),
+            RoiMasks.from_stack(im),
         ),
         "nwbfile": nwbfile,
     }

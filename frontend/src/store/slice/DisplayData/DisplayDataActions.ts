@@ -70,12 +70,28 @@ export function getDisplayErrorMessage(
   return payload?.message ?? fallback
 }
 
+export const EDIT_ROI_LOCKED_MESSAGE =
+  "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes."
+
+// a refused ROI edit; 423 is the experiment lock a commit or a run holds
+export function getEditRoiErrorMessage(
+  payload: RejectPayload | undefined,
+  fallback: string,
+): string {
+  if (payload?.status === 423) {
+    return EDIT_ROI_LOCKED_MESSAGE
+  }
+  return getDisplayErrorMessage(payload, fallback)
+}
+
 function extractErrorPayload(e: unknown): RejectPayload {
   if (e instanceof AxiosError) {
     const status = e.response?.status
-    const detail = (e.response?.data as { detail?: string })?.detail
+    const detail = (e.response?.data as { detail?: unknown })?.detail
     return {
-      message: detail ?? e.message ?? "Request failed",
+      // a 422's detail is a list of validation errors, not a message
+      message:
+        typeof detail === "string" ? detail : (e.message ?? "Request failed"),
       status,
     }
   }
@@ -338,7 +354,7 @@ export const addRoi = createAsyncThunk<
       await dispatch(getRoiData({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -355,7 +371,7 @@ export const mergeRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -372,7 +388,7 @@ export const deleteRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )

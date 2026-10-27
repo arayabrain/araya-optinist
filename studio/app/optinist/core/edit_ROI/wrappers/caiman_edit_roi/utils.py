@@ -12,16 +12,19 @@ def set_nwbfile(
 
     # NWBにROIを追加
     roi_list = []
-    n_cells = edit_roi_data.im.shape[0]
+    roi_masks = edit_roi_data.roi_masks
+    n_cells = len(roi_masks)
     if n_cells == 0:
         # Add a dummy ROI entry if empty to maintain table structure
-        roi_list.append({"image_mask": np.full(edit_roi_data.im.shape[1:], np.nan)})
+        roi_list.append({"image_mask": np.full(roi_masks.shape, np.nan)})
         iscell = np.array([[0, 0]])  # [iscell, probcell]
     else:
         for i in range(n_cells):
             kargs = {}
-            # im holds the ROI id inside the footprint and NaN outside
-            kargs["image_mask"] = (~np.isnan(edit_roi_data.im[i])).astype(np.float32)
+            # 1 on the ROI's footprint, 0 elsewhere
+            image_mask = np.zeros(roi_masks.shape, np.float32)
+            image_mask.flat[roi_masks.pixels(i)] = 1
+            kargs["image_mask"] = image_mask
             roi_list.append(kargs)
 
     nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}

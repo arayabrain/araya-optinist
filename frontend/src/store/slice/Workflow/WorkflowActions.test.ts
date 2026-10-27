@@ -62,7 +62,7 @@ describe("reconcileNodeParams", () => {
       timeout: RECONCILE_TIMEOUT_MS,
     })
     expect(changes).toEqual([
-      { nodeId: "a", name: "caiman_mc", removed: ["use_cuda"] },
+      { nodeId: "a", name: "caiman_mc", added: [], removed: ["use_cuda"] },
     ])
     expect(nodeDict.a.data?.param).toEqual(
       convertToParamMap({ border_nan: "min", advanced: { nb: 2 } }),
@@ -70,6 +70,33 @@ describe("reconcileNodeParams", () => {
     expect(nodeDict.b.data?.param).toEqual(
       convertToParamMap({ border_nan: "copy", advanced: { nb: 3 } }),
     )
+  })
+
+  it("adds keys the defaults gained and reports them", async () => {
+    mockedGetAlgoParams.mockResolvedValue(mcDefaults)
+    const nodeDict: NodeDict = {
+      a: algoNode("a", "caiman_mc", { border_nan: "min" }),
+      b: algoNode("b", "caiman_mc", { border_nan: "copy" }),
+    }
+    const changes = await reconcileNodeParams(nodeDict)
+    expect(changes).toEqual([
+      { nodeId: "a", name: "caiman_mc", added: ["advanced"], removed: [] },
+      { nodeId: "b", name: "caiman_mc", added: ["advanced"], removed: [] },
+    ])
+    expect(nodeDict.a.data?.param).toEqual(
+      convertToParamMap({ border_nan: "min", advanced: { nb: 2 } }),
+    )
+    // Nodes of one algorithm get their own copies of the added defaults
+    expect(nodeDict.a.data?.param?.advanced).not.toBe(
+      nodeDict.b.data?.param?.advanced,
+    )
+  })
+
+  it("fills an empty tree with the defaults without reporting it", async () => {
+    mockedGetAlgoParams.mockResolvedValue(mcDefaults)
+    const nodeDict: NodeDict = { a: algoNode("a", "caiman_mc", {}) }
+    expect(await reconcileNodeParams(nodeDict)).toEqual([])
+    expect(nodeDict.a.data?.param).toEqual(convertToParamMap(mcDefaults))
   })
 
   it("keeps saved params when the defaults request fails", async () => {

@@ -15,6 +15,7 @@ from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 from studio.app.optinist.dataclass import EditRoiData, FluoData
 from studio.app.optinist.dataclass.roi import (
     EditImagesUnavailableError,
+    RoiMasks,
     edit_reference,
     open_edit_images,
 )
@@ -63,7 +64,7 @@ def test_commit_traces_match_between_array_and_reference(movie_ref, tmp_path, mo
         im[0, 0:2, :] = 0
         im[1, 3, 1:4] = 1
         im[2, 0:2, :] = 2  # a pending merge, appended
-        data = EditRoiData(images=None, im=im)
+        data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
         data.temp_merge_roi[2.0] = [0, 0]
         fluo = FluoData(np.ones((2, FRAMES)))
         iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
@@ -198,7 +199,7 @@ def test_a_delete_only_commit_does_not_open_the_movie(tmp_path, module):
     im = np.full((2, LY, LX), np.nan)
     im[0, 0, :] = 0
     im[1, 3, :] = 1
-    data = EditRoiData(images=None, im=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     data.temp_delete_roi[1] = None
     fluo = FluoData(np.arange(2 * FRAMES, dtype=float).reshape(2, FRAMES))
     iscell = np.array([CellType.ROI, CellType.TEMP_DELETE])
@@ -221,7 +222,9 @@ def test_a_commit_on_a_node_without_rois_opens_the_reference(
         f"studio.app.optinist.core.edit_ROI.wrappers.{module}"
     ).commit_edit
     _, ref = movie_ref
-    data = EditRoiData(images=None, im=np.zeros((0, LY, LX)))
+    data = EditRoiData(
+        images=None, roi_masks=RoiMasks.from_stack(np.zeros((0, LY, LX)))
+    )
     no_traces = FluoData(np.zeros((0, FRAMES)))  # stored as (0, 0)
 
     info = commit_edit(ref, data, no_traces, np.array([]), str(tmp_path), "x")
