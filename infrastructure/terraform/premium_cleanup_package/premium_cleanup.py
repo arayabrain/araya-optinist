@@ -750,11 +750,15 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
         }
 
 
-def get_all_premium_instances_with_states():
+def get_all_premium_instances_with_states(raise_on_error: bool = False):
     """Get all premium instances with their AWS states.
 
     Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
     contamination (e.g., development Lambda discovering production instances).
+
+    On an EC2 error, returns [] unless raise_on_error is set. A caller that
+    deletes rows for instances missing from the result must set it: [] would
+    read as "no premium instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = PremiumInstanceConfig.get_env_prefix()
@@ -855,6 +859,8 @@ def get_all_premium_instances_with_states():
         return instances
     except Exception as e:
         print(f"Error getting premium instances: {str(e)}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -997,8 +1003,9 @@ def reconcile_instance_states() -> Dict[str, Any]:
     Moved from premium_manager as this is maintenance, not real-time operation
     """
     try:
-        # Get all instances from AWS using dynamic tag-based discovery
-        all_instances = get_all_premium_instances_with_states()
+        # Get all instances from AWS using dynamic tag-based discovery.
+        # Raises on an EC2 error, so no row is deleted on a failed discovery.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
 
         aws_instance_map = {}
         for instance in all_instances:
@@ -1037,6 +1044,26 @@ def _reconcile_instance_states_transaction(
             (PremiumAssignment.ACTIVE,),
         )
         db_assignments = cursor.fetchall()
+
+        # No instance discovered while rows point at real instances is more
+        # likely a discovery fault (a changed tag or filter) than every
+        # instance gone; deleting would drop every assignment and its routing.
+        if not aws_instance_map and any(
+            a["instance_id"] != PremiumAssignment.AUTOSCALING_POOL
+            for a in db_assignments
+        ):
+            print(
+                f"Skipping reconciliation: no premium instance discovered, "
+                f"but {len(db_assignments)} active assignments exist"
+            )
+            return {
+                "skipped": True,
+                "reason": "no_instances_discovered",
+                "cleanup_count": 0,
+                "update_count": 0,
+                "total_aws_instances": 0,
+                "total_db_assignments": len(db_assignments),
+            }
 
         for assignment in db_assignments:
             assignment_id = assignment["id"]

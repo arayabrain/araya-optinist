@@ -1027,11 +1027,16 @@ def get_assigned_users_for_instance(instance_id: str):
         return []
 
 
-def get_all_premium_instances_with_states():
+def get_all_premium_instances_with_states(raise_on_error: bool = False):
     """Get all premium instances with their AWS states.
 
     Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
     contamination (e.g., development Lambda discovering production instances).
+
+    On an EC2 error, returns [] unless raise_on_error is set. A caller that
+    deletes rows for instances missing from the result, or launches instances
+    for capacity it does not see, must set it: [] would read as "no premium
+    instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = EnvironmentConfig.get_env_prefix()
@@ -1132,6 +1137,8 @@ def get_all_premium_instances_with_states():
         return instances
     except Exception as e:
         print(f"Error getting premium instances: {str(e)}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -4133,8 +4140,9 @@ def scale_premium_instances_if_needed():
         # Get dynamic capacity limits based on premium users
         max_capacity = get_dynamic_max_capacity()
 
-        # Get all premium instances with their states
-        all_instances = get_all_premium_instances_with_states()
+        # Get all premium instances with their states. Raises on an EC2 error:
+        # [] would read as no instance running and launch new ones.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
         active_users = count_active_premium_users()
 
         running_instances = [
@@ -5624,8 +5632,9 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
 def cleanup_failed_standby_instances():
     """Clean up database entries for standby instances that no longer exist in AWS"""
     try:
-        # Get all AWS premium instances
-        aws_instances = get_all_premium_instances_with_states()
+        # Get all AWS premium instances. Raises on an EC2 error, so no row is
+        # deleted on a failed discovery.
+        aws_instances = get_all_premium_instances_with_states(raise_on_error=True)
         aws_instance_ids = {i["instance_id"] for i in aws_instances}
 
         # Get all standby assignments from database
@@ -5636,6 +5645,17 @@ def cleanup_failed_standby_instances():
                        WHERE is_standby = 1 AND status = 'active'"""
                 )
                 db_standby_instances = [row["instance_id"] for row in cursor.fetchall()]
+
+                # No instance discovered while standby rows exist is more
+                # likely a discovery fault (a changed tag or filter) than
+                # every instance gone.
+                if not aws_instance_ids and db_standby_instances:
+                    print(
+                        f"Skipping failed standby cleanup: no premium instance "
+                        f"discovered, but {len(db_standby_instances)} standby "
+                        f"rows exist"
+                    )
+                    return
 
                 # Remove database entries for instances that no longer exist
                 cleanup_count = 0

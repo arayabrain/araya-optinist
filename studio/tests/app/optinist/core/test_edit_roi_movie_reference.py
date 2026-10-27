@@ -16,7 +16,7 @@ from studio.app.common.dataclass.image import ImageData
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
-from studio.app.optinist.dataclass.roi import EditImagesUnavailableError
+from studio.app.optinist.dataclass.roi import EditImagesUnavailableError, RoiMasks
 from studio.app.optinist.schemas.roi import RoiPos
 
 SHAPE, NUM_FRAME = (6, 6), 5
@@ -59,7 +59,9 @@ def node(request):
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
         info={
-            "edit_roi_data": EditRoiData(images=movie, im=im),
+            "edit_roi_data": EditRoiData(
+                images=movie, roi_masks=RoiMasks.from_stack(im)
+            ),
             "iscell": IscellData(np.array([CellType.ROI, CellType.ROI])),
             "fluorescence": FluoData(np.ones((2, NUM_FRAME))),
             "nwbfile": {},

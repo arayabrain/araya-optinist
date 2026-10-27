@@ -2217,7 +2217,14 @@ class TestDatabaseCommits:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("premium_manager.pymysql.connect") as mock_pymysql:
-            mock_aws.return_value = []
+            mock_aws.return_value = [
+                {
+                    "instance_id": "i-live",
+                    "instance_type": "t3.large",
+                    "state": "stopped",
+                    "launch_time": None,
+                }
+            ]
 
             mock_connection = setup_db_mock(
                 fetchall_values=[
@@ -2487,6 +2494,26 @@ class TestGetAllPremiumInstances:
 
             result = get_all_premium_instances_with_states()
             assert len(result) == 0
+
+    def test_ec2_error_raises_only_when_asked(self, mock_env_vars_premium):
+        """Callers that only count instances keep getting []; a sweep that
+        deletes on absence gets the error."""
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+            mock_ec2.describe_instances.side_effect = ClientError(
+                {"Error": {"Code": "AccessDenied"}}, "DescribeInstances"
+            )
+
+            from premium_manager import get_all_premium_instances_with_states
+
+            assert get_all_premium_instances_with_states() == []
+            with pytest.raises(ClientError):
+                get_all_premium_instances_with_states(raise_on_error=True)
 
 
 class TestStartStandbyInstance:
@@ -7079,3 +7106,138 @@ class TestGetAvailableStandbyInstances:
         )
 
         assert standbys == []
+
+
+class TestCleanupFailedStandbyInstances:
+    """cleanup_failed_standby_instances deletes a standby row only for an
+    instance missing from a discovery that succeeded and found others."""
+
+    @staticmethod
+    def _run(mock_env_vars_premium, describe):
+        """Run the sweep through the real discovery over one standby row whose
+        instance is alive; return the DELETE statements it executed and the
+        connect mock."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock(
+                fetchall_values=[[MockRow({"instance_id": "i-standby"})]]
+            )
+            mock_pymysql.return_value = mock_connection
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_failed_standby_instances
+
+            cleanup_failed_standby_instances()
+
+        cursor = mock_connection.cursor.return_value.__enter__.return_value
+        deletes = [
+            c.args
+            for c in cursor.execute.call_args_list
+            if c.args[0].lstrip().startswith("DELETE")
+        ]
+        return deletes, mock_pymysql
+
+    def test_ec2_error_deletes_nothing(self, mock_env_vars_premium):
+        """A failed DescribeInstances must not read as "no instance exists":
+        the sweep stops before the database is read, not at the empty-result
+        guard."""
+        from botocore.exceptions import ClientError
+
+        def describe(**kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DescribeInstances")
+
+        deletes, mock_pymysql = self._run(mock_env_vars_premium, describe)
+
+        assert deletes == []
+        mock_pymysql.assert_not_called()
+
+    def test_no_instances_discovered_deletes_nothing(self, mock_env_vars_premium):
+        """An empty discovery while standby rows exist skips the sweep."""
+        deletes, _ = self._run(
+            mock_env_vars_premium, lambda **kwargs: {"Reservations": []}
+        )
+
+        assert deletes == []
+
+
+class TestScalePremiumInstancesIfNeeded:
+    """scale_premium_instances_if_needed launches only for capacity it has
+    seen: a failed discovery must not read as "no instance is running"."""
+
+    @staticmethod
+    def _scale(mock_env_vars_premium, describe):
+        """Run a scale-up through the real discovery with two active users and
+        room to grow; return the result, the create mock and the EC2 mock."""
+        create = MagicMock(return_value=True)
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch.multiple(
+            "premium_manager",
+            get_dynamic_max_capacity=MagicMock(return_value=5),
+            count_active_premium_users=MagicMock(return_value=2),
+            count_total_premium_users=MagicMock(return_value=2),
+            is_creation_lock_held=MagicMock(return_value=False),
+            _create_running_instances_locked=create,
+            invoke_migration_async=MagicMock(),
+            update_premium_service_desired_count=MagicMock(),
+        ):
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import scale_premium_instances_if_needed
+
+            return scale_premium_instances_if_needed(), create, ec2
+
+    def test_creates_the_missing_capacity(self, mock_env_vars_premium):
+        """One running instance for two active users: one is created."""
+
+        def describe(**kwargs):
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-running",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
+                                    },
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+        scaled, create, _ = self._scale(mock_env_vars_premium, describe)
+
+        assert scaled is True
+        create.assert_called_once_with(1)
+
+    def test_ec2_error_launches_nothing(self, mock_env_vars_premium):
+        """A failed DescribeInstances starts and creates no instance."""
+        from botocore.exceptions import ClientError
+
+        def describe(**kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DescribeInstances")
+
+        scaled, create, ec2 = self._scale(mock_env_vars_premium, describe)
+
+        assert scaled is False
+        create.assert_not_called()
+        ec2.start_instances.assert_not_called()
