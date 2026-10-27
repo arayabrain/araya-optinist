@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
@@ -88,7 +89,8 @@ class EditRoiUtils:
         asyncio.run(EditROI(file_path=filepath).commit())
 
 
-def create_ellipse_mask(shape: Tuple[int, int], roi_pos: RoiPos):
+def ellipse_pixels(shape: Tuple[int, int], roi_pos: RoiPos) -> np.ndarray:
+    """Flat indices of the ellipse at column posx, row posy, sizex x sizey."""
     x, y, width, height = (
         round(roi_pos.posx),
         round(roi_pos.posy),
@@ -96,18 +98,18 @@ def create_ellipse_mask(shape: Tuple[int, int], roi_pos: RoiPos):
         round(roi_pos.sizey),
     )
 
-    x_coords = np.arange(0, shape[0])
-    y_coords = np.arange(0, shape[1])
-    xx, yy = np.meshgrid(x_coords, y_coords)
-
-    # Calculate the distance of each pixel from the center of the ellipse
+    if width < 1 or height < 1:
+        return np.zeros(0, np.int64)
     a = width / 2
     b = height / 2
+
+    # only the ellipse's bounding box, clipped to the frame, can hold its pixels
+    rows = np.arange(max(0, math.floor(y - b)), min(shape[0], math.ceil(y + b) + 1))
+    cols = np.arange(max(0, math.floor(x - a)), min(shape[1], math.ceil(x + a) + 1))
+    yy, xx = np.meshgrid(rows, cols, indexing="ij")
+
+    # Calculate the distance of each pixel from the center of the ellipse
     distance = ((xx - x) / a) ** 2 + ((yy - y) / b) ** 2
+    inside = distance <= 1
 
-    # Set the pixels within the ellipse to 1 and the pixels outside to NaN
-    ellipse = np.empty(shape)
-    ellipse[:] = np.nan
-    ellipse[distance <= 1] = 1
-
-    return ellipse
+    return np.ravel_multi_index((yy[inside], xx[inside]), shape)

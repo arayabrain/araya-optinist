@@ -791,6 +791,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 **Input:** None (reads from AWS EC2 and database)
 **Output:** Updates DB records; cleans terminated entries
 **Calls:** get_all_premium_instances_with_states()
+**Fails closed:** Deletes nothing if EC2 cannot be asked, or if it reports no premium instance while assignments point at real instances; the EC2 state-change reconciliation still cleans each terminated instance
 
 **Frequency:** Runs hourly to keep DB accurate
 
@@ -974,11 +975,12 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry point, routes events by type |
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
-| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
+| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users`; launches nothing if EC2 cannot be asked |
 | `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
 | `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
 | `update_premium_service_desired_count()` | Sync ECS `desiredCount` to `registered + booting` instance count ([details](#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
+| `assign_claim()` | Per-user assign claim (`premium_assign_claims` row) serializing `assign_premium_user()` for one user; an expired claim is reclaimable |
 | `release_premium_user()` | Real-time user release (API) |
 | `handle_activity_update()` | Heartbeat/activity timestamp update (API) |
 | `get_premium_user_status()` | Get user assignment status (API) |
@@ -1002,8 +1004,9 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry, routes scheduled vs manual actions |
 | `cleanup_stale_assignments()` | Remove idle assignments (>3h, `@with_transaction`) |
-| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry |
-| `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id |
+| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry, except those of a user whose assign is in flight |
+| `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id, except those of a user whose assign is in flight |
+| `get_assign_claimed_user_ids()` | Users holding an unexpired assign claim; both ALB sweeps delete nothing if it cannot be read |
 | `reconcile_instance_states()` | Sync DB with AWS reality |
 | `ensure_standby_pool_capacity()` | Monitor standby health (read-only) |
 | `cleanup_test_user_assignments()` | Manual: clean up test user assignments |

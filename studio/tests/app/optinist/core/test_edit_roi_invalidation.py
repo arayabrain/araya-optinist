@@ -27,6 +27,7 @@ from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 workspace_id = "default"
 unique_id = "edit_roi_invalidation"
@@ -106,7 +107,9 @@ def build_experiment():
             "cell_roi": RoiData(
                 np.nanmax(im, axis=0), output_dir=roi_dir, file_name="cell_roi"
             ),
-            "edit_roi_data": EditRoiData(images=images, im=im),
+            "edit_roi_data": EditRoiData(
+                images=images, roi_masks=RoiMasks.from_stack(im)
+            ),
             "nwbfile": {"input": {"stub": True}, NODES["roi"][1]: {}},
         },
     )

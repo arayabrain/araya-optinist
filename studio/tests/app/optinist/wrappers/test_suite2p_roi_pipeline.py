@@ -173,7 +173,8 @@ def test_yaml_lands_in_the_settings_tree_and_detection_runs_on_the_binary(
     np.testing.assert_array_equal(ops["max_proj"], np.ones((LY, LX)))
     np.testing.assert_array_equal(info["iscell"].data, [1, 0])
     assert info["edit_roi_data"].images.path == [str(tmp_path / "movie.tif")]
-    assert info["edit_roi_data"].im.shape == (len(CELLS), LY, LX)
+    roi_masks = info["edit_roi_data"].roi_masks
+    assert len(roi_masks) == len(CELLS) and roi_masks.shape == (LY, LX)
 
 
 def test_without_a_registration_node_suite2p_gets_the_full_frame(
@@ -204,7 +205,8 @@ def test_no_rois_gives_empty_outputs_and_keeps_the_detection_images(
     assert ops["stat"] == []
     assert ops["F"].shape == (0, FRAMES)
     assert info["iscell"].data.shape == (0,)
-    assert info["edit_roi_data"].im.shape == (0, LY, LX)
+    roi_masks = info["edit_roi_data"].roi_masks
+    assert len(roi_masks) == 0 and roi_masks.shape == (LY, LX)
     np.testing.assert_array_equal(ops["max_proj"], np.ones((LY, LX)))
     assert np.isnan(info["cell_roi"].data).all()
 
@@ -358,18 +360,25 @@ def test_a_pre_upgrade_registration_pickle_is_accepted(
     assert info["edit_roi_data"].images.path == [str(tmp_path / "old.tif")]
 
 
+def _stack(info):
+    (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
+    return postprocess["all_roi_img"]
+
+
 def _run(tmp_path, output_dir):
     return suite2p_roi(
         _registered_ops(tmp_path), output_dir, params=read_default_params("suite2p_roi")
     )
 
 
-def test_the_node_references_the_stack_it_wrote(output_dir, tmp_path, suite2p_stub):
+def test_the_nwb_references_the_stack_it_wrote(output_dir, tmp_path, suite2p_stub):
     info = _run(tmp_path, output_dir)
-    im = info["edit_roi_data"].im
+    im = _stack(info)
     assert type(im) is RoiStack and im.shape == (len(CELLS), LY, LX)
-    (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
-    assert postprocess["all_roi_img"] is im
+    # EditRoiData holds the same ROIs as pixel lists, taken from stat
+    roi_masks = info["edit_roi_data"].roi_masks
+    for i in range(len(CELLS)):
+        np.testing.assert_array_equal(roi_masks.label_image([i]), im[i])
 
 
 def test_a_failed_stack_write_fails_the_node(
@@ -386,10 +395,10 @@ def test_a_failed_stack_write_fails_the_node(
 def test_a_rerun_replaces_the_file_so_an_open_stack_keeps_its_data(
     output_dir, tmp_path, suite2p_stub
 ):
-    first = _run(tmp_path, output_dir)["edit_roi_data"].im
+    first = _stack(_run(tmp_path, output_dir))
     before = np.array(first)
     suite2p_stub["result"] = _found(stat=_stat()[:1])
-    second = _run(tmp_path, output_dir)["edit_roi_data"].im
+    second = _stack(_run(tmp_path, output_dir))
     assert second.shape[0] == 1
     np.testing.assert_array_equal(first, before)
     assert not os.path.exists(f"{output_dir}/roi_mask_stack.npy.tmp")
@@ -403,7 +412,7 @@ def test_a_relative_output_dir_still_reopens_the_stack(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", "ws")
     os.makedirs("ws/0123abcd/suite2p_roi_x")
-    im = _run(tmp_path, "ws/0123abcd/suite2p_roi_x")["edit_roi_data"].im
+    im = _stack(_run(tmp_path, "ws/0123abcd/suite2p_roi_x"))
     assert type(im) is RoiStack and os.path.isabs(im._stack_path)
     blob = pickle.dumps(im)
     assert b"0123abcd/suite2p_roi_x/roi_mask_stack.npy" in blob

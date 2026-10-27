@@ -235,6 +235,133 @@ variable "premium_instance_type" {
   default     = "t3.large"
 }
 
+# Workflow task and host sizes per tier. A tfvars override names only the
+# fields it changes, e.g. premium_tier_sizing = { task_memory_mib = ... }; the
+# others keep these defaults. An unknown, null, fractional or too-small field
+# fails the plan: an object type would drop a misspelled field silently. Rules
+# across fields are preconditions on the task definitions (compute.tf). Host
+# swap is the whole swap volume (ecs-user-data.sh runs mkswap on the device)
+locals {
+  free_tier_sizing_defaults = {
+    task_cpu                         = 2048
+    task_memory_mib                  = 7168
+    container_cpu                    = 1536
+    container_memory_mib             = 6656
+    container_memory_reservation_mib = 4096
+    container_max_swap_mib           = 32768
+    container_swappiness             = 20
+    root_volume_gib                  = 88
+    swap_volume_gib                  = 32
+  }
+
+  premium_tier_sizing_defaults = {
+    task_cpu                         = 2048
+    task_memory_mib                  = 7168
+    container_cpu                    = 1536
+    container_memory_mib             = 6656
+    container_memory_reservation_mib = 4096
+    container_max_swap_mib           = 32768
+    container_swappiness             = 20
+    root_volume_gib                  = 48
+    swap_volume_gib                  = 32
+  }
+
+  # Smallest whole value per field: 0 where ECS accepts none, the AMI
+  # snapshot size (stock and custom) for the root volume
+  tier_sizing_minimums = {
+    task_cpu                         = 1
+    task_memory_mib                  = 1
+    container_cpu                    = 0
+    container_memory_mib             = 1
+    container_memory_reservation_mib = 1
+    container_max_swap_mib           = 0
+    container_swappiness             = 0
+    root_volume_gib                  = 30
+    swap_volume_gib                  = 1
+  }
+
+  # Read by the resources. A null field is dropped here so that only the
+  # variable's own rule reports it
+  free_tier_sizing = merge(
+    local.free_tier_sizing_defaults,
+    { for field, value in var.free_tier_sizing : field => value if value != null }
+  )
+  premium_tier_sizing = merge(
+    local.premium_tier_sizing_defaults,
+    { for field, value in var.premium_tier_sizing : field => value if value != null }
+  )
+}
+
+variable "free_tier_sizing" {
+  description = "Free-tier size overrides (aws_ecs_task_definition.autoscaling, aws_launch_template.ecs). Fields and defaults: local.free_tier_sizing_defaults"
+  type        = map(number)
+  default     = {}
+  nullable    = false
+
+  validation {
+    condition     = length(setsubtract(keys(var.free_tier_sizing), keys(local.free_tier_sizing_defaults))) == 0
+    error_message = "free_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.free_tier_sizing), keys(local.free_tier_sizing_defaults)))}; the fields are those of local.free_tier_sizing_defaults."
+  }
+
+  validation {
+    condition     = alltrue([for value in values(var.free_tier_sizing) : value != null])
+    error_message = "free_tier_sizing: a field must not be null; leave it out to keep its default."
+  }
+
+  validation {
+    condition     = alltrue([for value in values(var.free_tier_sizing) : value == null || value == floor(value)])
+    error_message = "free_tier_sizing: fields must be whole numbers."
+  }
+
+  validation {
+    condition = alltrue([
+      for field, value in var.free_tier_sizing :
+      value == null || !contains(keys(local.tier_sizing_minimums), field) || value >= local.tier_sizing_minimums[field]
+    ])
+    error_message = "free_tier_sizing: below the minimum in local.tier_sizing_minimums: ${join(", ", [for field, value in var.free_tier_sizing : field if value != null && value < lookup(local.tier_sizing_minimums, field, value)])}. A swap volume of 0 needs a change to the launch template."
+  }
+
+  validation {
+    condition     = lookup(var.free_tier_sizing, "container_swappiness", null) == null || lookup(var.free_tier_sizing, "container_swappiness", 0) <= 100
+    error_message = "free_tier_sizing: container_swappiness must not exceed 100."
+  }
+}
+
+variable "premium_tier_sizing" {
+  description = "Premium-tier size overrides (aws_ecs_task_definition.premium, aws_launch_template.premium, which premium-dedicated instances launch from too). Fields and defaults: local.premium_tier_sizing_defaults"
+  type        = map(number)
+  default     = {}
+  nullable    = false
+
+  validation {
+    condition     = length(setsubtract(keys(var.premium_tier_sizing), keys(local.premium_tier_sizing_defaults))) == 0
+    error_message = "premium_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.premium_tier_sizing), keys(local.premium_tier_sizing_defaults)))}; the fields are those of local.premium_tier_sizing_defaults."
+  }
+
+  validation {
+    condition     = alltrue([for value in values(var.premium_tier_sizing) : value != null])
+    error_message = "premium_tier_sizing: a field must not be null; leave it out to keep its default."
+  }
+
+  validation {
+    condition     = alltrue([for value in values(var.premium_tier_sizing) : value == null || value == floor(value)])
+    error_message = "premium_tier_sizing: fields must be whole numbers."
+  }
+
+  validation {
+    condition = alltrue([
+      for field, value in var.premium_tier_sizing :
+      value == null || !contains(keys(local.tier_sizing_minimums), field) || value >= local.tier_sizing_minimums[field]
+    ])
+    error_message = "premium_tier_sizing: below the minimum in local.tier_sizing_minimums: ${join(", ", [for field, value in var.premium_tier_sizing : field if value != null && value < lookup(local.tier_sizing_minimums, field, value)])}. A swap volume of 0 needs a change to the launch template."
+  }
+
+  validation {
+    condition     = lookup(var.premium_tier_sizing, "container_swappiness", null) == null || lookup(var.premium_tier_sizing, "container_swappiness", 0) <= 100
+    error_message = "premium_tier_sizing: container_swappiness must not exceed 100."
+  }
+}
+
 variable "premium_backend_port" {
   description = "Premium studio container listen port. Single source of truth for the premium task def's containerPort/hostPort/BACKEND_PORT and the premium_manager/cleanup Lambdas' BACKEND_PORT env, so the reconciler's networkBindings filter cannot drift from the live port mapping."
   type        = number

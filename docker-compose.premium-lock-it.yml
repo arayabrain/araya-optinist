@@ -1,6 +1,8 @@
-# Brings up a throwaway MySQL and runs the real-GET_LOCK
-# integration test, proving distributed_lock serializes concurrent sessions.
-# Opt-in: needs a real database, so it is not part of the per-PR lambda job.
+# Brings up a throwaway MySQL and runs the real-MySQL integration test,
+# proving distributed_lock (GET_LOCK) and the per-user assign claim serialize
+# concurrent sessions.
+# Needs a real database, so it is not part of the per-PR lambda job; its own
+# workflow (premium-lock-it.yml) runs it on PRs that touch the premium Lambdas.
 # Credentials are inline (not from studio/config/.env) so it runs unchanged.
 # Invoked via `make premium_lock_it`.
 #
@@ -36,7 +38,7 @@ services:
       PYTHONPATH: .
       TZ: UTC
       RUN_PREMIUM_LOCK_IT: "1"
-      # distributed_lock reads these; RDS_HOST is split on ":" and the port
+      # Both helpers read these; RDS_HOST is split on ":" and the port
       # comes from DatabaseConfig.DEFAULT_PORT (3306).
       RDS_HOST: db
       RDS_USER: premium_it_user
