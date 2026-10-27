@@ -582,11 +582,11 @@ describe("DisplayDataSlice", () => {
 
     it("are not stored once the path's data was deleted", () => {
       const fulfilled = reducer(
-        initialState,
+        undefined,
         getImageData.fulfilled(frames, "first", arg),
       )
       const rejected = reducer(
-        initialState,
+        undefined,
         getImageData.rejected(null, "first", arg, { message: "refused" }),
       )
 
@@ -595,7 +595,7 @@ describe("DisplayDataSlice", () => {
     })
 
     it("do not replace a later request's result", () => {
-      let state = reducer(initialState, getImageData.pending("first", arg))
+      let state = reducer(undefined, getImageData.pending("first", arg))
       state = reducer(state, getImageData.pending("second", arg))
 
       state = reducer(state, getImageData.fulfilled(frames, "first", arg))
