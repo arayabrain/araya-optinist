@@ -65,7 +65,7 @@ def _nested_keys(default_params) -> set:
 
 
 def check_types(params, default_params, name="", prefix="", added=None):
-    """Drop keys the yaml lost, add the ones it gained, cast types; in yaml order."""
+    """Drop the keys the yaml lost and add the ones it gained, in yaml order."""
     for key in list(params):
         path = f"{prefix}{key}"
         if key not in default_params:
