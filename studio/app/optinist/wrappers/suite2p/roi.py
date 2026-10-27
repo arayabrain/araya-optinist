@@ -13,7 +13,7 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
-from studio.app.optinist.dataclass.roi import RoiStack
+from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -91,13 +91,11 @@ def suite2p_roi(
     ops["settings"] = settings
 
     # Initialize default empty outputs
-    empty_roi = np.full((Ly, Lx), np.nan)
     im = np.zeros((0, Ly, Lx))
     F = np.zeros((0, nframes))
     Fneu = np.zeros((0, nframes))
     iscell = np.array([], dtype=int)
     stat = []
-    roi_images = None
     ops["max_proj"] = np.zeros((Ly, Lx))
     ops["Vcorr"] = np.zeros((Ly, Lx))
     ops["diameter"] = settings["diameter"]
@@ -144,7 +142,11 @@ def suite2p_roi(
         # a new inode, so a request still reading the previous stack keeps it
         os.replace(tmp_path, stack_path)
         im = RoiStack.open(stack_path)
-        roi_images = roi_label_images(stat, iscell, Ly, Lx)
+
+    roi_masks = RoiMasks.from_pixels(
+        (Ly, Lx),
+        (np.ravel_multi_index((s["ypix"], s["xpix"]), (Ly, Lx)) for s in stat),
+    )
 
     # Create ROI list
     roi_list = []
@@ -202,44 +204,27 @@ def suite2p_roi(
         "fluorescence": FluoData(F, file_name="fluorescence"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
-            roi_images["all"] if roi_images else empty_roi,
+            roi_masks.label_image(),
             output_dir=output_dir,
             file_name="all_roi",
         ),
         "non_cell_roi": RoiData(
-            roi_images["non_cell"] if roi_images else empty_roi,
+            roi_masks.label_image(iscell == 0),
             output_dir=output_dir,
             file_name="noncell_roi",
         ),
         "cell_roi": RoiData(
-            roi_images["cell"] if roi_images else empty_roi,
+            roi_masks.label_image(iscell != 0),
             output_dir=output_dir,
             file_name="cell_roi",
         ),
         # A reference to the movie, not the movie: suite2p's ROI editing reads
         # traces from the registered binary (ops["reg_file"]), never from this
         "edit_roi_data": EditRoiData(
-            images=ImageData(ops.get("file_list") or ops["filelist"]), im=im
+            images=ImageData(ops.get("file_list") or ops["filelist"]),
+            roi_masks=roi_masks,
         ),
         "nwbfile": nwbfile,
     }
 
     return info
-
-
-def roi_label_images(stat, iscell, Ly, Lx):
-    """
-    The all / cell / non-cell ROI images, from the ROIs' pixel lists.
-
-    Each pixel holds the highest ROI index covering it, which is what nanmax
-    over the per-ROI stack gives (layer i is i on ROI i's pixels, NaN elsewhere)
-    without reading the stack.
-    """
-    import numpy as np
-
-    images = {k: np.full((Ly, Lx), np.nan) for k in ("all", "cell", "non_cell")}
-    for i, s in enumerate(stat):
-        group = "cell" if iscell[i] != 0 else "non_cell"
-        for key in ("all", group):
-            images[key][s["ypix"], s["xpix"]] = i
-    return images
