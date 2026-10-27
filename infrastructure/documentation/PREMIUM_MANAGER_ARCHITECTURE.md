@@ -791,6 +791,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 **Input:** None (reads from AWS EC2 and database)
 **Output:** Updates DB records; cleans terminated entries
 **Calls:** get_all_premium_instances_with_states()
+**Fails closed:** Deletes nothing if EC2 cannot be asked, or if it reports no premium instance while assignments point at real instances; the EC2 state-change reconciliation still cleans each terminated instance
 
 **Frequency:** Runs hourly to keep DB accurate
 
@@ -974,7 +975,7 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry point, routes events by type |
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
-| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
+| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users`; launches nothing if EC2 cannot be asked |
 | `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
 | `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
 | `update_premium_service_desired_count()` | Sync ECS `desiredCount` to `registered + booting` instance count ([details](#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
