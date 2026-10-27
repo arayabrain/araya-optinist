@@ -139,6 +139,10 @@ locals {
     ? data.aws_ssm_parameter.custom_ami_id[0].value
     : data.aws_ami.ecs_optimized.id
   )
+
+  # Attachment name of the dedicated swap volume. ecs-user-data.sh finds the
+  # device by it, so the mapping and the script must use the same name
+  swap_device_name = "/dev/xvds"
 }
 
 resource "aws_launch_template" "ecs" {
@@ -156,7 +160,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 88 # Reduced from 120: 32 GB swap moved to dedicated volume
+      volume_size = local.free_tier_sizing.root_volume_gib
       volume_type = "gp3"
       encrypted   = true
     }
@@ -165,9 +169,9 @@ resource "aws_launch_template" "ecs" {
   # Dedicated swap volume — mkswap on a block device takes <1 second
   # vs ~4.5 minutes for dd-based swap file creation on root volume
   block_device_mappings {
-    device_name = "/dev/xvds"
+    device_name = local.swap_device_name
     ebs {
-      volume_size           = 32
+      volume_size           = local.free_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
       encrypted             = true
       delete_on_termination = true
@@ -187,8 +191,8 @@ resource "aws_launch_template" "ecs" {
     ecr_repository_url = local.ecr_repository_url
     efs_id             = aws_efs_file_system.snmk.id
     db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb       = 32768 # 32GB swap for workflow memory spikes
-    swap_device_name   = "/dev/xvds"
+    swap_size_mb       = local.free_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
+    swap_device_name   = local.swap_device_name
   }))
   tag_specifications {
     resource_type = "instance"
@@ -413,7 +417,7 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 48 # Reduced from 80: 32 GB swap moved to dedicated volume
+      volume_size = local.premium_tier_sizing.root_volume_gib
       volume_type = "gp3"
       encrypted   = true
     }
@@ -422,9 +426,9 @@ resource "aws_launch_template" "premium" {
   # Dedicated swap volume — mkswap on a block device takes <1 second
   # vs ~4.5 minutes for dd-based swap file creation on root volume
   block_device_mappings {
-    device_name = "/dev/xvds"
+    device_name = local.swap_device_name
     ebs {
-      volume_size           = 32
+      volume_size           = local.premium_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
       encrypted             = true
       delete_on_termination = true
@@ -444,8 +448,8 @@ resource "aws_launch_template" "premium" {
     ecr_repository_url = local.ecr_repository_url
     efs_id             = aws_efs_file_system.snmk.id
     db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb       = 32768 # 32GB swap for workflow memory spikes
-    swap_device_name   = "/dev/xvds"
+    swap_size_mb       = local.premium_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
+    swap_device_name   = local.swap_device_name
   }))
 
   tag_specifications {
@@ -618,8 +622,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
   family                   = "${local.env_prefix}-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = 2048
-  memory                   = 7168
+  cpu                      = local.free_tier_sizing.task_cpu
+  memory                   = local.free_tier_sizing.task_memory_mib
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -627,17 +631,17 @@ resource "aws_ecs_task_definition" "autoscaling" {
     {
       name              = "${local.env_prefix}-cloud-container"
       image             = "${local.ecr_repository_url}:latest"
-      cpu               = 1536
-      memory            = 6656
-      memoryReservation = 4096
+      cpu               = local.free_tier_sizing.container_cpu
+      memory            = local.free_tier_sizing.container_memory_mib
+      memoryReservation = local.free_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        maxSwap    = local.free_tier_sizing.container_max_swap_mib
+        swappiness = local.free_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
       }
 
       portMappings = [
@@ -878,6 +882,30 @@ resource "aws_ecs_task_definition" "autoscaling" {
   tags = {
     Name = "${local.env_prefix}-cloud-taskdef"
   }
+
+  # Rules across free_tier_sizing's fields (main.tf). Preconditions fail the
+  # plan too, and unlike a variable validation can read the merged sizes
+  lifecycle {
+    precondition {
+      condition     = local.free_tier_sizing.container_memory_mib <= local.free_tier_sizing.task_memory_mib
+      error_message = "free_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_memory_reservation_mib < local.free_tier_sizing.container_memory_mib
+      error_message = "free_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_cpu <= local.free_tier_sizing.task_cpu
+      error_message = "free_tier_sizing: container_cpu must not exceed task_cpu."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_max_swap_mib <= local.free_tier_sizing.swap_volume_gib * 1024
+      error_message = "free_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
+  }
 }
 
 
@@ -886,8 +914,8 @@ resource "aws_ecs_task_definition" "premium" {
   family                   = "${var.environment}-premium-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = 2048
-  memory                   = 7168
+  cpu                      = local.premium_tier_sizing.task_cpu
+  memory                   = local.premium_tier_sizing.task_memory_mib
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -895,17 +923,17 @@ resource "aws_ecs_task_definition" "premium" {
     {
       name              = "${var.environment}-premium-optinist-cloud-container"
       image             = "${local.ecr_repository_url}:latest"
-      cpu               = 1536
-      memory            = 6656
-      memoryReservation = 4096
+      cpu               = local.premium_tier_sizing.container_cpu
+      memory            = local.premium_tier_sizing.container_memory_mib
+      memoryReservation = local.premium_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        maxSwap    = local.premium_tier_sizing.container_max_swap_mib
+        swappiness = local.premium_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
       }
 
       portMappings = [
@@ -1132,6 +1160,30 @@ resource "aws_ecs_task_definition" "premium" {
   tags = {
     Name = "${var.environment}-premium-optinist-cloud-taskdef"
     Tier = "premium"
+  }
+
+  # Rules across premium_tier_sizing's fields (main.tf); see the free task
+  # definition
+  lifecycle {
+    precondition {
+      condition     = local.premium_tier_sizing.container_memory_mib <= local.premium_tier_sizing.task_memory_mib
+      error_message = "premium_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_memory_reservation_mib < local.premium_tier_sizing.container_memory_mib
+      error_message = "premium_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_cpu <= local.premium_tier_sizing.task_cpu
+      error_message = "premium_tier_sizing: container_cpu must not exceed task_cpu."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_max_swap_mib <= local.premium_tier_sizing.swap_volume_gib * 1024
+      error_message = "premium_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
   }
 }
 
