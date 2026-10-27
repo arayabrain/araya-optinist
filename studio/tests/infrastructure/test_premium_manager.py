@@ -1844,17 +1844,48 @@ class TestAssignClaimRow:
 
     def test_a_failed_attempt_leaves_no_claim_behind(self, claims):
         """The row is inserted before the session-lock check; if that check
-        fails, the exit still deletes the row by token."""
+        fails, the attempt counts as not acquired and the exit still deletes
+        the row by token."""
         claims.fail_on = (
             "IS_FREE_LOCK",
             pymysql.err.OperationalError(2013, "Lost connection"),
         )
         from premium_manager import assign_claim
 
-        with pytest.raises(pymysql.err.OperationalError):
-            with assign_claim(7, wait_seconds=0):
-                pass
+        with assign_claim(7, wait_seconds=0) as acquired:
+            assert acquired is False
         assert claims.rows == {}
+
+    def test_a_transient_db_error_keeps_the_waiter_polling(self, claims):
+        """A dropped connection on one attempt is not a 500: the next attempt
+        inside the wait takes the claim."""
+        from premium_manager import assign_claim
+
+        claims.fail_on = ("INSERT", pymysql.err.OperationalError(2013, "Lost"))
+
+        def connection_recovers(seconds):
+            claims.fail_on = None
+
+        with patch("premium_manager.time.sleep", side_effect=connection_recovers):
+            with assign_claim(7, wait_seconds=5) as acquired:
+                assert acquired is True
+
+    def test_db_errors_through_the_whole_wait_answer_409(self, claims):
+        """If every attempt fails, assign answers 409 (retryable), not 500."""
+        claims.fail_on = ("INSERT", pymysql.err.OperationalError(2013, "Lost"))
+        with patch("boto3.client"), patch(
+            "premium_manager.ASSIGN_CLAIM_WAIT_SECONDS", 0
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=None
+        ), patch(
+            "premium_manager._assign_premium_user_impl"
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+        assert result["statusCode"] == 409
+        mock_impl.assert_not_called()
 
     def test_only_a_missing_table_is_swallowed(self, claims):
         """Any other ProgrammingError (here a syntax error) reaches the handler."""
@@ -1865,16 +1896,34 @@ class TestAssignClaimRow:
             with assign_claim(7, wait_seconds=0):
                 pass
 
-    def test_missing_claims_table_is_not_acquired(self, mock_env_vars_premium):
-        """Before the migration lands, assign answers 200 / 409, not 500."""
+    @pytest.mark.parametrize("lock_granted", [True, False])
+    def test_missing_claims_table_falls_back_to_the_session_lock(
+        self, mock_env_vars_premium, lock_granted
+    ):
+        """Before the migration lands (Lambdas are applied first), assign
+        serializes on the previous release's GET_LOCK, so deploy order does
+        not matter; the claim helpers write nothing."""
         db = FakeAssignClaimsDb(missing_table=True)
+        lock = MagicMock()
+        lock.return_value.__enter__ = MagicMock(return_value=lock_granted)
+        lock.return_value.__exit__ = MagicMock(return_value=False)
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager.get_db_connection", side_effect=db.get_db_connection
-        ), patch("premium_manager.time.sleep") as mock_sleep:
-            from premium_manager import assign_claim
+        ), patch("premium_manager.distributed_lock", new=lock), patch(
+            "premium_manager.time.sleep"
+        ) as mock_sleep:
+            from premium_manager import (
+                ASSIGN_CLAIM_WAIT_SECONDS,
+                LEGACY_ASSIGN_LOCK_PREFIX,
+                assign_claim,
+            )
 
             with assign_claim(7) as acquired:
-                assert acquired is False
+                assert acquired is lock_granted
+        lock.assert_called_once_with(
+            f"{LEGACY_ASSIGN_LOCK_PREFIX}7", timeout=ASSIGN_CLAIM_WAIT_SECONDS
+        )
+        lock.return_value.__exit__.assert_called_once()
         mock_sleep.assert_not_called()
 
     def test_assign_returns_409_while_another_invocation_holds_the_claim(self, claims):

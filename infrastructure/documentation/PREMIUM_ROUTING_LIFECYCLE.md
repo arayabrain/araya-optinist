@@ -395,7 +395,8 @@ While the claim is held, a background thread renews `expires_at` by token. Relea
 | Scope | Entire `_assign_premium_user_impl` |
 | Connection | None held while the assignment runs |
 | Release | `DELETE` by token in a `finally` block, also after a failed attempt; a claim left by a crashed invocation is taken over by the next assign once it expires |
-| Missing table | Treated as not acquired (200 / 409), so a Lambda deployed before the migration does not return 500. Unassigned users still get only 409s until the migration runs, so deploy the migration (studio image) before the Lambdas |
+| Missing table | Before the migration runs (the deploy applies the Lambdas first), assign falls back to the previous release's `GET_LOCK('assign_user_<user_id>')` with the same wait, so deploy order does not matter. The cleanup sweeps delete nothing until the table exists |
+| Transient DB error | An attempt that hits an `OperationalError` counts as not acquired and the wait goes on; if every attempt fails, assign answers 409 |
 | Previous release still running | The previous release's assign held `GET_LOCK('assign_user_<user_id>')` for its whole run. While that lock is in use (`IS_FREE_LOCK`), a new assign gives its claim back and counts as not acquired, so the two never run side by side during a deploy |
 
 **Different users remain fully parallel** — the claim is keyed by `user_id`, so concurrent assignments for different users do not contend.

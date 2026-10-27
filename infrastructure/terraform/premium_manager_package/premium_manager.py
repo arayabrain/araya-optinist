@@ -88,7 +88,7 @@ ASSIGN_CLAIM_WAIT_SECONDS = 10  # Bounded wait, then the 200 / 409 fallback
 ASSIGN_CLAIM_POLL_INTERVAL_SECONDS = 1
 ASSIGN_CLAIM_TTL_SECONDS = 90  # Reclaimable this long after the last renewal
 ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS = 20
-# Previous release's assign session lock; remove once no deployed release takes it
+# Old assign session lock (previous release, pre-migration fallback); remove when unused
 LEGACY_ASSIGN_LOCK_PREFIX = "assign_user_"
 
 # Wait before first migration attempt to let instances boot
@@ -362,38 +362,54 @@ def _release_assign_claim(user_id: int, token: str) -> None:
         print(f"Failed to release assign claim for user {user_id}: {e}")
 
 
+def _poll_for_assign_claim(user_id: int, token: str, wait_seconds: float) -> bool:
+    """Retry until acquired or out of time; a transient DB error is a failed attempt."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            if _try_acquire_assign_claim(user_id, token):
+                return True
+        except pymysql.err.OperationalError as e:
+            print(f"Assign claim attempt for user {user_id} failed: {e}")
+        if time.monotonic() >= deadline:
+            return False
+        # Polling gives no order: with 3+ contenders one may still get 409
+        time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
+
+
 @contextmanager
 def assign_claim(user_id: int, wait_seconds: Optional[float] = None):
     """Yield True while holding the user's assign claim, renewed in the background."""
     if wait_seconds is None:
         wait_seconds = ASSIGN_CLAIM_WAIT_SECONDS
     token = uuid.uuid4().hex
-    deadline = time.monotonic() + wait_seconds
-    acquired = False
+    try:
+        acquired = _poll_for_assign_claim(user_id, token, wait_seconds)
+    except pymysql.err.ProgrammingError as e:
+        if e.args[0] != ER.NO_SUCH_TABLE:
+            _release_assign_claim(user_id, token)
+            raise
+        # Before the migration: the previous release's session lock, same name
+        print(f"premium_assign_claims is missing; using the session lock: {e}")
+        legacy_lock = f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}"
+        with distributed_lock(legacy_lock, timeout=int(wait_seconds)) as locked:
+            yield locked
+        return
+    except BaseException:
+        _release_assign_claim(user_id, token)
+        raise
+
     stop = threading.Event()
     renewer = None
+    if acquired:
+        print(f"Acquired assign claim for user {user_id}")
+        renewer = threading.Thread(
+            target=_keep_assign_claim_alive, args=(user_id, token, stop), daemon=True
+        )
+        renewer.start()
+    else:
+        print(f"Assign claim for user {user_id} is held by another invocation")
     try:
-        try:
-            acquired = _try_acquire_assign_claim(user_id, token)
-            # Polling gives no order: with 3+ contenders one may still get 409
-            while not acquired and time.monotonic() < deadline:
-                time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
-                acquired = _try_acquire_assign_claim(user_id, token)
-        except pymysql.err.ProgrammingError as e:
-            if e.args[0] != ER.NO_SUCH_TABLE:
-                raise
-            print(f"premium_assign_claims is missing; assign claim not taken: {e}")
-        else:
-            if acquired:
-                print(f"Acquired assign claim for user {user_id}")
-                renewer = threading.Thread(
-                    target=_keep_assign_claim_alive,
-                    args=(user_id, token, stop),
-                    daemon=True,
-                )
-                renewer.start()
-            else:
-                print(f"Assign claim for user {user_id} is held by another invocation")
         yield acquired
     finally:
         stop.set()

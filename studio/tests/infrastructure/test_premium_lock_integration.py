@@ -318,6 +318,31 @@ def test_claim_is_not_taken_while_a_previous_release_holds_the_session_lock(
 
 
 @_opt_in
+def test_without_the_claims_table_assign_serializes_on_the_session_lock(
+    pm, claim_user_ids
+):
+    """Before the migration (the Lambdas are applied first), a real 1146
+    switches assign to GET_LOCK('assign_user_<id>'): held by another session
+    it is refused; free, it is taken and held for the block."""
+    user = claim_user_ids[0]
+    legacy_name = f"{pm.LEGACY_ASSIGN_LOCK_PREFIX}{user}"
+    _execute(pm, "RENAME TABLE premium_assign_claims TO premium_assign_claims_hidden")
+    try:
+        with pm.distributed_lock(legacy_name, timeout=5) as other_session:
+            assert other_session is True
+            with pm.assign_claim(user, wait_seconds=0) as contender:
+                assert contender is False
+        with pm.assign_claim(user, wait_seconds=0) as holder:
+            assert holder is True
+            assert _lock_owner(pm, legacy_name) is not None
+        assert _lock_owner(pm, legacy_name) is None
+    finally:
+        _execute(
+            pm, "RENAME TABLE premium_assign_claims_hidden TO premium_assign_claims"
+        )
+
+
+@_opt_in
 def test_cleanup_reads_only_unexpired_claims(pm, claim_user_ids):
     import premium_cleanup
 
