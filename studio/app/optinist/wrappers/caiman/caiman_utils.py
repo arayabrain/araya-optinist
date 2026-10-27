@@ -106,17 +106,8 @@ CNN_CROPS_VERIFIED_CAIMAN = ("1.11.2", "1.11.3", "1.11.4", "1.12.0", "1.12.1", "
 
 
 def cnn_crops(A, dims, gSig, patch_size: int = 50) -> list:
-    """
-    The crops CaImAn's evaluate_components_CNN classifies, one per component of
-    A, each copied out of its dense frame.
-
-    CaImAn slices each crop from A[:, i].toarray(), so every crop keeps its
-    whole frame alive until the predictions return: 8 B x components x pixels
-    after a patch-mode fit (A is float64 there).
-    The copy keeps the slice's Fortran order, as np.linalg.norm sums in memory
-    order: the normalised crops, and so the predictions, stay bit for bit
-    CaImAn's.
-    """
+    """CaImAn's CNN crops, each copied out of its frame (Fortran order, so
+    results match CaImAn bit for bit)."""
     import scipy.ndimage
 
     half_crop = np.minimum(gSig[0] * 4 + 1, patch_size), np.minimum(

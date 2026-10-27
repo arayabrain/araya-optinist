@@ -1,6 +1,8 @@
 import contextlib
+import re
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -141,6 +143,18 @@ def caiman_modules(monkeypatch, version):
 
 
 NAMING = ["caiman.components_evaluation", "caiman.source_extraction.cnmf.estimates"]
+
+
+def test_the_pinned_caiman_releases_are_verified():
+    """A pin bump past the verified releases would silently fall back to
+    CaImAn's own crops; every version the conda pin names must be verified."""
+    env = Path(caiman_utils.__file__).parent / "conda" / "caiman.yaml"
+    pins = re.findall(r"^\s*-\s*caiman\s*([<>=!~][^\s#]*)", env.read_text(), re.M)
+    assert len(pins) == 1, pins
+    versions = re.findall(r"[<>=!~]=?\s*([0-9][0-9.]*)", pins[0])
+    assert versions, pins[0]
+    for version in versions:
+        assert version in caiman_utils.CNN_CROPS_VERIFIED_CAIMAN, version
 
 
 @pytest.mark.parametrize("version", caiman_utils.CNN_CROPS_VERIFIED_CAIMAN)
