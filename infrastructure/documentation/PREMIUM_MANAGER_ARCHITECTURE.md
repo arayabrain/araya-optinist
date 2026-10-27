@@ -980,6 +980,7 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 | `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
 | `update_premium_service_desired_count()` | Sync ECS `desiredCount` to `registered + booting` instance count ([details](#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
+| `assign_claim()` | Per-user assign claim (`premium_assign_claims` row) serializing `assign_premium_user()` for one user; an expired claim is reclaimable |
 | `release_premium_user()` | Real-time user release (API) |
 | `handle_activity_update()` | Heartbeat/activity timestamp update (API) |
 | `get_premium_user_status()` | Get user assignment status (API) |
@@ -1003,8 +1004,9 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry, routes scheduled vs manual actions |
 | `cleanup_stale_assignments()` | Remove idle assignments (>3h, `@with_transaction`) |
-| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry |
-| `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id |
+| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry, except those of a user whose assign is in flight |
+| `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id, except those of a user whose assign is in flight |
+| `get_assign_claimed_user_ids()` | Users holding an unexpired assign claim; both ALB sweeps delete nothing if it cannot be read |
 | `reconcile_instance_states()` | Sync DB with AWS reality |
 | `ensure_standby_pool_capacity()` | Monitor standby health (read-only) |
 | `cleanup_test_user_assignments()` | Manual: clean up test user assignments |

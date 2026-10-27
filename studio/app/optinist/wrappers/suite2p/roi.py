@@ -41,7 +41,7 @@ def suite2p_roi(
     fs = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
 
     if params and "detection" not in params:
-        # a pre-1.1.0 tree arrives here with only tau and classification left
+        # for params that skip the type check, which refuses pre-1.1.0 trees
         raise KeyError(
             "suite2p_roi parameters predate suite2p 1.1.0: "
             "delete the node and add it again"

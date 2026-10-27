@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
@@ -18,25 +20,171 @@ logger = AppLogger.get_logger()
 # Bytes of float64 frames LoadData reads at a time outside LCCD's own windows
 BATCH_BYTES = 64 << 20
 
+INT_PARAMS = ("filtersize1", "filtersize2", "fsize", "frame_divider", "f0_frames")
+NUMBER_PARAMS = ("sigma", "overlap_threshold", "f0_percentile")
+STAGES = ("blob_detector", "roi_integration")
+
+
+def lccd_config(params):
+    """The flattened params, plus each stage's own section on top of them, so
+    blob_detector and roi_integration keep their own min_area, max_area and
+    sparse (flattening alone lets one section's values overwrite the other's).
+    """
+    flat = {}
+    recursive_flatten_params(params, flat)
+    sections = {s: {**flat, **(params.get(s) or {})} for s in STAGES}
+    return {**flat, **sections}
+
+
+def is_finite_float(value):
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def typed(name, value, kind, errors):
+    """value if it is an "integer", or a "number" that is a finite float, else
+    None and an error."""
+    if kind == "integer":
+        ok = isinstance(value, int)
+    else:
+        ok = isinstance(value, (int, float)) and is_finite_float(value)
+    ok = ok and not isinstance(value, bool)
+    if not ok:
+        expected = "an integer" if kind == "integer" else "a finite number"
+        errors.append(f"{name} must be {expected}, got {value!r:.100}")
+    return value if ok else None
+
+
+def validate_params(params, video_shape):
+    """Check LCCD parameters against the movie's (rows, columns, frames).
+
+    Only keys present in params are checked. All violations are collected and
+    raised together as one ValueError so the user can fix everything at once.
+    """
+    rows, cols, T = video_shape
+    params = params or {}
+    config = lccd_config(params)
+    errors = []
+
+    v = {k: typed(k, config[k], "integer", errors) for k in INT_PARAMS if k in config}
+    for k in NUMBER_PARAMS:
+        if k in config:
+            v[k] = typed(k, config[k], "number", errors)
+
+    frame_divider = v.get("frame_divider")
+    if frame_divider is not None:
+        if frame_divider < 1:
+            errors.append(f"frame_divider must be >= 1, got {frame_divider}")
+        elif frame_divider > T:
+            errors.append(
+                f"frame_divider ({frame_divider}) is larger than the movie's "
+                f"{T} frames, so no chunk is processed: set frame_divider <= {T}"
+            )
+
+    filtersize1 = v.get("filtersize1")
+    if filtersize1 is not None:
+        if filtersize1 < 1:
+            errors.append(f"filtersize1 must be >= 1, got {filtersize1}")
+        elif frame_divider is not None and 1 <= frame_divider < filtersize1:
+            logger.warning(
+                "filtersize1 (%d) is larger than frame_divider (%d): the "
+                "temporal filters run on chunks of frame_divider frames, which "
+                "degrades detection; set filtersize1 <= frame_divider",
+                filtersize1,
+                frame_divider,
+            )
+
+    filtersize2 = v.get("filtersize2")
+    if filtersize2 is not None:
+        if filtersize2 < 1:
+            errors.append(f"filtersize2 must be >= 1, got {filtersize2}")
+        elif filtersize1 is not None and filtersize2 >= filtersize1 >= 1:
+            errors.append(
+                f"filtersize2 ({filtersize2}) must be < filtersize1 ({filtersize1})"
+            )
+
+    sigma = v.get("sigma")
+    if sigma is not None and sigma <= 0:
+        errors.append(f"sigma must be > 0, got {sigma}")
+
+    fsize = v.get("fsize")
+    if fsize is not None:
+        if not 1 <= fsize <= min(rows, cols):
+            errors.append(
+                f"fsize ({fsize}) must be between 1 and the frame's shorter "
+                f"side ({min(rows, cols)} pixels)"
+            )
+        elif fsize % 2 == 0:
+            logger.warning("fsize (%d) is even; an odd size is recommended", fsize)
+
+    for stage in STAGES:
+        prefix = f"{stage}." if stage in params else ""
+        area = {
+            k: typed(prefix + k, config[stage][k], "number", errors)
+            for k in ("min_area", "max_area")
+            if k in config[stage]
+        }
+        min_area, max_area = area.get("min_area"), area.get("max_area")
+        if min_area is not None and max_area is not None and min_area >= max_area:
+            errors.append(
+                f"{prefix}min_area ({min_area}) must be < "
+                f"{prefix}max_area ({max_area})"
+            )
+
+    overlap_threshold = v.get("overlap_threshold")
+    if overlap_threshold is not None and not 0 <= overlap_threshold <= 1:
+        errors.append(
+            f"overlap_threshold must be between 0 and 1, got {overlap_threshold}"
+        )
+
+    f0_frames = v.get("f0_frames")
+    if f0_frames is not None:
+        if f0_frames < 1:
+            errors.append(f"f0_frames must be >= 1, got {f0_frames}")
+        elif 2 * f0_frames >= T:
+            logger.warning(
+                "f0_frames (%d) leaves no frame with a full dff window "
+                "[k - f0_frames, k + f0_frames) inside the %d-frame movie: "
+                "dff will be entirely NaN; set f0_frames < %d",
+                f0_frames,
+                T,
+                (T + 1) // 2,
+            )
+
+    f0_percentile = v.get("f0_percentile")
+    if f0_percentile is not None and not 0 <= f0_percentile <= 100:
+        errors.append(f"f0_percentile must be between 0 and 100, got {f0_percentile}")
+
+    if errors:
+        # dict.fromkeys: flat params put the same area error in both stages
+        raise ValueError(
+            f"invalid LCCD parameters for a movie of {rows} x {cols} pixels "
+            f"(rows x columns) and {T} frames:\n- " + "\n- ".join(dict.fromkeys(errors))
+        )
+
 
 def lccd_detect(
     mc_images: ImageData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from studio.app.optinist.wrappers.lccd.lccd_python.lccd import LCCD
+    from studio.app.optinist.wrappers.data_utils.vacant_roi import movie_shape
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start lccd_detect: %s", function_id)
 
-    flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
-    params = flattened_params
+    params = params or {}
+    validate_params(params, movie_shape(mc_images))
 
+    from studio.app.optinist.wrappers.lccd.lccd_python.lccd import LCCD
+
+    params = lccd_config(params)
     logger.debug("params: %s", params)
     lccd = LCCD(params)
     with LoadData(mc_images) as D:
         assert (
             len(D.shape) == 3
-        ), "input array should have dimensions (width, height, time)"
+        ), "input array should have dimensions (rows, columns, time)"
         try:
             roi = lccd.apply(D)
             num_cell = roi.shape[1]
@@ -143,7 +291,7 @@ def lccd_detect(
 
 class LoadData:
     """
-    The movie LCCD detects on: (X, Y, frames), float64, scaled to [0, 1] by its
+    The movie LCCD detects on: (rows, columns, frames), float64, scaled to [0, 1] by its
     min and max. Frames are read from the first TIFF of mc_images when sliced:
     - LCCD.apply slices `[:, :, start:stop]`, one window at a time
     - roi_means reads BATCH_BYTES of frames at a time
@@ -155,7 +303,8 @@ class LoadData:
 
         self._pile = Image.open(mc_images.path[0])
         try:
-            self.shape = (*self._pile.size, self._pile.n_frames)
+            width, height = self._pile.size
+            self.shape = (height, width, self._pile.n_frames)
             lows, highs = [], []
             for start, stop in self._batches():
                 frames = self._read(range(start, stop))
