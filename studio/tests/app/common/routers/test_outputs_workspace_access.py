@@ -25,7 +25,8 @@ HTML_PATH = "1/wsaccess/glm/summary.html"
 
 URLS = [
     f"/api/visualizations/html/{HTML_PATH}",
-    f"/api/visualizations/html/{DIRPATH.OUTPUT_DIR}/{HTML_PATH}",
+    # Resolved per request so xdist workers collect the same test ids
+    f"/api/visualizations/html/{{output_dir}}/{HTML_PATH}",
     "/api/visualizations/data/1/wsaccess/glm/x.json",
     "/api/visualizations/inittimedata/1/wsaccess/fn/fluorescence.json",
     "/api/visualizations/timedata/1/wsaccess/fn/fluorescence.json?index=0",
@@ -76,7 +77,9 @@ def get_as(db, monkeypatch):
             organization=Organization(id=1, name="org"),
         )
         # Members reach the routes, which may fail on the missing fixtures
-        return TestClient(app, raise_server_exceptions=False).get(url)
+        return TestClient(app, raise_server_exceptions=False).get(
+            url.format(output_dir=DIRPATH.OUTPUT_DIR)
+        )
 
     yield get
     app.dependency_overrides.clear()
@@ -84,9 +87,10 @@ def get_as(db, monkeypatch):
     shutil.rmtree(os.path.join(DIRPATH.OUTPUT_DIR, "1", "wsaccess"))
 
 
+@pytest.mark.parametrize("url", URLS[:2])
 @pytest.mark.parametrize("user_id", [OWNER, SHARED])
-def test_member_reads_html_output(get_as, user_id):
-    response = get_as(f"/api/visualizations/html/{HTML_PATH}", user_id)
+def test_member_reads_html_output(get_as, url, user_id):
+    response = get_as(url, user_id)
     assert response.status_code == 200
     assert response.json()["data"] == "<table>summary</table>"
 

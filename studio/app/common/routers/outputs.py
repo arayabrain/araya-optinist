@@ -280,7 +280,7 @@ async def _background_full_sync(
     response_model=bool,
     dependencies=[Depends(is_workspace_available)],
     description="""
-    Sync visualization files (JSON, TIFF)
+    Sync visualization files (VISUALIZATION_SYNC_PATTERNS)
     from remote storage for viewing experiment results.
     Call this before loading visualization data to ensure files are available locally.
     Only syncs files needed for visualization, not large PKL/NWB files.
@@ -311,7 +311,7 @@ async def _sync_visualization_files(
 ) -> bool:
     """
     Lazy-load visualization files from remote storage.
-    Downloads only JSON and TIFF files needed for viewing results.
+    Downloads only the files needed for viewing results.
     Then triggers background download of PKL/NWB files for Edit ROI.
     """
     if not RemoteStorageController.is_available():
