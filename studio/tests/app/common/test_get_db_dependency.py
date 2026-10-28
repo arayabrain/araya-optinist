@@ -42,6 +42,7 @@ INTENDED_DEPENDENCY_PARAMS = {
         "workspace_id",
     ),
     ("studio.app.optinist.routers.roi.roi_filepath", "query", "workspace_id"),
+    ("studio.app.common.routers.outputs.workspace_access", "query", "workspace_id"),
     (
         "studio.app.common.routers.internal.verify_internal_secret",
         "header",
