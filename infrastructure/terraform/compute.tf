@@ -665,6 +665,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = var.aws_region
         },
         {
+          name  = "ANNOUNCEMENT_SSM_PARAMETER"
+          value = aws_ssm_parameter.announcement.name
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${local.env_prefix}-cloud-taskdef"
         },
@@ -955,6 +959,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "AWS_DEFAULT_REGION"
           value = var.aws_region
+        },
+        {
+          name  = "ANNOUNCEMENT_SSM_PARAMETER"
+          value = aws_ssm_parameter.announcement.name
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"

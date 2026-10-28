@@ -12,6 +12,7 @@ import {
   isDataviewPublicOutputsRequest,
   DATAVIEW_PUBLIC_REQUEST_KEY,
 } from "utils/DataviewUtils"
+import { reloadIfUnderMaintenance } from "utils/maintenance"
 import {
   routingService,
   type PremiumUnreachableDetail,
@@ -429,6 +430,16 @@ axios.interceptors.response.use(
     const is502or503 =
       error?.response?.status === 502 || error?.response?.status === 503
     const isNetworkError = !error?.response && !!error?.config
+
+    // From www the CORS-less maintenance 503 arrives as a network error.
+    if (
+      (error?.response?.status === 503 ||
+        (isNetworkError && !axiosLibrary.isCancel(error))) &&
+      (await reloadIfUnderMaintenance())
+    ) {
+      return new Promise(() => {})
+    }
+
     if (
       (is502or503 || isNetworkError) &&
       routingService.requiresPremiumRouting()

@@ -27,6 +27,7 @@ Weekly and monthly checks are automated by maintenance scripts that collect data
 - [Weekly Checks — weekly-maintenance.sh](#weekly-checks--weekly-maintenancesh)
 - [Monthly Checks — monthly-maintenance.sh](#monthly-checks--monthly-maintenancesh)
 - [Quarterly Checks](#quarterly-checks)
+- [Planned Downtime: Announcement and Maintenance Page](#planned-downtime-announcement-and-maintenance-page)
 - [Reference: CloudWatch Dashboard](#reference-cloudwatch-dashboard)
 - [Reference: Log Groups and Error Patterns](#reference-log-groups-and-error-patterns)
 - [Reference: Alarm Response Procedures](#reference-alarm-response-procedures)
@@ -347,6 +348,67 @@ The RDS instance has 20GB gp3 storage. Plan to increase if free storage trends b
 - Review security group rules — ensure no unnecessary ports are open
 - Check for dependency vulnerabilities (`pip audit`, `npm audit`)
 - Verify TLS certificates are not approaching expiration (ACM auto-renews, but verify)
+
+---
+
+## Planned Downtime: Announcement and Maintenance Page
+
+Two operator switches tell users about planned downtime. Neither needs a deploy or a Terraform apply.
+
+| Switch | What users see | Set with |
+|--------|----------------|----------|
+| Announcement | A warning in the centre of the header on signed-in pages; clicking it opens the full text | SSM parameter `/<environment>/optinist/announcement` |
+| Maintenance page | A static 503 page on every path instead of the app | `infrastructure/scripts/maintenance_mode.sh` |
+
+`<environment>` is the Terraform `var.environment` value: `development` or `subscr`.
+
+### Announcement
+
+The value is JSON with two fields. `message` is plain text, up to 500 characters; state the date, time and time zone of the downtime in it. The header shows the first line; the window shows the whole text, so put details after a `\n\n`. `until` is an ISO 8601 time with a time zone; the notice disappears after it.
+
+```bash
+aws ssm put-parameter --overwrite --region ap-northeast-1 \
+  --name /<environment>/optinist/announcement \
+  --value '{"message": "Scheduled maintenance Wed 5 Nov 13:00-14:00 JST\n\nThe site will be unavailable.", "until": "2026-11-05T05:00:00Z"}'
+```
+
+Clear it early with `--value '{}'`.
+
+- Each backend worker caches the value for 60 seconds. A fresh page load shows a change within about a minute; open tabs re-check every 10 minutes.
+- "Hide until next sign-in" in the window dismisses it. A dismissal lasts until the next sign-in in that browser, or until the message text changes. Editing the message shows it again to everyone.
+- A value that is not JSON, lacks a field, has an `until` without a time zone, or has an `until` in the past shows nothing and logs a warning starting `Announcement` in the ECS logs.
+- Standalone installs never show announcements.
+- Check it with `curl -s https://<host>/announcement`, which returns `{"id": ..., "message": ...}` while the notice is live.
+- Anyone with `ssm:PutParameter` on the parameter can change it. The ECS task role can only read it.
+
+### Maintenance page
+
+```bash
+infrastructure/scripts/maintenance_mode.sh <environment> on
+infrastructure/scripts/maintenance_mode.sh <environment> status
+infrastructure/scripts/maintenance_mode.sh <environment> off
+```
+
+- `on` adds a listener rule at priority 10 on the HTTPS listener that answers every path with the 503 page in `infrastructure/scripts/maintenance_page.html`. The page must stay under the ALB's 1024-character limit; the script refuses a longer one.
+- Terraform does not manage the rule, so an apply during the window leaves it in place. `status` is the only record that it is on.
+- Target-group health checks bypass listener rules, so targets stay healthy and the autoscaling groups do not react.
+- The 503 comes from the ALB, so it counts toward `HTTPCode_ELB_5XX_Count`, not the target 5XX alarm.
+- Every request through the ALB is blocked, including Stripe webhooks (Stripe retries them) and the premium manager's experiment-sync trigger (it logs the failure and continues).
+- Open tabs reload onto the page at their next failed API call. The page reloads itself every 5 minutes, so tabs return to the app once it is off.
+- `robots.txt` also returns 503, which pauses search-engine crawling. Keep windows under a day.
+
+### Runbook
+
+1. A week ahead, post the announcement. Load the site in a private window to check it.
+2. At the start of the window, run `maintenance_mode.sh <environment> on`. Check that `curl -si https://<host>/ | head -1` shows 503.
+3. Do the work. Check the backend from inside a container with ECS Exec, since the browser app cannot be reached past the rule:
+   ```bash
+   aws ecs execute-command --region ap-northeast-1 --cluster <environment>-optinist-cloud-cluster \
+     --task <task-id> --container <environment>-optinist-cloud-container --interactive \
+     --command "python -c \"import urllib.request as u; print(u.urlopen('http://localhost:8000/health').read())\""
+   ```
+4. Run `maintenance_mode.sh <environment> off`. Check that `curl -si https://<host>/ | head -1` shows 200.
+5. Clear the announcement, or let `until` pass.
 
 ---
 

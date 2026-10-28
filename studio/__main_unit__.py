@@ -63,6 +63,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.routers import (
     algolist,
+    announcement,
     auth,
     dataview,
     experiment,
@@ -264,11 +265,12 @@ def _register_public_routers(app: FastAPI) -> None:
     """Routers mounted on every tier so the SPA can bootstrap during a
     free-tier outage: auth (login/refresh), users_me (the GET /users/me +
     premium-assign / heartbeat / beacon set the SPA calls right after login),
-    public dataview, internal, outputs. Public-tier tasks still talk to the
-    same RDS and invoke the same premium-manager Lambda as free, so these
-    routes work identically whichever tier serves them.
+    public dataview, announcement, internal, outputs. Public-tier tasks still
+    talk to the same RDS and invoke the same premium-manager Lambda as free,
+    so these routes work identically whichever tier serves them.
     """
     app.include_router(dataview.public_router)
+    app.include_router(announcement.router)
     app.include_router(internal.router)  # Internal secret auth, not JWT.
     app.include_router(
         outputs.router,

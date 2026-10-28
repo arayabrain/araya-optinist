@@ -1518,6 +1518,11 @@ this document nor the release procedure states the combined order, so write it i
 issue beforehand, adding a same-morning `<FROM>` health-lane baseline before the plan and a re-read of the ECS
 and proxy checks after the service cycle.
 
+**Tell users through the site as well as by email.** Post the in-app announcement a week ahead and turn the
+maintenance page on for the window, as in
+[Planned Downtime](MAINTENANCE_PROCEDURES.md#planned-downtime-announcement-and-maintenance-page). Without the
+maintenance page the targets stay healthy while the database is offline, so users get application errors.
+
 **If 0B was skipped, the precheck runs here for the first time.** It fails safe — the instance stays on
 `<FROM>` and the cost is the window — and the response is decided in advance: capture the log, attempt no
 in-window fix, finish the rest of the release, and take a second window within days.
