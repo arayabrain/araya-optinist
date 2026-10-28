@@ -31,6 +31,7 @@ describe("reloadIfUnderMaintenance", () => {
   })
 
   afterEach(() => {
+    jest.useRealTimers()
     Object.defineProperty(window, "location", {
       configurable: true,
       value: originalLocation,
@@ -41,7 +42,10 @@ describe("reloadIfUnderMaintenance", () => {
   it("reloads on a same-origin 503 that carries the marker", async () => {
     global.fetch = respond(503, `<html>${MAINTENANCE_MARKER}</html>`)
     await expect(reloadIfUnderMaintenance()).resolves.toBe(true)
-    expect(global.fetch).toHaveBeenCalledWith("/", { cache: "no-store" })
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/",
+      expect.objectContaining({ cache: "no-store" }),
+    )
     expect(mockReload).toHaveBeenCalledTimes(1)
     expect(sessionStorage.getItem(MAINTENANCE_RELOAD_KEY)).not.toBeNull()
   })
@@ -63,6 +67,39 @@ describe("reloadIfUnderMaintenance", () => {
       throw new TypeError("offline")
     }) as typeof fetch
     await expect(reloadIfUnderMaintenance()).resolves.toBe(false)
+    expect(mockReload).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["the request", false],
+    ["the body", true],
+  ])("releases callers when %s stalls", async (_, headersArrive) => {
+    jest.useFakeTimers()
+    const stall = (signal: AbortSignal) =>
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) reject(new Error("aborted"))
+        signal.addEventListener("abort", () => reject(new Error("aborted")))
+      })
+    global.fetch = jest.fn(async (_url: RequestInfo, init?: RequestInit) => {
+      const signal = init!.signal!
+      if (!headersArrive) return stall(signal)
+      return { status: 503, text: () => stall(signal) } as unknown as Response
+    }) as typeof fetch
+    const callers = Promise.all([
+      reloadIfUnderMaintenance(),
+      reloadIfUnderMaintenance(),
+    ])
+    let settled = false
+    callers.then(() => (settled = true))
+    const flush = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+    }
+    await flush()
+    jest.advanceTimersByTime(4_999)
+    await flush()
+    expect(settled).toBe(false)
+    jest.advanceTimersByTime(1)
+    await expect(callers).resolves.toEqual([false, false])
     expect(mockReload).not.toHaveBeenCalled()
   })
 

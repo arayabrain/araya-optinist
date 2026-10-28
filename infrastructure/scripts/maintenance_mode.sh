@@ -28,18 +28,22 @@ if [ -z "$LISTENER_ARN" ] || [ "$(echo "$LISTENER_ARN" | wc -w)" -ne 1 ]; then
   exit 1
 fi
 
-current_rule() {
+rule_field() {
   aws elbv2 describe-rules --region "$REGION" --listener-arn "$LISTENER_ARN" \
-    --query "Rules[?Priority=='$PRIORITY'].[RuleArn, Actions[0].Type]" \
-    --output text
+    --query "Rules[?Priority=='$PRIORITY'] | [0].$1" --output text
 }
 
-RULE=$(current_rule)
-RULE_ARN=$(echo "$RULE" | cut -f1)
-RULE_TYPE=$(echo "$RULE" | cut -f2)
-if [ -n "$RULE_ARN" ] && [ "$RULE_TYPE" != "fixed-response" ]; then
-  echo "Priority $PRIORITY holds a $RULE_TYPE rule, not the maintenance page: $RULE_ARN" >&2
-  exit 1
+RULE_ARN=$(rule_field RuleArn)
+[ "$RULE_ARN" = "None" ] && RULE_ARN=""
+if [ -n "$RULE_ARN" ]; then
+  BODY=$(rule_field 'Actions[0].FixedResponseConfig.MessageBody')
+  case "$BODY" in
+    *"<!-- optinist-maintenance -->"*) ;;
+    *)
+      echo "Priority $PRIORITY holds a rule that is not the maintenance page: $RULE_ARN" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 case "$ACTION" in

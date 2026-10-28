@@ -113,3 +113,19 @@ class TestAnnouncementEndpoint:
         ssm_value(ssm, live("second"))
         announcement._cache["expires_at"] = 0.0
         assert client.get("/announcement").json()["message"] == "second"
+
+    def test_refill_in_progress_serves_cached_value(self, ssm):
+        announcement._cache["value"] = {"id": "old", "message": "old"}
+        with announcement._refill_lock:
+            response = TestClient(app).get("/announcement")
+        assert response.json() == {"id": "old", "message": "old"}
+        ssm.get_parameter.assert_not_called()
+
+    def test_ssm_client_makes_a_single_attempt(self, monkeypatch):
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+        announcement._ssm_client.cache_clear()
+        try:
+            config = announcement._ssm_client().meta.config
+        finally:
+            announcement._ssm_client.cache_clear()
+        assert config.retries["total_max_attempts"] == 1

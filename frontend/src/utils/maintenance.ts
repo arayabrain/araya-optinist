@@ -1,6 +1,7 @@
 export const MAINTENANCE_MARKER = "<!-- optinist-maintenance -->"
 export const MAINTENANCE_RELOAD_KEY = "maintenanceReloadAt"
 const MIN_RELOAD_INTERVAL_MS = 60_000
+const PROBE_TIMEOUT_MS = 5_000
 
 let probe: Promise<boolean> | null = null
 
@@ -15,16 +16,22 @@ const reloadedRecently = (): boolean => {
 
 const probeAndReload = async (): Promise<boolean> => {
   if (reloadedRecently()) return false
-  let res: Response
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
     // Same-origin, so the ALB's CORS-less maintenance page stays readable.
-    res = await fetch("/", { cache: "no-store" })
+    const res = await fetch("/", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+    if (res.status !== 503) return false
+    // The abort also fails a stalled body read.
+    if (!(await res.text()).includes(MAINTENANCE_MARKER)) return false
   } catch {
     return false
+  } finally {
+    clearTimeout(timer)
   }
-  if (res.status !== 503) return false
-  const body = await res.text().catch(() => "")
-  if (!body.includes(MAINTENANCE_MARKER)) return false
   try {
     sessionStorage.setItem(MAINTENANCE_RELOAD_KEY, String(Date.now()))
   } catch {

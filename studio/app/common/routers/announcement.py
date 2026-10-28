@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -20,13 +21,16 @@ CACHE_TTL_SECONDS = 60
 MAX_MESSAGE_LENGTH = 500
 
 _cache: dict = {"expires_at": 0.0, "value": {}}
+_refill_lock = threading.Lock()
 
 
 @lru_cache(maxsize=1)
 def _ssm_client():
     return boto3.client(
         "ssm",
-        config=Config(connect_timeout=2, read_timeout=2, retries={"max_attempts": 1}),
+        config=Config(
+            connect_timeout=2, read_timeout=2, retries={"total_max_attempts": 1}
+        ),
     )
 
 
@@ -75,8 +79,14 @@ def get_announcement() -> dict:
     parameter_name = os.environ.get(ANNOUNCEMENT_SSM_PARAMETER_ENV)
     if not parameter_name:
         return {}
-    now = time.monotonic()
-    if now >= _cache["expires_at"]:
-        _cache["value"] = _load_announcement(parameter_name)
-        _cache["expires_at"] = now + CACHE_TTL_SECONDS
+    # One thread refills; the others serve the previous value meanwhile
+    if time.monotonic() >= _cache["expires_at"] and _refill_lock.acquire(
+        blocking=False
+    ):
+        try:
+            if time.monotonic() >= _cache["expires_at"]:
+                _cache["value"] = _load_announcement(parameter_name)
+                _cache["expires_at"] = time.monotonic() + CACHE_TTL_SECONDS
+        finally:
+            _refill_lock.release()
     return _cache["value"]
