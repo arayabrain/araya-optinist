@@ -1,8 +1,9 @@
-"""Startup refuses a cloud deployment that signs tokens with a placeholder key.
+"""Startup refuses a placeholder or short signing key where tokens can be forged.
 
 Tokens signed with a key published in this repository can be forged by anyone.
-Cloud deployments are recognised by S3 remote storage; elsewhere the same
-findings are only logged so local multiuser development keeps working.
+Cloud deployments are recognised by S3 remote storage. Without Firebase the
+ExToken alone authenticates, so SECRET_KEY is checked there too. Elsewhere the
+same findings are only logged so local multiuser development keeps working.
 """
 
 from unittest.mock import patch
@@ -25,6 +26,7 @@ MOCK_STORAGE = "1"
 @pytest.fixture
 def multiuser(monkeypatch):
     monkeypatch.setattr(MODE, "IS_STANDALONE", False)
+    monkeypatch.setattr(AUTH_CONFIG, "USE_FIREBASE_TOKEN", True)
     monkeypatch.setattr(AUTH_CONFIG, "SECRET_KEY", STRONG_KEY)
     monkeypatch.setenv("ROUTING_SECRET_KEY", STRONG_KEY)
     monkeypatch.setenv("REMOTE_STORAGE_TYPE", S3)
@@ -78,15 +80,25 @@ def test_error_never_contains_the_secret_value(multiuser):
     assert INSECURE_DEFAULT_SECRET_KEY not in str(excinfo.value)
 
 
-def test_short_secret_key_only_warns_in_cloud(multiuser):
-    """An existing deployment on a short key must not be taken down by this."""
-    multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", "short-but-set")
+@pytest.mark.parametrize("name", ["SECRET_KEY", "ROUTING_SECRET_KEY"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "optinist_secret_key",  # old *.tfvars.example value
+        "test-secret-key-12345",  # infrastructure/scripts/test_constants.py
+        "k" * 31,
+    ],
+)
+def test_cloud_refuses_short_keys(multiuser, name, value):
+    if name == "SECRET_KEY":
+        multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", value)
+    else:
+        multiuser.setenv("ROUTING_SECRET_KEY", value)
 
-    secret_validation.validate_signing_secrets()
+    with pytest.raises(RuntimeError, match=name):
+        secret_validation.validate_signing_secrets()
 
-    findings = secret_validation.find_weak_signing_keys()
-    assert findings.blocking == []
-    assert findings.warnings == ["SECRET_KEY"]
+    assert secret_validation.find_weak_signing_keys().short == [name]
 
 
 def test_local_multiuser_only_warns(multiuser):
@@ -96,10 +108,33 @@ def test_local_multiuser_only_warns(multiuser):
 
     secret_validation.validate_signing_secrets()
 
-    assert secret_validation.find_weak_signing_keys().blocking == [
+    assert secret_validation.find_weak_signing_keys().placeholders == [
         "SECRET_KEY",
         "ROUTING_SECRET_KEY",
     ]
+
+
+@pytest.mark.parametrize("value", [INSECURE_DEFAULT_SECRET_KEY, "12345678", "short"])
+def test_without_firebase_refuses_weak_secret_key_outside_cloud(multiuser, value):
+    """The ExToken alone authenticates, so a known key makes anyone an admin."""
+    multiuser.setenv("REMOTE_STORAGE_TYPE", MOCK_STORAGE)
+    multiuser.setattr(AUTH_CONFIG, "USE_FIREBASE_TOKEN", False)
+    multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", value)
+    multiuser.delenv("ROUTING_SECRET_KEY")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        secret_validation.validate_signing_secrets()
+
+    assert "SECRET_KEY" in str(excinfo.value)
+    assert "ROUTING_SECRET_KEY" not in str(excinfo.value)
+
+
+def test_without_firebase_outside_cloud_ignores_routing_key(multiuser):
+    multiuser.setenv("REMOTE_STORAGE_TYPE", MOCK_STORAGE)
+    multiuser.setattr(AUTH_CONFIG, "USE_FIREBASE_TOKEN", False)
+    multiuser.delenv("ROUTING_SECRET_KEY")
+
+    secret_validation.validate_signing_secrets()
 
 
 def test_standalone_is_not_checked(multiuser):

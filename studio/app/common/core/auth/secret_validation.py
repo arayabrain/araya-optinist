@@ -2,9 +2,10 @@
 
 SECRET_KEY signs the locally issued access, refresh and beacon tokens, and
 ROUTING_SECRET_KEY signs the premium routing IDs. Both ship with placeholder
-defaults so a fresh checkout runs without setup. A cloud deployment left on
-those placeholders would accept tokens anyone can forge, so startup refuses
-to run there; elsewhere (local multiuser development) it only warns.
+defaults so a fresh checkout runs without setup. Startup refuses a placeholder
+or short key wherever a forged token would be accepted: both keys in the
+cloud, and SECRET_KEY wherever USE_FIREBASE_TOKEN is off (the ExToken alone
+then authenticates). Elsewhere (local development with Firebase) it only warns.
 
 Only variable names are ever logged, never their values.
 """
@@ -23,8 +24,7 @@ from studio.app.common.core.storage.remote_storage_controller import RemoteStora
 
 logger = AppLogger.get_logger()
 
-# Shorter keys are reported but not blocked: an existing deployment may run on
-# one, and refusing to start would turn a hardening change into an outage.
+# HS256 keys shorter than this can be brute-forced offline from one token.
 MIN_KEY_LENGTH = 32
 
 
@@ -39,9 +39,9 @@ PLACEHOLDER_MARKER_PREFIX = "<PLACEHOLDER"
 
 class KeyFindings(NamedTuple):
     # Unset, empty or published values: forgeable tokens.
-    blocking: List[str]
-    # Usable but shorter than recommended.
-    warnings: List[str]
+    placeholders: List[str]
+    # Set, but short enough to brute-force.
+    short: List[str]
 
 
 def is_placeholder(value: str) -> bool:
@@ -53,12 +53,12 @@ def is_placeholder(value: str) -> bool:
     )
 
 
-BLOCKING, SHORT, OK = "blocking", "short", "ok"
+PLACEHOLDER, SHORT, OK = "placeholder", "short", "ok"
 
 
 def _strength(value: str) -> str:
     if is_placeholder(value):
-        return BLOCKING
+        return PLACEHOLDER
     if len(value) < MIN_KEY_LENGTH:
         return SHORT
     return OK
@@ -71,8 +71,8 @@ def find_weak_signing_keys() -> KeyFindings:
         "ROUTING_SECRET_KEY": _strength(os.environ.get("ROUTING_SECRET_KEY", "")),
     }
     return KeyFindings(
-        blocking=[name for name, s in strength.items() if s == BLOCKING],
-        warnings=[name for name, s in strength.items() if s == SHORT],
+        placeholders=[name for name, s in strength.items() if s == PLACEHOLDER],
+        short=[name for name, s in strength.items() if s == SHORT],
     )
 
 
@@ -82,7 +82,7 @@ def is_cloud_deployment() -> bool:
 
 
 def validate_signing_secrets() -> None:
-    """Raise in a cloud deployment that runs on placeholder secrets.
+    """Raise where a weak key lets anyone forge tokens; warn elsewhere.
 
     Standalone mode authenticates nobody, so there is nothing to check.
     """
@@ -90,28 +90,27 @@ def validate_signing_secrets() -> None:
         return
 
     findings = find_weak_signing_keys()
-
-    if findings.warnings:
-        logger.warning(
-            "Signing secret shorter than %d characters: %s",
-            MIN_KEY_LENGTH,
-            ", ".join(findings.warnings),
-        )
-
-    if not findings.blocking:
+    weak = findings.placeholders + findings.short
+    if not weak:
         return
 
-    names = ", ".join(findings.blocking)
     if is_cloud_deployment():
+        refused = weak
+    elif not AUTH_CONFIG.USE_FIREBASE_TOKEN:
+        # The ExToken alone authenticates; routing IDs are only used in the cloud.
+        refused = [name for name in weak if name == "SECRET_KEY"]
+    else:
+        refused = []
+
+    if refused:
         message = (
-            f"Refusing to start: unset or placeholder value in {names}. "
-            "Set a random value of at least "
-            f"{MIN_KEY_LENGTH} characters."
+            f"Refusing to start: placeholder or short value in {', '.join(refused)}. "
+            f"Set a random value of at least {MIN_KEY_LENGTH} characters."
         )
         logger.error(message)
         raise RuntimeError(message)
 
     logger.warning(
-        "Unset or placeholder value in %s. Acceptable for local development only.",
-        names,
+        "Placeholder or short value in %s. Acceptable for local development only.",
+        ", ".join(weak),
     )
