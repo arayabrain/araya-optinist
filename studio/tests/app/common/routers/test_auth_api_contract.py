@@ -283,7 +283,9 @@ async def test_contract_refresh_response_format():
 
         refresh_token_data = RefreshToken(refresh_token="old_refresh_token")
 
-        result = await refresh(refresh_token=refresh_token_data, **_http())
+        result = await refresh(
+            refresh_token=refresh_token_data, request=_http()["request"]
+        )
 
         # Result should be AccessToken model
         result_dict = result.dict()

@@ -116,18 +116,10 @@ async def login(
 
 
 @router.post("/refresh", response_model=AccessToken)
-async def refresh(
-    request: Request,
-    response: Response,
-    refresh_token: RefreshToken = RefreshToken(),
-):
+async def refresh(request: Request, refresh_token: RefreshToken = RefreshToken()):
+    # A body token is never copied into the cookie: only login mints one.
     token = refresh_token.refresh_token
-    if token:
-        access = await auth.refresh_current_user_token(token)
-        # Moves a session stored by an older SPA onto the cookie.
-        _set_refresh_cookie(request, response, token)
-        return access
-    if _is_own_origin(request):
+    if not token and _is_own_origin(request):
         token = request.cookies.get(REFRESH_COOKIE)
     return await auth.refresh_current_user_token(token)
 

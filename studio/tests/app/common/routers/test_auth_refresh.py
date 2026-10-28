@@ -116,19 +116,19 @@ def test_login_sets_no_cookie_unless_its_own_origin_opts_in(client, headers):
     assert "refresh_token=" not in _cookie_header(response)
 
 
-def test_refresh_with_a_body_token_moves_it_into_the_cookie(client):
+def test_refresh_never_copies_a_body_token_into_the_cookie(client):
     with patch(
         f"{AUTH}.auth.refresh_current_user_token",
         return_value=AccessToken(access_token="new"),
-    ):
+    ) as refresh_token:
         response = client.post(
             "/auth/refresh", json={"refresh_token": "legacy"}, headers=OPT_IN
         )
     client.cookies.clear()
 
     assert response.json() == {"access_token": "new"}
-    assert _cookie_header(response).startswith("refresh_token=legacy;")
-    assert "secure" not in _cookie_header(response).lower()
+    refresh_token.assert_called_once_with("legacy")
+    assert "refresh_token=" not in _cookie_header(response)
 
 
 def test_refresh_with_an_invalid_body_token_sets_no_cookie(client):
