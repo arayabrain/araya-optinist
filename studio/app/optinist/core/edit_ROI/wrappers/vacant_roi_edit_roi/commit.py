@@ -18,7 +18,8 @@ def commit_edit(
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
     fluorescence = fluorescence.data
-    num_cell = data.im.shape[0]
+    roi_masks = data.roi_masks
+    num_cell = len(roi_masks)
     # Only new traces read the movie, so a commit that only deletes ROIs never
     # opens it. A node without traces also takes its frame count from it
     # (FluoData stores no traces as (0, 0)).
@@ -36,7 +37,8 @@ def commit_edit(
     added = iscell == CellType.TEMP_ADD
     iscell[iscell == CellType.TEMP_DELETE] = CellType.NON_ROI
     for i in range(num_committed, num_cell):
-        new_fluorescences[i] = np.mean(images[:, ~np.isnan(data.im[i])], axis=1)
+        rows, cols = roi_masks.coords(i)
+        new_fluorescences[i] = np.mean(images[:, rows, cols], axis=1)
         if added[i]:
             iscell[i] = CellType.ROI
 
@@ -44,7 +46,7 @@ def commit_edit(
 
     info = {
         "cell_roi": RoiData(
-            np.nanmax(data.im[iscell != CellType.NON_ROI], axis=0, initial=np.nan),
+            roi_masks.label_image(iscell != CellType.NON_ROI),
             output_dir=node_dirpath,
             file_name="cell_roi",
         ),

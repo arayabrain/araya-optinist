@@ -18,7 +18,11 @@ from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.core.edit_ROI.utils import EditRoiUtils
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
-from studio.app.optinist.dataclass.roi import EditImagesUnavailableError, edit_reference
+from studio.app.optinist.dataclass.roi import (
+    EditImagesUnavailableError,
+    RoiMasks,
+    edit_reference,
+)
 from studio.app.optinist.schemas.roi import RoiPos
 
 # Unlike caiman_cnmf's, a cnmf_multisession node id has no "caiman" in it.
@@ -64,7 +68,9 @@ def file_path():
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/cnmf_multisession.pkl",
         info={
-            "edit_roi_data": EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), im=im),
+            "edit_roi_data": EditRoiData(
+                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=RoiMasks.from_stack(im)
+            ),
             "iscell": IscellData(np.ones(NUM_ROI, dtype=int)),
             "fluorescence": FluoData(np.zeros((NUM_ROI, NUM_FRAME))),
             "dff": FluoData(DFF, file_name="dff"),
@@ -138,10 +144,10 @@ async def test_a_commit_reads_new_traces_from_the_split_parts(parts_file_path):
     await EditROI(file_path=file_path).commit()
 
     committed = EditROI(file_path=file_path).output_info
-    mask = ~np.isnan(committed["edit_roi_data"].im[NUM_ROI])
+    added = committed["edit_roi_data"].roi_masks.label_image([NUM_ROI])
     np.testing.assert_array_equal(
         committed["fluorescence"].data[NUM_ROI],
-        np.mean(movie[:, mask], axis=1, dtype=np.float32),
+        np.mean(movie[:, ~np.isnan(added)], axis=1, dtype=np.float32),
     )
 
 

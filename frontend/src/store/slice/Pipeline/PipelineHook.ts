@@ -42,6 +42,7 @@ import {
   releaseWorkspaceLock,
   refreshLock,
 } from "utils/operationLock"
+import { notifyParamChanges } from "utils/param/ParamUtils"
 
 const POLLING_INTERVAL = 10000
 const LOCK_REFRESH_INTERVAL_MS = 60000
@@ -59,16 +60,24 @@ export function useRunPipeline() {
 
   const { workspaceId } = useParams<{ workspaceId: string }>()
   const _workspaceId = Number(workspaceId)
+  const { enqueueSnackbar } = useSnackbar()
 
   useEffect(() => {
+    // Name the params reconciled on load, as reproduce and import do
+    const loadWorkflow = (id: number) =>
+      dispatch(fetchWorkflow(id)).then((action) => {
+        if (fetchWorkflow.fulfilled.match(action)) {
+          notifyParamChanges(action.payload.paramChanges, enqueueSnackbar)
+        }
+      })
     if (isStandalone) {
       dispatch(setCurrentWorkspace(STANDALONE_WORKSPACE_ID))
-      dispatch(fetchWorkflow(STANDALONE_WORKSPACE_ID))
+      loadWorkflow(STANDALONE_WORKSPACE_ID)
     } else {
       appDispatch(getWorkspace({ id: _workspaceId }))
         .unwrap()
         .then((_) => {
-          dispatch(fetchWorkflow(_workspaceId))
+          loadWorkflow(_workspaceId)
           const selectedTab = location.state?.tab
           selectedTab && dispatch(setActiveTab(selectedTab))
         })
@@ -96,6 +105,7 @@ export function useRunPipeline() {
     location.state,
     isStandalone,
     workspaceId,
+    enqueueSnackbar,
   ])
 
   const uid = useSelector(selectPipelineLatestUid)
@@ -106,7 +116,6 @@ export function useRunPipeline() {
   const filePathIsUndefined = useSelector(selectFilePathIsUndefined)
   const algorithmNodeNotExist = useSelector(selectAlgorithmNodeNotExist)
   const runPostData = useSelector(selectRunPostData)
-  const { enqueueSnackbar } = useSnackbar()
 
   const handleRunPipeline = useCallback(
     (name: string) => {
