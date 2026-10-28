@@ -37,7 +37,7 @@ PUBLISHED_PLACEHOLDERS = frozenset(
 PLACEHOLDER_MARKER_PREFIX = "<PLACEHOLDER"
 
 
-class SecretFindings(NamedTuple):
+class KeyFindings(NamedTuple):
     # Unset, empty or published values: forgeable tokens.
     blocking: List[str]
     # Usable but shorter than recommended.
@@ -53,21 +53,27 @@ def is_placeholder(value: str) -> bool:
     )
 
 
-def find_weak_secrets() -> SecretFindings:
-    blocking: List[str] = []
-    warnings: List[str] = []
+BLOCKING, SHORT, OK = "blocking", "short", "ok"
 
-    secrets = {
-        "SECRET_KEY": AUTH_CONFIG.SECRET_KEY or "",
-        "ROUTING_SECRET_KEY": os.environ.get("ROUTING_SECRET_KEY", ""),
+
+def _strength(value: str) -> str:
+    if is_placeholder(value):
+        return BLOCKING
+    if len(value) < RECOMMENDED_MIN_SECRET_LENGTH:
+        return SHORT
+    return OK
+
+
+def find_weak_signing_keys() -> KeyFindings:
+    # Only names and constant verdicts leave this function, never the values.
+    strength = {
+        "SECRET_KEY": _strength(AUTH_CONFIG.SECRET_KEY or ""),
+        "ROUTING_SECRET_KEY": _strength(os.environ.get("ROUTING_SECRET_KEY", "")),
     }
-    for name, value in secrets.items():
-        if is_placeholder(value):
-            blocking.append(name)
-        elif len(value) < RECOMMENDED_MIN_SECRET_LENGTH:
-            warnings.append(name)
-
-    return SecretFindings(blocking=blocking, warnings=warnings)
+    return KeyFindings(
+        blocking=[name for name, s in strength.items() if s == BLOCKING],
+        warnings=[name for name, s in strength.items() if s == SHORT],
+    )
 
 
 def is_cloud_deployment() -> bool:
@@ -83,7 +89,7 @@ def validate_signing_secrets() -> None:
     if MODE.IS_STANDALONE:
         return
 
-    findings = find_weak_secrets()
+    findings = find_weak_signing_keys()
 
     if findings.warnings:
         logger.warning(

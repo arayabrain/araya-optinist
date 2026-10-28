@@ -84,7 +84,7 @@ def test_short_secret_key_only_warns_in_cloud(multiuser):
 
     secret_validation.validate_signing_secrets()
 
-    findings = secret_validation.find_weak_secrets()
+    findings = secret_validation.find_weak_signing_keys()
     assert findings.blocking == []
     assert findings.warnings == ["SECRET_KEY"]
 
@@ -96,7 +96,7 @@ def test_local_multiuser_only_warns(multiuser):
 
     secret_validation.validate_signing_secrets()
 
-    assert secret_validation.find_weak_secrets().blocking == [
+    assert secret_validation.find_weak_signing_keys().blocking == [
         "SECRET_KEY",
         "ROUTING_SECRET_KEY",
     ]
