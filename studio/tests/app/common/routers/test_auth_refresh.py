@@ -6,14 +6,14 @@ present-but-invalid token keeps the existing 400 and a valid token returns the
 refreshed access token.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException, status
 
 from studio.app.common.core.auth.auth import refresh_current_user_token
-from studio.app.common.routers.auth import refresh
-from studio.app.common.schemas.auth import AccessToken, RefreshToken
+from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token
 
 
 def test_refresh_token_schema_allows_missing_or_null():
@@ -57,9 +57,119 @@ async def test_refresh_valid_token_returns_access_token():
     assert result.access_token == "new-access-token"
 
 
-@pytest.mark.asyncio
-async def test_refresh_endpoint_missing_token_returns_401():
-    with pytest.raises(HTTPException) as exc_info:
-        await refresh(refresh_token=RefreshToken(refresh_token=None))
-    assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
-    assert exc_info.value.detail == "re-login required"
+def test_refresh_endpoint_missing_token_returns_401(client):
+    response = client.post("/auth/refresh", json={})
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert response.json()["detail"] == "re-login required"
+
+
+AUTH = "studio.app.common.routers.auth"
+
+
+OPT_IN = {"x-refresh-cookie": "1"}
+
+
+def _cookie_header(response):
+    return response.headers.get("set-cookie", "")
+
+
+def _login(client, headers):
+    token = Token(
+        access_token="id", token_type="bearer", refresh_token="wrapped", ex_token=None
+    )
+    user = SimpleNamespace(id=1, email="a@example.com")
+    with patch(f"{AUTH}.auth.authenticate_user", return_value=(token, user)), patch(
+        f"{AUTH}.clear_logged_out_status"
+    ), patch(f"{AUTH}.clear_free_user_logged_out_at"), patch(
+        f"{AUTH}.ensure_user_bucket_exists", return_value=None
+    ), patch(
+        f"{AUTH}.calculate_limit_warning", return_value=None
+    ):
+        response = client.post(
+            "/auth/login",
+            json={"email": "a@example.com", "password": "pw"},
+            headers=headers,
+        )
+    client.cookies.clear()
+    return response
+
+
+def test_login_sets_an_http_only_refresh_cookie(client):
+    response = _login(client, {**OPT_IN, "x-forwarded-proto": "https"})
+
+    assert response.status_code == 200
+    assert response.json()["refresh_token"] == "wrapped"
+    cookie = _cookie_header(response).lower()
+    assert cookie.startswith("refresh_token=wrapped;")
+    for attr in ("httponly", "samesite=strict", "path=/auth", "secure"):
+        assert attr in cookie
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {**OPT_IN, "origin": "https://sibling.example"}, {**OPT_IN, "origin": "null"}],
+)
+def test_login_sets_no_cookie_unless_its_own_origin_opts_in(client, headers):
+    response = _login(client, headers)
+
+    assert response.status_code == 200
+    assert "refresh_token=" not in _cookie_header(response)
+
+
+def test_refresh_with_a_body_token_moves_it_into_the_cookie(client):
+    with patch(
+        f"{AUTH}.auth.refresh_current_user_token",
+        return_value=AccessToken(access_token="new"),
+    ):
+        response = client.post(
+            "/auth/refresh", json={"refresh_token": "legacy"}, headers=OPT_IN
+        )
+    client.cookies.clear()
+
+    assert response.json() == {"access_token": "new"}
+    assert _cookie_header(response).startswith("refresh_token=legacy;")
+    assert "secure" not in _cookie_header(response).lower()
+
+
+def test_refresh_with_an_invalid_body_token_sets_no_cookie(client):
+    with patch(
+        f"{AUTH}.auth.refresh_current_user_token",
+        side_effect=HTTPException(status_code=400),
+    ):
+        response = client.post(
+            "/auth/refresh", json={"refresh_token": "bad"}, headers=OPT_IN
+        )
+
+    assert response.status_code == 400
+    assert "refresh_token=" not in _cookie_header(response)
+
+
+@pytest.mark.parametrize(
+    "origin, expected",
+    [
+        (None, "from-cookie"),
+        ("http://testserver", "from-cookie"),
+        ("https://evil.example", None),
+    ],
+)
+def test_refresh_reads_the_cookie_only_from_its_own_origin(client, origin, expected):
+    headers = {"origin": origin} if origin else {}
+    client.cookies.set("refresh_token", "from-cookie", path="/auth")
+    with patch(
+        f"{AUTH}.auth.refresh_current_user_token",
+        return_value=AccessToken(access_token="new"),
+    ) as refresh_token:
+        client.post("/auth/refresh", json={}, headers=headers)
+    client.cookies.clear()
+
+    refresh_token.assert_called_once_with(expected)
+
+
+def test_logout_clears_the_refresh_cookie(client):
+    response = client.post("/auth/logout", headers={"x-forwarded-proto": "https"})
+
+    assert response.status_code == 204
+    cookie = _cookie_header(response).lower()
+    assert cookie.startswith('refresh_token="";') or "max-age=0" in cookie
+    for attr in ("httponly", "samesite=strict", "path=/auth", "secure"):
+        assert attr in cookie

@@ -483,8 +483,9 @@ Removing Firebase access is one step of offboarding, not all of it. Also revoke 
 | `POST /api/register` | Unauthenticated, creates both sides |
 | `GET /api/register/verify-status/{email}` | Unauthenticated verification-state lookup |
 | `POST /api/register/resend-verification` | Re-sends the verification email |
-| `POST /auth/login` | Returns `access_token`, `refresh_token`, `ex_token` |
-| `POST /auth/refresh` | Called by the frontend 401 interceptor |
+| `POST /auth/login` | Returns `access_token`, `refresh_token`, `ex_token`. When the request carries `X-Refresh-Cookie: 1` from the app's own origin, also sets `refresh_token` as an `HttpOnly; SameSite=Strict; Path=/auth` cookie (`Secure` when `X-Forwarded-Proto` is https). `proxy-login` does the same |
+| `POST /auth/refresh` | Called by the frontend 401 interceptor. Takes the refresh token from the body, or, when the body has none and the request's `Origin` is absent, its own host or `FRONTEND_URL`, from the cookie. A valid body token is copied into the cookie under the same opt-in |
+| `POST /auth/logout` | Clears the refresh cookie |
 | `POST /auth/send_reset_password_mail` | Query parameter `email` |
 | `POST /auth/proxy-login/{uid}` | Admin only |
 

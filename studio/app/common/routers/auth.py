@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlmodel import Session
 
 from studio.app.common.core.auth import auth
+from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
 from studio.app.common.core.cloud.cloud_utils import (
     calculate_limit_warning,
@@ -14,14 +17,51 @@ from studio.app.common.core.middleware.user_activity_middleware import (
 )
 from studio.app.common.db.database import get_db
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token, UserAuth
+from studio.app.const import FRONTEND_URL
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 logger = AppLogger.get_logger()
 
+REFRESH_COOKIE = "refresh_token"
+# Sent only by an SPA that also calls /auth/logout, so no cookie outlives a logout.
+REFRESH_COOKIE_OPT_IN = "x-refresh-cookie"
+
+
+def _is_own_origin(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    return (
+        origin is None
+        or origin == FRONTEND_URL
+        or urlsplit(origin).netloc == request.headers.get("host")
+    )
+
+
+def _cookie_attrs(request: Request) -> dict:
+    # TLS ends at the ALB, so the scheme uvicorn sees is http.
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return dict(
+        path=router.prefix, secure=proto == "https", httponly=True, samesite="strict"
+    )
+
+
+def _set_refresh_cookie(request: Request, response: Response, token: str) -> None:
+    if request.headers.get(REFRESH_COOKIE_OPT_IN) == "1" and _is_own_origin(request):
+        response.set_cookie(
+            REFRESH_COOKIE,
+            token,
+            max_age=AUTH_CONFIG.REFRESH_TOKEN_EXPIRE_MINUTES * 60,
+            **_cookie_attrs(request),
+        )
+
 
 @router.post("/login", response_model=Token)
-async def login(user_data: UserAuth, db: Session = Depends(get_db)):
+async def login(
+    user_data: UserAuth,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     try:
         token, user = await auth.authenticate_user(db, user_data)
 
@@ -71,12 +111,32 @@ async def login(user_data: UserAuth, db: Session = Depends(get_db)):
             detail="Some error occurred during authentication.",
         )
 
+    _set_refresh_cookie(request, response, token.refresh_token)
     return token
 
 
 @router.post("/refresh", response_model=AccessToken)
-async def refresh(refresh_token: RefreshToken):
-    return await auth.refresh_current_user_token(refresh_token.refresh_token)
+async def refresh(
+    request: Request,
+    response: Response,
+    refresh_token: RefreshToken = RefreshToken(),
+):
+    token = refresh_token.refresh_token
+    if token:
+        access = await auth.refresh_current_user_token(token)
+        # Moves a session stored by an older SPA onto the cookie.
+        _set_refresh_cookie(request, response, token)
+        return access
+    if _is_own_origin(request):
+        token = request.cookies.get(REFRESH_COOKIE)
+    return await auth.refresh_current_user_token(token)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(request: Request):
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(REFRESH_COOKIE, **_cookie_attrs(request))
+    return response
 
 
 @router.post("/send_reset_password_mail")
@@ -86,7 +146,11 @@ async def send_reset_password_mail(email: str, db: Session = Depends(get_db)):
 
 @router.post("/proxy-login/{uid}", response_model=Token)
 async def login_with_uid(
-    uid: str, admin_user=Depends(get_admin_user), db: Session = Depends(get_db)
+    uid: str,
+    request: Request,
+    response: Response,
+    admin_user=Depends(get_admin_user),
+    db: Session = Depends(get_db),
 ):
     try:
         token = await auth.login_with_uid(db, uid, admin_user)
@@ -102,4 +166,5 @@ async def login_with_uid(
             detail="Some error occurred during authentication.",
         )
 
+    _set_refresh_cookie(request, response, token.refresh_token)
     return token
