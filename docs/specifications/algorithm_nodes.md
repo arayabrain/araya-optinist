@@ -689,6 +689,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
 - **Output:** all_roi (RoiData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
 - `all_roi_label_img` is the all-ROI label image (one layer; each pixel holds the highest ROI covering it). cell_roi and non_cell_roi take the pixels whose ROI is in the group, so where a ROI of the other group lies on top, the pixel is empty. Files written by earlier releases hold one layer per ROI under `all_roi_img` instead, which is split by iscell as before.
+- iscell needs an entry for every ROI of cell_img (each layer of a per-ROI stack, each label up to the highest); otherwise the node stops with an error naming both counts.
 
 ###### roi_fluo_from_hdf5
 

@@ -80,3 +80,36 @@ def test_a_per_roi_stack_from_an_older_file_still_reads(tmp_path, loader):
     np.testing.assert_array_equal(
         info["cell_roi"].data, np.nanmax(stack[iscell != 0], axis=0)
     )
+
+
+@pytest.mark.parametrize("loader", LOADERS)
+@pytest.mark.parametrize(
+    "case, n_iscell, message",
+    [
+        ("stack", 2, "3 ROI layers, so iscell needs 3 entries; its length is 2"),
+        ("label", 1, "up to 2, so iscell needs at least 3 entries; its length is 1"),
+        ("label", 2, "up to 2, so iscell needs at least 3 entries; its length is 2"),
+    ],
+)
+def test_an_iscell_that_does_not_fit_cell_img_is_refused_by_name(
+    tmp_path, loader, case, n_iscell, message
+):
+    # before: a reshape error on the stack, and every ROI silently non-cell for
+    # a one-layer label image beside a one-entry iscell
+    stack, label, _ = label_case()
+    written = stack if case == "stack" else label[np.newaxis]
+    cell_img = ImageData(written, output_dir=str(tmp_path), file_name="cell_img")
+
+    with pytest.raises(ValueError, match=message):
+        LOADERS[loader](cell_img, str(tmp_path), IscellData(np.ones(n_iscell, int)))
+
+
+@pytest.mark.parametrize("loader", LOADERS)
+def test_a_label_image_may_leave_covered_rois_without_a_pixel(tmp_path, loader):
+    # ROI 3 lies under others: no label 3 in the image, but iscell has it
+    _, label, iscell = label_case()
+    cell_img = ImageData(label[np.newaxis], output_dir=str(tmp_path), file_name="c")
+
+    info = LOADERS[loader](cell_img, str(tmp_path), IscellData(np.append(iscell, 1)))
+
+    np.testing.assert_array_equal(info["all_roi"].data, label)

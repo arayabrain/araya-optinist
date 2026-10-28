@@ -19,6 +19,29 @@ def all_roi_image(rois):
     return rois if rois.ndim == 2 else np.nanmax(rois, axis=0)
 
 
+def check_iscell(rois, iscell):
+    """
+    Refuse an iscell that does not describe cell_img's ROIs: a per-ROI stack
+    needs one entry per layer, a label image one for every ROI up to its
+    highest label (ROIs covered by others may leave no pixel).
+    """
+    n = len(iscell)
+    if rois.ndim == 3 and len(rois) > 1:
+        if len(rois) != n:
+            raise ValueError(
+                f"cell_img holds {len(rois)} ROI layers, so iscell needs "
+                f"{len(rois)} entries; its length is {n}"
+            )
+        return
+    labels = rois[~np.isnan(rois)]
+    if labels.size and labels.max() + 1 > n:
+        top = int(labels.max())
+        raise ValueError(
+            f"cell_img labels ROIs up to {top}, so iscell needs at least "
+            f"{top + 1} entries; its length is {n}"
+        )
+
+
 def group_roi_image(rois, in_group):
     """
     The image of the ROIs where in_group (one entry per ROI) is true. From a
@@ -38,12 +61,13 @@ def roi_from_hdf5(
     output_dir: str,
     iscell: IscellData = None,
     params: dict = None,
-    **kwargs
+    **kwargs,
 ) -> dict(iscell=IscellData, all_roi=RoiData, non_cell_roi=RoiData, cell_roi=RoiData):
     rois = cell_img.data
     all_roi = RoiData(all_roi_image(rois), output_dir=output_dir, file_name="roi")
     if iscell is not None:
         iscell_data = iscell.data
+        check_iscell(rois, iscell_data)
         return {
             "iscell": IscellData(iscell_data, file_name="iscell"),
             "all_roi": all_roi,

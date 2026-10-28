@@ -7,6 +7,7 @@ from studio.app.optinist.dataclass.iscell import IscellData
 from studio.app.optinist.dataclass.roi import RoiData
 from studio.app.optinist.wrappers.data_utils.roi_from_hdf5 import (
     all_roi_image,
+    check_iscell,
     group_roi_image,
 )
 
@@ -56,6 +57,7 @@ def roi_fluo_from_hdf5(
 
     # Extract iscell data
     iscell_data = iscell.data
+    check_iscell(rois, iscell_data)
 
     # Process ROI types
     non_cell_roi = RoiData(
