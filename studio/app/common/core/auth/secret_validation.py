@@ -25,7 +25,7 @@ logger = AppLogger.get_logger()
 
 # Shorter keys are reported but not blocked: an existing deployment may run on
 # one, and refusing to start would turn a hardening change into an outage.
-RECOMMENDED_MIN_SECRET_LENGTH = 32
+MIN_KEY_LENGTH = 32
 
 
 # Values published in this repository: the code defaults, studio/config/
@@ -59,7 +59,7 @@ BLOCKING, SHORT, OK = "blocking", "short", "ok"
 def _strength(value: str) -> str:
     if is_placeholder(value):
         return BLOCKING
-    if len(value) < RECOMMENDED_MIN_SECRET_LENGTH:
+    if len(value) < MIN_KEY_LENGTH:
         return SHORT
     return OK
 
@@ -94,7 +94,7 @@ def validate_signing_secrets() -> None:
     if findings.warnings:
         logger.warning(
             "Signing secret shorter than %d characters: %s",
-            RECOMMENDED_MIN_SECRET_LENGTH,
+            MIN_KEY_LENGTH,
             ", ".join(findings.warnings),
         )
 
@@ -106,7 +106,7 @@ def validate_signing_secrets() -> None:
         message = (
             f"Refusing to start: unset or placeholder value in {names}. "
             "Set a random value of at least "
-            f"{RECOMMENDED_MIN_SECRET_LENGTH} characters."
+            f"{MIN_KEY_LENGTH} characters."
         )
         logger.error(message)
         raise RuntimeError(message)
