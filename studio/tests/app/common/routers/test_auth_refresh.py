@@ -173,3 +173,22 @@ def test_logout_clears_the_refresh_cookie(client):
     assert cookie.startswith('refresh_token="";') or "max-age=0" in cookie
     for attr in ("httponly", "samesite=strict", "path=/auth", "secure"):
         assert attr in cookie
+
+
+def test_logout_refuses_a_foreign_origin(client):
+    response = client.post(
+        "/auth/logout", headers={"origin": "https://sibling.example"}
+    )
+
+    assert response.status_code == 403
+    assert "refresh_token=" not in _cookie_header(response)
+
+
+def test_cors_echoes_the_origin_for_a_first_credentialed_request(client):
+    """The dev SPA on another port logs in with credentials before any cookie
+    exists; browsers drop that response if it carries "*"."""
+    client.cookies.clear()
+    response = client.post("/auth/logout", headers={"origin": "http://localhost:3000"})
+
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-credentials"] == "true"

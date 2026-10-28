@@ -126,6 +126,8 @@ async def refresh(request: Request, refresh_token: RefreshToken = RefreshToken()
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(request: Request):
+    if not _is_own_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.delete_cookie(REFRESH_COOKIE, **_cookie_attrs(request))
     return response

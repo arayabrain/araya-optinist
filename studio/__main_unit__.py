@@ -30,7 +30,7 @@ from studio.app.common.core.middleware import (
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
-from studio.app.common.core.middleware.cors_config import get_cors_allow_origins
+from studio.app.common.core.middleware.cors_config import get_cors_origin_options
 from studio.app.common.core.middleware.spa_routing_middleware import (
     INDEX_HTML_CACHE_HEADERS,
 )
@@ -345,7 +345,7 @@ app.add_middleware(SecureRoutingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_cors_allow_origins(),
+    **get_cors_origin_options(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
