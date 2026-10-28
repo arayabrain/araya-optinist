@@ -639,6 +639,23 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
     )
 
 
+def _require_output_file(filepath: str, remote_bucket_name: str) -> None:
+    """404 for an output missing after the sync attempt, 503 while still syncing."""
+    if os.path.exists(filepath):
+        return
+    if remote_bucket_name:
+        logger.warning(f"File not found after sync attempt: {filepath}")
+        experiment_dir = os.path.dirname(os.path.dirname(filepath))
+        if os.path.exists(experiment_dir):
+            raise HTTPException(
+                status_code=404,
+                detail="Output file not found. "
+                "Analysis may not have generated this file.",
+            )
+        raise HTTPException(status_code=503, detail="Data syncing. Please retry.")
+    raise HTTPException(status_code=404, detail="Output file not found")
+
+
 def _load_timeseries_record(dirpath: str, record_id: str) -> JsonTimeSeriesData:
     """
     Load a single timeseries record from either chunked or legacy format.
@@ -838,6 +855,7 @@ async def get_file(
     await _ensure_visualization_synced(
         os.path.dirname(abs_filepath), remote_bucket_name
     )
+    _require_output_file(abs_filepath, remote_bucket_name)
 
     return JsonReader.read_as_output(abs_filepath)
 
@@ -859,6 +877,7 @@ async def get_html(
     await _ensure_visualization_synced(
         os.path.dirname(abs_filepath), remote_bucket_name
     )
+    _require_output_file(abs_filepath, remote_bucket_name)
 
     return Reader.read_as_output(abs_filepath)
 
@@ -941,26 +960,7 @@ async def get_image(
         )
     else:
         json_filepath = abs_filepath
-        # Check if output file exists after sync attempt
-        if not os.path.exists(json_filepath):
-            if remote_bucket_name:
-                logger.warning(f"File not found after sync attempt: {json_filepath}")
-                experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
-                if os.path.exists(experiment_dir):
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Output file not found. "
-                        "Analysis may not have generated this file.",
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Data syncing. Please retry.",
-                    )
-            raise HTTPException(
-                status_code=404,
-                detail="Output file not found",
-            )
+        _require_output_file(json_filepath, remote_bucket_name)
 
     return JsonReader.read_as_output(json_filepath)
 

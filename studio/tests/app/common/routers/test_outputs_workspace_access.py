@@ -109,3 +109,9 @@ def test_non_member_is_refused(get_as, url):
 def test_output_path_outside_the_named_workspace_is_refused(get_as):
     url = "/api/visualizations/image/1/wsaccess/fn/cell_roi.json?workspace_id=2"
     assert get_as(url, STRANGER).status_code == 403
+
+
+@pytest.mark.parametrize("route", ["html", "data"])
+def test_missing_output_is_404(get_as, route):
+    url = f"/api/visualizations/{route}/1/wsaccess/glm/missing.json"
+    assert get_as(url, OWNER).status_code == 404
