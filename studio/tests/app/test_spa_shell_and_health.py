@@ -22,6 +22,7 @@ about the shell in CI - a "frontend not built" placeholder satisfies it.
 built-index path is covered wherever it runs.
 """
 
+import json
 import os
 import re
 from unittest.mock import patch
@@ -382,6 +383,22 @@ class TestPerRouteHeadMetadata:
             r'rel="canonical"\s+href="https?://([^"/]+)', read_public_index()
         ).group(1)
         assert {urlparse(loc).netloc for loc in locs} == {canonical_host}
+
+    def test_frontend_copy_matches_the_server_values(self):
+        """Client-side navigation never refetches the shell, so the SPA applies
+        the same values from its own copy; this keeps the two in step."""
+        path = f"{DIRPATH.FRONTEND_DIR}/src/const/routeHeadMetadata.json"
+        with open(path, encoding="utf-8") as f:
+            frontend = json.load(f)
+        defaults = self.head_values(read_public_index())
+
+        assert frontend["routes"] == ROUTE_HEAD_METADATA
+        assert frontend["default"] == {
+            "title": defaults["title"],
+            "description": defaults["description"],
+            "socialDescription": defaults["og_description"],
+        }
+        assert defaults["twitter_description"] == defaults["og_description"]
 
     @pytest.mark.parametrize("accept", ["text/html,application/xhtml+xml", "*/*"])
     def test_both_serving_mechanisms_emit_the_route_canonical(
