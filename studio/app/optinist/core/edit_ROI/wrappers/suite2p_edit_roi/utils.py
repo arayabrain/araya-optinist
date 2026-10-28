@@ -18,30 +18,17 @@ def median_pix(ypix, xpix):
     return [ypix[imin], xpix[imin]]
 
 
-def get_stat0_add_roi(ops, posx, posy, sizex, sizey):
-    posx, posy, sizex, sizey = round(posx), round(posy), round(sizex), round(sizey)
-    xrange = (np.arange(-1 * int(sizex), 1) + int(posx)).astype(np.int32)
-    yrange = (np.arange(-1 * int(sizey), 1) + int(posy)).astype(np.int32)
-    xrange += int(np.floor(sizex / 2))
-    yrange += int(np.floor(sizey / 2))
-
-    x, y = np.meshgrid(np.arange(0, xrange.size, 1), np.arange(0, yrange.size, 1))
-    ellipse = (
-        (y - sizey / 2) ** 2 / (sizey / 2) ** 2
-        + (x - sizex / 2) ** 2 / (sizex / 2) ** 2
-    ) <= 1
-
-    ellipse = ellipse[:, np.logical_and(xrange >= 0, xrange < ops["Lx"])]
-    xrange = xrange[np.logical_and(xrange >= 0, xrange < ops["Lx"])]
-    ellipse = ellipse[np.logical_and(yrange >= 0, yrange < ops["Ly"]), :]
-    yrange = yrange[np.logical_and(yrange >= 0, yrange < ops["Ly"])]
-
-    x, y = np.meshgrid(xrange, yrange)
-    ypix = y[ellipse].flatten()
-    xpix = x[ellipse].flatten()
-    if ypix.size == 0:  # a 1x1 ellipse has no interior, nor one off the frame
+def added_stat(edit_roi_data: EditRoiData, roi_id: int) -> dict:
+    """A stat entry for an added ROI: the pixels its ellipse covers in the
+    editor's RoiMasks, each weighted 1."""
+    rows, cols = edit_roi_data.roi_masks.coords(roi_id)
+    if rows.size == 0:
         raise ValueError("the ROI covers no pixel of the registered movie")
-    return {"ypix": ypix, "xpix": xpix, "lam": np.ones(ypix.shape, np.float32)}
+    return {
+        "ypix": rows.astype(np.int32),
+        "xpix": cols.astype(np.int32),
+        "lam": np.ones(rows.size, np.float32),
+    }
 
 
 def merge_stat(stat, ids):

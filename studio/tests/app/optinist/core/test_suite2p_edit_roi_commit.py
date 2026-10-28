@@ -185,11 +185,58 @@ def test_a_frame_count_disagreeing_with_the_stored_traces_is_named(tmp_path):
         commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
 
 
-def test_an_ellipse_with_no_interior_is_refused_by_name(tmp_path):
+@pytest.mark.parametrize(
+    "roi_pos",
+    [
+        RoiPos(posx=10, posy=20, sizex=3, sizey=3),
+        RoiPos(posx=30, posy=31, sizex=7, sizey=5),
+        RoiPos(posx=20, posy=30, sizex=5, sizey=9),
+    ],
+)
+def test_an_added_roi_keeps_the_pixels_the_editor_drew(tmp_path, roi_pos):
+    # odd sizes: suite2p's own ellipse for an added cell differs from the
+    # editor's; the trace, the ROI table and the label image follow the editor
+    drawn = ellipse_pixels((LY, LX), roi_pos)
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    movie.reshape(FRAMES, -1)[:, drawn] += 500
+    ops, im = build(tmp_path, movie)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, roi_pos))
+    data.temp_add_roi[2] = roi_pos
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    pixels = np.ravel_multi_index((new["ypix"], new["xpix"]), (LY, LX))
+    np.testing.assert_array_equal(np.sort(pixels), np.sort(drawn))
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+    (entry,) = info["nwbfile"]["ROI"].values()
+    rows, cols, _ = entry["roi_list"][2]["pixel_mask"].T
+    table = np.ravel_multi_index((rows.astype(int), cols.astype(int)), (LY, LX))
+    np.testing.assert_array_equal(np.sort(table), np.sort(drawn))
+
+
+def test_a_one_pixel_roi_commits_its_pixel(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     tiny = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
     data = EditRoiData(images=None, roi_masks=with_ellipse(im, tiny))
     data.temp_add_roi[2] = tiny
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert (list(new["ypix"]), list(new["xpix"])) == ([30], [30])
+    assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
+
+
+def test_an_roi_with_no_pixel_is_refused_by_name(tmp_path):
+    ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
+    # the stored pixels decide, whatever the RoiPos says
+    roi_masks = RoiMasks.from_stack(im)
+    roi_masks.append(np.zeros(0, np.int64))
+    data = EditRoiData(images=None, roi_masks=roi_masks)
+    data.temp_add_roi[2] = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
     with pytest.raises(ValueError, match="covers no pixel"):
