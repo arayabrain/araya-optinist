@@ -33,6 +33,7 @@ jest.mock("utils/auth/AuthUtils", () => ({
   getToken: mockGetToken,
   getExToken: mockGetExToken,
   logout: mockLogout,
+  restoreSession: async () => null,
   saveToken: mockSaveToken,
 }))
 jest.mock("utils/DataviewUtils", () => ({
