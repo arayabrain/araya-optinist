@@ -245,6 +245,16 @@ class TestLogCspReport:
         assert "email" not in message and "token" not in message
 
     @pytest.mark.asyncio
+    async def test_a_malformed_url_is_logged_not_a_500(self):
+        body = _csp_body(**{"blocked-uri": "https://[invalid/x.js?token=1"})
+        with patch("studio.app.common.routers.log_report.logger") as log:
+            response = await log_csp_report(_csp_request(body))
+
+        assert response.status_code == 204
+        message = log.warning.call_args.args[1]
+        assert "https://[invalid/x.js" in message and "token" not in message
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"other": 1}', b"x" * 9000])
     async def test_malformed_or_oversized_reports_are_dropped(self, body):
         with patch("studio.app.common.routers.log_report.logger") as log:

@@ -2,7 +2,6 @@ import json
 import time
 from collections import deque
 from typing import Dict, List, Optional
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
@@ -116,9 +115,7 @@ _csp_report_timestamps: deque = deque()
 
 def _csp_field(value) -> str:
     """Query strings can carry personal data (``/account-manager?email=``)."""
-    text = str(value)
-    if "://" in text:
-        text = urlsplit(text)._replace(query="", fragment="").geturl()
+    text = str(value).partition("?")[0].partition("#")[0]
     return text[:_MAX_CSP_FIELD_LENGTH]
 
 
