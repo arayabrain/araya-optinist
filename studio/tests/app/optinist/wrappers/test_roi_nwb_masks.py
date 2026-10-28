@@ -264,6 +264,36 @@ def test_image_masks_are_drawn_a_buffer_at_a_time(tmp_path, images, monkeypatch)
     assert sum(drawn) == 5 and max(drawn) <= 2
 
 
+def test_rewriting_an_older_whole_nwb_drops_the_nodes_per_roi_stack(
+    tmp_path, images, caiman_components
+):
+    # whole.nwb as written before: each node's per-ROI stack as all_roi_img
+    _, roi_masks, iscell, roi_list, F = caiman_components
+    stack = np.stack([roi_masks.label_image([i]) for i in range(len(roi_masks))])
+    older = caiman_config("caiman_cnmf_x", roi_masks, roi_list, iscell, F)
+    older[NWBDATASET.POSTPROCESS] = {
+        "caiman_cnmf_x": {"all_roi_img": stack},
+        "lccd_y": {"all_roi_img": stack},
+    }
+    input_config = ConfigReader.read(CORE_PARAM_PATH.nwb.value)
+    input_config["image_series"]["external_file"] = images
+    path = str(tmp_path / "whole.nwb")
+    save_nwb(path, input_config, older)
+
+    # an ROI edit, a re-run or a data filter rewrites the caiman node, two ROIs left
+    kept = RoiMasks.from_pixels(roi_masks.shape, [roi_masks.pixels(0), []])
+    config = caiman_config("caiman_cnmf_x", kept, roi_list[:2], iscell[:2], F[:2])
+    overwrite_nwbfile(path, config)
+
+    # read_back also checks the node has no all_roi_img left beside its label image
+    _, label_img = read_back(path, config)
+    np.testing.assert_array_equal(label_img[0], kept.label_image())
+    with NWBHDF5IO(path, "r") as io:
+        optinist = io.read().processing["optinist"]
+        # a node the rewrite does not carry keeps what it had
+        assert optinist["lccd_y_all_roi_img"].data.shape == stack.shape
+
+
 @pytest.mark.parametrize("rewrite", ["whole_nwb", "commit_or_filter"])
 def test_image_masks_survive_an_nwb_rewrite(
     tmp_path, images, caiman_components, rewrite

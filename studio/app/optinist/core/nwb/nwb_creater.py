@@ -28,6 +28,8 @@ from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
 # ROI frames an image_mask column holds in memory while it is written
 IMAGE_MASK_BUFFER = 16
+# postprocess entries -> the name the same data had in files written before
+RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
 
 
 def _time_first(data, n_roi):
@@ -350,15 +352,21 @@ class NWBCreater:
 
     @classmethod
     def postprocess(cls, nwbfile, function_id, data):
+        optinist = nwbfile.processing["optinist"]
         for key, value in data.items():
             process_name = f"{function_id}_{key}"
             postprocess = PostProcess(name=process_name, data=value)
 
             try:
-                nwbfile.processing["optinist"].add_container(postprocess)
+                optinist.add_container(postprocess)
             except ValueError:
-                nwbfile.processing["optinist"].data_interfaces.pop(process_name)
-                nwbfile.processing["optinist"].add_container(postprocess)
+                optinist.data_interfaces.pop(process_name)
+                optinist.add_container(postprocess)
+
+            # a file written before keeps what this entry replaced: drop it
+            retired = f"{function_id}_{RETIRED_POSTPROCESS.get(key)}"
+            if key in RETIRED_POSTPROCESS and retired in optinist.data_interfaces:
+                optinist.data_interfaces.pop(retired)
 
         return nwbfile
 
