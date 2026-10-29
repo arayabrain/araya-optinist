@@ -3,6 +3,8 @@
 Add grace-period email notification stamps to subscription_users:
 - grace_start_notified_at: when the grace-period start email was sent
 - grace_reminder_notified_at: when the grace-period reminder email was sent
+- reprocess_notified_at: when the over-quota-again email before a repeat deletion
+  pass was sent
 
 Revision ID: q901q1028030
 Revises: p901p1020029
@@ -28,8 +30,13 @@ def upgrade() -> None:
         "subscription_users",
         sa.Column("grace_reminder_notified_at", sa.DateTime(), nullable=True),
     )
+    op.add_column(
+        "subscription_users",
+        sa.Column("reprocess_notified_at", sa.DateTime(), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("subscription_users", "reprocess_notified_at")
     op.drop_column("subscription_users", "grace_reminder_notified_at")
     op.drop_column("subscription_users", "grace_start_notified_at")

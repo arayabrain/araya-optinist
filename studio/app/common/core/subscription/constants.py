@@ -463,6 +463,7 @@ class ExpirationDeletion:
     # Email notification timings
     GRACE_REMINDER_AFTER_DAYS = 20  # Must stay < SubscriptionPeriods.GRACE_PERIOD_DAYS
     MIN_NOTICE_DAYS = 7  # Min days between grace-start email and deletion
+    REPROCESS_NOTICE_VALID_DAYS = 30  # An older over-quota-again email no longer counts
     GRACE_NOTIFICATION_BATCH_SIZE = 50  # Max notification emails per job run
     # CloudWatch metrics
     METRIC_NAMESPACE_BASE = "OptiNiSt/BackgroundJobs"

@@ -569,12 +569,18 @@ class SubscriptionService:
         db.commit()
 
     @staticmethod
-    def mark_deletion_processed(db: Session, user_id: int) -> None:
-        """Set deletion_processed_at on expired subscription records for the user.
+    def mark_deletion_processed(
+        db: Session, user_id: int, still_over_quota: bool = False
+    ) -> None:
+        """Stamp deletion_processed_at = now on the user's expired records.
 
         Only stamps records whose expiration is past the grace cutoff (the same
-        records the eligibility query selected). New subscription records created
-        after re-subscribing start with deletion_processed_at = NULL.
+        records the eligibility query selected). Every pass restamps, so the
+        reprocess cooldown and the over-quota-again notice count from the latest
+        pass. A pass that leaves the user over quota carries the current warning
+        forward (reprocess_notified_at = now): the user never went under quota,
+        so "over the quota again" would be wrong. New subscription records
+        created after re-subscribing start with deletion_processed_at = NULL.
         """
         from studio.app.common.core.subscription.constants import SubscriptionPeriods
 
@@ -584,13 +590,14 @@ class SubscriptionService:
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
-                UserSubscription.deletion_processed_at.is_(None),
                 UserSubscription.expiration <= grace_cutoff,
             )
             .all()
         )
         for subscription in subscriptions:
             subscription.deletion_processed_at = now
+            if still_over_quota:
+                subscription.reprocess_notified_at = now
         if subscriptions:
             db.commit()
 
@@ -696,10 +703,62 @@ class SubscriptionService:
             )
         return results
 
+    # kind -> (stamp column, baseline): a stamp before its baseline is unsent
     _GRACE_NOTIFICATION_COLUMNS = {
-        "start": "grace_start_notified_at",
-        "reminder": "grace_reminder_notified_at",
+        "start": ("grace_start_notified_at", "expiration"),
+        "reminder": ("grace_reminder_notified_at", "expiration"),
+        "reprocess": ("reprocess_notified_at", "deletion_processed_at"),
     }
+
+    @staticmethod
+    def _reprocess_notice_unsent(now: datetime):
+        """No over-quota-again notice since the last pass, or one too old to count."""
+        notified = UserSubscription.reprocess_notified_at
+        return or_(
+            notified.is_(None),
+            notified < UserSubscription.deletion_processed_at,
+            notified
+            <= now - timedelta(days=ExpirationDeletion.REPROCESS_NOTICE_VALID_DAYS),
+        )
+
+    @staticmethod
+    def get_users_for_reprocess_notifications(db: Session) -> List[dict]:
+        """Get processed users who are over the free quota again, not yet warned.
+
+        A repeat deletion pass needs this warning (when notifications are
+        enabled), the same way the first pass needs the grace-start email.
+        """
+        from studio.app.common.models.subscription import UserStorageUsage
+
+        now = get_current_datetime()
+        grace_cutoff = now - timedelta(days=SubscriptionPeriods.GRACE_PERIOD_DAYS)
+        rows = (
+            db.query(UserSubscription, User, UserStorageUsage)
+            .join(User, UserSubscription.user_id == User.id)
+            .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
+            .filter(
+                UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
+                UserSubscription.expiration <= grace_cutoff,
+                UserSubscription.deletion_processed_at.isnot(None),
+                User.active.is_(True),
+                UserStorageUsage.storage_usage_bytes
+                > ExpirationDeletion.FREE_QUOTA_BYTES,
+                SubscriptionService._reprocess_notice_unsent(now),
+            )
+            .order_by(UserSubscription.deletion_processed_at.asc())
+            .limit(ExpirationDeletion.GRACE_NOTIFICATION_BATCH_SIZE)
+            .all()
+        )
+        return [
+            {
+                "user_id": user.id,
+                "email": user.email,
+                "expiration": sub.expiration,
+                "deletion_processed_at": sub.deletion_processed_at,
+                "storage_usage_bytes": storage.storage_usage_bytes,
+            }
+            for sub, user, storage in rows
+        ]
 
     @classmethod
     def claim_grace_notification(
@@ -715,14 +774,19 @@ class SubscriptionService:
         The UPDATE always changes the column value, so rowcount is reliable
         under both matched-rows and changed-rows connection semantics.
         """
-        column = getattr(UserSubscription, cls._GRACE_NOTIFICATION_COLUMNS[kind])
+        column_name, baseline_name = cls._GRACE_NOTIFICATION_COLUMNS[kind]
+        column = getattr(UserSubscription, column_name)
+        baseline = getattr(UserSubscription, baseline_name)
         stamp = get_current_datetime().replace(microsecond=0)
+        unsent = or_(column.is_(None), column < baseline)
+        if kind == "reprocess":
+            unsent = cls._reprocess_notice_unsent(stamp)
         updated = (
             db.query(UserSubscription)
             .filter(
                 UserSubscription.user_id == user_id,
                 UserSubscription.expiration == expiration,
-                or_(column.is_(None), column <= expiration),
+                unsent,
             )
             .update({column.key: stamp}, synchronize_session=False)
         )
@@ -734,7 +798,7 @@ class SubscriptionService:
         cls, db: Session, user_id: int, kind: str, stamp: datetime
     ) -> None:
         """Best-effort rollback of a claimed stamp after a failed send."""
-        column = getattr(UserSubscription, cls._GRACE_NOTIFICATION_COLUMNS[kind])
+        column = getattr(UserSubscription, cls._GRACE_NOTIFICATION_COLUMNS[kind][0])
         db.query(UserSubscription).filter(
             UserSubscription.user_id == user_id,
             column == stamp,
@@ -758,7 +822,9 @@ class SubscriptionService:
 
         With ``require_notice`` (email notifications enabled), only users whose
         grace-start email was sent for this cycle at least MIN_NOTICE_DAYS ago
-        are eligible: data is never deleted without a prior warning email.
+        are eligible, and a repeat pass also needs an over-quota-again email
+        sent since the previous pass: data is never deleted without a prior
+        warning email.
         """
         from studio.app.common.models.subscription import UserStorageUsage
 
@@ -771,6 +837,7 @@ class SubscriptionService:
         )
 
         notice_filters = []
+        reprocess_notice_filters = []
         if require_notice:
             notice_cutoff = current_time - timedelta(
                 days=ExpirationDeletion.MIN_NOTICE_DAYS
@@ -785,6 +852,23 @@ class SubscriptionService:
                         UserSubscription.grace_start_notified_at
                         > UserSubscription.expiration,
                         UserSubscription.grace_start_notified_at <= notice_cutoff,
+                    ),
+                )
+            ]
+            # A repeat pass also needs a current over-quota-again warning: not
+            # older than the previous pass, at least MIN_NOTICE_DAYS old and
+            # younger than REPROCESS_NOTICE_VALID_DAYS.
+            notice_expiry = current_time - timedelta(
+                days=ExpirationDeletion.REPROCESS_NOTICE_VALID_DAYS
+            )
+            reprocess_notice_filters = [
+                or_(
+                    User.active.is_(False),
+                    and_(
+                        UserSubscription.reprocess_notified_at
+                        >= UserSubscription.deletion_processed_at,
+                        UserSubscription.reprocess_notified_at <= notice_cutoff,
+                        UserSubscription.reprocess_notified_at > notice_expiry,
                     ),
                 )
             ]
@@ -833,6 +917,7 @@ class SubscriptionService:
                 > ExpirationDeletion.FREE_QUOTA_BYTES,
                 ~has_active_sub,
                 *notice_filters,
+                *reprocess_notice_filters,
             )
             .order_by(UserSubscription.expiration.desc())
             .all()

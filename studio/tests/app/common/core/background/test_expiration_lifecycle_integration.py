@@ -15,6 +15,7 @@ without ever finding a bucket and with ``ObjectSummary.size`` read unawaited.
 import asyncio
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -202,9 +203,52 @@ def _db_state(seeded):
         return {
             "processed_at": sub.deletion_processed_at,
             "start_notified_at": sub.grace_start_notified_at,
+            "again_notified_at": sub.reprocess_notified_at,
             "usage": usage.storage_usage_bytes,
             "flags": (record.has_intermediates, record.has_outputs, record.has_inputs),
         }
+
+
+def _set_subscription(seeded, **columns):
+    from studio.app.common.db.database import session_scope
+    from studio.app.common.models.subscription import UserSubscription
+
+    with session_scope() as db:
+        db.query(UserSubscription).filter(
+            UserSubscription.user_id == seeded["user_id"]
+        ).update(columns)
+
+
+def _set_usage_over_quota(seeded, over):
+    from studio.app.common.core.subscription.constants import ExpirationDeletion
+    from studio.app.common.db.database import session_scope
+    from studio.app.common.models.subscription import UserStorageUsage
+
+    with session_scope() as db:
+        db.query(UserStorageUsage).filter(
+            UserStorageUsage.user_id == seeded["user_id"]
+        ).update({"storage_usage_bytes": ExpirationDeletion.FREE_QUOTA_BYTES + over})
+
+
+@contextmanager
+def _emails_on():
+    """Notifications enabled; yields the (to, subject) pairs instead of SES sends."""
+    from studio.app.common.core.subscription.email_service import EmailService
+
+    sent = []
+
+    def record(to_email, subject, body):
+        sent.append((to_email, subject))
+        return True
+
+    with patch.dict(
+        os.environ, {"NOTIFICATION_FROM_EMAIL": "noreply@example.invalid"}
+    ), patch.object(EmailService, "_send", side_effect=record):
+        yield sent
+
+
+def _subjects_to(sent, seeded):
+    return [subject for to, subject in sent if to == seeded["email"]]
 
 
 def _run_job():
@@ -276,44 +320,193 @@ class TestExpirationDeletionOverRealStorage:
 
     def test_with_emails_on_it_warns_first_and_deletes_after_the_notice(self):
         from studio.app.common.core.subscription.constants import ExpirationDeletion
-        from studio.app.common.core.subscription.email_service import EmailService
-        from studio.app.common.db.database import session_scope
-        from studio.app.common.models.subscription import UserSubscription
 
         bucket = f"expiration-it-notice-{uuid.uuid4().hex[:8]}"
         _create_bucket(bucket)
         seeded = _seed_user(days_expired=31, usage_over_quota=EXCESS, bucket=bucket)
         keys = _put_experiment_data(bucket, seeded)
-        sent = []
 
-        def record(to_email, subject, body):
-            sent.append((to_email, subject))
-            return True
-
-        with patch.dict(
-            os.environ, {"NOTIFICATION_FROM_EMAIL": "noreply@example.invalid"}
-        ), patch.object(EmailService, "_send", side_effect=record):
+        with _emails_on() as sent:
             _run_job()
 
-            mine = [subject for to, subject in sent if to == seeded["email"]]
+            mine = _subjects_to(sent, seeded)
             assert len(mine) == 1 and "deletion notice" in mine[0]
             assert _keys(bucket) == set(keys.values())
             state = _db_state(seeded)
             assert state["start_notified_at"] is not None
             assert state["processed_at"] is None
 
-            with session_scope() as db:
-                db.query(UserSubscription).filter(
-                    UserSubscription.user_id == seeded["user_id"]
-                ).update(
-                    {
-                        "grace_start_notified_at": _now()
-                        - timedelta(days=ExpirationDeletion.MIN_NOTICE_DAYS + 1)
-                    }
-                )
+            _set_subscription(
+                seeded,
+                grace_start_notified_at=_now()
+                - timedelta(days=ExpirationDeletion.MIN_NOTICE_DAYS + 1),
+            )
             _run_job()
 
         assert _keys(bucket) == {keys["config"], keys["output"]}
         assert _db_state(seeded)["processed_at"] is not None
-        mine = [subject for to, subject in sent if to == seeded["email"]]
+        mine = _subjects_to(sent, seeded)
         assert len(mine) == 2 and "deletion completed" in mine[1]
+
+    def test_repeat_pass_waits_for_the_cooldown_and_restarts_it(self):
+        bucket = f"expiration-it-repeat-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=60, usage_over_quota=EXCESS, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+
+        _set_subscription(seeded, deletion_processed_at=_now() - timedelta(days=2))
+        _run_job()
+        assert _keys(bucket) == set(keys.values())
+
+        _set_subscription(seeded, deletion_processed_at=_now() - timedelta(days=8))
+        _run_job()
+        assert _keys(bucket) == {keys["config"], keys["output"]}
+        assert _db_state(seeded)["processed_at"] > _now() - timedelta(minutes=5)
+
+        # Over again straight away: the pass just now restarted the cooldown
+        _set_usage_over_quota(seeded, EXCESS)
+        _run_job()
+        assert _keys(bucket) == {keys["config"], keys["output"]}
+
+    def test_with_emails_on_a_repeat_pass_needs_a_fresh_warning(self):
+        from studio.app.common.core.subscription.constants import ExpirationDeletion
+
+        bucket = f"expiration-it-again-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=60, usage_over_quota=EXCESS, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+        _set_subscription(
+            seeded,
+            grace_start_notified_at=_now() - timedelta(days=50),
+            grace_reminder_notified_at=_now() - timedelta(days=40),
+            deletion_processed_at=_now() - timedelta(days=9),
+        )
+
+        with _emails_on() as sent:
+            _run_job()
+
+            mine = _subjects_to(sent, seeded)
+            assert len(mine) == 1 and "over the free plan quota again" in mine[0]
+            assert _keys(bucket) == set(keys.values())
+
+            _set_subscription(
+                seeded,
+                reprocess_notified_at=_now()
+                - timedelta(days=ExpirationDeletion.MIN_NOTICE_DAYS + 1),
+            )
+            _run_job()
+
+        assert _keys(bucket) == {keys["config"], keys["output"]}
+        mine = _subjects_to(sent, seeded)
+        assert len(mine) == 2 and "deletion completed" in mine[1]
+
+    def test_with_emails_on_a_pass_that_leaves_the_user_over_sends_no_again_email(
+        self,
+    ):
+        bucket = f"expiration-it-still-over-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        # Far more over quota than the deletable data: the pass cannot get under
+        seeded = _seed_user(days_expired=60, usage_over_quota=100 * UNIT, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+        _set_subscription(
+            seeded,
+            grace_start_notified_at=_now() - timedelta(days=50),
+            grace_reminder_notified_at=_now() - timedelta(days=40),
+        )
+
+        with _emails_on() as sent:
+            _run_job()
+            assert _keys(bucket) == {keys["config"]}
+            state = _db_state(seeded)
+            assert state["again_notified_at"] == state["processed_at"]
+
+            _run_job()
+
+            # Still over after the cooldown: weekly retries, still no new email
+            week_ago = _now() - timedelta(days=8)
+            _set_subscription(
+                seeded, deletion_processed_at=week_ago, reprocess_notified_at=week_ago
+            )
+            _run_job()
+
+        mine = _subjects_to(sent, seeded)
+        assert len(mine) == 1 and "deletion completed" in mine[0]
+        assert _db_state(seeded)["processed_at"] > _now() - timedelta(minutes=5)
+
+    def test_with_emails_on_a_stale_again_notice_is_sent_afresh(self):
+        from studio.app.common.core.subscription.constants import ExpirationDeletion
+
+        bucket = f"expiration-it-stale-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=120, usage_over_quota=EXCESS, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+        valid_days = ExpirationDeletion.REPROCESS_NOTICE_VALID_DAYS
+        # Warned after the last pass, but went under quota before the next one
+        _set_subscription(
+            seeded,
+            grace_start_notified_at=_now() - timedelta(days=110),
+            grace_reminder_notified_at=_now() - timedelta(days=100),
+            deletion_processed_at=_now() - timedelta(days=valid_days + 20),
+            reprocess_notified_at=_now() - timedelta(days=valid_days + 1),
+        )
+
+        with _emails_on() as sent:
+            _run_job()
+
+        assert _keys(bucket) == set(keys.values())
+        mine = _subjects_to(sent, seeded)
+        assert len(mine) == 1 and "over the free plan quota again" in mine[0]
+
+    def test_a_crash_mid_unit_leaves_flags_and_usage_matching_s3(self):
+        from studio.app.common.core.background.expiration_lifecycle_job import (
+            ExpirationLifecycleJob,
+        )
+
+        class Crash(BaseException):
+            pass
+
+        bucket = f"expiration-it-crash-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=31, usage_over_quota=EXCESS, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+        second = keys["intermediate"].replace("fluorescence", "f2")
+        _s3().put_object(Bucket=bucket, Key=second, Body=b"x" * UNIT)
+        first_deleted = min(keys["intermediate"], second)
+        before = _db_state(seeded)
+
+        # The job dies while handling the first file it deleted
+        with patch.object(
+            ExpirationLifecycleJob, "_delete_local_file", side_effect=Crash()
+        ), pytest.raises(Crash):
+            _run_job()
+
+        assert first_deleted not in _keys(bucket)
+        assert max(keys["intermediate"], second) in _keys(bucket)
+        after = _db_state(seeded)
+        assert after["flags"][0] is False
+        assert after["usage"] == before["usage"] - UNIT
+
+
+class TestQueuedDeletionOverRealStorage:
+    def test_experiment_delete_removes_it_from_the_owners_bucket(self):
+        from studio.app.common.core.background.background_task_worker import (
+            BackgroundTaskWorker,
+        )
+        from studio.app.common.core.mode import MODE
+
+        bucket = f"expiration-it-queued-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=-30, usage_over_quota=EXCESS, bucket=bucket)
+        # No local copy: the placeholder experiment.yaml is not a parseable config
+        keys = _put_experiment_data(bucket, seeded, local=False)
+
+        with patch.object(MODE, "IS_STANDALONE", False):
+            ok = asyncio.run(
+                BackgroundTaskWorker._delete_experiment(
+                    workspace_id=seeded["workspace_id"],
+                    experiment_uid=seeded["uid"],
+                )
+            )
+
+        assert ok is True
+        assert _keys(bucket) == {keys["input"]}

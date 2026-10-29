@@ -62,6 +62,25 @@ below {quota_gb} GB.
 Sign in to manage your subscription: {frontend_url}
 """
 
+_OVER_QUOTA_AGAIN_SUBJECT = (
+    "OptiNiSt Cloud: storage over the free plan quota again - data deletion notice"
+)
+_OVER_QUOTA_AGAIN_BODY = """\
+Your OptiNiSt Cloud premium subscription has expired, and your storage usage
+is over the free plan quota again.
+
+Your current storage usage is {usage_gb} GB; the free plan quota is
+{quota_gb} GB.
+
+Data exceeding the free plan quota will be automatically deleted on or
+after {deletion_not_before}.
+
+To keep your data, renew your subscription or reduce your storage usage
+below {quota_gb} GB before that date.
+
+Sign in to manage your subscription: {frontend_url}
+"""
+
 _DELETION_SUMMARY_SUBJECT = "OptiNiSt Cloud: automatic data deletion completed"
 _DELETION_SUMMARY_BODY = """\
 Automatic data deletion has run on your OptiNiSt Cloud account because your
@@ -137,6 +156,23 @@ class EmailService:
             frontend_url=FRONTEND_URL,
         )
         return cls._send(to_email, _GRACE_REMINDER_SUBJECT, body)
+
+    @classmethod
+    def send_over_quota_again_email(
+        cls,
+        to_email: str,
+        storage_usage_bytes: int,
+        deletion_not_before: datetime,
+    ) -> bool:
+        body = _OVER_QUOTA_AGAIN_BODY.format(
+            usage_gb=_gb(storage_usage_bytes),
+            quota_gb=StorageQuota.FREE,
+            deletion_not_before=format_date_for_display(
+                ensure_utc(deletion_not_before)
+            ),
+            frontend_url=FRONTEND_URL,
+        )
+        return cls._send(to_email, _OVER_QUOTA_AGAIN_SUBJECT, body)
 
     @classmethod
     def send_deletion_summary_email(

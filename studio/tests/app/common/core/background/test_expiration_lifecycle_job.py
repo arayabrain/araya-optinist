@@ -440,9 +440,8 @@ class TestExecuteDeletion:
                 ExpirationLifecycleJob,
                 "_delete_unit",
                 new_callable=AsyncMock,
-                return_value=5000,
+                return_value=(5000, 0),
             ) as mock_delete,
-            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             result = await ExpirationLifecycleJob._execute_deletion(
@@ -478,14 +477,13 @@ class TestExecuteDeletion:
                 ExpirationLifecycleJob,
                 "_delete_unit",
                 new_callable=AsyncMock,
-                return_value=100,
+                return_value=(100, 0),
             ),
             patch.object(
                 ExpirationLifecycleJob,
                 "_has_active_subscription",
                 return_value=True,
             ),
-            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             result = await ExpirationLifecycleJob._execute_deletion(
@@ -523,7 +521,7 @@ class TestExecuteDeletion:
 
         async def track_delete(user_id, bucket, tier, item, run_id, remaining_bytes=0):
             call_tiers.append(tier)
-            return 100
+            return 100, 0
 
         mock_session, _ = _mock_aioboto3_session()
 
@@ -531,7 +529,6 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=track_delete
             ),
-            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             await ExpirationLifecycleJob._execute_deletion(
@@ -574,7 +571,7 @@ class TestExecuteDeletion:
 
         async def track_delete(user_id, bucket, tier, item, run_id, remaining_bytes=0):
             call_tiers.append(tier)
-            return 100
+            return 100, 0
 
         mock_session, _ = _mock_aioboto3_session()
 
@@ -582,7 +579,6 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=track_delete
             ),
-            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             await ExpirationLifecycleJob._execute_deletion(
@@ -625,7 +621,7 @@ class TestExecuteDeletion:
         async def track_delete(user_id, bucket, tier, item, run_id, remaining_bytes=0):
             if hasattr(item, "uid"):
                 deleted_uids.append(item.uid)
-            return 100
+            return 100, 0
 
         mock_session, _ = _mock_aioboto3_session()
 
@@ -633,7 +629,6 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=track_delete
             ),
-            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             await ExpirationLifecycleJob._execute_deletion(
@@ -675,7 +670,7 @@ class TestExecuteDeletion:
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("S3 error")
-            return 1000
+            return 1000, 0
 
         mock_session, _ = _mock_aioboto3_session()
 
@@ -683,7 +678,6 @@ class TestExecuteDeletion:
             patch.object(
                 ExpirationLifecycleJob, "_delete_unit", side_effect=fail_then_succeed
             ),
-            patch.object(ExpirationLifecycleJob, "_update_data_flags"),
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
             result = await ExpirationLifecycleJob._execute_deletion(
@@ -702,8 +696,8 @@ class TestExecuteDeletion:
         assert result["succeeded"] == 3
 
     @pytest.mark.asyncio
-    async def test_calls_update_data_flags(self):
-        """_update_data_flags should be called after successful deletion."""
+    async def test_unit_with_failed_files_counts_as_failed(self):
+        """Freed bytes still count, but the unit is a failure so the user retries."""
         experiments = [
             _ExperimentInfo(
                 workspace_id=1,
@@ -720,15 +714,11 @@ class TestExecuteDeletion:
                 ExpirationLifecycleJob,
                 "_delete_unit",
                 new_callable=AsyncMock,
-                return_value=500,
+                side_effect=[(300, 1), (0, 0)],
             ),
-            patch.object(
-                ExpirationLifecycleJob,
-                "_update_data_flags",
-            ) as mock_flags,
             patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
         ):
-            await ExpirationLifecycleJob._execute_deletion(
+            result = await ExpirationLifecycleJob._execute_deletion(
                 user_id=1,
                 bucket_name="test-bucket",
                 experiments=experiments,
@@ -738,52 +728,117 @@ class TestExecuteDeletion:
                 run_id="test_run",
             )
 
-        assert mock_flags.call_count > 0
+        assert result["bytes_deleted"] == 300
+        assert result["failed"] == 1
+        assert result["succeeded"] == 1
+
+
+def _delete_unit(mock_bucket):
+    """Run _delete_unit for one intermediates unit."""
+    exp = _ExperimentInfo(
+        workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
+    )
+    return ExpirationLifecycleJob._delete_unit(
+        user_id=1,
+        bucket=mock_bucket,
+        tier=_DeletionTier.INTERMEDIATES,
+        item=exp,
+        run_id="test_run",
+        remaining_bytes=999999,
+    )
 
 
 class TestDeleteUnit:
-    @pytest.mark.asyncio
-    async def test_per_file_failure_continues(self):
-        """Per-file S3 failure should skip that file and continue."""
-        mock_bucket = MagicMock()
-        call_count = 0
-
-        async def mock_delete_objects(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise RuntimeError("S3 error on file 2")
-
-        mock_bucket.delete_objects = mock_delete_objects
-
-        keys_with_sizes = [(f"prefix/key_{i}", 100) for i in range(3)]
-
+    @pytest.fixture(autouse=True)
+    def _io(self):
         with (
-            patch.object(
-                ExpirationLifecycleJob,
-                "_list_experiment_objects",
-                new_callable=AsyncMock,
-                return_value=keys_with_sizes,
-            ),
-            patch(f"{MODULE}.decrement_storage_idempotent") as mock_decrement,
+            patch(f"{MODULE}.decrement_storage_idempotent") as self.decrement,
+            patch.object(ExpirationLifecycleJob, "_update_data_flags") as self.flags,
+            patch.object(ExpirationLifecycleJob, "_delete_local_file") as self.local,
             patch(f"{MODULE}.DIRPATH") as mock_dirpath,
+            patch(
+                f"{MODULE}.S3StorageController.make_s3_output_prefix",
+                return_value="prefix/",
+            ),
         ):
             mock_dirpath.OUTPUT_DIR = "/app/output"
-            exp = _ExperimentInfo(
-                workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
-            )
-            result = await ExpirationLifecycleJob._delete_unit(
-                user_id=1,
-                bucket=mock_bucket,
-                tier=_DeletionTier.INTERMEDIATES,
-                item=exp,
-                run_id="test_run",
-                remaining_bytes=999999,
-            )
+            yield
 
-        # File 1 and 3 succeed (200 bytes), file 2 fails
-        assert result == 200
-        mock_decrement.assert_called_once()
+    def _listing(self, keys_with_sizes):
+        return patch.object(
+            ExpirationLifecycleJob,
+            "_list_experiment_objects",
+            new_callable=AsyncMock,
+            return_value=keys_with_sizes,
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_file_failure_continues(self):
+        """Per-file S3 failure should skip that file, count it and continue."""
+        mock_bucket = MagicMock()
+        mock_bucket.delete_objects = AsyncMock(
+            side_effect=[{}, RuntimeError("S3 error on file 2"), {}]
+        )
+        keys_with_sizes = [(f"prefix/key_{i}", 100) for i in range(3)]
+
+        with self._listing(keys_with_sizes):
+            result = await _delete_unit(mock_bucket)
+
+        assert result == (200, 1)
+        assert self.decrement.call_count == 2
+        self.flags.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_s3_reported_errors_are_failures(self):
+        """Quiet delete_objects reports refusals in Errors without raising."""
+        mock_bucket = MagicMock()
+        mock_bucket.delete_objects = AsyncMock(
+            side_effect=[
+                {"Errors": [{"Key": "prefix/key_0", "Code": "AccessDenied"}]},
+                {},
+            ]
+        )
+        keys_with_sizes = [("prefix/key_0", 100), ("prefix/key_1", 50)]
+
+        with self._listing(keys_with_sizes):
+            result = await _delete_unit(mock_bucket)
+
+        assert result == (50, 1)
+        assert [c.args[1] for c in self.decrement.call_args_list] == [50]
+        assert self.local.call_count == 1
+        assert self.local.call_args.args[0].endswith("key_1")
+
+    @pytest.mark.asyncio
+    async def test_flag_and_usage_are_updated_before_the_unit_ends(self):
+        """A crash after the first file must not leave the flag or usage stale."""
+
+        class Crash(BaseException):
+            pass
+
+        mock_bucket = MagicMock()
+        mock_bucket.delete_objects = AsyncMock(return_value={})
+        self.local.side_effect = Crash()
+        keys_with_sizes = [("prefix/key_0", 100), ("prefix/key_1", 50)]
+
+        with self._listing(keys_with_sizes), pytest.raises(Crash):
+            await _delete_unit(mock_bucket)
+
+        self.flags.assert_called_once()
+        self.decrement.assert_called_once()
+        assert self.decrement.call_args.args[1] == 100
+
+    @pytest.mark.asyncio
+    async def test_all_files_failing_keeps_the_flag(self):
+        mock_bucket = MagicMock()
+        mock_bucket.delete_objects = AsyncMock(side_effect=RuntimeError("down"))
+        keys_with_sizes = [("prefix/key_0", 100)]
+
+        with self._listing(keys_with_sizes):
+            result = await _delete_unit(mock_bucket)
+
+        assert result == (0, 1)
+        self.flags.assert_not_called()
+        self.decrement.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_such_bucket_returns_zero(self):
@@ -794,39 +849,18 @@ class TestDeleteUnit:
             def __init__(self):
                 self.response = {"Error": {"Code": "NoSuchBucket"}}
 
+        mock_bucket.delete_objects = AsyncMock(side_effect=FakeS3Error())
         keys_with_sizes = [("prefix/key1", 100)]
 
-        async def mock_delete_objects(**kwargs):
-            raise FakeS3Error()
-
-        mock_bucket.delete_objects = mock_delete_objects
-
         with (
-            patch.object(
-                ExpirationLifecycleJob,
-                "_list_experiment_objects",
-                new_callable=AsyncMock,
-                return_value=keys_with_sizes,
-            ),
+            self._listing(keys_with_sizes),
             patch(f"{MODULE}.is_no_such_bucket_error", return_value=True),
-            patch(f"{MODULE}.decrement_storage_idempotent") as mock_decrement,
-            patch(f"{MODULE}.DIRPATH") as mock_dirpath,
         ):
-            mock_dirpath.OUTPUT_DIR = "/app/output"
-            exp = _ExperimentInfo(
-                workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
-            )
-            result = await ExpirationLifecycleJob._delete_unit(
-                user_id=1,
-                bucket=mock_bucket,
-                tier=_DeletionTier.INTERMEDIATES,
-                item=exp,
-                run_id="test_run",
-                remaining_bytes=999999,
-            )
+            result = await _delete_unit(mock_bucket)
 
-        assert result == 0
-        mock_decrement.assert_not_called()
+        assert result == (0, 0)
+        self.decrement.assert_not_called()
+        self.flags.assert_not_called()
 
 
 class TestListExperimentObjects:
@@ -914,9 +948,7 @@ class TestUpdateDataFlags:
         item = _ExperimentInfo(
             workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
         )
-        ExpirationLifecycleJob._update_data_flags(
-            _DeletionTier.INTERMEDIATES, item, 1000
-        )
+        ExpirationLifecycleJob._update_data_flags(_DeletionTier.INTERMEDIATES, item)
         mock_db.query.return_value.filter.return_value.update.assert_called_once()
 
     @patch(f"{MODULE}.session_scope")
@@ -929,7 +961,7 @@ class TestUpdateDataFlags:
         item = _ExperimentInfo(
             workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
         )
-        ExpirationLifecycleJob._update_data_flags(_DeletionTier.OUTPUTS, item, 1000)
+        ExpirationLifecycleJob._update_data_flags(_DeletionTier.OUTPUTS, item)
         mock_db.query.return_value.filter.return_value.update.assert_called_once()
 
     @patch(f"{MODULE}.session_scope")
@@ -942,16 +974,8 @@ class TestUpdateDataFlags:
         item = _WorkspaceInputInfo(
             workspace_id=1, has_published_experiments=False, created_at=None
         )
-        ExpirationLifecycleJob._update_data_flags(_DeletionTier.INPUTS, item, 1000)
+        ExpirationLifecycleJob._update_data_flags(_DeletionTier.INPUTS, item)
         mock_db.query.return_value.filter.return_value.update.assert_called_once()
-
-    def test_skips_when_no_bytes_deleted(self):
-        """Should not update flags when bytes_deleted is 0."""
-        item = _ExperimentInfo(
-            workspace_id=1, uid="exp1", is_published=False, analyzed_at=None
-        )
-        # Should not raise or open a session
-        ExpirationLifecycleJob._update_data_flags(_DeletionTier.INTERMEDIATES, item, 0)
 
 
 def _grace_item(**overrides):
@@ -1096,6 +1120,87 @@ class TestSendGraceNotifications:
         assert result == (0, 1)
         cleared_kinds = sorted(call.args[2] for call in mock_clear.call_args_list)
         assert cleared_kinds == ["reminder", "start"]
+
+
+class TestOverQuotaAgainNotifications:
+    @pytest.fixture(autouse=True)
+    def _db(self):
+        mock_scope_obj, _ = _mock_session_scope()
+        with (
+            patch(f"{MODULE}.EmailService.is_enabled", return_value=True),
+            patch(f"{MODULE}.session_scope", mock_scope_obj),
+            patch(
+                f"{MODULE}.SubscriptionService.get_users_for_grace_notifications",
+                return_value=[],
+            ),
+            patch(
+                f"{MODULE}.SubscriptionService.get_users_for_reprocess_notifications"
+            ) as self.get,
+            patch(
+                f"{MODULE}.SubscriptionService.claim_grace_notification"
+            ) as self.claim,
+            patch(
+                f"{MODULE}.SubscriptionService.clear_grace_notification"
+            ) as self.clear,
+        ):
+            yield
+
+    def _item(self, processed_days_ago):
+        from studio.app.common.core.utils.datetime_utils import get_current_datetime
+
+        now = get_current_datetime().replace(tzinfo=None)
+        return {
+            "user_id": 1,
+            "email": "user@example.org",
+            "expiration": now - timedelta(days=60),
+            "deletion_processed_at": now - timedelta(days=processed_days_ago),
+            "storage_usage_bytes": 6 * 1024**3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_sends_after_claim_with_deletion_a_notice_period_out(self):
+        from studio.app.common.core.subscription.constants import ExpirationDeletion
+        from studio.app.common.core.utils.datetime_utils import get_current_datetime
+
+        self.get.return_value = [self._item(1)]
+        self.claim.return_value = datetime(2026, 10, 29, 1, 0, 0)
+
+        with patch(
+            f"{MODULE}.EmailService.send_over_quota_again_email", return_value=True
+        ) as send:
+            result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (1, 0)
+        assert self.claim.call_args.args[3] == "reprocess"
+        not_before = send.call_args.args[2]
+        days_out = (not_before - get_current_datetime()).total_seconds() / 86400
+        assert abs(days_out - ExpirationDeletion.MIN_NOTICE_DAYS) < 0.01
+        self.clear.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_send_rolls_the_claim_back(self):
+        self.get.return_value = [self._item(10)]
+        stamp = datetime(2026, 10, 29, 1, 0, 0)
+        self.claim.return_value = stamp
+
+        with patch(
+            f"{MODULE}.EmailService.send_over_quota_again_email", return_value=False
+        ):
+            result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (0, 1)
+        assert self.clear.call_args.args[2:] == ("reprocess", stamp)
+
+    @pytest.mark.asyncio
+    async def test_lost_claim_sends_nothing(self):
+        self.get.return_value = [self._item(10)]
+        self.claim.return_value = None
+
+        with patch(f"{MODULE}.EmailService.send_over_quota_again_email") as send:
+            result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (0, 0)
+        send.assert_not_called()
 
 
 class TestDeletionSummaryEmail:

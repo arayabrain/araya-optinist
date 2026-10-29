@@ -146,6 +146,11 @@ class UserSubscription(SQLModel, table=True):
         sa_column=Column(DateTime, nullable=True),
         default=None,
     )
+    # Over-quota-again warning; a stamp <= deletion_processed_at predates the last pass
+    reprocess_notified_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
 
 
 class SubscriptionProvider(SQLModel, table=True):

@@ -14,6 +14,8 @@ on:
     paths:
       - "studio/app/common/core/background/expiration_lifecycle_job.py"
       - "studio/app/common/core/background/cleanup_job.py"
+      - "studio/app/common/core/background/background_task_worker.py"
+      - "studio/app/common/core/experiment/experiment_writer.py"
       - "studio/app/common/core/subscription/subscription_service.py"
       - "studio/app/common/core/subscription/email_service.py"
       - "studio/app/common/core/subscription/constants.py"
