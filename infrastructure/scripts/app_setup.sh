@@ -247,7 +247,7 @@ retry_command $DB_CONNECTION_MAX_ATTEMPTS $DB_CONNECTION_RETRY_DELAY "nc -z $RDS
 
 # Initialize database tables and users
 echo "$(date): Initializing database tables"
-# mktemp creates it owner-only; removed on any exit, a failed step's included
+# mktemp creates it owner-only; the trap removes it on any exit, failure included
 DB_INIT_SQL_FILE=$(mktemp /tmp/init_optinist_db.XXXXXX)
 trap 'rm -f "$DB_INIT_SQL_FILE"' EXIT
 cat > "$DB_INIT_SQL_FILE" << 'INIT_SQL'
