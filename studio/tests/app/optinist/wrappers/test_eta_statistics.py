@@ -288,5 +288,5 @@ def test_constant_roi_is_named_without_a_numpy_warning(tmp_path, caplog):
     for position in (0, 2):
         assert np.isnan(corr[position]).all() and np.isnan(corr[:, position]).all()
     assert np.isfinite(corr[1, 3])
-    assert "2 ROI(s) have a constant trace" in caplog.text
+    assert "2 ROI(s) have a constant or non-finite trace" in caplog.text
     assert "[1, 3]" in caplog.text

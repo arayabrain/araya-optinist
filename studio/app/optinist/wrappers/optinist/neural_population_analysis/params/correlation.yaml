@@ -1,1 +1,2 @@
 transpose: False
+sort_by_cluster: False # order cells by average-linkage clustering on 1 - r
