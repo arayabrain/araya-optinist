@@ -454,19 +454,23 @@ class TestWorkflowTierSizingVariables:
         ]
 
 
+# Every task definition that starts cloud-startup.sh, as (file, name);
+# test_every_startup_task_definition_is_covered keeps the list complete.
+STARTUP_TASK_DEFINITIONS = [
+    ("compute.tf", "autoscaling"),
+    ("compute.tf", "premium"),
+    ("public_service.tf", "public"),
+    ("background_service.tf", "background"),
+]
+
+UVICORN_WORKERS = {"autoscaling": "3", "premium": "2", "public": "1", "background": "1"}
+
+
 class TestUvicornWorkers:
     """Every task definition that starts cloud-startup.sh sets its worker count."""
 
-    @pytest.mark.parametrize(
-        "tf_file,task_definition,workers",
-        [
-            ("compute.tf", "autoscaling", "3"),
-            ("compute.tf", "premium", "2"),
-            ("public_service.tf", "public", "1"),
-            ("background_service.tf", "background", "1"),
-        ],
-    )
-    def test_worker_count_is_explicit(self, tf_file, task_definition, workers):
+    @pytest.mark.parametrize("tf_file,task_definition", STARTUP_TASK_DEFINITIONS)
+    def test_worker_count_is_explicit(self, tf_file, task_definition):
         """Unset, cloud-startup.sh's default would apply; each worker holds a
         full app process out of the memory the instance shares."""
         block = resource_block(
@@ -475,15 +479,7 @@ class TestUvicornWorkers:
         values = re.findall(
             r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
         )
-        assert values == [workers]
-
-
-STARTUP_TASK_DEFINITIONS = [
-    ("compute.tf", "autoscaling"),
-    ("compute.tf", "premium"),
-    ("public_service.tf", "public"),
-    ("background_service.tf", "background"),
-]
+        assert values == [UVICORN_WORKERS[task_definition]]
 
 
 class TestStartupCommand:
@@ -510,8 +506,8 @@ class TestStartupCommand:
         ]
 
     def test_every_startup_task_definition_is_covered(self):
-        """A task definition added later with the script falls under the test
-        above rather than outside it."""
+        """A task definition added later with the script falls under the worker
+        count and startup command tests rather than outside them."""
         found = sorted(
             (path.name, name)
             for path in TERRAFORM_DIR.glob("*.tf")
