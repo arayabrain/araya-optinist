@@ -354,7 +354,7 @@ For background sync metrics (`ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`,
 | `SECRET_KEY` | Signs the app-level JWT that wraps the Firebase refresh token, and the `ExToken` | Required |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | Lifetime of the app-level refresh JWT | `1440` |
 
-All set in `studio/config/.env.example`; `app_setup.sh` overrides `USE_FIREBASE_TOKEN` to `True` on AWS. `INITIAL_FIREBASE_UID` is set on the ECS task definitions in Terraform (`public_service.tf`, `background_service.tf`, `compute.tf`) but, as of this writing, read by nothing in `studio/`. Re-check with `grep -rn INITIAL_FIREBASE_UID studio/` before relying on that.
+All set in `studio/config/.env.example`. On AWS no task definition sets `USE_FIREBASE_TOKEN`, so the code default `True` applies. `INITIAL_FIREBASE_UID` is set on the ECS task definitions in Terraform (`public_service.tf`, `background_service.tf`, `compute.tf`) but, as of this writing, read by nothing in `studio/`. Re-check with `grep -rn INITIAL_FIREBASE_UID studio/` before relying on that.
 
 For the Terraform-side secrets (`firebase_config_json`, `firebase_private_json`, `optinist_admin_uid`, `test_users[].firebase_uid`) and how they flow into Secrets Manager, see [TERRAFORM_ARCHITECTURE.md](TERRAFORM_ARCHITECTURE.md#how-firebase-configuration-flows).
 

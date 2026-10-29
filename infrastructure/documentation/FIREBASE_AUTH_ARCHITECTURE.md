@@ -276,7 +276,7 @@ Both paths are resolved in `studio/app/dir_path.py` as `FIREBASE_PRIVATE_PATH` a
 | Local development   | Developer places both files in `studio/config/auth/` by hand                                                                                                        |
 | CI (GitHub Actions) | `.github/workflows/e2e.yml` writes them from the `E2E_FIREBASE_CONFIG_JSON` and `E2E_FIREBASE_PRIVATE_JSON` repository secrets                                       |
 | AWS (ECS)           | `cloud-startup.sh` fetches `${ENV_PREFIX}-optinist/firebase/config` and `${ENV_PREFIX}-optinist/firebase/private-key` from Secrets Manager and creates both files. The image ships neither, so a failed fetch leaves the backend with no credentials at all |
-| AWS (EC2 hosts)     | `infrastructure/scripts/app_setup.sh` does the equivalent, and additionally pip-installs `firebase-admin` and calls `auth.update_user(admin_uid, email_verified=True)` to bootstrap the admin account |
+| AWS (EC2 hosts)     | Neither file. `infrastructure/scripts/app_setup.sh` pip-installs `firebase-admin`, passes it the service account from `${ENV_PREFIX}-optinist/firebase/private-key` on stdin, and calls `auth.update_user(admin_uid, email_verified=True)` to bootstrap the admin account |
 
 ### Environment Variables
 
