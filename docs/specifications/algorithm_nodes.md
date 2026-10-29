@@ -709,12 +709,15 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData, HDF5Data, IscellData
   - If using optinist nwb format:
     - cell_img:
-      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_img/data
-      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_img/data
+      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_label_img/data
+      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_label_img/data
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
 - **Output:** all_roi (RoiData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_label_img` is the all-ROI label image (one layer; each pixel holds the highest ROI covering it). cell_roi and non_cell_roi take the pixels whose ROI is in the group, so where a ROI of the other group lies on top, the pixel is empty. Files written by earlier releases hold one layer per ROI under `all_roi_img` instead, which is split by iscell as before.
+- A label image counts ROIs from 0: ROI i holds the value i, and pixels outside every ROI are NaN. A label image from a tool that counts from 1 over a 0 background (Cellpose, ImageJ) needs converting first, or its background reads as ROI 0.
+- iscell needs an entry for every ROI of cell_img (each layer of a per-ROI stack, each label up to the highest); otherwise the node stops with an error naming both counts. One layer beside a one-entry iscell reads as one ROI, whatever value its pixels hold.
 
 ###### roi_fluo_from_hdf5
 
@@ -722,8 +725,8 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData, FluoData, HDF5Data, IscellData
   - If using optinist nwb format:
     - cell_img:
-      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_img/data
-      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_img/data
+      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_label_img/data
+      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_label_img/data
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
@@ -731,6 +734,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
       - processing/ophys/suite2p_roi_UNIQUE-ID/Fluorescence/data
       - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
 - **Output:** all_roi (RoiData), fluorescence (FluoData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_label_img`, and `all_roi_img` of earlier files: read as by roi_from_hdf5.
 - **Parameters:**
   - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
@@ -741,7 +745,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData
   - If using optinist nwb format:
     - cell_img:
-      - processing/ophys/ImageSegmentation/vacant_roi_UNIQUE-ID/image_mask
+      - processing/optinist/vacant_roi_UNIQUE-ID_all_roi_label_img/data
     - fluorescence
       - processing/ophys/vacant_roi_UNIQUE-ID/Fluorescence/data
 - **Output** FluoData, IscellData
