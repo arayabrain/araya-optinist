@@ -114,7 +114,7 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
    - Build and push Docker images using `ecr_build_push.sh`
 
 3. **Host provisioning (`app_setup.sh`, runs on a 30-minute schedule):**
-   - Runs independently of image deploys. `aws_ssm_association "app_setup"` (`deployment.tf`, `schedule_expression = "rate(30 minutes)"`) downloads the script from S3 and executes it on each EC2 host via SSM — **not inside the container, and not one-shot**. It re-runs every 30 minutes for the life of the instance. On each cycle it:
+   - Runs independently of image deploys. `aws_ssm_association "app_setup"` (`deployment.tf`, `schedule_expression = "rate(30 minutes)"`) downloads the script from S3 and executes it on each free-tier host (the association targets `aws_autoscaling_group.main`) via SSM — **not inside the container, and not one-shot**. It re-runs every 30 minutes for the life of the instance. On each cycle it:
      - Reads secrets from AWS Secrets Manager
      - Discovers infrastructure (RDS endpoint, S3 buckets) via AWS CLI
      - Applies the DB bootstrap SQL (idempotent — guarded so re-runs allocate
