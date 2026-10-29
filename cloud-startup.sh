@@ -64,33 +64,8 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 # Wait for RDS to be available
 # This is necessary because RDS might still be initializing when container starts
 # (e.g., after dev scheduler starts the environment — RDS takes 5-10 min)
-# Tries 60 times with 10 second intervals (total 10 minutes timeout)
-max_tries=60
-counter=0
-
-# Build SSL options based on MYSQL_SSL_MODE
-if [ -n "${MYSQL_SSL_MODE}" ]; then
-    case "${MYSQL_SSL_MODE}" in
-        DISABLED)
-            ssl_opts="--skip-ssl"
-            ;;
-        *)
-            ssl_opts="--ssl"
-            ;;
-    esac
-else
-    ssl_opts=""
-fi
-
-until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
-do
-    sleep 10
-    [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
-    echo "Attempt $counter: Waiting for Database..."
-    ((counter++))
-done
-
-echo 'Database connection successful'
+# Bounded to 10 minutes; exits the task when the database stays unreachable
+bash /app/scripts/wait_for_database.sh
 
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
@@ -276,7 +251,7 @@ check_load_balancer() {
             sleep ${WAIT_SECONDS}
             [[ $counter -eq $MAX_TRIES ]] && echo "Load balancer not ready after 5 minutes" && return 1
             echo "Attempt $counter: Waiting for load balancer..."
-            ((counter++))
+            counter=$((counter + 1))
         done
         echo "Load balancer is ready"
         return 0
