@@ -275,10 +275,12 @@ def test_color_limit_sets_the_figure_scale(output_dir):
     assert auto != fixed
 
 
-def test_many_clusters_still_render_and_write_outputs(output_dir):
+def test_many_clusters_still_render_and_write_outputs(output_dir, caplog):
+    caplog.set_level(logging.WARNING)
     X = np.random.default_rng(0).normal(size=(120, 60))
     info = _run(output_dir, X, {"n_clusters": 100, "response_end": 0})
 
+    assert "mean traces of clusters 1..30 of 100" in caplog.text
     assert info["figure"].data.startswith("<img")
     assert info["cluster_mean"].data.shape[0] == 100
     assert len(_post(info)["labels"]) == 120
