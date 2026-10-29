@@ -142,6 +142,16 @@ class TestWaitForDatabase:
         assert "Failed to connect to Database" in result.stdout
         assert elapsed < wait + 1.5
 
+    def test_starts_no_attempt_that_cannot_finish_in_time(self, tmp_path):
+        """A 2 s attempt fits once in a 3 s wait; a second would end past the
+        deadline, so the script gives up instead of starting it."""
+        result, elapsed, calls = _run_wait(
+            tmp_path, failures=1000, block=True, wait=3, attempt_timeout=2
+        )
+
+        assert result.returncode == 1
+        assert len(calls) == 1, (len(calls), elapsed)
+
     @pytest.mark.parametrize(
         "ssl_mode,expected",
         [(None, set()), ("DISABLED", {"--skip-ssl"}), ("REQUIRED", {"--ssl"})],
