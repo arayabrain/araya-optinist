@@ -24,3 +24,4 @@ ophys:
     plane_segmentation:
         name: 'PlaneSegmentation'
         description: ''
+        save_image_mask: False

@@ -13,7 +13,11 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
-from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -91,7 +95,6 @@ def suite2p_roi(
     ops["settings"] = settings
 
     # Initialize default empty outputs
-    im = np.zeros((0, Ly, Lx))
     F = np.zeros((0, nframes))
     Fneu = np.zeros((0, nframes))
     iscell = np.array([], dtype=int)
@@ -129,20 +132,6 @@ def suite2p_roi(
         stat, F, Fneu = list(stat_), F_, Fneu_
         iscell = iscell_[:, 0].astype(int)
 
-    # Outside the handler: a failed write must fail the node, not empty its images
-    if len(iscell) > 0:
-        # The per-ROI mask stack (NaN outside ROI i, i inside it), written
-        # to disk one ROI at a time and referenced rather than held
-        stack_path = os.path.abspath(join_filepath([output_dir, "roi_mask_stack.npy"]))
-        stack, tmp_path = RoiStack.create(stack_path + ".tmp", (len(stat), Ly, Lx))
-        for i, s in enumerate(stat):
-            stack[i, s["ypix"], s["xpix"]] = i
-        stack.flush()
-        del stack
-        # a new inode, so a request still reading the previous stack keeps it
-        os.replace(tmp_path, stack_path)
-        im = RoiStack.open(stack_path)
-
     roi_masks = RoiMasks.from_pixels(
         (Ly, Lx),
         (np.ravel_multi_index((s["ypix"], s["xpix"]), (Ly, Lx)) for s in stat),
@@ -159,8 +148,11 @@ def suite2p_roi(
 
     # Prepare NWB output
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
+    all_roi = roi_masks.label_image()
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {
             "name": "iscell",
@@ -204,7 +196,7 @@ def suite2p_roi(
         "fluorescence": FluoData(F, file_name="fluorescence"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
-            roi_masks.label_image(),
+            all_roi,
             output_dir=output_dir,
             file_name="all_roi",
         ),
