@@ -6,6 +6,7 @@ it a real user and give the workspace check a database to answer from.
 """
 import os
 import shutil
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,9 +14,11 @@ from fastapi.testclient import TestClient
 from studio.__main_unit__ import app
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user_with_dataview_outputs_check,
+    get_outputs_remote_bucket_name,
 )
 from studio.app.common.db.database import get_db
 from studio.app.common.models import Workspace, WorkspacesShareUser
+from studio.app.common.routers import outputs
 from studio.app.common.schemas.users import Organization, User
 from studio.app.dir_path import DIRPATH
 from studio.tests.app.common.sqlite_harness import sqlite_session
@@ -111,7 +114,21 @@ def test_output_path_outside_the_named_workspace_is_refused(get_as):
     assert get_as(url, STRANGER).status_code == 403
 
 
+@pytest.mark.parametrize(
+    "path", ["wsaccess/glm/missing.json", "no_such_uid/glm/x.json"]
+)
 @pytest.mark.parametrize("route", ["html", "data"])
-def test_missing_output_is_404(get_as, route):
-    url = f"/api/visualizations/{route}/1/wsaccess/glm/missing.json"
-    assert get_as(url, OWNER).status_code == 404
+def test_missing_output_is_404(get_as, route, path):
+    app.dependency_overrides[get_outputs_remote_bucket_name] = lambda: "bucket"
+    url = f"/api/visualizations/{route}/1/{path}"
+    storage = outputs.RemoteStorageController
+    with patch.object(storage, "is_available", return_value=False):
+        assert get_as(url, OWNER).status_code == 404
+
+
+@pytest.mark.parametrize("route", ["html", "data"])
+def test_unsynced_experiment_is_503_with_remote_storage(get_as, route):
+    url = f"/api/visualizations/{route}/1/no_such_uid/glm/x.json"
+    storage = outputs.RemoteStorageController
+    with patch.object(storage, "is_available", return_value=True):
+        assert get_as(url, OWNER).status_code == 503

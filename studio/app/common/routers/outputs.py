@@ -639,11 +639,11 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
     )
 
 
-def _require_output_file(filepath: str, remote_bucket_name: str) -> None:
+def _require_output_file(filepath: str) -> None:
     """404 for an output missing after the sync attempt, 503 while still syncing."""
     if os.path.exists(filepath):
         return
-    if remote_bucket_name:
+    if RemoteStorageController.is_available():
         logger.warning(f"File not found after sync attempt: {filepath}")
         experiment_dir = os.path.dirname(os.path.dirname(filepath))
         if os.path.exists(experiment_dir):
@@ -855,7 +855,7 @@ async def get_file(
     await _ensure_visualization_synced(
         os.path.dirname(abs_filepath), remote_bucket_name
     )
-    _require_output_file(abs_filepath, remote_bucket_name)
+    _require_output_file(abs_filepath)
 
     return JsonReader.read_as_output(abs_filepath)
 
@@ -877,7 +877,7 @@ async def get_html(
     await _ensure_visualization_synced(
         os.path.dirname(abs_filepath), remote_bucket_name
     )
-    _require_output_file(abs_filepath, remote_bucket_name)
+    _require_output_file(abs_filepath)
 
     return Reader.read_as_output(abs_filepath)
 
@@ -960,7 +960,7 @@ async def get_image(
         )
     else:
         json_filepath = abs_filepath
-        _require_output_file(json_filepath, remote_bucket_name)
+        _require_output_file(json_filepath)
 
     return JsonReader.read_as_output(json_filepath)
 
