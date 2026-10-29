@@ -11,12 +11,26 @@ Usage::
 """
 
 import argparse
+import subprocess
+import sys
 
 import uvicorn
 
 from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
 
 logger = AppLogger.get_logger()
+
+
+def app_imports() -> bool:
+    """Import the app once in a child process; return whether that succeeded.
+
+    Above one worker nothing in this process imports the app, and uvicorn's
+    supervisor keeps running when every worker fails to, so a broken app would
+    leave the task up with nothing serving. The child exits before any worker
+    starts, so its memory is never held beside theirs.
+    """
+    result = subprocess.run([sys.executable, "-c", "import studio.__main_unit__"])
+    return result.returncode == 0
 
 
 def main(develop_mode: bool = False):
@@ -47,6 +61,10 @@ def main(develop_mode: bool = False):
         f"Starting Optinist server on {args.host}:{args.port} "
         f"(log_level={effective_level})"
     )
+
+    if args.workers > 1 and not app_imports():
+        logger.error("The app failed to import (traceback above); not starting")
+        sys.exit(1)
 
     if develop_mode:
         if args.workers > 1:
