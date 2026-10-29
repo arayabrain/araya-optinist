@@ -19,20 +19,26 @@ def all_roi_image(rois):
     return rois if rois.ndim == 2 else np.nanmax(rois, axis=0)
 
 
+def is_roi_stack(rois, n_rois):
+    """Whether cell_img reads as a per-ROI stack, one layer per ROI; anything
+    else reads as a label image (one layer, or 2D)."""
+    return rois.ndim == 3 and len(rois) == n_rois
+
+
 def check_iscell(rois, iscell):
     """
-    Refuse an iscell that does not describe cell_img's ROIs: a per-ROI stack
-    needs one entry per layer, a label image one for every ROI up to its
+    Refuse an iscell that does not describe cell_img's ROIs: a stack of several
+    layers needs one entry per layer, a label image one for every ROI up to its
     highest label (ROIs covered by others may leave no pixel).
     """
     n = len(iscell)
-    if rois.ndim == 3 and len(rois) > 1:
-        if len(rois) != n:
-            raise ValueError(
-                f"cell_img holds {len(rois)} ROI layers, so iscell needs "
-                f"{len(rois)} entries; its length is {n}"
-            )
+    if is_roi_stack(rois, n):
         return
+    if rois.ndim == 3 and len(rois) > 1:
+        raise ValueError(
+            f"cell_img holds {len(rois)} ROI layers, so iscell needs "
+            f"{len(rois)} entries; its length is {n}"
+        )
     labels = rois[~np.isnan(rois)]
     if labels.size and labels.max() + 1 > n:
         top = int(labels.max())
@@ -50,7 +56,7 @@ def group_roi_image(rois, in_group):
     ROI of the other group covers one, the pixel is NaN. A stack of one ROI is
     its own label image, so either reading gives the same.
     """
-    if rois.ndim == 3 and len(rois) == len(in_group):
+    if is_roi_stack(rois, len(in_group)):
         return max_projection(rois[in_group])
     label = rois.reshape(rois.shape[-2:])
     return np.where(np.isin(label, np.flatnonzero(in_group)), label, np.nan)

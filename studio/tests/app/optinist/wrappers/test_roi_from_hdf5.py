@@ -87,21 +87,34 @@ def test_a_per_roi_stack_from_an_older_file_still_reads(tmp_path, loader):
     "case, n_iscell, message",
     [
         ("stack", 2, "3 ROI layers, so iscell needs 3 entries; its length is 2"),
-        ("label", 1, "up to 2, so iscell needs at least 3 entries; its length is 1"),
         ("label", 2, "up to 2, so iscell needs at least 3 entries; its length is 2"),
     ],
 )
 def test_an_iscell_that_does_not_fit_cell_img_is_refused_by_name(
     tmp_path, loader, case, n_iscell, message
 ):
-    # before: a reshape error on the stack, and every ROI silently non-cell for
-    # a one-layer label image beside a one-entry iscell
+    # before: a reshape error on the stack, and a label image read as if iscell
+    # covered it
     stack, label, _ = label_case()
     written = stack if case == "stack" else label[np.newaxis]
     cell_img = ImageData(written, output_dir=str(tmp_path), file_name="cell_img")
 
     with pytest.raises(ValueError, match=message):
         LOADERS[loader](cell_img, str(tmp_path), IscellData(np.ones(n_iscell, int)))
+
+
+@pytest.mark.parametrize("loader", LOADERS)
+def test_one_layer_beside_a_one_entry_iscell_reads_as_a_one_roi_stack(tmp_path, loader):
+    # a binary mask from another tool: its ROI holds 1, not the label 0; one
+    # layer and one iscell entry read as one ROI, as earlier releases read it
+    mask = np.full((1, H, W), np.nan, np.float32)
+    mask[0, 1:3, 1:3] = 1
+    cell_img = ImageData(mask, output_dir=str(tmp_path), file_name="cell_img")
+
+    info = LOADERS[loader](cell_img, str(tmp_path), IscellData(np.array([1])))
+
+    np.testing.assert_array_equal(info["cell_roi"].data, mask[0])
+    assert np.isnan(info["non_cell_roi"].data).all()
 
 
 @pytest.mark.parametrize("loader", LOADERS)
