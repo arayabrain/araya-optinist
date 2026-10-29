@@ -459,14 +459,17 @@ class NWBCreater:
             imaging_planes.append(imaging_plane)
 
         # Create Acquisition
+        series = nwbfile.acquisition["TwoPhotonSeries"]
         image_series = TwoPhotonSeries(
             name="TwoPhotonSeries",
-            starting_frame=nwbfile.acquisition["TwoPhotonSeries"].starting_frame,
-            external_file=nwbfile.acquisition["TwoPhotonSeries"].external_file,
+            starting_frame=series.starting_frame,
+            external_file=series.external_file,
             imaging_plane=imaging_planes[0],
-            starting_time=nwbfile.acquisition["TwoPhotonSeries"].starting_time,
-            rate=nwbfile.acquisition["TwoPhotonSeries"].rate,
-            unit=nwbfile.acquisition["TwoPhotonSeries"].unit,
+            starting_time=series.starting_time,
+            rate=series.rate,
+            unit=series.unit,
+            # frames stored with save_raw_image_to_nwb, which leaves no external file
+            data=series.data if series.external_file is None else None,
         )
         new_nwbfile.add_acquisition(image_series)
 
@@ -571,7 +574,8 @@ def overwrite_nwb(config, save_path, nwb_file_name):
         new_nwbfile = set_nwbconfig(new_nwbfile, config)
 
         with NWBHDF5IO(tmp_nwb_path, "w") as io:
-            io.write(new_nwbfile)
+            # copy stored frames: a link would point at the file replaced below
+            io.write(new_nwbfile, link_data=False)
     shutil.copyfile(tmp_nwb_path, nwb_path)
     os.remove(tmp_nwb_path)
 
