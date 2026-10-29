@@ -230,6 +230,45 @@ def test_a_one_pixel_roi_commits_its_pixel(tmp_path):
     assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
 
 
+@pytest.mark.parametrize("size", [1, 3])
+def test_an_roi_drawn_entirely_on_a_cell_takes_its_trace_from_all_its_pixels(
+    tmp_path, size
+):
+    # without allow_overlap, overlapping pixels leave the trace; with none of
+    # its own left, an added ROI would commit as a cell with an all-zero trace
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    cell_y, cell_x = disk(*CELLS[0], 3)
+    movie[:, cell_y, cell_x] += 500
+    ops, im = build(tmp_path, movie)
+    on_cell = RoiPos(posx=CELLS[0][1], posy=CELLS[0][0], sizex=size, sizey=size)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, on_cell))
+    data.temp_add_roi[2] = on_cell
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert new["overlap"].all()
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+
+
+def test_a_partly_overlapping_roi_still_leaves_out_the_shared_pixels(tmp_path):
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    cell_y, cell_x = disk(*CELLS[0], 3)
+    movie[:, cell_y, cell_x] += 500
+    ops, im = build(tmp_path, movie)
+    around = RoiPos(posx=CELLS[0][1], posy=CELLS[0][0], sizex=9, sizey=9)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, around))
+    data.temp_add_roi[2] = around
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert new["overlap"].any() and not new["overlap"].all()
+    assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
+
+
 def test_an_roi_with_no_pixel_is_refused_by_name(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     # the stored pixels decide, whatever the RoiPos says

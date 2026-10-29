@@ -164,6 +164,10 @@ def extract_traces(ops, stat, targets):
     Fneu = np.zeros_like(F)
     for i, s in enumerate(targets):
         keep = slice(None) if ext.get("allow_overlap", False) else ~s["overlap"]
+        if not s["lam"][keep].size:
+            # an ROI drawn entirely on others keeps no pixel of its own: its
+            # trace comes from all its pixels, as the other algorithms' commits do
+            keep = slice(None)
         lam = s["lam"][keep].astype(np.float32)
         if lam.size > 0:
             pixels = mov[:, s["ypix"][keep], s["xpix"][keep]].astype(np.float32)
