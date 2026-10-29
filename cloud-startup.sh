@@ -149,9 +149,9 @@ if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
 fi
 
 # Configure Uvicorn worker processes
-# Each worker is a full app process, and above one the supervisor is another, all
-# from the memory the workflows use. Two keep /health answered while one worker's
-# event loop is blocked. Each task definition sets its own count.
+# Each worker is a full app process, all from the memory the workflows use; the
+# supervisor above one worker does not load the app. Two keep /health answered
+# while one worker's event loop is blocked. Each task definition sets its own count.
 UVICORN_WORKERS=${UVICORN_WORKERS:-2}
 echo "Uvicorn workers: $UVICORN_WORKERS"
 
