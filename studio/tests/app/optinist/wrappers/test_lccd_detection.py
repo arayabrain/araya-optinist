@@ -214,6 +214,12 @@ def test_each_stage_keeps_its_own_section():
     assert config["frame_divider"] == 10
 
 
+def test_the_shipped_defaults_run_both_stages_sparse():
+    config = lccd_config(read_default_params("lccd_cell_detection"))
+    assert config["blob_detector"]["sparse"] is True
+    assert config["roi_integration"]["sparse"] is True
+
+
 def test_flat_params_feed_both_stages():
     config = lccd_config({"min_area": 4, "max_area": 16, "frame_divider": 10})
     for stage in ("blob_detector", "roi_integration"):

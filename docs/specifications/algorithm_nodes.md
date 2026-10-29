@@ -244,14 +244,14 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
     - **fsize** [int (1 <= fsize <= the frame's shorter side, odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
     - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for detected blobs.
     - **max_area** [number, default: 100]: Define the acceptable size range for detected blobs.
-    - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
+    - **sparse** [bool, default: True]: Determines whether to use sparse matrix operations. The ROIs found are the same either way; sparse uses less memory and time.
 
   - **roi_integration:** Takes blobs detected across all frames and integrates them into coherent ROI that represent consistent cell locations over time.
 
     - **overlap_threshold** [float (0 <= overlap_threshold <= 1), default: 0.25]: Threshold for determining significant overlap between ROIs
     - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for integrated ROIs.
     - **max_area** [number, default: 100]: Maximum acceptable size for integrated ROIs.
-    - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
+    - **sparse** [bool, default: True]: Determines whether to use sparse matrix operations. The ROIs found are the same either way; sparse uses less memory and time.
 
   - **lccd:**
 
