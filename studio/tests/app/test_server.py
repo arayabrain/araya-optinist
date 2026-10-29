@@ -28,7 +28,7 @@ sys.argv = ["entry", "--workers", "3"]
 with patch.object(uvicorn, "run") as run:
     {run_entry}
 assert "studio.__main_unit__" not in sys.modules, "the entry imported the app"
-for heavy in ("fastapi", "numpy", "pandas"):
+for heavy in ("fastapi", "starlette", "pyrebase", "numpy", "pandas"):
     assert heavy not in sys.modules, f"the entry imported {{heavy}}"
 assert run.call_count == 1
 assert run.call_args.args == ("studio.__main_unit__:app",)
