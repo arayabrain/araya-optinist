@@ -1,6 +1,6 @@
+import contextlib
 import json
 import os
-import shutil
 
 import numpy as np
 from hdmf.data_utils import GenericDataChunkIterator
@@ -544,18 +544,28 @@ def save_nwb(save_path, input_config, config):
         f.write(nwbfile)
 
 
+@contextlib.contextmanager
+def _replacing(tmp_path, path):
+    """Replace path with tmp_path, which the block writes, in one rename once it
+    ends; delete tmp_path if anything fails. path is never written in place."""
+    try:
+        yield
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def overwrite_nwbfile(save_path, config):
     tmp_save_path = join_filepath(
         [os.path.dirname(save_path), "tmp_" + os.path.basename(save_path)]
     )
-    with NWBHDF5IO(save_path, "r") as src_io:
+    with _replacing(tmp_save_path, save_path), NWBHDF5IO(save_path, "r") as src_io:
         old_nwbfile = src_io.read()
         nwbfile = set_nwbconfig(old_nwbfile, config)
         nwbfile.set_modified()
         with NWBHDF5IO(tmp_save_path, mode="w") as io:
             io.export(src_io=src_io, nwbfile=nwbfile)
-    shutil.copyfile(tmp_save_path, save_path)
-    os.remove(tmp_save_path)
 
 
 def overwrite_nwb(config, save_path, nwb_file_name):
@@ -564,7 +574,7 @@ def overwrite_nwb(config, save_path, nwb_file_name):
     tmp_nwb_path = join_filepath([save_path, "tmp_" + nwb_file_name])
 
     # NWBファイルの読み込み
-    with NWBHDF5IO(nwb_path, "r") as io:
+    with _replacing(tmp_nwb_path, nwb_path), NWBHDF5IO(nwb_path, "r") as io:
         nwbfile = io.read()
         # acquisition を元ファイルから作成する
         new_nwbfile = NWBCreater.re_acquisition(nwbfile)
@@ -572,8 +582,6 @@ def overwrite_nwb(config, save_path, nwb_file_name):
 
         with NWBHDF5IO(tmp_nwb_path, "w") as io:
             io.write(new_nwbfile)
-    shutil.copyfile(tmp_nwb_path, nwb_path)
-    os.remove(tmp_nwb_path)
 
 
 def merge_nwbfile(old_nwbfile, new_nwbfile):
