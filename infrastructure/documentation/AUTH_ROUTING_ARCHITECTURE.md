@@ -228,7 +228,7 @@ Cleared state during logout:
 |---------|-----|---------|
 | localStorage | `access_token` | JWT access token |
 | localStorage | `refresh_token` | JWT refresh token |
-| localStorage | `ExToken` | External token |
+| localStorage | `ExToken` | App-signed JWT; only issued when `USE_FIREBASE_TOKEN=False`, expires after `ACCESS_TOKEN_EXPIRE_MINUTES` |
 | localStorage | `dismissedAlerts` | UI alert dismissal state |
 | sessionStorage | `storage-refreshed-on-login` | One-time storage refresh flag |
 
@@ -353,6 +353,7 @@ For background sync metrics (`ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`,
 | `FRONTEND_URL` | Only used in the `else` branch of `auth_email_service.py` commented "Development/Testing: Just log the link", where it builds `action_code_settings`. On the live path, `sendOobCode` is posted with no `continueUrl`, so the real action-link target comes from the **Firebase console email template**, not this variable | `http://localhost:3000`, set by `FRONTEND_URL` in `app/const.py` |
 | `SECRET_KEY` | Signs the app-level JWT that wraps the Firebase refresh token, and the `ExToken` | Required |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | Lifetime of the app-level refresh JWT | `1440` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Lifetime of the `ExToken` | `1440` |
 
 All set in `studio/config/.env.example`; `app_setup.sh` overrides `USE_FIREBASE_TOKEN` to `True` on AWS. `INITIAL_FIREBASE_UID` is set on the ECS task definitions in Terraform (`public_service.tf`, `background_service.tf`, `compute.tf`) but, as of this writing, read by nothing in `studio/`. Re-check with `grep -rn INITIAL_FIREBASE_UID studio/` before relying on that.
 

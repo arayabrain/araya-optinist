@@ -21,15 +21,23 @@ from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
 logger = AppLogger.get_logger()
 
 
-def app_imports() -> bool:
-    """Import the app once in a child process; return whether that succeeded.
+def app_starts() -> bool:
+    """Import the app and check its signing secrets once in a child process;
+    return whether both succeeded.
 
     Above one worker nothing in this process imports the app, and uvicorn's
-    supervisor keeps running when every worker fails to, so a broken app would
-    leave the task up with nothing serving. The child exits before any worker
-    starts, so its memory is never held beside theirs.
+    supervisor keeps running when every worker fails to, so a broken app or a
+    refused secret would leave the task up with nothing serving. The child exits
+    before any worker starts, so its memory is never held beside theirs.
     """
-    result = subprocess.run([sys.executable, "-c", "import studio.__main_unit__"])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from studio.__main_unit__ import validate_signing_secrets; "
+            "validate_signing_secrets()",
+        ]
+    )
     return result.returncode == 0
 
 
@@ -62,8 +70,8 @@ def main(develop_mode: bool = False):
         f"(log_level={effective_level})"
     )
 
-    if args.workers > 1 and not app_imports():
-        logger.error("The app failed to import (traceback above); not starting")
+    if args.workers > 1 and not app_starts():
+        logger.error("The app failed to import or start (see above); not starting")
         sys.exit(1)
 
     if develop_mode:

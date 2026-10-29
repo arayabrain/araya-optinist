@@ -36,10 +36,15 @@ def create_access_token(
     expires_delta: timedelta = None,
     user_claims: Dict[str, Any] = None,
 ) -> str:
+    exp = (
+        expires_delta
+        if expires_delta
+        else timedelta(minutes=AUTH_CONFIG.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     return _create_token(
         subject,
         token_type="access_token",
-        expires_delta=expires_delta,
+        expires_delta=exp,
         user_claims=user_claims,
     )
 
@@ -68,8 +73,13 @@ def _validate_token(
 ) -> Tuple[Dict[str, Any], Optional[str]]:
     payload = err = None
     try:
+        # Every token type is issued with "exp"; one without it never expires,
+        # so it is rejected rather than trusted forever.
         payload = jwt.decode(
-            token, AUTH_CONFIG.SECRET_KEY, algorithms=[AUTH_CONFIG.ALGORITHM]
+            token,
+            AUTH_CONFIG.SECRET_KEY,
+            algorithms=[AUTH_CONFIG.ALGORITHM],
+            options={"require_exp": True},
         )
         if payload.get("token_type") != token_type:
             err = "Invalid token type"
