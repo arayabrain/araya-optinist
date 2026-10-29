@@ -232,6 +232,13 @@ the instance as needing to be created. This is expected. Once the scheduler rest
 the instance on the next start, `terraform plan` should show no changes (the instance
 is restored with the same identifier and configuration).
 
+### Do not apply while the environment is stopped
+
+Plan only during off-hours. An apply would create the RDS instance the stop destroyed, and
+it sets the background ECS service back to `1` and the public one to its tfvars count while
+their instances are stopped, so their tasks fail placement until the next start. The free
+and premium services ignore `desired_count`, so the stop's zeros stand for them.
+
 ### Lambda schedules are disabled after a stop
 
 This is expected. The stop action disables the free_manager, premium_manager,
