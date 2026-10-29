@@ -21,11 +21,10 @@ import {
   selectPipelineNodeResultOutputFileDataType,
   selectPipelineNodeResultOutputFilePath,
 } from "store/slice/Pipeline/PipelineSelectors"
+import { deleteWorkflowDialogItems } from "store/slice/VisualizeItem/VisualizeItemActions"
 import { selectVisualizeItemIdForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSelectors"
-import {
-  addItemForWorkflowDialog,
-  deleteAllItemForWorkflowDialog,
-} from "store/slice/VisualizeItem/VisualizeItemSlice"
+import { addItemForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSlice"
+import { AppDispatch } from "store/store"
 import { arrayEqualityFn } from "utils/EqualityUtils"
 
 interface AlgorithmOutputDialogProps {
@@ -41,10 +40,10 @@ export const AlgorithmOutputDialog = memo(function AlgorithmOutputDialog({
 }: AlgorithmOutputDialogProps) {
   const { dialogFilterNodeId } = useContext(DialogContext)
 
-  const dispatch = useDispatch()
+  const dispatch = useDispatch<AppDispatch>()
   const closeFn = () => {
     onClose()
-    dispatch(deleteAllItemForWorkflowDialog())
+    dispatch(deleteWorkflowDialogItems())
   }
   return (
     <Dialog
