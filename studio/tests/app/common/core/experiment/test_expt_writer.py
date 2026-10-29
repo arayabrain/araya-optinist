@@ -250,6 +250,10 @@ OBJECT_ARRAYS = {
     "equal_length": lambda path: object_array([np.arange(3.0), np.arange(3.0, 6.0)]),
     "paths_2d": lambda path: object_array([path, path], shape=(1, 2)),
     "zero_d": lambda path: object_array([path], shape=()),
+    # a masked element's raw value holds an id too
+    "masked": lambda path: np.ma.masked_array(
+        object_array([path, path]), mask=[False, True]
+    ),
 }
 
 
@@ -266,15 +270,20 @@ def test_copy_data_keeps_object_arrays_as_they_are(tmp_path, suffix, method, cas
 
     assert loaded["reg_file"] == path.replace(old_id, new_id)
     rewritten = loaded["array"]
-    assert isinstance(rewritten, np.ndarray)
+    assert type(rewritten) is type(array)
     assert rewritten.dtype == object
     assert rewritten.shape == array.shape
+    np.testing.assert_array_equal(
+        np.ma.getmaskarray(rewritten), np.ma.getmaskarray(array)
+    )
+    # plain views: a masked element reads as `masked`, not as its raw value
+    raw_rewritten, raw_array = rewritten.view(np.ndarray), array.view(np.ndarray)
     for index in np.ndindex(array.shape):
-        expected = array[index]
+        expected = raw_array[index]
         if isinstance(expected, str):
             expected = expected.replace(old_id, new_id)
-        assert type(rewritten[index]) is type(expected)
-        np.testing.assert_array_equal(rewritten[index], expected)
+        assert type(raw_rewritten[index]) is type(expected)
+        np.testing.assert_array_equal(raw_rewritten[index], expected)
 
 
 COPY_SOURCE_ID, COPY_ID = "aaaa1111", "bbbb2222"
