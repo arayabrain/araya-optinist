@@ -1,5 +1,4 @@
 import json
-from datetime import timedelta
 from typing import Optional, Tuple
 
 from fastapi import HTTPException, status
@@ -25,13 +24,11 @@ logger = AppLogger.get_logger()
 
 
 def _create_ex_token(uid: str) -> Optional[str]:
-    # Only read when Firebase verification is off; expires with the refresh token.
+    # Only read when Firebase verification is off. Lifetime comes from
+    # create_access_token's default, ACCESS_TOKEN_EXPIRE_MINUTES.
     if AUTH_CONFIG.USE_FIREBASE_TOKEN:
         return None
-    return create_access_token(
-        subject=uid,
-        expires_delta=timedelta(minutes=AUTH_CONFIG.REFRESH_TOKEN_EXPIRE_MINUTES),
-    )
+    return create_access_token(subject=uid)
 
 
 def _extract_firebase_error(error: RequestException) -> str:

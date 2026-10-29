@@ -149,7 +149,7 @@ Match on the **status code**, not the message text. The strings above are quoted
 **File:** `studio/app/common/core/auth/auth.py`
 **Purpose:** Exchange email and password for a token bundle, enforcing both the DB row and the Firebase email-verification state
 **Input:** `db` (Session), `data` (UserAuth with email and password)
-**Output:** `(Token, UserModel)`. The token bundle is `access_token` (the raw Firebase ID token, whose lifetime Firebase sets, currently one hour), `refresh_token` (an app-signed JWT wrapping the Firebase refresh token, lifetime from `REFRESH_TOKEN_EXPIRE_MINUTES`), and `ex_token` (the app's own HS256 JWT, issued only when `USE_FIREBASE_TOKEN=False` and `null` otherwise; it expires after `REFRESH_TOKEN_EXPIRE_MINUTES`, the same as the refresh token). Note the naming is counter-intuitive: `access_token` is Firebase's, `ex_token` is the one this app signs
+**Output:** `(Token, UserModel)`. The token bundle is `access_token` (the raw Firebase ID token, whose lifetime Firebase sets, currently one hour), `refresh_token` (an app-signed JWT wrapping the Firebase refresh token, lifetime from `REFRESH_TOKEN_EXPIRE_MINUTES`), and `ex_token` (the app's own HS256 JWT, issued only when `USE_FIREBASE_TOKEN=False` and `null` otherwise; it expires after `ACCESS_TOKEN_EXPIRE_MINUTES`). Note the naming is counter-intuitive: `access_token` is Firebase's, `ex_token` is the one this app signs
 **Calls:** `pyrebase_app.auth().sign_in_with_email_and_password()` -> DB lookup by `uid` -> `firebase_auth.get_user()` -> `create_access_token()` -> `create_refresh_token()`
 
 Note that `firebase_auth.get_user()` runs before the DB-miss check is raised, so a missing DB row surfaces as `404` only after the Firebase round trip.
@@ -280,7 +280,7 @@ Both paths are resolved in `studio/app/dir_path.py` as `FIREBASE_PRIVATE_PATH` a
 
 ### Environment Variables
 
-Firebase and auth environment variables (`USE_FIREBASE_TOKEN`, `USE_FIREBASE_EMAIL`, `IS_STANDALONE`, `FRONTEND_URL`, `SECRET_KEY`, `REFRESH_TOKEN_EXPIRE_MINUTES`) are documented in [AUTH_ROUTING_ARCHITECTURE.md](AUTH_ROUTING_ARCHITECTURE.md#firebase--auth-environment-variables).
+Firebase and auth environment variables (`USE_FIREBASE_TOKEN`, `USE_FIREBASE_EMAIL`, `IS_STANDALONE`, `FRONTEND_URL`, `SECRET_KEY`, `REFRESH_TOKEN_EXPIRE_MINUTES`, `ACCESS_TOKEN_EXPIRE_MINUTES`) are documented in [AUTH_ROUTING_ARCHITECTURE.md](AUTH_ROUTING_ARCHITECTURE.md#firebase--auth-environment-variables).
 
 Turning Firebase off is two independent switches, not one. To take it out of the picture completely:
 
