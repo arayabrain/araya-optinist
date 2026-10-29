@@ -3,7 +3,7 @@ import os
 import shutil
 
 import numpy as np
-from hdmf.data_utils import GenericDataChunkIterator
+from hdmf.data_utils import DataChunkIterator, GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -23,6 +23,7 @@ from studio.app.common.core.utils.datetime_utils import (
     get_datetime_for_timezone,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.dataclass.image import BATCH_BYTES, ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
@@ -30,6 +31,25 @@ from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 IMAGE_MASK_BUFFER = 16
 # postprocess entries -> the name the same data had in files written before
 RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
+
+
+def _raw_movie(external_file):
+    """The input movie save_raw_image_to_nwb stores: a TIFF stack is written a
+    batch of frames at a time (its `data` holds the movie twice while it
+    concatenates the files); other inputs are read whole."""
+    stream = (
+        external_file.frame_stream() if isinstance(external_file, ImageData) else None
+    )
+    if stream is None:
+        return external_file.data
+    shape, dtype, frames = stream
+    frame_bytes = int(np.prod(shape[1:])) * dtype.itemsize
+    return DataChunkIterator(
+        data=frames,
+        maxshape=shape,
+        dtype=dtype,
+        buffer_size=max(1, BATCH_BYTES // frame_bytes),
+    )
 
 
 def _time_first(data, n_roi):
@@ -158,7 +178,7 @@ class NWBCreater:
                 starting_time=float(config[NWBDATASET.IMAGE_SERIES]["starting_time"]),
                 rate=float(config["imaging_plane"]["imaging_rate"]),
                 unit="normalized amplitude",
-                data=external_file.data if save_raw_image_to_nwb else None,
+                data=_raw_movie(external_file) if save_raw_image_to_nwb else None,
             )
             new_nwbfile.add_acquisition(image_series)
 
