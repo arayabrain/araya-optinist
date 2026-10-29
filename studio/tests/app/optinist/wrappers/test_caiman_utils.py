@@ -409,7 +409,7 @@ def test_multisession_nwb_mask_puts_each_pixel_where_the_movie_has_it(
     info, _ = run_multisession({})
 
     roi = info["nwbfile"][NWBDATASET.ROI]["cnmf_multisession_x"]["roi_list"][0]
-    assert np.argwhere(roi["image_mask"]).tolist() == [list(MASK_PIXEL)]
+    assert roi["pixel_mask"][:, :2].tolist() == [list(MASK_PIXEL)]
 
 
 @pytest.mark.parametrize(

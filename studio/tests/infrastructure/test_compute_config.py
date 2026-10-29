@@ -9,6 +9,8 @@
   instance has booted.
 - Base premium instance: termination protection, with Terraform still able
   to replace it.
+- Workflow services: the free and premium services leave desired_count to
+  their manager Lambdas.
 - Workflow tier sizing: each tier's task definition and launch template take
   their sizes from that tier's sizing in main.tf; its defaults, partial
   overrides and validation rules, unknown fields included.
@@ -22,6 +24,7 @@ import pytest
 from terraform_source import (
     TERRAFORM_DIR,
     attribute,
+    identifier_list,
     read,
     resource_block,
     string_list,
@@ -195,6 +198,18 @@ class TestBasePremiumInstanceProtection:
         """Without force_destroy, a Terraform replace or destroy of a
         protected instance fails."""
         assert attribute(self.instance, "force_destroy") == "true"
+
+
+class TestWorkflowServiceDesiredCount:
+    """The free and premium services' task counts belong to their managers."""
+
+    @pytest.mark.parametrize("service", ["autoscaling", "premium"])
+    def test_apply_leaves_desired_count_alone(self, service):
+        """free-manager and premium-manager set one task per instance. Without
+        this an apply pulls the count back to 1, and ECS stops the task on
+        every other instance of the tier until the manager's next sync."""
+        block = resource_block(read(COMPUTE_TF), "aws_ecs_service", service)
+        assert "desired_count" in identifier_list(attribute(block, "ignore_changes"))
 
 
 # Workflow tier: (sizing name, task definition, launch template). The resources
