@@ -131,6 +131,8 @@ subscription_plans = [
         }
       ]
     }
+    # Workflow runs a user of the plan may have at once; null = no limit
+    max_concurrent_workflows = null
   },
   {
     id                = 2
@@ -170,5 +172,7 @@ subscription_plans = [
         }
       ]
     }
+    # Workflow runs a user of the plan may have at once; null = no limit
+    max_concurrent_workflows = null
   }
 ]

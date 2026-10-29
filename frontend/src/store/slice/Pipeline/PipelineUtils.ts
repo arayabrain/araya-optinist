@@ -10,7 +10,13 @@ interface ApiError {
   message?: string
 }
 
-import { RunPostData, RunResultDTO, OutputPathsDTO } from "api/run/Run"
+import {
+  RunPostData,
+  RunResultDTO,
+  OutputPathsDTO,
+  WORKFLOW_CONCURRENCY_LIMIT,
+  WorkflowConcurrencyLimitDetail,
+} from "api/run/Run"
 import { toDataType } from "store/slice/DisplayData/DisplayDataUtils"
 import { NODE_TYPE_SET } from "store/slice/FlowElement/FlowElementType"
 import {
@@ -119,12 +125,54 @@ export const WORKFLOW_YAML_ERROR = "Workflow yaml error, see FAQ"
 // Matched as a prefix so rewording either side of the wire keeps the FAQ link.
 const WORKFLOW_YAML_ERROR_PREFIX = "Workflow yaml error"
 
+const SUBSCRIPTION_PAGE = "/subscription"
+
+function isConcurrencyLimitDetail(
+  detail: unknown,
+): detail is WorkflowConcurrencyLimitDetail {
+  if (typeof detail !== "object" || detail === null) return false
+  const { code, message } = detail as Partial<WorkflowConcurrencyLimitDetail>
+  return code === WORKFLOW_CONCURRENCY_LIMIT && typeof message === "string"
+}
+
+// A native link: focusable, and opened by Enter as well as by a click
+function linkAction(label: string, url: string) {
+  return function LinkAction(_key: SnackbarKey) {
+    return createElement(
+      "a",
+      {
+        href: url,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        onMouseDown: (e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation(),
+        style: {
+          cursor: "pointer",
+          textDecoration: "underline",
+        },
+        className: "text-inherit",
+      },
+      label,
+    )
+  }
+}
+
 export function handleWorkflowYamlError(
   error: ApiError,
   enqueueSnackbar: (message: string, options?: OptionsObject) => SnackbarKey,
 ): void {
   const detail = (error?.response?.data as { detail?: unknown } | undefined)
     ?.detail
+  // At the plan's concurrent-run limit: the server's message says what to do
+  if (error?.response?.status === 429 && isConcurrencyLimitDetail(detail)) {
+    enqueueSnackbar(detail.message, {
+      variant: "warning",
+      autoHideDuration: 30000,
+      action: detail.upgrade_available
+        ? linkAction("See plans", SUBSCRIPTION_PAGE)
+        : undefined,
+    })
+    return
+  }
   if (
     error?.response?.status === 422 &&
     typeof detail === "string" &&
@@ -138,27 +186,10 @@ export function handleWorkflowYamlError(
     const snackbarOptions: OptionsObject = {
       variant: "warning",
       autoHideDuration: 30000,
-      action: function (_key: SnackbarKey) {
-        return createElement(
-          "span",
-          {
-            role: "button",
-            onMouseDown: (e: MouseEvent<HTMLSpanElement>) => {
-              e.stopPropagation()
-              window.open(
-                "https://github.com/oist/optinist/wiki/FAQ#error-yaml-file-error",
-                "_blank",
-              )
-            },
-            style: {
-              cursor: "pointer",
-              textDecoration: "underline",
-            },
-            className: "text-inherit",
-          },
-          "Click here",
-        )
-      },
+      action: linkAction(
+        "Click here",
+        "https://github.com/oist/optinist/wiki/FAQ#error-yaml-file-error",
+      ),
     }
     enqueueSnackbar(
       `${typeof detail === "string" ? detail : WORKFLOW_YAML_ERROR}\n`,

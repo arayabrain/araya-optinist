@@ -250,7 +250,7 @@ def _rerun(monkeypatch, run_item):
     """Runs the item; returns the node ids snakemake is forced to run."""
     seen = []
 
-    def snakemake_execute(workspace_id, unique_id, params, *args):
+    def snakemake_execute(workspace_id, unique_id, params, *args, **kwargs):
         seen.extend(p.nodeId for p in params.forcerun)
 
     monkeypatch.setattr(workflow_runner, "snakemake_execute", snakemake_execute)

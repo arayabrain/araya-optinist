@@ -33,6 +33,10 @@ except ImportError as e:
     print("Make sure you're running from the project root directory")
     sys.exit(1)
 
+# Written even when null: null means "no limit" here, so a value removed from
+# the config must clear the row too
+NULLABLE_FIELDS = {"max_concurrent_workflows"}
+
 
 def get_database_url():
     """Get database URL from environment variables."""
@@ -118,12 +122,13 @@ def main():
                 "stripe_product_id": plan_data.get("stripe_product_id"),
                 "stripe_price_id": plan_data.get("stripe_price_id"),
                 "features": plan_data.get("features"),
+                "max_concurrent_workflows": plan_data.get("max_concurrent_workflows"),
             }
 
             if existing:
                 # Update existing plan
                 for key, value in plan_fields.items():
-                    if value is not None:
+                    if value is not None or key in NULLABLE_FIELDS:
                         setattr(existing, key, value)
                 print(f"  Updated plan: {plan_fields['name']} (id={plan_id})")
             else:

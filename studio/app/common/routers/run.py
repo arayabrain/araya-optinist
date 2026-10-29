@@ -33,6 +33,9 @@ from studio.app.common.core.utils.datetime_utils import (
 )
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
+from studio.app.common.core.workflow.workflow_concurrency import (
+    WorkflowConcurrencyLimitError,
+)
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_input_validator import (
     WorkflowValidationError,
@@ -46,7 +49,6 @@ from studio.app.common.core.workflow.workflow_result import (
     await_despite_cancel,
 )
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
-from studio.app.common.core.workflow.workflow_tracking import decrement_workflow_count
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -102,6 +104,19 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
             )
 
 
+async def _release_unscheduled(runner: WorkflowRunner) -> None:
+    """Release a counted run that will not be scheduled, off the event loop."""
+    await await_despite_cancel(
+        asyncio.ensure_future(asyncio.to_thread(runner.release_unscheduled))
+    )
+
+
+def _concurrency_limit_response(e: WorkflowConcurrencyLimitError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=e.to_detail()
+    )
+
+
 @router.post(
     "/{workspace_id}",
     response_model=str,
@@ -128,12 +143,16 @@ async def run(
             remote_bucket_name, workspace_id, unique_id, runItem, user_id
         )
 
-        # Download any remote-only input files before workflow runs
-        # This ensures migrated users' input data is available locally
-        if RemoteStorageController.is_available():
-            await runner.ensure_input_data_local()
+        try:
+            # Download any remote-only input files before workflow runs
+            # This ensures migrated users' input data is available locally
+            if RemoteStorageController.is_available():
+                await runner.ensure_input_data_local()
 
-        runner.run_workflow(background_tasks)
+            runner.run_workflow(background_tasks)
+        except BaseException:
+            await _release_unscheduled(runner)
+            raise
 
         # Refresh storage cache in background to keep it up-to-date
         if user_id is not None:
@@ -158,6 +177,9 @@ async def run(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         )
+
+    except WorkflowConcurrencyLimitError as e:
+        raise _concurrency_limit_response(e)
 
     except RemoteStorageLockError as e:
         logger.error(e)
@@ -241,21 +263,21 @@ async def run_id(
                 # will never be scheduled, so no child replaces the old pickles
                 if build.exception() is None:
                     workflow_result.mark_plan_pending()
-                    await await_despite_cancel(
-                        asyncio.ensure_future(
-                            asyncio.to_thread(decrement_workflow_count, user_id)
-                        )
-                    )
+                    await _release_unscheduled(build.result())
                 raise
 
-            # The config is reset, so its old pickles wait for the child's plan
-            workflow_result.mark_plan_pending()
+            try:
+                # The config is reset, so its old pickles wait for the child's plan
+                workflow_result.mark_plan_pending()
 
-            # Download any remote-only input files before workflow runs
-            if RemoteStorageController.is_available():
-                await runner.ensure_input_data_local()
+                # Download any remote-only input files before workflow runs
+                if RemoteStorageController.is_available():
+                    await runner.ensure_input_data_local()
 
-            runner.run_workflow(background_tasks)
+                runner.run_workflow(background_tasks)
+            except BaseException:
+                await _release_unscheduled(runner)
+                raise
         finally:
             observe_lock.release()
 
@@ -276,6 +298,9 @@ async def run_id(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         )
+
+    except WorkflowConcurrencyLimitError as e:
+        raise _concurrency_limit_response(e)
 
     except RemoteStorageLockError as e:
         logger.error(e)
