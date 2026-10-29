@@ -399,6 +399,15 @@ resource "aws_ecs_service" "premium" {
   depends_on = [
     aws_instance.premium
   ]
+
+  # desired_count above is the creation value only. At runtime the
+  # premium-manager Lambda owns it, keeping one slot per premium instance that
+  # is registered with ECS or still booting, so Terraform must not pull it back
+  # to 1 - ECS would stop the task on every other premium instance until the
+  # manager's next sync. Same as the free service.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }
 
 # Premium Launch Template - Optimized for dedicated premium users
