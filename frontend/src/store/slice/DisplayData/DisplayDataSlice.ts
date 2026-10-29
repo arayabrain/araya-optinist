@@ -474,10 +474,13 @@ export const displayDataSlice = createSlice({
           pending: true,
           fulfilled: false,
           error: null,
+          requestId: action.meta.requestId,
         }
       })
       .addCase(getImageData.fulfilled, (state, action) => {
         const { path } = action.meta.arg
+        // Stale: the path's data was deleted, or a later request replaced it
+        if (state.image[path]?.requestId !== action.meta.requestId) return
         state.image[path] = {
           type: "image",
           data: action.payload.data,
@@ -485,10 +488,12 @@ export const displayDataSlice = createSlice({
           pending: false,
           fulfilled: true,
           error: null,
+          requestId: action.meta.requestId,
         }
       })
       .addCase(getImageData.rejected, (state, action) => {
         const { path } = action.meta.arg
+        if (state.image[path]?.requestId !== action.meta.requestId) return
         const payload = action.payload as RejectPayload | undefined
         const errorMessage = getDisplayErrorMessage(payload, "Image not synced")
 
@@ -499,6 +504,7 @@ export const displayDataSlice = createSlice({
           fulfilled: false,
           error: errorMessage,
           errorStatus: payload?.status,
+          requestId: action.meta.requestId,
         }
       })
       .addCase(getCsvData.pending, (state, action) => {

@@ -14,6 +14,8 @@
 - Workflow tier sizing: each tier's task definition and launch template take
   their sizes from that tier's sizing in main.tf; its defaults, partial
   overrides and validation rules, unknown fields included.
+- Uvicorn workers: every task definition that starts cloud-startup.sh sets
+  its own count (the public and background ones live in their own files).
 """
 
 import re
@@ -447,3 +449,27 @@ class TestWorkflowTierSizingVariables:
         assert _values(self.block, "condition") == [
             rule.format(v=variable) for rule in TIER_SIZING_RULES
         ]
+
+
+class TestUvicornWorkers:
+    """Every task definition that starts cloud-startup.sh sets its worker count."""
+
+    @pytest.mark.parametrize(
+        "tf_file,task_definition,workers",
+        [
+            ("compute.tf", "autoscaling", "3"),
+            ("compute.tf", "premium", "2"),
+            ("public_service.tf", "public", "1"),
+            ("background_service.tf", "background", "1"),
+        ],
+    )
+    def test_worker_count_is_explicit(self, tf_file, task_definition, workers):
+        """Unset, cloud-startup.sh's default would apply; each worker holds a
+        full app process out of the memory the instance shares."""
+        block = resource_block(
+            read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
+        )
+        values = re.findall(
+            r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
+        )
+        assert values == [workers]
