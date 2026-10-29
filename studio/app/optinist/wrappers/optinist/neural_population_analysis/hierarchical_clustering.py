@@ -84,6 +84,15 @@ def _link_colors(Z, labels, cut_height, colors):
     return link_color
 
 
+def _clusters_to_label(centres, sizes, min_gap):
+    """Clusters whose number fits beside its block; a clash keeps the larger one."""
+    kept = []
+    for c in np.argsort(-sizes, kind="stable"):
+        if all(abs(centres[c] - centres[d]) >= min_gap for d in kept):
+            kept.append(c)
+    return sorted(kept)
+
+
 def _figure(
     X, index, Z, labels, leaf_order, cut_height, means, bands, response_z, color_limit
 ):
@@ -162,16 +171,21 @@ def _figure(
     ax_bar.tick_params(left=False, labelleft=False)
     # Cluster numbers right of the dendrogram, as in Patel et al. 2026 Fig 3d
     label_transform = blended_transform_factory(ax_tree.transAxes, ax_tree.transData)
-    for c in range(1, k + 1):
-        rows = np.flatnonzero(sorted_labels == c)
+    centres = np.array(
+        [np.flatnonzero(sorted_labels == c).mean() for c in range(1, k + 1)]
+    )
+    sizes = np.bincount(labels, minlength=k + 1)[1:]
+    rows_px = ax_tree.get_position().height * fig.get_figheight() * fig.dpi / n
+    min_gap = 1.2 * 9 / 72 * fig.dpi / rows_px
+    for c in _clusters_to_label(centres, sizes, min_gap):
         ax_tree.text(
             1.03,
-            10 * rows.mean() + 5,
-            str(c),
+            10 * centres[c] + 5,
+            str(c + 1),
             ha="left",
             va="center",
             fontsize=9,
-            color=colors[(c - 1) % len(colors)],
+            color=colors[c % len(colors)],
             transform=label_transform,
         )
 

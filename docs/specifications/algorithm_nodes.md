@@ -584,7 +584,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
   - sorted_heatmap (HeatMapData): the input rows in dendrogram leaf order, labelled with ROI numbers. The heatmap draws its first row at the bottom, matching the dendrogram.
   - cluster_mean (TimeSeriesData): one row per cluster, mean across its cells with a std or sem band.
   - cluster_size (BarData): cells per cluster.
-  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means (the means of the first 30 clusters; `cluster_mean` holds all).
+  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means (the means of the first 30 clusters; `cluster_mean` holds all). A cluster number that would overlap another is left out, keeping the larger cluster's.
   - nwbfile: `labels` per input row (0 for rows left out), `cell_numbers`, `leaf_order`, `linkage`, `cut_height`, `cluster_mean`, `cluster_size` and `response_z`.
 - Clusters are numbered 1..k from the top of the figure down. All-NaN columns (for example empty covariate bins) are dropped. Rows that still hold NaN, or that are constant under the correlation metric, are left out and logged.
 - **Parameters:**

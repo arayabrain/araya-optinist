@@ -12,6 +12,7 @@ from studio.app.common.dataclass.csv import CsvData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import IscellData
 from studio.app.optinist.wrappers.optinist.neural_population_analysis.hierarchical_clustering import (  # noqa: E501
+    _clusters_to_label,
     hierarchical_clustering,
 )
 
@@ -309,3 +310,18 @@ def test_response_window_error_says_how_to_skip(output_dir):
     X, _ = _profiles()
     with pytest.raises(AssertionError, match="response_end equal to"):
         _run(output_dir, X, {"response_start": 500, "response_end": 600})
+
+
+def test_every_cluster_number_drawn_when_they_fit():
+    assert _clusters_to_label(np.array([10.0, 40, 70]), np.array([20, 30, 30]), 15) == [
+        0,
+        1,
+        2,
+    ]
+
+
+def test_clashing_cluster_numbers_keep_the_larger_cluster():
+    centres = np.array([10.0, 100, 103, 106, 200])
+    sizes = np.array([20, 2, 9, 3, 50])
+
+    assert _clusters_to_label(centres, sizes, 15) == [0, 2, 4]
