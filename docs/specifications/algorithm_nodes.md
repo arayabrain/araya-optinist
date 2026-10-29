@@ -574,7 +574,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Output:** HeatMapData (correlation matrix)
 - **Parameters:**
 - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
-- **sort_by_cluster** [bool, default: False]: Order the heatmap's rows and columns by the leaf order of average-linkage hierarchical clustering on 1 - r, so correlated assemblies form blocks on the diagonal. Cells with a constant trace go last. Axis labels keep the ROI numbers; the NWB `corr` stays in cell order and `order` lists the ROI numbers in heatmap order. This sorts only; for cluster labels and cluster means use `hierarchical_clustering`.
+- **sort_by_cluster** [bool, default: False]: Order the heatmap's rows and columns by the leaf order of average-linkage hierarchical clustering on 1 - r, so correlated assemblies form blocks on the diagonal. Cells with a constant trace or a non-finite sample go last. Axis labels keep the ROI numbers; the NWB `corr` stays in cell order and `order` lists the ROI numbers in heatmap order. This sorts only; for cluster labels and cluster means use `hierarchical_clustering`.
 
 ###### hierarchical_clustering
 
@@ -584,7 +584,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
   - sorted_heatmap (HeatMapData): the input rows in dendrogram leaf order, labelled with ROI numbers. The heatmap draws its first row at the bottom, matching the dendrogram.
   - cluster_mean (TimeSeriesData): one row per cluster, mean across its cells with a std or sem band.
   - cluster_size (BarData): cells per cluster.
-  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means.
+  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means (the means of the first 30 clusters; `cluster_mean` holds all).
   - nwbfile: `labels` per input row (0 for rows left out), `cell_numbers`, `leaf_order`, `linkage`, `cut_height`, `cluster_mean`, `cluster_size` and `response_z`.
 - Clusters are numbered 1..k from the top of the figure down. All-NaN columns (for example empty covariate bins) are dropped. Rows that still hold NaN, or that are constant under the correlation metric, are left out and logged.
 - **Parameters:**
@@ -600,7 +600,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
   - **color_limit** [float, default: 0]: The figure's heatmap colour scale runs from -color_limit to +color_limit, centred at 0. 0 uses the 99th percentile of the absolute values.
 - **Presets:**
   - Response types around an event (Patel et al. 2026, Nat Neurosci, Fig 3d,e): `eta` with `baseline_window` set to the pre-bout baseline (30 frames for 3 s at 10 Hz), then `ward` / `euclidean`, and lower `height_fraction` until one cluster is non-responsive.
-  - Tuning types: `covariate_binning` mean, `zscore_rows: true`, `average` / `correlation`.
+  - Tuning types: `covariate_binning` mean, `zscore_rows: true`, `average` / `correlation`, and `response_end` equal to `response_start` (the bin centres are in covariate units, which may lie outside the default window).
 
 ###### [cross_correlation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.correlate.html)
 

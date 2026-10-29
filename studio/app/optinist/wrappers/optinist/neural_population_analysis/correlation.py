@@ -57,11 +57,12 @@ def correlation(
     num_cell = X.shape[0]
 
     # calculate correlation
-    flat = np.where(np.ptp(X, axis=1) == 0)[0]  # exact, unlike std == 0
+    # exact, unlike std == 0; a non-finite sample makes its whole row NaN
+    flat = np.where((np.ptp(X, axis=1) == 0) | ~np.isfinite(X).all(axis=1))[0]
     if len(flat):
         rois = ind[flat] if ind is not None else flat
         logger.warning(
-            "correlation: %d ROI(s) have a constant trace, "
+            "correlation: %d ROI(s) have a constant or non-finite trace, "
             "their rows and columns are NaN: %s",
             len(flat),
             rois.tolist(),

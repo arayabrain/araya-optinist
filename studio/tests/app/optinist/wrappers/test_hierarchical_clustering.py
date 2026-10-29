@@ -1,5 +1,6 @@
 import base64
 import inspect
+import json
 import logging
 
 import numpy as np
@@ -271,3 +272,40 @@ def test_color_limit_sets_the_figure_scale(output_dir):
     fixed = _run(output_dir, X, {"color_limit": 10})["figure"].data
 
     assert auto != fixed
+
+
+def test_many_clusters_still_render_and_write_outputs(output_dir):
+    X = np.random.default_rng(0).normal(size=(120, 60))
+    info = _run(output_dir, X, {"n_clusters": 100, "response_end": 0})
+
+    assert info["figure"].data.startswith("<img")
+    assert info["cluster_mean"].data.shape[0] == 100
+    assert len(_post(info)["labels"]) == 120
+
+
+def test_cluster_size_bars_are_numbered_from_one(output_dir, tmp_path):
+    X, _ = _profiles()
+    info = _run(output_dir, X)
+    bar = info["cluster_size"]
+    bar.save_json(str(tmp_path))
+
+    assert list(bar.columns) == [1, 2, 3, 4]
+    saved = json.loads((tmp_path / "cluster_size.json").read_text())
+    assert saved["columns"] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("criterion", ["n_clusters", "height_fraction"])
+def test_cut_height_reproduces_the_labels(output_dir, criterion):
+    X, _ = _profiles()
+    info = _run(output_dir, X, {"cut_criterion": criterion})
+    post = _post(info)
+    Z = post["linkage"]
+    cut = fcluster(Z, post["cut_height"][0], criterion="distance")
+
+    assert _same_partition(cut, post["labels"])
+
+
+def test_response_window_error_says_how_to_skip(output_dir):
+    X, _ = _profiles()
+    with pytest.raises(AssertionError, match="response_end equal to"):
+        _run(output_dir, X, {"response_start": 500, "response_end": 600})

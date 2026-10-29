@@ -18,6 +18,7 @@ METRICS = ("euclidean", "correlation")
 CUT_CRITERIA = ("n_clusters", "height_fraction")
 BANDS = ("std", "sem")
 DENDROGRAM_MAX_ROWS = 5000
+MEAN_PANELS_MAX = 30
 
 
 def _choice(params, key, options):
@@ -95,6 +96,14 @@ def _figure(
     from scipy.cluster.hierarchy import dendrogram
 
     k = len(means)
+    shown = min(k, MEAN_PANELS_MAX)
+    if shown < k:
+        logger.warning(
+            "hierarchical_clustering: figure shows the mean traces of clusters "
+            "1..%d of %d; all means are in cluster_mean",
+            shown,
+            k,
+        )
     n = len(labels)
     colors = [
         "#e7298a",
@@ -113,9 +122,9 @@ def _figure(
     lim = color_limit if color_limit > 0 else np.nanpercentile(np.abs(X), 99) or 1.0
     x0, x1 = float(index[0]), float(index[-1])
 
-    fig = Figure(figsize=(11, max(6, 0.9 * k + 1)))
+    fig = Figure(figsize=(11, max(6, 0.9 * shown + 1)))
     grid = fig.add_gridspec(
-        max(k, 1), 5, width_ratios=[6, 0.25, 1.6, 0.8, 4.5], wspace=0.05
+        max(shown, 1), 5, width_ratios=[6, 0.25, 1.6, 0.8, 4.5], wspace=0.05
     )
     ax_heat = fig.add_subplot(grid[:, 0])
     ax_bar = fig.add_subplot(grid[:, 1], sharey=ax_heat)
@@ -184,7 +193,7 @@ def _figure(
         ax_tree.spines[side].set_visible(False)
     ax_heat.set_ylim(0, 10 * n)
 
-    for c in range(k):
+    for c in range(shown):
         ax = fig.add_subplot(grid[c, 4])
         color = colors[c % len(colors)]
         ax.fill_between(
@@ -199,7 +208,7 @@ def _figure(
             title += f", response {response_z[c]:+.2f}"
         ax.set_title(title, fontsize=7, loc="left", color=color, pad=2)
         ax.tick_params(labelsize=6)
-        if c < k - 1:
+        if c < shown - 1:
             ax.set_xticklabels([])
 
     buffer = io.StringIO()
@@ -320,7 +329,8 @@ def hierarchical_clustering(
         window = (index >= start) & (index < end)
         assert window.any(), (
             f"response window [{start}, {end}) holds no index value; the index "
-            f"runs from {index[0]} to {index[-1]}"
+            f"runs from {index[0]} to {index[-1]}. Set response_end equal to "
+            f"response_start to skip it"
         )
         response_z = means[:, window].mean(axis=1)
 
@@ -361,7 +371,12 @@ def hierarchical_clustering(
         cell_numbers=list(range(1, k + 1)),
         file_name="cluster_mean",
     )
-    info["cluster_size"] = BarData(sizes, index=["cells"], file_name="cluster_size")
+    info["cluster_size"] = BarData(
+        sizes,
+        index=["cells"],
+        columns=list(range(1, k + 1)),
+        file_name="cluster_size",
+    )
     info["figure"] = HTMLData(
         _figure(
             X_valid,

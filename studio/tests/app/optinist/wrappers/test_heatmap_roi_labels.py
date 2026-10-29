@@ -131,6 +131,18 @@ def test_correlation_sort_by_cluster_permutes_rows_and_labels(output_dir):
     np.testing.assert_array_equal(post["corr"], plain["corr"].data)
 
 
+def test_correlation_sort_by_cluster_puts_nan_cell_last(output_dir):
+    X = np.random.default_rng(4).normal(size=(10, 300))
+    X[4, 7] = np.nan
+    info = correlation(
+        FluoData(X, file_name="f"),
+        output_dir,
+        params={"transpose": False, "sort_by_cluster": True},
+    )
+
+    assert list(info["corr"].index)[-1] == 4
+
+
 def test_correlation_sort_by_cluster_keeps_iscell_roi_numbers(output_dir):
     X = np.random.default_rng(3).random((len(ISCELL), 40))
     info = correlation(
