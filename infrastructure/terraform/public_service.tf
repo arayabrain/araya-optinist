@@ -161,8 +161,9 @@ resource "aws_ecs_task_definition" "public" {
       memoryReservation = 1024
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       portMappings = [
         {

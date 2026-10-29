@@ -16,6 +16,8 @@
   overrides and validation rules, unknown fields included.
 - Uvicorn workers: every task definition that starts cloud-startup.sh sets
   its own count (the public and background ones live in their own files).
+- Startup command: every such task definition execs the script, so it runs
+  as PID 1 and receives the stop signal.
 """
 
 import re
@@ -27,6 +29,7 @@ from terraform_source import (
     identifier_list,
     read,
     resource_block,
+    resource_blocks,
     string_list,
     variable_block,
 )
@@ -473,3 +476,48 @@ class TestUvicornWorkers:
             r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
         )
         assert values == [workers]
+
+
+STARTUP_TASK_DEFINITIONS = [
+    ("compute.tf", "autoscaling"),
+    ("compute.tf", "premium"),
+    ("public_service.tf", "public"),
+    ("background_service.tf", "background"),
+]
+
+
+class TestStartupCommand:
+    """Every task definition that starts cloud-startup.sh makes it PID 1."""
+
+    @pytest.mark.parametrize("tf_file,task_definition", STARTUP_TASK_DEFINITIONS)
+    def test_script_replaces_the_shell(self, tf_file, task_definition):
+        """ECS sends the stop SIGTERM to PID 1 only. A plain ``sh -c`` in the
+        image forks the script and stays PID 1 itself, so the script's trap
+        never runs and the container is killed at stopTimeout. ``exec`` does
+        not depend on the shell skipping that fork."""
+        block = resource_block(
+            read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
+        )
+        commands = [
+            string_list(value)
+            for value in re.findall(
+                r"^\s*command\s*=\s*(\[.*\])\s*$", block, re.MULTILINE
+            )
+        ]
+        assert string_list(attribute(block, "entryPoint")) == ["/bin/sh", "-c"]
+        assert [c for c in commands if c[:1] != ["CMD-SHELL"]] == [
+            ["exec ./cloud-startup.sh"]
+        ]
+
+    def test_every_startup_task_definition_is_covered(self):
+        """A task definition added later with the script falls under the test
+        above rather than outside it."""
+        found = sorted(
+            (path.name, name)
+            for path in TERRAFORM_DIR.glob("*.tf")
+            for name, block in resource_blocks(
+                read(path), "aws_ecs_task_definition"
+            ).items()
+            if "cloud-startup.sh" in block
+        )
+        assert found == sorted(STARTUP_TASK_DEFINITIONS)
