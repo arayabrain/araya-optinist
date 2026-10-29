@@ -364,9 +364,10 @@ class NWBCreater:
                 optinist.add_container(postprocess)
 
             # a file written before keeps what this entry replaced: drop it
-            retired = f"{function_id}_{RETIRED_POSTPROCESS.get(key)}"
-            if key in RETIRED_POSTPROCESS and retired in optinist.data_interfaces:
-                optinist.data_interfaces.pop(retired)
+            if key in RETIRED_POSTPROCESS:
+                retired = f"{function_id}_{RETIRED_POSTPROCESS[key]}"
+                if retired in optinist.data_interfaces:
+                    optinist.data_interfaces.pop(retired)
 
         return nwbfile
 

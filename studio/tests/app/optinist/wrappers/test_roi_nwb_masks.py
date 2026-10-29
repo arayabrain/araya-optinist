@@ -280,7 +280,7 @@ def test_rewriting_an_older_whole_nwb_drops_the_nodes_per_roi_stack(
     path = str(tmp_path / "whole.nwb")
     save_nwb(path, input_config, older)
 
-    # an ROI edit, a re-run or a data filter rewrites the caiman node, two ROIs left
+    # an ROI edit or a re-run rewrites the caiman node, two ROIs left
     kept = RoiMasks.from_pixels(roi_masks.shape, [roi_masks.pixels(0), []])
     config = caiman_config("caiman_cnmf_x", kept, roi_list[:2], iscell[:2], F[:2])
     overwrite_nwbfile(path, config)
