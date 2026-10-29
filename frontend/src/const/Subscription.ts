@@ -7,7 +7,6 @@
 export const SubscriptionPeriods = {
   TRIAL_PERIOD_DAYS: 30,
   GRACE_PERIOD_DAYS: 30,
-  WARNING_PERIOD_DAYS: 30,
   STORAGE_WARNING_DAYS: 30,
 
   // Progress calculation constants

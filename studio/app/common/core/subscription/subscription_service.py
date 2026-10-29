@@ -4,13 +4,14 @@ from typing import List, NamedTuple, Optional, Tuple
 
 import stripe
 from fastapi import HTTPException
-from sqlalchemy import and_, exists
+from sqlalchemy import and_, exists, or_
 from sqlmodel import Session, select
 
 from studio.app.common import models as common_model
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.subscription.constants import (
     DeletionPriority,
+    ExpirationDeletion,
     PlanName,
     SubscriptionLifecycleStatus,
     SubscriptionPeriods,
@@ -22,7 +23,7 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.utils.config_handler import get_env_var
-from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.app.common.core.utils.datetime_utils import ensure_utc, get_current_datetime
 from studio.app.common.models.free_user import FreeUserAssignment
 from studio.app.common.models.subscription import (
     SubscriptionCancellation,
@@ -313,7 +314,6 @@ class SubscriptionService:
         the raw quota.
         """
         GRACE_PERIOD_DAYS = SubscriptionPeriods.GRACE_PERIOD_DAYS
-        WARNING_PERIOD_DAYS = SubscriptionPeriods.WARNING_PERIOD_DAYS
 
         query_result = db.execute(
             select(UserSubscription)
@@ -360,7 +360,8 @@ class SubscriptionService:
             subscription_end = subscription_end.replace(tzinfo=timezone.utc)
 
         grace_end = subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
-        deletion_date = grace_end + timedelta(days=WARNING_PERIOD_DAYS)
+        # ExpirationLifecycleJob deletes over-quota data once the grace period ends
+        deletion_date = grace_end
         now = get_current_datetime()
 
         days_remaining = None
@@ -369,9 +370,6 @@ class SubscriptionService:
         elif now <= grace_end:
             status = SubscriptionLifecycleStatus.GRACE
             days_remaining = (grace_end - now).days
-        elif now <= deletion_date:
-            status = SubscriptionLifecycleStatus.WARNING
-            days_remaining = (deletion_date - now).days
         else:
             status = SubscriptionLifecycleStatus.OVERDUE
             days_remaining = 0
@@ -597,7 +595,156 @@ class SubscriptionService:
             db.commit()
 
     @staticmethod
-    def get_users_for_expiration_deletion(db: Session) -> List[dict]:
+    def grace_notification_flags(
+        expiration: datetime,
+        start_notified_at: Optional[datetime],
+        reminder_notified_at: Optional[datetime],
+        now: datetime,
+    ) -> Tuple[bool, bool]:
+        """Return (needs_start, needs_reminder) for the current grace cycle.
+
+        A stamp at or before ``expiration`` belongs to a previous subscription
+        cycle (renewals reuse the row), so it counts as unsent. The reminder is
+        due once GRACE_REMINDER_AFTER_DAYS have passed since expiration.
+        """
+        expiration = ensure_utc(expiration)
+        start_notified_at = ensure_utc(start_notified_at)
+        reminder_notified_at = ensure_utc(reminder_notified_at)
+        now = ensure_utc(now)
+
+        needs_start = start_notified_at is None or start_notified_at <= expiration
+        reminder_due = now >= expiration + timedelta(
+            days=ExpirationDeletion.GRACE_REMINDER_AFTER_DAYS
+        )
+        needs_reminder = reminder_due and (
+            reminder_notified_at is None or reminder_notified_at <= expiration
+        )
+        return needs_start, needs_reminder
+
+    @staticmethod
+    def get_users_for_grace_notifications(db: Session) -> List[dict]:
+        """Get users who still need a grace-period start or reminder email.
+
+        Selects expired premium subscriptions of active users whose storage
+        exceeds the free quota. Past-grace users whose deletion has not been
+        processed yet are included, so a (late) start warning always precedes
+        deletion when notifications are enabled.
+        """
+        from studio.app.common.models.subscription import UserStorageUsage
+
+        now = get_current_datetime()
+        grace_cutoff = now - timedelta(days=SubscriptionPeriods.GRACE_PERIOD_DAYS)
+        reminder_cutoff = now - timedelta(
+            days=ExpirationDeletion.GRACE_REMINDER_AFTER_DAYS
+        )
+
+        start_pending = or_(
+            UserSubscription.grace_start_notified_at.is_(None),
+            UserSubscription.grace_start_notified_at <= UserSubscription.expiration,
+        )
+        reminder_pending = and_(
+            or_(
+                UserSubscription.grace_reminder_notified_at.is_(None),
+                UserSubscription.grace_reminder_notified_at
+                <= UserSubscription.expiration,
+            ),
+            UserSubscription.expiration <= reminder_cutoff,
+        )
+
+        rows = (
+            db.query(UserSubscription, User, UserStorageUsage)
+            .join(User, UserSubscription.user_id == User.id)
+            .join(UserStorageUsage, UserStorageUsage.user_id == User.id)
+            .filter(
+                UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
+                UserSubscription.expiration <= now,
+                or_(
+                    UserSubscription.expiration > grace_cutoff,
+                    UserSubscription.deletion_processed_at.is_(None),
+                ),
+                User.active.is_(True),
+                UserStorageUsage.storage_usage_bytes
+                > ExpirationDeletion.FREE_QUOTA_BYTES,
+                or_(start_pending, reminder_pending),
+            )
+            .order_by(UserSubscription.expiration.asc())
+            .limit(ExpirationDeletion.GRACE_NOTIFICATION_BATCH_SIZE)
+            .all()
+        )
+
+        results = []
+        for sub, user, storage in rows:
+            needs_start, needs_reminder = SubscriptionService.grace_notification_flags(
+                sub.expiration,
+                sub.grace_start_notified_at,
+                sub.grace_reminder_notified_at,
+                now,
+            )
+            if not (needs_start or needs_reminder):
+                continue
+            results.append(
+                {
+                    "user_id": user.id,
+                    "email": user.email,
+                    "expiration": sub.expiration,
+                    "grace_end": ensure_utc(sub.expiration)
+                    + timedelta(days=SubscriptionPeriods.GRACE_PERIOD_DAYS),
+                    "storage_usage_bytes": storage.storage_usage_bytes,
+                    "needs_start": needs_start,
+                    "needs_reminder": needs_reminder,
+                }
+            )
+        return results
+
+    _GRACE_NOTIFICATION_COLUMNS = {
+        "start": "grace_start_notified_at",
+        "reminder": "grace_reminder_notified_at",
+    }
+
+    @classmethod
+    def claim_grace_notification(
+        cls, db: Session, user_id: int, expiration: datetime, kind: str
+    ) -> Optional[datetime]:
+        """Atomically claim a grace notification for the current cycle.
+
+        Returns the written stamp, or None if another process already claimed
+        it (or the subscription row changed cycle since it was read - the
+        expiration equality guards against stamping a freshly renewed row).
+        The stamp is truncated to whole seconds so it round-trips through
+        a MySQL DATETIME column unchanged (needed by clear_grace_notification).
+        The UPDATE always changes the column value, so rowcount is reliable
+        under both matched-rows and changed-rows connection semantics.
+        """
+        column = getattr(UserSubscription, cls._GRACE_NOTIFICATION_COLUMNS[kind])
+        stamp = get_current_datetime().replace(microsecond=0)
+        updated = (
+            db.query(UserSubscription)
+            .filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.expiration == expiration,
+                or_(column.is_(None), column <= expiration),
+            )
+            .update({column.key: stamp}, synchronize_session=False)
+        )
+        db.commit()
+        return stamp if updated else None
+
+    @classmethod
+    def clear_grace_notification(
+        cls, db: Session, user_id: int, kind: str, stamp: datetime
+    ) -> None:
+        """Best-effort rollback of a claimed stamp after a failed send."""
+        column = getattr(UserSubscription, cls._GRACE_NOTIFICATION_COLUMNS[kind])
+        db.query(UserSubscription).filter(
+            UserSubscription.user_id == user_id,
+            column == stamp,
+        ).update({column.key: None}, synchronize_session=False)
+        db.commit()
+
+    @staticmethod
+    def get_users_for_expiration_deletion(
+        db: Session, require_notice: bool = False
+    ) -> List[dict]:
         """
         Get users past grace period who need expiration deletion.
 
@@ -608,12 +755,11 @@ class SubscriptionService:
 
         Also re-processes users whose storage has grown back above quota
         after a cooldown period (self-healing).
+
+        With ``require_notice`` (email notifications enabled), only users whose
+        grace-start email was sent for this cycle at least MIN_NOTICE_DAYS ago
+        are eligible: data is never deleted without a prior warning email.
         """
-        from studio.app.common.core.subscription.constants import (
-            ExpirationDeletion,
-            SubscriptionPeriods,
-            SubscriptionPlanIds,
-        )
         from studio.app.common.models.subscription import UserStorageUsage
 
         current_time = get_current_datetime()
@@ -623,6 +769,25 @@ class SubscriptionService:
         reprocess_cutoff = current_time - timedelta(
             days=ExpirationDeletion.REPROCESS_COOLDOWN_DAYS
         )
+
+        notice_filters = []
+        if require_notice:
+            notice_cutoff = current_time - timedelta(
+                days=ExpirationDeletion.MIN_NOTICE_DAYS
+            )
+            # Inactive (soft-deleted) users receive no emails, so the notice
+            # gate must not apply to them or they would never be deleted.
+            notice_filters = [
+                or_(
+                    User.active.is_(False),
+                    and_(
+                        UserSubscription.grace_start_notified_at.isnot(None),
+                        UserSubscription.grace_start_notified_at
+                        > UserSubscription.expiration,
+                        UserSubscription.grace_start_notified_at <= notice_cutoff,
+                    ),
+                )
+            ]
 
         # Subquery: exclude users who have a current active subscription
         from sqlalchemy.orm import aliased
@@ -647,6 +812,7 @@ class SubscriptionService:
                 UserStorageUsage.storage_usage_bytes
                 > ExpirationDeletion.FREE_QUOTA_BYTES,
                 ~has_active_sub,
+                *notice_filters,
             )
             .order_by(UserSubscription.expiration.desc())
             .all()
@@ -666,6 +832,7 @@ class SubscriptionService:
                 UserStorageUsage.storage_usage_bytes
                 > ExpirationDeletion.FREE_QUOTA_BYTES,
                 ~has_active_sub,
+                *notice_filters,
             )
             .order_by(UserSubscription.expiration.desc())
             .all()
@@ -682,6 +849,8 @@ class SubscriptionService:
                 {
                     "user_id": user.id,
                     "user_uid": user.uid,
+                    "email": user.email,
+                    "active": user.active,
                     "storage_usage_bytes": storage.storage_usage_bytes,
                     "excess_bytes": (
                         storage.storage_usage_bytes

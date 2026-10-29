@@ -225,7 +225,6 @@ class SubscriptionPeriods:
 
     TRIAL_PERIOD_DAYS = 30
     GRACE_PERIOD_DAYS = 30
-    WARNING_PERIOD_DAYS = 30
     # Days before grace period end to warn about quota drop
     QUOTA_DROP_WARNING_DAYS = 3
     STORAGE_WARNING_DAYS = 30  # Days to remove excess storage for free users
@@ -314,8 +313,7 @@ class SubscriptionLifecycleStatus(StrEnum):
 
     ACTIVE = "active"  # Subscription has not expired yet
     GRACE = "grace"  # In grace period after expiration
-    WARNING = "warning"  # In warning period (after grace, before deletion)
-    OVERDUE = "overdue"  # Past warning period
+    OVERDUE = "overdue"  # Past grace period, over-quota data is being deleted
     FREE = "free"  # Never had premium subscription
 
 
@@ -327,14 +325,14 @@ class AlertType(StrEnum):
     Note: Frontend expects exactly these values: "storage", "grace", "overdue"
 
     Mapping from SubscriptionLifecycleStatus:
-    - GRACE, WARNING -> AlertType.GRACE (both are grace period warnings)
+    - GRACE -> AlertType.GRACE
     - OVERDUE -> AlertType.OVERDUE
     - Storage exceeded -> AlertType.STORAGE
     """
 
     STORAGE = "storage"  # Storage quota exceeded
-    GRACE = "grace"  # In grace or warning period (premium features expiring)
-    OVERDUE = "overdue"  # Past all grace periods, data deletion imminent
+    GRACE = "grace"  # In grace period (premium features expiring)
+    OVERDUE = "overdue"  # Past grace period, data deletion imminent
 
 
 class SyncStatusConstants:
@@ -462,10 +460,16 @@ class ExpirationDeletion:
     RECHECK_SUBSCRIPTION_INTERVAL = 5  # Re-check subscription every N units
     FREE_QUOTA_BYTES = StorageQuota.FREE * StorageSize.GB  # 5 GB
     REPROCESS_COOLDOWN_DAYS = 7  # Days before re-processing a user
+    # Email notification timings
+    GRACE_REMINDER_AFTER_DAYS = 20  # Must stay < SubscriptionPeriods.GRACE_PERIOD_DAYS
+    MIN_NOTICE_DAYS = 7  # Min days between grace-start email and deletion
+    GRACE_NOTIFICATION_BATCH_SIZE = 50  # Max notification emails per job run
     # CloudWatch metrics
     METRIC_NAMESPACE_BASE = "OptiNiSt/BackgroundJobs"
     METRIC_PROCESSED = "ExpirationDeletionProcessed"
     METRIC_ERRORS = "ExpirationDeletionErrors"
+    METRIC_EMAILS_SENT = "ExpirationEmailsSent"
+    METRIC_EMAIL_FAILURES = "ExpirationEmailFailures"
 
 
 class PremiumExpirationSweep:

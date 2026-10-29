@@ -778,3 +778,24 @@ resource "aws_cloudwatch_dashboard" "main" {
     ]
   })
 }
+
+# ==================================================
+# Expiration Lifecycle Email Monitoring
+# ==================================================
+# Persistent send failures pause over-quota expiration deletion (the job
+# never deletes data it could not warn about), so they must be visible.
+resource "aws_cloudwatch_metric_alarm" "expiration_email_failures" {
+  count               = var.notification_from_email == "" ? 0 : 1
+  alarm_name          = "${local.env_prefix}-expiration-email-failures"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ExpirationEmailFailures"
+  namespace           = "OptiNiSt/BackgroundJobs/${var.environment}"
+  period              = "86400"
+  statistic           = "Sum"
+  threshold           = "0"
+  alarm_description   = "Expiration lifecycle emails are failing; over-quota deletion is paused for unwarned users"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+  treat_missing_data  = "notBreaching"
+}

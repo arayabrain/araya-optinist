@@ -136,6 +136,16 @@ class UserSubscription(SQLModel, table=True):
         sa_column=Column(DateTime, nullable=True),
         default=None,
     )
+    # Grace-period email stamps; a stamp <= expiration belongs to a previous
+    # subscription cycle (renewals reuse the row via the user_id unique constraint).
+    grace_start_notified_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
+    grace_reminder_notified_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
 
 
 class SubscriptionProvider(SQLModel, table=True):

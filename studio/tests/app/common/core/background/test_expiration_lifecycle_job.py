@@ -1,6 +1,7 @@
 """Tests for expiration lifecycle background job."""
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -39,28 +40,112 @@ def _mock_aioboto3_session():
     return mock_session, mock_bucket
 
 
+S3_STORAGE = {"REMOTE_STORAGE_TYPE": "2"}
+
+
 class TestRun:
-    @patch(f"{MODULE}.DIRPATH")
+    @patch.dict("os.environ", {"REMOTE_STORAGE_TYPE": "1"})
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_expiration_deletion")
     @pytest.mark.asyncio
-    async def test_skips_when_no_bucket(self, mock_dirpath):
-        mock_dirpath.DATA_BUCKET_NAME = None
+    async def test_skips_when_storage_is_not_s3(self, mock_get_users):
+        await ExpirationLifecycleJob.run()
+        mock_get_users.assert_not_called()
+
+    @patch.dict("os.environ", S3_STORAGE)
+    @patch.object(ExpirationLifecycleJob, "_publish_metrics")
+    @patch.object(ExpirationLifecycleJob, "_process_user", new_callable=AsyncMock)
+    @patch(
+        f"{MODULE}.DataCleanupJob._resolve_user_bucket_name",
+        side_effect=lambda user_id: {1: "optinist-user-1", 2: None}[user_id],
+    )
+    @patch(f"{MODULE}.session_scope")
+    @patch(
+        f"{MODULE}.SubscriptionService.get_users_for_expiration_deletion",
+        return_value=[{"user_id": 1}, {"user_id": 2}],
+    )
+    @pytest.mark.asyncio
+    async def test_deletes_from_each_users_bucket_and_skips_unresolved(
+        self, mock_get_users, mock_scope, mock_resolve, mock_process, mock_metrics
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_process.return_value = (0, 0)
+
         await ExpirationLifecycleJob.run()
 
-    @patch(f"{MODULE}.DIRPATH")
+        mock_process.assert_awaited_once_with({"user_id": 1}, "optinist-user-1")
+        mock_metrics.assert_called_once_with(1, 0, 0, 0)
+
+    @patch.object(ExpirationLifecycleJob, "_publish_metrics")
+    @patch.dict("os.environ", S3_STORAGE)
     @patch(f"{MODULE}.session_scope")
     @patch(
         f"{MODULE}.SubscriptionService.get_users_for_expiration_deletion",
         return_value=[],
     )
     @pytest.mark.asyncio
-    async def test_skips_when_no_users(self, mock_get_users, mock_scope, mock_dirpath):
-        mock_dirpath.DATA_BUCKET_NAME = "test-bucket"
+    async def test_skips_when_no_users(self, mock_get_users, mock_scope, mock_metrics):
         mock_scope_obj, _ = _mock_session_scope()
         mock_scope.side_effect = mock_scope_obj.side_effect
         mock_scope.return_value = mock_scope_obj.return_value
 
         await ExpirationLifecycleJob.run()
         mock_get_users.assert_called_once()
+        mock_metrics.assert_called_once_with(0, 0, 0, 0)
+
+    @patch.object(ExpirationLifecycleJob, "_publish_metrics")
+    @patch.object(
+        ExpirationLifecycleJob,
+        "_send_grace_notifications",
+        new_callable=AsyncMock,
+        side_effect=Exception("smtp down"),
+    )
+    @patch.dict("os.environ", S3_STORAGE)
+    @patch(f"{MODULE}.session_scope")
+    @patch(
+        f"{MODULE}.SubscriptionService.get_users_for_expiration_deletion",
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_grace_notification_failure_does_not_block_deletion_pass(
+        self, mock_get_users, mock_scope, mock_notify, mock_metrics
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+
+        await ExpirationLifecycleJob.run()
+        mock_get_users.assert_called_once()
+
+    @patch.object(ExpirationLifecycleJob, "_publish_metrics")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @patch.object(
+        ExpirationLifecycleJob,
+        "_send_grace_notifications",
+        new_callable=AsyncMock,
+        return_value=(0, 0),
+    )
+    @patch.dict("os.environ", S3_STORAGE)
+    @patch(f"{MODULE}.session_scope")
+    @patch(
+        f"{MODULE}.SubscriptionService.get_users_for_expiration_deletion",
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_requires_notice_when_emails_enabled(
+        self,
+        mock_get_users,
+        mock_scope,
+        mock_notify,
+        mock_enabled,
+        mock_metrics,
+    ):
+        mock_scope_obj, mock_db = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+
+        await ExpirationLifecycleJob.run()
+        mock_get_users.assert_called_once_with(mock_db, require_notice=True)
 
 
 class TestProcessUser:
@@ -749,22 +834,20 @@ class TestListExperimentObjects:
     async def test_classifies_files_correctly(self):
         """YAML files should be protected
         subdirs are intermediates, root files are outputs."""
-        mock_objects = []
         prefix = "studio/output/1/exp1/"
-
-        for key, size in [
+        entries = [
             (f"{prefix}experiment.yaml", 100),
             (f"{prefix}workflow.yml", 200),
             (f"{prefix}result.npy", 5000),
             (f"{prefix}subdir/temp.dat", 3000),
-        ]:
-            obj = MagicMock()
-            obj.key = key
-            obj.size = size
-            mock_objects.append(obj)
+        ]
 
         async def mock_filter(Prefix=""):
-            for obj in mock_objects:
+            for key, size in entries:
+                obj = MagicMock()
+                obj.key = key
+                # aioboto3 loads ObjectSummary.size lazily: it must be awaited
+                obj.size = asyncio.sleep(0, result=size)
                 yield obj
 
         mock_bucket = MagicMock()
@@ -869,3 +952,310 @@ class TestUpdateDataFlags:
         )
         # Should not raise or open a session
         ExpirationLifecycleJob._update_data_flags(_DeletionTier.INTERMEDIATES, item, 0)
+
+
+def _grace_item(**overrides):
+    from studio.app.common.core.utils.datetime_utils import get_current_datetime
+
+    now = get_current_datetime()
+    item = {
+        "user_id": 1,
+        "email": "user@example.org",
+        "expiration": now - timedelta(days=21),
+        "grace_end": now + timedelta(days=9),
+        "storage_usage_bytes": 10 * 1024**3,
+        "needs_start": True,
+        "needs_reminder": False,
+    }
+    item.update(overrides)
+    return item
+
+
+class TestSendGraceNotifications:
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=False)
+    @pytest.mark.asyncio
+    async def test_disabled_skips_without_db_access(self, mock_enabled, mock_scope):
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+        assert result == (0, 0)
+        mock_scope.assert_not_called()
+
+    @patch(f"{MODULE}.EmailService.send_grace_period_start_email", return_value=True)
+    @patch(f"{MODULE}.SubscriptionService.clear_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.claim_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_grace_notifications")
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_sends_start_email_after_claim(
+        self,
+        mock_enabled,
+        mock_scope,
+        mock_get,
+        mock_claim,
+        mock_clear,
+        mock_send,
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_get.return_value = [_grace_item()]
+        mock_claim.return_value = datetime(2026, 9, 25, 1, 0, 0)
+
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (1, 0)
+        mock_send.assert_called_once()
+        mock_clear.assert_not_called()
+
+    @patch(f"{MODULE}.EmailService.send_grace_period_start_email", return_value=True)
+    @patch(f"{MODULE}.SubscriptionService.claim_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_grace_notifications")
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_same_run_reminder_is_claimed_but_not_sent(
+        self, mock_enabled, mock_scope, mock_get, mock_claim, mock_send
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_get.return_value = [_grace_item(needs_reminder=True)]
+        mock_claim.return_value = datetime(2026, 9, 25, 1, 0, 0)
+
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (1, 0)
+        claimed_kinds = [call.args[3] for call in mock_claim.call_args_list]
+        assert claimed_kinds == ["start", "reminder"]
+        mock_send.assert_called_once()
+
+    @patch(f"{MODULE}.EmailService.send_grace_period_reminder_email", return_value=True)
+    @patch(f"{MODULE}.SubscriptionService.claim_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_grace_notifications")
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_sends_reminder_email(
+        self, mock_enabled, mock_scope, mock_get, mock_claim, mock_send
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_get.return_value = [_grace_item(needs_start=False, needs_reminder=True)]
+        mock_claim.return_value = datetime(2026, 9, 25, 1, 0, 0)
+
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (1, 0)
+        mock_send.assert_called_once()
+
+    @patch(f"{MODULE}.EmailService.send_grace_period_start_email")
+    @patch(f"{MODULE}.SubscriptionService.claim_grace_notification", return_value=None)
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_grace_notifications")
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_lost_claim_sends_nothing(
+        self, mock_enabled, mock_scope, mock_get, mock_claim, mock_send
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_get.return_value = [_grace_item()]
+
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (0, 0)
+        mock_send.assert_not_called()
+
+    @patch(f"{MODULE}.EmailService.send_grace_period_start_email", return_value=False)
+    @patch(f"{MODULE}.SubscriptionService.clear_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.claim_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_grace_notifications")
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_failed_send_clears_all_claimed_stamps(
+        self,
+        mock_enabled,
+        mock_scope,
+        mock_get,
+        mock_claim,
+        mock_clear,
+        mock_send,
+    ):
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_get.return_value = [_grace_item(needs_reminder=True)]
+        mock_claim.return_value = datetime(2026, 9, 25, 1, 0, 0)
+
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (0, 1)
+        cleared_kinds = sorted(call.args[2] for call in mock_clear.call_args_list)
+        assert cleared_kinds == ["reminder", "start"]
+
+
+class TestDeletionSummaryEmail:
+    def _user_info(self, **overrides):
+        info = {
+            "user_id": 1,
+            "excess_bytes": 5000,
+            "email": "user@example.org",
+            "active": True,
+        }
+        info.update(overrides)
+        return info
+
+    def _patched_process(self):
+        return [
+            patch(
+                f"{MODULE}.SubscriptionService.get_user_subscription", return_value=None
+            ),
+            patch(
+                f"{MODULE}.SubscriptionService.has_active_workflows", return_value=False
+            ),
+            patch(
+                f"{MODULE}.SubscriptionService.get_deletion_priority",
+                return_value="preserve_outputs",
+            ),
+            patch(
+                f"{MODULE}.SubscriptionService.get_current_excess_bytes",
+                return_value=5000,
+            ),
+            patch(f"{MODULE}.SubscriptionService.mark_deletion_processed"),
+            patch.object(
+                ExpirationLifecycleJob,
+                "_fetch_user_data",
+                return_value=(
+                    [
+                        _ExperimentInfo(
+                            workspace_id=1,
+                            uid="abc",
+                            is_published=False,
+                            analyzed_at=None,
+                        )
+                    ],
+                    [],
+                ),
+            ),
+        ]
+
+    async def _run_process_user(self, user_info, execute_result):
+        mock_scope_obj, _ = _mock_session_scope()
+        patches = self._patched_process()
+        with patch(f"{MODULE}.session_scope", mock_scope_obj):
+            with patch.object(
+                ExpirationLifecycleJob,
+                "_execute_deletion",
+                new_callable=AsyncMock,
+                return_value=execute_result,
+            ):
+                for p in patches:
+                    p.start()
+                try:
+                    return await ExpirationLifecycleJob._process_user(
+                        user_info, "test-bucket"
+                    )
+                finally:
+                    for p in patches:
+                        p.stop()
+
+    @patch(f"{MODULE}.EmailService.send_deletion_summary_email", return_value=True)
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_summary_sent_after_deletion(self, mock_enabled, mock_send):
+        result = await self._run_process_user(
+            self._user_info(),
+            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+        )
+        assert result == (1, 0)
+        mock_send.assert_called_once_with("user@example.org", 5000, 2)
+
+    @patch(f"{MODULE}.EmailService.send_deletion_summary_email", return_value=True)
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_summary_sent_on_aborted_run_with_bytes_freed(
+        self, mock_enabled, mock_send
+    ):
+        result = await self._run_process_user(
+            self._user_info(),
+            {"succeeded": 1, "failed": 0, "bytes_deleted": 1000, "aborted": True},
+        )
+        assert result == (1, 0)
+        mock_send.assert_called_once()
+
+    @patch(f"{MODULE}.EmailService.send_deletion_summary_email")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_no_summary_when_nothing_deleted(self, mock_enabled, mock_send):
+        result = await self._run_process_user(
+            self._user_info(),
+            {"succeeded": 0, "failed": 0, "bytes_deleted": 0, "aborted": False},
+        )
+        assert result == (0, 0)
+        mock_send.assert_not_called()
+
+    @patch(f"{MODULE}.EmailService.send_deletion_summary_email")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=False)
+    @pytest.mark.asyncio
+    async def test_no_summary_when_disabled(self, mock_enabled, mock_send):
+        result = await self._run_process_user(
+            self._user_info(),
+            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+        )
+        assert result == (0, 0)
+        mock_send.assert_not_called()
+
+    @patch(f"{MODULE}.EmailService.send_deletion_summary_email")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_no_summary_for_inactive_user(self, mock_enabled, mock_send):
+        result = await self._run_process_user(
+            self._user_info(active=False),
+            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+        )
+        assert result == (0, 0)
+        mock_send.assert_not_called()
+
+    @patch(f"{MODULE}.EmailService.send_deletion_summary_email", return_value=False)
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_failed_summary_counted(self, mock_enabled, mock_send):
+        result = await self._run_process_user(
+            self._user_info(),
+            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+        )
+        assert result == (0, 1)
+
+
+class TestGraceNotificationIsolation:
+    @patch(f"{MODULE}.EmailService.send_grace_period_start_email")
+    @patch(f"{MODULE}.SubscriptionService.clear_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.claim_grace_notification")
+    @patch(f"{MODULE}.SubscriptionService.get_users_for_grace_notifications")
+    @patch(f"{MODULE}.session_scope")
+    @patch(f"{MODULE}.EmailService.is_enabled", return_value=True)
+    @pytest.mark.asyncio
+    async def test_item_exception_is_isolated_and_claim_rolled_back(
+        self, mock_enabled, mock_scope, mock_get, mock_claim, mock_clear, mock_send
+    ):
+        """One raising item must not abort the pass; its claim is cleared."""
+        mock_scope_obj, _ = _mock_session_scope()
+        mock_scope.side_effect = mock_scope_obj.side_effect
+        mock_scope.return_value = mock_scope_obj.return_value
+        mock_get.return_value = [
+            _grace_item(user_id=1),
+            _grace_item(user_id=2),
+        ]
+        mock_claim.return_value = datetime(2026, 9, 25, 1, 0, 0)
+        mock_send.side_effect = [Exception("boom"), True]
+
+        result = await ExpirationLifecycleJob._send_grace_notifications()
+
+        assert result == (1, 1)
+        assert mock_send.call_count == 2
+        mock_clear.assert_called_once()
+        assert mock_clear.call_args.args[1] == 1

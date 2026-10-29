@@ -214,12 +214,19 @@ Safety checks before deletion:
 | `DataCleanupCount` | `DataCleanupJob` | Count |
 | `CleanupErrors` | `DataCleanupJob` | Count |
 | `CleanupKept` | `DataCleanupJob` | Count |
+| `ExpirationDeletionProcessed` | `ExpirationLifecycleJob` | Count |
+| `ExpirationDeletionErrors` | `ExpirationLifecycleJob` | Count |
+| `ExpirationEmailsSent` | `ExpirationLifecycleJob` | Count |
+| `ExpirationEmailFailures` | `ExpirationLifecycleJob` | Count |
 
 > `CleanupErrors` = actionable failures (unexpected exception, or data retained
 > because its S3 backup could not be verified). `CleanupKept` = benign
 > keep-the-record outcomes (no local data on this instance, or the user returned)
-> — deliberately **not** counted as errors. No CloudWatch alarm is wired to this
-> namespace yet; these metrics are the intended signals for such alarms.
+> — deliberately **not** counted as errors. Except for
+> `ExpirationEmailFailures` (alarmed when `notification_from_email` is set,
+> because persistent send failures pause over-quota expiration deletion), no
+> CloudWatch alarm is wired to this namespace yet; these metrics are the
+> intended signals for such alarms.
 
 ### Logs
 

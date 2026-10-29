@@ -129,6 +129,20 @@ variable "stripe_webhook_secret" {
   sensitive   = true
 }
 
+variable "notification_from_email" {
+  description = "Verified SES sender address for expiration lifecycle emails. Empty disables email notifications."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.notification_from_email == "" ||
+      can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.notification_from_email))
+    )
+    error_message = "notification_from_email must be a bare email address (local@domain) or empty."
+  }
+}
+
 variable "routing_secret_key" {
   description = "Secret key for generating non-reversible routing IDs (HMAC-SHA256)"
   type        = string

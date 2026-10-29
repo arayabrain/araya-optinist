@@ -1,0 +1,45 @@
+name: Expiration Deletion Integration
+
+# Runs the real-database, real-S3-API lane (`make expiration_it`) on PRs that
+# touch the expiration deletion path or the lane itself: the per-PR unit tests
+# mock the bucket lookup and the S3 objects.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - develop-main
+      - future
+      - "future/**"
+    paths:
+      - "studio/app/common/core/background/expiration_lifecycle_job.py"
+      - "studio/app/common/core/background/cleanup_job.py"
+      - "studio/app/common/core/subscription/subscription_service.py"
+      - "studio/app/common/core/subscription/email_service.py"
+      - "studio/app/common/core/subscription/constants.py"
+      - "studio/app/common/core/cloud/storage_operations.py"
+      - "studio/app/common/core/storage/s3_storage_controller.py"
+      - "studio/app/common/models/**"
+      - "studio/alembic/versions/**"
+      - "studio/tests/app/common/core/background/test_expiration_lifecycle_integration.py"
+      - "docker-compose.expiration-it.yml"
+      - ".github/workflows/expiration-it.yml"
+
+# A newer push to the same PR supersedes a running lane.
+concurrency:
+  group: expiration-it-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default: jobs opt in to anything beyond reading the repo.
+permissions:
+  contents: read
+
+jobs:
+  expiration_it:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the expiration deletion integration lane
+        run: make expiration_it
