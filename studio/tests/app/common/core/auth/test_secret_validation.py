@@ -6,6 +6,7 @@ ExToken alone authenticates, so SECRET_KEY is checked there too. Elsewhere the
 same findings are only logged so local multiuser development keeps working.
 """
 
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -144,16 +145,27 @@ def test_standalone_is_not_checked(multiuser):
     secret_validation.validate_signing_secrets()
 
 
-def test_main_checks_before_starting_uvicorn(multiuser, monkeypatch):
+def test_entry_refuses_before_starting_uvicorn(multiuser):
     """With several workers, uvicorn's supervisor keeps running when a worker's
-    lifespan fails, so main() must refuse before uvicorn.run is ever called."""
-    from studio import __main_unit__
+    lifespan fails, so the entry must refuse before uvicorn.run is ever called."""
+    from studio import server
 
     multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", INSECURE_DEFAULT_SECRET_KEY)
-    monkeypatch.setattr("sys.argv", ["main.py", "--workers", "3"])
+    multiuser.setattr("sys.argv", ["main.py", "--workers", "3"])
 
-    with patch.object(__main_unit__.uvicorn, "run") as uvicorn_run:
-        with pytest.raises(RuntimeError, match="SECRET_KEY"):
-            __main_unit__.main()
+    # Runs the child's code in this process, where the fixture's settings apply.
+    def child_in_process(argv):
+        try:
+            exec(argv[-1], {})
+        except RuntimeError:
+            return subprocess.CompletedProcess(argv, 1)
+        return subprocess.CompletedProcess(argv, 0)
 
+    with patch.object(server.uvicorn, "run") as uvicorn_run, patch.object(
+        server.subprocess, "run", side_effect=child_in_process
+    ):
+        with pytest.raises(SystemExit) as stop:
+            server.main()
+
+    assert stop.value.code == 1
     uvicorn_run.assert_not_called()

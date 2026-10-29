@@ -1,11 +1,13 @@
+import asyncio
 import os
+import threading
 from typing import Optional
 
 import h5py
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
@@ -31,7 +33,11 @@ from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
     normalize_output_path,
 )
-from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
+from studio.app.common.core.utils.json_writer import (
+    JsonWriter,
+    TiffPreviewTooLargeError,
+    save_tiff2json,
+)
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
@@ -46,6 +52,13 @@ from studio.app.optinist.routers.mat import MatGetter
 router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
+
+# One TIFF preview at a time per process, built or read, keeps its memory
+# bounded; a request waiting longer than this is answered 429
+TIFF_PREVIEW_WAIT_SECONDS = 30
+_tiff_preview_lock = asyncio.Lock()
+# Also held by the thread, which outlives a cancelled request's await
+_tiff_preview_thread_lock = threading.Lock()
 
 
 async def get_or_generate_thumbnail(
@@ -850,8 +863,9 @@ async def get_image(
         json_filepath = join_filepath(
             [save_dirpath, f"{filename}_{str(start_index)}_{str(end_index)}.json"]
         )
-        if not os.path.exists(json_filepath):
-            save_tiff2json(abs_filepath, save_dirpath, start_index, end_index)
+        return await _read_tiff_preview(
+            abs_filepath, save_dirpath, json_filepath, start_index, end_index
+        )
     else:
         json_filepath = abs_filepath
         # Check if output file exists after sync attempt
@@ -876,6 +890,60 @@ async def get_image(
             )
 
     return JsonReader.read_as_output(json_filepath)
+
+
+def _tiff_preview_body(
+    tiff_filepath: str,
+    save_dirpath: str,
+    json_filepath: str,
+    start_index: int,
+    end_index: int,
+) -> bytes:
+    with _tiff_preview_thread_lock:
+        # A request queued behind the same window finds it written
+        if not os.path.exists(json_filepath):
+            save_tiff2json(tiff_filepath, save_dirpath, start_index, end_index)
+        return JsonReader.read_as_output_bytes(json_filepath)
+
+
+async def _read_tiff_preview(
+    tiff_filepath: str,
+    save_dirpath: str,
+    json_filepath: str,
+    start_index: int,
+    end_index: int,
+) -> Response:
+    """
+    A TIFF preview's JSON, built if missing, one at a time per process; 422 with
+    max_frames for a window too large.
+    """
+    try:
+        async with asyncio.timeout(TIFF_PREVIEW_WAIT_SECONDS):
+            await _tiff_preview_lock.acquire()
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Other image previews are being prepared. Please retry.",
+            headers={"Retry-After": "5"},
+        )
+    try:
+        body = await asyncio.to_thread(
+            _tiff_preview_body,
+            tiff_filepath,
+            save_dirpath,
+            json_filepath,
+            start_index,
+            end_index,
+        )
+    except TiffPreviewTooLargeError as e:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": e.detail, "max_frames": e.max_frames},
+        )
+    finally:
+        _tiff_preview_lock.release()
+    # Served as written: parsing and encoding it again would hold the event loop
+    return Response(content=body, media_type="application/json")
 
 
 @router.get("/csv/{filepath:path}", response_model=OutputData)

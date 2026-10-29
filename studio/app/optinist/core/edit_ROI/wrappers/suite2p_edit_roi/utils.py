@@ -5,6 +5,7 @@ from scipy.ndimage import percentile_filter
 
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData
+from studio.app.optinist.dataclass.roi import nwb_roi_label_image, nwb_roi_table
 
 # numpy ports of what suite2p's extraction does for a manually added ROI
 # (create_cell_pix, extendROI, create_neuropil_masks, extract_traces), so a
@@ -17,30 +18,17 @@ def median_pix(ypix, xpix):
     return [ypix[imin], xpix[imin]]
 
 
-def get_stat0_add_roi(ops, posx, posy, sizex, sizey):
-    posx, posy, sizex, sizey = round(posx), round(posy), round(sizex), round(sizey)
-    xrange = (np.arange(-1 * int(sizex), 1) + int(posx)).astype(np.int32)
-    yrange = (np.arange(-1 * int(sizey), 1) + int(posy)).astype(np.int32)
-    xrange += int(np.floor(sizex / 2))
-    yrange += int(np.floor(sizey / 2))
-
-    x, y = np.meshgrid(np.arange(0, xrange.size, 1), np.arange(0, yrange.size, 1))
-    ellipse = (
-        (y - sizey / 2) ** 2 / (sizey / 2) ** 2
-        + (x - sizex / 2) ** 2 / (sizex / 2) ** 2
-    ) <= 1
-
-    ellipse = ellipse[:, np.logical_and(xrange >= 0, xrange < ops["Lx"])]
-    xrange = xrange[np.logical_and(xrange >= 0, xrange < ops["Lx"])]
-    ellipse = ellipse[np.logical_and(yrange >= 0, yrange < ops["Ly"]), :]
-    yrange = yrange[np.logical_and(yrange >= 0, yrange < ops["Ly"])]
-
-    x, y = np.meshgrid(xrange, yrange)
-    ypix = y[ellipse].flatten()
-    xpix = x[ellipse].flatten()
-    if ypix.size == 0:  # a 1x1 ellipse has no interior, nor one off the frame
+def added_stat(edit_roi_data: EditRoiData, roi_id: int) -> dict:
+    """A stat entry for an added ROI: the pixels its ellipse covers in the
+    editor's RoiMasks, each weighted 1."""
+    rows, cols = edit_roi_data.roi_masks.coords(roi_id)
+    if rows.size == 0:
         raise ValueError("the ROI covers no pixel of the registered movie")
-    return {"ypix": ypix, "xpix": xpix, "lam": np.ones(ypix.shape, np.float32)}
+    return {
+        "ypix": rows.astype(np.int32),
+        "xpix": cols.astype(np.int32),
+        "lam": np.ones(rows.size, np.float32),
+    }
 
 
 def merge_stat(stat, ids):
@@ -176,6 +164,10 @@ def extract_traces(ops, stat, targets):
     Fneu = np.zeros_like(F)
     for i, s in enumerate(targets):
         keep = slice(None) if ext.get("allow_overlap", False) else ~s["overlap"]
+        if not s["lam"][keep].size:
+            # an ROI drawn entirely on others keeps no pixel of its own: its
+            # trace comes from all its pixels, as the other algorithms' commits do
+            keep = slice(None)
         lam = s["lam"][keep].astype(np.float32)
         if lam.size > 0:
             pixels = mov[:, s["ypix"][keep], s["xpix"][keep]].astype(np.float32)
@@ -191,7 +183,9 @@ def extract_traces(ops, stat, targets):
     return F, Fneu
 
 
-def set_nwbfile(ops, iscell, edit_roi_data: EditRoiData, function_id):
+def set_nwbfile(
+    ops, iscell, edit_roi_data: EditRoiData, function_id, nwb_settings=None
+):
     stat = ops.get("stat", [])  # Default to empty
     F = ops.get("F", np.zeros((1, 1)))  # Default to minimum
     Fneu = ops.get("Fneu", np.zeros((1, 1)))
@@ -212,7 +206,11 @@ def set_nwbfile(ops, iscell, edit_roi_data: EditRoiData, function_id):
             roi_list.append(kargs)
     nwbfile = {}
 
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(
+            roi_list, edit_roi_data.roi_masks.shape, nwb_settings
+        )
+    }
 
     # iscellを追加
     nwbfile[NWBDATASET.COLUMN] = {
@@ -248,6 +246,7 @@ def set_nwbfile(ops, iscell, edit_roi_data: EditRoiData, function_id):
     # NWB追加
     nwbfile[NWBDATASET.POSTPROCESS] = {
         function_id: {
+            **nwb_roi_label_image(edit_roi_data.roi_masks.label_image()),
             "add_roi": edit_roi_data.add_roi,
             "delete_roi": edit_roi_data.delete_roi,
             "merge_roi": edit_roi_data.merge_roi,
