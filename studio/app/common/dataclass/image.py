@@ -252,6 +252,20 @@ class ImageData(BaseData):
                     os.remove(_path)
             raise
 
+    def frame_stream(self):
+        """
+        (shape, dtype, frames) of `data` without holding it: the frames one at a
+        time, read in batches of at most BATCH_BYTES, as split_image reads them.
+        None when the files are not TIFF stacks of 2-D frames.
+        """
+        paths = self.path if isinstance(self.path, list) else [self.path]
+        headers = _stack_headers(paths)
+        if headers is None:
+            return None
+        dtype = np.result_type(*(dt.newbyteorder("=") for _, dt in headers))
+        shape = (sum(s[0] for s, _ in headers),) + headers[0][0][1:]
+        return shape, dtype, _iter_frames(paths, headers, dtype, BATCH_BYTES)
+
     @property
     def data(self):
         if isinstance(self.path, list):
