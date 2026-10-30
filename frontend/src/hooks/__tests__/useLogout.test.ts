@@ -21,12 +21,14 @@ const mockSetLoggingOut = jest.fn()
 const mockBroadcastLogout = jest.fn()
 const mockFlushErrors = jest.fn()
 const mockAutoReleaseOnLogout = jest.fn()
+const mockLogoutApi = jest.fn()
 
 jest.mock("react-redux", () => ({ useDispatch: () => mockDispatch }))
 jest.mock("react-router-dom", () => ({ useNavigate: () => mockNavigate }))
 jest.mock("contexts/PremiumAssignmentContext", () => ({
   usePremiumAssignment: () => mockUsePremiumAssignment(),
 }))
+jest.mock("api/auth/Auth", () => ({ logoutApi: () => mockLogoutApi() }))
 jest.mock("api/users/UsersMe", () => ({
   logoutFreeUserApi: () => mockLogoutFreeUserApi(),
 }))
@@ -83,5 +85,62 @@ describe("useLogout - fault-tolerant logout", () => {
     expect(mockLogoutFreeUserApi).not.toHaveBeenCalled()
     expect(mockDispatch).toHaveBeenCalledWith({ type: "user/logout" })
     expect(mockNavigate).toHaveBeenCalledWith("/login")
+  })
+})
+
+describe("useLogout - refresh cookie", () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockLogout.mockReturnValue({ type: "user/logout" })
+  })
+
+  test.each([false, true])(
+    "clears the cookie before other tabs are told (premium=%s)",
+    async (isPremiumUser) => {
+      mockUsePremiumAssignment.mockReturnValue({
+        autoReleaseOnLogout: mockAutoReleaseOnLogout,
+        isPremiumUser,
+      })
+      const { result } = renderHook(() => useLogout())
+
+      await act(async () => {
+        await result.current.performLogout()
+      })
+
+      expect(mockLogoutApi).toHaveBeenCalledTimes(1)
+      expect(mockLogoutApi.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBroadcastLogout.mock.invocationCallOrder[0],
+      )
+    },
+  )
+
+  test("logs out locally when clearing the cookie fails", async () => {
+    mockUsePremiumAssignment.mockReturnValue({
+      autoReleaseOnLogout: mockAutoReleaseOnLogout,
+      isPremiumUser: false,
+    })
+    mockLogoutApi.mockRejectedValue(new Error("offline"))
+    const { result } = renderHook(() => useLogout())
+
+    await act(async () => {
+      await result.current.performLogout()
+    })
+
+    expect(mockDispatch).toHaveBeenCalledWith({ type: "user/logout" })
+    expect(mockNavigate).toHaveBeenCalledWith("/login")
+  })
+
+  test("a tab told by another tab does not call the endpoint again", async () => {
+    mockUsePremiumAssignment.mockReturnValue({
+      autoReleaseOnLogout: mockAutoReleaseOnLogout,
+      isPremiumUser: false,
+    })
+    const { result } = renderHook(() => useLogout())
+
+    await act(async () => {
+      await result.current.performLogout(false)
+    })
+
+    expect(mockLogoutApi).not.toHaveBeenCalled()
   })
 })

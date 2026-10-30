@@ -43,6 +43,10 @@ def _collect_algos(nest_dict, algos):
         ("optinist/dimension_reduction/tsne", ["projectedNd"]),
         ("optinist/neural_population_analysis/correlation", ["corr"]),
         (
+            "optinist/neural_population_analysis/hierarchical_clustering",
+            ["sorted_heatmap", "cluster_mean", "cluster_size", "figure"],
+        ),
+        (
             "optinist/neural_population_analysis/granger",
             ["Granger_fval_mat_heatmap", "Granger_fval_mat_scatter"],
         ),
@@ -128,3 +132,17 @@ def test_caiman_dff_is_a_fluo_port():
     for name in ("caiman_cnmf", "caiman_cnmfe", "cnmf_multisession"):
         returns = {r.name: r.type for r in caiman[name].returns}
         assert returns["dff"] == "FluoData", name
+
+
+def test_clustering_takes_eta_mean():
+    nodes = NestDictGetter.get_nest_dict(wrapper_dict, "")["optinist"]["children"]
+    eta = nodes["basic_neural_analysis"]["children"]["eta"]
+    clustering = nodes["neural_population_analysis"]["children"][
+        "hierarchical_clustering"
+    ]
+
+    # The GUI connects a handle only to a port of the same type name
+    assert [(a.name, a.type, a.isNone) for a in clustering.args] == [
+        ("neural_data", "TimeSeriesData", False)
+    ]
+    assert ("mean", "TimeSeriesData") in [(r.name, r.type) for r in eta.returns]

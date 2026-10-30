@@ -57,6 +57,7 @@ _TEST_ENV = {
     "STRIPE_SECRET_KEY": "sk_test_dummy_123",
     "STRIPE_WEBHOOK_SECRET": "whsec_dummy_123",
     "STRIPE_CALLBACK_URL": "http://localhost:8000",
+    "CORS_ORIGINS": "*",
 }
 
 os.environ.update(_TEST_ENV)
