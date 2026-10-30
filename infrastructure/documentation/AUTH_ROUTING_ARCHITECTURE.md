@@ -228,7 +228,7 @@ Cleared state during logout:
 |---------|-----|---------|
 | localStorage | `access_token` | JWT access token |
 | localStorage | `refresh_token` | JWT refresh token |
-| localStorage | `ExToken` | External token |
+| localStorage | `ExToken` | App-signed JWT; only issued when `USE_FIREBASE_TOKEN=False`, expires with the refresh token |
 | localStorage | `dismissedAlerts` | UI alert dismissal state |
 | sessionStorage | `storage-refreshed-on-login` | One-time storage refresh flag |
 
