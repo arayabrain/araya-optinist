@@ -4,7 +4,7 @@ name: Tutorial1
 started_at: '2025-02-13 14:42:12'
 finished_at: '2025-02-13 14:50:10'
 success: success
-hasNWB: true
+hasNWB: false
 function:
   input_ab1mmvt2ky:
     unique_id: input_ab1mmvt2ky
@@ -30,11 +30,7 @@ function:
     success: success
     hasNWB: false
     message: suite2p_file_convert success
-    outputPaths:
-      meanImg:
-        path: /tmp/studio/output/1/tutorial1/suite2p_file_convert_tlri58d268/meanImg.json
-        type: images
-        max_index: 1
+    outputPaths: null
     started_at: '2025-02-13 14:47:37'
     finished_at: '2025-02-13 14:49:31'
   suite2p_registration_xq4pexs8o7:
@@ -43,69 +39,25 @@ function:
     success: success
     hasNWB: false
     message: suite2p_registration success
-    outputPaths:
-      refImg:
-        path: /tmp/studio/output/1/tutorial1/suite2p_registration_xq4pexs8o7/refImg.json
-        type: images
-        max_index: 1
-      meanImgE:
-        path: /tmp/studio/output/1/tutorial1/suite2p_registration_xq4pexs8o7/meanImgE.json
-        type: images
-        max_index: 1
-      mc_images:
-        path: /tmp/studio/output/1/tutorial1/suite2p_registration_xq4pexs8o7/tiff/mc_images/mc_images.tif
-        type: images
-        max_index: 2000
+    outputPaths: null
     started_at: '2025-02-13 14:49:22'
     finished_at: '2025-02-13 14:50:07'
   suite2p_roi_yvqcdmsg0r:
     unique_id: suite2p_roi_yvqcdmsg0r
     name: suite2p_roi
     success: success
-    hasNWB: true
+    hasNWB: false
     message: suite2p_roi success
-    outputPaths:
-      max_proj:
-        path: /tmp/studio/output/1/tutorial1/suite2p_roi_yvqcdmsg0r/max_proj.json
-        type: images
-        max_index: 1
-      Vcorr:
-        path: /tmp/studio/output/1/tutorial1/suite2p_roi_yvqcdmsg0r/Vcorr.json
-        type: images
-        max_index: 1
-      fluorescence:
-        path: /tmp/studio/output/1/tutorial1/suite2p_roi_yvqcdmsg0r/fluorescence
-        type: timeseries
-        max_index: 295
-      all_roi:
-        path: /tmp/studio/output/1/tutorial1/suite2p_roi_yvqcdmsg0r/all_roi.json
-        type: roi
-        max_index: null
-      non_cell_roi:
-        path: /tmp/studio/output/1/tutorial1/suite2p_roi_yvqcdmsg0r/noncell_roi.json
-        type: roi
-        max_index: null
-      cell_roi:
-        path: /tmp/studio/output/1/tutorial1/suite2p_roi_yvqcdmsg0r/cell_roi.json
-        type: roi
-        max_index: null
+    outputPaths: null
     started_at: '2025-02-13 14:49:41'
     finished_at: '2025-02-13 14:50:08'
   eta_elysjdrr7j:
     unique_id: eta_elysjdrr7j
     name: eta
     success: success
-    hasNWB: true
+    hasNWB: false
     message: eta success
-    outputPaths:
-      mean:
-        path: /tmp/studio/output/1/tutorial1/eta_elysjdrr7j/mean
-        type: timeseries
-        max_index: 45
-      mean_heatmap:
-        path: /tmp/studio/output/1/tutorial1/eta_elysjdrr7j/mean_heatmap.json
-        type: heatmap
-        max_index: null
+    outputPaths: null
     started_at: '2025-02-13 14:50:06'
     finished_at: '2025-02-13 14:50:10'
 nwb:
