@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException, status
+from requests import ConnectionError as RequestsConnectionError
+from requests import HTTPError, Response
 
 from studio.app.common.core.auth.auth import refresh_current_user_token
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token
@@ -40,6 +42,38 @@ async def test_refresh_present_but_invalid_token_returns_400():
         with pytest.raises(HTTPException) as exc_info:
             await refresh_current_user_token("present-but-invalid")
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def _firebase_error(status_code: int) -> HTTPError:
+    response = Response()
+    response.status_code = status_code
+    return HTTPError(HTTPError(response=response), '{"error": {"message": "X"}}')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (_firebase_error(400), status.HTTP_400_BAD_REQUEST),
+        (_firebase_error(503), status.HTTP_503_SERVICE_UNAVAILABLE),
+        (RequestsConnectionError("https://example/v1/token?key=K"), 503),
+    ],
+)
+async def test_refresh_tells_a_refused_token_from_firebase_being_unreachable(
+    error, expected
+):
+    with patch(
+        "studio.app.common.core.auth.auth.validate_refresh_token",
+        return_value=({"sub": "firebase-refresh-token"}, None),
+    ), patch("studio.app.common.core.auth.auth.pyrebase_app") as mock_pyrebase, patch(
+        "studio.app.common.core.auth.auth.logger"
+    ) as log:
+        mock_pyrebase.auth.return_value.refresh.side_effect = error
+        with pytest.raises(HTTPException) as exc_info:
+            await refresh_current_user_token("present")
+
+    assert exc_info.value.status_code == expected
+    assert "key=" not in log.warning.call_args.args[0]
 
 
 @pytest.mark.asyncio
