@@ -17,7 +17,12 @@ from studio.app.common.dataclass import ImageData
 from studio.app.common.dataclass.image import CANNOT_MAP, iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_reference
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    edit_reference,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
 from studio.app.optinist.wrappers.caiman.caiman_utils import (
     caiman_cluster,
     cnn_crops_copied,
@@ -32,13 +37,14 @@ CORRELATION_CHUNK_ELEMENTS = 2**24  # float64 values per frame chunk, 128 MB
 
 
 def get_roi(A, roi_thr, thr_method, swap_dim, dims):
+    """Each column's footprint as a boolean image of dims, one column at a
+    time, so no more than one full-frame mask is held."""
     from scipy.ndimage import binary_fill_holes
     from skimage.measure import find_contours
 
     d, nr = np.shape(A)
 
     # for each patches
-    ims = []
     coordinates = []
     for i in range(nr):
         pars = dict()
@@ -57,7 +63,7 @@ def get_roi(A, roi_thr, thr_method, swap_dim, dims):
                 )
                 coordinates.append(pars)
                 # keep one mask per column so row i stays component i
-                ims.append(np.zeros(dims))
+                yield np.zeros(dims, dtype=bool)
                 continue
             else:
                 # we work with normalized values
@@ -82,10 +88,7 @@ def get_roi(A, roi_thr, thr_method, swap_dim, dims):
             r_mask[np.round(c[:, 0]).astype("int"), np.round(c[:, 1]).astype("int")] = 1
 
         # Fill in the hole created by the contour boundary
-        r_mask = binary_fill_holes(r_mask)
-        ims.append(r_mask + (i * r_mask))
-
-    return ims
+        yield binary_fill_holes(r_mask)
 
 
 def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
@@ -358,9 +361,21 @@ def util_download_model_files():
                 f.write(response.content)
 
 
-def nwb_image_mask(A, comp, dims, swap_dim):
+def nwb_pixel_mask(A, comp, dims, swap_dim):
+    """
+    Component comp of A as NWB pixel-mask rows (row, column, weight), its
+    non-zero pixels in row-major order: the image_mask it replaces, made sparse.
+    """
     # the pixel order get_roi reads A in, so the NWB masks match the ROI images
-    return A[:, comp].toarray().reshape(dims, order="C" if swap_dim else "F")
+    column = A[:, [comp]].tocoo()
+    column.sum_duplicates()
+    nonzero = column.data != 0
+    rows, cols = np.unravel_index(
+        column.row[nonzero], dims, order="C" if swap_dim else "F"
+    )
+    weights = column.data[nonzero]
+    by_pixel = np.lexsort((cols, rows))
+    return np.array([rows[by_pixel], cols[by_pixel], weights[by_pixel]]).T
 
 
 def component_outputs(
@@ -376,64 +391,42 @@ def component_outputs(
     rejected_list=None,
     n_frames=0,
 ):
-    """im, iscell, the NWB ROI table and fluorescence in one shared row order.
+    """The ROI masks, iscell, the NWB ROI table and fluorescence in one shared
+    row order.
 
     Row i of every output is component order[i], accepted components first, so
-    the ROI editor and the analyses can index fluorescence by im row. order is
+    the ROI editor and the analyses can index fluorescence by ROI row. order is
     returned last for the outputs computed elsewhere.
     """
     order = list(idx_good) + list(idx_bad)
     n_components = len(order)
+    n_rois, n_noncell_rois = len(idx_good), len(idx_bad)
 
     iscell = np.concatenate(
         [
-            np.ones(len(idx_good), dtype=int),
-            np.zeros(len(idx_bad), dtype=int),
+            np.ones(n_rois, dtype=int),
+            np.zeros(n_noncell_rois, dtype=int),
         ]
     )
 
-    if len(idx_good) > 0 and A is not None:
-        cell_ims = get_roi(A[:, idx_good], roi_thr, thr_method, swap_dim, dims)
-        if len(cell_ims) != len(idx_good):
-            raise ValueError("one mask per accepted component expected")
-        if len(cell_ims) > 0:  # Check if get_roi returned any ROIs
-            cell_ims = np.stack(cell_ims).astype(float)
-            cell_ims[cell_ims == 0] = np.nan
-            cell_ims = np.where(
-                np.isnan(cell_ims), cell_ims, cell_ims - 1
-            )  # Safer subtraction
-            n_rois = len(cell_ims)
-        else:
-            cell_ims = np.zeros((0, *dims))
-            n_rois = 0
-    else:
-        cell_ims = np.zeros((0, *dims))
-        n_rois = 0
-
-    if len(idx_bad) > 0:
-        non_cell_ims = get_roi(A[:, idx_bad], roi_thr, thr_method, swap_dim, dims)
-        if len(non_cell_ims) != len(idx_bad):
-            raise ValueError("one mask per rejected component expected")
-        non_cell_ims = np.stack(non_cell_ims).astype(float)
-        for i, j in enumerate(range(n_rois, n_rois + len(non_cell_ims))):
-            non_cell_ims[i, :] = np.where(non_cell_ims[i, :] != 0, j, np.nan)
-        non_cell_roi = np.nanmax(non_cell_ims, axis=0)
-    else:
-        non_cell_ims = np.zeros((0, *dims))
-        non_cell_roi = np.full(dims, np.nan)
-
-    n_noncell_rois = len(non_cell_ims)
-
-    im = (
-        np.vstack([cell_ims, non_cell_ims])
-        if n_components > 0
-        else np.zeros((0, *dims))
-    )
+    # one footprint at a time: no full-frame layer per component is kept
+    pixels = []
+    for ids, kind in ((idx_good, "accepted"), (idx_bad, "rejected")):
+        if len(ids) == 0 or A is None:
+            continue
+        found = 0
+        for mask in get_roi(A[:, ids], roi_thr, thr_method, swap_dim, dims):
+            pixels.append(np.flatnonzero(mask))
+            found += 1
+        if found != len(ids):
+            raise ValueError(f"one mask per {kind} component expected")
+    roi_masks = RoiMasks.from_pixels(dims, pixels)
+    non_cell_roi = roi_masks.label_image(slice(n_rois, None))
 
     roi_list = []
     for comp in order:
         kargs = {}
-        kargs["image_mask"] = nwb_image_mask(A, comp, dims, swap_dim)
+        kargs["pixel_mask"] = nwb_pixel_mask(A, comp, dims, swap_dim)
         if accepted_list is not None:
             kargs["accepted"] = comp in accepted_list
         if rejected_list is not None:
@@ -447,7 +440,7 @@ def component_outputs(
     )
 
     return (
-        im,
+        roi_masks,
         iscell,
         roi_list,
         fluorescence,
@@ -610,7 +603,7 @@ def caiman_cnmf(
     swap_dim = False
 
     (
-        im,
+        roi_masks,
         iscell,
         roi_list,
         fluorescence,
@@ -635,8 +628,11 @@ def caiman_cnmf(
 
     # NWB additions
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
+    all_roi = roi_masks.label_image()
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 
     # Add iscell to NWB
     nwbfile[NWBDATASET.COLUMN] = {
@@ -660,9 +656,6 @@ def caiman_cnmf(
         }
     }
 
-    # Create empty ROI array filled with NaN for when no components found
-    empty_roi = np.full(dims, np.nan)
-
     info = {
         "images": ImageData(
             np.array(Cn * 255, dtype=np.uint8),
@@ -676,25 +669,22 @@ def caiman_cnmf(
         "dff": FluoData(dff, file_name="dff"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
-            np.nanmax(im, axis=0) if len(im) > 0 else empty_roi.copy(),
+            all_roi,
             output_dir=output_dir,
             file_name="all_roi",
         ),
         "cell_roi": RoiData(
-            np.nanmax(im[iscell != 0], axis=0, initial=np.nan)
-            if len(im) > 0
-            else empty_roi.copy(),
+            roi_masks.label_image(iscell != 0),
             output_dir=output_dir,
             file_name="cell_roi",
         ),
         "non_cell_roi": RoiData(
-            non_cell_roi if len(im) > 0 else empty_roi.copy(),
+            non_cell_roi,
             output_dir=output_dir,
             file_name="non_cell_roi",
         ),
         "edit_roi_data": EditRoiData(
-            util_edit_roi_movie(images_ref, mmap_images, output_dir),
-            RoiMasks.from_stack(im),
+            util_edit_roi_movie(images_ref, mmap_images, output_dir), roi_masks
         ),
         "nwbfile": nwbfile,
     }

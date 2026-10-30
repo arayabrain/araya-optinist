@@ -95,7 +95,11 @@ export const userSlice = createSlice({
 
           saveToken(action.payload.access_token)
           saveRefreshToken(action.payload.refresh_token)
-          saveExToken(action.payload.ex_token)
+          if (action.payload.ex_token) {
+            saveExToken(action.payload.ex_token)
+          } else {
+            removeExToken()
+          }
         },
       )
       .addMatcher(

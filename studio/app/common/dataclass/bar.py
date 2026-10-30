@@ -12,7 +12,12 @@ from studio.app.common.schemas.outputs import PlotMetaData
 
 class BarData(BaseData):
     def __init__(
-        self, data, index=None, file_name="bar", meta: Optional[PlotMetaData] = None
+        self,
+        data,
+        index=None,
+        file_name="bar",
+        meta: Optional[PlotMetaData] = None,
+        columns=None,
     ):
         super().__init__(file_name)
         self.meta = meta
@@ -26,6 +31,7 @@ class BarData(BaseData):
         assert data.ndim == 2, "Bar Dimension is not 2"
 
         self.data = data
+        self.columns = columns
 
         # indexを指定
         if index is not None:
@@ -38,6 +44,7 @@ class BarData(BaseData):
         df = pd.DataFrame(
             self.data,
             index=self.index,
+            columns=self.columns,
         )
         JsonWriter.write_as_split(self.json_path, df)
         JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)

@@ -117,6 +117,11 @@ different things:
 An apply that reset the ECS count to its declared `1` would leave the other
 instances task-less and unhealthy.
 
+`aws_ecs_service.premium` carries the same `ignore_changes` on its
+`desired_count`: the Premium Manager Lambda keeps it at one task per premium
+instance that is registered with ECS or still booting. A reset to `1` would
+stop the task on every other premium instance until the manager's next sync.
+
 | Variable | Effect |
 |---|---|
 | `asg_min_size` | The knob that moves steady-state capacity. Raising it makes the ASG lift desired capacity to the new minimum |
