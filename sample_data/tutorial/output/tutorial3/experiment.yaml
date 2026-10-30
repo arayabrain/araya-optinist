@@ -4,7 +4,7 @@ name: Tutorial3
 started_at: '2025-02-13 15:33:37'
 finished_at: '2025-02-13 15:34:57'
 success: success
-hasNWB: true
+hasNWB: false
 function:
   input_qsxe86gdqi:
     unique_id: input_qsxe86gdqi
@@ -21,11 +21,7 @@ function:
     success: success
     hasNWB: false
     message: suite2p_file_convert success
-    outputPaths:
-      meanImg:
-        path: /tmp/studio/output/1/tutorial3/suite2p_file_convert_uwyrgu1xyc/meanImg.json
-        type: images
-        max_index: 1
+    outputPaths: null
     started_at: '2025-02-13 15:33:48'
     finished_at: '2025-02-13 15:33:57'
   suite2p_registration_q9rk525j0v:
@@ -34,48 +30,16 @@ function:
     success: success
     hasNWB: false
     message: suite2p_registration success
-    outputPaths:
-      refImg:
-        path: /tmp/studio/output/1/tutorial3/suite2p_registration_q9rk525j0v/refImg.json
-        type: images
-        max_index: 1
-      meanImgE:
-        path: /tmp/studio/output/1/tutorial3/suite2p_registration_q9rk525j0v/meanImgE.json
-        type: images
-        max_index: 1
-      mc_images:
-        path: /tmp/studio/output/1/tutorial3/suite2p_registration_q9rk525j0v/tiff/mc_images/mc_images.tif
-        type: images
-        max_index: 2000
+    outputPaths: null
     started_at: '2025-02-13 15:34:05'
     finished_at: '2025-02-13 15:34:18'
   lccd_cell_detection_q9g9if8oeg:
     unique_id: lccd_cell_detection_q9g9if8oeg
     name: lccd_cell_detection
     success: success
-    hasNWB: true
+    hasNWB: false
     message: lccd_cell_detection success
-    outputPaths:
-      dff:
-        path: /tmp/studio/output/1/tutorial3/lccd_cell_detection_q9g9if8oeg/dff
-        type: timeseries
-        max_index: 42
-      fluorescence:
-        path: /tmp/studio/output/1/tutorial3/lccd_cell_detection_q9g9if8oeg/fluorescence
-        type: timeseries
-        max_index: 42
-      all_roi:
-        path: /tmp/studio/output/1/tutorial3/lccd_cell_detection_q9g9if8oeg/all_roi.json
-        type: roi
-        max_index: null
-      cell_roi:
-        path: /tmp/studio/output/1/tutorial3/lccd_cell_detection_q9g9if8oeg/cell_roi.json
-        type: roi
-        max_index: null
-      non_cell_roi:
-        path: /tmp/studio/output/1/tutorial3/lccd_cell_detection_q9g9if8oeg/non_cell_roi.json
-        type: roi
-        max_index: null
+    outputPaths: null
     started_at: '2025-02-13 15:34:25'
     finished_at: '2025-02-13 15:34:48'
   input_9ig87jnsul:
@@ -91,13 +55,9 @@ function:
     unique_id: lda_hasufj1cnb
     name: lda
     success: success
-    hasNWB: true
+    hasNWB: false
     message: lda success
-    outputPaths:
-      score:
-        path: /tmp/studio/output/1/tutorial3/lda_hasufj1cnb/score.json
-        type: bar
-        max_index: null
+    outputPaths: null
     started_at: '2025-02-13 15:34:53'
     finished_at: '2025-02-13 15:34:57'
 nwb:

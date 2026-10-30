@@ -4,7 +4,7 @@ name: setup_conda_microscope
 started_at: '2025-01-31 17:39:52'
 finished_at: '2025-01-31 17:40:02'
 success: success
-hasNWB: true
+hasNWB: false
 function:
   input_bmkjfbfk1d:
     unique_id: input_bmkjfbfk1d
@@ -21,11 +21,7 @@ function:
     success: success
     hasNWB: false
     message: setup_conda_microscope success
-    outputPaths:
-      image:
-        path: /tmp/setup_conda_mouse2p_image.tiff
-        type: images
-        max_index: 200
+    outputPaths: null
     started_at: '2025-01-31 17:39:58'
     finished_at: '2025-01-31 17:40:02'
 nwb:
