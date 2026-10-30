@@ -11,18 +11,47 @@ const getSetLoggingOut = async () => {
   return setLoggingOutFn
 }
 
+// Memory only, out of reach of injected scripts; the httpOnly refresh cookie
+// restores it after a reload.
+let accessToken: string | null = null
+let restoring: Promise<string | null> | null = null
+
+// Survives a failed /auth/logout, so a refresh cookie left behind cannot sign
+// the user back in; only a login clears it.
+const LOGGED_OUT_KEY = "logged_out"
+
 export const saveToken = (access_token: string) => {
-  localStorage.setItem("access_token", access_token)
+  accessToken = access_token
+  localStorage.removeItem(LOGGED_OUT_KEY)
 }
 
-export const getToken = () => {
-  return localStorage.getItem("access_token")
+export const getToken = () => accessToken
+
+// One refresh per page load, shared by every caller; null when there is no session.
+export const restoreSession = (): Promise<string | null> => {
+  if (accessToken) return Promise.resolve(accessToken)
+  if (localStorage.getItem(LOGGED_OUT_KEY)) return Promise.resolve(null)
+  if (!restoring) {
+    const attempt: Promise<string | null> = import("api/auth/Auth")
+      .then(({ refreshTokenApi }) => refreshTokenApi())
+      // A logout while this was in flight wins.
+      .then(({ access_token }) =>
+        restoring === attempt ? (accessToken ??= access_token) : null,
+      )
+      .catch((e) => {
+        // Only a 4xx means there is no session; anything else is retried.
+        const status = e?.response?.status
+        if (!(status >= 400 && status < 500) && restoring === attempt) {
+          restoring = null
+        }
+        return null
+      })
+    restoring = attempt
+  }
+  return restoring
 }
 
-export const saveRefreshToken = (refresh_token: string) => {
-  localStorage.setItem("refresh_token", refresh_token)
-}
-
+// Written by SPA versions that kept the refresh token in localStorage.
 export const getRefreshToken = () => {
   return localStorage.getItem("refresh_token")
 }
@@ -53,6 +82,13 @@ export const logout = async ({
     }
   }
 
+  try {
+    const { logoutApi } = await import("api/auth/Auth")
+    await logoutApi()
+  } catch (e) {
+    // The cookie expires on its own; logout must not hang on it
+  }
+
   // Remove tokens synchronously first - this is the critical step
   removeRefreshToken()
   removeToken()
@@ -79,7 +115,11 @@ export const logout = async ({
 }
 
 export const removeToken = () => {
-  return localStorage.removeItem("access_token")
+  accessToken = null
+  restoring = null
+  localStorage.setItem(LOGGED_OUT_KEY, "1")
+  // Written by SPA versions that kept the access token in localStorage.
+  localStorage.removeItem("access_token")
 }
 
 export const saveExToken = (ExToken: string) => {

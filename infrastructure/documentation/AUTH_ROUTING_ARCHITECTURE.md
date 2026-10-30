@@ -220,14 +220,16 @@ Login-time operations (all wrapped in try/except to not block login):
 **Purpose:** Coordinated async logout: signal interceptor, notify backend, clear all state, navigate to login
 **Input:** None
 **Output:** None (navigates to `/login`)
-**Calls:** `getSetLoggingOut()` -> `setLoggingOut(true)` -> `logoutFreeUserApi()` -> token removal -> `routingService.clearRoutingInfo()` -> `setLoggingOut(false)` -> navigate
+**Calls:** `getSetLoggingOut()` -> `setLoggingOut(true)` -> `logoutFreeUserApi()` -> `logoutApi()` (clears the refresh cookie) -> token removal -> `routingService.clearRoutingInfo()` -> `setLoggingOut(false)` -> navigate
 
 Cleared state during logout:
 
 | Storage | Key | Purpose |
 |---------|-----|---------|
-| localStorage | `access_token` | JWT access token |
-| localStorage | `refresh_token` | JWT refresh token |
+| memory | access token | Never written to storage; restored from the refresh cookie after a reload |
+| cookie | `refresh_token` | HttpOnly, `Path=/auth`; cleared by `POST /auth/logout` |
+| localStorage | `refresh_token`, `access_token` | Left by older SPA versions; removed on logout |
+| localStorage | `logged_out` | Set on logout, cleared on login; blocks restoring from a cookie a failed logout left behind |
 | localStorage | `ExToken` | App-signed JWT; only issued when `USE_FIREBASE_TOKEN=False`, expires with the refresh token |
 | localStorage | `dismissedAlerts` | UI alert dismissal state |
 | sessionStorage | `storage-refreshed-on-login` | One-time storage refresh flag |
@@ -247,7 +249,7 @@ Cleared state during logout:
 
 **File:** `frontend/src/components/Layout/index.tsx`
 **Purpose:** Validate token, fetch user, refresh storage, with multiple token revalidation points to detect concurrent logout
-**Input:** None (reads from localStorage and Redux store)
+**Input:** None (reads the token from `restoreSession()` and the Redux store)
 **Output:** None (dispatches `getMe()`, refreshes storage, navigates)
 **Token revalidation points:** Before `getMe()`, after `getMe()`, after storage refresh, before navigation
 
@@ -423,8 +425,9 @@ For the Terraform-side secrets (`firebase_config_json`, `firebase_private_json`,
 |----------|---------|
 | `logout()` | Coordinated async logout with interceptor signaling |
 | `getSetLoggingOut()` | Cached dynamic import to avoid circular dependency |
-| `saveToken()` / `getToken()` / `removeToken()` | Access token localStorage management |
-| `saveRefreshToken()` / `getRefreshToken()` / `removeRefreshToken()` | Refresh token localStorage management |
+| `saveToken()` / `getToken()` / `removeToken()` | In-memory access token; `removeToken()` sets the `logged_out` flag |
+| `restoreSession()` | One `/auth/refresh` per page load from the cookie, shared by all callers; null without a session |
+| `getRefreshToken()` / `removeRefreshToken()` | Refresh token an older SPA left in localStorage |
 | `isPublicRoute()` | Check if pathname matches public route patterns |
 
 ### Frontend Axios (`frontend/src/utils/axios.ts`)

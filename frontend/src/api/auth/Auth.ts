@@ -1,4 +1,7 @@
-import { getRefreshToken, logout } from "utils/auth/AuthUtils"
+import axiosLibrary from "axios"
+
+import { API_TIMEOUT, BASE_URL } from "const/API"
+import { getRefreshToken, removeRefreshToken } from "utils/auth/AuthUtils"
 import axios from "utils/axios"
 
 export type LoginDTO = {
@@ -16,21 +19,52 @@ export type AccessTokenDTO = {
   access_token: string
 }
 
+// Asks the backend to keep the refresh token in an httpOnly cookie.
+const REFRESH_COOKIE = {
+  withCredentials: true,
+  headers: { "X-Refresh-Cookie": "1" },
+}
+
 export const loginApi = async (data: LoginDTO): Promise<TokenDTO> => {
-  const response = await axios.post("/auth/login", data)
+  const response = await axios.post("/auth/login", data, REFRESH_COOKIE)
   return response.data
 }
 
-export const refreshTokenApi = async (): Promise<AccessTokenDTO> => {
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) {
-    await logout()
-    throw new Error("No stored refresh token; re-login required")
-  }
-  const response = await axios.post("/auth/refresh", {
-    refresh_token: refreshToken,
+let refreshing: Promise<AccessTokenDTO> | null = null
+
+// Bypasses the shared instance: its 401 handler logs out, which is wrong for a
+// visitor with no session, and its premium routing headers are not needed here.
+export const refreshTokenApi = (): Promise<AccessTokenDTO> => {
+  const post = (body: object) =>
+    axiosLibrary.post<AccessTokenDTO>(`${BASE_URL}/auth/refresh`, body, {
+      ...REFRESH_COOKIE,
+      timeout: API_TIMEOUT.REFRESH,
+    })
+  refreshing ??= (async () => {
+    const legacy = getRefreshToken()
+    if (legacy) {
+      try {
+        // Used until it expires; the backend never moves it into the cookie.
+        return (await post({ refresh_token: legacy })).data
+      } catch (e) {
+        const status = axiosLibrary.isAxiosError(e) ? e.response?.status : 0
+        if (!status || status >= 500) throw e
+        // A dead token from an older SPA must not shadow a live cookie.
+        removeRefreshToken()
+      }
+    }
+    return (await post({})).data
+  })().finally(() => {
+    refreshing = null
   })
-  return response.data
+  return refreshing
+}
+
+export const logoutApi = async (): Promise<void> => {
+  await axiosLibrary.post(`${BASE_URL}/auth/logout`, undefined, {
+    withCredentials: true,
+    timeout: API_TIMEOUT.LOGOUT,
+  })
 }
 
 export const sendResetPasswordMailApi = async (
@@ -43,6 +77,10 @@ export const sendResetPasswordMailApi = async (
 }
 
 export const proxyLoginApi = async (uid: string): Promise<TokenDTO> => {
-  const response = await axios.post(`/auth/proxy-login/${uid}`)
+  const response = await axios.post(
+    `/auth/proxy-login/${uid}`,
+    undefined,
+    REFRESH_COOKIE,
+  )
   return response.data
 }

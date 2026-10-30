@@ -1385,19 +1385,25 @@ export async function deleteE2eWorkspaces(
   return deleted
 }
 
-// The app keeps its tokens in localStorage, so page.request needs them
-// passed explicitly; the page must already be on the app origin
+// The app holds its access token in page memory, so page.request mints one
+// from the context's refresh cookie; the page must already be on the app origin
 export async function apiHeaders(page: Page) {
-  const { token, exToken } = await page.evaluate(() => ({
-    token: localStorage.getItem("access_token"),
-    exToken: localStorage.getItem("ExToken"),
-  }))
-  if (!token) {
+  const refreshed = await page.request.post(`${apiUrl()}/auth/refresh`, {
+    data: {},
+  })
+  if (!refreshed.ok()) {
     throw new Error(
-      "No access_token in localStorage — is the storage state stale? Delete e2e/.auth and rerun.",
+      `No session to refresh (${refreshed.status()}) - is the storage state stale? Delete e2e/.auth and rerun.`,
     )
   }
-  return authHeaders(token, exToken)
+  const { access_token } = await refreshed.json()
+  const exToken = await page.evaluate(() => localStorage.getItem("ExToken"))
+  return authHeaders(access_token, exToken)
+}
+
+export async function hasRefreshCookie(page: Page) {
+  const cookies = await page.context().cookies()
+  return cookies.some((cookie) => cookie.name === "refresh_token")
 }
 
 // Find-or-create a workspace via the API — avoids the virtualized grid
