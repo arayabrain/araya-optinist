@@ -1,4 +1,5 @@
 # ALB listener rules for the multi-tier split. Lower priority wins.
+# 10:      maintenance page (scripts/maintenance_mode.sh, not Terraform)
 # 100-199: premium dynamic rules (created by premium-manager Lambda)
 # 200-312: public-bound (system-internal sync, /api/public/*, /auth/*,
 #          /users/me/*, /log-report/*, assets)

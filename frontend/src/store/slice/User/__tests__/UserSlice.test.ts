@@ -265,6 +265,16 @@ describe("UserSlice", () => {
       expect(clearOrder).toBeLessThan(saveOrder)
     })
 
+    it("should clear the announcement dismissal so it shows again", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, loginFulfilledAction)
+
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        "announcementDismissed",
+      )
+    })
+
     it("should drop a stale ex token when the backend issues none", () => {
       const state = userSlice.reducer(undefined, { type: "@@INIT" })
 

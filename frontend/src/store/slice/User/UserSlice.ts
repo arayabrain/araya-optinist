@@ -90,6 +90,8 @@ export const userSlice = createSlice({
           // Prevents a new session from inheriting routing-id/premium_assigned
           // from a prior premium session that did not log out cleanly (#659).
           routingService.clearRoutingInfo()
+          // Show a dismissed site announcement again on each sign-in.
+          localStorage.removeItem("announcementDismissed")
 
           saveToken(action.payload.access_token)
           saveRefreshToken(action.payload.refresh_token)

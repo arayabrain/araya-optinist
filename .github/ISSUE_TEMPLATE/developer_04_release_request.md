@@ -126,6 +126,8 @@ assignees: ''
     - 実績: {日時}
   - [ ] ユーザーリスト確認
   - [ ] BCCでメール配送
+  - [ ] （ダウンタイムありの場合）サイト内告知を設定 -> [MAINTENANCE_PROCEDURES.md#planned-downtime-announcement-and-maintenance-page](https://github.com/arayabrain/araya-optinist/blob/develop-main/infrastructure/documentation/MAINTENANCE_PROCEDURES.md#planned-downtime-announcement-and-maintenance-page)
+    - [ ] シークレットウィンドウでログインし、ヘッダーに告知が表示されることを確認
 
 #### リリース準備（～リリース前日）
 
@@ -154,6 +156,8 @@ assignees: ''
     - [ ] 実績: {時刻}
   - [ ] Status を In progress に更新、Slack 連絡
   - [ ] 対象 commit SHA / タグ `vX.Y.Z` を再確認
+  - [ ] （ダウンタイムありの場合）メンテナンスページを有効化: `infrastructure/scripts/maintenance_mode.sh subscr on`
+    - [ ] `curl -si https://<host>/ | head -1` が 503 であることを確認
 - [ ] **2. デプロイ実施**
   - 担当: 支援者
   - 時刻:
@@ -169,6 +173,8 @@ assignees: ''
       - check_ecs_image_drift.py を使用して、デプロイしたインスタンスが最新かの確認
         - [ ] 確認結果:
   <!-- - [ ] （DBマイグレーションがある場合）マイグレーション実行 -->
+  - [ ] （メンテナンスページ有効時）解除: `infrastructure/scripts/maintenance_mode.sh subscr off`
+    - [ ] `curl -si https://<host>/ | head -1` が 200 であることを確認
 - [ ] **3. リリース後動作確認（主要EP / 認証 / 課金 / premium routing）**
   - 担当: @
   - 時刻:
@@ -192,6 +198,7 @@ assignees: ''
     - 予定: {時刻}
     - [ ] 実績: {時刻}
   - [ ] メンテナンス終了 / リリース完了を告知
+  - [ ] サイト内告知をクリア（`--value '{}'`、または `until` 経過で自動的に消える）
   - [ ] 完了報告コメントを issue に追加
 
 ### 事後作業
