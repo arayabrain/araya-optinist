@@ -2,11 +2,11 @@
 
 Terraform already passes CORS_ORIGINS to every service, but the app used to
 hard-code "*" and ignore it. A comma-separated list narrows the origins;
-unset, empty or "*" keeps the previous behaviour.
+unset, empty or "*" allows every origin.
 """
 
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 WILDCARD = "*"
 
@@ -24,3 +24,13 @@ def get_cors_allow_origins(raw: Optional[str] = None) -> List[str]:
     if not origins or WILDCARD in origins:
         return [WILDCARD]
     return origins
+
+
+def get_cors_origin_options() -> Dict[str, Any]:
+    """Origin arguments for Starlette's CORSMiddleware."""
+    origins = get_cors_allow_origins()
+    if origins == [WILDCARD]:
+        # Starlette answers "*" to a credentialed request that carries no cookie
+        # yet, which browsers refuse; echoing every origin allows the same set.
+        return {"allow_origins": [], "allow_origin_regex": ".*"}
+    return {"allow_origins": origins}

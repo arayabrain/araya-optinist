@@ -16,6 +16,7 @@ const mockGetToken = jest.fn(() => "access-token" as string | null)
 const mockGetExToken = jest.fn(() => null as string | null)
 const mockLogout = jest.fn()
 const mockSaveToken = jest.fn()
+const mockRestoreSession = jest.fn<Promise<string | null>, []>()
 const mockGetRoutingHeaders = jest.fn<Record<string, string>, []>(() => ({}))
 const mockUpdateRoutingToken = jest.fn<void, [string]>()
 const mockRequiresPremiumRouting = jest.fn<boolean, []>(() => false)
@@ -28,6 +29,7 @@ jest.mock("utils/auth/AuthUtils", () => ({
   getToken: mockGetToken,
   getExToken: mockGetExToken,
   logout: mockLogout,
+  restoreSession: mockRestoreSession,
   saveToken: mockSaveToken,
 }))
 jest.mock("utils/routing/RoutingService", () => ({
@@ -136,5 +138,43 @@ describe("axios 401->refresh failure handling", () => {
 
     await expect(axiosInstance.get("/protected")).rejects.toBeTruthy()
     expect(mockLogout).not.toHaveBeenCalled()
+  })
+})
+
+describe("axios request after a reload, before the token is restored", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let axiosInstance: any
+
+  beforeEach(() => {
+    jest.resetModules()
+    jest.clearAllMocks()
+    responses = new Map()
+    mockGetToken.mockReturnValue(null)
+    mockGetExToken.mockReturnValue(null)
+    mockGetRoutingHeaders.mockReturnValue({})
+    mockRequiresPremiumRouting.mockReturnValue(false)
+    mockIsDataviewPublicOutputsRequest.mockReturnValue(false)
+    mockRestoreSession.mockResolvedValue("restored")
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    axiosInstance = require("utils/axios").default
+    installAdapter(axiosInstance)
+  })
+
+  it("waits for the restored token instead of sending the request bare", async () => {
+    responses.set("/protected", { status: 200 })
+
+    const response = await axiosInstance.get("/protected")
+
+    expect(response.config.headers.Authorization).toBe("Bearer restored")
+    expect(mockRestoreSession).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not wait on a restore for the auth endpoints themselves", async () => {
+    responses.set("/auth/login", { status: 200 })
+
+    const response = await axiosInstance.post("/auth/login", {})
+
+    expect(response.config.headers.Authorization).toBeUndefined()
+    expect(mockRestoreSession).not.toHaveBeenCalled()
   })
 })

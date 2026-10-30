@@ -220,14 +220,16 @@ Login-time operations (all wrapped in try/except to not block login):
 **Purpose:** Coordinated async logout: signal interceptor, notify backend, clear all state, navigate to login
 **Input:** None
 **Output:** None (navigates to `/login`)
-**Calls:** `getSetLoggingOut()` -> `setLoggingOut(true)` -> `logoutFreeUserApi()` -> token removal -> `routingService.clearRoutingInfo()` -> `setLoggingOut(false)` -> navigate
+**Calls:** `getSetLoggingOut()` -> `setLoggingOut(true)` -> `logoutFreeUserApi()` -> `logoutApi()` (clears the refresh cookie) -> token removal -> `routingService.clearRoutingInfo()` -> `setLoggingOut(false)` -> navigate
 
 Cleared state during logout:
 
 | Storage | Key | Purpose |
 |---------|-----|---------|
-| localStorage | `access_token` | JWT access token |
-| localStorage | `refresh_token` | JWT refresh token |
+| memory | access token | Never written to storage; restored from the refresh cookie after a reload |
+| cookie | `refresh_token` | HttpOnly, `Path=/auth`; cleared by `POST /auth/logout` |
+| localStorage | `refresh_token`, `access_token` | Left by older SPA versions; removed on logout |
+| localStorage | `logged_out` | Set on logout, cleared on login; blocks restoring from a cookie a failed logout left behind |
 | localStorage | `ExToken` | App-signed JWT; only issued when `USE_FIREBASE_TOKEN=False`, expires with the refresh token |
 | localStorage | `dismissedAlerts` | UI alert dismissal state |
 | sessionStorage | `storage-refreshed-on-login` | One-time storage refresh flag |
@@ -247,7 +249,7 @@ Cleared state during logout:
 
 **File:** `frontend/src/components/Layout/index.tsx`
 **Purpose:** Validate token, fetch user, refresh storage, with multiple token revalidation points to detect concurrent logout
-**Input:** None (reads from localStorage and Redux store)
+**Input:** None (reads the token from `restoreSession()` and the Redux store)
 **Output:** None (dispatches `getMe()`, refreshes storage, navigates)
 **Token revalidation points:** Before `getMe()`, after `getMe()`, after storage refresh, before navigation
 
@@ -350,7 +352,7 @@ For background sync metrics (`ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`,
 | `USE_FIREBASE_TOKEN` | `True` → authenticate with `Authorization: Bearer <Firebase ID token>`. `False` → use the locally-signed `ExToken` JWT and bypass Firebase | `True` (`auth_config.py`); `studio/config/.env.example` sets `False` for local dev |
 | `USE_FIREBASE_EMAIL` | Send verification / reset mail via the Firebase Identity Toolkit REST API | `True` |
 | `IS_STANDALONE` | Tolerates a missing `firebase_config.json` | `True` locally |
-| `FRONTEND_URL` | Only used in the `else` branch of `auth_email_service.py` commented "Development/Testing: Just log the link", where it builds `action_code_settings`. On the live path, `sendOobCode` is posted with no `continueUrl`, so the real action-link target comes from the **Firebase console email template**, not this variable | `http://localhost:3000`, set by `FRONTEND_URL` in `app/const.py` |
+| `FRONTEND_URL` | The one cross-origin page allowed to set, read and clear the refresh cookie on `/auth/login`, `/auth/refresh` and `/auth/logout`; a deployment that serves the SPA from another origin than the API must set it to that origin. Also used in the `else` branch of `auth_email_service.py` commented "Development/Testing: Just log the link", where it builds `action_code_settings`. On the live path, `sendOobCode` is posted with no `continueUrl`, so the real action-link target comes from the **Firebase console email template**, not this variable | `http://localhost:3000`, set by `FRONTEND_URL` in `app/const.py` |
 | `SECRET_KEY` | Signs the app-level JWT that wraps the Firebase refresh token, and the `ExToken` | Required, see the startup check below |
 | `ROUTING_SECRET_KEY` | HMAC key for premium routing IDs | Required in the cloud, see the startup check below |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | Lifetime of the app-level refresh JWT and of the `ExToken`. Every app-signed token must carry `exp` | `1440` |
@@ -423,8 +425,9 @@ For the Terraform-side secrets (`firebase_config_json`, `firebase_private_json`,
 |----------|---------|
 | `logout()` | Coordinated async logout with interceptor signaling |
 | `getSetLoggingOut()` | Cached dynamic import to avoid circular dependency |
-| `saveToken()` / `getToken()` / `removeToken()` | Access token localStorage management |
-| `saveRefreshToken()` / `getRefreshToken()` / `removeRefreshToken()` | Refresh token localStorage management |
+| `saveToken()` / `getToken()` / `removeToken()` | In-memory access token; `removeToken()` sets the `logged_out` flag |
+| `restoreSession()` | One `/auth/refresh` per page load from the cookie, shared by all callers; null without a session |
+| `getRefreshToken()` / `removeRefreshToken()` | Refresh token an older SPA left in localStorage |
 | `isPublicRoute()` | Check if pathname matches public route patterns |
 
 ### Frontend Axios (`frontend/src/utils/axios.ts`)
