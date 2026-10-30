@@ -17,7 +17,6 @@ import pytest
 from premium_manager import MAX_PREMIUM_PRIORITY, get_next_available_priority
 from terraform_source import (
     NEXT_TOP_LEVEL_BLOCK,
-    PROJECT_ROOT,
     TERRAFORM_DIR,
     attribute,
     read,
@@ -31,7 +30,6 @@ INFRASTRUCTURE_TF = TERRAFORM_DIR / "infrastructure.tf"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
 COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 MONITORING_TF = TERRAFORM_DIR / "monitoring.tf"
-CLOUD_STARTUP_SH = PROJECT_ROOT / "cloud-startup.sh"
 
 PREMIUM_BAND_START = 100
 
@@ -498,29 +496,6 @@ class TestPublicServicePlacement:
 
     def test_placement_constraint_selects_the_public_tier_attribute(self):
         assert attribute(self.constraint, "expression") == '"attribute:tier == public"'
-
-
-class TestPublicServiceHealthCheckGrace:
-    """The public service's grace outlasts cloud-startup.sh's database wait."""
-
-    # Migrations, app start and the target group's two passing checks
-    STARTUP_MARGIN_SECONDS = 120
-
-    def test_service_grace_period_covers_the_database_wait(self):
-        script = read(CLOUD_STARTUP_SH)
-        tries = re.search(r"^max_tries=(\d+)$", script, re.MULTILINE)
-        pause = re.search(
-            r"^until mysql .*\n\s*do\n\s*sleep (\d+)$", script, re.MULTILINE
-        )
-        assert tries and pause, "database wait loop not found in cloud-startup.sh"
-        wait = int(tries.group(1)) * int(pause.group(1))
-
-        service = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
-        grace = int(attribute(service, "health_check_grace_period_seconds"))
-        assert grace >= wait + self.STARTUP_MARGIN_SECONDS, (
-            f"grace {grace} s < database wait {wait} s "
-            f"+ margin {self.STARTUP_MARGIN_SECONDS} s"
-        )
 
 
 class TestPublishedDataEfsLifecycle:

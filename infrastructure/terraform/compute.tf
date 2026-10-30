@@ -395,6 +395,10 @@ resource "aws_ecs_service" "premium" {
     expression = "attribute:tier == premium"
   }
 
+  # No load balancer, but ECS applies the grace to container health checks
+  # too. Sized for cloud-startup.sh's DB wait (up to 600 s) plus app start;
+  # the container's startPeriod caps at 300 s.
+  health_check_grace_period_seconds = 900
 
   depends_on = [
     aws_instance.premium
