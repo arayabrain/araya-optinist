@@ -154,7 +154,7 @@ def test_nwb_file_is_time_first_with_zero_rois(images, output_dir, tmp_path):
 
 def test_correlation_default_correlates_rois_not_timepoints(output_dir):
     params = read_default_params("correlation")
-    assert params == {"transpose": False}
+    assert params == {"transpose": False, "sort_by_cluster": False}
 
     fluo = FluoData(np.random.default_rng(2).random((N_ROI, N_TIME)), file_name="f")
     info = correlation(fluo, output_dir, params=params)

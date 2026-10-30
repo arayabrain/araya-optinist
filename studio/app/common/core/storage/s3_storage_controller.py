@@ -962,7 +962,7 @@ class S3StorageController(BaseRemoteStorageController):
             sync_mode: RemoteExperimentSyncMode enum value
                 - ALL: sync everything (default)
                 - ESSENTIAL_ONLY: skip large files, sync yaml/json (for dataview)
-                - VISUALIZATION: sync only json and tiff (for viewing results)
+                - VISUALIZATION: sync only the files needed for viewing results
 
         Returns:
             True if download successful, False otherwise

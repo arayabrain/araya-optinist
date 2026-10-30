@@ -35,6 +35,7 @@ class WorkflowWithResults:
     nodeDict: Dict[str, Node]
     edgeDict: Dict[str, Edge]
     is_remote_synced: Optional[bool] = None
+    data_usage: Optional[int] = None
 
 
 @dataclass

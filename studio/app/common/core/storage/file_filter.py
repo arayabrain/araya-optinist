@@ -38,7 +38,7 @@ class FileSyncFilter:
                 return (True, "thumbnail file")
             return (False, "not needed for thumbnails")
 
-        # Visualization mode: only sync JSON and TIFF files needed for viewing
+        # Visualization mode: only sync the files needed for viewing
         if sync_mode == RemoteExperimentSyncMode.VISUALIZATION:
             if any(
                 file_lower.endswith(pattern) for pattern in VISUALIZATION_SYNC_PATTERNS

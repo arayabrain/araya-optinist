@@ -126,6 +126,15 @@ class TestFileSyncFilterVisualizationMode:
             assert should_sync is True, f"Expected {file_path} to sync"
             assert reason == "visualization file"
 
+    def test_visualization_syncs_html_files(self):
+        """Visualization mode syncs HTML summaries read by /html"""
+        for file_path in ["glm/summary.html", "SUMMARY.HTML"]:
+            should_sync, reason = self.filter.should_sync_file(
+                file_path, RemoteExperimentSyncMode.VISUALIZATION
+            )
+            assert should_sync is True, f"Expected {file_path} to sync"
+            assert reason == "visualization file"
+
     def test_visualization_skips_large_files(self):
         """Visualization mode skips large binary files"""
         large_files = [

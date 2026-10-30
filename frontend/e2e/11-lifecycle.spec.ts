@@ -24,6 +24,7 @@ import {
   sqlLiteral,
   sqlSkipReason,
   verifyEmail,
+  hasRefreshCookie,
 } from "./helpers"
 
 // The subscription/storage warning lifecycle, on the local docker stack AND on
@@ -1026,9 +1027,18 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     )
     try {
       // The corrupted token makes the first heartbeat a genuine dead-token
-      // 401 (ExToken is ignored locally; auth is the Firebase bearer token)
-      await page.evaluate(() =>
-        localStorage.setItem("access_token", "e2e-dead-token"),
+      // 401 (ExToken is ignored locally; auth is the Firebase bearer token).
+      // The access token lives in page memory, so it goes on the request
+      await page.route(
+        "**/users/me/premium/heartbeat",
+        (route) =>
+          route.continue({
+            headers: {
+              ...route.request().headers(),
+              authorization: "Bearer e2e-dead-token",
+            },
+          }),
+        { times: 1 },
       )
 
       const heartbeat401 = page.waitForResponse(
@@ -1192,10 +1202,8 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     expect(response.status()).toBe(200)
     expect((await response.json()).logged_out).toBe(true)
 
-    // logout() asserted the redirect; the session tokens must be gone too
-    expect(
-      await page.evaluate(() => localStorage.getItem("access_token")),
-    ).toBeNull()
+    // logout() asserted the redirect; the session cookie must be gone too
+    expect(await hasRefreshCookie(page)).toBe(false)
 
     expect(
       runSql(

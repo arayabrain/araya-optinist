@@ -42,13 +42,16 @@ const HTMLPlotImple = memo(function HTMLPlotImple() {
   const htmlData = useSelector(selectHTMLData(path))
 
   return (
-    <div
-      dangerouslySetInnerHTML={{ __html: htmlData }}
-      style={{
-        overflow: "scroll",
-        display: "flex",
-        height: "90%",
+    // No allow-scripts: the output cannot run code; same-origin lets us size it.
+    <iframe
+      sandbox="allow-same-origin"
+      srcDoc={htmlData}
+      title={path}
+      onLoad={({ currentTarget: frame }) => {
+        const height = frame.contentDocument?.documentElement.scrollHeight
+        if (height) frame.style.height = `${height}px`
       }}
+      style={{ width: "100%", border: 0 }}
     />
   )
 })
