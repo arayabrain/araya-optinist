@@ -39,8 +39,8 @@ import PopupInputUrl from "components/Workspace/PopupInputUrl"
 import { CONTENT_HEIGHT, RIGHT_DRAWER_WIDTH } from "const/Layout"
 import { getAlgoList } from "store/slice/AlgorithmList/AlgorithmListActions"
 import {
-  getStatusLoadViaUrl,
   uploadViaUrl,
+  waitForUploadViaUrl,
 } from "store/slice/FileUploader/FileUploaderActions"
 import { setInputNodeFilePath } from "store/slice/InputNode/InputNodeActions"
 import { selectLogsModalIsOpen } from "store/slice/LogsModal/LogsModalSelectors"
@@ -126,44 +126,34 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
         requestId: dialogViaUrl.requestId,
       }),
     )
-    if ((data as { error: { message: string } }).error) {
+    if (!uploadViaUrl.fulfilled.match(data)) {
       handleClickVariant("error", "Url does not exist!")
       return
     }
-    let firstCall = true
-    const makeApiCall = async () => {
-      const statusData = await dispatch(
-        getStatusLoadViaUrl({
-          workspaceId,
-          file_name: (data.payload as { file_name: string }).file_name,
-          requestId: dialogViaUrl.requestId,
+    const { file_name, upload_id } = data.payload
+    setDialogFile({ ...dialogFile, filePath: [file_name] })
+    const result = await dispatch(
+      waitForUploadViaUrl({
+        workspaceId,
+        file_name,
+        upload_id,
+        requestId: dialogViaUrl.requestId,
+      }),
+    )
+    if (waitForUploadViaUrl.fulfilled.match(result)) {
+      handleClickVariant("success", "File upload finished!")
+      dispatch(
+        setInputNodeFilePath({
+          nodeId: dialogViaUrl.nodeId,
+          filePath: file_name,
         }),
       )
-      if (
-        (statusData.payload as { current: number }).current !==
-        (statusData.payload as { total: number }).total
-      ) {
-        if (!firstCall) {
-          setTimeout(makeApiCall, 1000)
-        } else {
-          firstCall = false
-          makeApiCall()
-        }
-      } else {
-        handleClickVariant("success", "File upload finished!")
-        dispatch(
-          setInputNodeFilePath({
-            nodeId: dialogViaUrl.nodeId,
-            filePath: (data.payload as { file_name: string }).file_name,
-          }),
-        )
-      }
+    } else {
+      handleClickVariant(
+        "error",
+        `File upload failed: ${result.payload ?? result.error.message}`,
+      )
     }
-    makeApiCall()
-    setDialogFile({
-      ...dialogFile,
-      filePath: [(data.payload as { file_name: string }).file_name],
-    })
   }
 
   const onCloseModalLogs = useCallback(() => {
