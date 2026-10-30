@@ -2,9 +2,8 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from fastapi_pagination import add_pagination
 from starlette.middleware.cors import CORSMiddleware
 
@@ -30,7 +29,8 @@ from studio.app.common.core.middleware import (
 )
 from studio.app.common.core.middleware.cors_config import get_cors_allow_origins
 from studio.app.common.core.middleware.spa_routing_middleware import (
-    INDEX_HTML_CACHE_HEADERS,
+    ROOT_SEO_FILES,
+    serve_spa_shell,
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
@@ -283,6 +283,7 @@ def _register_public_routers(app: FastAPI) -> None:
     app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
     app.include_router(users_me.beacon_router)
     app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
+    app.include_router(log_report.csp_router)
 
 
 def _register_authenticated_routers(app: FastAPI) -> None:
@@ -379,22 +380,24 @@ app.mount(
     name="images",
 )
 
-public_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.PUBLIC)
-build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
+
+@app.get("/robots.txt", include_in_schema=False)
+@app.get("/sitemap.xml", include_in_schema=False)
+@app.get("/llms.txt", include_in_schema=False)
+async def root_seo_file(request: Request):
+    """Serve crawler files as themselves; the SPA catch-all would otherwise
+    answer them with the HTML shell, which Search Console cannot read."""
+    path = request.scope["path"]
+    media_type = ROOT_SEO_FILES.get(path)
+    file_path = f"{DIRPATH.FRONTEND_DIRS.BUILD}{path}"
+    if media_type is None or not os.path.exists(file_path):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    return FileResponse(file_path, media_type=media_type)
 
 
 @app.get("/")
 async def root(request: Request):
-    if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
-        return build_templates.TemplateResponse(
-            "index.html", {"request": request}, headers=INDEX_HTML_CACHE_HEADERS
-        )
-    else:
-        return public_templates.TemplateResponse(
-            "no-built-pages.html",
-            {"request": request},
-            headers=INDEX_HTML_CACHE_HEADERS,
-        )
+    return serve_spa_shell(request)
 
 
 @app.get("/{_:path}")
