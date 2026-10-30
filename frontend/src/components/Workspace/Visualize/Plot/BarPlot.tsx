@@ -12,8 +12,10 @@ import Typography from "@mui/material/Typography"
 
 import { BarData } from "api/visualizations/Outputs"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import { barXLabels } from "components/Workspace/Visualize/Plot/barLabels"
 import { getBarData } from "store/slice/DisplayData/DisplayDataActions"
 import {
+  selectBarColumns,
   selectBarData,
   selectBarDataError,
   selectBarDataIsFulfilled,
@@ -63,16 +65,17 @@ const BarPlotImple = memo(function BarPlotImple() {
   const height = useSelector(selectVisualizeItemHeight(itemId))
   const index = useSelector(selectBarItemIndex(itemId))
   const dataKeys = useSelector(selectBarIndex(path))
+  const columns = useSelector(selectBarColumns(path))
 
   const data = useMemo(
     () => [
       {
-        x: Object.keys(barData[index]),
+        x: barXLabels(barData[index], columns),
         y: Object.values(barData[index]),
         type: "bar",
       },
     ],
-    [barData, index],
+    [barData, index, columns],
   )
 
   const layout = useMemo(

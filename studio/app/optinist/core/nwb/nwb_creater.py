@@ -3,6 +3,7 @@ import os
 import shutil
 
 import numpy as np
+from hdmf.data_utils import GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -25,6 +26,11 @@ from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
+# ROI frames an image_mask column holds in memory while it is written
+IMAGE_MASK_BUFFER = 16
+# postprocess entries -> the name the same data had in files written before
+RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
+
 
 def _time_first(data, n_roi):
     # a square array counts as (roi, time); its axes cannot be told apart
@@ -32,6 +38,41 @@ def _time_first(data, n_roi):
     if data.ndim == 2 and data.shape[0] == n_roi:
         return data.T
     return data
+
+
+class ImageMasks(GenericDataChunkIterator):
+    """
+    A dense float32 image_mask per ROI, drawn from its (row, column, weight)
+    pixel_mask only as its chunk is written: the file gets ROIs x H x W, while
+    memory holds a buffer of IMAGE_MASK_BUFFER frames.
+    """
+
+    def __init__(self, pixel_masks: list, shape):
+        self._pixel_masks = pixel_masks
+        self._shape = tuple(shape)
+        buffer = min(IMAGE_MASK_BUFFER, len(pixel_masks))
+        super().__init__(
+            chunk_shape=(1, *self._shape), buffer_shape=(buffer, *self._shape)
+        )
+
+    def __len__(self):
+        # DynamicTable.add_column checks the column's length against the rows
+        return len(self._pixel_masks)
+
+    def _get_data(self, selection):
+        rois = range(len(self._pixel_masks))[selection[0]]
+        frames = np.zeros((len(rois), *self._shape), dtype=np.float32)
+        for k, i in enumerate(rois):
+            pixels = np.asarray(self._pixel_masks[i], dtype=float).reshape(-1, 3)
+            rows, cols = pixels[:, 0].astype(int), pixels[:, 1].astype(int)
+            frames[k, rows, cols] = pixels[:, 2]
+        return frames[(slice(None), *selection[1:])]
+
+    def _get_maxshape(self):
+        return (len(self._pixel_masks), *self._shape)
+
+    def _get_dtype(self):
+        return np.dtype("float32")
 
 
 class NWBCreater:
@@ -213,7 +254,7 @@ class NWBCreater:
         return nwbfile
 
     @classmethod
-    def roi(cls, nwbfile, function_id, roi_list):
+    def roi(cls, nwbfile, function_id, roi_list, image_mask_shape=None):
         nwbfile = cls.plane_segmentation(nwbfile, function_id)
         image_seg = nwbfile.processing["ophys"].data_interfaces["ImageSegmentation"]
         plane_seg = image_seg.plane_segmentations[function_id]
@@ -225,6 +266,21 @@ class NWBCreater:
 
         for col in roi_list:
             plane_seg.add_roi(**col)
+
+        # dense masks for every row, unless the rows carry their own (older configs)
+        if (
+            image_mask_shape is not None
+            and roi_list
+            and all("pixel_mask" in roi and "image_mask" not in roi for roi in roi_list)
+        ):
+            plane_seg.add_column(
+                name="image_mask",
+                description="Image masks for each ROI",
+                data=ImageMasks(
+                    [roi["pixel_mask"] for roi in roi_list], image_mask_shape
+                ),
+                check_ragged=False,
+            )
 
         return nwbfile
 
@@ -296,15 +352,22 @@ class NWBCreater:
 
     @classmethod
     def postprocess(cls, nwbfile, function_id, data):
+        optinist = nwbfile.processing["optinist"]
         for key, value in data.items():
             process_name = f"{function_id}_{key}"
             postprocess = PostProcess(name=process_name, data=value)
 
             try:
-                nwbfile.processing["optinist"].add_container(postprocess)
+                optinist.add_container(postprocess)
             except ValueError:
-                nwbfile.processing["optinist"].data_interfaces.pop(process_name)
-                nwbfile.processing["optinist"].add_container(postprocess)
+                optinist.data_interfaces.pop(process_name)
+                optinist.add_container(postprocess)
+
+            # a file written before keeps what this entry replaced: drop it
+            if key in RETIRED_POSTPROCESS:
+                retired = f"{function_id}_{RETIRED_POSTPROCESS[key]}"
+                if retired in optinist.data_interfaces:
+                    optinist.data_interfaces.pop(retired)
 
         return nwbfile
 
@@ -441,9 +504,12 @@ def set_nwbconfig(nwbfile, config):
             )
 
     if NWBDATASET.ROI in config:
-        for function_key in config[NWBDATASET.ROI]:
+        for function_key, entry in config[NWBDATASET.ROI].items():
             nwbfile = NWBCreater.roi(
-                nwbfile, function_key, config[NWBDATASET.ROI][function_key]["roi_list"]
+                nwbfile,
+                function_key,
+                entry["roi_list"],
+                entry.get("image_mask_shape"),
             )
 
     if NWBDATASET.COLUMN in config:

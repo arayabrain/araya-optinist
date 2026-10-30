@@ -13,8 +13,9 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.utils.pickle_handler import PickleWriter
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, Suite2pData
-from studio.app.optinist.dataclass.roi import RoiMasks, RoiStack
+from studio.app.optinist.dataclass.roi import RoiMasks
 
 # non_cell_roi is rebuilt on every commit, for all four wrappers and all four
 # operations. vacant_roi is the one wrapper importable in CI, so it stands in.
@@ -42,7 +43,9 @@ def node_dirpath(request):
     shutil.rmtree(WORKSPACE, ignore_errors=True)
 
 
-def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
+def build_node(
+    node_dirpath, iscell, num_trace=NUM_ROI, legacy_stack=False, nwbfile=None
+):
     os.makedirs(node_dirpath, exist_ok=True)
 
     # commit() reads workflow.yaml to find the nodes downstream of this one; a
@@ -66,9 +69,8 @@ def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
     for i in range(NUM_ROI):
         im[i, i, :] = i
     data = EditRoiData(np.ones((NUM_FRAME, *SHAPE)), RoiMasks.from_stack(im))
-    if on_disk:  # as suite2p_roi stored it before RoiMasks: pickled as `im`
-        np.save(f"{node_dirpath}/roi_mask_stack.npy", im)
-        data.roi_masks = RoiStack.open(f"{node_dirpath}/roi_mask_stack.npy")
+    if legacy_stack:  # as nodes stored it before RoiMasks: pickled as `im`
+        data.roi_masks = im
 
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/vacant_roi.pkl",
@@ -76,7 +78,7 @@ def build_node(node_dirpath, iscell, num_trace=NUM_ROI, on_disk=False):
             "edit_roi_data": data,
             "iscell": IscellData(np.array(iscell)),
             "fluorescence": FluoData(np.zeros((num_trace, NUM_FRAME))),
-            "nwbfile": {},
+            "nwbfile": nwbfile or {},
         },
     )
     # __non_cell_roi_file_name resolves the name from whichever file is on disk.
@@ -192,9 +194,9 @@ async def test_iscell_keeps_one_entry_per_im_row(node_dirpath):
 
 
 @pytest.mark.asyncio
-async def test_a_delete_only_commit_redraws_from_a_stack_on_disk(node_dirpath):
+async def test_a_delete_only_commit_redraws_from_a_legacy_stack(node_dirpath):
     file_path = build_node(
-        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], on_disk=True
+        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], legacy_stack=True
     )
 
     EditROI(file_path=file_path).delete([1])
@@ -204,9 +206,9 @@ async def test_a_delete_only_commit_redraws_from_a_stack_on_disk(node_dirpath):
     assert drawn_ids(node_dirpath, "cell_roi") == [0]
 
 
-def test_cancel_redraws_cell_roi_from_a_stack_on_disk(node_dirpath):
+def test_cancel_redraws_cell_roi_from_a_legacy_stack(node_dirpath):
     file_path = build_node(
-        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], on_disk=True
+        node_dirpath, [CellType.ROI, CellType.ROI, CellType.NON_ROI], legacy_stack=True
     )
 
     EditROI(file_path=file_path).delete([1])
@@ -215,12 +217,9 @@ def test_cancel_redraws_cell_roi_from_a_stack_on_disk(node_dirpath):
     assert drawn_ids(node_dirpath, "cell_roi") == [0, 1]
 
 
-@pytest.mark.asyncio
-async def test_a_suite2p_node_draws_only_rows_with_a_fluorescence_record(
-    node_dirpath,
-):
-    # vacant_roi's commit fills a missing trace, suite2p's keeps ops["F"] as it
-    # is, so a suite2p node is where rows without a trace survive a commit
+def build_suite2p_node(node_dirpath, nwbfile=None):
+    """A suite2p_roi node beside node_dirpath, its F one row short of its ROIs
+    (as an older commit left it), ROI 2 a non-cell."""
     node_dirpath = f"{os.path.dirname(node_dirpath)}/suite2p_roi_00000000000"
     os.makedirs(node_dirpath)
     node_id = os.path.basename(node_dirpath)
@@ -253,16 +252,46 @@ async def test_a_suite2p_node_draws_only_rows_with_a_fluorescence_record(
                 np.array([CellType.ROI, CellType.ROI, CellType.NON_ROI])
             ),
             "fluorescence": FluoData(traces),
-            "nwbfile": {},
+            "nwbfile": nwbfile or {},
         },
     )
     with open(f"{node_dirpath}/non_cell_roi.json", "w") as f:
         json.dump({"columns": [], "index": [], "data": []}, f)
-    file_path = f"{node_dirpath}/cell_roi.json"
+    return f"{node_dirpath}/cell_roi.json"
+
+
+@pytest.mark.asyncio
+async def test_a_suite2p_node_draws_only_rows_with_a_fluorescence_record(
+    node_dirpath,
+):
+    # vacant_roi's commit fills a missing trace, suite2p's keeps ops["F"] as it
+    # is, so a suite2p node is where rows without a trace survive a commit
+    file_path = build_suite2p_node(node_dirpath)
 
     # the traceless row stays a non-cell: deleted, it would be dropped as a
     # pending row before the commit draws anything
     EditROI(file_path=file_path).delete([0, 1])
     await EditROI(file_path=file_path).commit()
 
-    assert drawn_ids(node_dirpath, "non_cell_roi") == [0, 1]
+    assert drawn_ids(os.path.dirname(file_path), "non_cell_roi") == [0, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("algo", ["vacant_roi", "lccd", "suite2p_roi"])
+async def test_a_commit_keeps_the_runs_image_mask_setting(node_dirpath, algo):
+    settings = {"ophys": {"plane_segmentation": {"save_image_mask": True}}}
+    nwbfile = {"input": settings}
+    # not under node_dirpath: its test id's brackets would read as a glob pattern
+    node_dirpath = f"{WORKSPACE}/image_mask_{algo}/{algo}_00000000000"
+    if algo == "suite2p_roi":
+        file_path = build_suite2p_node(node_dirpath, nwbfile=nwbfile)
+    else:
+        file_path = build_node(node_dirpath, [CellType.ROI] * NUM_ROI, nwbfile=nwbfile)
+
+    EditROI(file_path=file_path).delete([0])
+    await EditROI(file_path=file_path).commit()
+
+    committed = EditROI(file_path=file_path).output_info["nwbfile"]
+    (node_nwb,) = (v for k, v in committed.items() if k != "input")
+    (entry,) = node_nwb[NWBDATASET.ROI].values()
+    assert entry["image_mask_shape"] == SHAPE

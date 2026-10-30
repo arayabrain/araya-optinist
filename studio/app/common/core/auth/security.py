@@ -39,7 +39,7 @@ def create_access_token(
     exp = (
         expires_delta
         if expires_delta
-        else timedelta(minutes=AUTH_CONFIG.ACCESS_TOKEN_EXPIRE_MINUTES)
+        else timedelta(minutes=AUTH_CONFIG.REFRESH_TOKEN_EXPIRE_MINUTES)
     )
     return _create_token(
         subject,

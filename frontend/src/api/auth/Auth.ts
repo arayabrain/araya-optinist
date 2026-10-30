@@ -13,7 +13,7 @@ export type TokenDTO = {
   access_token: string
   token_type: string
   refresh_token: string
-  ex_token: string
+  ex_token: string | null
 }
 export type AccessTokenDTO = {
   access_token: string

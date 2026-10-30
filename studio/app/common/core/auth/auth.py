@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from typing import Optional, Tuple
 
 from fastapi import HTTPException, status
@@ -8,6 +9,7 @@ from requests.exceptions import HTTPError, RequestException
 from sqlmodel import Session
 
 from studio.app.common.core.auth import pyrebase_app
+from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
 from studio.app.common.core.auth.security import (
     create_access_token,
@@ -20,6 +22,16 @@ from studio.app.common.schemas.auth import AccessToken, Token, UserAuth
 from studio.app.common.schemas.users import User
 
 logger = AppLogger.get_logger()
+
+
+def _create_ex_token(uid: str) -> Optional[str]:
+    # Only read when Firebase verification is off; expires with the refresh token.
+    if AUTH_CONFIG.USE_FIREBASE_TOKEN:
+        return None
+    return create_access_token(
+        subject=uid,
+        expires_delta=timedelta(minutes=AUTH_CONFIG.REFRESH_TOKEN_EXPIRE_MINUTES),
+    )
 
 
 def _extract_firebase_error(error: RequestException) -> str:
@@ -75,7 +87,7 @@ async def authenticate_user(db: Session, data: UserAuth) -> Tuple[Token, UserMod
             )
 
         assert user_db is not None, "Invalid user uid"
-        ex_token = create_access_token(subject=user_db.uid)
+        ex_token = _create_ex_token(user_db.uid)
         token = Token(
             access_token=user["idToken"],
             refresh_token=create_refresh_token(subject=user["refreshToken"]),
@@ -113,9 +125,18 @@ async def refresh_current_user_token(refresh_token: Optional[str]):
     try:
         user = pyrebase_app.auth().refresh(refresh_token=token["sub"])
         return AccessToken(access_token=user["idToken"])
-    except Exception as e:
-        message = _extract_firebase_error(e) if isinstance(e, HTTPError) else str(e)
+    except RequestException as e:
+        # pyrebase re-raises HTTPError(original, body); the response is on the original
+        response = getattr(e.args[0], "response", None) if e.args else None
+        message = (
+            _extract_firebase_error(e) if isinstance(e, HTTPError) else type(e).__name__
+        )
         logger.warning(f"Token refresh failed: {message}")
+        if response is None or response.status_code >= 500:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.warning(f"Token refresh failed: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
 
@@ -151,7 +172,7 @@ async def login_with_uid(db: Session, uid: str, current_user: User) -> Token:
         token = auth.create_custom_token(uid)
         user = pyrebase_app.auth().sign_in_with_custom_token(token.decode())
 
-        ex_token = create_access_token(uid)
+        ex_token = _create_ex_token(uid)
         token = Token(
             access_token=user["idToken"],
             refresh_token=create_refresh_token(subject=user["refreshToken"]),
