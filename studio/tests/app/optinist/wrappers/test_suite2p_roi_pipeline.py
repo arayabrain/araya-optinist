@@ -5,7 +5,6 @@ through the empty and failing paths. suite2p is stubbed.
 import copy
 import logging
 import os
-import pickle
 import sys
 import types
 
@@ -13,9 +12,7 @@ import numpy as np
 import pytest
 
 from studio.app.common.core.workflow.workflow_params import read_default_params
-from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass import Suite2pData
-from studio.app.optinist.dataclass.roi import RoiStack
 from studio.app.optinist.wrappers.suite2p.roi import suite2p_roi
 from studio.tests.app.optinist.suite2p_settings_1_1_0 import default_settings
 
@@ -360,61 +357,44 @@ def test_a_pre_upgrade_registration_pickle_is_accepted(
     assert info["edit_roi_data"].images.path == [str(tmp_path / "old.tif")]
 
 
-def _stack(info):
+def _label_img(info):
     (postprocess,) = info["nwbfile"]["POSTPROCESS"].values()
-    return postprocess["all_roi_img"]
+    return postprocess["all_roi_label_img"]
 
 
-def _run(tmp_path, output_dir):
+def _run(tmp_path, output_dir, nwbfile=None):
     return suite2p_roi(
-        _registered_ops(tmp_path), output_dir, params=read_default_params("suite2p_roi")
+        _registered_ops(tmp_path),
+        output_dir,
+        params=read_default_params("suite2p_roi"),
+        nwbfile=nwbfile or {},
     )
 
 
-def test_the_nwb_references_the_stack_it_wrote(output_dir, tmp_path, suite2p_stub):
-    info = _run(tmp_path, output_dir)
-    im = _stack(info)
-    assert type(im) is RoiStack and im.shape == (len(CELLS), LY, LX)
-    # EditRoiData holds the same ROIs as pixel lists, taken from stat
-    roi_masks = info["edit_roi_data"].roi_masks
-    for i in range(len(CELLS)):
-        np.testing.assert_array_equal(roi_masks.label_image([i]), im[i])
-
-
-def test_a_failed_stack_write_fails_the_node(
-    output_dir, tmp_path, suite2p_stub, monkeypatch
-):
-    def disk_full(*args, **kwargs):
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(RoiStack, "create", disk_full)
-    with pytest.raises(OSError, match="No space left"):
-        _run(tmp_path, output_dir)
-
-
-def test_a_rerun_replaces_the_file_so_an_open_stack_keeps_its_data(
+def test_the_image_mask_setting_asks_the_roi_table_for_the_frame_shape(
     output_dir, tmp_path, suite2p_stub
 ):
-    first = _stack(_run(tmp_path, output_dir))
-    before = np.array(first)
-    suite2p_stub["result"] = _found(stat=_stat()[:1])
-    second = _stack(_run(tmp_path, output_dir))
-    assert second.shape[0] == 1
-    np.testing.assert_array_equal(first, before)
-    assert not os.path.exists(f"{output_dir}/roi_mask_stack.npy.tmp")
+    settings = {"ophys": {"plane_segmentation": {"save_image_mask": True}}}
+    (entry,) = _run(tmp_path, output_dir, settings)["nwbfile"]["ROI"].values()
+    assert entry["image_mask_shape"] == (LY, LX)
+    # the pickle keeps pixel lists: the dense masks are drawn as the file is written
+    assert all(set(roi) == {"pixel_mask"} for roi in entry["roi_list"])
 
 
-def test_a_relative_output_dir_still_reopens_the_stack(
-    tmp_path, suite2p_stub, monkeypatch
+def test_the_rois_are_kept_as_pixel_lists_and_no_stack_is_written(
+    output_dir, tmp_path, suite2p_stub
 ):
-    # the pickle path is OUTPUT_DIR-relative; the wrapper must not hand open()
-    # a relative path that would be prefixed with OUTPUT_DIR a second time
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(DIRPATH, "OUTPUT_DIR", "ws")
-    os.makedirs("ws/0123abcd/suite2p_roi_x")
-    im = _stack(_run(tmp_path, "ws/0123abcd/suite2p_roi_x"))
-    assert type(im) is RoiStack and os.path.isabs(im._stack_path)
-    blob = pickle.dumps(im)
-    assert b"0123abcd/suite2p_roi_x/roi_mask_stack.npy" in blob
-    assert str(tmp_path).encode() not in blob
-    np.testing.assert_array_equal(pickle.loads(blob), im)
+    info = _run(tmp_path, output_dir)
+    stat = info["ops"].data["stat"]
+    stack = np.full((len(stat), LY, LX), np.nan)
+    for i, s in enumerate(stat):
+        stack[i, s["ypix"], s["xpix"]] = i
+
+    # EditRoiData's ROIs are the stack's layers; NWB keeps the all-ROI image
+    roi_masks = info["edit_roi_data"].roi_masks
+    for i in range(len(stat)):
+        np.testing.assert_array_equal(roi_masks.label_image([i]), stack[i])
+    all_roi = np.nanmax(stack, axis=0, initial=np.nan)
+    np.testing.assert_array_equal(_label_img(info), all_roi[np.newaxis])
+    np.testing.assert_array_equal(info["all_roi"].data, all_roi)
+    assert not os.path.exists(f"{output_dir}/roi_mask_stack.npy")
