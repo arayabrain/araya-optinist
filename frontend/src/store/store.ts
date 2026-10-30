@@ -63,6 +63,9 @@ export const rootReducer = combineReducers({
 
 export const store = configureStore({
   reducer: rootReducer,
+  // The login actions carry tokens; keep them out of the Redux DevTools
+  // history in production builds.
+  devTools: process.env.NODE_ENV !== "production",
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
       // Ignore serializable checks because serializing fails
