@@ -858,7 +858,7 @@ class RemoteStorageController(BaseRemoteStorageController):
             workspace_id: Workspace identifier
             unique_id: Experiment identifier
             sync_mode: RemoteExperimentSyncMode.ALL (full sync),
-                       RemoteExperimentSyncMode.VISUALIZATION (json/tiff only),
+                       RemoteExperimentSyncMode.VISUALIZATION (viewing files only),
                        or RemoteExperimentSyncMode.ESSENTIAL_ONLY (yaml/json only)
 
         Note: Only sync_mode=ALL updates the sync status file and downloads

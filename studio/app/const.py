@@ -43,8 +43,8 @@ LARGE_FILE_PATTERNS = tuple(
     ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl", ".pkl.staged", ".bin", ".npy"]
 )
 # Visualization mode: JSON for timeseries data, TIFF for images,
-# YAML for snakemake config
-VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
+# YAML for snakemake config, HTML for summary tables
+VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml", ".html")
 
 
 # Thumbnail type identifiers

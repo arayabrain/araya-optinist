@@ -1,8 +1,10 @@
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.storage.mock_storage_controller import MockStorageController
 from studio.app.dir_path import DIRPATH
 
@@ -16,6 +18,17 @@ def test_import(client):
 
     assert response.status_code == 200
     assert isinstance(data, dict)
+
+
+def test_reproduce_keeps_data_usage(client, monkeypatch):
+    read = ExptConfigReader.read
+    monkeypatch.setattr(
+        ExptConfigReader,
+        "read",
+        classmethod(lambda cls, ws, uid: replace(read(ws, uid), data_usage=1234)),
+    )
+    response = client.get(f"/workflow/reproduce/{workspace_id}/{unique_id}")
+    assert response.json()["data_usage"] == 1234
 
 
 SAMPLE_WORKSPACE_ID = "9875"
