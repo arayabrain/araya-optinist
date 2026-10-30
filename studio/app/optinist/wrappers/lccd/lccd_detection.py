@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import scipy.sparse
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
@@ -34,6 +35,18 @@ def lccd_config(params):
     recursive_flatten_params(params, flat)
     sections = {s: {**flat, **(params.get(s) or {})} for s in STAGES}
     return {**flat, **sections}
+
+
+def roi_columns(roi):
+    """Each ROI's flat pixel indices, ascending, and their weights: the nonzero
+    entries of each column of LCCD's (pixels, ROIs) matrix, dense or sparse."""
+    roi = scipy.sparse.csc_matrix(roi)
+    roi.sum_duplicates()
+    roi.eliminate_zeros()
+    return [
+        (roi.indices[start:stop], roi.data[start:stop])
+        for start, stop in zip(roi.indptr[:-1], roi.indptr[1:])
+    ]
 
 
 def is_finite_float(value):
@@ -200,9 +213,9 @@ def lccd_detect(
     num_frames = D.shape[2]
 
     # each ROI's pixels, flat in the (X, Y) order roi's rows reshape to
-    roi_masks = RoiMasks.from_pixels(
-        D.shape[:2], (np.flatnonzero(roi[:, i]) for i in range(num_cell))
-    )
+    columns = roi_columns(roi)
+    del roi
+    roi_masks = RoiMasks.from_pixels(D.shape[:2], (pixels for pixels, _ in columns))
 
     # Handle zero ROIs case
     if num_cell == 0:
@@ -225,9 +238,8 @@ def lccd_detect(
 
     # Create ROI list for NWB: (row, column, weight) of each ROI's pixels
     roi_list = []
-    for i in range(num_cell):
+    for i, (_, weights) in enumerate(columns):
         rows, cols = roi_masks.coords(i)
-        weights = roi[roi_masks.pixels(i), i]
         roi_list.append({"pixel_mask": np.array([rows, cols, weights]).T})
     all_roi = roi_masks.label_image()
 
@@ -328,13 +340,14 @@ class LoadData:
         window /= self.maxval - self.minval
         return window[rows, cols]
 
-    def roi_means(self, roi: np.ndarray) -> np.ndarray:
-        """Each ROI's (column of roi's) mean over its pixels, per frame."""
+    def roi_means(self, roi) -> np.ndarray:
+        """Each ROI's (column of roi's) mean over its pixels, per frame; roi is
+        (pixels, ROIs), dense or sparse."""
         X, Y, T = self.shape
         timeseries = np.zeros([roi.shape[1], T])
         if roi.shape[1] == 0:
             return timeseries
-        pixels = [np.flatnonzero(roi[:, i] > 0) for i in range(roi.shape[1])]
+        pixels = [p[weights > 0] for p, weights in roi_columns(roi)]
         for start, stop in self._batches():
             frames = self[:, :, start:stop].reshape(X * Y, stop - start)
             for i, p in enumerate(pixels):

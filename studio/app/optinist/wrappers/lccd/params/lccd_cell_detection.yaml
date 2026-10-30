@@ -5,12 +5,12 @@ blob_detector:
   fsize: 9
   min_area: 16
   max_area: 100
-  sparse: False
+  sparse: True
 roi_integration:
   overlap_threshold: 0.25
   min_area: 16
   max_area: 100
-  sparse: False
+  sparse: True
 lccd:
   frame_divider: 100
 dff:
