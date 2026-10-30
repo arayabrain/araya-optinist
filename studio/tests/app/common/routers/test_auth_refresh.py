@@ -67,6 +67,7 @@ AUTH = "studio.app.common.routers.auth"
 
 
 OPT_IN = {"x-refresh-cookie": "1"}
+SPA_ORIGIN = "https://spa.example"
 
 
 def _cookie_header(response):
@@ -103,6 +104,25 @@ def test_login_sets_an_http_only_refresh_cookie(client):
     assert cookie.startswith("refresh_token=wrapped;")
     for attr in ("httponly", "samesite=strict", "path=/auth", "secure"):
         assert attr in cookie
+
+
+def test_login_cookie_is_not_secure_over_plain_http(client):
+    cookie = _cookie_header(_login(client, OPT_IN)).lower()
+
+    assert cookie.startswith("refresh_token=wrapped;")
+    assert "secure" not in cookie
+
+
+def test_proxy_login_sets_the_refresh_cookie(client):
+    token = Token(
+        access_token="id", token_type="bearer", refresh_token="wrapped", ex_token=None
+    )
+    with patch(f"{AUTH}.auth.login_with_uid", return_value=token):
+        response = client.post("/auth/proxy-login/uid-1", headers=OPT_IN)
+    client.cookies.clear()
+
+    assert response.status_code == 200
+    assert _cookie_header(response).startswith("refresh_token=wrapped;")
 
 
 @pytest.mark.parametrize(
@@ -149,13 +169,14 @@ def test_refresh_with_an_invalid_body_token_sets_no_cookie(client):
     [
         (None, "from-cookie"),
         ("http://testserver", "from-cookie"),
+        (SPA_ORIGIN, "from-cookie"),
         ("https://evil.example", None),
     ],
 )
 def test_refresh_reads_the_cookie_only_from_its_own_origin(client, origin, expected):
     headers = {"origin": origin} if origin else {}
     client.cookies.set("refresh_token", "from-cookie", path="/auth")
-    with patch(
+    with patch(f"{AUTH}.FRONTEND_URL", SPA_ORIGIN), patch(
         f"{AUTH}.auth.refresh_current_user_token",
         return_value=AccessToken(access_token="new"),
     ) as refresh_token:
