@@ -12,11 +12,6 @@ class AuthConfig(BaseSettings):
     REFRESH_TOKEN_EXPIRE_MINUTES: int = Field(
         default=60 * 24 * 1, env="REFRESH_TOKEN_EXPIRE_MINUTES"
     )
-    # Lifetime of the locally issued access token (ExToken). It used to carry
-    # no "exp" claim at all; the default matches the refresh token lifetime.
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
-        default=60 * 24 * 1, gt=0, env="ACCESS_TOKEN_EXPIRE_MINUTES"
-    )
     SECRET_KEY: str = Field(default=INSECURE_DEFAULT_SECRET_KEY, env="SECRET_KEY")
     USE_FIREBASE_TOKEN: bool = Field(default=True, env="USE_FIREBASE_TOKEN")
     ALGORITHM = "HS256"

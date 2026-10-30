@@ -97,6 +97,13 @@ export async function getImageDataApi(
   return response.data
 }
 
+/** The image route's 422: the window is too large to preview */
+export type ImagePreviewTooLarge = {
+  detail: string
+  /** Frames from the window's start that can be previewed; 0 if none */
+  max_frames: number
+}
+
 export type CsvData = number[][]
 
 export async function getCsvDataApi(

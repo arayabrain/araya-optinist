@@ -399,6 +399,15 @@ resource "aws_ecs_service" "premium" {
   depends_on = [
     aws_instance.premium
   ]
+
+  # desired_count above is the creation value only. At runtime the
+  # premium-manager Lambda owns it, keeping one slot per premium instance that
+  # is registered with ECS or still booting, so Terraform must not pull it back
+  # to 1 - ECS would stop the task on every other premium instance until the
+  # manager's next sync. Same as the free service.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }
 
 # Premium Launch Template - Optimized for dedicated premium users
@@ -823,9 +832,9 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
         },
-        # Each worker is a full app process (~0.3 GiB), and above one the
-        # supervisor is another, all from the memory the workflows use. One
-        # more than premium for page-load bursts from users sharing an instance.
+        # Each worker is a full app process (~0.3 GiB) out of the memory the
+        # workflows use. One more than premium for page-load bursts from users
+        # sharing an instance.
         {
           name  = "UVICORN_WORKERS"
           value = "3"

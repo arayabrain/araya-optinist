@@ -25,8 +25,8 @@ def test_access_token_carries_exp_by_default():
     assert payload["sub"] == "uid-1"
 
 
-def test_access_token_lifetime_follows_config(monkeypatch):
-    monkeypatch.setattr(AUTH_CONFIG, "ACCESS_TOKEN_EXPIRE_MINUTES", 5)
+def test_access_token_expires_with_the_refresh_token(monkeypatch):
+    monkeypatch.setattr(AUTH_CONFIG, "REFRESH_TOKEN_EXPIRE_MINUTES", 5)
 
     claims = _claims(security.create_access_token(subject="uid-1"))
     lifetime = claims["exp"] - int(security.get_current_datetime().timestamp())

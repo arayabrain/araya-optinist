@@ -1,0 +1,14 @@
+I/O:
+  transpose: False # rows must be cells
+
+hierarchical_clustering:
+  zscore_rows: False # cluster on response shape only
+  method: 'ward' # ['ward', 'average']; ward needs metric 'euclidean'
+  metric: 'euclidean' # ['euclidean', 'correlation']
+  cut_criterion: 'n_clusters' # ['n_clusters', 'height_fraction']
+  n_clusters: 5
+  height_fraction: 0.5 # cut at this fraction of the tallest merge
+  band: 'sem' # ['std', 'sem'] across the cells of each cluster
+  response_start: 0 # index range [start, end) for each cluster's mean response
+  response_end: 30 # set equal to start to skip
+  color_limit: 0 # figure colour scale +/- this value; 0 = 99th percentile of |x|
