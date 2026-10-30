@@ -1,0 +1,90 @@
+# Brings up a throwaway MySQL and an S3 API (moto server), migrates the
+# database to head, then runs the expiration deletion integration test:
+# ExpirationLifecycleJob.run() against real rows and real buckets.
+# Opt-in: needs a real database and S3 endpoint, so it is not part of the
+# per-PR test job; its own workflow (expiration-it.yml) runs it on PRs that
+# touch the deletion path. Credentials are inline (not from studio/config/.env,
+# which is gitignored) so this runs unchanged in CI. Invoked via
+# `make expiration_it`.
+#
+# Own compose project: without it this file inherits `araya-optinist` from the
+# directory and the make target's `down -v` cleanup would stop a dev or test
+# lane running concurrently.
+name: expiration-it
+
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: studio
+      MYSQL_USER: studio_db_user
+      MYSQL_PASSWORD: studio_db_password
+      TZ: UTC
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  s3:
+    image: motoserver/moto:5.2.3
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  expiration_it:
+    image: test_studio_backend
+    build:
+      context: .
+      dockerfile: studio/config/docker/Dockerfile.test
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      PYTHONPATH: .
+      TZ: UTC
+      RUN_EXPIRATION_IT: "1"
+      MYSQL_SERVER: db:3306
+      MYSQL_USER: studio_db_user
+      MYSQL_PASSWORD: studio_db_password
+      MYSQL_DATABASE: studio
+      MYSQL_SSL_MODE: ""
+      STRIPE_CALLBACK_URL: http://localhost:8000
+      STRIPE_SECRET_KEY: sk_test_dummy_123
+      STRIPE_WEBHOOK_SECRET: whsec_dummy_123
+      S3_DEFAULT_BUCKET_NAME: expiration-it-default
+      S3_USER_BUCKET_PREFIX: expiration-it
+      S3_USER_BUCKET_SECRET: expiration-it-secret
+      AWS_ENDPOINT_URL_S3: http://s3:5000
+      AWS_ENDPOINT_URL_CLOUDWATCH: http://s3:5000
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      AWS_DEFAULT_REGION: ap-northeast-1
+    depends_on:
+      db:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+    # Fail (not skip) if any test is skipped: under this harness the opt-in
+    # flag, database and S3 endpoint are wired, so a skip means the env didn't
+    # reach the runner and the "green" would be hollow. set -e/pipefail also
+    # propagate real pytest failures.
+    command:
+      - bash
+      - -c
+      - |
+        set -eo pipefail
+        alembic upgrade head
+        poetry run python -m pytest \
+          studio/tests/app/common/core/background/test_expiration_lifecycle_integration.py \
+          -v -rs | tee /tmp/expiration-it.out
+        ! grep -qE '[0-9]+ skipped' /tmp/expiration-it.out

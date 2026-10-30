@@ -96,3 +96,218 @@ class TestDetermineLifecycle:
 
         assert isinstance(result, SubscriptionLifecycle)
         assert result.status == SubscriptionLifecycleStatus.FREE
+
+
+class TestGraceNotificationFlags:
+    """Pure classification tests for grace notification emails."""
+
+    @staticmethod
+    def _flags(days_since_expiration, start_at=None, reminder_at=None):
+        from studio.app.common.core.subscription.subscription_service import (
+            SubscriptionService,
+        )
+
+        now = get_current_datetime()
+        expiration = now - timedelta(days=days_since_expiration)
+        return SubscriptionService.grace_notification_flags(
+            expiration, start_at, reminder_at, now
+        )
+
+    def test_fresh_grace_user_needs_start_only(self):
+        needs_start, needs_reminder = self._flags(days_since_expiration=1)
+        assert needs_start is True
+        assert needs_reminder is False
+
+    def test_reminder_not_due_at_day_19(self):
+        _, needs_reminder = self._flags(days_since_expiration=19)
+        assert needs_reminder is False
+
+    def test_reminder_due_at_day_20(self):
+        _, needs_reminder = self._flags(days_since_expiration=20)
+        assert needs_reminder is True
+
+    def test_current_cycle_stamps_suppress_both(self):
+        now = get_current_datetime()
+        needs_start, needs_reminder = self._flags(
+            days_since_expiration=21,
+            start_at=now - timedelta(days=20),
+            reminder_at=now - timedelta(days=1),
+        )
+        assert needs_start is False
+        assert needs_reminder is False
+
+    def test_stale_stamp_from_previous_cycle_resends(self):
+        """Renewals reuse the subscription row: a stamp at or before the
+        (new) expiration belongs to the previous cycle."""
+        now = get_current_datetime()
+        needs_start, needs_reminder = self._flags(
+            days_since_expiration=21,
+            start_at=now - timedelta(days=100),
+            reminder_at=now - timedelta(days=100),
+        )
+        assert needs_start is True
+        assert needs_reminder is True
+
+    def test_naive_datetimes_accepted(self):
+        from studio.app.common.core.subscription.subscription_service import (
+            SubscriptionService,
+        )
+
+        now = get_current_datetime().replace(tzinfo=None)
+        expiration = now - timedelta(days=25)
+        needs_start, needs_reminder = SubscriptionService.grace_notification_flags(
+            expiration, now - timedelta(days=24), None, now
+        )
+        assert needs_start is False
+        assert needs_reminder is True
+
+
+class TestClaimGraceNotification:
+    """Claim/clear stamp tests (rowcount-based dedupe)."""
+
+    @staticmethod
+    def _mock_db(update_rowcount):
+        db = Mock()
+        db.query.return_value.filter.return_value.update.return_value = update_rowcount
+        return db
+
+    def test_claim_returns_stamp_when_row_updated(self):
+        db = self._mock_db(update_rowcount=1)
+        expiration = get_current_datetime() - timedelta(days=5)
+
+        stamp = SubscriptionService.claim_grace_notification(db, 1, expiration, "start")
+
+        assert stamp is not None
+        assert stamp.microsecond == 0
+        db.commit.assert_called_once()
+
+    def test_claim_returns_none_when_already_claimed(self):
+        db = self._mock_db(update_rowcount=0)
+        expiration = get_current_datetime() - timedelta(days=5)
+
+        stamp = SubscriptionService.claim_grace_notification(
+            db, 1, expiration, "reminder"
+        )
+
+        assert stamp is None
+
+    def test_clear_commits(self):
+        db = self._mock_db(update_rowcount=1)
+        SubscriptionService.clear_grace_notification(
+            db, 1, "start", get_current_datetime()
+        )
+        db.commit.assert_called_once()
+
+
+class TestGetUsersForGraceNotifications:
+    """Query shaping tests (classification is covered by the flags tests)."""
+
+    @staticmethod
+    def _mock_db(rows):
+        db = Mock()
+        chain = db.query.return_value.join.return_value.join.return_value
+        limited = chain.filter.return_value.order_by.return_value.limit.return_value
+        limited.all.return_value = rows
+        return db
+
+    def test_no_rows_returns_empty(self):
+        assert (
+            SubscriptionService.get_users_for_grace_notifications(self._mock_db([]))
+            == []
+        )
+
+    def test_returns_classified_users(self):
+        now = get_current_datetime()
+
+        sub = Mock()
+        sub.expiration = now - timedelta(days=21)
+        sub.grace_start_notified_at = now - timedelta(days=20)
+        sub.grace_reminder_notified_at = None
+
+        user = Mock()
+        user.id = 7
+        user.email = "user@example.org"
+
+        storage = Mock()
+        storage.storage_usage_bytes = 10 * 1024**3
+
+        result = SubscriptionService.get_users_for_grace_notifications(
+            self._mock_db([(sub, user, storage)])
+        )
+
+        assert len(result) == 1
+        assert result[0]["user_id"] == 7
+        assert result[0]["needs_start"] is False
+        assert result[0]["needs_reminder"] is True
+        assert result[0]["grace_end"] > now
+
+    def test_fully_notified_row_is_dropped(self):
+        now = get_current_datetime()
+
+        sub = Mock()
+        sub.expiration = now - timedelta(days=5)
+        sub.grace_start_notified_at = now - timedelta(days=4)
+        sub.grace_reminder_notified_at = None
+
+        user = Mock()
+        user.id = 7
+        user.email = "user@example.org"
+
+        storage = Mock()
+        storage.storage_usage_bytes = 10 * 1024**3
+
+        result = SubscriptionService.get_users_for_grace_notifications(
+            self._mock_db([(sub, user, storage)])
+        )
+
+        assert result == []
+
+
+class TestNotificationTimingInvariants:
+    def test_reminder_and_notice_fit_inside_grace_period(self):
+        from studio.app.common.core.subscription.constants import (
+            ExpirationDeletion,
+            SubscriptionPeriods,
+        )
+
+        assert (
+            ExpirationDeletion.GRACE_REMINDER_AFTER_DAYS
+            < SubscriptionPeriods.GRACE_PERIOD_DAYS
+        )
+        assert (
+            ExpirationDeletion.MIN_NOTICE_DAYS <= SubscriptionPeriods.GRACE_PERIOD_DAYS
+        )
+
+
+class TestRequireNoticeFilter:
+    """The warn-before-delete gate must be present in the SQL predicates."""
+
+    @staticmethod
+    def _mock_db():
+        db = Mock()
+        chain = db.query.return_value.join.return_value.join.return_value
+        chain.filter.return_value.order_by.return_value.all.return_value = []
+        return db, chain
+
+    def test_default_has_no_notice_predicate(self):
+        db, chain = self._mock_db()
+
+        SubscriptionService.get_users_for_expiration_deletion(db)
+
+        assert len(chain.filter.call_args_list) == 2
+        for call in chain.filter.call_args_list:
+            sql = " ".join(str(arg) for arg in call.args)
+            assert "grace_start_notified_at" not in sql
+
+    def test_require_notice_gates_on_warning_or_inactive(self):
+        """Both eligibility queries must require a matured warning stamp,
+        except for inactive users (who get no emails but must stay deletable)."""
+        db, chain = self._mock_db()
+
+        SubscriptionService.get_users_for_expiration_deletion(db, require_notice=True)
+
+        assert len(chain.filter.call_args_list) == 2
+        for call in chain.filter.call_args_list:
+            sql = " ".join(str(arg) for arg in call.args)
+            assert "grace_start_notified_at" in sql
+            assert "users.active" in sql

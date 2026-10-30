@@ -1,27 +1,31 @@
 """
 Background job for expiration lifecycle deletion.
 
-Runs daily. Finds users past the grace period whose storage exceeds
-the free-tier quota, then enumerates and deletes data (both S3 and
-local) in priority order until storage is within the free-tier quota.
+Runs daily. Sends grace-period notification emails (when enabled), then
+finds users past the grace period whose storage exceeds the free-tier
+quota, and enumerates and deletes data (both S3 and local) in priority
+order until storage is within the free-tier quota.
 
 Deletion is streamed one unit at a time to limit memory usage.
 """
 
 import asyncio
+import hashlib
 import os
 import shutil
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import List, Optional, Tuple, Union
 
 import aioboto3
 from sqlalchemy import or_ as db_or
 
+from studio.app.common.core.background.cleanup_job import DataCleanupJob
 from studio.app.common.core.cloud.storage_operations import decrement_storage_idempotent
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.storage.s3_storage_controller import (
     S3StorageController,
     is_no_such_bucket_error,
@@ -30,7 +34,9 @@ from studio.app.common.core.subscription.constants import (
     DeletionPriority,
     ExpirationDeletion,
 )
+from studio.app.common.core.subscription.email_service import EmailService
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
+from studio.app.common.core.utils.datetime_utils import ensure_utc, get_current_datetime
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.experiment import ExperimentRecord
@@ -71,23 +77,34 @@ class _WorkspaceInputInfo:
 class ExpirationLifecycleJob:
     @classmethod
     async def run(cls):
-        """Daily job: find users past grace period, execute deletion."""
+        """Daily job: send grace notifications, then execute expiration deletion."""
         logger.info("Starting expiration lifecycle job")
 
         try:
-            bucket_name = getattr(DIRPATH, "DATA_BUCKET_NAME", None)
-            if not bucket_name:
+            if RemoteStorageType.get_activated_type() != RemoteStorageType.S3:
                 logger.warning(
-                    "No remote bucket configured, skipping expiration lifecycle. "
+                    "Remote storage is not S3, skipping expiration lifecycle. "
                     "Local-only cleanup is handled by DataCleanupJob."
                 )
                 return
 
+            # Deliberately after the storage guard: when no deletion can
+            # happen, no deletion warnings are sent either.
+            emails_sent = 0
+            emails_failed = 0
+            try:
+                emails_sent, emails_failed = await cls._send_grace_notifications()
+            except Exception as e:
+                logger.error(f"Grace notification pass failed: {e}", exc_info=True)
+
             with session_scope() as db:
-                users = SubscriptionService.get_users_for_expiration_deletion(db)
+                users = SubscriptionService.get_users_for_expiration_deletion(
+                    db, require_notice=EmailService.is_enabled()
+                )
 
             if not users:
                 logger.debug("No users eligible for expiration deletion")
+                cls._publish_metrics(0, 0, emails_sent, emails_failed)
                 return
 
             logger.info(f"Processing {len(users)} users for expiration deletion")
@@ -97,7 +114,18 @@ class ExpirationLifecycleJob:
 
             for user_info in users:
                 try:
-                    await cls._process_user(user_info, bucket_name)
+                    bucket_name = DataCleanupJob._resolve_user_bucket_name(
+                        user_info["user_id"]
+                    )
+                    if not bucket_name:
+                        logger.warning(
+                            f"No bucket resolved for user {user_info['user_id']}, "
+                            f"keeping their data"
+                        )
+                        continue
+                    sent, failed = await cls._process_user(user_info, bucket_name)
+                    emails_sent += sent
+                    emails_failed += failed
                     processed += 1
                 except Exception as e:
                     logger.error(
@@ -111,14 +139,17 @@ class ExpirationLifecycleJob:
                 f"Expiration lifecycle job completed: "
                 f"{processed} users processed, {errors} errors"
             )
-            cls._publish_metrics(processed, errors)
+            cls._publish_metrics(processed, errors, emails_sent, emails_failed)
 
         except Exception as e:
             logger.error(f"Fatal error in expiration lifecycle job: {e}", exc_info=True)
 
     @classmethod
-    async def _process_user(cls, user_info: dict, bucket_name: str):
-        """Process expiration deletion for a single user."""
+    async def _process_user(cls, user_info: dict, bucket_name: str) -> Tuple[int, int]:
+        """Process expiration deletion for a single user.
+
+        Returns (emails_sent, emails_failed) for the deletion summary email.
+        """
         user_id = user_info["user_id"]
         excess_bytes = user_info["excess_bytes"]
 
@@ -129,11 +160,11 @@ class ExpirationLifecycleJob:
                     f"User {user_id} has active subscription, skipping deletion"
                 )
                 SubscriptionService.mark_deletion_processed(db, user_id)
-                return
+                return 0, 0
 
             if SubscriptionService.has_active_workflows(db, user_id):
                 logger.info(f"User {user_id} has active workflows, deferring deletion")
-                return
+                return 0, 0
 
             # Read deletion priority from UserPreferences
             priority = SubscriptionService.get_deletion_priority(db, user_id)
@@ -144,8 +175,10 @@ class ExpirationLifecycleJob:
         if not experiments and not workspace_inputs:
             logger.info(f"No deletable data found for user {user_id}")
             with session_scope() as db:
-                SubscriptionService.mark_deletion_processed(db, user_id)
-            return
+                SubscriptionService.mark_deletion_processed(
+                    db, user_id, still_over_quota=True
+                )
+            return 0, 0
 
         # Re-check current storage to get fresh excess_bytes (may have
         # changed since the eligibility query ran)
@@ -155,7 +188,7 @@ class ExpirationLifecycleJob:
             logger.info(f"User {user_id} storage now within quota, skipping deletion")
             with session_scope() as db:
                 SubscriptionService.mark_deletion_processed(db, user_id)
-            return
+            return 0, 0
         if fresh_excess is not None:
             excess_bytes = fresh_excess
 
@@ -174,7 +207,11 @@ class ExpirationLifecycleJob:
         # Only mark processed if deletion fully succeeded or target met
         if result["failed"] == 0 or result["bytes_deleted"] >= excess_bytes:
             with session_scope() as db:
-                SubscriptionService.mark_deletion_processed(db, user_id)
+                SubscriptionService.mark_deletion_processed(
+                    db,
+                    user_id,
+                    still_over_quota=result["bytes_deleted"] < excess_bytes,
+                )
         else:
             logger.warning(
                 f"Partial failure for user {user_id}: "
@@ -191,24 +228,173 @@ class ExpirationLifecycleJob:
             + (" (aborted: user re-subscribed)" if result["aborted"] else "")
         )
 
+        # Per-run summary: sent whenever bytes were actually freed, including
+        # aborted (re-subscribed mid-run) and partial-failure runs.
+        if (
+            result["bytes_deleted"] > 0
+            and EmailService.is_enabled()
+            and user_info.get("active")
+            and user_info.get("email")
+        ):
+            ok = await asyncio.to_thread(
+                EmailService.send_deletion_summary_email,
+                user_info["email"],
+                result["bytes_deleted"],
+                result["succeeded"],
+            )
+            return (1, 0) if ok else (0, 1)
+        return 0, 0
+
+    @classmethod
+    async def _send_grace_notifications(cls) -> Tuple[int, int]:
+        """Send grace and over-quota-again emails. Returns (sent, failed).
+
+        Claim-then-send: the notification stamp is claimed with a conditional
+        UPDATE before sending, so overlapping job instances cannot double-send.
+        On send failure the claim is rolled back and retried on the next run.
+        """
+        if not EmailService.is_enabled():
+            logger.info("Email notifications disabled, skipping grace notifications")
+            return 0, 0
+
+        with session_scope() as db:
+            pending = SubscriptionService.get_users_for_grace_notifications(db)
+
+        sent = 0
+        failed = 0
+        for item in pending:
+            claimed = {}
+            try:
+                kind = "start" if item["needs_start"] else "reminder"
+                with session_scope() as db:
+                    stamp = SubscriptionService.claim_grace_notification(
+                        db, item["user_id"], item["expiration"], kind
+                    )
+                    if stamp:
+                        claimed[kind] = stamp
+                        # A same-run reminder adds nothing after a (late) start
+                        # email: claim it too, but send only the start email.
+                        if kind == "start" and item["needs_reminder"]:
+                            reminder_stamp = (
+                                SubscriptionService.claim_grace_notification(
+                                    db, item["user_id"], item["expiration"], "reminder"
+                                )
+                            )
+                            if reminder_stamp:
+                                claimed["reminder"] = reminder_stamp
+                if not claimed:
+                    continue
+
+                if kind == "start":
+                    deletion_not_before = max(
+                        item["grace_end"],
+                        get_current_datetime()
+                        + timedelta(days=ExpirationDeletion.MIN_NOTICE_DAYS),
+                    )
+                    ok = await asyncio.to_thread(
+                        EmailService.send_grace_period_start_email,
+                        item["email"],
+                        item["grace_end"],
+                        item["storage_usage_bytes"],
+                        deletion_not_before,
+                    )
+                else:
+                    ok = await asyncio.to_thread(
+                        EmailService.send_grace_period_reminder_email,
+                        item["email"],
+                        item["grace_end"],
+                        item["storage_usage_bytes"],
+                    )
+
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+                    cls._clear_claims(item["user_id"], claimed)
+            except Exception as e:
+                # A claimed-but-unsent stamp would satisfy the notice gate
+                # without any email having gone out, so roll it back.
+                logger.error(
+                    f"Grace notification failed for user {item.get('user_id')}: {e}",
+                    exc_info=True,
+                )
+                failed += 1
+                cls._clear_claims(item.get("user_id"), claimed)
+
+        with session_scope() as db:
+            over_again = SubscriptionService.get_users_for_reprocess_notifications(db)
+
+        for item in over_again:
+            claimed = {}
+            try:
+                with session_scope() as db:
+                    stamp = SubscriptionService.claim_grace_notification(
+                        db, item["user_id"], item["expiration"], "reprocess"
+                    )
+                if not stamp:
+                    continue
+                claimed["reprocess"] = stamp
+
+                # The repeat pass needs both the cooldown and the notice to pass
+                deletion_not_before = max(
+                    ensure_utc(item["deletion_processed_at"])
+                    + timedelta(days=ExpirationDeletion.REPROCESS_COOLDOWN_DAYS),
+                    get_current_datetime()
+                    + timedelta(days=ExpirationDeletion.MIN_NOTICE_DAYS),
+                )
+                ok = await asyncio.to_thread(
+                    EmailService.send_over_quota_again_email,
+                    item["email"],
+                    item["storage_usage_bytes"],
+                    deletion_not_before,
+                )
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+                    cls._clear_claims(item["user_id"], claimed)
+            except Exception as e:
+                logger.error(
+                    f"Over-quota notification failed for user {item.get('user_id')}: "
+                    f"{e}",
+                    exc_info=True,
+                )
+                failed += 1
+                cls._clear_claims(item.get("user_id"), claimed)
+
+        if sent or failed:
+            logger.info(f"Grace notifications: {sent} sent, {failed} failed")
+        return sent, failed
+
+    @staticmethod
+    def _clear_claims(user_id, claimed: dict):
+        """Best-effort rollback of claimed notification stamps."""
+        if not claimed:
+            return
+        try:
+            with session_scope() as db:
+                for kind, stamp in claimed.items():
+                    SubscriptionService.clear_grace_notification(
+                        db, user_id, kind, stamp
+                    )
+        except Exception as e:
+            logger.error(f"Failed to clear notification claim for {user_id}: {e}")
+
     @classmethod
     def _update_data_flags(
         cls,
         tier: _DeletionTier,
         item: Union[_ExperimentInfo, _WorkspaceInputInfo],
-        bytes_deleted: int,
     ):
-        """Clear data-existence flags on experiment records after tier deletion.
+        """Clear a unit's data-existence flags once its first file is deleted.
 
+        A partly deleted unit is unusable, so the flag goes before the rest of
+        its files rather than after: a crash mid-unit cannot leave it set.
         For INPUTS tier, all experiments in the workspace are marked
-        ``has_inputs=False`` even if deletion stopped early (byte target
-        reached).  This is intentional: workspace inputs are shared across
-        experiments, so partial deletion makes the input directory unreliable
-        for every experiment in that workspace.
+        ``has_inputs=False``: workspace inputs are shared across experiments,
+        so partial deletion makes the input directory unreliable for every
+        experiment in that workspace.
         """
-        if bytes_deleted <= 0:
-            return
-
         with session_scope() as db:
             if tier == _DeletionTier.INTERMEDIATES:
                 db.query(ExperimentRecord).filter(
@@ -261,7 +447,8 @@ class ExpirationLifecycleJob:
                         ExperimentRecord.has_inputs == True,  # noqa: E712
                     ),
                 )
-                .order_by(ExperimentRecord.analyzed_at.asc().nulls_first())
+                # MySQL has no NULLS FIRST; ascending order already puts NULL first
+                .order_by(ExperimentRecord.analyzed_at.asc())
                 .all()
             )
 
@@ -387,7 +574,7 @@ class ExpirationLifecycleJob:
                             return result
 
                     try:
-                        bytes_deleted = await cls._delete_unit(
+                        bytes_deleted, failed_keys = await cls._delete_unit(
                             user_id,
                             bucket,
                             tier,
@@ -395,11 +582,12 @@ class ExpirationLifecycleJob:
                             run_id,
                             remaining_bytes=target_bytes - accumulated,
                         )
-                        result["succeeded"] += 1
                         result["bytes_deleted"] += bytes_deleted
                         accumulated += bytes_deleted
-
-                        cls._update_data_flags(tier, item, bytes_deleted)
+                        if failed_keys:
+                            result["failed"] += 1
+                        else:
+                            result["succeeded"] += 1
                     except Exception as e:
                         logger.error(
                             f"Deletion failed for user {user_id}, "
@@ -418,7 +606,7 @@ class ExpirationLifecycleJob:
         item: Union[_ExperimentInfo, _WorkspaceInputInfo],
         run_id: str,
         remaining_bytes: int,
-    ) -> int:
+    ) -> Tuple[int, int]:
         """
         Enumerate S3 keys for a single unit and delete them one at a time.
 
@@ -426,7 +614,7 @@ class ExpirationLifecycleJob:
         removed, before moving to the next file. Stops early once
         remaining_bytes of data has been freed.
 
-        Returns total bytes deleted.
+        Returns (bytes deleted, number of files that failed to delete).
         """
         if tier == _DeletionTier.INPUTS:
             prefix = S3StorageController.make_s3_input_prefix(
@@ -445,18 +633,20 @@ class ExpirationLifecycleJob:
             keys_with_sizes = await cls._list_experiment_objects(bucket, prefix, tier)
 
         if not keys_with_sizes:
-            return 0
+            return 0, 0
 
         # Build idempotency key
         unit_id = item.uid if hasattr(item, "uid") else f"ws_{item.workspace_id}"
         idempotency_key = f"exp_del_{run_id}_{item.workspace_id}_{unit_id}_{tier.value}"
 
         total_deleted_bytes = 0
+        failed_keys = 0
+        flags_cleared = False
 
         for s3_key, size in keys_with_sizes:
             # Delete from S3
             try:
-                await bucket.delete_objects(
+                response = await bucket.delete_objects(
                     Delete={"Objects": [{"Key": s3_key}], "Quiet": True}
                 )
             except Exception as e:
@@ -466,9 +656,22 @@ class ExpirationLifecycleJob:
                     )
                     break
                 logger.error(f"S3 deletion failed for key {s3_key}: {e}")
+                failed_keys += 1
                 continue  # Skip this file, try next
 
+            # Quiet mode reports per-key failures here instead of raising
+            errors = response.get("Errors")
+            if errors:
+                logger.error(f"S3 refused to delete {s3_key}: {errors[0].get('Code')}")
+                failed_keys += 1
+                continue
+
             total_deleted_bytes += size
+            key_hash = hashlib.sha1(s3_key.encode()).hexdigest()
+            decrement_storage_idempotent(user_id, size, f"{idempotency_key}_{key_hash}")
+            if not flags_cleared:
+                cls._update_data_flags(tier, item)
+                flags_cleared = True
 
             # Delete corresponding local file
             relative_path = s3_key[len(prefix) :]
@@ -480,15 +683,12 @@ class ExpirationLifecycleJob:
             if total_deleted_bytes >= remaining_bytes:
                 break
 
-        if total_deleted_bytes > 0:
-            decrement_storage_idempotent(user_id, total_deleted_bytes, idempotency_key)
-
         logger.info(
             f"Deleted {total_deleted_bytes} bytes for user {user_id}, "
             f"tier={tier.value}, prefix={prefix}"
         )
 
-        return total_deleted_bytes
+        return total_deleted_bytes, failed_keys
 
     @staticmethod
     def _delete_local_file(local_path: str, user_id: int):
@@ -541,7 +741,7 @@ class ExpirationLifecycleJob:
                 obj_tier = _DeletionTier.OUTPUTS
 
             if obj_tier == tier:
-                keys_with_sizes.append((obj.key, obj.size or 0))
+                keys_with_sizes.append((obj.key, (await obj.size) or 0))
 
         return keys_with_sizes
 
@@ -551,7 +751,7 @@ class ExpirationLifecycleJob:
         keys_with_sizes: List[Tuple[str, int]] = []
 
         async for obj in bucket.objects.filter(Prefix=prefix):
-            keys_with_sizes.append((obj.key, obj.size or 0))
+            keys_with_sizes.append((obj.key, (await obj.size) or 0))
 
         return keys_with_sizes
 
@@ -562,7 +762,13 @@ class ExpirationLifecycleJob:
             return SubscriptionService.get_user_subscription(db, user_id) is not None
 
     @classmethod
-    def _publish_metrics(cls, processed: int, errors: int):
+    def _publish_metrics(
+        cls,
+        processed: int,
+        errors: int,
+        emails_sent: int = 0,
+        email_failures: int = 0,
+    ):
         """Publish job metrics to CloudWatch.
 
         Wraps the sync boto3 call in run_in_executor to avoid blocking
@@ -571,8 +777,6 @@ class ExpirationLifecycleJob:
 
         def _put_metrics():
             import boto3
-
-            from studio.app.common.core.utils.datetime_utils import get_current_datetime
 
             now = get_current_datetime()
             cloudwatch = boto3.client("cloudwatch")
@@ -591,6 +795,18 @@ class ExpirationLifecycleJob:
                     {
                         "MetricName": ExpirationDeletion.METRIC_ERRORS,
                         "Value": errors,
+                        "Unit": "Count",
+                        "Timestamp": now,
+                    },
+                    {
+                        "MetricName": ExpirationDeletion.METRIC_EMAILS_SENT,
+                        "Value": emails_sent,
+                        "Unit": "Count",
+                        "Timestamp": now,
+                    },
+                    {
+                        "MetricName": ExpirationDeletion.METRIC_EMAIL_FAILURES,
+                        "Value": email_failures,
                         "Unit": "Count",
                         "Timestamp": now,
                     },
