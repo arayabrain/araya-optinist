@@ -145,6 +145,20 @@ def test_standalone_is_not_checked(multiuser):
     secret_validation.validate_signing_secrets()
 
 
+def test_lifespan_refuses_placeholder_key(multiuser):
+    """One worker (public, background) skips the pre-fork check in studio.server,
+    so the lifespan is the only gate there."""
+    from fastapi.testclient import TestClient
+
+    from studio.__main_unit__ import app
+
+    multiuser.setattr(AUTH_CONFIG, "SECRET_KEY", INSECURE_DEFAULT_SECRET_KEY)
+
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        with TestClient(app):
+            pass
+
+
 def test_entry_refuses_before_starting_uvicorn(multiuser):
     """With several workers, uvicorn's supervisor keeps running when a worker's
     lifespan fails, so the entry must refuse before uvicorn.run is ever called."""
