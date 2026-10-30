@@ -4,8 +4,14 @@ const mockRefreshTokenApi = jest.fn() as unknown as jest.Mock<
   Promise<{ access_token: string }>
 >
 
-jest.mock("api/auth/Auth", () => ({ refreshTokenApi: mockRefreshTokenApi }))
+const mockLogoutApi = jest.fn<() => Promise<void>>()
+
+jest.mock("api/auth/Auth", () => ({
+  refreshTokenApi: mockRefreshTokenApi,
+  logoutApi: () => mockLogoutApi(),
+}))
 jest.mock("utils/routing/RoutingService", () => ({ routingService: {} }))
+jest.mock("utils/axios", () => ({ setLoggingOut: () => undefined }))
 
 const load = () => import("utils/auth/AuthUtils")
 
@@ -113,6 +119,29 @@ describe("access token storage", () => {
     finish({ access_token: "stale" })
 
     expect(await pending).toBeNull()
+    expect(getToken()).toBeNull()
+  })
+})
+
+describe("logout", () => {
+  beforeEach(() => {
+    jest.resetModules()
+    jest.clearAllMocks()
+    localStorage.clear()
+  })
+
+  it("clears the cookie on the server before dropping the token", async () => {
+    const { getToken, logout, saveToken } = await load()
+    saveToken("live")
+    let tokenWhenCalled: string | null = null
+    mockLogoutApi.mockImplementation(async () => {
+      tokenWhenCalled = getToken()
+    })
+
+    await logout({ skipBackendLogout: true })
+
+    expect(mockLogoutApi).toHaveBeenCalledTimes(1)
+    expect(tokenWhenCalled).toBe("live")
     expect(getToken()).toBeNull()
   })
 })

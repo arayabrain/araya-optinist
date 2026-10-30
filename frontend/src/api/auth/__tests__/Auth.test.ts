@@ -109,3 +109,35 @@ describe("refreshTokenApi", () => {
     expect(mockPost).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("login opts in to the refresh cookie", () => {
+  beforeEach(() => {
+    jest.resetModules()
+    jest.clearAllMocks()
+    mockPost.mockResolvedValue({ data: { access_token: "a" } })
+  })
+
+  it("on a password login", async () => {
+    const { loginApi } = await import("api/auth/Auth")
+
+    await loginApi({ email: "a@example.com", password: "pw" })
+
+    expect(mockPost).toHaveBeenCalledWith(
+      "/auth/login",
+      { email: "a@example.com", password: "pw" },
+      COOKIE_OPTIONS,
+    )
+  })
+
+  it("on a proxy login", async () => {
+    const { proxyLoginApi } = await import("api/auth/Auth")
+
+    await proxyLoginApi("uid-1")
+
+    expect(mockPost).toHaveBeenCalledWith(
+      "/auth/proxy-login/uid-1",
+      undefined,
+      COOKIE_OPTIONS,
+    )
+  })
+})
