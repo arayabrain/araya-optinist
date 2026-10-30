@@ -148,6 +148,7 @@ export function handleWorkflowYamlError(
               window.open(
                 "https://github.com/oist/optinist/wiki/FAQ#error-yaml-file-error",
                 "_blank",
+                "noopener,noreferrer",
               )
             },
             style: {

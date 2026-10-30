@@ -44,7 +44,11 @@ const Tooltips: FC = () => {
     setAnchorEl(null)
   }
   const handleGoToDocClick = () => {
-    window.open("https://optinist.readthedocs.io/en/latest/", "_blank")
+    window.open(
+      "https://optinist.readthedocs.io/en/latest/",
+      "_blank",
+      "noopener,noreferrer",
+    )
   }
 
   const [dialogOpen, setDialogOpen] = useState(false)

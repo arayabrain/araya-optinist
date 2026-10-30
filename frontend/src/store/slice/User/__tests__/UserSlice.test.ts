@@ -264,6 +264,18 @@ describe("UserSlice", () => {
       const saveOrder = mockSaveToken.mock.invocationCallOrder[0]
       expect(clearOrder).toBeLessThan(saveOrder)
     })
+
+    it("should drop a stale ex token when the backend issues none", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, {
+        ...loginFulfilledAction,
+        payload: { ...loginFulfilledAction.payload, ex_token: null },
+      })
+
+      expect(mockSaveExToken).not.toHaveBeenCalled()
+      expect(mockRemoveExToken).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe("proxyLogin.fulfilled", () => {
