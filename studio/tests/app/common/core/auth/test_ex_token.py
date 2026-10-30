@@ -26,6 +26,24 @@ async def test_no_ex_token_when_firebase_verifies(
 
 
 @pytest.mark.asyncio
+async def test_no_ex_token_on_proxy_login_when_firebase_verifies(
+    db, firebase_accepts_the_password, monkeypatch
+):
+    monkeypatch.setattr(AUTH_CONFIG, "USE_FIREBASE_TOKEN", True)
+    harness.seed(db, active=True)
+    pyrebase_auth = firebase_accepts_the_password.auth.return_value
+    pyrebase_auth.sign_in_with_custom_token.return_value = {
+        "idToken": "id-token",
+        "refreshToken": "refresh-token",
+    }
+
+    token = await auth_module.login_with_uid(db, harness.UID, None)
+
+    assert token.access_token == "id-token"
+    assert token.ex_token is None
+
+
+@pytest.mark.asyncio
 async def test_ex_token_expires_with_the_refresh_token(
     db, firebase_accepts_the_password, monkeypatch
 ):
