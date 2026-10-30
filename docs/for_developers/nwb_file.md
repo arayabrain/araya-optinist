@@ -15,6 +15,9 @@
 - `FluoData` / `SpikingActivityData` in memory: `(roi, time)`, matching Suite2p `F` and CaImAn `C`.
 - `Fluorescence` / `RoiResponseSeries` written to NWB: `(time, roi)`, the NWB convention. Writers pass the `(roi, time)` array as is; `NWBCreater.fluorescence` transposes the axis whose length matches the `rois` region, so configs replayed from older pickles land in the same orientation. `fluo_from_hdf5` transposes back on load.
 - `ImageData`: `(time, y, x)`.
+- ROI tables (`PlaneSegmentation`): one `pixel_mask` row per pixel of each ROI, `(row, column, weight)`, for every ROI node. pynwb names these fields `x`, `y`, `weight`: `x` holds the row (the image's first axis) and `y` the column, as suite2p writes them. A reader that takes `x` as the horizontal axis, as pynwb's own `PlaneSegmentation.pixel_to_image` does, gets transposed ROIs. Files written before held a dense `(roi, row, column)` `image_mask` instead for CaImAn, LCCD and vacant ROI.
+- With the NWB setting `ophys.plane_segmentation.save_image_mask` on (off by default), every ROI table also holds a dense float32 `image_mask` per ROI, `(roi, row, column)`, beside its `pixel_mask`: the same values the earlier files held for CaImAn, LCCD and vacant ROI. It is drawn from the pixel masks as the file is written, a few ROIs at a time (`ImageMasks` in `nwb_creater.py`), so node pickles keep the pixel lists only and memory never holds all the masks; the file grows by ROIs × height × width × 4 bytes. Every rewrite of `whole.nwb` writes the masks again, its temporary copy holding them twice on disk for a moment, and a data filter adds a `filtered_<node>` ROI table with masks of its own, the same size again.
+- `<node>_all_roi_label_img`: the all-ROI label image, `(1, row, column)`: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held a per-ROI stack, `(roi, row, column)`, under `<node>_all_roi_img` instead.
 
 ## Suite2p
 
@@ -78,11 +81,11 @@ info = {
     'all_roi': RoiData(roi_images['all'], file_name='all_roi'),
     'non_cell_roi': RoiData(roi_images['non_cell'], file_name='noncell_roi'),
     'cell_roi': RoiData(roi_images['cell'], file_name='cell_roi'),
-    'edit_roi_data': EditRoiData(images=ImageData(ops['file_list']), im=im),
+    'edit_roi_data': EditRoiData(images=ImageData(ops['file_list']), roi_masks=roi_masks),
     'nwbfile': nwbfile,
 }
 
-`im` is the on-disk per-ROI mask stack (`RoiStack`), `roi_images` the all / cell / non-cell label images built from each ROI's pixel lists.
+`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_label_img` is the all-ROI label image, as one (1, height, width) layer: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held one layer per ROI under `all_roi_img` instead.
 
 ### suite2p_spike_deconv
 
@@ -135,7 +138,7 @@ info = {
 - [ophys](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
   - [ImageSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.data_interfaces)
     - [PlaneSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation)
-      - [image_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates)
+      - [pixel_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates): (row, column, weight) of each component's non-zero pixels in `estimates.A`
       - [columns](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation): 'iscell'
         - [description]: 'two columns - iscell & probcell'
         - [data](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.cnmf.CNMF.fit)

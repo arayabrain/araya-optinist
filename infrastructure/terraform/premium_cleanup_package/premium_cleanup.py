@@ -20,8 +20,9 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
+import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Set
 
 import boto3
 import pymysql
@@ -204,6 +205,36 @@ def with_transaction(func):
                 raise e
 
     return wrapper
+
+
+def get_assign_claimed_user_ids() -> Set[int]:
+    """User ids with an assign in flight; raises on DB error (callers fail closed)."""
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT user_id FROM premium_assign_claims
+                   WHERE expires_at >= NOW()"""
+            )
+            return {row["user_id"] for row in cursor.fetchall()}
+
+
+_PREMIUM_TG_NAME_RE = re.compile(r":targetgroup/premium-(\d+)-tg/")
+
+
+def _rule_may_belong_to_inflight_assign(
+    rule: Dict[str, Any],
+    claimed_user_ids: Set[int],
+) -> bool:
+    """A claimed user's premium-<id>-tg rule, or a user-less rule during any claim."""
+    if not claimed_user_ids:
+        return False
+    for action in rule.get("Actions", []):
+        if action.get("Type") != "forward":
+            continue
+        match = _PREMIUM_TG_NAME_RE.search(action.get("TargetGroupArn") or "")
+        if not match or int(match.group(1)) in claimed_user_ids:
+            return True
+    return False
 
 
 def get_assigned_users_for_instance(instance_id: str) -> List[str]:
@@ -440,6 +471,18 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
+        # Claims before the keep-set: an assign stores its row before dropping its claim
+        try:
+            claimed_user_ids = get_assign_claimed_user_ids()
+        except Exception as claim_error:
+            print(f"Skipping orphan cleanup: cannot read assign claims: {claim_error}")
+            return {
+                "orphaned_rules_deleted": 0,
+                "orphaned_target_groups_deleted": 0,
+                "error": f"assign claims unavailable: {claim_error}",
+            }
+        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+
         # Keep-set: ACTIVE/MIGRATING/TERMINATING (statuses that can own a live
         # rule) plus any row touched within the grace window. TERMINATING
         # aliases PENDING_RELEASE, so an ACTIVE-only filter would reap a rule
@@ -476,9 +519,14 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
         print(f"Found {len(db_rule_arns)} keep-set assignments in database")
 
         # Find orphaned rules (in ALB but not in database)
-        orphaned_rules = [
-            rule for rule in premium_rules if rule["RuleArn"] not in db_rule_arns
-        ]
+        orphaned_rules = []
+        for rule in premium_rules:
+            if rule["RuleArn"] in db_rule_arns:
+                continue
+            if _rule_may_belong_to_inflight_assign(rule, claimed_user_ids):
+                print(f"Keeping rule {rule['RuleArn']}: an assign is in flight")
+                continue
+            orphaned_rules.append(rule)
 
         if not orphaned_rules:
             print("No orphaned ALB resources found")
@@ -514,7 +562,6 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 print("Deleted ALB rule")
 
                 # Delete the target group if it exists (skip shared autoscaling TG)
-                autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
                 if target_group_arn and target_group_arn != autoscaling_tg_arn:
                     try:
                         _delete_premium_tg_unhealthy_alarm(target_group_arn)
@@ -598,6 +645,20 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                     rules_by_routing_id[routing_id] = []
                 rules_by_routing_id[routing_id].append(rule)
 
+        # Claims before the keep-set: an assign stores its row before dropping its claim
+        try:
+            claimed_user_ids = get_assign_claimed_user_ids()
+        except Exception as claim_error:
+            print(
+                f"Skipping duplicate cleanup: cannot read assign claims: "
+                f"{claim_error}"
+            )
+            return {
+                "duplicates_deleted": 0,
+                "target_groups_deleted": 0,
+                "error": f"assign claims unavailable: {claim_error}",
+            }
+
         # Get all active assignments from database to know which rules to keep
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -633,6 +694,9 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                 rule_arn = rule["RuleArn"]
                 if rule_arn in db_rule_arns:
                     print(f"Keeping rule {rule_arn} (in database)")
+                    continue
+                if _rule_may_belong_to_inflight_assign(rule, claimed_user_ids):
+                    print(f"Keeping rule {rule_arn}: an assign is in flight")
                     continue
 
                 # Delete this duplicate rule
@@ -686,11 +750,15 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
         }
 
 
-def get_all_premium_instances_with_states():
+def get_all_premium_instances_with_states(raise_on_error: bool = False):
     """Get all premium instances with their AWS states.
 
     Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
     contamination (e.g., development Lambda discovering production instances).
+
+    On an EC2 error, returns [] unless raise_on_error is set. A caller that
+    deletes rows for instances missing from the result must set it: [] would
+    read as "no premium instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = PremiumInstanceConfig.get_env_prefix()
@@ -791,6 +859,8 @@ def get_all_premium_instances_with_states():
         return instances
     except Exception as e:
         print(f"Error getting premium instances: {str(e)}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -933,8 +1003,9 @@ def reconcile_instance_states() -> Dict[str, Any]:
     Moved from premium_manager as this is maintenance, not real-time operation
     """
     try:
-        # Get all instances from AWS using dynamic tag-based discovery
-        all_instances = get_all_premium_instances_with_states()
+        # Get all instances from AWS using dynamic tag-based discovery.
+        # Raises on an EC2 error, so no row is deleted on a failed discovery.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
 
         aws_instance_map = {}
         for instance in all_instances:
@@ -973,6 +1044,26 @@ def _reconcile_instance_states_transaction(
             (PremiumAssignment.ACTIVE,),
         )
         db_assignments = cursor.fetchall()
+
+        # No instance discovered while rows point at real instances is more
+        # likely a discovery fault (a changed tag or filter) than every
+        # instance gone; deleting would drop every assignment and its routing.
+        if not aws_instance_map and any(
+            a["instance_id"] != PremiumAssignment.AUTOSCALING_POOL
+            for a in db_assignments
+        ):
+            print(
+                f"Skipping reconciliation: no premium instance discovered, "
+                f"but {len(db_assignments)} active assignments exist"
+            )
+            return {
+                "skipped": True,
+                "reason": "no_instances_discovered",
+                "cleanup_count": 0,
+                "update_count": 0,
+                "total_aws_instances": 0,
+                "total_db_assignments": len(db_assignments),
+            }
 
         for assignment in db_assignments:
             assignment_id = assignment["id"]

@@ -9,16 +9,6 @@ if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); 
     exit 1
 fi
 
-# === AWS CREDENTIAL DIAGNOSTIC (remove after investigation of #612) ===
-echo "=== AWS CREDENTIAL DIAGNOSTIC ==="
-echo "AWS_ACCESS_KEY_ID set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "YES (${AWS_ACCESS_KEY_ID:0:4}...)" || echo "NO")"
-echo "AWS_SECRET_ACCESS_KEY set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "YES" || echo "NO")"
-echo "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-NOT SET}"
-echo "Calling sts get-caller-identity..."
-aws sts get-caller-identity --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>&1 || echo "STS CALL FAILED"
-echo "=== END DIAGNOSTIC ==="
-# === END DIAGNOSTIC ===
-
 # Map infrastructure environment variables (DB_*) to application expected variables (MYSQL_*)
 # This allows the application's config.py to find the correct environment variables
 # while maintaining infrastructure naming conventions
@@ -149,10 +139,10 @@ if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
 fi
 
 # Configure Uvicorn worker processes
-# Workers handle concurrent requests. Recommended formula: (2 × CPU cores) + 1
-# t3.large has 2 vCPUs, so optimal range is 2-5 workers
-# Set via environment variable UVICORN_WORKERS, defaults to 5 for production use
-UVICORN_WORKERS=${UVICORN_WORKERS:-5}
+# Each worker is a full app process, all from the memory the workflows use; the
+# supervisor above one worker does not load the app. Two keep /health answered
+# while one worker's event loop is blocked. Each task definition sets its own count.
+UVICORN_WORKERS=${UVICORN_WORKERS:-2}
 echo "Uvicorn workers: $UVICORN_WORKERS"
 
 # Get EC2 instance ID for free tier user tracking

@@ -178,16 +178,144 @@ def open_edit_images(images, node_dirpath: str):
     return np.concatenate([open_frames(path) for path in paths])
 
 
+class RoiMasks:
+    """Each ROI's pixels, CSR: ROI i is indices[indptr[i]:indptr[i + 1]], flat."""
+
+    def __init__(self, shape, indptr, indices):
+        self.shape = tuple(int(n) for n in shape)
+        self.indptr = np.asarray(indptr, dtype=np.int64)
+        self.indices = np.asarray(indices, dtype=np.int64)
+
+    @classmethod
+    def from_pixels(cls, shape, pixels):
+        """From each ROI's flat pixel indices, in any order, repeats allowed."""
+        rows = [np.unique(np.asarray(p, dtype=np.int64)) for p in pixels]
+        return cls._from_sorted(shape, rows)
+
+    @classmethod
+    def from_stack(cls, stack):
+        """From a per-ROI stack, one layer at a time: a ROI is its non-NaN pixels."""
+        rows = [np.flatnonzero(~np.isnan(stack[i])) for i in range(len(stack))]
+        return cls._from_sorted(stack.shape[1:], rows)
+
+    @classmethod
+    def _from_sorted(cls, shape, rows):
+        indptr = np.zeros(len(rows) + 1, np.int64)
+        indptr[1:] = np.cumsum([len(row) for row in rows])
+        return cls(shape, indptr, np.concatenate(rows) if rows else [])
+
+    def __len__(self):
+        return len(self.indptr) - 1
+
+    def pixels(self, i) -> np.ndarray:
+        """ROI i's flat pixel indices, ascending."""
+        return self.indices[self.indptr[i] : self.indptr[i + 1]]
+
+    def coords(self, i):
+        """ROI i's (rows, columns), in the order a boolean mask selects them."""
+        return np.unravel_index(self.pixels(i), self.shape)
+
+    def append(self, pixels):
+        """Add a ROI of the given flat pixel indices as the last row."""
+        row = np.unique(np.asarray(pixels, dtype=np.int64))
+        self.indices = np.concatenate((self.indices, row))
+        self.indptr = np.append(self.indptr, len(self.indices))
+
+    def union(self, ids) -> np.ndarray:
+        """The pixels of any of the ROIs `ids`."""
+        rows = [self.pixels(i) for i in ids]
+        return np.unique(np.concatenate(rows)) if rows else np.zeros(0, np.int64)
+
+    def select(self, rows) -> "RoiMasks":
+        """The ROIs `rows` (indices or a boolean mask), renumbered from 0."""
+        rows = np.arange(len(self))[rows]
+        return RoiMasks._from_sorted(self.shape, [self.pixels(i) for i in rows])
+
+    def label_image(self, rows=None) -> np.ndarray:
+        """Each pixel's highest ROI among `rows` (all when None), else NaN."""
+        selected = np.arange(len(self)) if rows is None else np.arange(len(self))[rows]
+        image = np.full(self.shape, np.nan)
+        flat = image.reshape(-1)
+        for i in np.sort(selected):  # the highest ROI writes last
+            flat[self.pixels(i)] = i
+        return image
+
+    def state(self) -> dict:
+        return {"shape": self.shape, "indptr": self.indptr, "indices": self.indices}
+
+
+def nwb_roi_label_image(label_image: np.ndarray) -> dict:
+    """
+    The NWB postprocess entry of the all-ROI label image, all_roi_label_img, as
+    one (1, H, W) layer. An HDF5 input reads a rank-3 dataset as ImageData, which
+    roi_from_hdf5 takes; a 2D one would read as FluoData.
+    """
+    return {"all_roi_label_img": label_image[np.newaxis]}
+
+
+def nwb_roi_table(roi_list: list, shape, nwb_settings: dict = None) -> dict:
+    """
+    The NWB ROI entry of a node. With the NWB setting
+    ophys.plane_segmentation.save_image_mask on, it carries the frame shape, and
+    the file also gets a dense image_mask per ROI, drawn from the pixel masks only
+    as the file is written: node pickles keep the pixel lists alone.
+    """
+    entry = {"roi_list": roi_list}
+    ophys = (nwb_settings or {}).get("ophys") or {}
+    if (ophys.get("plane_segmentation") or {}).get("save_image_mask", False):
+        entry["image_mask_shape"] = tuple(int(n) for n in shape)
+    return entry
+
+
 class EditRoiData(BaseData):
-    def __init__(self, images, im):
+    def __init__(self, images, roi_masks: RoiMasks):
+        if not isinstance(roi_masks, RoiMasks):
+            raise TypeError(f"roi_masks is a {type(roi_masks).__name__}, not RoiMasks")
         self.images: ImageData = images
-        self.im = im
+        self.roi_masks = roi_masks
         self.temp_add_roi: Dict[int, RoiPos] = {}
         self.temp_merge_roi: Dict[float, List[int]] = {}
         self.temp_delete_roi: Dict[float, None] = {}
         self.add_roi = []
         self.merge_roi = []
         self.delete_roi = []
+
+    @property
+    def roi_masks(self) -> RoiMasks:
+        self.convert_legacy_stack()
+        return self._roi_masks
+
+    @roi_masks.setter
+    def roi_masks(self, value):
+        if isinstance(value, RoiMasks):
+            self._roi_masks, self._stack = value, None
+        else:
+            self._roi_masks, self._stack = None, value
+
+    def convert_legacy_stack(self) -> bool:
+        """Convert the stack an older pickle held as `im`; True if there was one."""
+        if self._roi_masks is not None:
+            return False
+        self.roi_masks = RoiMasks.from_stack(self._stack)
+        return True
+
+    def __getstate__(self):
+        # plain arrays, no RoiMasks class, so an earlier release still loads it
+        state = dict(self.__dict__)
+        roi_masks, stack = state.pop("_roi_masks"), state.pop("_stack")
+        if roi_masks is None:
+            state["im"] = stack  # never converted: written back as it was read
+        else:
+            state["roi_masks"] = roi_masks.state()
+        return state
+
+    def __setstate__(self, state):
+        state = dict(state)
+        if "roi_masks" in state:
+            self.roi_masks = RoiMasks(**state.pop("roi_masks"))
+        else:
+            self.roi_masks = state.pop("im")
+        self.__dict__.update(state)
 
     def save_json(self, json_dir):
         pass
@@ -225,72 +353,3 @@ class EditRoiData(BaseData):
         self.temp_add_roi = {}
         self.temp_merge_roi = {}
         self.temp_delete_roi = {}
-
-
-def _plain(value):
-    """RoiStack arguments as plain arrays, inside tuples and lists too."""
-    if isinstance(value, RoiStack):
-        return value.view(np.ndarray)
-    if isinstance(value, (list, tuple)):
-        return type(value)(_plain(v) for v in value)
-    return value
-
-
-def _stack_path_for_pickle(path: str) -> str:
-    """Relative to OUTPUT_DIR when under it, so the reference survives a move."""
-    output_dir = os.path.abspath(DIRPATH.OUTPUT_DIR)
-    if os.path.abspath(path).startswith(output_dir + os.sep):
-        return os.path.relpath(path, output_dir)
-    return path
-
-
-class RoiStack(np.memmap):
-    """
-    A per-ROI mask stack (n_roi x Ly x Lx) kept in a .npy file next to the
-    node's outputs, rather than in memory and in the node pickle.
-
-    It behaves as a read-only array. Pickling the whole stack stores only its
-    path, so the node pickle, result polling, post-processing and ROI-edit
-    requests do not carry n_roi x Ly x Lx x 8 bytes. Anything derived from it
-    (a slice, a fancy-indexed subset, a ufunc or reduction result) is a plain
-    array as far as pickling goes, and is serialised with its data as before.
-    """
-
-    @classmethod
-    def create(cls, path: str, shape: tuple, fill=np.nan, dtype=np.float64):
-        """A writable stack at `path`, filled with `fill` one layer at a time."""
-        out = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
-        for i in range(shape[0]):
-            out[i] = fill
-        out.flush()
-        return out, path
-
-    @classmethod
-    def open(cls, path: str):
-        absolute = path if os.path.isabs(path) else f"{DIRPATH.OUTPUT_DIR}/{path}"
-        obj = np.load(absolute, mmap_mode="r").view(cls)
-        obj._stack_path = os.path.abspath(absolute)
-        obj._whole_file = True
-        return obj
-
-    def __array_finalize__(self, obj):
-        super().__array_finalize__(obj)
-        # Views, subsets and results are not the file: they pickle their data
-        self._stack_path = getattr(obj, "_stack_path", None)
-        self._whole_file = False
-
-    def __array_function__(self, func, types, args, kwargs):
-        # numpy keeps fast paths (nanmax with initial, for one) for exact ndarrays
-        return func(*_plain(args), **{k: _plain(v) for k, v in kwargs.items()})
-
-    def __array_wrap__(self, arr, context=None, *args, **kwargs):
-        # Ufunc and reduction results are new data, not the file: plain arrays
-        arr = super().__array_wrap__(arr, context, *args, **kwargs)
-        if isinstance(arr, RoiStack) and not np.shares_memory(arr, self):
-            arr = arr.view(np.ndarray)
-        return arr[()] if arr.ndim == 0 else arr
-
-    def __reduce__(self):
-        if getattr(self, "_whole_file", False) and self._stack_path:
-            return (RoiStack.open, (_stack_path_for_pickle(self._stack_path),))
-        return np.array(self, subok=False).__reduce__()

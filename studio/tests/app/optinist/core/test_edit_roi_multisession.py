@@ -18,7 +18,11 @@ from studio.app.optinist.core.edit_ROI.edit_ROI import CellType, EditROI
 from studio.app.optinist.core.edit_ROI.utils import EditRoiUtils
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData
-from studio.app.optinist.dataclass.roi import EditImagesUnavailableError, edit_reference
+from studio.app.optinist.dataclass.roi import (
+    EditImagesUnavailableError,
+    RoiMasks,
+    edit_reference,
+)
 from studio.app.optinist.schemas.roi import RoiPos
 
 # Unlike caiman_cnmf's, a cnmf_multisession node id has no "caiman" in it.
@@ -64,7 +68,9 @@ def file_path():
     PickleWriter.write(
         pickle_path=f"{node_dirpath}/cnmf_multisession.pkl",
         info={
-            "edit_roi_data": EditRoiData(images=np.ones((NUM_FRAME, *SHAPE)), im=im),
+            "edit_roi_data": EditRoiData(
+                images=np.ones((NUM_FRAME, *SHAPE)), roi_masks=RoiMasks.from_stack(im)
+            ),
             "iscell": IscellData(np.ones(NUM_ROI, dtype=int)),
             "fluorescence": FluoData(np.zeros((NUM_ROI, NUM_FRAME))),
             "dff": FluoData(DFF, file_name="dff"),
@@ -100,15 +106,30 @@ async def test_a_delete_only_commit_keeps_the_recording_rate(file_path):
 
 
 @pytest.mark.asyncio
-async def test_a_commit_exports_binary_footprints_as_nwb_masks(file_path):
+async def test_a_commit_keeps_the_runs_image_mask_setting(file_path):
+    pickle_path = f"{os.path.dirname(file_path)}/cnmf_multisession.pkl"
+    with open(pickle_path, "rb") as f:
+        info = pickle.load(f)
+    plane_segmentation = {"save_image_mask": True}
+    info["nwbfile"]["input"]["ophys"] = {"plane_segmentation": plane_segmentation}
+    PickleWriter.write(pickle_path=pickle_path, info=info)
+
+    EditROI(file_path=file_path).delete([0])
+    await EditROI(file_path=file_path).commit()
+
+    nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
+    assert nwbfile[NWBDATASET.ROI][NODE_ID]["image_mask_shape"] == SHAPE
+
+
+@pytest.mark.asyncio
+async def test_a_commit_exports_footprints_as_nwb_pixel_masks(file_path):
     EditROI(file_path=file_path).delete([2])
     await EditROI(file_path=file_path).commit()
 
     nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
-    masks = [roi["image_mask"] for roi in nwbfile[NWBDATASET.ROI][NODE_ID]["roi_list"]]
+    masks = [roi["pixel_mask"] for roi in nwbfile[NWBDATASET.ROI][NODE_ID]["roi_list"]]
     for i in range(2):
-        expected = np.zeros(SHAPE)
-        expected[i, :] = 1
+        expected = [[i, col, 1.0] for col in range(SHAPE[1])]
         np.testing.assert_array_equal(masks[i], expected)
 
 
@@ -138,10 +159,10 @@ async def test_a_commit_reads_new_traces_from_the_split_parts(parts_file_path):
     await EditROI(file_path=file_path).commit()
 
     committed = EditROI(file_path=file_path).output_info
-    mask = ~np.isnan(committed["edit_roi_data"].im[NUM_ROI])
+    added = committed["edit_roi_data"].roi_masks.label_image([NUM_ROI])
     np.testing.assert_array_equal(
         committed["fluorescence"].data[NUM_ROI],
-        np.mean(movie[:, mask], axis=1, dtype=np.float32),
+        np.mean(movie[:, ~np.isnan(added)], axis=1, dtype=np.float32),
     )
 
 

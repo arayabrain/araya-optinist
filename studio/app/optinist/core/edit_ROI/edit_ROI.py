@@ -21,7 +21,7 @@ from studio.app.common.core.workflow.workflow_dependencies import delete_depende
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.dataclass.base import BaseData
 from studio.app.dir_path import DIRPATH
-from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
+from studio.app.optinist.core.edit_ROI.utils import ellipse_pixels
 from studio.app.optinist.core.nwb.nwb_creater import overwrite_nwb
 from studio.app.optinist.dataclass import EditRoiData, IscellData, RoiData
 from studio.app.optinist.schemas.roi import RoiStatus
@@ -91,17 +91,17 @@ class EditROI:
 
     @property
     def shape(self):
-        return self.tmp_data.im.shape[1:]
+        return self.tmp_data.roi_masks.shape
 
     @property
     def num_cell(self):
-        return self.tmp_data.im.shape[0]
+        return len(self.tmp_data.roi_masks)
 
     @property
     def __cell_roi_im(self):
         # A pending promotion stays out of cell_roi until commit resolves it.
         drawn = ~np.isin(self.tmp_iscell, [CellType.NON_ROI, CellType.TEMP_PROMOTE])
-        return np.nanmax(self.tmp_data.im[drawn], axis=0, initial=np.nan)
+        return self.tmp_data.roi_masks.label_image(drawn)
 
     def get_status(self) -> RoiStatus:
         roi_status = self.tmp_data.status()
@@ -111,17 +111,16 @@ class EditROI:
         return roi_status
 
     def add(self, roi_pos):
-        new_roi = create_ellipse_mask(self.shape, roi_pos)
-        if np.isnan(new_roi).all():  # drawn outside the field of view
+        new_roi = ellipse_pixels(self.shape, roi_pos)
+        if new_roi.size == 0:  # drawn outside the field of view
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="the ROI covers no pixel",
             )
-        new_roi = new_roi[np.newaxis, :, :] * self.num_cell
 
         self.tmp_data.temp_add_roi[self.num_cell] = roi_pos
         self.tmp_iscell = np.append(self.tmp_iscell, CellType.TEMP_ADD)
-        self.tmp_data.im = np.vstack((self.tmp_data.im, new_roi))
+        self.tmp_data.roi_masks.append(new_roi)
 
         info = {
             "cell_roi": RoiData(
@@ -136,13 +135,26 @@ class EditROI:
         self.__save_json(info)
 
     def merge(self, ids: List[int]):
-        merging_rois = self.tmp_data.im[ids, :, :]
-        merging_rois[np.isnan(merging_rois)] = -np.inf
-        merged_roi = np.maximum.reduce(merging_rois)
-        merged_roi = np.where(merged_roi == -np.inf, np.nan, self.num_cell)
-
+        self.__check_ids(ids)
+        if len(set(ids)) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"a merge needs two ROIs or more: {ids}",
+            )
+        # a deleted or merged ROI, or a non-cell, is not merged again
+        not_cells = [
+            id
+            for id in ids
+            if self.tmp_iscell[id] not in (CellType.ROI, CellType.TEMP_ADD)
+        ]
+        if not_cells:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ROIs are not cells: {not_cells}",
+            )
+        roi_masks = self.tmp_data.roi_masks
         self.tmp_data.temp_merge_roi[float(self.num_cell)] = ids
-        self.tmp_data.im = np.vstack((self.tmp_data.im, merged_roi[np.newaxis, :, :]))
+        roi_masks.append(roi_masks.union(ids))
 
         self.tmp_iscell[ids] = CellType.TEMP_DELETE
         self.tmp_iscell = np.append(self.tmp_iscell, CellType.TEMP_ADD)
@@ -161,10 +173,11 @@ class EditROI:
         self.__save_json(info)
 
     def delete(self, ids: List[int]):
+        self.__check_ids(ids)
         # Deleting a still pending merge undoes it: its sources go back to what
         # they were before the merge marked them for deletion. The temp_merge_roi
         # entry stays so commit still appends the merged ROI's trace and keeps
-        # fluorescence aligned with im - it just lands as a non-cell, and one
+        # fluorescence aligned with the ROIs - it just lands as a non-cell, and one
         # that occludes nothing, since every projection is a max-index flatten.
         for id in ids:
             for parent in self.tmp_data.temp_merge_roi.get(float(id), []):
@@ -224,7 +237,8 @@ class EditROI:
         self.__drop_deleted_pending_rows()
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.ROI
 
-        # the same lookup the wrappers make for their series rate
+        # the run's NWB settings: the wrappers' series rate, and the ROI table's
+        # dense image_mask when the setting asks for one
         nwb_input = self.output_info.get("nwbfile", {}).get("input", {})
         rate = nwb_input.get("imaging_plane", {}).get("imaging_rate", 30)
 
@@ -239,6 +253,7 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                nwb_settings=nwb_input,
             )
         elif "lccd" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi import (
@@ -253,6 +268,7 @@ class EditROI:
                 self.node_dirpath,
                 self.function_id,
                 rate=rate,
+                nwb_settings=nwb_input,
             )
 
         elif "vacant_roi" in self.function_id:
@@ -268,6 +284,7 @@ class EditROI:
                 self.node_dirpath,
                 self.function_id,
                 rate=rate,
+                nwb_settings=nwb_input,
             )
 
         elif "caiman" in self.function_id or "cnmf_multisession" in self.function_id:
@@ -284,19 +301,19 @@ class EditROI:
                 self.function_id,
                 dff=self.output_info.get("dff"),
                 rate=rate,
+                nwb_settings=nwb_input,
             )
 
         iscell = info["iscell"].data
         non_cell_roi_file_name = self.__non_cell_roi_file_name()
         if non_cell_roi_file_name:
-            im = info["edit_roi_data"].im
+            roi_masks = info["edit_roi_data"].roi_masks
             # Only ROIs the fluorescence output has a record for: a node an
-            # older release committed can hold fewer traces than im rows, and
+            # older release committed can hold fewer traces than ROIs, and
             # drawing those would offer a click that answers 500.
-            has_trace = np.arange(len(im)) < len(info["fluorescence"].data)
-            non_cell_im = im[(iscell == CellType.NON_ROI) & has_trace]
+            has_trace = np.arange(len(roi_masks)) < len(info["fluorescence"].data)
             info["non_cell_roi"] = RoiData(
-                np.nanmax(non_cell_im, axis=0, initial=np.nan),
+                roi_masks.label_image((iscell == CellType.NON_ROI) & has_trace),
                 output_dir=self.node_dirpath,
                 file_name=non_cell_roi_file_name,
             )
@@ -351,7 +368,9 @@ class EditROI:
 
     def cancel(self):
         original_num_cell = len(self.output_info.get("fluorescence").data)
-        self.tmp_data.im = self.tmp_data.im[:original_num_cell]
+        self.tmp_data.roi_masks = self.tmp_data.roi_masks.select(
+            slice(original_num_cell)
+        )
         self.tmp_iscell = self.tmp_iscell[:original_num_cell]
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.NON_ROI
         self.tmp_data.cancel()
@@ -375,11 +394,20 @@ class EditROI:
             else None
         )
 
+    def __check_ids(self, ids: List[int]):
+        """Refuse ROI ids outside the node before the pending edit changes."""
+        unknown = [id for id in ids if not 0 <= id < self.num_cell]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"no such ROIs: {unknown}",
+            )
+
     def __drop_deleted_pending_rows(self):
         """A pending add or merge deleted before commit leaves no row behind.
 
         Pending rows sit after the committed ones, so dropping them only renumbers
-        the pending tail: im pixel values, iscell and the temp_* indices.
+        the pending tail: the ROI masks, iscell and the temp_* indices.
         """
         data = self.tmp_data
         num_committed = len(self.output_info.get("fluorescence").data)
@@ -398,10 +426,7 @@ class EditROI:
             return
 
         new_index = np.cumsum(keep) - 1
-        data.im = data.im[keep]
-        for new, old in enumerate(np.nonzero(keep)[0]):
-            if new != old:
-                data.im[new][~np.isnan(data.im[new])] = new
+        data.roi_masks = data.roi_masks.select(keep)
         self.tmp_iscell = self.tmp_iscell[keep]
         data.temp_add_roi = {
             int(new_index[i]): pos for i, pos in data.temp_add_roi.items() if keep[i]

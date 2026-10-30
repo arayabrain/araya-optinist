@@ -238,27 +238,27 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
   - **blob_detector:** Initial step that identifies potential cells or "blobs" in each frame of the video.
 
-    - **filtersize1** [int (filtersize1 <= Time / 2), default: 100]: Size of the larger temporal filter for smoothing.
+    - **filtersize1** [int (filtersize1 >= 1), default: 100]: Size of the larger temporal filter for smoothing. The temporal filters run on chunks of frame_divider frames, so filtersize1 <= frame_divider is recommended; larger values degrade detection and log a warning.
     - **filtersize2** [int (filtersize2 < filtersize1), default: 4]: Size of the smaller temporal filter for edge detection.
-    - **sigma** [float, smaller than T & filtersize2 < filtersize1, default: 1.25]: Standard deviation for the Gaussian filter.
-    - **fsize** [int (odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
-    - **min_area** [int (min_area < max_area < X * Y), default: 16]: Define the acceptable size range for detected blobs.
-    - **max_area** [int, (max_area < X * Y), default: 100]: Define the acceptable size range for detected blobs.
+    - **sigma** [float (sigma > 0), default: 1.25]: Standard deviation for the Gaussian filter.
+    - **fsize** [int (1 <= fsize <= the frame's shorter side, odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
+    - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for detected blobs.
+    - **max_area** [number, default: 100]: Define the acceptable size range for detected blobs.
     - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
 
   - **roi_integration:** Takes blobs detected across all frames and integrates them into coherent ROI that represent consistent cell locations over time.
 
-    - **overlap_threshold** [float (0 < overlap_threshold < 1), default: 0.25]: Threshold for determining significant overlap between ROIs
-    - **min_area** [int (min_area < max_area < X * Y), default: 16]: Define the acceptable size range for integrated ROIs.
-    - **max_area** [int (max_area < X * Y), default: 100]: Maximum acceptable size for integrated ROIs.
+    - **overlap_threshold** [float (0 <= overlap_threshold <= 1), default: 0.25]: Threshold for determining significant overlap between ROIs
+    - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for integrated ROIs.
+    - **max_area** [number, default: 100]: Maximum acceptable size for integrated ROIs.
     - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
 
   - **lccd:**
 
-    - **frame_divider** [int (Time / frame_divider >= 2), default: 100]: Divides the time dimension into segments for faster processing.
+    - **frame_divider** [int (1 <= frame_divider <= Time), default: 100]: Divides the time dimension into segments for faster processing. Frames after the last full segment are not used for detection.
 
   - **dff:**
-    - **f0_frames** [int (0, f0_frames, Time), default: 100]: Number of frames used to calculate the baseline fluorescence.
+    - **f0_frames** [int (f0_frames >= 1), default: 100]: Number of frames used to calculate the baseline fluorescence. The dff at frame k uses the window [k - f0_frames, k + f0_frames), so dff is entirely NaN unless 2 \* f0_frames < Time.
     - **f0_percentile** [float (0 <= f0_percentile <= 100), default: 8]: Percentile used for calculating the baseline fluorescence.
 
 #### OptiNiSt (Analysis)
@@ -574,6 +574,33 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Output:** HeatMapData (correlation matrix)
 - **Parameters:**
 - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+- **sort_by_cluster** [bool, default: False]: Order the heatmap's rows and columns by the leaf order of average-linkage hierarchical clustering on 1 - r, so correlated assemblies form blocks on the diagonal. Cells with a constant trace or a non-finite sample go last. Axis labels keep the ROI numbers; the NWB `corr` stays in cell order and `order` lists the ROI numbers in heatmap order. This sorts only; for cluster labels and cluster means use `hierarchical_clustering`.
+
+###### hierarchical_clustering
+
+- **Description:** Agglomerative hierarchical clustering of cells by their response profile, using [scipy.cluster.hierarchy](https://docs.scipy.org/doc/scipy/reference/cluster.hierarchy.html). Each row of the input is one cell's profile, such as an event-triggered average (`eta` mean) or a tuning curve (`covariate_binning` mean).
+- **Input:** TimeSeriesData, cells x features. Pooled data from several sessions can be fed through `data_concat` with `axis: 0`.
+- **Output:**
+  - sorted_heatmap (HeatMapData): the input rows in dendrogram leaf order, labelled with ROI numbers. The heatmap draws its first row at the bottom, matching the dendrogram.
+  - cluster_mean (TimeSeriesData): one row per cluster, mean across its cells with a std or sem band.
+  - cluster_size (BarData): cells per cluster.
+  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means (the means of the first 30 clusters; `cluster_mean` holds all). A cluster number that would overlap another is left out, keeping the larger cluster's.
+  - nwbfile: `labels` per input row (0 for rows left out), `cell_numbers`, `leaf_order`, `linkage`, `cut_height`, `cluster_mean`, `cluster_size` and `response_z`.
+- Clusters are numbered 1..k from the top of the figure down. All-NaN columns (for example empty covariate bins) are dropped. Rows that still hold NaN, or that are constant under the correlation metric, are left out and logged.
+- **Parameters:**
+  - **transpose** [bool, default: False]: Transpose so that rows are cells.
+  - **zscore_rows** [bool, default: False]: Z-score each row before clustering, so clusters follow response shape and not amplitude.
+  - **method** ['ward', 'average', default: 'ward']: Linkage method. Ward needs the euclidean metric.
+  - **metric** ['euclidean', 'correlation', default: 'euclidean']: Distance between rows.
+  - **cut_criterion** ['n_clusters', 'height_fraction', default: 'n_clusters']: Cut the dendrogram into a fixed number of clusters, or at a fraction of the tallest merge. Tied merges can give fewer clusters than asked, which is logged.
+  - **n_clusters** [int, default: 5]
+  - **height_fraction** [float, default: 0.5]: The cut is scale invariant, so it reads the same for dF/F and z-scored input.
+  - **band** ['std', 'sem', default: 'sem']: Band of `cluster_mean`, across the cells of each cluster.
+  - **response_start**, **response_end** [default: 0, 30]: Index range [start, end) over which each cluster's mean response is reported in the figure and NWB. Set them equal to skip. With z-scored `eta` input, a cluster whose response lies within +/-1.98 is non-responsive in the sense of Patel et al. 2026.
+  - **color_limit** [float, default: 0]: The figure's heatmap colour scale runs from -color_limit to +color_limit, centred at 0. 0 uses the 99th percentile of the absolute values.
+- **Presets:**
+  - Response types around an event (Patel et al. 2026, Nat Neurosci, Fig 3d,e): `eta` with `baseline_window` set to the pre-bout baseline (30 frames for 3 s at 10 Hz), then `ward` / `euclidean`, and lower `height_fraction` until one cluster is non-responsive.
+  - Tuning types: `covariate_binning` mean, `zscore_rows: true`, `average` / `correlation`, and `response_end` equal to `response_start` (the bin centres are in covariate units, which may lie outside the default window).
 
 ###### [cross_correlation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.correlate.html)
 
@@ -682,12 +709,15 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData, HDF5Data, IscellData
   - If using optinist nwb format:
     - cell_img:
-      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_img/data
-      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_img/data
+      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_label_img/data
+      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_label_img/data
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
 - **Output:** all_roi (RoiData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_label_img` is the all-ROI label image (one layer; each pixel holds the highest ROI covering it). cell_roi and non_cell_roi take the pixels whose ROI is in the group, so where a ROI of the other group lies on top, the pixel is empty. Files written by earlier releases hold one layer per ROI under `all_roi_img` instead, which is split by iscell as before.
+- A label image counts ROIs from 0: ROI i holds the value i, and pixels outside every ROI are NaN. A label image from a tool that counts from 1 over a 0 background (Cellpose, ImageJ) needs converting first, or its background reads as ROI 0.
+- iscell needs an entry for every ROI of cell_img (each layer of a per-ROI stack, each label up to the highest); otherwise the node stops with an error naming both counts. One layer beside a one-entry iscell reads as one ROI, whatever value its pixels hold.
 
 ###### roi_fluo_from_hdf5
 
@@ -695,8 +725,8 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData, FluoData, HDF5Data, IscellData
   - If using optinist nwb format:
     - cell_img:
-      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_img/data
-      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_img/data
+      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_label_img/data
+      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_label_img/data
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
@@ -704,6 +734,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
       - processing/ophys/suite2p_roi_UNIQUE-ID/Fluorescence/data
       - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
 - **Output:** all_roi (RoiData), fluorescence (FluoData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_label_img`, and `all_roi_img` of earlier files: read as by roi_from_hdf5.
 - **Parameters:**
   - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
@@ -714,7 +745,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Input:** ImageData
   - If using optinist nwb format:
     - cell_img:
-      - processing/ophys/ImageSegmentation/vacant_roi_UNIQUE-ID/image_mask
+      - processing/optinist/vacant_roi_UNIQUE-ID_all_roi_label_img/data
     - fluorescence
       - processing/ophys/vacant_roi_UNIQUE-ID/Fluorescence/data
 - **Output** FluoData, IscellData
