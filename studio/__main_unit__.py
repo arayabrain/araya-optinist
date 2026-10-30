@@ -15,6 +15,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_outputs_remote_bucket_name,
     get_user_remote_bucket_name,
 )
+from studio.app.common.core.auth.secret_validation import validate_signing_secrets
 from studio.app.common.core.instance_mode import (
     INSTANCE_MODE_DEFAULT,
     INSTANCE_MODE_ENV,
@@ -27,6 +28,7 @@ from studio.app.common.core.middleware import (
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
+from studio.app.common.core.middleware.cors_config import get_cors_allow_origins
 from studio.app.common.core.middleware.spa_routing_middleware import (
     INDEX_HTML_CACHE_HEADERS,
 )
@@ -100,6 +102,11 @@ async def lifespan(app: FastAPI):
     remote_storage_type = RemoteStorageType.get_activated_type()
 
     logger = AppLogger.get_logger()
+
+    # Fail fast, before anything reports startup or starts background work.
+    # Above one worker, studio.server.main() runs the same check in a child
+    # before uvicorn.run; this one covers one worker and other launchers.
+    validate_signing_secrets()
 
     logger.info(
         f'"Studio" application startup complete.\n'
@@ -336,7 +343,7 @@ app.add_middleware(SecureRoutingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
