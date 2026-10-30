@@ -4,7 +4,7 @@ const mockRefreshTokenApi = jest.fn() as unknown as jest.Mock<
   Promise<{ access_token: string }>
 >
 
-const mockLogoutApi = jest.fn<() => Promise<void>>()
+const mockLogoutApi = jest.fn<Promise<void>, []>()
 
 jest.mock("api/auth/Auth", () => ({
   refreshTokenApi: mockRefreshTokenApi,

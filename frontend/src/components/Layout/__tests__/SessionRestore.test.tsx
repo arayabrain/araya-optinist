@@ -10,14 +10,13 @@ import { MemoryRouter, useLocation } from "react-router-dom"
 import { default as configureStore } from "redux-mock-store"
 
 import { describe, it, expect, jest, beforeEach } from "@jest/globals"
-import "@testing-library/jest-dom"
 import { render, act, screen } from "@testing-library/react"
 
 import Layout from "components/Layout"
 import { AppDispatch } from "store/store"
 import { removeToken } from "utils/auth/AuthUtils"
 
-const mockRefreshTokenApi = jest.fn<() => Promise<{ access_token: string }>>()
+const mockRefreshTokenApi = jest.fn<Promise<{ access_token: string }>, []>()
 
 jest.mock("api/auth/Auth", () => ({
   refreshTokenApi: () => mockRefreshTokenApi(),
@@ -95,7 +94,7 @@ describe("Layout on a reload", () => {
     await mountAt("/dashboard")
 
     expect(mockRefreshTokenApi).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId("path")).toHaveTextContent("/dashboard")
+    expect(screen.getByTestId("path").textContent).toBe("/dashboard")
   })
 
   it("sends the user to login when there is no session", async () => {
@@ -103,6 +102,6 @@ describe("Layout on a reload", () => {
 
     await mountAt("/dashboard")
 
-    expect(screen.getByTestId("path")).toHaveTextContent("/login")
+    expect(screen.getByTestId("path").textContent).toBe("/login")
   })
 })
