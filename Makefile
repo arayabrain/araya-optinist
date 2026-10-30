@@ -177,7 +177,7 @@ docs:
 .PHONY: local_build
 local_build:
 	rm -rf dist
-	cd frontend && yarn install --ignore-scripts && GENERATE_SOURCEMAP=false yarn build
+	cd frontend && yarn install --ignore-scripts && yarn build
 	poetry build
 
 
