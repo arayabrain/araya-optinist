@@ -3,6 +3,7 @@ import { useSelector } from "react-redux"
 
 import Box from "@mui/material/Box"
 import Button from "@mui/material/Button"
+import Link from "@mui/material/Link"
 import Paper from "@mui/material/Paper"
 import Typography from "@mui/material/Typography"
 
@@ -52,7 +53,17 @@ const ConsentBanner: FC = () => {
       }}
     >
       <Typography variant="body2">
-        We use analytics cookies to measure site usage.
+        We use analytics cookies to measure site usage. See our{" "}
+        {/* Outside the router, so a plain link; a new tab keeps the notice. */}
+        <Link
+          href="/privacy"
+          target="_blank"
+          rel="noopener"
+          data-testid="consent-privacy-link"
+        >
+          Privacy Policy
+        </Link>
+        .
       </Typography>
       <Box sx={{ display: "flex", gap: 1, ml: "auto" }}>
         {/* Identical styling on both: a de-emphasised Decline is a dark pattern. */}
