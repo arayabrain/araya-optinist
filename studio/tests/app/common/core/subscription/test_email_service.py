@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from studio.app.common.core.subscription.email_service import (
     NOTIFICATION_FROM_EMAIL_ENV,
+    SUPPORT_EMAIL,
     EmailService,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
@@ -43,6 +44,10 @@ class TestSend:
         kwargs = mock_ses.send_email.call_args.kwargs
         assert kwargs["Source"] == SENDER
         assert kwargs["Destination"] == {"ToAddresses": [RECIPIENT]}
+        assert kwargs["ReplyToAddresses"] == [SUPPORT_EMAIL]
+        assert kwargs["Message"]["Body"]["Text"]["Data"].endswith(
+            f"Questions: {SUPPORT_EMAIL}\n"
+        )
         assert "2.00 GB" in kwargs["Message"]["Body"]["Text"]["Data"]
         assert "5 data unit(s)" in kwargs["Message"]["Body"]["Text"]["Data"]
 

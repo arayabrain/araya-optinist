@@ -25,6 +25,7 @@ from studio.app.const import FRONTEND_URL
 logger = AppLogger.get_logger()
 
 NOTIFICATION_FROM_EMAIL_ENV = "NOTIFICATION_FROM_EMAIL"
+SUPPORT_EMAIL = "optinist-support@araya.org"
 
 _GRACE_START_SUBJECT = (
     "OptiNiSt Cloud: your premium plan expired - data deletion notice"
@@ -205,9 +206,15 @@ class EmailService:
             ses.send_email(
                 Source=sender,
                 Destination={"ToAddresses": [to_email]},
+                ReplyToAddresses=[SUPPORT_EMAIL],
                 Message={
                     "Subject": {"Data": subject, "Charset": "UTF-8"},
-                    "Body": {"Text": {"Data": body, "Charset": "UTF-8"}},
+                    "Body": {
+                        "Text": {
+                            "Data": f"{body}\nQuestions: {SUPPORT_EMAIL}\n",
+                            "Charset": "UTF-8",
+                        }
+                    },
                 },
             )
             logger.info(f"Sent notification email: {subject}")
