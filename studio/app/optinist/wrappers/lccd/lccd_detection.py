@@ -236,7 +236,9 @@ def lccd_detect(
                     )
                     timeseries_dff[i, k] = (timeseries[i, k] - f0) / f0
 
-    # Create ROI list for NWB: (row, column, weight) of each ROI's pixels
+    # Create ROI list for NWB: (row, column, weight) of each ROI's pixels.
+    # A column's weights line up with roi_masks' coords: both follow the same
+    # pixels, ascending and unique (canonical CSC, np.unique in from_pixels).
     roi_list = []
     for i, (_, weights) in enumerate(columns):
         rows, cols = roi_masks.coords(i)
