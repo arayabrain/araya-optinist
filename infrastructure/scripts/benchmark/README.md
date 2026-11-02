@@ -86,7 +86,7 @@ ROI detection, not for registration memory.
 | File | Content |
 |---|---|
 | `provenance.json` | Git SHA and dirty files, fixture and overrides, input bytes and SHA-256, image ID, memory and CPU flags, uvicorn workers, sampling intervals, host |
-| `rules-N.jsonl` | One line per rule: `peak_rss_mb` (kernel high-water mark, not sampled), `write_bytes`, process start / imports done / end times, status, and per-step peaks (`phases`) |
+| `rules-N.jsonl` | One line per rule: `peak_rss_mb` (kernel high-water mark, not sampled), `write_bytes`, process start / imports done / end times, per-step peaks (`phases`), and `status`, the rule process's own outcome. A function that fails writes its error as the rule's output, so its process still ends `ok`; the node's result is in the run's experiment record, and `summary.md` shows it per rule |
 | `cgroup.tsv` | Container memory, peak, swap, OOM-kill count, CPU — every second |
 | `probe.tsv` | `/health` status and latency every second (failure = non-200 or 10 s timeout) |
 | `summary.md` | The above reduced to tables |

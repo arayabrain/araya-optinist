@@ -44,13 +44,16 @@ def fmt_s(seconds):
     return f"{seconds / 60:.1f} min" if seconds >= 120 else f"{seconds:.0f} s"
 
 
-def rules_table(path):
+def rules_table(path, functions):
+    """`functions`: the run's node results by node id, from BENCH_RESULT. A rule
+    process ends ok when its function fails (the error is its output), so the
+    node result is the one that shows a failure."""
     rows = [json.loads(line) for line in open(path) if line.strip()]
     rows.sort(key=lambda r: r.get("t_proc_start") or 0)
     out = [
-        "| Rule | Status | Peak RSS (MB) | Children peak (MB) | Written (MB) | "
-        "Start→imports | Imports→end |",
-        "|---|---|---|---|---|---|---|",
+        "| Rule | Node | Process | Peak RSS (MB) | Children peak (MB) | "
+        "Written (MB) | Start→imports | Imports→end |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         t_proc = r.get("t_proc_start")
@@ -63,8 +66,9 @@ def rules_table(path):
             work = (t_done - t_proc) if (t_proc and t_done) else None
         written = (r.get("write_bytes") or 0) / MB
         status = r["status"] + ("" if r.get("output_exists") else " (no output)")
+        node = functions.get(r.get("node_id")) or "–"
         out.append(
-            f"| {r['rule']} | {status} | {r['peak_rss_mb']:.0f} | "
+            f"| {r['rule']} | {node} | {status} | {r['peak_rss_mb']:.0f} | "
             f"{r['children_peak_rss_mb']:.0f} | {written:.0f} | "
             f"{fmt_s(imports)} | {fmt_s(work)} |"
         )
@@ -218,7 +222,8 @@ def main():
         mixed = len(algos) > 1 and run <= len(algos)
         fixture = f" ({algos[run - 1]})" if mixed else ""
         print(f"\n## Per rule — {os.path.basename(path)}{fixture}\n")
-        print(rules_table(path))
+        functions = bench_result(row, run).get("functions") or {}
+        print(rules_table(path, functions))
         phases = phases_tables(path)
         if phases:
             print(f"\n### Steps within rules — {os.path.basename(path)}")
