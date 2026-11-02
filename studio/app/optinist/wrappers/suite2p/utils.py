@@ -50,6 +50,22 @@ def tiff_path(output_dir, file_name):
     return join_filepath([output_dir, "tiff", file_name, f"{file_name}.tif"])
 
 
+def reserve_blocks(path):
+    """
+    Allocate a sparse file's disk blocks.
+
+    A write through a memory map that needs a block on a full disk is a SIGBUS:
+    no exception, so no cleanup. Reserved first, a full disk is an OSError
+    here. ext4 and XFS allocate without writing data; posix_fallocate is not
+    available on macOS or Windows, where the file stays sparse.
+    """
+    fallocate = getattr(os, "posix_fallocate", None)
+    if fallocate is None:
+        return
+    with open(path, "r+b") as f:
+        fallocate(f.fileno(), 0, os.fstat(f.fileno()).st_size)
+
+
 @contextlib.contextmanager
 def writable_tiff(output_dir, file_name, shape):
     """
@@ -58,8 +74,9 @@ def writable_tiff(output_dir, file_name, shape):
     The empty file is laid out as tifffile writes the whole array, so once
     filled it is byte-identical to writing the array, BigTIFF included
     (tifffile.memmap's own create would align the pixels to 4 KiB instead).
-    It is built beside the final path and moved there on a clean exit, so a
-    failure leaves no partial file and any earlier one untouched.
+    Its blocks are reserved before it is mapped (reserve_blocks). It is built
+    beside the final path and moved there on a clean exit, so a failure leaves
+    no partial file and any earlier one untouched.
     """
     import tifffile
 
@@ -68,6 +85,7 @@ def writable_tiff(output_dir, file_name, shape):
     tmp_path = f"{path}.partial"
     try:
         tifffile.imwrite(tmp_path, shape=shape, dtype=np.int16)
+        reserve_blocks(tmp_path)
         # mapped as its series, which has no frame axis for one frame
         frames = tifffile.memmap(tmp_path, mode="r+").reshape(shape)
         yield frames
