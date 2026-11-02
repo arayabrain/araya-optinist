@@ -409,13 +409,14 @@ const InvoicesPage: FC = () => {
       window.open(
         "https://billing.stripe.com/p/login/5kQ9ATdaS2TbdknghI2wU00",
         "_blank",
+        "noopener,noreferrer",
       )
     }
   }
 
   const handleViewInvoice = (invoice: InvoiceDTO): void => {
     if (!shouldShowLoader && invoice.invoice_url) {
-      window.open(invoice.invoice_url, "_blank")
+      window.open(invoice.invoice_url, "_blank", "noopener,noreferrer")
     }
   }
 

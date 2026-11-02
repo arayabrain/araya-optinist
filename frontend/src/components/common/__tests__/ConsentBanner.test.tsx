@@ -65,6 +65,13 @@ describe("ConsentBanner", () => {
     expect(screen.getByTestId("consent-banner")).toBeInTheDocument()
   })
 
+  it("links the privacy policy in a new tab", () => {
+    renderBanner()
+    const link = screen.getByTestId("consent-privacy-link")
+    expect(link).toHaveAttribute("href", "/privacy")
+    expect(link).toHaveAttribute("target", "_blank")
+  })
+
   it("persists the grant, updates gtag and dismisses", async () => {
     renderBanner()
 

@@ -574,6 +574,33 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 - **Output:** HeatMapData (correlation matrix)
 - **Parameters:**
 - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+- **sort_by_cluster** [bool, default: False]: Order the heatmap's rows and columns by the leaf order of average-linkage hierarchical clustering on 1 - r, so correlated assemblies form blocks on the diagonal. Cells with a constant trace or a non-finite sample go last. Axis labels keep the ROI numbers; the NWB `corr` stays in cell order and `order` lists the ROI numbers in heatmap order. This sorts only; for cluster labels and cluster means use `hierarchical_clustering`.
+
+###### hierarchical_clustering
+
+- **Description:** Agglomerative hierarchical clustering of cells by their response profile, using [scipy.cluster.hierarchy](https://docs.scipy.org/doc/scipy/reference/cluster.hierarchy.html). Each row of the input is one cell's profile, such as an event-triggered average (`eta` mean) or a tuning curve (`covariate_binning` mean).
+- **Input:** TimeSeriesData, cells x features. Pooled data from several sessions can be fed through `data_concat` with `axis: 0`.
+- **Output:**
+  - sorted_heatmap (HeatMapData): the input rows in dendrogram leaf order, labelled with ROI numbers. The heatmap draws its first row at the bottom, matching the dendrogram.
+  - cluster_mean (TimeSeriesData): one row per cluster, mean across its cells with a std or sem band.
+  - cluster_size (BarData): cells per cluster.
+  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means (the means of the first 30 clusters; `cluster_mean` holds all). A cluster number that would overlap another is left out, keeping the larger cluster's.
+  - nwbfile: `labels` per input row (0 for rows left out), `cell_numbers`, `leaf_order`, `linkage`, `cut_height`, `cluster_mean`, `cluster_size` and `response_z`.
+- Clusters are numbered 1..k from the top of the figure down. All-NaN columns (for example empty covariate bins) are dropped. Rows that still hold NaN, or that are constant under the correlation metric, are left out and logged.
+- **Parameters:**
+  - **transpose** [bool, default: False]: Transpose so that rows are cells.
+  - **zscore_rows** [bool, default: False]: Z-score each row before clustering, so clusters follow response shape and not amplitude.
+  - **method** ['ward', 'average', default: 'ward']: Linkage method. Ward needs the euclidean metric.
+  - **metric** ['euclidean', 'correlation', default: 'euclidean']: Distance between rows.
+  - **cut_criterion** ['n_clusters', 'height_fraction', default: 'n_clusters']: Cut the dendrogram into a fixed number of clusters, or at a fraction of the tallest merge. Tied merges can give fewer clusters than asked, which is logged.
+  - **n_clusters** [int, default: 5]
+  - **height_fraction** [float, default: 0.5]: The cut is scale invariant, so it reads the same for dF/F and z-scored input.
+  - **band** ['std', 'sem', default: 'sem']: Band of `cluster_mean`, across the cells of each cluster.
+  - **response_start**, **response_end** [default: 0, 30]: Index range [start, end) over which each cluster's mean response is reported in the figure and NWB. Set them equal to skip. With z-scored `eta` input, a cluster whose response lies within +/-1.98 is non-responsive in the sense of Patel et al. 2026.
+  - **color_limit** [float, default: 0]: The figure's heatmap colour scale runs from -color_limit to +color_limit, centred at 0. 0 uses the 99th percentile of the absolute values.
+- **Presets:**
+  - Response types around an event (Patel et al. 2026, Nat Neurosci, Fig 3d,e): `eta` with `baseline_window` set to the pre-bout baseline (30 frames for 3 s at 10 Hz), then `ward` / `euclidean`, and lower `height_fraction` until one cluster is non-responsive.
+  - Tuning types: `covariate_binning` mean, `zscore_rows: true`, `average` / `correlation`, and `response_end` equal to `response_start` (the bin centres are in covariate units, which may lie outside the default window).
 
 ###### [cross_correlation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.correlate.html)
 

@@ -250,6 +250,9 @@ export const selectBarData = (filePath: string) =>
 export const selectBarMeta = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).bar[filePath]?.meta
 
+export const selectBarColumns = (filePath: string) => (state: RootState) =>
+  selectDisplayData(state).bar[filePath]?.columns
+
 export const selectBarIndex = (filePath: string) =>
   createSelector(
     [(state: RootState) => selectDisplayData(state).bar[filePath]?.index],
