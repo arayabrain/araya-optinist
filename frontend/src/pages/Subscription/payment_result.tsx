@@ -258,6 +258,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({
                   window.open(
                     "https://github.com/arayabrain/araya-optinist",
                     "_blank",
+                    "noopener,noreferrer",
                   )
                 }
               >
@@ -288,6 +289,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({
                   window.open(
                     "https://optinist.readthedocs.io/en/latest",
                     "_blank",
+                    "noopener,noreferrer",
                   )
                 }
               >

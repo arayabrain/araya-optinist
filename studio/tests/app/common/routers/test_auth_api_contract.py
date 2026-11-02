@@ -15,8 +15,15 @@ Tested endpoints:
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from fastapi import Request, Response
 
 from studio.app.common.schemas.auth import AccessToken, Token
+
+
+def _http():
+    scope = {"type": "http", "scheme": "http", "path": "/", "headers": []}
+    return {"request": Request(scope), "response": Response()}
+
 
 # ============================================================================
 # Frontend Contract Definitions
@@ -249,7 +256,7 @@ async def test_contract_login_response_format():
                         )
                         mock_db = Mock()
 
-                        result = await login(user_data=user_data, db=mock_db)
+                        result = await login(user_data=user_data, db=mock_db, **_http())
 
                         # Result should be Token model, convert to dict for validation
                         result_dict = result.dict()
@@ -276,7 +283,9 @@ async def test_contract_refresh_response_format():
 
         refresh_token_data = RefreshToken(refresh_token="old_refresh_token")
 
-        result = await refresh(refresh_token=refresh_token_data)
+        result = await refresh(
+            refresh_token=refresh_token_data, request=_http()["request"]
+        )
 
         # Result should be AccessToken model
         result_dict = result.dict()
@@ -389,7 +398,7 @@ async def test_contract_login_clears_logged_out_status():
                         )
                         mock_db = Mock()
 
-                        await login(user_data=user_data, db=mock_db)
+                        await login(user_data=user_data, db=mock_db, **_http())
 
                         # Verify both clear functions were called with user.id
                         mock_clear_status.assert_called_once_with(42)
@@ -449,7 +458,7 @@ async def test_contract_login_continues_on_clear_failure():
                         mock_db = Mock()
 
                         # Should not raise - login should continue
-                        result = await login(user_data=user_data, db=mock_db)
+                        result = await login(user_data=user_data, db=mock_db, **_http())
 
                         # Login should still succeed
                         assert result.access_token == "jwt_token_here"
