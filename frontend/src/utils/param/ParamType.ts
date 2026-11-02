@@ -24,5 +24,6 @@ export type ParamDTO = {
 export type NodeParamChange = {
   nodeId: string
   name: string
+  added: string[]
   removed: string[]
 }

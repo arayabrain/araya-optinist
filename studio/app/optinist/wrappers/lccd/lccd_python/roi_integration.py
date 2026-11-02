@@ -26,7 +26,7 @@ def filter_roi_by_area(roi, min_area, max_area):
         area = np.sum(roi[:, i])
         if min_area <= area and area <= max_area:
             indices.append(i)
-    return roi[:, np.array(indices)]
+    return roi[:, np.array(indices, dtype=int)]
 
 
 class RoiIntegration:

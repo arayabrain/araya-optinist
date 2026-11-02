@@ -2,7 +2,7 @@ import json
 import mmap
 import os
 from abc import ABC, abstractmethod
-from dataclasses import fields
+from dataclasses import asdict, fields
 from io import BufferedReader
 from pathlib import Path
 
@@ -52,6 +52,19 @@ class JsonReader:
             index=json_data["index"],
             meta=plot_metadata,
         )
+
+    @classmethod
+    def read_as_output_bytes(cls, filepath) -> bytes:
+        """
+        A file's JSON object with its plot meta added, without parsing the file.
+        Its members are served as written: no OutputData conversion.
+        """
+        plot_metadata_path = f"{os.path.splitext(filepath)[0]}.plot-meta.json"
+        meta = json.dumps(asdict(cls.read_as_plot_meta(plot_metadata_path)))
+        with open(filepath, "rb") as f:
+            body = f.read()
+        # "meta" goes first, after the object's opening brace
+        return b"".join((b'{"meta":', meta.encode(), b",", memoryview(body)[1:]))
 
     @classmethod
     def read_as_timeseries(cls, filepath) -> JsonTimeSeriesData:

@@ -1,5 +1,6 @@
 import copy
 import os
+import pickle
 import shutil
 from glob import glob
 from typing import Optional
@@ -71,10 +72,12 @@ class WorkflowNodeDataFilter:
             if not os.path.exists(self.original_pkl_filepath):
                 self._backup_original_data()
 
+            # filter_data works on a copy of its own
             original_output_info = PickleReader.read(self.original_pkl_filepath)
-            filtered_output_info = copy.deepcopy(original_output_info)
+            if original_output_info["edit_roi_data"].convert_legacy_stack():
+                self._rewrite_backup(original_output_info)
             filtered_output_info = self.filter_data(
-                filtered_output_info,
+                original_output_info,
                 params,
                 type=self.workflow_config.nodeDict[self.node_id].data.label,
                 output_dir=self.node_dirpath,
@@ -127,6 +130,17 @@ class WorkflowNodeDataFilter:
             shutil.copytree(
                 self.dff_dirpath, self.original_dff_dirpath, dirs_exist_ok=True
             )
+
+    def _rewrite_backup(self, output_info):
+        """Replace the backup in one step, so a failed write keeps the old one."""
+        tmp_path = f"{self.original_pkl_filepath}.tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                pickle.dump(output_info, f)
+            os.replace(tmp_path, self.original_pkl_filepath)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def _recover_original_data(self):
         logger = AppLogger.get_logger()
@@ -212,9 +226,10 @@ class WorkflowNodeDataFilter:
     ) -> dict:
         logger = AppLogger.get_logger()
 
+        # read first, so an older node's stack is converted, not copied
+        roi_masks = output_info["edit_roi_data"].roi_masks
         # Deep copy all mutable data to avoid in-place modification
         filtered_output_info = copy.deepcopy(output_info)
-        im = filtered_output_info["edit_roi_data"].im
         fluorescence = filtered_output_info["fluorescence"].data
         dff = (
             filtered_output_info["dff"].data
@@ -307,7 +322,7 @@ class WorkflowNodeDataFilter:
         info = {
             **filtered_output_info,
             "cell_roi": RoiData(
-                np.nanmax(im[iscell_filtered != 0], axis=0, initial=np.nan),
+                roi_masks.label_image(iscell_filtered != 0),
                 output_dir=output_dir,
                 file_name="cell_roi",
             ),
@@ -321,12 +336,12 @@ class WorkflowNodeDataFilter:
         # lccd_detect keeps its own all_roi and its always-empty non_cell_roi
         if "lccd" not in type:
             info["all_roi"] = RoiData(
-                np.nanmax(im, axis=0, initial=np.nan),
+                roi_masks.label_image(),
                 output_dir=output_dir,
                 file_name="all_roi",
             )
             info["non_cell_roi"] = RoiData(
-                np.nanmax(im[iscell_filtered == 0], axis=0, initial=np.nan),
+                roi_masks.label_image(iscell_filtered == 0),
                 output_dir=output_dir,
                 # suite2p names its file noncell_roi
                 file_name=getattr(

@@ -78,6 +78,11 @@ EOT
 # ASG configuration
 asg_max_size = 3
 
+# Workflow task and host sizes per tier: fields and defaults in main.tf
+# (local.free_tier_sizing_defaults, local.premium_tier_sizing_defaults). Set
+# only the fields to change; an unknown field name fails the plan, e.g.
+# premium_tier_sizing = { task_memory_mib = <MiB>, container_memory_mib = <MiB> }
+
 # EC2 Image Builder — Custom AMI (reduces instance boot from ~8 min to ~2 min)
 # Set to true after initial terraform apply to create the Image Builder pipeline.
 # See image_builder.tf for deployment workflow. The AMI version is tracked in

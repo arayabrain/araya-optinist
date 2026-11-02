@@ -435,16 +435,17 @@ def test_run_releases_the_request_session_before_the_run(endpoint):
     background_tasks = BackgroundTasks()
 
     def queue_run(tasks):
-        # The session is still open while the run is queued ...
-        assert not db.close.called
+        # run holds the session until the run is queued; run_id releases it
+        # before it awaits the runner's build
+        assert db.close.called == (endpoint is run.run_id)
         tasks.add_task(Mock())
 
     with _run_stubs() as runner:
         runner.run_workflow.side_effect = queue_run
         assert _call_run(endpoint, db, background_tasks) == "uid"
 
-    # ... and released by the time the response is sent, before any task runs
-    db.close.assert_called_once()
+    # Released by the time the response is sent, before any task runs
+    db.close.assert_called()
     assert background_tasks.tasks
 
 
@@ -454,7 +455,7 @@ def test_run_releases_the_request_session_on_failure(endpoint):
     with _run_stubs(runner_raises=RuntimeError("boom")):
         with pytest.raises(HTTPException):
             _call_run(endpoint, db, BackgroundTasks())
-    db.close.assert_called_once()
+    db.close.assert_called()
 
 
 def test_download_file_releases_the_request_session():

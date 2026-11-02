@@ -23,6 +23,7 @@ describe("reconcileParamMap", () => {
   it("keeps saved values and drops keys unknown to the defaults", () => {
     const saved: ParamMap = convertToParamMap({
       border_nan: "min",
+      shifts_interpolate: true,
       use_cuda: false,
       max_shifts: [8, 8],
       gSig_filt: null,
@@ -31,35 +32,68 @@ describe("reconcileParamMap", () => {
         merge_params: { merge_thr: 0.9, max_merge_area: null },
       },
     })
-    const { params, removed } = reconcileParamMap(saved, defaults)
+    const { params, added, removed } = reconcileParamMap(saved, defaults)
     expect(params).toEqual(
       convertToParamMap({
         border_nan: "min",
+        shifts_interpolate: true,
         max_shifts: [8, 8],
         gSig_filt: null,
         advanced: { nb: 3, merge_params: { merge_thr: 0.9 } },
       }),
     )
+    expect(added).toEqual([])
     expect(removed).toEqual([
       "use_cuda",
       "advanced/merge_params/max_merge_area",
     ])
   })
 
-  it("does not add defaults the saved tree lacks", () => {
-    const saved: ParamMap = convertToParamMap({ border_nan: "copy" })
-    const { params, removed } = reconcileParamMap(saved, defaults)
-    expect(params).toEqual(saved)
+  it("adds the keys the defaults gained, with their default values", () => {
+    const saved: ParamMap = convertToParamMap({
+      border_nan: "min",
+      advanced: { nb: 3 },
+    })
+    const { params, added, removed } = reconcileParamMap(saved, defaults)
+    expect(params).toEqual(
+      convertToParamMap({
+        border_nan: "min",
+        shifts_interpolate: false,
+        max_shifts: [6, 6],
+        gSig_filt: null,
+        advanced: { nb: 3, merge_params: { merge_thr: 0.85 } },
+      }),
+    )
+    expect(added).toEqual([
+      "shifts_interpolate",
+      "max_shifts",
+      "gSig_filt",
+      "advanced/merge_params",
+    ])
     expect(removed).toEqual([])
   })
 
-  it("drops a key whose shape changed between child and parent", () => {
+  it("follows the defaults' key order, so an added key sits where the yaml has it", () => {
+    const saved: ParamMap = convertToParamMap({
+      advanced: { nb: 2, merge_params: { merge_thr: 0.85 } },
+      gSig_filt: null,
+      border_nan: "copy",
+    })
+    const { params } = reconcileParamMap(saved, defaults)
+    expect(Object.keys(params)).toEqual(Object.keys(defaults))
+  })
+
+  it("replaces a key whose shape changed between child and parent with its default", () => {
     const saved: ParamMap = convertToParamMap({
       border_nan: "copy",
+      shifts_interpolate: false,
+      max_shifts: [6, 6],
+      gSig_filt: null,
       advanced: 1,
     })
-    const { params, removed } = reconcileParamMap(saved, defaults)
-    expect(params).toEqual(convertToParamMap({ border_nan: "copy" }))
+    const { params, added, removed } = reconcileParamMap(saved, defaults)
+    expect(params).toEqual(defaults)
+    expect(added).toEqual(["advanced"])
     expect(removed).toEqual(["advanced"])
   })
 })
@@ -82,6 +116,23 @@ describe("hasOutdatedShape", () => {
 
   it("is false for a retired key when a newer default group is missing", () => {
     const saved = convertToParamMap({ border_nan: "copy", soma_crop: false })
+    expect(hasOutdatedShape(saved, defaults)).toBe(false)
+  })
+
+  it("is true for a group the defaults replaced with another", () => {
+    const saved = convertToParamMap({
+      border_nan: "copy",
+      cell_detection: { high_pass: 100 },
+    })
+    expect(hasOutdatedShape(saved, defaults)).toBe(true)
+  })
+
+  it("is false for a retired group when every default group is present", () => {
+    const saved = convertToParamMap({
+      border_nan: "copy",
+      advanced: { nb: 2 },
+      cell_detection: { high_pass: 100 },
+    })
     expect(hasOutdatedShape(saved, defaults)).toBe(false)
   })
 
@@ -110,26 +161,43 @@ describe("notifyParamChanges", () => {
   it("names every change in one info snackbar", () => {
     const snackbar = jest.fn<SnackbarKey, [string, OptionsObject?]>(() => "key")
     notifyParamChanges(
-      [{ nodeId: "n1", name: "caiman_mc", removed: ["advanced/use_cuda"] }],
+      [
+        {
+          nodeId: "n1",
+          name: "caiman_mc",
+          added: ["advanced/nb"],
+          removed: ["advanced/use_cuda"],
+        },
+      ],
       snackbar,
     )
     expect(snackbar).toHaveBeenCalledTimes(1)
     expect(snackbar.mock.calls[0][0]).toBe(
-      "Parameters updated to the current version: caiman_mc (removed: advanced/use_cuda)",
+      "Parameters updated to the current version: caiman_mc (added: advanced/nb; removed: advanced/use_cuda)",
     )
     expect(snackbar.mock.calls[0][1]).toMatchObject({ variant: "info" })
   })
 })
 
 describe("describeNodeParamChanges", () => {
-  it("names the node and lists removed paths", () => {
+  it("names the node and lists only the non-empty kinds of change", () => {
     expect(
       describeNodeParamChanges([
-        { nodeId: "n1", name: "caiman_mc", removed: ["advanced/use_cuda"] },
-        { nodeId: "n2", name: "caiman_cnmf", removed: ["max_merge_area"] },
+        {
+          nodeId: "n1",
+          name: "caiman_mc",
+          added: [],
+          removed: ["advanced/use_cuda"],
+        },
+        {
+          nodeId: "n2",
+          name: "suite2p_registration",
+          added: ["batch_size", "do_regmetrics"],
+          removed: [],
+        },
       ]),
     ).toBe(
-      "caiman_mc (removed: advanced/use_cuda) / caiman_cnmf (removed: max_merge_area)",
+      "caiman_mc (removed: advanced/use_cuda) / suite2p_registration (added: batch_size, do_regmetrics)",
     )
   })
 })

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 
@@ -6,11 +7,13 @@ from fastapi import BackgroundTasks
 
 from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucket_name
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.snakemake.smk import ForceRun
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteSyncLockFileUtil,
 )
+from studio.app.common.core.utils.filepath_creater import get_pickle_file, join_filepath
 from studio.app.common.core.workflow import workflow_runner
 from studio.app.common.core.workflow.workflow import (
     Edge,
@@ -19,6 +22,12 @@ from studio.app.common.core.workflow.workflow import (
     RunItem,
     WorkflowRunStatus,
 )
+from studio.app.common.core.workflow.workflow_params import (
+    dict2nest,
+    nest2dict,
+    read_default_params,
+)
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.dir_path import DIRPATH
 
@@ -192,3 +201,95 @@ def test_a_refused_rerun_leaves_the_existing_record_as_it_was():
     assert {n: open(f"{dirpath}/{n}", "rb").read() for n in names} == before
     assert ExptConfigReader.read(workspace_id, unique_id).success == "success"
     shutil.rmtree(dirpath, ignore_errors=True)
+
+
+def _eta_run_item(saved: dict, forced=()):
+    node = Node(
+        id="eta_node",
+        type="AlgorithmNode",
+        data=NodeData(label="eta", param=dict2nest(saved), path="", type=""),
+        position={"x": 0, "y": 0},
+        style={},
+    )
+    return RunItem(
+        name="New Flow",
+        nodeDict={"eta_node": node},
+        edgeDict={},
+        snakemakeParam={},
+        nwbParam={},
+        forceRunList=[ForceRun(nodeId=n, name="eta") for n in forced],
+    )
+
+
+def _eta_without_sort_by_peak():
+    saved = read_default_params("eta")
+    del saved["ETA"]["sort_by_peak"]
+    return saved
+
+
+@pytest.fixture
+def eta_output(monkeypatch):
+    """A record whose eta output exists without snakemake metadata; yields its path."""
+    monkeypatch.setattr(RemoteStorageController, "is_available", lambda: False)
+    monkeypatch.setattr(WorkflowRunner, "set_smk_config", lambda self: None)
+    monkeypatch.setattr(workflow_runner, "delete_procs_dependencies", lambda **kw: None)
+    shutil.rmtree(dirpath, ignore_errors=True)
+    output = join_filepath(
+        [
+            DIRPATH.OUTPUT_DIR,
+            get_pickle_file(workspace_id, unique_id, "eta_node", "eta"),
+        ]
+    )
+    os.makedirs(os.path.dirname(output))
+    open(output, "wb").close()
+    yield output
+    shutil.rmtree(dirpath, ignore_errors=True)
+
+
+def _rerun(monkeypatch, run_item):
+    """Runs the item; returns the node ids snakemake is forced to run."""
+    seen = []
+
+    def snakemake_execute(workspace_id, unique_id, params, *args):
+        seen.extend(p.nodeId for p in params.forcerun)
+
+    monkeypatch.setattr(workflow_runner, "snakemake_execute", snakemake_execute)
+    tasks = BackgroundTasks()
+    WorkflowRunner(remote_bucket_name, workspace_id, unique_id, run_item).run_workflow(
+        tasks
+    )
+    asyncio.run(tasks())
+    return seen
+
+
+def test_a_rerun_runs_a_node_again_when_the_check_adds_keys(monkeypatch, eta_output):
+    # the client forces nothing: without metadata, only the deleted output re-runs it
+    assert _rerun(monkeypatch, _eta_run_item(_eta_without_sort_by_peak())) == [
+        "eta_node"
+    ]
+    assert not os.path.exists(eta_output)
+
+
+def test_a_rerun_keeps_the_output_of_a_complete_tree(monkeypatch, eta_output):
+    assert _rerun(monkeypatch, _eta_run_item(read_default_params("eta"))) == []
+    assert os.path.exists(eta_output)
+
+
+def test_a_node_the_client_already_forces_is_listed_once(monkeypatch, eta_output):
+    run_item = _eta_run_item(_eta_without_sort_by_peak(), forced=["eta_node"])
+    assert _rerun(monkeypatch, run_item) == ["eta_node"]
+
+
+def test_a_filled_tree_is_saved_and_not_forced_again(monkeypatch, eta_output):
+    assert _rerun(monkeypatch, _eta_run_item(_eta_without_sort_by_peak())) == [
+        "eta_node"
+    ]
+    record = WorkflowConfigReader.read(workspace_id, unique_id)
+    assert nest2dict(record.nodeDict["eta_node"].data.param) == read_default_params(
+        "eta"
+    )
+
+    # the next run of the same unfilled tree finds the output made with the keys
+    open(eta_output, "wb").close()
+    assert _rerun(monkeypatch, _eta_run_item(_eta_without_sort_by_peak())) == []
+    assert os.path.exists(eta_output)

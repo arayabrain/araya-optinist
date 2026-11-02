@@ -123,6 +123,19 @@ def test_a_pre_upgrade_roi_pickle_stores_tau_flat(output_dir, suite2p_stub):
     assert info["ops"].data["settings"]["tau"] == 0.7
 
 
+def test_the_image_mask_setting_asks_the_roi_table_for_the_frame_shape(
+    output_dir, suite2p_stub
+):
+    info = suite2p_spike_deconv(
+        _ops(np.ones((N_ROI, FRAMES), np.float32), Ly=6, Lx=5),
+        output_dir,
+        params=read_default_params("suite2p_spike_deconv"),
+        nwbfile={"ophys": {"plane_segmentation": {"save_image_mask": True}}},
+    )
+    (entry,) = info["nwbfile"]["ROI"].values()
+    assert entry["image_mask_shape"] == (6, 5)
+
+
 def test_no_rois_gives_no_spikes_without_calling_suite2p(output_dir, suite2p_stub):
     info = suite2p_spike_deconv(
         _ops(np.zeros((0, FRAMES), np.float32)),

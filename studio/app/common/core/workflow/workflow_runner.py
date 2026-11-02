@@ -29,6 +29,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone_formatted,
@@ -46,7 +47,11 @@ from studio.app.common.core.workflow.workflow import (
     WorkflowRunStatus,
 )
 from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
-from studio.app.common.core.workflow.workflow_params import get_typecheck_params
+from studio.app.common.core.workflow.workflow_params import (
+    dict2nest,
+    get_typecheck_params,
+    nest2dict,
+)
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
 from studio.app.common.schemas.workflow import WorkflowConfig
@@ -72,10 +77,26 @@ class WorkflowRunner:
         self.edgeDict = self.runItem.edgeDict
         self.logger = AppLogger.get_logger()
 
-        # A stale parameter tree is refused before any record is written
+        # Refuse a stale tree before any record is written; save a filled one
+        last_run = (
+            ConfigReader.read(
+                WorkflowConfigReader.get_config_yaml_path(workspace_id, unique_id)
+            )
+            or {}
+        ).get("nodeDict", {})
+        self.forced_by_fill: List[ForceRun] = []
         for node in self.nodeDict.values():
             if NodeTypeUtil.check_nodetype(node.type) == NodeType.ALGO:
-                get_typecheck_params(node.data.param, node.data.label)
+                added: List[str] = []
+                params = get_typecheck_params(node.data.param, node.data.label, added)
+                if added:
+                    node.data.param = dict2nest(params)
+                    # re-run unless the record's last run already had these params
+                    last = last_run.get(node.id, {}).get("data", {}).get("param")
+                    if last is None or nest2dict(last) != params:
+                        self.forced_by_fill.append(
+                            ForceRun(nodeId=node.id, name=node.data.label)
+                        )
 
         # Extract timezone from nwbParam before validation (not in default params).
         # Passed from browser in ParamChild format: {type: "child", value: "..."}
@@ -119,7 +140,7 @@ class WorkflowRunner:
             self.edgeDict,
         ).write()
 
-        ExptConfigWriter(
+        expt_config = ExptConfigWriter(
             self.workspace_id,
             self.unique_id,
             self.runItem.name,
@@ -127,6 +148,7 @@ class WorkflowRunner:
             snakemake=snakemake_params,
             timezone=timezone,
         ).write()
+        self.generation = expt_config.started_at
 
         Runner.clear_pid_file(self.workspace_id, self.unique_id)
 
@@ -286,7 +308,10 @@ class WorkflowRunner:
                 self.runItem.snakemakeParam, "snakemake"
             )
             snakemake_params = SmkParamReader.read(snakemake_params)
-            snakemake_params.forcerun = self.runItem.forceRunList
+            forced = {p.nodeId for p in self.runItem.forceRunList}
+            snakemake_params.forcerun = self.runItem.forceRunList + [
+                p for p in self.forced_by_fill if p.nodeId not in forced
+            ]
 
             # delete dependencies for nodes
             if len(snakemake_params.forcerun) > 0:
@@ -333,6 +358,7 @@ class WorkflowRunner:
             self.unique_id,
             snakemake_params,
             self.user_id,
+            self.generation,
         )
 
     def finish_workflow_without_run(

@@ -5,7 +5,11 @@ from studio.app.common.dataclass.image import ImageData
 from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.dataclass.iscell import IscellData
 from studio.app.optinist.dataclass.roi import RoiData
-from studio.app.optinist.wrappers.data_utils.roi_from_hdf5 import max_projection
+from studio.app.optinist.wrappers.data_utils.roi_from_hdf5 import (
+    all_roi_image,
+    check_iscell,
+    group_roi_image,
+)
 
 
 def roi_fluo_from_hdf5(
@@ -40,9 +44,8 @@ def roi_fluo_from_hdf5(
     logger.info("Starting ROI and fluorescence data processing")
 
     # Base output data
-    all_roi = RoiData(
-        np.nanmax(cell_img.data, axis=0), output_dir=output_dir, file_name="all_roi"
-    )
+    rois = cell_img.data
+    all_roi = RoiData(all_roi_image(rois), output_dir=output_dir, file_name="all_roi")
 
     if params["transpose"] and not getattr(fluo, "nwb_oriented", False):
         fluorescence = FluoData(np.transpose(fluo.data), file_name="fluorescence")
@@ -54,16 +57,17 @@ def roi_fluo_from_hdf5(
 
     # Extract iscell data
     iscell_data = iscell.data
+    check_iscell(rois, iscell_data)
 
     # Process ROI types
     non_cell_roi = RoiData(
-        max_projection(cell_img.data[np.where(iscell_data == 0)]),
+        group_roi_image(rois, iscell_data == 0),
         output_dir=output_dir,
         file_name="noncell_roi",
     )
 
     cell_roi = RoiData(
-        max_projection(cell_img.data[np.where(iscell_data != 0)]),
+        group_roi_image(rois, iscell_data != 0),
         output_dir=output_dir,
         file_name="cell_roi",
     )

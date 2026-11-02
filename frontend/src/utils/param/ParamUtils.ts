@@ -156,13 +156,20 @@ export function formatParamsForDisplay(
   return formatted
 }
 
+// The backend's has_outdated_shape: such a tree is left for it to refuse
 export function hasOutdatedShape(saved: ParamMap, defaults: ParamMap): boolean {
   const savedKeys = Object.keys(saved)
   const unknown = savedKeys.filter((key) => !(key in defaults))
   if (unknown.length === 0) return false
   const noOverlap = unknown.length === savedKeys.length
   const nested = new Set(nestedKeys(defaults))
-  return noOverlap || unknown.some((key) => nested.has(key))
+  const movedKey = unknown.some((key) => nested.has(key))
+  const replacedGroup =
+    unknown.some((key) => isParamParent(saved[key])) &&
+    Object.entries(defaults).some(
+      ([key, param]) => isParamParent(param) && !(key in saved),
+    )
+  return noOverlap || movedKey || replacedGroup
 }
 
 function nestedKeys(map: ParamMap): string[] {
@@ -173,17 +180,25 @@ function nestedKeys(map: ParamMap): string[] {
   )
 }
 
+/** Drop the keys the defaults lost and add the ones they gained, in their order */
 export function reconcileParamMap(
   saved: ParamMap,
   defaults: ParamMap,
-): { params: ParamMap; removed: string[] } {
+): { params: ParamMap; added: string[]; removed: string[] } {
+  const added: string[] = []
   const removed: string[] = []
   const walk = (s: ParamMap, d: ParamMap, prefix: string[]): ParamMap => {
-    const out: ParamMap = {}
     Object.entries(s).forEach(([key, sParam]) => {
-      const dParam = d[key]
-      if (dParam == null || dParam.type !== sParam.type) {
+      if (d[key] == null || d[key].type !== sParam.type) {
         removed.push(prefix.concat(key).join(PATH_SEPARATOR))
+      }
+    })
+    const out: ParamMap = {}
+    Object.entries(d).forEach(([key, dParam]) => {
+      const sParam = s[key]
+      if (sParam == null || sParam.type !== dParam.type) {
+        added.push(prefix.concat(key).join(PATH_SEPARATOR))
+        out[key] = dParam
       } else if (isParamParent(sParam) && isParamParent(dParam)) {
         out[key] = {
           type: "parent",
@@ -195,12 +210,18 @@ export function reconcileParamMap(
     })
     return out
   }
-  return { params: walk(saved, defaults, []), removed }
+  return { params: walk(saved, defaults, []), added, removed }
 }
 
 export function describeNodeParamChanges(changes: NodeParamChange[]): string {
   return changes
-    .map(({ name, removed }) => `${name} (removed: ${removed.join(", ")})`)
+    .map(({ name, added, removed }) => {
+      const parts = [
+        added.length > 0 ? `added: ${added.join(", ")}` : null,
+        removed.length > 0 ? `removed: ${removed.join(", ")}` : null,
+      ].filter((part) => part != null)
+      return `${name} (${parts.join("; ")})`
+    })
     .join(" / ")
 }
 

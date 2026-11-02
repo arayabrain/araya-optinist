@@ -12,7 +12,7 @@ import {
   WorkflowWithResultDTO,
 } from "api/workflow/Workflow"
 import { WORKFLOW_SLICE_NAME } from "store/slice/Workflow/WorkflowType"
-import { NodeParamChange, ParamMap } from "utils/param/ParamType"
+import { NodeParamChange, ParamDTO } from "utils/param/ParamType"
 import {
   convertToParamMap,
   hasOutdatedShape,
@@ -21,14 +21,14 @@ import {
 
 type WithParamChanges<T> = T & { paramChanges: NodeParamChange[] }
 
-// The reconcile is cosmetic (the backend drops the key at run time anyway),
-// so a slow /params request must not hold the workflow load
+// The backend applies the same reconcile at run time, so a slow /params
+// request must not hold the workflow load
 export const RECONCILE_TIMEOUT_MS = 5000
 
 export async function reconcileNodeParams(
   nodeDict: NodeDict,
 ): Promise<NodeParamChange[]> {
-  const defaultsByAlgo = new Map<string, Promise<ParamMap>>()
+  const defaultsByAlgo = new Map<string, Promise<ParamDTO>>()
   const changes: NodeParamChange[] = []
   await Promise.all(
     Object.values(nodeDict)
@@ -38,21 +38,20 @@ export async function reconcileNodeParams(
         if (node.data == null || name == null) return
         let defaults = defaultsByAlgo.get(name)
         if (defaults == null) {
-          defaults = getAlgoParamsApi(name, {
-            timeout: RECONCILE_TIMEOUT_MS,
-          }).then(convertToParamMap)
+          defaults = getAlgoParamsApi(name, { timeout: RECONCILE_TIMEOUT_MS })
           defaultsByAlgo.set(name, defaults)
         }
         try {
-          const current = await defaults
-          if (hasOutdatedShape(node.data.param, current)) return
-          const { params, removed } = reconcileParamMap(
-            node.data.param,
-            current,
-          )
+          // Converted per node, so nodes of one algorithm share no objects
+          const current = convertToParamMap(await defaults)
+          const saved = node.data.param
+          if (hasOutdatedShape(saved, current)) return
+          const { params, added, removed } = reconcileParamMap(saved, current)
           node.data.param = params
-          if (removed.length > 0) {
-            changes.push({ nodeId: node.id, name, removed })
+          // An empty tree already runs on the yaml defaults: nothing to report
+          if (Object.keys(saved).length === 0) return
+          if (added.length > 0 || removed.length > 0) {
+            changes.push({ nodeId: node.id, name, added, removed })
           }
         } catch {
           // defaults unavailable for this node; its saved params stay as they are

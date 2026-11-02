@@ -2,9 +2,10 @@ import numpy as np
 import pytest
 
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
-from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
+from studio.app.optinist.core.edit_ROI.utils import ellipse_pixels
 from studio.app.optinist.core.edit_ROI.wrappers.suite2p_edit_roi import commit_edit
 from studio.app.optinist.dataclass import EditRoiData, Suite2pData
+from studio.app.optinist.dataclass.roi import RoiMasks
 from studio.app.optinist.schemas.roi import RoiPos
 
 LY = LX = 40
@@ -60,6 +61,13 @@ def build(tmp_path, movie):
     return ops, np.stack(im)
 
 
+def with_ellipse(im, roi_pos):
+    """The ROIs of im and, after them, the ellipse EditROI.add draws."""
+    roi_masks = RoiMasks.from_stack(im)
+    roi_masks.append(ellipse_pixels((LY, LX), roi_pos))
+    return roi_masks
+
+
 def test_add_extracts_trace_and_neuropil_from_the_registered_movie(tmp_path):
     movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
     roi_y, roi_x = disk(NEW_ROI.posy, NEW_ROI.posx, 3)
@@ -68,9 +76,7 @@ def test_add_extracts_trace_and_neuropil_from_the_registered_movie(tmp_path):
     cell_y, cell_x = disk(*CELLS[1], 3)
     movie[:, cell_y, cell_x] += 5000
     ops, im = build(tmp_path, movie)
-    data = EditRoiData(
-        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
-    )
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, NEW_ROI))
     data.temp_add_roi[2] = NEW_ROI
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
@@ -95,7 +101,10 @@ def test_add_extracts_trace_and_neuropil_from_the_registered_movie(tmp_path):
 def test_merge_averages_traces_and_unions_pixels(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     ops["reg_file"] = str(tmp_path / "missing.bin")  # a merge reads no movie
-    data = EditRoiData(images=None, im=np.vstack((im, np.nanmax(im, axis=0)[None])))
+    data = EditRoiData(
+        images=None,
+        roi_masks=RoiMasks.from_stack(np.vstack((im, np.nanmax(im, axis=0)[None]))),
+    )
     data.temp_merge_roi[2.0] = [0, 1]
     iscell = np.array([CellType.TEMP_DELETE, CellType.TEMP_DELETE, CellType.TEMP_ADD])
 
@@ -119,7 +128,7 @@ def test_merge_averages_traces_and_unions_pixels(tmp_path):
 def test_delete_only_touches_flags_and_not_the_movie(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     ops["reg_file"] = str(tmp_path / "missing.bin")
-    data = EditRoiData(images=None, im=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     data.temp_delete_roi[0] = None
     iscell = np.array([CellType.TEMP_DELETE, CellType.ROI])
 
@@ -137,7 +146,7 @@ def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
     ops, im = build(tmp_path, movie)
 
     # every ROI deleted, then committed
-    data = EditRoiData(images=None, im=im)
+    data = EditRoiData(images=None, roi_masks=RoiMasks.from_stack(im))
     for i in range(len(CELLS)):
         data.temp_delete_roi[i] = None
     iscell = np.array([CellType.TEMP_DELETE] * len(CELLS))
@@ -146,11 +155,11 @@ def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
 
     ops = info["ops"].data
     assert list(info["iscell"].data) == [CellType.NON_ROI] * len(CELLS)
-    assert ops["F"].shape[0] == len(ops["stat"]) == len(info["edit_roi_data"].im)
+    assert ops["F"].shape[0] == len(ops["stat"]) == len(info["edit_roi_data"].roi_masks)
 
-    # an ROI added afterwards must land on the same row in im and in F
+    # an ROI added afterwards must land on the same row in the masks and in F
     data = info["edit_roi_data"]
-    data.im = np.vstack((data.im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
+    data.roi_masks.append(ellipse_pixels((LY, LX), NEW_ROI))
     new_id = len(CELLS)
     data.temp_add_roi[new_id] = NEW_ROI
     iscell = np.append(info["iscell"].data, CellType.TEMP_ADD)
@@ -160,7 +169,7 @@ def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
     ops = info["ops"].data
     assert ops["F"].shape[0] == ops["Fneu"].shape[0] == new_id + 1
     assert len(ops["stat"]) == new_id + 1
-    assert len(info["fluorescence"].data) == len(info["edit_roi_data"].im)
+    assert len(info["fluorescence"].data) == len(info["edit_roi_data"].roi_masks)
     assert list(info["iscell"].data) == [CellType.NON_ROI] * new_id + [CellType.ROI]
     assert np.allclose(ops["F"][new_id], FLAT + 500, atol=1e-2)
 
@@ -168,9 +177,7 @@ def test_delete_all_then_add_keeps_rows_aligned(tmp_path):
 def test_a_frame_count_disagreeing_with_the_stored_traces_is_named(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     ops["nframes"] = FRAMES - 1
-    data = EditRoiData(
-        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
-    )
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, NEW_ROI))
     data.temp_add_roi[2] = NEW_ROI
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
@@ -178,13 +185,97 @@ def test_a_frame_count_disagreeing_with_the_stored_traces_is_named(tmp_path):
         commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
 
 
-def test_an_ellipse_with_no_interior_is_refused_by_name(tmp_path):
+@pytest.mark.parametrize(
+    "roi_pos",
+    [
+        RoiPos(posx=10, posy=20, sizex=3, sizey=3),
+        RoiPos(posx=30, posy=31, sizex=7, sizey=5),
+        RoiPos(posx=20, posy=30, sizex=5, sizey=9),
+    ],
+)
+def test_an_added_roi_keeps_the_pixels_the_editor_drew(tmp_path, roi_pos):
+    # odd sizes: suite2p's own ellipse for an added cell differs from the
+    # editor's; the trace, the ROI table and the label image follow the editor
+    drawn = ellipse_pixels((LY, LX), roi_pos)
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    movie.reshape(FRAMES, -1)[:, drawn] += 500
+    ops, im = build(tmp_path, movie)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, roi_pos))
+    data.temp_add_roi[2] = roi_pos
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    pixels = np.ravel_multi_index((new["ypix"], new["xpix"]), (LY, LX))
+    np.testing.assert_array_equal(np.sort(pixels), np.sort(drawn))
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+    (entry,) = info["nwbfile"]["ROI"].values()
+    rows, cols, _ = entry["roi_list"][2]["pixel_mask"].T
+    table = np.ravel_multi_index((rows.astype(int), cols.astype(int)), (LY, LX))
+    np.testing.assert_array_equal(np.sort(table), np.sort(drawn))
+
+
+def test_a_one_pixel_roi_commits_its_pixel(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     tiny = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
-    data = EditRoiData(
-        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), tiny)[None]))
-    )
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, tiny))
     data.temp_add_roi[2] = tiny
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert (list(new["ypix"]), list(new["xpix"])) == ([30], [30])
+    assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
+
+
+@pytest.mark.parametrize("size", [1, 3])
+def test_an_roi_drawn_entirely_on_a_cell_takes_its_trace_from_all_its_pixels(
+    tmp_path, size
+):
+    # without allow_overlap, overlapping pixels leave the trace; with none of
+    # its own left, an added ROI would commit as a cell with an all-zero trace
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    cell_y, cell_x = disk(*CELLS[0], 3)
+    movie[:, cell_y, cell_x] += 500
+    ops, im = build(tmp_path, movie)
+    on_cell = RoiPos(posx=CELLS[0][1], posy=CELLS[0][0], sizex=size, sizey=size)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, on_cell))
+    data.temp_add_roi[2] = on_cell
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert new["overlap"].all()
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+
+
+def test_a_partly_overlapping_roi_still_leaves_out_the_shared_pixels(tmp_path):
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    cell_y, cell_x = disk(*CELLS[0], 3)
+    movie[:, cell_y, cell_x] += 500
+    ops, im = build(tmp_path, movie)
+    around = RoiPos(posx=CELLS[0][1], posy=CELLS[0][0], sizex=9, sizey=9)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, around))
+    data.temp_add_roi[2] = around
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert new["overlap"].any() and not new["overlap"].all()
+    assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
+
+
+def test_an_roi_with_no_pixel_is_refused_by_name(tmp_path):
+    ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
+    # the stored pixels decide, whatever the RoiPos says
+    roi_masks = RoiMasks.from_stack(im)
+    roi_masks.append(np.zeros(0, np.int64))
+    data = EditRoiData(images=None, roi_masks=roi_masks)
+    data.temp_add_roi[2] = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
     with pytest.raises(ValueError, match="covers no pixel"):
@@ -197,9 +288,7 @@ def test_neuropil_follows_the_ring_geometry_on_a_ramped_background(tmp_path):
         np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)) + np.arange(LY)[:, None]
     )
     ops, im = build(tmp_path, movie)
-    data = EditRoiData(
-        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
-    )
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, NEW_ROI))
     data.temp_add_roi[2] = NEW_ROI
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
@@ -224,9 +313,7 @@ def test_extraction_settings_are_read_from_a_1_1_0_pickle(tmp_path):
             for key in ("allow_overlap", "inner_neuropil_radius", "min_neuropil_pixels")
         }
     }
-    data = EditRoiData(
-        images=None, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
-    )
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, NEW_ROI))
     data.temp_add_roi[2] = NEW_ROI
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
@@ -245,9 +332,7 @@ def test_commit_never_reads_the_movie_edit_roi_data_carries(tmp_path):
     movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
     ops, im = build(tmp_path, movie)
     unread = ImageData(str(tmp_path / "missing.tif"))  # opening it would raise
-    data = EditRoiData(
-        images=unread, im=np.vstack((im, create_ellipse_mask((LY, LX), NEW_ROI)[None]))
-    )
+    data = EditRoiData(images=unread, roi_masks=with_ellipse(im, NEW_ROI))
     data.temp_add_roi[2] = NEW_ROI
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 

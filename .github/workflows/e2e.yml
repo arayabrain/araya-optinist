@@ -36,8 +36,8 @@ jobs:
       - name: Run the heavier_processing backend tests
         run: make test_backend_heavy
 
-  # Real MySQL GET_LOCK serialization. Opt-in by design (its own compose
-  # project and a throwaway DB), so no per-PR job runs it.
+  # Real MySQL GET_LOCK and assign-claim serialization (its own compose project
+  # and a throwaway DB). Per-PR, premium-lock-it.yml runs it on premium changes.
   premium_lock_it:
     runs-on: ubuntu-latest
     timeout-minutes: 30

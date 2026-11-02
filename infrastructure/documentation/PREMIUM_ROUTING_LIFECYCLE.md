@@ -4,7 +4,7 @@
 
 - **Premium Routing Lifecycle** covers the full end-to-end interaction between the frontend and backend for premium user instance assignment, routing, resilience, and release
 - **Frontend assignment context** orchestrates auto-assign on login, status polling, migration detection, re-trigger after timeout, inactivity release, and cross-tab coordination
-- **Concurrent assignment protection** uses per-user distributed locks (MySQL `GET_LOCK`) to prevent ALB corruption from simultaneous assign calls
+- **Concurrent assignment protection** uses a per-user assign claim (a committed `premium_assign_claims` row) to prevent ALB corruption from simultaneous assign calls
 - **Session boundary routing state management** ensures stale routing data is cleared on login and logout to prevent 403 loops and routing misdirection
 - **Instance identity verification** uses `X-Served-By-Instance` (domain-separated HMAC) to detect ALB fallback to the shared backend
 - **Degraded instance recovery** uses a half-open circuit breaker with exponential backoff to probe and re-arm premium routing after 503 failures
@@ -54,7 +54,7 @@ sequenceDiagram
     FE->>FE: isPremiumUser? → autoAssignOnLogin()
 
     FE->>Lambda: POST /premium/assign
-    Lambda->>Lambda: acquire per-user lock
+    Lambda->>Lambda: take per-user assign claim
     Lambda->>Lambda: 5-tier assignment cascade
     Lambda-->>FE: {assigned, instance_id, instance_id_hash, is_shared, routing_id}
 
@@ -108,7 +108,7 @@ sequenceDiagram
 | Generate routing ID | — | — | — | — | Yes | Yes |
 | Generate instance hash | — | — | — | — | Yes | — |
 | Validate routing ID vs JWT | — | — | — | — | Yes | — |
-| Per-user assign lock | — | — | — | — | — | Yes |
+| Per-user assign claim | — | — | — | — | — | Yes |
 | 5-tier assignment cascade | — | — | — | — | — | Yes |
 
 ---
@@ -358,20 +358,19 @@ Cross-tab coordination uses three mechanisms:
 
 ## Concurrent Assignment Protection
 
-### 1. Per-User Distributed Lock
+### 1. Per-User Assign Claim
 
 **File:** `infrastructure/terraform/premium_manager_package/premium_manager.py`
-**Function:** `assign_premium_user()` wrapper
+**Function:** `assign_premium_user()` wrapper, `assign_claim()`
 
-When `POST /premium/assign` is called, the Lambda acquires a per-user distributed lock before executing the assignment logic:
+When `POST /premium/assign` is called, the Lambda takes the user's assign claim before executing the assignment logic:
 
 ```python
-lock_name = f"assign_user_{user_id}"
-with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
+with assign_claim(user_id) as acquired:
     if acquired:
-        return _assign_premium_user_impl(user_id, event, user_uid)
+        return _assign_premium_user_impl(user_id, event, user_uid, ...)
     else:
-        # Lock not acquired — check if winner completed
+        # Claim held by another invocation — check if it completed
         existing = get_existing_user_assignment(user_id)
         if existing:
             return {statusCode: 200, body: existing}
@@ -379,24 +378,36 @@ with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquire
             return {statusCode: 409, body: "retry"}
 ```
 
-**Lock properties:**
+The claim is one row per user in `premium_assign_claims` (`user_id` primary key, `claim_token`, `claimed_at`, `expires_at`). Each attempt runs on one short connection:
+1. An `INSERT`. If a row exists, an `UPDATE … WHERE expires_at < NOW()` takes over an expired one, and ownership is read back by token.
+2. An `IS_FREE_LOCK` check of the previous release's session lock.
+
+While the claim is held, a background thread renews `expires_at` by token. Releasing it is a `DELETE … WHERE claim_token = <own token>`.
+
+**Claim properties:**
 
 | Property | Value |
 |----------|-------|
-| Lock backend | MySQL `GET_LOCK` (session-scoped) |
-| Lock name | `assign_user_{user_id}` (per-user) |
-| Lock timeout | 10 seconds (`ASSIGN_LOCK_TIMEOUT_SECONDS`) |
+| Backend | Committed row in `premium_assign_claims` (no session lock) |
+| Key | `user_id` (per user, within the environment's own database) |
+| Wait | Up to 10 seconds (`ASSIGN_CLAIM_WAIT_SECONDS`), retried every second. Polling gives no order: with three or more concurrent assigns for one user, one may still get 409 and retry |
+| Lifetime | 90 seconds (`ASSIGN_CLAIM_TTL_SECONDS`) after the last renewal; renewed every 20 seconds (`ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS`) while held. A hard-crashed holder (no `finally`) blocks the user for at most 90 seconds. Four consecutive failed renewals would let another assign take the claim over |
 | Scope | Entire `_assign_premium_user_impl` |
-| Connection | Dedicated MySQL connection (separate from application pool) |
-| Release | Automatic via `RELEASE_LOCK` in `finally` block |
+| Connection | None held while the assignment runs |
+| Release | `DELETE` by token in a `finally` block, also after a failed attempt; a claim left by a crashed invocation is taken over by the next assign once it expires |
+| Missing table | Before the migration runs (the deploy applies the Lambdas first), assign falls back to the previous release's `GET_LOCK('assign_user_<user_id>')` with the same wait, so deploy order does not matter. The cleanup sweeps delete nothing until the table exists |
+| Transient DB error | An attempt that hits an `OperationalError` counts as not acquired and the wait goes on; if every attempt fails, assign answers 409 |
+| Previous release still running | The previous release's assign held `GET_LOCK('assign_user_<user_id>')` for its whole run. While that lock is in use (`IS_FREE_LOCK`), a new assign gives its claim back and counts as not acquired, so the two never run side by side during a deploy |
 
-**Different users remain fully parallel** — the lock name includes the `user_id`, so concurrent assignments for different users do not contend.
+**Different users remain fully parallel** — the claim is keyed by `user_id`, so concurrent assignments for different users do not contend.
+
+**Cleanup coordination:** `premium_cleanup` reads the unexpired claims between listing the ALB rules and reading its database keep-set. The orphan and duplicate rule sweeps skip a rule that forwards to `premium-<user_id>-tg` of a claimed user, and, while any claim is live, any rule whose target names no user (the shared autoscaling target group of a pool user). The skip does not depend on `AUTOSCALING_TARGET_GROUP_ARN`; the cleanup Lambda still needs that variable to avoid deleting the shared target group itself. If the claims cannot be read, both sweeps delete nothing in that run. The stale-assignment sweep and the instance reconcile do not read claims.
 
 ### 2. 409 Conflict Handling
 
 **File:** `studio/app/common/core/premium/premium_assignment_service.py`
 
-When the Lambda returns 409 (lock timeout):
+When the Lambda returns 409 (claim wait timed out):
 
 ```python
 return {
@@ -408,20 +419,20 @@ return {
 ```
 
 The frontend receives `requires_retry: True` and enters the polling + re-trigger flow (see §3 above). The re-trigger mechanism periodically re-calls `/assign` during polling, which will either:
-- Acquire the lock (previous invocation has completed) and perform a fresh assignment
+- Take the claim (previous invocation has completed) and perform a fresh assignment
 - Find an existing assignment created by the previous invocation and return it
 
 ### 3. Rate Limiting
 
 **File:** `studio/app/common/core/premium/premium_assignment_service.py`
 
-The service layer applies a 30-second rate limit per user to prevent rapid assignment attempts. This is separate from the distributed lock:
+The service layer applies a 30-second rate limit per user to prevent rapid assignment attempts. This is separate from the assign claim:
 
-| Scenario | Rate Limited? | Lock Acquired? |
-|----------|---------------|----------------|
+| Scenario | Rate Limited? | Claim Acquired? |
+|----------|---------------|-----------------|
 | Normal first assign | No | Yes |
 | Rapid retry (<30s) | Yes (blocked) | N/A |
-| 409 from lock contention | No (bypassed) | No |
+| 409 from claim contention | No (bypassed) | No |
 | Lambda timeout | No (cache cleared on error) | N/A |
 
 ---
@@ -737,9 +748,12 @@ Circuit breaker state transitions are broadcast via `crossTabSync`:
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `ASSIGN_USER_LOCK_PREFIX` | `"assign_user_"` | Per-user lock naming prefix |
-| `ASSIGN_LOCK_TIMEOUT_SECONDS` | `10` | Lock timeout for concurrent assign protection |
-| `LOCK_TIMEOUT_SECONDS` | `60` | Default lock timeout for other operations |
+| `ASSIGN_CLAIM_WAIT_SECONDS` | `10` | How long a second assign waits for the user's claim before the 200 / 409 fallback |
+| `ASSIGN_CLAIM_POLL_INTERVAL_SECONDS` | `1` | Retry interval while waiting for the claim |
+| `ASSIGN_CLAIM_TTL_SECONDS` | `90` | How long a claim stays valid after its last write |
+| `ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS` | `20` | Renewal interval while a claim is held |
+| `LEGACY_ASSIGN_LOCK_PREFIX` | `"assign_user_"` | Session lock of the previous release's assign; no claim is taken while it is in use |
+| `LOCK_TIMEOUT_SECONDS` | `60` | Default `GET_LOCK` timeout for the scaling / standby / migration locks |
 
 **File:** `infrastructure/aws_constants.py`
 
@@ -752,7 +766,7 @@ Circuit breaker state transitions are broadcast via `crossTabSync`:
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | Rate limit window | `30 seconds` | Minimum interval between assign attempts per user |
-| 409 retry delay | `5 seconds` | Suggested retry delay on lock contention |
+| 409 retry delay | `5 seconds` | Suggested retry delay on claim contention |
 
 ---
 
@@ -762,15 +776,15 @@ Circuit breaker state transitions are broadcast via `crossTabSync`:
 
 Items with planned improvements. See [PREMIUM_ROUTING_RETROSPECTIVE_v1.1.9.md § Recommendations](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333) for the corresponding action plans.
 
-1. **Lock scope is broader than necessary.** The entire `_assign_premium_user_impl` runs under the distributed lock, including instance boot waits (up to 6 minutes). Narrowing the lock to the critical section (orphan TG cleanup + ALB rule creation) would reduce lock hold time and 409 frequency. A more fundamental alternative is replacing `GET_LOCK` with DB state-based locking (`reserving` status in `premium_user_assignments`), which also eliminates the extra DB connection, lock fall-off risk, and non-environment-scoped lock name issues. (Introduced in [PR #658](https://github.com/arayabrain/araya-optinist/pull/658) for [#630](https://github.com/arayabrain/araya-optinist/issues/630); DB state-based alternative proposed in [PR #658 review](https://github.com/arayabrain/araya-optinist/pull/658#issuecomment-4767821077); → [Recommendation #2](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333))
+1. **Claim scope is broader than necessary.** The entire `_assign_premium_user_impl` runs under the assign claim, including instance boot waits (up to 6 minutes), so a second assign for the same user during a boot still waits 10 seconds and gets 409. The claim replaced the `GET_LOCK` lock in [#732](https://github.com/arayabrain/araya-optinist/issues/732), which removed the dedicated lock connection, the silent lock loss on a dropped connection, the cleanup Lambda's blind spot and the non-environment-scoped lock name; the scope itself was kept. Narrowing it to the critical section (orphan TG cleanup + ALB rule creation) would reduce 409 frequency. (Introduced in [PR #658](https://github.com/arayabrain/araya-optinist/pull/658) for [#630](https://github.com/arayabrain/araya-optinist/issues/630); → [Recommendation #2](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333))
 
-2. **No idempotency key for assign requests.** The assign API does not accept a client-generated idempotency key. Duplicate invocations are handled by the distributed lock (serialization) rather than by idempotent processing. (Lock-based serialization introduced in [PR #658](https://github.com/arayabrain/araya-optinist/pull/658) for [#630](https://github.com/arayabrain/araya-optinist/issues/630); → [Recommendation #5](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333))
+2. **No idempotency key for assign requests.** The assign API does not accept a client-generated idempotency key. Duplicate invocations are handled by the assign claim (serialization) rather than by idempotent processing. (Lock-based serialization introduced in [PR #658](https://github.com/arayabrain/araya-optinist/pull/658) for [#630](https://github.com/arayabrain/araya-optinist/issues/630); → [Recommendation #5](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333))
 
 3. **`PremiumAssignmentContext` complexity.** The context manages assignment lifecycle, polling, re-trigger, inactivity, cross-tab sync, and circuit breaker in a single component with multiple interacting refs. Future changes carry a high regression risk. An explicit state machine (e.g., `useReducer`-based) would reduce this risk. (Complexity grew through PRs [#649](https://github.com/arayabrain/araya-optinist/pull/649), [#656](https://github.com/arayabrain/araya-optinist/pull/656), [#701](https://github.com/arayabrain/araya-optinist/pull/701), [#703](https://github.com/arayabrain/araya-optinist/pull/703), [#704](https://github.com/arayabrain/araya-optinist/pull/704), [#710](https://github.com/arayabrain/araya-optinist/pull/710); → [Recommendation #3](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333))
 
 4. **`handlePremiumRoutingError` global scope.** A single 502/503 response triggers `setPremiumAssigned(false)` globally, dropping all concurrent and subsequent requests to the free tier. During ALB target-group propagation (where 502s are transient), the status poll re-sets `premiumAssigned=true`, causing a flip-flop cycle. The routing token value is invariant (UID-based HMAC, identical on all backends), so the token itself is not the source of mis-routing — the global `premiumAssigned` toggle is. Scoping the fallback to per-request (via `_retryWithoutPremium` without touching global state) or adding hysteresis would eliminate the flip-flop. (Identified in [PR #703](https://github.com/arayabrain/araya-optinist/pull/703) review — [comment](https://github.com/arayabrain/araya-optinist/pull/703#issuecomment-4786044772); → [Recommendation #3](https://github.com/arayabrain/araya-optinist/issues/667#issuecomment-4828783333))
 
-5. **Non-environment-scoped lock names.** Lock names (`assign_user_{user_id}`, `CREATE_STANDBY_LOCK`, etc.) do not include an environment prefix. If multiple environments share the same RDS instance, locks for the same user ID or operation would collide across environments. Currently low risk (non-standard configuration). (Identified in [PR #658](https://github.com/arayabrain/araya-optinist/pull/658) review Point #7; naturally resolved by DB state-based locking — see item #1 above)
+5. **Non-environment-scoped lock names.** The remaining `GET_LOCK` names (`CREATE_STANDBY_LOCK`, `CREATE_RUNNING_LOCK`, `MIGRATE_USERS_LOCK`, `PREMIUM_SCALING_LOCK`) do not include an environment prefix. If multiple environments share the same RDS instance, locks for the same operation would collide across environments. Currently low risk (non-standard configuration). The per-user assign lock had the same issue; the assign claim lives in the environment's own database and does not. (Identified in [PR #658](https://github.com/arayabrain/araya-optinist/pull/658) review Point #7)
 
 ### Accepted Constraints
 

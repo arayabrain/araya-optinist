@@ -4,22 +4,30 @@ import { describe, expect, it, jest } from "@jest/globals"
 import { configureStore } from "@reduxjs/toolkit"
 
 import {
+  addRoiApi,
   commitRoiApi,
+  deleteRoiApi,
   getStatusRoi,
   getTimeSeriesAllDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesInitDataApi,
+  mergeRoiApi,
 } from "api/visualizations/Outputs"
 import {
+  addRoi,
   commitRoi,
-  getDisplayErrorMessage,
+  deleteRoi,
+  EDIT_ROI_LOCKED_MESSAGE,
+  getEditRoiErrorMessage,
   getStatus,
   getTimeSeriesAllData,
   getTimeSeriesDataById,
   getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  mergeRoi,
   RejectPayload,
   retryRejectedTimeSeries,
+  SYNC_IN_PROGRESS_MESSAGE,
 } from "store/slice/DisplayData/DisplayDataActions"
 import reducer from "store/slice/DisplayData/DisplayDataSlice"
 
@@ -666,11 +674,130 @@ describe("commitRoi", () => {
     expect(result.payload).toEqual({ status: 409, message: detail })
     // what ImagePlot's snackbar shows
     expect(
-      getDisplayErrorMessage(
+      getEditRoiErrorMessage(
         result.payload as RejectPayload,
         "Failed to commit Edit ROI.",
       ),
     ).toBe(detail)
     expect(store.getState().displayData.loading).toBe(false)
+  })
+})
+
+describe("ROI edits the server refuses", () => {
+  const refusal = (detail: unknown, status = 400) => {
+    const error = new AxiosError(`Request failed with status code ${status}`)
+    error.response = {
+      status,
+      statusText: "",
+      headers: {},
+      config: { headers: new AxiosHeaders() },
+      data: { detail },
+    }
+    return error
+  }
+
+  const newStore = () => configureStore({ reducer: { displayData: reducer } })
+
+  const expectRefusal = (payload: unknown, detail: string) => {
+    expect(payload).toEqual({ status: 400, message: detail })
+    // what ImagePlot's snackbar shows
+    expect(getEditRoiErrorMessage(payload as RejectPayload, "Failed.")).toBe(
+      detail,
+    )
+  }
+
+  it("addRoi rejects with the server's reason", async () => {
+    const detail = "the ROI covers no pixel"
+    jest.mocked(addRoiApi).mockRejectedValue(refusal(detail))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      addRoi({
+        path: "/p",
+        workspaceId: 1,
+        data: { posx: 900, posy: 900, sizex: 2, sizey: 2 },
+      }),
+    )
+
+    expectRefusal(result.payload, detail)
+    expect(store.getState().displayData.loading).toBe(false)
+  })
+
+  it("addRoi rejects with a string message for a validation error", async () => {
+    // FastAPI's 422 detail is a list, which a snackbar cannot render
+    const detail = [
+      {
+        loc: ["body", "sizex"],
+        msg: "ensure this value is greater than or equal to 1",
+        type: "value_error.number.not_ge",
+      },
+    ]
+    jest.mocked(addRoiApi).mockRejectedValue(refusal(detail, 422))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      addRoi({
+        path: "/p",
+        workspaceId: 1,
+        data: { posx: 1, posy: 1, sizex: 0, sizey: 2 },
+      }),
+    )
+
+    expect(result.payload).toEqual({
+      status: 422,
+      message: "Request failed with status code 422",
+    })
+  })
+
+  it("mergeRoi rejects with the server's reason", async () => {
+    const detail = "ROIs are not cells: [1]"
+    jest.mocked(mergeRoiApi).mockRejectedValue(refusal(detail))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      mergeRoi({ path: "/p", workspaceId: 1, data: { ids: [1, 3] } }),
+    )
+
+    expectRefusal(result.payload, detail)
+    expect(store.getState().displayData.loading).toBe(false)
+  })
+
+  it("deleteRoi rejects with the server's reason", async () => {
+    const detail = "no such ROIs: [-1]"
+    jest.mocked(deleteRoiApi).mockRejectedValue(refusal(detail))
+    const store = newStore()
+
+    const result = await store.dispatch(
+      deleteRoi({ path: "/p", workspaceId: 1, data: { ids: [-1] } }),
+    )
+
+    expectRefusal(result.payload, detail)
+    expect(store.getState().displayData.loading).toBe(false)
+  })
+})
+
+describe("getEditRoiErrorMessage", () => {
+  const fallback = "Failed to merge the ROIs."
+
+  it("replaces the lock error's text with what the user can do", () => {
+    expect(
+      getEditRoiErrorMessage(
+        { status: 423, message: "Remote data is temporary locked. [1/uid]" },
+        fallback,
+      ),
+    ).toBe(EDIT_ROI_LOCKED_MESSAGE)
+  })
+
+  it("otherwise shows the sync message, the server's reason or the fallback", () => {
+    expect(
+      getEditRoiErrorMessage({ status: 503, message: "not synced" }, fallback),
+    ).toBe(SYNC_IN_PROGRESS_MESSAGE)
+    expect(
+      getEditRoiErrorMessage(
+        { status: 400, message: "ROIs are not cells: [1]" },
+        fallback,
+      ),
+    ).toBe("ROIs are not cells: [1]")
+    expect(getEditRoiErrorMessage(undefined, fallback)).toBe(fallback)
   })
 })

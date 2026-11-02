@@ -34,6 +34,7 @@ const selectNodeIsUpdate = (nodeId: string) => (state: RootState) => {
   return (
     state.algorithmNode[nodeId]?.isUpdate ||
     state.algorithmNode[nodeId]?.downstreamStale ||
+    state.algorithmNode[nodeId]?.paramsAdded ||
     JSON.stringify(dim1?.filter(Boolean)) !==
       JSON.stringify(_dim1?.filter(Boolean)) ||
     JSON.stringify(roi?.filter(Boolean)) !==

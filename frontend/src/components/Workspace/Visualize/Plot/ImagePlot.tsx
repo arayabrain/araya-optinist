@@ -44,11 +44,11 @@ import {
   deleteRoi,
   mergeRoi,
   promoteRoi,
-  getImageData,
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
-  getDisplayErrorMessage,
+  getEditRoiErrorMessage,
+  EDIT_ROI_LOCKED_MESSAGE,
   RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
@@ -63,6 +63,7 @@ import {
   selectStatusRoi,
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import {
+  getImageItemData,
   selectingImageArea,
   setImageItemClickedDataId,
 } from "store/slice/VisualizeItem/VisualizeItemActions"
@@ -80,6 +81,7 @@ import {
   selectRoiItemIndex,
   selectRoiItemNodeId,
   selectImageItemDuration,
+  selectVisualizeItemIsWorkflowDialog,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
   selectVisualizeSaveFilename,
@@ -143,27 +145,28 @@ export const ImagePlot = memo(function ImagePlot() {
   const { filePath: path, itemId } = useContext(DisplayDataContext)
 
   const workspaceId = useSelector(selectCurrentWorkspaceId)
-  const startIndex = useSelector(selectImageItemStartIndex(itemId))
-  const endIndex = useSelector(selectImageItemEndIndex(itemId))
   const isPending = useSelector(selectImageDataIsPending(path))
   const isInitialized = useSelector(selectImageDataIsInitialized(path))
   const isFulfilled = useSelector(selectImageDataIsFulfilled(path))
   const error = useSelector(selectImageDataError(path))
 
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const isWorkflowDialog = useSelector(
+    selectVisualizeItemIsWorkflowDialog(itemId),
+  )
 
   const dispatch = useDispatch<AppDispatch>()
+  // A dialog item fetches its own window when it mounts: frames cached for its
+  // path may be another item's window, or a refusal of one
+  useEffect(() => {
+    if (workspaceId && isWorkflowDialog) {
+      dispatch(getImageItemData({ itemId, path, workspaceId }))
+    }
+  }, [dispatch, isWorkflowDialog, itemId, path, workspaceId])
   useEffect(() => {
     if (workspaceId) {
-      if (!isInitialized) {
-        dispatch(
-          getImageData({
-            path,
-            workspaceId,
-            startIndex: startIndex ?? 1,
-            endIndex: endIndex ?? 10,
-          }),
-        )
+      if (!isWorkflowDialog && !isInitialized) {
+        dispatch(getImageItemData({ itemId, path, workspaceId }))
       }
       if (roiFilePath != null) {
         dispatch(getRoiData({ path: roiFilePath, workspaceId }))
@@ -172,10 +175,10 @@ export const ImagePlot = memo(function ImagePlot() {
   }, [
     dispatch,
     isInitialized,
+    isWorkflowDialog,
+    itemId,
     path,
     workspaceId,
-    startIndex,
-    endIndex,
     roiFilePath,
   ])
   if (isPending) {
@@ -292,10 +295,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       .unwrap()
       .catch((error: RejectPayload) => {
         if (error?.status === 423) {
-          enqueueSnackbar(
-            "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes.",
-            { variant: "warning" },
-          )
+          enqueueSnackbar(EDIT_ROI_LOCKED_MESSAGE, { variant: "warning" })
         }
       })
     //eslint-disable-next-line react-hooks/exhaustive-deps
@@ -678,6 +678,14 @@ const ImagePlotChart = memo(function ImagePlotChart({
     refPageYSize.current = pageY
   }
 
+  // the server's reason for a refused edit, e.g. an ROI that is not a cell
+  const reportEditError = (error: unknown, fallback: string) => {
+    enqueueSnackbar(
+      getEditRoiErrorMessage(error as RejectPayload | undefined, fallback),
+      { variant: "error" },
+    )
+  }
+
   const addOrSelectRoi = async () => {
     if (!roiFilePath || !workspaceId || !statusRoi) return
     if (action === ADD_ROI) {
@@ -695,33 +703,45 @@ const ImagePlotChart = memo(function ImagePlotChart({
         sizey: yAdd,
       }
       await dispatch(resetAllOrderList())
-      await dispatch(
-        addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
-      )
+      try {
+        await dispatch(
+          addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to add the ROI.")
+      }
       onCancelAdd()
     }
     if (action === MERGE_ROI) {
       if (roiClicked.length < 2) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        mergeRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          mergeRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to merge the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === DELETE_ROI) {
       if (!roiClicked.length) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        deleteRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          deleteRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to delete the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === PROMOTE_ROI) {
@@ -736,10 +756,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
           }),
         ).unwrap()
       } catch (error) {
-        const message = (error as { message?: string })?.message
-        enqueueSnackbar(message ?? "Failed to set the ROIs as cell ROIs.", {
-          variant: "error",
-        })
+        reportEditError(error, "Failed to set the ROIs as cell ROIs.")
       }
     }
     setAction("")
@@ -789,13 +806,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
       }
     } catch (error) {
       // e.g. 409 when the movie this node read was removed or rewritten
-      enqueueSnackbar(
-        getDisplayErrorMessage(
-          error as RejectPayload | undefined,
-          "Failed to commit Edit ROI.",
-        ),
-        { variant: "error" },
-      )
+      reportEditError(error, "Failed to commit Edit ROI.")
     } finally {
       setEdit(false)
       setAction("")

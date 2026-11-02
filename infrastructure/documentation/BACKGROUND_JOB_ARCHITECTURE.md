@@ -46,7 +46,7 @@
 │  │ Free-Tier Instance (ASG)     │  │ Background Service      │                 │
 │  │                              │  │ (1 task, 1 worker)      │                 │
 │  │  uvicorn         cleanup     │  │                         │                 │
-│  │  (WORKERS=5)     _worker     │  │ → Sync, reconciliation, │                 │
+│  │  (WORKERS=3)     _worker     │  │ → Sync, reconciliation, │                 │
 │  │  +-----------+  +---------+  │  │   expiration jobs       │                 │
 │  │  | FastAPI   |  | APSched |  │  │ → Orphaned DB cleanup   │                 │
 │  │  | (API only,|  | Cleanup |  │  │ → No local data access  │                 │
@@ -234,7 +234,7 @@ View logs at: `/ecs/subscr-background-optinist-cloud-taskdef`
 | `DISABLE_BACKGROUND_SCHEDULER` | Controls scheduler startup in FastAPI lifespan | `0` (enabled) | `1` (disabled) |
 | `ENABLE_LOCAL_CLEANUP` | Starts standalone cleanup worker process | Not set | `1` |
 | `INSTANCE_ID` | EC2 instance ID for cleanup filtering | Set by `cloud-startup.sh` | Set by `cloud-startup.sh` |
-| `UVICORN_WORKERS` | Number of uvicorn workers | `1` | `5` |
+| `UVICORN_WORKERS` | Number of uvicorn workers | `1` | `3` |
 | `S3_DEFAULT_BUCKET_NAME` | S3 bucket for experiments | Required | Required |
 | `INTERNAL_API_SECRET` | Shared secret for internal API calls | Required (caller) | Required (receiver) |
 | `ALB_DNS_NAME` | ALB hostname for proactive download calls | Required | Not set |
@@ -303,15 +303,15 @@ View logs at: `/ecs/subscr-background-optinist-cloud-taskdef`
 
 **File:** `infrastructure/terraform/compute.tf`
 
-- Autoscaling task definition sets `DISABLE_BACKGROUND_SCHEDULER=1` and `ENABLE_LOCAL_CLEANUP=1`
+- Autoscaling task definition sets `DISABLE_BACKGROUND_SCHEDULER=1`, `ENABLE_LOCAL_CLEANUP=1` and `UVICORN_WORKERS=3`
 - `cloud-startup.sh` starts `python -m studio.cleanup_worker &` before uvicorn when `ENABLE_LOCAL_CLEANUP=1`
-- Cleanup worker runs in a separate process from uvicorn (avoids UVICORN_WORKERS=5 multi-scheduler issue)
+- Cleanup worker runs in a separate process from uvicorn (avoids one scheduler per uvicorn worker when `UVICORN_WORKERS` > 1)
 
 ### Premium Instances
 
 **File:** `infrastructure/terraform/compute.tf`
 
-- Premium task definition sets `DISABLE_BACKGROUND_SCHEDULER=1`
+- Premium task definition sets `DISABLE_BACKGROUND_SCHEDULER=1` and `UVICORN_WORKERS=2`
 - No cleanup worker (premium users have S3-backed storage, not local EBS)
 
 ### Lambda Functions

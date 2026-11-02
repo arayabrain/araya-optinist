@@ -1,12 +1,9 @@
-import argparse
 import os
 from contextlib import asynccontextmanager
 
-import uvicorn
 from fastapi import Depends, FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from fastapi_pagination import add_pagination
 from starlette.middleware.cors import CORSMiddleware
 
@@ -17,20 +14,23 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_outputs_remote_bucket_name,
     get_user_remote_bucket_name,
 )
+from studio.app.common.core.auth.secret_validation import validate_signing_secrets
 from studio.app.common.core.instance_mode import (
     INSTANCE_MODE_DEFAULT,
     INSTANCE_MODE_ENV,
     INSTANCE_MODE_PUBLIC,
 )
-from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
     SecureRoutingMiddleware,
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
+from studio.app.common.core.middleware.cors_config import get_cors_origin_options
 from studio.app.common.core.middleware.spa_routing_middleware import (
-    INDEX_HTML_CACHE_HEADERS,
+    ROOT_SEO_FILES,
+    serve_spa_shell,
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
@@ -102,6 +102,11 @@ async def lifespan(app: FastAPI):
     remote_storage_type = RemoteStorageType.get_activated_type()
 
     logger = AppLogger.get_logger()
+
+    # Fail fast, before anything reports startup or starts background work.
+    # Above one worker, studio.server.main() runs the same check in a child
+    # before uvicorn.run; this one covers one worker and other launchers.
+    validate_signing_secrets()
 
     logger.info(
         f'"Studio" application startup complete.\n'
@@ -278,6 +283,7 @@ def _register_public_routers(app: FastAPI) -> None:
     app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
     app.include_router(users_me.beacon_router)
     app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
+    app.include_router(log_report.csp_router)
 
 
 def _register_authenticated_routers(app: FastAPI) -> None:
@@ -338,7 +344,7 @@ app.add_middleware(SecureRoutingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    **get_cors_origin_options(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -374,22 +380,24 @@ app.mount(
     name="images",
 )
 
-public_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.PUBLIC)
-build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
+
+@app.get("/robots.txt", include_in_schema=False)
+@app.get("/sitemap.xml", include_in_schema=False)
+@app.get("/llms.txt", include_in_schema=False)
+async def root_seo_file(request: Request):
+    """Serve crawler files as themselves; the SPA catch-all would otherwise
+    answer them with the HTML shell, which Search Console cannot read."""
+    path = request.scope["path"]
+    media_type = ROOT_SEO_FILES.get(path)
+    file_path = f"{DIRPATH.FRONTEND_DIRS.BUILD}{path}"
+    if media_type is None or not os.path.exists(file_path):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    return FileResponse(file_path, media_type=media_type)
 
 
 @app.get("/")
 async def root(request: Request):
-    if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
-        return build_templates.TemplateResponse(
-            "index.html", {"request": request}, headers=INDEX_HTML_CACHE_HEADERS
-        )
-    else:
-        return public_templates.TemplateResponse(
-            "no-built-pages.html",
-            {"request": request},
-            headers=INDEX_HTML_CACHE_HEADERS,
-        )
+    return serve_spa_shell(request)
 
 
 @app.get("/{_:path}")
@@ -404,62 +412,3 @@ async def any_pages(request: Request):
     # In all other cases, forward to frontend.
     else:
         return await root(request)
-
-
-def main(develop_mode: bool = False):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--reload", action="store_true")
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default=None,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Override log level (takes precedence over LOG_LEVEL env var)",
-    )
-    timeout_keep_alive = 60
-    args = parser.parse_args()
-
-    logging_config = AppLogger.get_logging_config()
-
-    if args.log_level:
-        logging_config = LoggingConfigHelper._apply_log_level_override(
-            logging_config, args.log_level
-        )
-
-    effective_level = logging_config.get("root", {}).get("level", "INFO")
-    logger.info(
-        f"Starting Optinist server on {args.host}:{args.port} "
-        f"(log_level={effective_level})"
-    )
-
-    if develop_mode:
-        if args.workers > 1:
-            reload = False
-            reload_options = {}
-        else:
-            reload = args.reload
-            reload_options = {"reload_dirs": ["studio"]} if args.reload else {}
-
-        uvicorn.run(
-            "studio.__main_unit__:app",
-            host=args.host,
-            port=args.port,
-            log_config=logging_config,
-            workers=args.workers,
-            timeout_keep_alive=timeout_keep_alive,
-            reload=reload,
-            **reload_options,
-        )
-    else:
-        uvicorn.run(
-            "studio.__main_unit__:app",
-            host=args.host,
-            port=args.port,
-            log_config=logging_config,
-            workers=args.workers,
-            timeout_keep_alive=timeout_keep_alive,
-            reload=False,
-        )

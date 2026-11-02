@@ -1,26 +1,27 @@
-"""Differential concurrency test for the per-user assign lock (case 6204).
+"""Differential concurrency test for the per-user assign claim (case 6204).
 
 Runs the REAL ``assign_premium_user`` for a single user on two threads against
-a shared in-memory fake DB and fake ELBv2. The only thing that differs between
-the two test cases is the injected ``distributed_lock``:
+a shared in-memory fake DB and fake ELBv2. The two cases differ in the assign
+claim and, as a side effect, in the DB stub behind the impl's few direct SQL
+statements (the claims fake turns them into no-ops, the no-op case keeps
+``setup_db_mock``); neither stub decides the outcome:
 
-  * a genuinely serializing per-name lock -> the second assign observes the
-    first's stored assignment and short-circuits, so exactly one target group
-    is created and none is deleted;
-  * a no-op lock -> the two assigns interleave, the second's orphan-cleanup
+  * the real ``assign_claim`` over an in-memory premium_assign_claims table ->
+    the second assign waits for the first's claim, then observes its stored
+    assignment and short-circuits, so exactly one target group is created and
+    none is deleted;
+  * a no-op claim -> the two assigns interleave, the second's orphan-cleanup
     deletes the first's live target group, and the first's returned assignment
     is left pointing at a deleted target group (ALB routing corruption).
 
-Pass/fail therefore flips solely on whether the lock serializes: the no-op
-case reproduces the corruption, the serializing case does not. Pre-lock code
-(assignment without the per-user lock) behaves like the no-op case and fails
-the serializing-lock expectation.
+Pass/fail therefore flips on whether the claim serializes: the no-op case
+reproduces the corruption, the real claim does not.
 
 Determinism: a barrier gates critical-section entry. When both threads are
-concurrently inside the section (no-op lock) the barrier trips and
+concurrently inside the section (no-op claim) the barrier trips and
 one-directional events script the exact create/delete interleaving with no
-sleeps. When the lock serializes, the second thread cannot enter the section
-while the first holds the lock, the barrier breaks, and the ordinary
+sleeps. When the claim serializes, the second thread cannot enter the section
+while the first holds the claim, the barrier breaks, and the ordinary
 single-threaded flow runs. The barrier's timeout is consumed only in the
 serializing (passing) case, where no partner ever arrives.
 """
@@ -32,45 +33,42 @@ from unittest.mock import MagicMock, patch
 
 from aws_constants import InstanceState
 
-from conftest import setup_db_mock
+from conftest import FakeAssignClaimsDb, setup_db_mock
 
 USER_ID = 77
 USER_UID = "uid_77"
 
 # Window for both threads to reach the in-section barrier when they run
 # concurrently. Consumed in full only by the serializing case, where the
-# second thread is blocked on the lock and never arrives.
+# second thread is waiting on the claim and never arrives.
 ENTRY_BARRIER_TIMEOUT = 3.0
 # Generous ceiling for the pre-assign rendezvous; both threads always reach it.
 START_GATE_TIMEOUT = 15.0
+# Loser's claim poll interval; the wait itself stays ASSIGN_CLAIM_WAIT_SECONDS.
+CLAIM_POLL_INTERVAL = 0.05
 
 
-def _make_serializing_lock():
-    """distributed_lock replacement that genuinely serializes same-name holders."""
-    locks = {}
-    guard = threading.Lock()
-
-    @contextmanager
-    def _lock(name, timeout=None):
-        with guard:
-            lk = locks.setdefault(name, threading.Lock())
-        lk.acquire()
-        try:
-            yield True
-        finally:
-            lk.release()
-
-    return _lock
+def _real_claim_patches(premium_manager):
+    """The real assign_claim, backed by one in-memory claims table."""
+    claims = FakeAssignClaimsDb()
+    return [
+        patch.object(
+            premium_manager, "get_db_connection", side_effect=claims.get_db_connection
+        ),
+        patch.object(
+            premium_manager, "ASSIGN_CLAIM_POLL_INTERVAL_SECONDS", CLAIM_POLL_INTERVAL
+        ),
+    ]
 
 
-def _make_noop_lock():
-    """distributed_lock replacement that grants immediately with no exclusion."""
+def _noop_claim_patches(premium_manager):
+    """An assign_claim that grants immediately with no exclusion."""
 
     @contextmanager
-    def _lock(name, timeout=None):
+    def _claim(user_id):
         yield True
 
-    return _lock
+    return [patch.object(premium_manager, "assign_claim", new=_claim)]
 
 
 class _Coordinator:
@@ -209,7 +207,7 @@ class _CoordElbv2:
         return {}
 
 
-def _run_variant(mock_env, lock_factory):
+def _run_variant(mock_env, claim_patches):
     """Run two concurrent assign_premium_user calls for one user.
 
     Returns (coordinator, results) where results maps thread tag -> the
@@ -280,9 +278,8 @@ def _run_variant(mock_env, lock_factory):
                 side_effect=lambda *a, **k: setup_db_mock(),
             )
         )
-        stack.enter_context(
-            patch("premium_manager.distributed_lock", new=lock_factory())
-        )
+        for claim_patch in claim_patches(premium_manager):
+            stack.enter_context(claim_patch)
         stack.enter_context(patch("boto3.client", side_effect=boto3_client))
 
         t1 = threading.Thread(target=worker, args=("a",))
@@ -296,10 +293,10 @@ def _run_variant(mock_env, lock_factory):
     return coord, results
 
 
-def test_serializing_lock_yields_single_target_group(mock_env_vars_premium):
-    """With a genuinely serializing lock the second assign short-circuits, so
+def test_assign_claim_yields_single_target_group(mock_env_vars_premium):
+    """With the real assign claim the second assign short-circuits, so
     exactly one target group survives and nothing is orphaned."""
-    coord, results = _run_variant(mock_env_vars_premium, _make_serializing_lock)
+    coord, results = _run_variant(mock_env_vars_premium, _real_claim_patches)
 
     assert all(isinstance(r, dict) for r in results.values()), results
     statuses = sorted(r["statusCode"] for r in results.values())
@@ -314,11 +311,11 @@ def test_serializing_lock_yields_single_target_group(mock_env_vars_premium):
     assert list(coord.live) == coord.created
 
 
-def test_noop_lock_orphans_first_target_group(mock_env_vars_premium):
-    """With a no-op lock the two assigns race: both create a target group and
+def test_noop_claim_orphans_first_target_group(mock_env_vars_premium):
+    """With a no-op claim the two assigns race: both create a target group and
     the second's orphan-cleanup deletes the first's live one, leaving the first
     assignment pointing at a deleted target group."""
-    coord, results = _run_variant(mock_env_vars_premium, _make_noop_lock)
+    coord, results = _run_variant(mock_env_vars_premium, _noop_claim_patches)
 
     # Both assigns took the fresh path and created a target group.
     assert len(coord.created) == 2, coord.created

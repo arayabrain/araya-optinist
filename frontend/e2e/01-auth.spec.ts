@@ -11,6 +11,7 @@ import {
   runSql,
   skipWithoutCreds,
   sqlLiteral,
+  hasRefreshCookie,
 } from "./helpers"
 
 // Login, logout, session persistence, and public-header navigation
@@ -147,11 +148,13 @@ test.describe("Login", () => {
     // routing_id/routing_tier are premium-only, so for this free account they
     // are absent either way and would pad the filter with a permanent 0 of 0.
     const AUTH_KEYS = ["access_token", "refresh_token", "ExToken"]
-    const keysPresent = () =>
-      page.evaluate(
+    const keysPresent = async () => [
+      ...(await page.evaluate(
         (keys) => keys.filter((k) => localStorage.getItem(k) !== null),
         AUTH_KEYS,
-      )
+      )),
+      ...((await hasRefreshCookie(page)) ? ["refresh_token cookie"] : []),
+    ]
 
     // Positive control: without it a renamed key makes the filter match nothing
     // and the emptiness assertion below passes on a session that never cleared.
@@ -175,7 +178,7 @@ test.describe("Login", () => {
 
       expect(
         await keysPresent(),
-        "auth keys still in localStorage after logout",
+        "auth keys or the refresh cookie still present after logout",
       ).toEqual([])
 
       // A cleared session must also fail the guard, not just look logged out

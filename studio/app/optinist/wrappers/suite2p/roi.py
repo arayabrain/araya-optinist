@@ -13,7 +13,11 @@ from studio.app.optinist.dataclass import (
     RoiData,
     Suite2pData,
 )
-from studio.app.optinist.dataclass.roi import RoiStack
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -37,7 +41,7 @@ def suite2p_roi(
     fs = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
 
     if params and "detection" not in params:
-        # a pre-1.1.0 tree arrives here with only tau and classification left
+        # for params that skip the type check, which refuses pre-1.1.0 trees
         raise KeyError(
             "suite2p_roi parameters predate suite2p 1.1.0: "
             "delete the node and add it again"
@@ -91,13 +95,10 @@ def suite2p_roi(
     ops["settings"] = settings
 
     # Initialize default empty outputs
-    empty_roi = np.full((Ly, Lx), np.nan)
-    im = np.zeros((0, Ly, Lx))
     F = np.zeros((0, nframes))
     Fneu = np.zeros((0, nframes))
     iscell = np.array([], dtype=int)
     stat = []
-    roi_images = None
     ops["max_proj"] = np.zeros((Ly, Lx))
     ops["Vcorr"] = np.zeros((Ly, Lx))
     ops["diameter"] = settings["diameter"]
@@ -131,20 +132,10 @@ def suite2p_roi(
         stat, F, Fneu = list(stat_), F_, Fneu_
         iscell = iscell_[:, 0].astype(int)
 
-    # Outside the handler: a failed write must fail the node, not empty its images
-    if len(iscell) > 0:
-        # The per-ROI mask stack (NaN outside ROI i, i inside it), written
-        # to disk one ROI at a time and referenced rather than held
-        stack_path = os.path.abspath(join_filepath([output_dir, "roi_mask_stack.npy"]))
-        stack, tmp_path = RoiStack.create(stack_path + ".tmp", (len(stat), Ly, Lx))
-        for i, s in enumerate(stat):
-            stack[i, s["ypix"], s["xpix"]] = i
-        stack.flush()
-        del stack
-        # a new inode, so a request still reading the previous stack keeps it
-        os.replace(tmp_path, stack_path)
-        im = RoiStack.open(stack_path)
-        roi_images = roi_label_images(stat, iscell, Ly, Lx)
+    roi_masks = RoiMasks.from_pixels(
+        (Ly, Lx),
+        (np.ravel_multi_index((s["ypix"], s["xpix"]), (Ly, Lx)) for s in stat),
+    )
 
     # Create ROI list
     roi_list = []
@@ -157,8 +148,11 @@ def suite2p_roi(
 
     # Prepare NWB output
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
+    all_roi = roi_masks.label_image()
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {
             "name": "iscell",
@@ -202,44 +196,27 @@ def suite2p_roi(
         "fluorescence": FluoData(F, file_name="fluorescence"),
         "iscell": IscellData(iscell, file_name="iscell"),
         "all_roi": RoiData(
-            roi_images["all"] if roi_images else empty_roi,
+            all_roi,
             output_dir=output_dir,
             file_name="all_roi",
         ),
         "non_cell_roi": RoiData(
-            roi_images["non_cell"] if roi_images else empty_roi,
+            roi_masks.label_image(iscell == 0),
             output_dir=output_dir,
             file_name="noncell_roi",
         ),
         "cell_roi": RoiData(
-            roi_images["cell"] if roi_images else empty_roi,
+            roi_masks.label_image(iscell != 0),
             output_dir=output_dir,
             file_name="cell_roi",
         ),
         # A reference to the movie, not the movie: suite2p's ROI editing reads
         # traces from the registered binary (ops["reg_file"]), never from this
         "edit_roi_data": EditRoiData(
-            images=ImageData(ops.get("file_list") or ops["filelist"]), im=im
+            images=ImageData(ops.get("file_list") or ops["filelist"]),
+            roi_masks=roi_masks,
         ),
         "nwbfile": nwbfile,
     }
 
     return info
-
-
-def roi_label_images(stat, iscell, Ly, Lx):
-    """
-    The all / cell / non-cell ROI images, from the ROIs' pixel lists.
-
-    Each pixel holds the highest ROI index covering it, which is what nanmax
-    over the per-ROI stack gives (layer i is i on ROI i's pixels, NaN elsewhere)
-    without reading the stack.
-    """
-    import numpy as np
-
-    images = {k: np.full((Ly, Lx), np.nan) for k in ("all", "cell", "non_cell")}
-    for i, s in enumerate(stat):
-        group = "cell" if iscell[i] != 0 else "non_cell"
-        for key in ("all", group):
-            images[key][s["ypix"], s["xpix"]] = i
-    return images

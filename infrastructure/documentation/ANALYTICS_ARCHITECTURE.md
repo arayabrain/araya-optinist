@@ -129,11 +129,11 @@ Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until 
 
 1. **Restrict GTM container publish rights to a named, minimal set of people, with 2FA enforced on those Google accounts.** GTM is by design a mechanism for injecting arbitrary JavaScript into the page from a console outside this repository. That page runs authenticated scientific workflows and admin impersonation (`proxyLogin`), so publish rights on the container are equivalent to code execution in an authenticated session. This is the single largest security consideration of the whole feature.
 2. **Prefer a locked-down container.** Avoid Custom HTML tags; if the threat model warrants it, use server-side GTM.
-3. **Decide and record the CSP posture.** There is currently **no Content-Security-Policy anywhere in this repository** - no meta tag in `index.html`, no nginx layer, no CloudFront distribution, and the ALB rules in `infrastructure/terraform/public_alb_rules.tf` only match request headers, they do not add response headers. The absence pre-dates this subsystem (the app already loads `fonts.googleapis.com`), and adding GTM does not preclude a nonce-based CSP later, but GTM materially raises what an injection is worth. Either add one following Google's CSP guidance for GTM, or record the decision to accept the current posture.
+3. **Enforce the CSP before or soon after enabling the container.** The backend sends `Content-Security-Policy-Report-Only` on the shell (`content_security_policy` in `spa_routing_middleware.py`): a per-response nonce on every inline `<script>`, `www.googletagmanager.com` in `script-src`, the GA4 hosts in `img-src` and `connect-src`, and `'unsafe-inline'` kept in `style-src` for MUI/emotion and react-flow. Violations are logged with a `[CSP]` prefix by `POST /log-report/csp`. Switch the header to `Content-Security-Policy` once those logs are clean on real traffic, with the container enabled on development so its requests are in the reports. Keep Custom HTML tags out of the container: they would need the nonce.
 
 ### Compliance
 
-4. **Link the privacy policy from the consent notice.** GDPR and ePrivacy expect the notice to link to the policy describing the processing. The Terms of Service and Privacy Policy pages are being added separately; wire the link in once those routes exist.
+4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. The policy still describes Google Analytics as planned and not yet active; update it in the same release that sets the production container ID.
 5. **Have the notice copy reviewed.** It has had no legal review.
 6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload. A restyle of either surface can regress this.
 
@@ -181,9 +181,8 @@ The code side is inert without these console-side settings. Configure them **bef
 
 ## Known gaps
 
-- **The notice does not link to a privacy policy.** Terms and privacy pages are being added separately; link them from the notice once they exist.
 - **Consent does not sync across tabs.** Granting in one tab leaves another tab's notice up until it reloads.
-- **`canonical` and `og:url` in `index.html` are hardcoded to the site root**, so `/login`, `/register` and `/public` in `sitemap.xml` self-canonicalize to `/`. Submitting that sitemap to Search Console will report those URLs as duplicates. Fix the canonical handling before submitting the sitemap.
+- **Per-route head metadata only covers the sitemap routes.** The backend rewrites the canonical, URL, title and description head tags (including the `og:` and `twitter:` variants) for `/login`, `/register` and `/public` when it serves the shell (`rewrite_route_metadata` in `spa_routing_middleware.py`), and `/robots.txt`, `/sitemap.xml` and `/llms.txt` are served as real files instead of the shell. Other public routes (`/terms`, `/privacy`, ...) still carry the root page's metadata; add them to the sitemap, `ROUTE_HEAD_METADATA` and `frontend/src/const/routeHeadMetadata.json` (which `RouteHeadMetadata` applies after in-app navigation) together. `og:image` is also a relative URL, which the OG spec requires to be absolute, so some scrapers drop the preview image.
 - **Search Console ownership is not verified.** DNS TXT or a `google-site-verification` meta tag are the robust methods; the GTM method additionally requires publish rights on the container.
 - **e2e consent seeding is only partial.** `frontend/e2e/global-setup.ts` seeds `analyticsConsent=denied` into the authenticated storage state, but specs that build their own unauthenticated context (the login and registration flows) will still meet the notice once a container ID is set for the tested build.
 

@@ -1,0 +1,42 @@
+name: Premium Lock Integration
+
+# Runs the real-MySQL lane (`make premium_lock_it`) on PRs that touch the
+# premium Lambdas or the lane itself: the per-PR unit tests use an in-memory
+# claims table that does not evaluate the claim SQL's predicates.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - develop-main
+      - future
+      - "future/**"
+    paths:
+      - "infrastructure/terraform/premium_manager_package/**"
+      - "infrastructure/terraform/premium_cleanup_package/**"
+      - "infrastructure/aws_constants.py"
+      - "studio/tests/infrastructure/test_premium_lock_integration.py"
+      - "studio/tests/infrastructure/conftest.py"
+      - "studio/alembic/versions/p901p1020029_add_premium_assign_claims.py"
+      - "studio/app/common/models/premium_assign_claim.py"
+      - "docker-compose.premium-lock-it.yml"
+      - ".github/workflows/premium-lock-it.yml"
+
+# A newer push to the same PR supersedes a running lane.
+concurrency:
+  group: premium-lock-it-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default: jobs opt in to anything beyond reading the repo.
+permissions:
+  contents: read
+
+jobs:
+  premium_lock_it:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the premium lock integration lane
+        run: make premium_lock_it

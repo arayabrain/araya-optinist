@@ -39,7 +39,10 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
@@ -58,6 +61,7 @@ from aws_constants import (
     RoutingHeaders,
 )
 from botocore.exceptions import ClientError
+from pymysql.constants import ER
 
 if TYPE_CHECKING:
     from mypy_boto3_cloudwatch import CloudWatchClient
@@ -77,11 +81,15 @@ CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
-ASSIGN_USER_LOCK_PREFIX = "assign_user_"
-ASSIGN_LOCK_TIMEOUT_SECONDS = (
-    10  # Short acquisition timeout so 409 fallback is reachable within Lambda timeout
-)
 LOCK_TIMEOUT_SECONDS = 60
+
+# Per-user assign claim (premium_assign_claims row)
+ASSIGN_CLAIM_WAIT_SECONDS = 10  # Bounded wait, then the 200 / 409 fallback
+ASSIGN_CLAIM_POLL_INTERVAL_SECONDS = 1
+ASSIGN_CLAIM_TTL_SECONDS = 90  # Reclaimable this long after the last renewal
+ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS = 20
+# Old assign session lock (previous release, pre-migration fallback); remove when unused
+LEGACY_ASSIGN_LOCK_PREFIX = "assign_user_"
 
 # Wait before first migration attempt to let instances boot
 MIGRATION_INITIAL_DELAY_SECONDS = 60
@@ -260,6 +268,155 @@ def distributed_lock(lock_name, timeout=LOCK_TIMEOUT_SECONDS):
                     pass
 
     return _lock_context()
+
+
+def _try_acquire_assign_claim(user_id: int, token: str) -> bool:
+    """One attempt on one connection: insert, or take over an expired claim;
+    then give it back if the previous release's session lock is in use."""
+    with get_db_connection(auto_commit=True) as connection:
+        with connection.cursor() as cursor:
+            try:
+                cursor.execute(
+                    """INSERT INTO premium_assign_claims
+                       (user_id, claim_token, claimed_at, expires_at)
+                       VALUES (%s, %s, NOW(), NOW() + INTERVAL %s SECOND)""",
+                    (user_id, token, ASSIGN_CLAIM_TTL_SECONDS),
+                )
+            except pymysql.err.IntegrityError as e:
+                if e.args[0] != ER.DUP_ENTRY:
+                    raise
+                cursor.execute(
+                    """UPDATE premium_assign_claims
+                       SET claim_token = %s, claimed_at = NOW(),
+                           expires_at = NOW() + INTERVAL %s SECOND
+                       WHERE user_id = %s AND expires_at < NOW()""",
+                    (token, ASSIGN_CLAIM_TTL_SECONDS, user_id),
+                )
+                cursor.execute(
+                    "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                if not row or row["claim_token"] != token:
+                    return False
+                print(f"Reclaimed expired assign claim for user {user_id}")
+
+            # IS_FREE_LOCK: 1 free, 0 in use, NULL error (treated as in use)
+            cursor.execute(
+                "SELECT IS_FREE_LOCK(%s) AS is_free",
+                (f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}",),
+            )
+            if cursor.fetchone()["is_free"] == 1:
+                return True
+            print(f"Previous release still assigning user {user_id}; claim given back")
+            cursor.execute(
+                """DELETE FROM premium_assign_claims
+                   WHERE user_id = %s AND claim_token = %s""",
+                (user_id, token),
+            )
+            return False
+
+
+def _renew_assign_claim(user_id: int, token: str) -> bool:
+    """Push the claim's expiry forward; False once another holder owns it."""
+    with get_db_connection(auto_commit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE premium_assign_claims
+                   SET expires_at = NOW() + INTERVAL %s SECOND
+                   WHERE user_id = %s AND claim_token = %s""",
+                (ASSIGN_CLAIM_TTL_SECONDS, user_id, token),
+            )
+            cursor.execute(
+                "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return bool(row) and row["claim_token"] == token
+
+
+def _keep_assign_claim_alive(user_id: int, token: str, stop: threading.Event):
+    """Renew the claim until ``stop`` is set or the claim is lost."""
+    while not stop.wait(ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS):
+        try:
+            if not _renew_assign_claim(user_id, token):
+                print(f"Assign claim for user {user_id} was lost; renewal stopped")
+                return
+        except Exception as e:
+            print(f"Failed to renew assign claim for user {user_id}: {e}")
+
+
+def _release_assign_claim(user_id: int, token: str) -> None:
+    """Best-effort delete by token; a claim left behind expires."""
+    try:
+        with get_db_connection(auto_commit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """DELETE FROM premium_assign_claims
+                       WHERE user_id = %s AND claim_token = %s""",
+                    (user_id, token),
+                )
+                if cursor.rowcount:
+                    print(f"Released assign claim for user {user_id}")
+    except Exception as e:
+        print(f"Failed to release assign claim for user {user_id}: {e}")
+
+
+def _poll_for_assign_claim(user_id: int, token: str, wait_seconds: float) -> bool:
+    """Retry until acquired or out of time; a transient DB error is a failed attempt."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            if _try_acquire_assign_claim(user_id, token):
+                return True
+        except pymysql.err.OperationalError as e:
+            print(f"Assign claim attempt for user {user_id} failed: {e}")
+        if time.monotonic() >= deadline:
+            return False
+        # Polling gives no order: with 3+ contenders one may still get 409
+        time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
+
+
+@contextmanager
+def assign_claim(user_id: int, wait_seconds: Optional[float] = None):
+    """Yield True while holding the user's assign claim, renewed in the background."""
+    if wait_seconds is None:
+        wait_seconds = ASSIGN_CLAIM_WAIT_SECONDS
+    token = uuid.uuid4().hex
+    try:
+        acquired = _poll_for_assign_claim(user_id, token, wait_seconds)
+    except pymysql.err.ProgrammingError as e:
+        if e.args[0] != ER.NO_SUCH_TABLE:
+            _release_assign_claim(user_id, token)
+            raise
+        # Before the migration: the previous release's session lock, same name
+        print(f"premium_assign_claims is missing; using the session lock: {e}")
+        legacy_lock = f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}"
+        with distributed_lock(legacy_lock, timeout=int(wait_seconds)) as locked:
+            yield locked
+        return
+    except BaseException:
+        _release_assign_claim(user_id, token)
+        raise
+
+    stop = threading.Event()
+    renewer = None
+    if acquired:
+        print(f"Acquired assign claim for user {user_id}")
+        renewer = threading.Thread(
+            target=_keep_assign_claim_alive, args=(user_id, token, stop), daemon=True
+        )
+        renewer.start()
+    else:
+        print(f"Assign claim for user {user_id} is held by another invocation")
+    try:
+        yield acquired
+    finally:
+        stop.set()
+        if renewer:
+            renewer.join(timeout=5)
+        # Also clears a row a failed attempt may have left
+        _release_assign_claim(user_id, token)
 
 
 def with_transaction(func):
@@ -870,11 +1027,16 @@ def get_assigned_users_for_instance(instance_id: str):
         return []
 
 
-def get_all_premium_instances_with_states():
+def get_all_premium_instances_with_states(raise_on_error: bool = False):
     """Get all premium instances with their AWS states.
 
     Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
     contamination (e.g., development Lambda discovering production instances).
+
+    On an EC2 error, returns [] unless raise_on_error is set. A caller that
+    deletes rows for instances missing from the result, or launches instances
+    for capacity it does not see, must set it: [] would read as "no premium
+    instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = EnvironmentConfig.get_env_prefix()
@@ -975,6 +1137,8 @@ def get_all_premium_instances_with_states():
         return instances
     except Exception as e:
         print(f"Error getting premium instances: {str(e)}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -2877,11 +3041,9 @@ def _assign_premium_user_impl(
 ) -> Dict[str, Any]:
     """Core premium user assignment logic.
 
-    Called from assign_premium_user UNDER the per-user distributed
-    lock to prevent concurrent calls from corrupting ALB resources
-    (issue #630).  The lock uses ASSIGN_LOCK_TIMEOUT_SECONDS (10 s)
-    so the 409 fallback is reliably reachable within the Lambda
-    invocation timeout (60 s).
+    Called from assign_premium_user while it holds the user's assign
+    claim, so concurrent calls for one user cannot corrupt each other's
+    ALB resources.
     """
     # Restore pending_release if user refreshed (beacon fired but user is back)
     try:
@@ -3832,24 +3994,12 @@ def assign_premium_user(
             ),
         }
 
-    # Serialize concurrent assign calls for the same user_id.
-    # Without this lock, two concurrent calls can both pass the
-    # "existing assignment?" check and race through TG creation,
-    # causing the second call's orphan-cleanup to delete the first
-    # call's freshly-created target group (issue #630).
-    #
-    # The entire _assign_premium_user_impl runs under the lock.
-    # Lock timeout is short (ASSIGN_LOCK_TIMEOUT_SECONDS = 10) so
-    # the 409 fallback is reliably reachable within the Lambda
-    # invocation timeout (60 s).
-    lock_name = f"{ASSIGN_USER_LOCK_PREFIX}{user_id}"
-    with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
+    # One assign per user at a time, or concurrent ones delete each other's TG
+    with assign_claim(user_id) as acquired:
         if not acquired:
-            # Lock timed out -- another invocation held it.
-            # Check whether that call stored a valid assignment
-            # before giving up.
+            # Return what the holder stored, if it has finished; else 409
             print(
-                f"Per-user assign lock timed out for user {user_id}, "
+                f"Assign claim wait timed out for user {user_id}, "
                 f"checking for completed assignment"
             )
             try:
@@ -3888,7 +4038,7 @@ def assign_premium_user(
                 ),
             }
 
-        # ── Under lock: full assignment logic ──
+        # ── Under the claim: full assignment logic ──
         return _assign_premium_user_impl(
             user_id,
             event,
@@ -3990,8 +4140,9 @@ def scale_premium_instances_if_needed():
         # Get dynamic capacity limits based on premium users
         max_capacity = get_dynamic_max_capacity()
 
-        # Get all premium instances with their states
-        all_instances = get_all_premium_instances_with_states()
+        # Get all premium instances with their states. Raises on an EC2 error:
+        # [] would read as no instance running and launch new ones.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
         active_users = count_active_premium_users()
 
         running_instances = [
@@ -5481,8 +5632,9 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
 def cleanup_failed_standby_instances():
     """Clean up database entries for standby instances that no longer exist in AWS"""
     try:
-        # Get all AWS premium instances
-        aws_instances = get_all_premium_instances_with_states()
+        # Get all AWS premium instances. Raises on an EC2 error, so no row is
+        # deleted on a failed discovery.
+        aws_instances = get_all_premium_instances_with_states(raise_on_error=True)
         aws_instance_ids = {i["instance_id"] for i in aws_instances}
 
         # Get all standby assignments from database
@@ -5493,6 +5645,17 @@ def cleanup_failed_standby_instances():
                        WHERE is_standby = 1 AND status = 'active'"""
                 )
                 db_standby_instances = [row["instance_id"] for row in cursor.fetchall()]
+
+                # No instance discovered while standby rows exist is more
+                # likely a discovery fault (a changed tag or filter) than
+                # every instance gone.
+                if not aws_instance_ids and db_standby_instances:
+                    print(
+                        f"Skipping failed standby cleanup: no premium instance "
+                        f"discovered, but {len(db_standby_instances)} standby "
+                        f"rows exist"
+                    )
+                    return
 
                 # Remove database entries for instances that no longer exist
                 cleanup_count = 0
