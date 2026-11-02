@@ -15,13 +15,22 @@ NODE_CONFIG = {NWBDATASET.POSTPROCESS: {"node": {"image": np.ones((4, 3))}}}
 
 @pytest.fixture
 def node_nwb(tmp_path):
-    """Write a node NWB as the node's rule does; returns its path and movie."""
+    """Write a node NWB as the node's rule does, from n_files copies of FRAMES;
+    returns its path and movie."""
 
-    def write(save_raw_image_to_nwb):
-        images = ImageData(FRAMES, output_dir=str(tmp_path), file_name="movie")
+    def write(save_raw_image_to_nwb, n_files=1):
+        paths = [
+            ImageData(FRAMES, output_dir=str(tmp_path), file_name=f"movie{i}").path[0]
+            for i in range(n_files)
+        ]
+        images = ImageData(paths, "")
         input_config = ConfigReader.read(CORE_PARAM_PATH.nwb.value)
         input_config["image_series"]["external_file"] = images
         input_config["image_series"]["save_raw_image_to_nwb"] = save_raw_image_to_nwb
+        if n_files > 1:  # where each file starts in the series
+            input_config["image_series"]["starting_frame"] = [
+                i * len(FRAMES) for i in range(n_files)
+            ]
         path = tmp_path / "func" / "func.nwb"
         path.parent.mkdir()
         save_nwb(str(path), input_config, NODE_CONFIG)
@@ -65,8 +74,9 @@ def test_a_rewrite_copies_the_stored_frames_into_the_file(node_nwb):
     assert isinstance(link, h5py.HardLink)
 
 
-def test_a_rewrite_keeps_the_movie_reference_by_default(node_nwb):
-    path, images = node_nwb(save_raw_image_to_nwb=False)
+@pytest.mark.parametrize("n_files", [1, 2], ids=["one_file", "two_files"])
+def test_a_rewrite_keeps_the_movie_reference_by_default(node_nwb, n_files):
+    path, images = node_nwb(save_raw_image_to_nwb=False, n_files=n_files)
 
     rewrite(path)
 
@@ -74,4 +84,5 @@ def test_a_rewrite_keeps_the_movie_reference_by_default(node_nwb):
     with NWBHDF5IO(str(path), "r") as io:
         series = io.read().acquisition["TwoPhotonSeries"]
         assert list(series.external_file[:]) == images.path
+        assert list(series.starting_frame[:]) == [0, 5][:n_files]
         assert series.data.size == 0
