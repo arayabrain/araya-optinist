@@ -81,6 +81,25 @@ def test_the_raw_movie_is_never_read_whole(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "frame_shape, chunks",
+    [
+        ((512, 512), (2, 512, 512)),
+        ((1024, 1024), (1, 1024, 1024)),
+        ((H, W), (3, H, W)),
+    ],
+    ids=["two_frames", "one_frame", "the_whole_movie"],
+)
+def test_the_raw_movie_is_chunked_by_whole_frames(tmp_path, frame_shape, chunks):
+    """As many uint16 frames per chunk as fit in 1 MiB, at least one, at most
+    the movie: reading one frame reads only its chunk."""
+    path = str(tmp_path / "movie.tif")
+    tifffile.imwrite(path, np.zeros((3, *frame_shape), np.uint16))
+
+    with NWBHDF5IO(write_raw(tmp_path, ImageData(path, "")), "r") as io:
+        assert io.read().acquisition["TwoPhotonSeries"].data.chunks == chunks
+
+
 def test_an_input_that_is_not_a_tiff_stack_is_read_whole(tmp_path):
     class Frames:
         """An input such as a microscope file: frames through `data` only."""

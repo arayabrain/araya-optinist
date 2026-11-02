@@ -3,6 +3,7 @@ import os
 import shutil
 
 import numpy as np
+from hdmf.backends.hdf5.h5_utils import H5DataIO
 from hdmf.data_utils import DataChunkIterator, GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
@@ -29,6 +30,9 @@ from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
 # ROI frames an image_mask column holds in memory while it is written
 IMAGE_MASK_BUFFER = 16
+# HDF5 chunk of a streamed raw movie: whole frames, up to h5py's default chunk
+# cache, so a frame-by-frame reader reads each chunk once
+RAW_MOVIE_CHUNK_BYTES = 1 << 20
 # postprocess entries -> the name the same data had in files written before
 RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
 
@@ -44,11 +48,17 @@ def _raw_movie(external_file):
         return external_file.data
     shape, dtype, frames = stream
     frame_bytes = int(np.prod(shape[1:])) * dtype.itemsize
-    return DataChunkIterator(
-        data=frames,
-        maxshape=shape,
-        dtype=dtype,
-        buffer_size=max(1, BATCH_BYTES // frame_bytes),
+    chunk_frames = min(max(1, RAW_MOVIE_CHUNK_BYTES // frame_bytes), shape[0])
+    # an iterator cannot be stored contiguous, and h5py's guessed chunks span
+    # dozens of frames
+    return H5DataIO(
+        data=DataChunkIterator(
+            data=frames,
+            maxshape=shape,
+            dtype=dtype,
+            buffer_size=max(1, BATCH_BYTES // frame_bytes),
+        ),
+        chunks=(chunk_frames,) + shape[1:],
     )
 
 
