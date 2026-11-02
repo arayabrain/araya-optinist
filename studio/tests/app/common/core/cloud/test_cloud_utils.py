@@ -1612,9 +1612,7 @@ def test_upload_gate_allows_active_user_under_raw_quota():
     ) as mock_scope, patch(
         "studio.app.common.routers.files.create_directory"
     ), patch(
-        "studio.app.common.routers.files.open", create=True
-    ), patch(
-        "studio.app.common.routers.files.shutil"
+        "studio.app.common.routers.files._write_file_atomic"
     ), patch(
         "studio.app.common.routers.files.WorkspaceDataCapacityService.is_available",
         return_value=False,

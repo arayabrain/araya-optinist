@@ -56,6 +56,14 @@ export type GetStatusViaUrl = {
   total: number
   current: number
   error: string | null
+  // The file is in place
+  done: boolean
+  upload_id: string | null
+}
+
+export type UploadViaUrlStarted = {
+  file_name: string
+  upload_id: string
 }
 
 export async function getFilesTreeApi(
@@ -139,7 +147,7 @@ export async function updateShapeApi(
 export const uploadViaUrlApi = async (
   workspaceId: number,
   url: string,
-): Promise<{ file_name: string }> => {
+): Promise<UploadViaUrlStarted> => {
   const res = await axios.post(
     `${BASE_URL}/files/${workspaceId}/download`,
     { url },
@@ -154,9 +162,11 @@ export const uploadViaUrlApi = async (
 export const getStatusLoadViaUrlApi = async (
   workspaceId: number,
   file_name: string,
+  upload_id: string,
 ): Promise<GetStatusViaUrl> => {
   const res = await axios.get(
-    `${BASE_URL}/files/${workspaceId}/download/status?file_name=${file_name}`,
+    `${BASE_URL}/files/${workspaceId}/download/status`,
+    { params: { file_name, upload_id } },
   )
   return res.data
 }
