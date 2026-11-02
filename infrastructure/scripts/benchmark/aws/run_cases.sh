@@ -24,8 +24,9 @@ M="$ROOT/inputs/neurofinder.00.10_stack.tif"
 L="$ROOT/inputs/neurofinder.00.10_stack_x2.tif"
 S="$ROOT/repo/sample_data/dev_mouse2p_short_image.tiff"
 SHORT_FRAMES="${BENCH_SHORT_FRAMES:-}"
-# A task sets CPU shares, not a cap, so the container may use every vCPU
-COMMON=(--variant S --cpus "$(nproc)" --timeout "${BENCH_ROW_TIMEOUT:-3600}")
+# A task sets CPU shares, not a cap, so the container may use every vCPU.
+# Runs start through the API, so no harness process adds to the container's memory
+COMMON=(--variant S --start api --cpus "$(nproc)" --timeout "${BENCH_ROW_TIMEOUT:-3600}")
 export BENCH_LANE="aws"
 
 sync_results() { aws s3 sync --quiet "$RES/" "$BENCH_S3_PREFIX/results/"; }
@@ -44,8 +45,8 @@ warmup() {
   echo "WARMUP $* exit=$?"
 }
 
-warmup --algo suite2p --input "$S" --variant U
-warmup --algo caiman --input "$S" --variant U
+warmup --algo suite2p --input "$S" --variant U --start api
+warmup --algo caiman --input "$S" --variant U --start api
 
 # One run: the reference the concurrent rows are compared with
 row S2P-1 --algo suite2p --input "$M" "${COMMON[@]}"

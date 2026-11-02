@@ -8,11 +8,14 @@
 #   run_bench.sh --algo <fixture>[,<fixture>...] --input <host path to tiff> \
 #                --variant U|P|S --results-dir <dir> [--conc N] [--label R3] \
 #                [--set node.dotted.param=value ...] [--cpus 2 | --cpuset 0-4] \
-#                [--env KEY=VALUE ...] [--timeout 10800] [--keep-outputs]
+#                [--env KEY=VALUE ...] [--timeout 10800] [--keep-outputs] \
+#                [--start exec|api]
 #
 # Several fixtures start one run each, together (e.g. suite2p,caiman).
 # Variants:  U = no memory limit (demand)   P = tier ceiling, no swap
 #            S = tier ceiling plus its swap allowance (needs host swap)
+# Start:     exec = a driver process per run calls WorkflowRunner (the baseline
+#            rows; it adds its own memory)   api = POST /run, as the web UI does
 # BENCH_MEMORY_MIB / BENCH_SWAP_MIB set the ceiling and the swap allowance.
 # BENCH_UVICORN_WORKERS sets the API's workers (default 5, the baseline rows).
 # BENCH_LANE (default "local") names the lane in the row ID and provenance.
@@ -42,7 +45,7 @@ CEILING_PLUS_SWAP="$((MEMORY_MIB + SWAP_MIB))m"
 LANE="${BENCH_LANE:-local}"
 
 ALGO="" INPUT="" VARIANT="" RESULTS_DIR="" CONC="" LABEL="" CPUS="2" CPUSET=""
-TIMEOUT=10800 KEEP_OUTPUTS=0
+TIMEOUT=10800 KEEP_OUTPUTS=0 START=exec
 OVERRIDES=()
 EXTRA_ENV=()
 
@@ -60,12 +63,14 @@ while [[ $# -gt 0 ]]; do
     --cpuset) CPUSET="$2"; CPUS=""; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --keep-outputs) KEEP_OUTPUTS=1; shift ;;
+    --start) START="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$ALGO" && -n "$INPUT" && -n "$VARIANT" && -n "$RESULTS_DIR" ]] || {
-  sed -n '2,18p' "$0"; exit 2; }
+  sed -n '2,21p' "$0"; exit 2; }
+[[ "$START" == exec || "$START" == api ]] || { echo "start must be exec or api" >&2; exit 2; }
 IFS=, read -r -a ALGOS <<< "$ALGO"
 for a in "${ALGOS[@]}"; do
   [[ -f "$SCRIPT_DIR/fixtures/$a.json" ]] || { echo "no fixture for $a" >&2; exit 2; }
@@ -132,6 +137,21 @@ done
 curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:$HOST_PORT/health" || {
   echo "API did not come up" >&2; exit 1; }
 
+SET_ARGS=()
+for o in "${OVERRIDES[@]+"${OVERRIDES[@]}"}"; do SET_ARGS+=(--set "$o"); done
+# One fixture: every run uses it; several: run i uses the i-th
+fixture_of() { echo "infrastructure/scripts/benchmark/fixtures/${ALGOS[$((($1 - 1) % ${#ALGOS[@]}))]}.json"; }
+
+if [[ "$START" == api ]]; then
+  # Built before sampling starts, so the builder's memory is in no figure
+  for i in $(seq 1 "$CONC"); do
+    docker exec "$CONTAINER" python infrastructure/scripts/benchmark/run_workflow.py \
+      --fixture "$(fixture_of "$i")" --input "$INPUT_NAME" --workspace "$WORKSPACE" \
+      --print-run-item "${SET_ARGS[@]+"${SET_ARGS[@]}"}" \
+      > "$OUT/runitem-$i.json" 2> "$OUT/runitem-$i.log"
+  done
+fi
+
 docker exec -d "$CONTAINER" sh /app/infrastructure/scripts/benchmark/sample_cgroup.sh \
   /bench_out/cgroup.tsv "$SAMPLE_INTERVAL"
 "$SCRIPT_DIR/probe.sh" "http://127.0.0.1:$HOST_PORT/health" "$OUT/probe.tsv" \
@@ -142,21 +162,22 @@ echo "-- idle ${IDLE_BEFORE_RUN}s (API baseline)"
 sleep "$IDLE_BEFORE_RUN"
 T_RUNS_START=$(date +%s)
 
-SET_ARGS=()
-for o in "${OVERRIDES[@]+"${OVERRIDES[@]}"}"; do SET_ARGS+=(--set "$o"); done
-
 PIDS=()
 for i in $(seq 1 "$CONC"); do
-  UID_I="${RUN_ID}-${i}"
-  # One fixture: every run uses it; several: run i uses the i-th
-  FIXTURE_I="${ALGOS[$(((i - 1) % ${#ALGOS[@]}))]}"
-  docker exec "$CONTAINER" timeout "$TIMEOUT" python \
-    infrastructure/scripts/benchmark/run_workflow.py \
-    --fixture "infrastructure/scripts/benchmark/fixtures/$FIXTURE_I.json" \
-    --input "$INPUT_NAME" --workspace "$WORKSPACE" --unique-id "$UID_I" \
-    "${SET_ARGS[@]+"${SET_ARGS[@]}"}" > "$OUT/run-$i.log" 2>&1 &
+  if [[ "$START" == api ]]; then
+    docker exec "$CONTAINER" timeout "$TIMEOUT" python \
+      infrastructure/scripts/benchmark/start_via_api.py \
+      --run-item "/bench_out/runitem-$i.json" --workspace "$WORKSPACE" \
+      > "$OUT/run-$i.log" 2>&1 &
+  else
+    docker exec "$CONTAINER" timeout "$TIMEOUT" python \
+      infrastructure/scripts/benchmark/run_workflow.py \
+      --fixture "$(fixture_of "$i")" --input "$INPUT_NAME" --workspace "$WORKSPACE" \
+      --unique-id "${RUN_ID}-${i}" "${SET_ARGS[@]+"${SET_ARGS[@]}"}" \
+      > "$OUT/run-$i.log" 2>&1 &
+  fi
   PIDS+=($!)
-  echo "-- started run $i ($UID_I, $FIXTURE_I)"
+  echo "-- started run $i ($(basename "$(fixture_of "$i")" .json), start $START)"
 done
 
 RC_ALL=0
@@ -171,9 +192,18 @@ T_RUNS_END=$(date +%s)
 CONTAINER_STATE="$(docker inspect -f '{{.State.Status}} oom_killed={{.State.OOMKilled}} exit={{.State.ExitCode}}' "$CONTAINER" 2>/dev/null || echo gone)"
 
 # Collect from the host side (works even if the container died)
+RUN_DIRS=()
 for i in $(seq 1 "$CONC"); do
-  RUN_DIR="$DATA_DIR/output/$WORKSPACE/${RUN_ID}-${i}"
+  if [[ "$START" == api ]]; then
+    # The API picks the run's id; start_via_api.py prints it first
+    UID_I="$(sed -n 's/^BENCH_UID //p' "$OUT/run-$i.log" | head -1)"
+  else
+    UID_I="${RUN_ID}-${i}"
+  fi
+  [[ -n "$UID_I" ]] || continue
+  RUN_DIR="$DATA_DIR/output/$WORKSPACE/$UID_I"
   [[ -d "$RUN_DIR" ]] || continue
+  RUN_DIRS+=("$RUN_DIR")
   [[ -f "$RUN_DIR/bench/rules.jsonl" ]] && cp "$RUN_DIR/bench/rules.jsonl" "$OUT/rules-$i.jsonl"
   for f in "$RUN_DIR"/*.yaml; do [[ -f "$f" ]] && cp "$f" "$OUT/$(basename "${f%.yaml}")-$i.yaml"; done
   ls -t "$RUN_DIR"/.snakemake/log/*.snakemake.log 2>/dev/null | head -1 | xargs -I{} cp {} "$OUT/snakemake-$i.log" || true
@@ -183,7 +213,7 @@ done
 
 python3 "$SCRIPT_DIR/write_provenance.py" \
   --out "$OUT/provenance.json" --repo "$REPO_DIR" --run-id "$RUN_ID" \
-  --algo "$ALGO" --input "$INPUT" --variant "$VARIANT" --conc "$CONC" \
+  --algo "$ALGO" --input "$INPUT" --variant "$VARIANT" --conc "$CONC" --start "$START" \
   --memory="${MEM_FLAGS[*]+${MEM_FLAGS[*]}}" --cpu="${CPU_FLAGS[*]}" --image "$IMAGE" \
   --uvicorn-workers "$UVICORN_WORKERS" --sample-interval "$SAMPLE_INTERVAL" \
   --probe "interval=${PROBE_INTERVAL}s timeout=${PROBE_TIMEOUT}s" --timeout "$TIMEOUT" \
@@ -195,7 +225,7 @@ kill "$PROBE_PID" 2>/dev/null; wait "$PROBE_PID" 2>/dev/null || true; PROBE_PID=
 python3 "$SCRIPT_DIR/summarize.py" "$OUT" > "$OUT/summary.md" || echo "summarize failed" >&2
 
 if [[ $KEEP_OUTPUTS -eq 0 ]]; then
-  for i in $(seq 1 "$CONC"); do rm -rf "${DATA_DIR:?}/output/$WORKSPACE/${RUN_ID}-${i}"; done
+  for d in ${RUN_DIRS[@]+"${RUN_DIRS[@]}"}; do rm -rf "${d:?}"; done
 fi
 echo "== done: $OUT (container: $CONTAINER_STATE)"
 exit "$RC_ALL"

@@ -8,6 +8,15 @@ One benchmark container stands in for one application task: the API and the work
 share the container's cgroup, so the API's own memory counts against the same limit, as it
 does in a deployed task.
 
+A run starts in one of two ways (`--start`):
+
+- **`api`**: `POST /run`, as the web UI does. A uvicorn worker builds the run and is its
+  snakemake parent, as in a deployed task. Use it for figures read against a ceiling.
+- **`exec`** (default, as in the earlier baseline rows): a driver process per run calls
+  `WorkflowRunner` itself and is the snakemake parent. It is an extra app-sized process in
+  the container, which a deployed run does not have; each run records its memory
+  (`harness_process` in `run-N.log`, and in `summary.md`).
+
 ## What it does not measure
 
 - **Wall clock comparable with a deployment, on an Apple Silicon host.** The image is
@@ -18,6 +27,8 @@ does in a deployed task.
   which shows the failure point instead of a swap stall. Variant S needs host swap.
 - **The cost of conda activation on a shared file system.** Conda envs are on a local
   volume here.
+- **The web UI's result polling.** Neither start mode calls `/run/result` during a run; the
+  `api` mode watches the run's `experiment.yaml` instead.
 
 ## Prerequisites
 
@@ -36,7 +47,7 @@ infrastructure/scripts/benchmark/run_bench.sh \
   --algo suite2p --input /path/to/input.tif --variant U \
   --results-dir /path/to/results [--conc 2] [--label R3] \
   [--set caiman_cnmf.advanced.patch_params.n_processes=4] \
-  [--cpus 2 | --cpuset 0-4] [--timeout 10800] [--keep-outputs]
+  [--cpus 2 | --cpuset 0-4] [--timeout 10800] [--keep-outputs] [--start exec|api]
 ```
 
 | Option | Meaning |
@@ -49,8 +60,9 @@ infrastructure/scripts/benchmark/run_bench.sh \
 | `--set node.path=value` | Override one default parameter (dotted path into the node's default yaml); `nwb.path=value` overrides the NWB defaults |
 | `--env KEY=VALUE` | Extra environment variable for the container |
 | `--cpus` / `--cpuset` | CPU limit (default `--cpus 2`). `--cpuset` changes what the process sees as available CPUs, which caiman's `n_processes` clamp reads |
-| `--timeout` | Per-run cap in seconds (default 3 h) |
+| `--timeout` | Per-run cap in seconds (default 3 h). In `api` mode the run is then cancelled through the API |
 | `--keep-outputs` | Keep the runs' output directories |
+| `--start exec\|api` | How runs start (above); default `exec` |
 
 | Environment | Meaning |
 |---|---|
@@ -84,6 +96,10 @@ ROI detection, not for registration memory.
 
 - **Demand is the container's peak `anon`** (process memory, API included), not `memory.peak`:
   the latter includes page cache, which the kernel reclaims under pressure.
+- **In `exec` rows, demand includes one driver process per run.** `summary.md` gives each
+  driver's memory under the runs. It is an upper bound on the excess, not the excess: in a
+  deployment the uvicorn worker that runs the workflow grows too. Use `--start api` for figures
+  read against a ceiling. Rows from before `--start` existed were `exec` rows.
 - **Per-rule RSS overstates caiman**: its memmapped file pages count as RSS but are reclaimable.
   Use the container's peak `anon` for caiman.
 - **If the container swapped, the figures are lower bounds.** Under variant U the only bound is
@@ -109,7 +125,8 @@ ROI detection, not for registration memory.
 - fetches the inputs from S3.
 
 `aws/run_cases.sh` then runs the case list at the tier's ceiling with its swap allowance
-(variant S) and copies each finished row to S3: one suite2p run as the reference, two
+(variant S), each run started through the API (`--start api`), and copies each finished row
+to S3: one suite2p run as the reference, two
 suite2p runs together, suite2p beside CaImAn, and one run at about twice the length.
 `BENCH_SHORT_FRAMES` adds the two concurrent rows on an input cut to that many frames.
 Set `BENCH_UVICORN_WORKERS` (and `BENCH_MEMORY_MIB` / `BENCH_SWAP_MIB` if they differ from the

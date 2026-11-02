@@ -26,6 +26,18 @@ def to_int(value):
         return None
 
 
+def bench_result(row, run):
+    """The run's BENCH_RESULT line from run-N.log, or {}."""
+    path = os.path.join(row, f"run-{run}.log")
+    if not os.path.exists(path):
+        return {}
+    with open(path, errors="replace") as f:
+        for line in f:
+            if line.startswith("BENCH_RESULT "):
+                return json.loads(line[len("BENCH_RESULT ") :])
+    return {}
+
+
 def fmt_s(seconds):
     if seconds is None:
         return "–"
@@ -162,13 +174,40 @@ def main():
         + ("" if comparable else " (emulated: not comparable with a deployment)")
     )
     print(f"- container after runs: {prov['container']['state_after_runs']}")
-    for rc_file in sorted(glob.glob(os.path.join(row, "run-*.rc"))):
-        print(
-            f"- {os.path.basename(rc_file)[:-3]}: exit {open(rc_file).read().strip()}"
+    start = prov["workflow"].get("start", "exec")
+    print(
+        "- start: "
+        + (
+            "api (POST /run; the snakemake parent is a uvicorn worker)"
+            if start == "api"
+            else "exec (a driver process per run; a deployed run has none)"
         )
+    )
+    harness_mb = 0.0
+    for rc_file in sorted(glob.glob(os.path.join(row, "run-*.rc"))):
+        run = os.path.basename(rc_file)[len("run-") : -len(".rc")]
+        harness = bench_result(row, run).get("harness_process") or {}
+        harness_mb += harness.get("rss_anon_mb", 0.0)
+        memory = (
+            f" · harness process RssAnon {harness['rss_anon_mb']:,.0f} MB"
+            f" (peak RSS {harness.get('hwm_mb', 0):,.0f} MB)"
+            if "rss_anon_mb" in harness
+            else ""
+        )
+        print(f"- run-{run}: exit {open(rc_file).read().strip()}{memory}")
 
     print("\n## Container (cgroup)\n")
     print(cgroup_summary(read_tsv(os.path.join(row, "cgroup.tsv")), t_start, t_end))
+    if harness_mb:
+        note = (
+            "; a deployed run's uvicorn worker would hold part of it"
+            if start == "exec"
+            else ""
+        )
+        print(
+            f"\nThe harness's own processes held {harness_mb:,.0f} MB RssAnon at the"
+            f" end of the runs; peak anon includes it{note}."
+        )
     print("\n## API probe\n")
     print(probe_summary(read_tsv(os.path.join(row, "probe.tsv")), t_start, t_end))
 

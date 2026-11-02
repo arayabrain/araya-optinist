@@ -111,6 +111,7 @@ def main():
         "input",
         "variant",
         "conc",
+        "start",
         "memory",
         "cpu",
         "image",
@@ -147,6 +148,8 @@ def main():
             "algo": a.algo,
             # Several fixtures: one per run, in run order
             "fixture": fixtures[0] if len(fixtures) == 1 else fixtures,
+            # exec: a driver process per run (adds its memory); api: POST /run
+            "start": a.start or "exec",
             "param_overrides": a.overrides,
             "benchmark_env": a.extra_env,
             "params": "shipped defaults unless overridden (see workflow-N.yaml)",

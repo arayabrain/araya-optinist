@@ -1,9 +1,11 @@
 """
-Run one benchmark workflow headlessly, through the same path as POST /run.
+Build one benchmark workflow's RunItem, and run it headlessly (start mode exec).
 
-Runs inside the benchmark container (see run_bench.sh), so the workflow shares
-the API's cgroup as it does in a deployed task. POST /run itself cannot be used
-in standalone mode, so this builds the RunItem and calls WorkflowRunner directly.
+Runs inside the benchmark container (see run_bench.sh). In start mode exec this
+process calls WorkflowRunner itself and waits for the run, so the snakemake
+parent is this process, an extra app-sized process in the container's memory
+that a deployed run does not have; BENCH_RESULT records its own memory.
+--print-run-item only prints the RunItem, for start_via_api.py (start mode api).
 
 Algorithm parameters are the shipped defaults, plus --set overrides
 (<node label>.<dotted path into its default yaml>=<value>, e.g.
@@ -13,7 +15,8 @@ NWB defaults (e.g. nwb.imaging_plane.imaging_rate=7).
 Usage (inside the container):
   python infrastructure/scripts/benchmark/run_workflow.py \
       --fixture infrastructure/scripts/benchmark/fixtures/suite2p.json \
-      --input neurofinder.00.10_stack.tif --workspace bench --unique-id r3 \
+      --input neurofinder.00.10_stack.tif --workspace bench \
+      (--unique-id r3 | --print-run-item) \
       [--set caiman_cnmf.advanced.patch_params.n_processes=4]
 """
 
@@ -24,6 +27,7 @@ import time
 
 import yaml
 from fastapi import BackgroundTasks
+from process_memory import own_memory_mb
 
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.workflow.workflow import RunItem
@@ -126,7 +130,9 @@ def main():
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--input", required=True, help="filename in input/<ws>/")
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--unique-id", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--unique-id")
+    mode.add_argument("--print-run-item", action="store_true")
     parser.add_argument("--set", action="append", dest="overrides")
     args = parser.parse_args()
 
@@ -134,6 +140,9 @@ def main():
         fixture = json.load(f)
     overrides = parse_overrides(args.overrides)
     run_item = build_run_item(fixture, args.input, overrides)
+    if args.print_run_item:
+        print(run_item.json(), flush=True)
+        return 0
 
     t_start = time.time()
     runner = WorkflowRunner(
@@ -158,6 +167,8 @@ def main():
         "t_start": round(t_start, 3),
         "t_end": round(t_end, 3),
         "elapsed_s": round(t_end - t_start, 1),
+        "start": "exec",
+        "harness_process": own_memory_mb(),
     }
     print("BENCH_RESULT " + json.dumps(result), flush=True)
     return 0 if expt.success == "success" else 1
