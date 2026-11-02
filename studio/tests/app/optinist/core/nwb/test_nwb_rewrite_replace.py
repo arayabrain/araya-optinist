@@ -1,4 +1,5 @@
 import os
+import stat
 import threading
 import time
 
@@ -68,6 +69,15 @@ def test_a_rewrite_renames_the_new_file_over_the_old_one(nwb_path, rewrite, meth
     assert os.stat(nwb_path).st_ino != old_inode
     assert os.listdir(nwb_path.parent) == [nwb_path.name]
     np.testing.assert_array_equal(node_image(nwb_path), np.full((4, 3), 2.0))
+
+
+@REWRITES
+def test_a_rewrite_keeps_the_file_mode(nwb_path, rewrite, method):
+    os.chmod(nwb_path, 0o640)
+
+    rewrite(nwb_path, config_with(2.0))
+
+    assert stat.S_IMODE(os.stat(nwb_path).st_mode) == 0o640
 
 
 @REWRITES

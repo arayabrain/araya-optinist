@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import shutil
 
 import numpy as np
 from filelock import FileLock
@@ -554,9 +555,10 @@ def _replacing(tmp_path, path):
     """Replace path with tmp_path, which the block writes, in one rename once it
     ends; delete tmp_path if anything fails. path is never written in place.
     tmp_path reaches the disk before the rename, so after a crash path holds
-    the old file or the new one."""
+    the old file or the new one. path keeps its permission bits."""
     try:
         yield
+        shutil.copymode(path, tmp_path)
         with open(tmp_path, "rb+") as f:
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
