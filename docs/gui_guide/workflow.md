@@ -441,8 +441,10 @@ For general information about NWB, refer to [NWB official page](https://www.nwb.
    - ``ophys.plane_segmentation.save_image_mask``
       If True, each ROI table also holds a dense image_mask (one full frame per ROI)
       beside its pixel_mask, for tools that read image masks only.
-      Off by default: with many ROIs it is large (ROIs x height x width x 4 bytes),
-      and a data filter adds the same size again for the filtered ROI table.
+      Off by default: with many ROIs it is large, ROIs x height x width x 4 bytes
+      in each NWB file that holds a ROI table (the node's own file and whole.nwb),
+      and each rewrite of whole.nwb briefly needs a second copy on disk.
+      A data filter adds the same size again for the filtered ROI table.
 ```
 
 ## Viewing Logs with Log Viewer

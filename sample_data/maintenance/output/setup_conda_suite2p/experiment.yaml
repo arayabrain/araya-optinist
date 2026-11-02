@@ -4,7 +4,7 @@ name: setup_conda_suite2p
 started_at: '2025-01-30 16:36:30'
 finished_at: '2025-01-30 16:36:40'
 success: success
-hasNWB: true
+hasNWB: false
 function:
   input_bmkjfbfk1d:
     unique_id: input_bmkjfbfk1d
@@ -21,11 +21,7 @@ function:
     success: success
     hasNWB: false
     message: setup_conda_suite2p success
-    outputPaths:
-      image:
-        path: /tmp/setup_conda_mouse2p_image.tiff
-        type: images
-        max_index: 200
+    outputPaths: null
     started_at: '2025-01-30 16:36:35'
     finished_at: '2025-01-30 16:36:40'
 nwb:
