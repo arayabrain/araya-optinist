@@ -1,6 +1,6 @@
 # Paths that should skip authentication-related middleware processing.
 # These endpoints are either public (login, refresh) or internal (health check).
-SKIP_AUTH_PATHS = ["/health", "/auth/login", "/auth/refresh"]
+SKIP_AUTH_PATHS = ["/health", "/auth/login", "/auth/refresh", "/auth/logout"]
 
 # Placeholder routing HMAC key for local development. Cloud deployments set
 # ROUTING_SECRET_KEY; startup refuses to run there on this value

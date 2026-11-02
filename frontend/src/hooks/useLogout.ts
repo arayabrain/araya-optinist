@@ -2,6 +2,7 @@ import { useCallback } from "react"
 import { useDispatch } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
+import { logoutApi } from "api/auth/Auth"
 import { logoutFreeUserApi } from "api/users/UsersMe"
 import { usePremiumAssignment } from "contexts/PremiumAssignmentContext"
 import { logout } from "store/slice/User/UserSlice"
@@ -35,6 +36,11 @@ export const useLogout = () => {
       }
 
       if (broadcast) {
+        try {
+          await logoutApi()
+        } catch {
+          // The refresh cookie expires on its own
+        }
         tabSync.broadcastLogout()
       }
 

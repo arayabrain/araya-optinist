@@ -1,0 +1,21 @@
+{
+  "default": {
+    "title": "Araya OptiNiSt - No-Code Scientific Data Analysis Platform",
+    "description": "Araya OptiNiSt (Optical Neuroimage Studio) is a no-code cloud platform for scientific data analysis. Build visual pipelines, analyze calcium imaging data, and collaborate with NWB-compatible workflows.",
+    "socialDescription": "Build analysis pipelines visually, ensure reproducibility, and collaborate seamlessly. The no-code platform for calcium imaging and neuroscience data analysis."
+  },
+  "routes": {
+    "/login": {
+      "title": "Log In - Araya OptiNiSt",
+      "description": "Log in to Araya OptiNiSt to build and run no-code analysis pipelines for calcium imaging and neuroscience data."
+    },
+    "/register": {
+      "title": "Create an Account - Araya OptiNiSt",
+      "description": "Create a free Araya OptiNiSt account to analyze calcium imaging data with no-code visual pipelines and NWB-compatible workflows."
+    },
+    "/public": {
+      "title": "Public Datasets - Araya OptiNiSt",
+      "description": "Browse publicly shared analyses and datasets on Araya OptiNiSt, the no-code platform for neuroscience data analysis."
+    }
+  }
+}

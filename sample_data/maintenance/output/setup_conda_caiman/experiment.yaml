@@ -4,7 +4,7 @@ name: setup_conda_caiman
 started_at: '2025-01-31 16:34:12'
 finished_at: '2025-01-31 16:34:17'
 success: success
-hasNWB: true
+hasNWB: false
 function:
   input_bmkjfbfk1d:
     unique_id: input_bmkjfbfk1d
@@ -21,11 +21,7 @@ function:
     success: success
     hasNWB: false
     message: setup_conda_caiman success
-    outputPaths:
-      image:
-        path: /tmp/setup_conda_mouse2p_image.tiff
-        type: images
-        max_index: 200
+    outputPaths: null
     started_at: '2025-01-31 16:34:16'
     finished_at: '2025-01-31 16:34:17'
 nwb:

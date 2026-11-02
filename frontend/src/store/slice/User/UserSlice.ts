@@ -20,7 +20,6 @@ import {
   removeRefreshToken,
   removeToken,
   saveExToken,
-  saveRefreshToken,
   saveToken,
 } from "utils/auth/AuthUtils"
 import { setLoggingOut } from "utils/axios"
@@ -94,7 +93,8 @@ export const userSlice = createSlice({
           localStorage.removeItem("announcementDismissed")
 
           saveToken(action.payload.access_token)
-          saveRefreshToken(action.payload.refresh_token)
+          // The backend now holds the refresh token in a cookie
+          removeRefreshToken()
           if (action.payload.ex_token) {
             saveExToken(action.payload.ex_token)
           } else {
