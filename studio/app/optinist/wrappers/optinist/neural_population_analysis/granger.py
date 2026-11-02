@@ -110,7 +110,7 @@ def Granger(
     # -> check this if ADF pval is large
     cit = {
         "cit_count_t": np.zeros([num_comb], dtype="float64"),
-        "cit_pvalue": np.zeros([num_comb], dtype="int"),
+        "cit_pvalue": np.zeros([num_comb], dtype="float64"),
         "cit_crit_value": np.zeros([num_comb, 3], dtype="float64"),
     }
 

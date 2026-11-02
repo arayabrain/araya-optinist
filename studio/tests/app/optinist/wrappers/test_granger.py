@@ -96,3 +96,12 @@ def test_granger_keeps_no_fitted_model_per_pair(output_dir, stattools):
     np.testing.assert_array_equal(
         info["Granger_fval_mat_heatmap"].data, post["Granger_fval_mat"]
     )
+
+
+def test_granger_keeps_cointegration_pvalues(output_dir, stattools):
+    X = np.random.default_rng(0).standard_normal((N_TIME, N_CELL))
+
+    info = granger.Granger(FluoData(X), output_dir, params=PARAMS)
+
+    (post,) = info["nwbfile"][NWBDATASET.POSTPROCESS].values()
+    np.testing.assert_array_equal(post["cit_pvalue"], [0.04] * len(PAIRS))
