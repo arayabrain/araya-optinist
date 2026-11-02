@@ -187,16 +187,27 @@ fi
 # Install the trap BEFORE launching any child so a stop signal arriving
 # during startup (between process launch and trap installation) is still
 # forwarded. CLEANUP_PID / APP_PID are empty until their process starts;
-# the guards below skip any child that hasn't launched yet.
+# _term_once skips any child that hasn't launched yet.
+#
+# The trap and the end of the script both forward, but each child gets
+# SIGTERM once: a second one can deadlock uvicorn's multi-worker parent in its
+# signal handler. SIGNALLED_PIDS lists the PIDs already sent it; a PID is
+# recorded before its kill, so a trap that runs in between skips it.
+SIGNALLED_PIDS=""
+_term_once() {
+    [ -n "$1" ] || return 0
+    case " $SIGNALLED_PIDS " in *" $1 "*) return 0 ;; esac
+    SIGNALLED_PIDS="$SIGNALLED_PIDS $1"
+    # `|| true` is required, not tidiness: `set -e` applies to a trap-invoked
+    # body, and a kill against an exited child fails, aborting the handler
+    # mid-way.
+    kill -TERM "$1" 2>/dev/null || true
+}
 _forward_shutdown() {
     echo "Received shutdown signal, forwarding to child processes..."
-    # `|| true` is required, not tidiness: `set -e` applies to a trap-invoked
-    # body, and a kill against an exited child ends the `&&` list non-zero,
-    # aborting the handler mid-way. The call site at the end of the script is
-    # exempt -- it sits in a `|| true` list.
-    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null || true
-    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null || true
-    [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null || true
+    _term_once "$CLEANUP_PID"
+    _term_once "$APP_PID"
+    _term_once "$LB_CHECK_PID"
 }
 trap _forward_shutdown TERM INT
 
@@ -271,9 +282,12 @@ elif [ -n "$CLEANUP_PID" ] && ! kill -0 "$CLEANUP_PID" 2>/dev/null; then
     echo "Cleanup worker exited unexpectedly (status: $EXIT_STATUS), stopping the task"
 fi
 
-# _forward_shutdown only sends SIGTERM; wait for the children to drain rather
-# than cutting in-flight requests. `|| true` throughout: a kill or wait against
-# an already-dead process fails, which `set -e` would take as our exit status.
+# _forward_shutdown only sends SIGTERM, and only to children the trap has not:
+# the rest when one exits on its own, or the load balancer check when it
+# started after a trap deferred by the startup sleep. Then wait for the
+# children to drain rather than cutting in-flight requests. `|| true`
+# throughout: a kill or wait against an already-dead process fails, which
+# `set -e` would take as our exit status.
 _forward_shutdown || true
 wait "$APP_PID" 2>/dev/null || true
 [ -n "$CLEANUP_PID" ] && { wait "$CLEANUP_PID" 2>/dev/null || true; }
