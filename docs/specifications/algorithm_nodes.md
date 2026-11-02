@@ -124,7 +124,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
 ###### suite2p_registration
 
-- **Description:** Motion correction. suite2p computes its own reference image from `nimg_init` frames and registers the frames of the binary written by suite2p_file_convert into `mc_images`, the one copy of the registered movie, which suite2p_roi and ROI editing read. The binary keeps the unregistered frames, so re-running only this node registers the original movie again. The 1P pre-filtering of suite2p 0.10.3 (`1Preg`, `spatial_hp_reg`, `pre_smooth`) was removed upstream; raise `smooth_sigma` and `spatial_taper` for 1P data instead.
+- **Description:** Motion correction. suite2p computes its own reference image from `nimg_init` frames and registers the frames of the binary written by suite2p_file_convert (below another registration node, that node's `mc_images`) into `mc_images`, the one copy of the registered movie, which suite2p_roi and ROI editing read. The binary keeps the unregistered frames, so re-running only this node registers the original movie again. The 1P pre-filtering of suite2p 0.10.3 (`1Preg`, `spatial_hp_reg`, `pre_smooth`) was removed upstream; raise `smooth_sigma` and `spatial_taper` for 1P data instead.
 - **Input:** Suite2pData
 - **Output:** ops (Suite2pData), mc_images (ImageData), meanImg (ImageData: mean of the registered movie; suite2p_file_convert's meanImg is the unregistered one), refImg (ImageData: the reference frames were aligned to)
 - **Parameters:**
