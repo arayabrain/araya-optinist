@@ -430,7 +430,7 @@ Covers secrets retrieval, infrastructure discovery, config file creation, databa
 
 Logs to stdout (captured by ECS awslogs driver). Covers:
 
-- DB connectivity wait loop (30 attempts, 2s intervals)
+- DB connectivity wait (`infrastructure/scripts/wait_for_database.sh`: up to 10 minutes, each attempt bounded to 10 s, 10 s apart)
 - Alembic migration execution
 - EC2 instance ID retrieval from ECS metadata
 - Uvicorn startup with worker count
