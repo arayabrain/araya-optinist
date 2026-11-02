@@ -6,14 +6,17 @@ lane (``make expiration_it``), where alembic has migrated a throwaway MySQL and
 The per-PR lane collects this module and skips it. Every import that needs the
 database is inside a test or helper body for the same reason.
 
-``ExpirationLifecycleJob.run()`` runs unpatched; only the SES send is recorded
-instead of delivered. The mocked tests in ``test_expiration_lifecycle_job.py``
-stubbed the bucket lookup and the S3 objects, which is how the job shipped
-without ever finding a bucket and with ``ObjectSummary.size`` read unawaited.
+``ExpirationLifecycleJob.run()`` runs unpatched, and its SES sends go to the same
+moto server (``AWS_ENDPOINT_URL_SES``). The mocked tests in
+``test_expiration_lifecycle_job.py`` stubbed the bucket lookup and the S3
+objects, which is how the job shipped without ever finding a bucket and with
+``ObjectSummary.size`` read unawaited.
 """
 
 import asyncio
+import json
 import os
+import urllib.request
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
@@ -29,6 +32,7 @@ pytestmark = pytest.mark.skipif(
 
 EXCESS = 3_000
 UNIT = 2_000
+SENDER = "noreply@example.invalid"
 
 
 @pytest.fixture(autouse=True)
@@ -231,24 +235,27 @@ def _set_usage_over_quota(seeded, over):
 
 
 @contextmanager
-def _emails_on():
-    """Notifications enabled; yields the (to, subject) pairs instead of SES sends."""
-    from studio.app.common.core.subscription.email_service import EmailService
+def _emails_on(sender=SENDER):
+    """Notifications enabled; moto's SES accepts only the verified example.invalid."""
+    import boto3
 
-    sent = []
-
-    def record(to_email, subject, body):
-        sent.append((to_email, subject))
-        return True
-
-    with patch.dict(
-        os.environ, {"NOTIFICATION_FROM_EMAIL": "noreply@example.invalid"}
-    ), patch.object(EmailService, "_send", side_effect=record):
-        yield sent
+    boto3.client("ses").verify_domain_identity(Domain="example.invalid")
+    with patch.dict(os.environ, {"NOTIFICATION_FROM_EMAIL": sender}):
+        yield
 
 
-def _subjects_to(sent, seeded):
-    return [subject for to, subject in sent if to == seeded["email"]]
+def _sent_to(seeded):
+    """Messages moto's SES accepted for this user, oldest first."""
+    url = f"{os.environ['AWS_ENDPOINT_URL_SES']}/moto-api/data.json"
+    with urllib.request.urlopen(url) as response:
+        messages = json.load(response)["ses"]["Message"]
+    return [
+        m for m in messages if m["destinations"]["ToAddresses"] == [seeded["email"]]
+    ]
+
+
+def _subjects_to(seeded):
+    return [m["subject"] for m in _sent_to(seeded)]
 
 
 def _run_job():
@@ -326,11 +333,13 @@ class TestExpirationDeletionOverRealStorage:
         seeded = _seed_user(days_expired=31, usage_over_quota=EXCESS, bucket=bucket)
         keys = _put_experiment_data(bucket, seeded)
 
-        with _emails_on() as sent:
+        with _emails_on():
             _run_job()
 
-            mine = _subjects_to(sent, seeded)
-            assert len(mine) == 1 and "deletion notice" in mine[0]
+            mine = _sent_to(seeded)
+            assert len(mine) == 1 and "deletion notice" in mine[0]["subject"]
+            assert mine[0]["source"] == SENDER
+            assert mine[0]["body"].endswith("Questions: optinist-support@araya.org\n")
             assert _keys(bucket) == set(keys.values())
             state = _db_state(seeded)
             assert state["start_notified_at"] is not None
@@ -345,8 +354,23 @@ class TestExpirationDeletionOverRealStorage:
 
         assert _keys(bucket) == {keys["config"], keys["output"]}
         assert _db_state(seeded)["processed_at"] is not None
-        mine = _subjects_to(sent, seeded)
+        mine = _subjects_to(seeded)
         assert len(mine) == 2 and "deletion completed" in mine[1]
+
+    def test_a_rejected_send_records_no_notice_and_deletes_nothing(self):
+        bucket = f"expiration-it-rejected-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=31, usage_over_quota=EXCESS, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+
+        with _emails_on(sender="noreply@unverified.invalid"):
+            _run_job()
+
+        assert _sent_to(seeded) == []
+        assert _keys(bucket) == set(keys.values())
+        state = _db_state(seeded)
+        assert state["start_notified_at"] is None
+        assert state["processed_at"] is None
 
     def test_repeat_pass_waits_for_the_cooldown_and_restarts_it(self):
         bucket = f"expiration-it-repeat-{uuid.uuid4().hex[:8]}"
@@ -382,10 +406,10 @@ class TestExpirationDeletionOverRealStorage:
             deletion_processed_at=_now() - timedelta(days=9),
         )
 
-        with _emails_on() as sent:
+        with _emails_on():
             _run_job()
 
-            mine = _subjects_to(sent, seeded)
+            mine = _subjects_to(seeded)
             assert len(mine) == 1 and "over the free plan quota again" in mine[0]
             assert _keys(bucket) == set(keys.values())
 
@@ -397,7 +421,7 @@ class TestExpirationDeletionOverRealStorage:
             _run_job()
 
         assert _keys(bucket) == {keys["config"], keys["output"]}
-        mine = _subjects_to(sent, seeded)
+        mine = _subjects_to(seeded)
         assert len(mine) == 2 and "deletion completed" in mine[1]
 
     def test_with_emails_on_a_pass_that_leaves_the_user_over_sends_no_again_email(
@@ -414,7 +438,7 @@ class TestExpirationDeletionOverRealStorage:
             grace_reminder_notified_at=_now() - timedelta(days=40),
         )
 
-        with _emails_on() as sent:
+        with _emails_on():
             _run_job()
             assert _keys(bucket) == {keys["config"]}
             state = _db_state(seeded)
@@ -429,7 +453,7 @@ class TestExpirationDeletionOverRealStorage:
             )
             _run_job()
 
-        mine = _subjects_to(sent, seeded)
+        mine = _subjects_to(seeded)
         assert len(mine) == 1 and "deletion completed" in mine[0]
         assert _db_state(seeded)["processed_at"] > _now() - timedelta(minutes=5)
 
@@ -450,11 +474,11 @@ class TestExpirationDeletionOverRealStorage:
             reprocess_notified_at=_now() - timedelta(days=valid_days + 1),
         )
 
-        with _emails_on() as sent:
+        with _emails_on():
             _run_job()
 
         assert _keys(bucket) == set(keys.values())
-        mine = _subjects_to(sent, seeded)
+        mine = _subjects_to(seeded)
         assert len(mine) == 1 and "over the free plan quota again" in mine[0]
 
     def test_emails_turned_on_after_an_email_off_pass_warn_then_delete(self):
@@ -467,10 +491,10 @@ class TestExpirationDeletionOverRealStorage:
         # Processed earlier with emails off: no warning stamp of any kind
         _set_subscription(seeded, deletion_processed_at=_now() - timedelta(days=9))
 
-        with _emails_on() as sent:
+        with _emails_on():
             _run_job()
 
-            mine = _subjects_to(sent, seeded)
+            mine = _subjects_to(seeded)
             assert len(mine) == 1 and "over the free plan quota again" in mine[0]
             assert _keys(bucket) == set(keys.values())
 
@@ -482,7 +506,7 @@ class TestExpirationDeletionOverRealStorage:
             _run_job()
 
         assert _keys(bucket) == {keys["config"], keys["output"]}
-        mine = _subjects_to(sent, seeded)
+        mine = _subjects_to(seeded)
         assert len(mine) == 2 and "deletion completed" in mine[1]
 
     def test_with_emails_off_a_pass_that_leaves_the_user_over_records_no_notice(

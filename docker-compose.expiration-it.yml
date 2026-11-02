@@ -1,4 +1,4 @@
-# Brings up a throwaway MySQL and an S3 API (moto server), migrates the
+# Brings up a throwaway MySQL and an S3 and SES API (moto server), migrates the
 # database to head, then runs the expiration deletion integration test:
 # ExpirationLifecycleJob.run() against real rows and real buckets.
 # Opt-in: needs a real database and S3 endpoint, so it is not part of the
@@ -66,6 +66,7 @@ services:
       S3_USER_BUCKET_SECRET: expiration-it-secret
       AWS_ENDPOINT_URL_S3: http://s3:5000
       AWS_ENDPOINT_URL_CLOUDWATCH: http://s3:5000
+      AWS_ENDPOINT_URL_SES: http://s3:5000
       AWS_ACCESS_KEY_ID: testing
       AWS_SECRET_ACCESS_KEY: testing
       AWS_DEFAULT_REGION: ap-northeast-1

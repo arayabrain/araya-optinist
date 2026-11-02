@@ -30,11 +30,13 @@
 | manual                       | no automated counterpart; follow the sheet's own Action / Expected columns                                                                                       |
 
 Everything except the Playwright IDs and the opt-in lanes runs on every non-docs
-PR. Two backend lanes are also opt-in: `test_premium_lock_integration.py`
-(`RUN_PREMIUM_LOCK_IT=1`, real `GET_LOCK`, `make premium_lock_it`) and
+PR. Three backend lanes are also opt-in: `test_premium_lock_integration.py`
+(`RUN_PREMIUM_LOCK_IT=1`, real `GET_LOCK`, `make premium_lock_it`),
 `test_workflow_count_integration.py` (`RUN_WORKFLOW_COUNT_IT=1`, real
-connections, `make workflow_count_it`). Both collect and skip otherwise, and
-both run in the Monday `Weekly Regression`.
+connections, `make workflow_count_it`) and
+`test_expiration_lifecycle_integration.py` (`RUN_EXPIRATION_IT=1`, real MySQL
+with moto S3 and SES, `make expiration_it`). All collect and skip otherwise, and
+all run in the Monday `Weekly Regression`.
 
 The opt-in lanes never run per PR. `@slow` runs in the Monday `Weekly
 Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`,
