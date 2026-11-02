@@ -7,7 +7,12 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
-from studio.app.optinist.dataclass.roi import RoiMasks, edit_images
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    edit_images,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -194,27 +199,19 @@ def lccd_detect(
 
     num_frames = D.shape[2]
 
+    # each ROI's pixels, flat in the (X, Y) order roi's rows reshape to
+    roi_masks = RoiMasks.from_pixels(
+        D.shape[:2], (np.flatnonzero(roi[:, i]) for i in range(num_cell))
+    )
+
     # Handle zero ROIs case
     if num_cell == 0:
-        empty_roi = np.full(D.shape[:2], np.nan)
-        im = np.zeros((0, *D.shape[:2]))  # Empty stack of ROIs
         iscell = np.array([], dtype=int)
         timeseries_dff = np.zeros((0, num_frames))
     else:
         dff_f0_frames = params["f0_frames"]
         dff_f0_percentile = params["f0_percentile"]
         iscell = np.ones(num_cell, dtype=int)
-
-        roi_list = []
-        for i in range(num_cell):
-            roi_list.append((roi[:, i].reshape([D.shape[0], D.shape[1]])) * (i + 1))
-
-        im = np.stack(roi_list)
-        im = im.astype(np.float64)
-        im[im == 0] = np.nan
-        im -= 1
-
-        empty_roi = np.full_like(im[0], np.nan)
 
         timeseries_dff = np.ones([num_cell, num_frames]) * np.nan
         for i in range(num_cell):
@@ -226,12 +223,19 @@ def lccd_detect(
                     )
                     timeseries_dff[i, k] = (timeseries[i, k] - f0) / f0
 
-    # Create ROI list for NWB
-    roi_list = [{"image_mask": roi[:, i].reshape(D.shape[:2])} for i in range(num_cell)]
+    # Create ROI list for NWB: (row, column, weight) of each ROI's pixels
+    roi_list = []
+    for i in range(num_cell):
+        rows, cols = roi_masks.coords(i)
+        weights = roi[roi_masks.pixels(i), i]
+        roi_list.append({"pixel_mask": np.array([rows, cols, weights]).T})
+    all_roi = roi_masks.label_image()
 
     nwbfile = {}
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+    }
+    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 
     nwbfile[NWBDATASET.COLUMN] = {
         function_id: {
@@ -259,25 +263,25 @@ def lccd_detect(
         "fluorescence": FluoData(timeseries, file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "all_roi": RoiData(
-            np.nanmax(im, axis=0) if len(im) > 0 else empty_roi,
+            all_roi,
             output_dir=output_dir,
             file_name="all_roi",
         ),
         "cell_roi": RoiData(
-            np.nanmax(im[iscell != 0], axis=0) if len(im) > 0 else empty_roi,
+            roi_masks.label_image(iscell != 0),
             output_dir=output_dir,
             file_name="cell_roi",
         ),
         "non_cell_roi": RoiData(
-            empty_roi, output_dir=output_dir, file_name="non_cell_roi"
+            np.full(D.shape[:2], np.nan),
+            output_dir=output_dir,
+            file_name="non_cell_roi",
         ),
         # A reference to the movie when it lives in this experiment; ROI
         # editing opens it lazily
         "edit_roi_data": EditRoiData(
             images=edit_images(mc_images, output_dir),
-            roi_masks=RoiMasks.from_pixels(
-                D.shape[:2], (np.flatnonzero(roi[:, i]) for i in range(num_cell))
-            ),
+            roi_masks=roi_masks,
         ),
         "nwbfile": nwbfile,
     }

@@ -238,7 +238,7 @@ class AppLogger:
             so no explicit initialization process is required.
 
             - logger initialization location
-              - Web App ... studio.__main_unit__
+              - Web App ... studio.server
               - Batch App ... studio.app.optinist.core.expdb.batch_runner
                 (optinist-for-server)
 

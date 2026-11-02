@@ -409,20 +409,14 @@ class ExptDataWriter:
                 [DIRPATH.OUTPUT_DIR, self.workspace_id, new_unique_id]
             )
 
-            # Copy directory
-            shutil.copytree(output_dir, new_output_dir)
-
-            # Update experiment configuration and unique IDs
-            if not self.__copy_data_update_experiment_config_name(
-                self.workspace_id, new_unique_id, new_name
+            # Blocking file work: run it off the event loop
+            if not await asyncio.to_thread(
+                self.__copy_data_local,
+                output_dir,
+                new_output_dir,
+                new_unique_id,
+                new_name,
             ):
-                logger.error("Failed to update experiment.yml after copying.")
-                return False
-
-            if not self.__copy_data_replace_unique_id(
-                new_output_dir, self.unique_id, new_unique_id
-            ):
-                logger.error("Failed to update unique_id in files.")
                 return False
 
             # Operate remote storage data.
@@ -441,6 +435,50 @@ class ExptDataWriter:
         except Exception as e:
             logger.error(f"Error copying data: {e}")
             return False
+
+    def __copy_data_local(
+        self, output_dir: str, new_output_dir: str, new_unique_id: str, new_name: str
+    ) -> bool:
+        logger = AppLogger.get_logger()
+
+        # Built under a dot name, which the record list's glob skips, and renamed
+        # into place once rewritten: until then its yaml holds the source's id
+        staging_name = f".{new_unique_id}.copying"
+        staging_dir = join_filepath(
+            [DIRPATH.OUTPUT_DIR, self.workspace_id, staging_name]
+        )
+
+        # The cleanup below removes staging_dir, so it must be this copy's own
+        for path in (new_output_dir, staging_dir):
+            if os.path.exists(path):
+                logger.error(f"Copy destination already exists: {path}")
+                return False
+
+        succeeded = False
+        try:
+            # Copy directory
+            shutil.copytree(output_dir, staging_dir)
+
+            # Update experiment configuration and unique IDs
+            if not self.__copy_data_update_experiment_config_name(
+                self.workspace_id, staging_name, new_name
+            ):
+                logger.error("Failed to update experiment.yml after copying.")
+                return False
+
+            if not self.__copy_data_replace_unique_id(
+                staging_dir, self.unique_id, new_unique_id
+            ):
+                logger.error("Failed to update unique_id in files.")
+                return False
+
+            os.rename(staging_dir, new_output_dir)
+            succeeded = True
+            return True
+        finally:
+            # A file left with the source's paths breaks once the source is deleted
+            if not succeeded:
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
     def __copy_data_replace_unique_id(
         self, directory: str, old_id: str, new_id: str
@@ -495,7 +533,8 @@ class ExptDataWriter:
 
             logger.debug(f"Updated YAML: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to update YAML {file_path}: {e}")
+            logger.error(f"Failed to update YAML {file_path}: {e}")
+            raise
 
     def __copy_data_update_pickle(
         self, file_path: str, old_id: str, new_id: str
@@ -511,7 +550,8 @@ class ExptDataWriter:
 
             logger.debug(f"Updated Pickle: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to update Pickle {file_path}: {e}")
+            logger.error(f"Failed to update Pickle {file_path}: {e}")
+            raise
 
     def __copy_data_update_npy(self, file_path: str, old_id: str, new_id: str) -> None:
         logger = AppLogger.get_logger()
@@ -535,7 +575,8 @@ class ExptDataWriter:
 
             logger.debug(f"Updated NPY: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to update NPY {file_path}: {e}")
+            logger.error(f"Failed to update NPY {file_path}: {e}")
+            raise
 
     def __replace_ids_recursive(
         self, obj: object, old_id: str, new_id: str, memo: dict = None
@@ -580,15 +621,19 @@ class ExptDataWriter:
             memo[obj_id] = (obj, result)
             return result
         elif isinstance(obj, np.ndarray):
-            if obj.dtype.kind not in "OU":  # only object and str arrays can hold an id
-                # but subclass attributes can, such as a pickled backing-file path
-                memo[obj_id] = (obj, obj)
-                for attr, value in getattr(obj, "__dict__", {}).items():
-                    setattr(
-                        obj,
-                        attr,
-                        self.__replace_ids_recursive(value, old_id, new_id, memo),
+            if obj.dtype.kind == "O":
+                # Element by element: np.array() would merge equal-length elements
+                # into one numeric array and reject ragged ones
+                result = obj.copy()  # keeps the subclass and a masked array's mask
+                memo[obj_id] = (obj, result)
+                # plain views index the raw elements, masked or not
+                source, target = obj.view(np.ndarray), result.view(np.ndarray)
+                for index in np.ndindex(obj.shape):
+                    target[index] = self.__replace_ids_recursive(
+                        source[index], old_id, new_id, memo
                     )
+                return result
+            if obj.dtype.kind != "U":  # only object and str arrays can hold an id
                 return obj
             memo[obj_id] = (obj, obj)
             if obj.ndim == 0:  # Handle 0D (scalar-like) arrays

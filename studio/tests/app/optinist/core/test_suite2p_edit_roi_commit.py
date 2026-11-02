@@ -1,6 +1,19 @@
+import asyncio
+import shutil
+from dataclasses import asdict
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_writer import (
+    ExptConfigWriter,
+    ExptDataWriter,
+)
+from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
+from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
+from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 from studio.app.optinist.core.edit_ROI.utils import ellipse_pixels
 from studio.app.optinist.core.edit_ROI.wrappers.suite2p_edit_roi import commit_edit
@@ -185,11 +198,97 @@ def test_a_frame_count_disagreeing_with_the_stored_traces_is_named(tmp_path):
         commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
 
 
-def test_an_ellipse_with_no_interior_is_refused_by_name(tmp_path):
+@pytest.mark.parametrize(
+    "roi_pos",
+    [
+        RoiPos(posx=10, posy=20, sizex=3, sizey=3),
+        RoiPos(posx=30, posy=31, sizex=7, sizey=5),
+        RoiPos(posx=20, posy=30, sizex=5, sizey=9),
+    ],
+)
+def test_an_added_roi_keeps_the_pixels_the_editor_drew(tmp_path, roi_pos):
+    # odd sizes: suite2p's own ellipse for an added cell differs from the
+    # editor's; the trace, the ROI table and the label image follow the editor
+    drawn = ellipse_pixels((LY, LX), roi_pos)
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    movie.reshape(FRAMES, -1)[:, drawn] += 500
+    ops, im = build(tmp_path, movie)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, roi_pos))
+    data.temp_add_roi[2] = roi_pos
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    pixels = np.ravel_multi_index((new["ypix"], new["xpix"]), (LY, LX))
+    np.testing.assert_array_equal(np.sort(pixels), np.sort(drawn))
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+    (entry,) = info["nwbfile"]["ROI"].values()
+    rows, cols, _ = entry["roi_list"][2]["pixel_mask"].T
+    table = np.ravel_multi_index((rows.astype(int), cols.astype(int)), (LY, LX))
+    np.testing.assert_array_equal(np.sort(table), np.sort(drawn))
+
+
+def test_a_one_pixel_roi_commits_its_pixel(tmp_path):
     ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
     tiny = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
     data = EditRoiData(images=None, roi_masks=with_ellipse(im, tiny))
     data.temp_add_roi[2] = tiny
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert (list(new["ypix"]), list(new["xpix"])) == ([30], [30])
+    assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
+
+
+@pytest.mark.parametrize("size", [1, 3])
+def test_an_roi_drawn_entirely_on_a_cell_takes_its_trace_from_all_its_pixels(
+    tmp_path, size
+):
+    # without allow_overlap, overlapping pixels leave the trace; with none of
+    # its own left, an added ROI would commit as a cell with an all-zero trace
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    cell_y, cell_x = disk(*CELLS[0], 3)
+    movie[:, cell_y, cell_x] += 500
+    ops, im = build(tmp_path, movie)
+    on_cell = RoiPos(posx=CELLS[0][1], posy=CELLS[0][0], sizex=size, sizey=size)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, on_cell))
+    data.temp_add_roi[2] = on_cell
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert new["overlap"].all()
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+
+
+def test_a_partly_overlapping_roi_still_leaves_out_the_shared_pixels(tmp_path):
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    cell_y, cell_x = disk(*CELLS[0], 3)
+    movie[:, cell_y, cell_x] += 500
+    ops, im = build(tmp_path, movie)
+    around = RoiPos(posx=CELLS[0][1], posy=CELLS[0][0], sizex=9, sizey=9)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, around))
+    data.temp_add_roi[2] = around
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    new = info["ops"].data["stat"][2]
+    assert new["overlap"].any() and not new["overlap"].all()
+    assert np.allclose(info["ops"].data["F"][2], FLAT, atol=1e-2)
+
+
+def test_an_roi_with_no_pixel_is_refused_by_name(tmp_path):
+    ops, im = build(tmp_path, np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)))
+    # the stored pixels decide, whatever the RoiPos says
+    roi_masks = RoiMasks.from_stack(im)
+    roi_masks.append(np.zeros(0, np.int64))
+    data = EditRoiData(images=None, roi_masks=roi_masks)
+    data.temp_add_roi[2] = RoiPos(posx=30, posy=30, sizex=1, sizey=1)
     iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
 
     with pytest.raises(ValueError, match="covers no pixel"):
@@ -254,6 +353,61 @@ def test_commit_never_reads_the_movie_edit_roi_data_carries(tmp_path):
 
     assert len(info["fluorescence"].data) == 3
     assert info["edit_roi_data"].images is unread
+
+
+SOURCE_ID, COPY_ID = "cccc3333", "dddd4444"
+
+
+@pytest.fixture
+def experiments(monkeypatch):
+    """A source experiment's directory and its copy's, removed afterwards."""
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", RemoteStorageType.NO_USE.value)
+    dirs = [Path(DIRPATH.OUTPUT_DIR, "default", uid) for uid in (SOURCE_ID, COPY_ID)]
+    for path in dirs:
+        shutil.rmtree(path, ignore_errors=True)
+    yield dirs
+    for path in dirs:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def test_a_commit_in_a_copied_experiment_reads_only_the_copy(experiments):
+    """Experiment copy must rewrite reg_file through suite2p 1.1.0's ops, whose
+    Vmap is an object array of maps of different sizes."""
+    source, copied = experiments
+    movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
+    roi_y, roi_x = disk(NEW_ROI.posy, NEW_ROI.posx, 3)
+    movie[:, roi_y, roi_x] += 500
+    (source / "suite2p_roi_x").mkdir(parents=True)
+    ops, im = build(source / "suite2p_roi_x", movie)
+    ops["Vmap"] = np.empty(2, dtype=object)
+    ops["Vmap"][0], ops["Vmap"][1] = np.zeros((4, 4)), np.zeros((2, 2))
+    PickleWriter.write(
+        str(source / "suite2p_roi_x" / "suite2p_roi.pkl"),
+        {
+            "ops": Suite2pData(ops),
+            "edit_roi_data": EditRoiData(
+                images=None, roi_masks=RoiMasks.from_stack(im)
+            ),
+        },
+    )
+    config = asdict(ExptConfigReader.create_empty_experiment_config())
+    ExptConfigWriter._write_raw("default", SOURCE_ID, config)
+
+    writer = ExptDataWriter("bucket", "default", SOURCE_ID)
+    assert asyncio.run(writer.copy_data(COPY_ID, "copy"))
+    shutil.rmtree(source)  # the copy must not depend on the source
+
+    output = PickleReader.read(str(copied / "suite2p_roi_x" / "suite2p_roi.pkl"))
+    data = output["edit_roi_data"]
+    data.roi_masks.append(ellipse_pixels((LY, LX), NEW_ROI))
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(
+        data, output["ops"], iscell, str(copied / "suite2p_roi_x"), "suite2p_roi_x"
+    )
+
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
 
 
 def test_suite2p_roi_stores_a_reference_to_the_movie(tmp_path, monkeypatch):

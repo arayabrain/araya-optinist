@@ -17,6 +17,7 @@ import {
   gotoDashboard,
   setPublished,
   skipWithoutCreds,
+  hasRefreshCookie,
 } from "./helpers"
 
 // Public-instance behaviour a browser can observe on any tier: the SPA shell
@@ -193,9 +194,7 @@ async function anonymousPage(browser: Browser): Promise<Page> {
 async function openPublicInputs(page: Page, record: PublicRecordRef) {
   await page.goto("/public")
   // Really anonymous: rows 815-818 are about a visitor with no session
-  expect(
-    await page.evaluate(() => localStorage.getItem("access_token")),
-  ).toBeNull()
+  expect(await hasRefreshCookie(page)).toBe(false)
   // Server-side filter first: the grid is virtualized, so an unfiltered
   // listing can hold the target row outside the DOM
   expect(await filterPublicToRecord(page, record)).toHaveLength(1)

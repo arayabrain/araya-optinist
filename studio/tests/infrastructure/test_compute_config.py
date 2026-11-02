@@ -9,19 +9,25 @@
   instance has booted.
 - Base premium instance: termination protection, with Terraform still able
   to replace it.
+- Workflow services: the free and premium services leave desired_count to
+  their manager Lambdas.
 - Workflow tier sizing: each tier's task definition and launch template take
   their sizes from that tier's sizing in main.tf; its defaults, partial
   overrides and validation rules, unknown fields included.
 - Uvicorn workers: every task definition that starts cloud-startup.sh sets
   its own count (the public and background ones live in their own files).
+- Health check grace: every service that starts cloud-startup.sh outlasts
+  its database wait.
 """
 
 import re
 
 import pytest
 from terraform_source import (
+    PROJECT_ROOT,
     TERRAFORM_DIR,
     attribute,
+    identifier_list,
     read,
     resource_block,
     string_list,
@@ -30,6 +36,9 @@ from terraform_source import (
 
 COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
+WAIT_FOR_DATABASE_SH = (
+    PROJECT_ROOT / "infrastructure" / "scripts" / "wait_for_database.sh"
+)
 
 EXPECTED_MOUNT_PATH = "/app/.snakemake"
 
@@ -195,6 +204,18 @@ class TestBasePremiumInstanceProtection:
         """Without force_destroy, a Terraform replace or destroy of a
         protected instance fails."""
         assert attribute(self.instance, "force_destroy") == "true"
+
+
+class TestWorkflowServiceDesiredCount:
+    """The free and premium services' task counts belong to their managers."""
+
+    @pytest.mark.parametrize("service", ["autoscaling", "premium"])
+    def test_apply_leaves_desired_count_alone(self, service):
+        """free-manager and premium-manager set one task per instance. Without
+        this an apply pulls the count back to 1, and ECS stops the task on
+        every other instance of the tier until the manager's next sync."""
+        block = resource_block(read(COMPUTE_TF), "aws_ecs_service", service)
+        assert "desired_count" in identifier_list(attribute(block, "ignore_changes"))
 
 
 # Workflow tier: (sizing name, task definition, launch template). The resources
@@ -458,3 +479,44 @@ class TestUvicornWorkers:
             r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
         )
         assert values == [workers]
+
+
+class TestServiceHealthCheckGrace:
+    """Every service that starts cloud-startup.sh outlasts its database wait.
+
+    ECS ignores failing load balancer and container health checks for the
+    grace period only. A task still waiting for the database past it is
+    marked unhealthy and replaced, and its replacement waits again.
+    """
+
+    # Migrations, app start and the first passing health checks
+    STARTUP_MARGIN_SECONDS = 120
+
+    @pytest.mark.parametrize(
+        "tf_file,service",
+        [
+            ("compute.tf", "autoscaling"),
+            ("compute.tf", "premium"),
+            ("public_service.tf", "public"),
+            ("background_service.tf", "background"),
+        ],
+    )
+    def test_grace_period_covers_the_database_wait(self, tf_file, service):
+        script = read(WAIT_FOR_DATABASE_SH)
+        match = re.search(
+            r"^wait_seconds=\$\{DB_WAIT_SECONDS:-(\d+)\}$", script, re.MULTILINE
+        )
+        assert match, "database wait bound not found in wait_for_database.sh"
+        wait = int(match.group(1))
+
+        tf = read(TERRAFORM_DIR / tf_file)
+        # The override is for tests; a task definition setting it would
+        # change the wait this test checks against
+        assert "DB_WAIT_SECONDS" not in tf
+
+        block = resource_block(tf, "aws_ecs_service", service)
+        grace = int(attribute(block, "health_check_grace_period_seconds"))
+        assert grace >= wait + self.STARTUP_MARGIN_SECONDS, (
+            f"grace {grace} s < database wait {wait} s "
+            f"+ margin {self.STARTUP_MARGIN_SECONDS} s"
+        )

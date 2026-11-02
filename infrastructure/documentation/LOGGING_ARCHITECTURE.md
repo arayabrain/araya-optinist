@@ -244,7 +244,7 @@ frontend filtering).
 ECS Task Definition (LOG_LEVEL=INFO)
   -> cloud-startup.sh
     -> main.py --host --port --workers [--log-level DEBUG]
-      -> __main_unit__.main()
+      -> studio.server.main()
         -> AppLogger.get_logging_config()
           -> LoggingConfigHelper.load_and_configure_logging_config()
             -> Reads YAML file (base config: optinist=DEBUG, root=INFO)
@@ -430,7 +430,7 @@ Covers secrets retrieval, infrastructure discovery, config file creation, databa
 
 Logs to stdout (captured by ECS awslogs driver). Covers:
 
-- DB connectivity wait loop (30 attempts, 2s intervals)
+- DB connectivity wait (`infrastructure/scripts/wait_for_database.sh`: up to 10 minutes, each attempt bounded to 10 s, 10 s apart)
 - Alembic migration execution
 - EC2 instance ID retrieval from ECS metadata
 - Uvicorn startup with worker count
@@ -557,7 +557,7 @@ def get_logging_config():
     return logging_config
 ```
 
-The CLI `--log-level` argument is still applied in `__main_unit__.main()` for local development to override Python logging levels.
+The CLI `--log-level` argument is still applied in `studio.server.main()` for local development to override Python logging levels.
 
 ### Frontend Level Endpoint
 

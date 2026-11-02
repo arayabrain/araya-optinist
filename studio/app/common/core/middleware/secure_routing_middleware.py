@@ -30,7 +30,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.middleware.constants import SKIP_AUTH_PATHS
+from studio.app.common.core.middleware.constants import (
+    DEFAULT_ROUTING_SECRET_KEY,
+    SKIP_AUTH_PATHS,
+)
 from studio.app.common.core.middleware.user_activity_middleware import (
     TIER_FREE,
     TIER_PREMIUM,
@@ -42,7 +45,7 @@ from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 logger = AppLogger.get_logger()
 
 # Routing secret key for generating non-reversible routing IDs
-ROUTING_SECRET_KEY = os.environ.get("ROUTING_SECRET_KEY", "dev-key-not-for-production")
+ROUTING_SECRET_KEY = os.environ.get("ROUTING_SECRET_KEY", DEFAULT_ROUTING_SECRET_KEY)
 
 # Tier cache: {uid: (tier, timestamp)}
 _tier_cache = {}

@@ -66,7 +66,7 @@
   "scripts": {
     "prestart": "node export-versions.js",
     "start": "react-app-rewired start --scripts-version react-scripts",
-    "build": "cross-env BUILD_PATH='./build' react-app-rewired build --openssl-legacy-provider build",
+    "build": "cross-env BUILD_PATH='./build' GENERATE_SOURCEMAP=false react-app-rewired build --openssl-legacy-provider build",
     "test": "react-app-rewired test",
     "test-coverage": "react-app-rewired test --coverage",
     "test:ci": "cross-env CI=true react-app-rewired test",
