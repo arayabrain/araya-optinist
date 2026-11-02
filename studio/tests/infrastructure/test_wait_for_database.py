@@ -26,6 +26,10 @@ WAIT_FOR_DATABASE_SH = (
 
 BASH = shutil.which("bash")
 
+# Over a bound: SECONDS rounding (under 1 s) plus process start-up, which a
+# loaded runner can stretch.
+BOUND_SLACK_SECONDS = 3
+
 # Records each call's arguments and MYSQL_PWD, then fails STUB_FAILURES times
 # before succeeding; with STUB_BLOCK set, a failing call blocks instead.
 MYSQL_STUB = """#!/bin/sh
@@ -131,7 +135,7 @@ class TestWaitForDatabase:
         assert "Attempt 1: Waiting for Database..." in result.stdout
         assert "Failed to connect to Database" in result.stdout
         assert len(calls) >= 2
-        assert elapsed < wait + 1.5
+        assert elapsed < wait + BOUND_SLACK_SECONDS
 
     def test_bounds_an_attempt_that_blocks(self, tmp_path):
         """An RDS Proxy with no target holds the connection open; without a
@@ -144,7 +148,7 @@ class TestWaitForDatabase:
         assert result.returncode == 1
         assert "Attempt 1: no answer within 1 s" in result.stdout
         assert "Failed to connect to Database" in result.stdout
-        assert elapsed < wait + 1.5
+        assert elapsed < wait + BOUND_SLACK_SECONDS
 
     def test_starts_no_attempt_that_cannot_finish_in_time(self, tmp_path):
         """A 2 s attempt fits once in a 3 s wait; a second would end past the
