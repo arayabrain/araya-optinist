@@ -128,6 +128,10 @@ def main():
     a = p.parse_args()
 
     docker_info = sh("docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}").split()
+    fixtures = [
+        f"infrastructure/scripts/benchmark/fixtures/{algo}.json"
+        for algo in a.algo.split(",")
+    ]
     provenance = {
         "run_id": a.run_id,
         "lane": os.environ.get("BENCH_LANE", "local"),
@@ -141,7 +145,8 @@ def main():
         },
         "workflow": {
             "algo": a.algo,
-            "fixture": f"infrastructure/scripts/benchmark/fixtures/{a.algo}.json",
+            # Several fixtures: one per run, in run order
+            "fixture": fixtures[0] if len(fixtures) == 1 else fixtures,
             "param_overrides": a.overrides,
             "benchmark_env": a.extra_env,
             "params": "shipped defaults unless overridden (see workflow-N.yaml)",

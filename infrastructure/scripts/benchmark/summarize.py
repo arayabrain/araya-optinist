@@ -172,8 +172,13 @@ def main():
     print("\n## API probe\n")
     print(probe_summary(read_tsv(os.path.join(row, "probe.tsv")), t_start, t_end))
 
+    algos = prov["workflow"]["algo"].split(",")
     for path in sorted(glob.glob(os.path.join(row, "rules-*.jsonl"))):
-        print(f"\n## Per rule — {os.path.basename(path)}\n")
+        # Several fixtures: run N used the N-th
+        run = int(os.path.basename(path)[len("rules-") : -len(".jsonl")])
+        mixed = len(algos) > 1 and run <= len(algos)
+        fixture = f" ({algos[run - 1]})" if mixed else ""
+        print(f"\n## Per rule — {os.path.basename(path)}{fixture}\n")
         print(rules_table(path))
         phases = phases_tables(path)
         if phases:

@@ -5,11 +5,12 @@
 # container's cgroup. See README.md for the runbook.
 #
 # Usage:
-#   run_bench.sh --algo <fixture> --input <host path to tiff> \
+#   run_bench.sh --algo <fixture>[,<fixture>...] --input <host path to tiff> \
 #                --variant U|P|S --results-dir <dir> [--conc N] [--label R3] \
 #                [--set node.dotted.param=value ...] [--cpus 2 | --cpuset 0-4] \
 #                [--env KEY=VALUE ...] [--timeout 10800] [--keep-outputs]
 #
+# Several fixtures start one run each, together (e.g. suite2p,caiman).
 # Variants:  U = no memory limit (demand)   P = tier ceiling, no swap
 #            S = tier ceiling plus its swap allowance (needs host swap)
 # BENCH_MEMORY_MIB / BENCH_SWAP_MIB set the ceiling and the swap allowance.
@@ -40,7 +41,7 @@ CEILING="${MEMORY_MIB}m"
 CEILING_PLUS_SWAP="$((MEMORY_MIB + SWAP_MIB))m"
 LANE="${BENCH_LANE:-local}"
 
-ALGO="" INPUT="" VARIANT="" RESULTS_DIR="" CONC=1 LABEL="" CPUS="2" CPUSET=""
+ALGO="" INPUT="" VARIANT="" RESULTS_DIR="" CONC="" LABEL="" CPUS="2" CPUSET=""
 TIMEOUT=10800 KEEP_OUTPUTS=0
 OVERRIDES=()
 EXTRA_ENV=()
@@ -64,8 +65,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$ALGO" && -n "$INPUT" && -n "$VARIANT" && -n "$RESULTS_DIR" ]] || {
-  sed -n '2,17p' "$0"; exit 2; }
-[[ -f "$SCRIPT_DIR/fixtures/$ALGO.json" ]] || { echo "no fixture for $ALGO" >&2; exit 2; }
+  sed -n '2,18p' "$0"; exit 2; }
+IFS=, read -r -a ALGOS <<< "$ALGO"
+for a in "${ALGOS[@]}"; do
+  [[ -f "$SCRIPT_DIR/fixtures/$a.json" ]] || { echo "no fixture for $a" >&2; exit 2; }
+done
+if [[ ${#ALGOS[@]} -gt 1 ]]; then
+  [[ -z "$CONC" || "$CONC" -eq ${#ALGOS[@]} ]] || {
+    echo "--conc must equal the number of fixtures in --algo" >&2; exit 2; }
+  CONC=${#ALGOS[@]}
+fi
+CONC="${CONC:-1}"
 [[ -f "$INPUT" ]] || { echo "input not found: $INPUT" >&2; exit 2; }
 docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER" && {
   echo "container $CONTAINER already exists — another run in progress?" >&2; exit 1; }
@@ -83,7 +93,7 @@ if [[ -n "$CPUSET" ]]; then CPU_FLAGS=(--cpuset-cpus="$CPUSET"); else CPU_FLAGS=
 INPUT_DIR_HOST="$(cd "$(dirname "$INPUT")" && pwd)"
 INPUT_NAME="$(basename "$INPUT")"
 WORKSPACE="bench"
-RUN_ID="$(date +%Y%m%d-%H%M)-${LANE}-${ALGO}-${INPUT_NAME%%.*}-${VARIANT}-c${CONC}${LABEL:+-$LABEL}"
+RUN_ID="$(date +%Y%m%d-%H%M)-${LANE}-${ALGO//,/+}-${INPUT_NAME%%.*}-${VARIANT}-c${CONC}${LABEL:+-$LABEL}"
 mkdir -p "$RESULTS_DIR" "$DATA_DIR/input/$WORKSPACE"
 OUT="$(cd "$RESULTS_DIR" && pwd)/$RUN_ID"
 mkdir -p "$OUT"
@@ -138,13 +148,15 @@ for o in "${OVERRIDES[@]+"${OVERRIDES[@]}"}"; do SET_ARGS+=(--set "$o"); done
 PIDS=()
 for i in $(seq 1 "$CONC"); do
   UID_I="${RUN_ID}-${i}"
+  # One fixture: every run uses it; several: run i uses the i-th
+  FIXTURE_I="${ALGOS[$(((i - 1) % ${#ALGOS[@]}))]}"
   docker exec "$CONTAINER" timeout "$TIMEOUT" python \
     infrastructure/scripts/benchmark/run_workflow.py \
-    --fixture "infrastructure/scripts/benchmark/fixtures/$ALGO.json" \
+    --fixture "infrastructure/scripts/benchmark/fixtures/$FIXTURE_I.json" \
     --input "$INPUT_NAME" --workspace "$WORKSPACE" --unique-id "$UID_I" \
     "${SET_ARGS[@]+"${SET_ARGS[@]}"}" > "$OUT/run-$i.log" 2>&1 &
   PIDS+=($!)
-  echo "-- started run $i ($UID_I)"
+  echo "-- started run $i ($UID_I, $FIXTURE_I)"
 done
 
 RC_ALL=0

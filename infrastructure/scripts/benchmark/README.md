@@ -41,11 +41,11 @@ infrastructure/scripts/benchmark/run_bench.sh \
 
 | Option | Meaning |
 |---|---|
-| `--algo` | Fixture in `fixtures/`: `suite2p` (file_convert → registration → roi), `caiman` (mc → cnmf), `lccd`, `vacant_roi` (suite2p registration, then that node), `multisession` |
+| `--algo` | Fixture in `fixtures/`: `suite2p` (file_convert → registration → roi), `caiman` (mc → cnmf), `lccd`, `vacant_roi` (suite2p registration, then that node), `multisession`. A comma-separated list starts one run per fixture, together (`suite2p,caiman`) |
 | `--variant U` | No memory limit — measures demand |
 | `--variant P` | The tier's container ceiling, swap disabled — shows what fails at that limit |
 | `--variant S` | The tier's container ceiling plus its swap allowance — needs host swap |
-| `--conc N` | N runs started together in the same container |
+| `--conc N` | N runs of the fixture started together in the same container (with a fixture list: the list's length) |
 | `--set node.path=value` | Override one default parameter (dotted path into the node's default yaml); `nwb.path=value` overrides the NWB defaults |
 | `--env KEY=VALUE` | Extra environment variable for the container |
 | `--cpus` / `--cpuset` | CPU limit (default `--cpus 2`). `--cpuset` changes what the process sees as available CPUs, which caiman's `n_processes` clamp reads |
@@ -68,7 +68,7 @@ ROI detection, not for registration memory.
 
 ## Output of a row
 
-`<results-dir>/<YYYYMMDD-HHMM>-<lane>-<algo>-<input>-<U|P|S>-c<N>[-label]/`
+`<results-dir>/<YYYYMMDD-HHMM>-<lane>-<algo[+algo]>-<input>-<U|P|S>-c<N>[-label]/`
 
 | File | Content |
 |---|---|
