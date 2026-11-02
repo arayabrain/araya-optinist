@@ -137,6 +137,13 @@ done
 curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:$HOST_PORT/health" || {
   echo "API did not come up" >&2; exit 1; }
 
+if [[ "$VARIANT" == S ]]; then
+  # Without host swap Docker still accepts --memory-swap, and the row runs as P
+  SWAP_KB="$(docker exec "$CONTAINER" sed -n 's/^SwapTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo)"
+  [[ "${SWAP_KB:-0}" -gt 0 ]] || {
+    echo "variant S needs host swap, and the container sees none" >&2; exit 2; }
+fi
+
 SET_ARGS=()
 for o in "${OVERRIDES[@]+"${OVERRIDES[@]}"}"; do SET_ARGS+=(--set "$o"); done
 # One fixture: every run uses it; several: run i uses the i-th
