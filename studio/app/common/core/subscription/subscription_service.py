@@ -594,9 +594,13 @@ class SubscriptionService:
             )
             .all()
         )
+        from studio.app.common.core.subscription.email_service import EmailService
+
+        # With emails off there is no warning to carry forward
+        carry_notice = still_over_quota and EmailService.is_enabled()
         for subscription in subscriptions:
             subscription.deletion_processed_at = now
-            if still_over_quota:
+            if carry_notice:
                 subscription.reprocess_notified_at = now
         if subscriptions:
             db.commit()
@@ -820,11 +824,12 @@ class SubscriptionService:
         Also re-processes users whose storage has grown back above quota
         after a cooldown period (self-healing).
 
-        With ``require_notice`` (email notifications enabled), only users whose
-        grace-start email was sent for this cycle at least MIN_NOTICE_DAYS ago
-        are eligible, and a repeat pass also needs an over-quota-again email
+        With ``require_notice`` (email notifications enabled), a first pass
+        needs the grace-start email for this cycle, sent at least
+        MIN_NOTICE_DAYS ago, and a repeat pass needs an over-quota-again email
         sent since the previous pass: data is never deleted without a prior
-        warning email.
+        warning email. A repeat pass does not need the grace-start stamp, which
+        a pass run with emails off never set.
         """
         from studio.app.common.models.subscription import UserStorageUsage
 
@@ -855,7 +860,7 @@ class SubscriptionService:
                     ),
                 )
             ]
-            # A repeat pass also needs a current over-quota-again warning: not
+            # A repeat pass needs a current over-quota-again warning instead: not
             # older than the previous pass, at least MIN_NOTICE_DAYS old and
             # younger than REPROCESS_NOTICE_VALID_DAYS.
             notice_expiry = current_time - timedelta(
@@ -916,7 +921,6 @@ class SubscriptionService:
                 UserStorageUsage.storage_usage_bytes
                 > ExpirationDeletion.FREE_QUOTA_BYTES,
                 ~has_active_sub,
-                *notice_filters,
                 *reprocess_notice_filters,
             )
             .order_by(UserSubscription.expiration.desc())

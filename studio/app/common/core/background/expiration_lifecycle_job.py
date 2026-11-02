@@ -49,6 +49,14 @@ logger = AppLogger.get_logger()
 _YAML_EXTENSIONS = frozenset({".yaml", ".yml"})
 
 
+class _BookkeepingError(Exception):
+    """DB bookkeeping failed after S3 had already deleted a file."""
+
+    def __init__(self, bytes_deleted: int):
+        super().__init__(f"bookkeeping failed after {bytes_deleted} bytes freed")
+        self.bytes_deleted = bytes_deleted
+
+
 class _DeletionTier(str, Enum):
     INTERMEDIATES = "intermediates"
     OUTPUTS = "outputs"
@@ -222,7 +230,7 @@ class ExpirationLifecycleJob:
 
         logger.info(
             f"Expiration deletion for user {user_id}: "
-            f"{result['succeeded']} units deleted, "
+            f"{result['units_removed']} units deleted, "
             f"{result['failed']} failed, "
             f"{result['bytes_deleted']} bytes freed"
             + (" (aborted: user re-subscribed)" if result["aborted"] else "")
@@ -240,7 +248,7 @@ class ExpirationLifecycleJob:
                 EmailService.send_deletion_summary_email,
                 user_info["email"],
                 result["bytes_deleted"],
-                result["succeeded"],
+                result["units_removed"],
             )
             return (1, 0) if ok else (0, 1)
         return 0, 0
@@ -505,7 +513,7 @@ class ExpirationLifecycleJob:
         and never included in any tier.
         """
         result = {
-            "succeeded": 0,
+            "units_removed": 0,
             "failed": 0,
             "bytes_deleted": 0,
             "aborted": False,
@@ -584,10 +592,20 @@ class ExpirationLifecycleJob:
                         )
                         result["bytes_deleted"] += bytes_deleted
                         accumulated += bytes_deleted
+                        if bytes_deleted:
+                            result["units_removed"] += 1
                         if failed_keys:
                             result["failed"] += 1
-                        else:
-                            result["succeeded"] += 1
+                    except _BookkeepingError as e:
+                        # The DB is failing: stop rather than delete past target
+                        logger.error(
+                            f"Stopping deletion for user {user_id}, "
+                            f"tier {tier.value}: {e}: {e.__cause__}"
+                        )
+                        result["bytes_deleted"] += e.bytes_deleted
+                        result["units_removed"] += 1
+                        result["failed"] += 1
+                        return result
                     except Exception as e:
                         logger.error(
                             f"Deletion failed for user {user_id}, "
@@ -668,10 +686,15 @@ class ExpirationLifecycleJob:
 
             total_deleted_bytes += size
             key_hash = hashlib.sha1(s3_key.encode()).hexdigest()
-            decrement_storage_idempotent(user_id, size, f"{idempotency_key}_{key_hash}")
-            if not flags_cleared:
-                cls._update_data_flags(tier, item)
-                flags_cleared = True
+            try:
+                decrement_storage_idempotent(
+                    user_id, size, f"{idempotency_key}_{key_hash}"
+                )
+                if not flags_cleared:
+                    cls._update_data_flags(tier, item)
+                    flags_cleared = True
+            except Exception as e:
+                raise _BookkeepingError(total_deleted_bytes) from e
 
             # Delete corresponding local file
             relative_path = s3_key[len(prefix) :]

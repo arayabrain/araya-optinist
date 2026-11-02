@@ -8,6 +8,7 @@ import pytest
 
 from studio.app.common.core.background.expiration_lifecycle_job import (
     ExpirationLifecycleJob,
+    _BookkeepingError,
     _DeletionTier,
     _ExperimentInfo,
     _WorkspaceInputInfo,
@@ -219,7 +220,7 @@ class TestProcessUser:
         mock_scope.return_value = mock_scope_obj.return_value
 
         mock_execute.return_value = {
-            "succeeded": 1,
+            "units_removed": 1,
             "failed": 0,
             "bytes_deleted": 5000,
             "aborted": False,
@@ -342,7 +343,7 @@ class TestProcessUser:
         mock_scope.return_value = mock_scope_obj.return_value
 
         mock_execute.return_value = {
-            "succeeded": 1,
+            "units_removed": 1,
             "failed": 2,
             "bytes_deleted": 1000,
             "aborted": False,
@@ -401,7 +402,7 @@ class TestProcessUser:
         mock_scope.return_value = mock_scope_obj.return_value
 
         mock_execute.return_value = {
-            "succeeded": 5,
+            "units_removed": 5,
             "failed": 2,
             "bytes_deleted": 10000,
             "aborted": False,
@@ -454,7 +455,7 @@ class TestExecuteDeletion:
                 run_id="test_run",
             )
 
-        assert result["succeeded"] == 1
+        assert result["units_removed"] == 1
         assert result["bytes_deleted"] == 5000
         assert mock_delete.call_count == 1
 
@@ -693,7 +694,7 @@ class TestExecuteDeletion:
         # First call fails (intermediates/exp1), remaining succeed.
         # Each experiment appears in intermediates + outputs tiers = 4 total calls.
         assert result["failed"] == 1
-        assert result["succeeded"] == 3
+        assert result["units_removed"] == 3
 
     @pytest.mark.asyncio
     async def test_unit_with_failed_files_counts_as_failed(self):
@@ -730,7 +731,77 @@ class TestExecuteDeletion:
 
         assert result["bytes_deleted"] == 300
         assert result["failed"] == 1
-        assert result["succeeded"] == 1
+        assert result["units_removed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_listings_are_not_counted_as_removed_units(self):
+        experiments = [
+            _ExperimentInfo(
+                workspace_id=1,
+                uid="exp1",
+                is_published=False,
+                analyzed_at=datetime(2025, 1, 1),
+            ),
+        ]
+
+        mock_session, _ = _mock_aioboto3_session()
+
+        with (
+            patch.object(
+                ExpirationLifecycleJob,
+                "_delete_unit",
+                new_callable=AsyncMock,
+                side_effect=[(0, 0), (500, 0)],
+            ),
+            patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
+        ):
+            result = await ExpirationLifecycleJob._execute_deletion(
+                user_id=1,
+                bucket_name="test-bucket",
+                experiments=experiments,
+                workspace_inputs=[],
+                priority="preserve_outputs",
+                target_bytes=999999,
+                run_id="test_run",
+            )
+
+        assert result["bytes_deleted"] == 500
+        assert result["units_removed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_bookkeeping_failure_keeps_freed_bytes_and_stops(self):
+        """Freed bytes count toward the target; no further unit is touched."""
+        experiments = [
+            _ExperimentInfo(
+                workspace_id=1,
+                uid=f"exp{i}",
+                is_published=False,
+                analyzed_at=datetime(2025, 1, i + 1),
+            )
+            for i in range(2)
+        ]
+
+        mock_session, _ = _mock_aioboto3_session()
+        delete_unit = AsyncMock(side_effect=[_BookkeepingError(100), (100, 0)])
+
+        with (
+            patch.object(ExpirationLifecycleJob, "_delete_unit", delete_unit),
+            patch(f"{MODULE}.aioboto3.Session", return_value=mock_session),
+        ):
+            result = await ExpirationLifecycleJob._execute_deletion(
+                user_id=1,
+                bucket_name="test-bucket",
+                experiments=experiments,
+                workspace_inputs=[],
+                priority="preserve_outputs",
+                target_bytes=150,
+                run_id="test_run",
+            )
+
+        assert delete_unit.await_count == 1
+        assert result["bytes_deleted"] == 100
+        assert result["units_removed"] == 1
+        assert result["failed"] == 1
 
 
 def _delete_unit(mock_bucket):
@@ -826,6 +897,19 @@ class TestDeleteUnit:
         self.flags.assert_called_once()
         self.decrement.assert_called_once()
         assert self.decrement.call_args.args[1] == 100
+
+    @pytest.mark.asyncio
+    async def test_bookkeeping_failure_reports_the_bytes_already_freed(self):
+        mock_bucket = MagicMock()
+        mock_bucket.delete_objects = AsyncMock(return_value={})
+        self.flags.side_effect = RuntimeError("db down")
+        keys_with_sizes = [("prefix/key_0", 100), ("prefix/key_1", 50)]
+
+        with self._listing(keys_with_sizes), pytest.raises(_BookkeepingError) as exc:
+            await _delete_unit(mock_bucket)
+
+        assert exc.value.bytes_deleted == 100
+        assert mock_bucket.delete_objects.await_count == 1
 
     @pytest.mark.asyncio
     async def test_all_files_failing_keeps_the_flag(self):
@@ -1274,7 +1358,7 @@ class TestDeletionSummaryEmail:
     async def test_summary_sent_after_deletion(self, mock_enabled, mock_send):
         result = await self._run_process_user(
             self._user_info(),
-            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+            {"units_removed": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
         )
         assert result == (1, 0)
         mock_send.assert_called_once_with("user@example.org", 5000, 2)
@@ -1287,7 +1371,7 @@ class TestDeletionSummaryEmail:
     ):
         result = await self._run_process_user(
             self._user_info(),
-            {"succeeded": 1, "failed": 0, "bytes_deleted": 1000, "aborted": True},
+            {"units_removed": 1, "failed": 0, "bytes_deleted": 1000, "aborted": True},
         )
         assert result == (1, 0)
         mock_send.assert_called_once()
@@ -1298,7 +1382,7 @@ class TestDeletionSummaryEmail:
     async def test_no_summary_when_nothing_deleted(self, mock_enabled, mock_send):
         result = await self._run_process_user(
             self._user_info(),
-            {"succeeded": 0, "failed": 0, "bytes_deleted": 0, "aborted": False},
+            {"units_removed": 0, "failed": 0, "bytes_deleted": 0, "aborted": False},
         )
         assert result == (0, 0)
         mock_send.assert_not_called()
@@ -1309,7 +1393,7 @@ class TestDeletionSummaryEmail:
     async def test_no_summary_when_disabled(self, mock_enabled, mock_send):
         result = await self._run_process_user(
             self._user_info(),
-            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+            {"units_removed": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
         )
         assert result == (0, 0)
         mock_send.assert_not_called()
@@ -1320,7 +1404,7 @@ class TestDeletionSummaryEmail:
     async def test_no_summary_for_inactive_user(self, mock_enabled, mock_send):
         result = await self._run_process_user(
             self._user_info(active=False),
-            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+            {"units_removed": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
         )
         assert result == (0, 0)
         mock_send.assert_not_called()
@@ -1331,7 +1415,7 @@ class TestDeletionSummaryEmail:
     async def test_failed_summary_counted(self, mock_enabled, mock_send):
         result = await self._run_process_user(
             self._user_info(),
-            {"succeeded": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
+            {"units_removed": 2, "failed": 0, "bytes_deleted": 5000, "aborted": False},
         )
         assert result == (0, 1)
 

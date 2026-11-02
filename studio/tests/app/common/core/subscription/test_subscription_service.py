@@ -301,13 +301,19 @@ class TestRequireNoticeFilter:
 
     def test_require_notice_gates_on_warning_or_inactive(self):
         """Both eligibility queries must require a matured warning stamp,
-        except for inactive users (who get no emails but must stay deletable)."""
+        except for inactive users (who get no emails but must stay deletable).
+        A repeat pass gates on the over-quota-again notice alone: a pass run
+        with emails off left no grace-start stamp."""
         db, chain = self._mock_db()
 
         SubscriptionService.get_users_for_expiration_deletion(db, require_notice=True)
 
-        assert len(chain.filter.call_args_list) == 2
-        for call in chain.filter.call_args_list:
-            sql = " ".join(str(arg) for arg in call.args)
-            assert "grace_start_notified_at" in sql
-            assert "users.active" in sql
+        first, repeat = (
+            " ".join(str(arg) for arg in call.args)
+            for call in chain.filter.call_args_list
+        )
+        assert "grace_start_notified_at" in first
+        assert "reprocess_notified_at" not in first
+        assert "grace_start_notified_at" not in repeat
+        assert "reprocess_notified_at" in repeat
+        assert "users.active" in first and "users.active" in repeat
