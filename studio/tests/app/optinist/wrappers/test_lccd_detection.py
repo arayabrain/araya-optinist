@@ -2,6 +2,7 @@
 the algorithm, so a short movie with default settings fails fast with one
 actionable error instead of an opaque crash deep in the pipeline.
 """
+import importlib.util
 import sys
 import types
 
@@ -397,6 +398,53 @@ def test_dense_and_sparse_integration_find_the_same_rois(real_lccd, seed):
             overlapping_chunks(seed), blob_sparse=blob_sparse, roi_sparse=True
         )
         np.testing.assert_array_equal(sparse.toarray(), dense.toarray())
+
+
+@pytest.fixture
+def oval_filter(monkeypatch):
+    """The real oval_filter over a stand-in skimage (not installed here) whose
+    regionprops passes every labelled region as a round blob."""
+
+    def regionprops(label_mat):
+        return [
+            types.SimpleNamespace(
+                label=label,
+                area=1,
+                axis_major_length=1,
+                axis_minor_length=1,
+                eccentricity=0,
+            )
+            for label in np.unique(label_mat[label_mat > 0])
+        ]
+
+    skimage = types.ModuleType("skimage")
+    skimage.measure = types.SimpleNamespace(regionprops=regionprops)
+    monkeypatch.setitem(sys.modules, "skimage", skimage)
+    # loaded unregistered, so no module bound to the stand-in outlives the test
+    spec = importlib.util.find_spec(
+        f"{lccd_detection.__package__}.lccd_python.oval_filter"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.oval_filter
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [(slice(1, 3), slice(1, 3))],  # one blob
+        [(slice(1, 3), slice(1, 3)), (slice(5, 7), slice(5, 7))],  # equal areas
+        [(slice(1, 3), slice(1, 3)), (slice(4, 7), slice(4, 7))],  # different
+    ],
+)
+def test_sparse_oval_filter_gives_the_dense_rois(oval_filter, regions):
+    label_mat = np.zeros((8, 8), dtype=int)
+    for label, region in enumerate(regions, start=1):
+        label_mat[region] = label
+    dense = oval_filter(label_mat, sparse=False)
+    sparse = oval_filter(label_mat, sparse=True)
+    assert sparse.format == "csc" and sparse.dtype == dense.dtype
+    np.testing.assert_array_equal(sparse.toarray(), dense)
 
 
 @pytest.mark.parametrize("sparse", [False, True])
