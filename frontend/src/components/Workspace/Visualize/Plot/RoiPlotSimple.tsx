@@ -9,7 +9,6 @@ import CloudDownloadIcon from "@mui/icons-material/CloudDownload"
 import CloudSyncIcon from "@mui/icons-material/CloudSync"
 import {
   CircularProgress,
-  LinearProgress,
   Typography,
   Box,
   IconButton,
@@ -23,6 +22,7 @@ import {
 import {
   selectRoiData,
   selectRoiDataIsPending,
+  selectRoiDataIsInitialized,
   selectRoiDataError,
   selectRoiDataErrorStatus,
 } from "store/slice/DisplayData/DisplayDataSelectors"
@@ -44,6 +44,7 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
   // Use selectors instead of direct state access
   const roiDataFromSelector = useSelector(selectRoiData(filePath))
   const isPending = useSelector(selectRoiDataIsPending(filePath))
+  const isInitialized = useSelector(selectRoiDataIsInitialized(filePath))
   const error = useSelector(selectRoiDataError(filePath))
   const errorStatus = useSelector(selectRoiDataErrorStatus(filePath))
   const [isMounted, setIsMounted] = useState(false)
@@ -105,8 +106,26 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
     }
   }
 
-  if (isPending) {
-    return <LinearProgress />
+  // With a workspaceId, not-yet-initialized means the effect above has a fetch coming.
+  if (isPending || (!isInitialized && !!workspaceId)) {
+    return (
+      <Box
+        sx={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0.5,
+        }}
+      >
+        <CircularProgress size={20} aria-label="Loading thumbnail" />
+        <Tooltip title="May need to sync from cloud storage">
+          <CloudSyncIcon sx={{ fontSize: 14, color: "primary.main" }} />
+        </Tooltip>
+      </Box>
+    )
   } else if (error != null) {
     const isSyncing = error === SYNC_IN_PROGRESS_MESSAGE
     const isNotFound = errorStatus === 404
@@ -217,80 +236,8 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
           justifyContent: "center",
         }}
       >
-        <Typography variant="caption">
-          {isPending
-            ? "Loading..."
-            : `No ROI data (${roiData.length} items, max: ${maxIndex})`}
-        </Typography>
+        <Typography variant="caption">No ROI data</Typography>
       </Box>
     )
   }
-})
-
-interface RoiPlotSimpleWithLoadingProps extends RoiPlotSimpleProps {
-  /** If true, show a sync indicator for legacy JSON files that may need on-demand sync */
-  showSyncIndicator?: boolean
-}
-
-/**
- * RoiPlotSimple with loading state indicator for legacy JSON files.
- *
- * Legacy JSON files may need on-demand sync from S3, which can take longer.
- * This component shows a sync indicator when loading potentially large files.
- *
- * Note: PNG thumbnails are handled directly by the parent component (DataviewRecords)
- * and don't go through this component.
- */
-export const RoiPlotSimpleWithLoading = memo(function RoiPlotSimpleWithLoading({
-  filePath,
-  workspaceId,
-  uniqueId,
-  onClick,
-  showSyncIndicator = true,
-}: RoiPlotSimpleWithLoadingProps) {
-  const [isSyncing, setIsSyncing] = useState(false)
-  const isPending = useSelector(selectRoiDataIsPending(filePath ?? ""))
-  const roiData = useSelector(selectRoiData(filePath ?? ""))
-
-  // Show sync indicator when loading
-  useEffect(() => {
-    if (showSyncIndicator && isPending && !roiData) {
-      setIsSyncing(true)
-    } else if (roiData) {
-      setIsSyncing(false)
-    }
-  }, [showSyncIndicator, isPending, roiData])
-
-  return (
-    <Box sx={{ position: "relative", width: 100, height: 80 }}>
-      <RoiPlotSimple
-        filePath={filePath}
-        workspaceId={workspaceId}
-        uniqueId={uniqueId}
-        onClick={onClick}
-      />
-      {isSyncing && (
-        <Box
-          sx={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "rgba(255, 255, 255, 0.8)",
-            gap: 0.5,
-          }}
-        >
-          <CircularProgress size={20} />
-          <Tooltip title="Syncing from cloud storage">
-            <CloudSyncIcon sx={{ fontSize: 14, color: "primary.main" }} />
-          </Tooltip>
-        </Box>
-      )}
-    </Box>
-  )
 })
