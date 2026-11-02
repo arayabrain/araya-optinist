@@ -51,7 +51,7 @@ def suite2p_stub(monkeypatch):
         def __getitem__(self, indices):
             return self.file[indices]
 
-    def pipeline(save_path, f_reg, f_raw, run_registration, settings, device):
+    def pipeline(save_path, f_reg, run_registration, settings, device, f_raw=None):
         calls["pipeline"] = dict(
             save_path=save_path,
             run_registration=run_registration,
@@ -59,9 +59,10 @@ def suite2p_stub(monkeypatch):
             device=device,
         )
         n, Ly, Lx = f_reg.shape
-        # what registration does with f_raw: reads its frames, shifts their
-        # bidiphase in place, and writes the registered frames into f_reg
-        frames = f_raw[0:n]
+        # what registration does: reads f_raw's frames (f_reg's without one),
+        # shifts their bidiphase in place, and writes the registered frames
+        # into f_reg
+        frames = (f_reg if f_raw is None else f_raw)[0:n]
         frames[:, 1::2] += 1
         f_reg[0:n] = frames + 100
         reg_outputs = {
