@@ -20,7 +20,9 @@ set -e
 # Logging
 LOGFILE="/var/log/app-setup.log"
 
-# Files earlier versions of this script left on the host; nothing reads them
+# Files earlier versions of this script left on the host; nothing reads them.
+# A host removes them on its first run of this version, so this list and its
+# removal can go once every environment has run it.
 LEFTOVER_CONFIG_DIR="/opt/optinist/optinist-for-cloud/studio/config"
 LEFTOVER_FILES=(
     "${LEFTOVER_CONFIG_DIR}/auth/firebase_config.json"
@@ -366,7 +368,8 @@ max_attempts=$DB_INIT_MAX_ATTEMPTS
 attempt=1
 while [ $attempt -le $max_attempts ]; do
   echo "$(date): Attempting to initialize database (attempt $attempt/$max_attempts)"
-  if mysql -h "$RDS_HOST" -P $MYSQL_PORT -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --ssl "$MYSQL_DATABASE" < "$DB_INIT_SQL_FILE"; then
+  # MYSQL_PWD rather than -p: argv is visible to every user, root's environment is not
+  if MYSQL_PWD="$MYSQL_PASSWORD" mysql -h "$RDS_HOST" -P $MYSQL_PORT -u "$MYSQL_USER" --ssl "$MYSQL_DATABASE" < "$DB_INIT_SQL_FILE"; then
     echo "$(date): Database initialization successful"
     break
   else
@@ -403,7 +406,17 @@ import json
 import sys
 
 try:
-    initialize_app(credentials.Certificate(json.load(sys.stdin)))
+    info = json.load(sys.stdin)
+    if not isinstance(info, dict):
+        raise ValueError('not a JSON object')
+    cred = credentials.Certificate(info)
+except ValueError as e:
+    # Names only the error type: messages can quote the secret
+    print(f'ERROR: Firebase service account secret is not a valid certificate ({type(e).__name__})', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    initialize_app(cred)
 except ValueError:
     pass  # App already initialized
 

@@ -1,18 +1,27 @@
 """Host file regression tests for infrastructure/scripts/app_setup.sh.
 
 The script runs as root on every free-tier host on a schedule, against AWS and
-the database, so it is checked as text, like the terraform sources.
+the database, so it is checked as text, like the terraform sources. The admin
+email verification step alone is also run, with secrets that fail before any
+network call.
 
 - Host configuration: the script writes none; each container fetches its own
   at startup. Each run removes the files earlier versions left on the host,
   before any step that can fail.
 - Firebase service account: reaches the admin email verification on stdin
-  only.
+  only; an invalid one is reported as such, without its value.
+- DB password: reaches mysql through the environment, not the command line.
 - DB-initialisation SQL: created owner-only, removed on any exit.
 """
 
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 # Same layout handling as test_git_ref_info.py: this file sits at
 # studio/tests/infrastructure/, so the project root is four levels up.
@@ -34,6 +43,12 @@ _LEFTOVER_DEFINITION_RE = re.compile(
 )
 # A call, not the function definition (`name() {`)
 _FALLIBLE_CALL_RE = re.compile(r"\b(?:retry_command|get_secret)\s+[^(\s]")
+# The verification pipeline, from its printf to its `|| echo` fallback
+_VERIFICATION_STEP_RE = re.compile(
+    r'^printf \'%s\' "\$FIREBASE_PRIVATE_JSON" \| python3 -c "$.*?^" \|\| echo .*?$',
+    re.DOTALL | re.MULTILINE,
+)
+SECRET_MARKER = "value-that-must-not-be-logged"
 
 
 def _script() -> str:
@@ -100,7 +115,66 @@ class TestFirebaseServiceAccount:
             'private-key")',
             'printf \'%s\' "$FIREBASE_PRIVATE_JSON" | python3 -c "',
         ]
-        assert "credentials.Certificate(json.load(sys.stdin))" in script
+        assert "json.load(sys.stdin)" in script
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="bash runs the step")
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "",
+            "{not json",
+            f'"{SECRET_MARKER}"',
+            f'["{SECRET_MARKER}"]',
+            f'{{"type": "{SECRET_MARKER}"}}',
+        ],
+        ids=["empty", "malformed", "json-string", "json-list", "wrong-type"],
+    )
+    def test_invalid_secret_is_reported_without_its_value(self, secret, tmp_path):
+        """The step, run as the script runs it, names the secret as the problem
+        rather than the SDK, and keeps going. A JSON string would otherwise be
+        taken for a file path and echoed in the traceback."""
+        pytest.importorskip("firebase_admin")
+        match = _VERIFICATION_STEP_RE.search(_script())
+        assert match, "verification step not found"
+        # A wrapper, not a symlink: a venv's interpreter needs its own path
+        python3 = tmp_path / "python3"
+        python3.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        python3.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FIREBASE_PRIVATE_JSON": secret,
+            "OPTINIST_ADMIN_UID": "test-admin-uid",
+            # Any network call fails fast instead of reaching Google
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+        }
+        result = subprocess.run(
+            ["bash", "-c", match.group()],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert (
+            "ERROR: Firebase service account secret is not a valid certificate"
+            in output
+        )
+        assert "default Firebase app does not exist" not in output
+        assert SECRET_MARKER not in output
+        assert "WARNING: Firebase email verification script encountered" in output
+
+
+class TestDbPassword:
+    def test_password_stays_off_the_mysql_command_line(self):
+        """argv is readable by every user on the host; root's environment is
+        not."""
+        statements = _statements(_script())
+        calls = [line for line in statements if re.search(r"\bmysql\s+-h\b", line)]
+        assert calls, "mysql call not found"
+        assert all('MYSQL_PWD="$MYSQL_PASSWORD" mysql ' in line for line in calls)
+        assert [line for line in calls if re.search(r"\s-p\S", line)] == []
 
 
 class TestDbInitSqlFile:
