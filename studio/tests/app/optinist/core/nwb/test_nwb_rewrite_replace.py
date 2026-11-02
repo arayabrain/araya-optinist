@@ -71,6 +71,32 @@ def test_a_rewrite_renames_the_new_file_over_the_old_one(nwb_path, rewrite, meth
 
 
 @REWRITES
+def test_a_rewrite_syncs_the_new_file_before_the_rename(
+    nwb_path, rewrite, method, monkeypatch
+):
+    events = []
+    fsync, replace = os.fsync, os.replace
+
+    def recording_fsync(fd):
+        events.append(("fsync", os.fstat(fd).st_ino))
+        fsync(fd)
+
+    def recording_replace(src, dst):
+        events.append(("replace", os.stat(src).st_ino))
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+
+    rewrite(nwb_path, config_with(2.0))
+
+    # the file renamed in is the one synced, and it was synced first
+    assert [event for event, _ in events] == ["fsync", "replace"]
+    (_, synced), (_, renamed) = events
+    assert synced == renamed == os.stat(nwb_path).st_ino
+
+
+@REWRITES
 def test_a_failed_rewrite_leaves_the_old_file_and_no_temporary(
     nwb_path, rewrite, method, monkeypatch
 ):

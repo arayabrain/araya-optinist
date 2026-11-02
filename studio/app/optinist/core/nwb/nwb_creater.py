@@ -552,9 +552,13 @@ def save_nwb(save_path, input_config, config):
 @contextlib.contextmanager
 def _replacing(tmp_path, path):
     """Replace path with tmp_path, which the block writes, in one rename once it
-    ends; delete tmp_path if anything fails. path is never written in place."""
+    ends; delete tmp_path if anything fails. path is never written in place.
+    tmp_path reaches the disk before the rename, so after a crash path holds
+    the old file or the new one."""
     try:
         yield
+        with open(tmp_path, "rb+") as f:
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
     finally:
         if os.path.exists(tmp_path):
