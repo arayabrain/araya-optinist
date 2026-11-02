@@ -2,6 +2,7 @@ import asyncio
 import os
 import pickle
 import shutil
+from glob import glob
 from types import SimpleNamespace
 
 import numpy as np
@@ -287,6 +288,8 @@ def test_copy_data_keeps_object_arrays_as_they_are(tmp_path, suffix, method, cas
 
 
 COPY_SOURCE_ID, COPY_ID = "aaaa1111", "bbbb2222"
+STAGING_NAME = f".{COPY_ID}.copying"  # where the copy is built before its rename
+STAGING = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{STAGING_NAME}"
 
 
 @pytest.fixture
@@ -295,7 +298,7 @@ def copy_source(monkeypatch):
     monkeypatch.setenv("REMOTE_STORAGE_TYPE", RemoteStorageType.NO_USE.value)
     source = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{COPY_SOURCE_ID}"
     copied = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{COPY_ID}"
-    for path in (source, copied):
+    for path in (source, copied, STAGING):
         shutil.rmtree(path, ignore_errors=True)
     WorkflowConfigWriter(
         workspace_id=workspace_id,
@@ -305,7 +308,7 @@ def copy_source(monkeypatch):
     ).write()
     ExptConfigWriter(workspace_id, COPY_SOURCE_ID, name="source").write()
     yield source, copied
-    for path in (source, copied):
+    for path in (source, copied, STAGING):
         shutil.rmtree(path, ignore_errors=True)
 
 
@@ -336,17 +339,42 @@ def test_a_failed_rewrite_fails_the_copy_and_removes_it(copy_source, name):
     assert not copy_the_source()
 
     assert not os.path.exists(copied)
+    assert not os.path.exists(STAGING)
     assert os.path.exists(f"{source}/suite2p_roi/{name}")
 
 
-def test_copy_data_keeps_a_destination_it_did_not_create(copy_source):
-    _, copied = copy_source
-    os.makedirs(copied)
-    open(f"{copied}/other.txt", "w").close()
+@pytest.mark.parametrize("name", [COPY_ID, STAGING_NAME])
+def test_copy_data_keeps_a_destination_it_did_not_create(copy_source, name):
+    existing = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{name}"
+    os.makedirs(existing)
+    open(f"{existing}/other.txt", "w").close()
 
     assert not copy_the_source()
 
-    assert os.listdir(copied) == ["other.txt"]
+    assert os.listdir(existing) == ["other.txt"]
+
+
+def test_the_record_list_sees_the_copy_only_once_it_is_complete(
+    copy_source, monkeypatch
+):
+    """While the ids are rewritten, the copy's yaml still holds the source's
+    unique id: the record list must not read it under the copy's directory."""
+    _, copied = copy_source
+    listed = []
+    rewrite = "_ExptDataWriter__copy_data_replace_unique_id"
+    original = getattr(ExptDataWriter, rewrite)
+
+    def listing_while_rewriting(*args):
+        listed.extend(glob(ExptConfigReader.get_config_yaml_wild_path(workspace_id)))
+        return original(*args)
+
+    monkeypatch.setattr(ExptDataWriter, rewrite, listing_while_rewriting)
+
+    assert copy_the_source()
+
+    assert [path for path in listed if COPY_ID in path] == []
+    listed_after = glob(ExptConfigReader.get_config_yaml_wild_path(workspace_id))
+    assert f"{copied}/experiment.yaml" in listed_after
 
 
 def test_copy_data_runs_the_file_work_off_the_event_loop(copy_source, monkeypatch):

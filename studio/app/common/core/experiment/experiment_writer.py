@@ -441,35 +441,44 @@ class ExptDataWriter:
     ) -> bool:
         logger = AppLogger.get_logger()
 
-        # The cleanup below removes new_output_dir, so it must be this copy's own
-        if os.path.exists(new_output_dir):
-            logger.error(f"Copy destination already exists: {new_output_dir}")
-            return False
+        # Built under a dot name, which the record list's glob skips, and renamed
+        # into place once rewritten: until then its yaml holds the source's id
+        staging_name = f".{new_unique_id}.copying"
+        staging_dir = join_filepath(
+            [DIRPATH.OUTPUT_DIR, self.workspace_id, staging_name]
+        )
+
+        # The cleanup below removes staging_dir, so it must be this copy's own
+        for path in (new_output_dir, staging_dir):
+            if os.path.exists(path):
+                logger.error(f"Copy destination already exists: {path}")
+                return False
 
         succeeded = False
         try:
             # Copy directory
-            shutil.copytree(output_dir, new_output_dir)
+            shutil.copytree(output_dir, staging_dir)
 
             # Update experiment configuration and unique IDs
             if not self.__copy_data_update_experiment_config_name(
-                self.workspace_id, new_unique_id, new_name
+                self.workspace_id, staging_name, new_name
             ):
                 logger.error("Failed to update experiment.yml after copying.")
                 return False
 
             if not self.__copy_data_replace_unique_id(
-                new_output_dir, self.unique_id, new_unique_id
+                staging_dir, self.unique_id, new_unique_id
             ):
                 logger.error("Failed to update unique_id in files.")
                 return False
 
+            os.rename(staging_dir, new_output_dir)
             succeeded = True
             return True
         finally:
             # A file left with the source's paths breaks once the source is deleted
             if not succeeded:
-                shutil.rmtree(new_output_dir, ignore_errors=True)
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
     def __copy_data_replace_unique_id(
         self, directory: str, old_id: str, new_id: str
