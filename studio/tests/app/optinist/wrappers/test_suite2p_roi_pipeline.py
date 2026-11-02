@@ -2,6 +2,7 @@
 registration step's frame range to pipeline(), and keeps the flat ops contract
 through the empty and failing paths. suite2p is stubbed.
 """
+import contextlib
 import copy
 import logging
 import os
@@ -94,8 +95,15 @@ def suite2p_stub(monkeypatch):
             raise result
         return result
 
+    @contextlib.contextmanager
+    def BinaryFile(Ly, Lx, filename, n_frames=None, write=False):
+        """suite2p 1.1.0's, as a memory map of the file."""
+        mode = "r+" if write else "r"
+        yield np.memmap(filename, np.int16, mode, shape=(n_frames, Ly, Lx))
+
     fake = types.ModuleType("suite2p")
     fake.default_settings = default_settings
+    fake.io = types.SimpleNamespace(BinaryFile=BinaryFile)
     fake.pipeline = pipeline
     run_s2p = types.ModuleType("suite2p.run_s2p")
     run_s2p._assign_torch_device = lambda name: f"device:{name}"

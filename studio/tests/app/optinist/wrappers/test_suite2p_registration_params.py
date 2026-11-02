@@ -51,6 +51,9 @@ def suite2p_stub(monkeypatch):
         def __getitem__(self, indices):
             return self.file[indices]
 
+        def __setitem__(self, indices, frames):
+            self.file[indices] = frames
+
     def pipeline(save_path, f_reg, run_registration, settings, device, f_raw=None):
         calls["pipeline"] = dict(
             save_path=save_path,
