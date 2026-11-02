@@ -209,8 +209,8 @@ const Privacy = () => {
           by this provider; we do not store card numbers.
         </li>
         <li>
-          Analytics provider: for website and usage analytics (planned: Google
-          LLC / Google Analytics, not yet active; see Section 5).
+          Analytics provider: for website and usage analytics, only with your
+          consent (currently Google LLC / Google Analytics; see Section 5).
         </li>
       </ul>
       <P>
@@ -244,9 +244,7 @@ const Privacy = () => {
         </TableHead>
         <TableBody>
           <TableRow>
-            <TableCell>
-              Google LLC: authentication (analytics planned)
-            </TableCell>
+            <TableCell>Google LLC: authentication and analytics</TableCell>
             <TableCell>United States and other countries</TableCell>
             <TableCell>
               Google is certified under the EU-U.S. Data Privacy Framework
@@ -347,18 +345,22 @@ const Privacy = () => {
       <P>
         To keep you signed in, the Service stores authentication tokens in your
         browser&apos;s local storage or similar. These are strictly necessary to
-        use the Service.
+        use the Service. We also store your analytics consent choice there so
+        that we do not ask again on every visit.
       </P>
 
       <H3>5.2 Analytics (Google Analytics)</H3>
       <P>
-        We plan to use Google Analytics, provided by Google LLC, to understand
-        how the Service is used and to improve it (this analytics integration is
-        not yet active on the Service). Google Analytics uses cookies and
-        similar technologies to collect information such as pages viewed,
-        interactions, approximate location derived from IP address, and device
-        and browser information. This information is transmitted to and stored
-        by Google. For details, see Google&apos;s{" "}
+        With your consent, we use Google Analytics, provided by Google LLC and
+        loaded through Google Tag Manager, to understand how the Service is used
+        and to improve it. Google Analytics uses cookies and similar
+        technologies to collect information such as pages viewed, certain
+        actions (registering, signing in, running an analysis pipeline, and
+        viewing public data), approximate location derived from IP address, and
+        device and browser information. We do not send your name, email address,
+        or research data to Google Analytics, and the page addresses we send
+        exclude URL query parameters. This information is transmitted to and
+        stored by Google. For details, see Google&apos;s{" "}
         <ExternalLink href="https://policies.google.com/privacy">
           Privacy Policy
         </ExternalLink>{" "}
@@ -371,17 +373,22 @@ const Privacy = () => {
         <ExternalLink href="https://tools.google.com/dlpage/gaoptout">
           Google Analytics Opt-out Browser Add-on
         </ExternalLink>
-        , or by declining analytics cookies through the consent banner described
+        , or by declining analytics cookies through the consent notice described
         below.
       </P>
       <P>
-        Consent: Before activating analytics, we will use a cookie-consent
-        banner that requests your prior opt-in consent for analytics cookies if
-        you are in the EEA or the UK, and that lets you decline or withdraw
-        consent at any time; elsewhere, analytics may run on an opt-out basis.
-        Google Analytics will be configured with IP-address anonymization
-        enabled, a data-retention period of 14 months, and Google Signals /
-        advertising features disabled.
+        Consent: Analytics is opt-in for all visitors, wherever you are located.
+        On your first visit, a notice asks whether to allow analytics cookies,
+        with Accept and Decline options of equal prominence. Until you accept,
+        no analytics events are sent; if you decline, none are sent. You can
+        change your choice at any time: signed-in users can use the Analytics
+        Cookies setting on the Account page, and any visitor can clear this
+        site&apos;s stored data in their browser to see the notice again. Google
+        Analytics is configured with a data-retention period of 14 months,
+        Google Signals and advertising personalization disabled, and data
+        redaction enabled for email addresses and selected URL parameters.
+        Google Analytics does not log or store IP addresses; it uses them only
+        to derive approximate location.
       </P>
 
       <H2>6. Data Sharing and Publishing Features</H2>

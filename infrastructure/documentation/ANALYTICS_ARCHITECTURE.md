@@ -133,7 +133,7 @@ Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until 
 
 ### Compliance
 
-4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. The policy still describes Google Analytics as planned and not yet active; update it in the same release that sets the production container ID.
+4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. Section 5.2 describes the consent flow, the events and the GA4 property settings; update it whenever any of those change.
 5. **Have the notice copy reviewed.** It has had no legal review.
 6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload. A restyle of either surface can regress this.
 
