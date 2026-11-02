@@ -18,12 +18,15 @@
   its own count (the public and background ones live in their own files).
 - Startup command: every such task definition execs the script, so it runs
   as PID 1 and receives the stop signal.
+- Health check grace: every service that starts cloud-startup.sh outlasts
+  its database wait.
 """
 
 import re
 
 import pytest
 from terraform_source import (
+    PROJECT_ROOT,
     TERRAFORM_DIR,
     attribute,
     identifier_list,
@@ -36,6 +39,9 @@ from terraform_source import (
 
 COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
+WAIT_FOR_DATABASE_SH = (
+    PROJECT_ROOT / "infrastructure" / "scripts" / "wait_for_database.sh"
+)
 
 EXPECTED_MOUNT_PATH = "/app/.snakemake"
 
@@ -517,3 +523,44 @@ class TestStartupCommand:
             if "cloud-startup.sh" in block
         )
         assert found == sorted(STARTUP_TASK_DEFINITIONS)
+
+
+class TestServiceHealthCheckGrace:
+    """Every service that starts cloud-startup.sh outlasts its database wait.
+
+    ECS ignores failing load balancer and container health checks for the
+    grace period only. A task still waiting for the database past it is
+    marked unhealthy and replaced, and its replacement waits again.
+    """
+
+    # Migrations, app start and the first passing health checks
+    STARTUP_MARGIN_SECONDS = 120
+
+    @pytest.mark.parametrize(
+        "tf_file,service",
+        [
+            ("compute.tf", "autoscaling"),
+            ("compute.tf", "premium"),
+            ("public_service.tf", "public"),
+            ("background_service.tf", "background"),
+        ],
+    )
+    def test_grace_period_covers_the_database_wait(self, tf_file, service):
+        script = read(WAIT_FOR_DATABASE_SH)
+        match = re.search(
+            r"^wait_seconds=\$\{DB_WAIT_SECONDS:-(\d+)\}$", script, re.MULTILINE
+        )
+        assert match, "database wait bound not found in wait_for_database.sh"
+        wait = int(match.group(1))
+
+        tf = read(TERRAFORM_DIR / tf_file)
+        # The override is for tests; a task definition setting it would
+        # change the wait this test checks against
+        assert "DB_WAIT_SECONDS" not in tf
+
+        block = resource_block(tf, "aws_ecs_service", service)
+        grace = int(attribute(block, "health_check_grace_period_seconds"))
+        assert grace >= wait + self.STARTUP_MARGIN_SECONDS, (
+            f"grace {grace} s < database wait {wait} s "
+            f"+ margin {self.STARTUP_MARGIN_SECONDS} s"
+        )

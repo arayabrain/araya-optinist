@@ -1,15 +1,15 @@
 import asyncio
 import json
 import os
+import re
 import shutil
-import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import PurePath
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-import requests
 import tifffile
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from requests.models import Response
@@ -26,6 +26,7 @@ from studio.app.common.core.cloud.storage_tracking import (
     get_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import (
     InputFileLock,
     RemoteStorageController,
@@ -37,6 +38,7 @@ from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
+from studio.app.common.core.utils.public_url import open_url
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -293,16 +295,40 @@ def _locked_json_edit(
         _write_json_atomic(filepath, data)
 
 
-def _write_json_atomic(filepath: str, data: dict) -> None:
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(filepath), suffix=".tmp")
+_ATOMIC_TMP_NAME = re.compile(r"\.[0-9a-f]{32}\.tmp")
+
+
+def is_atomic_replace_tmp(filename: str) -> bool:
+    """A temporary file of _atomic_replace, e.g. one a killed process left."""
+    return _ATOMIC_TMP_NAME.fullmatch(filename) is not None
+
+
+@contextmanager
+def _atomic_replace(filepath: str):
+    """Yield a file that replaces filepath once the block ends without an error.
+    A reader of the old file keeps reading it; a failed write leaves it in place."""
+    # Hidden, a fixed length whatever filepath's, default permissions (not 0600)
+    tmp_path = os.path.join(os.path.dirname(filepath), f".{uuid.uuid4().hex}.tmp")
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(tmp_path, "xb") as f:
+            yield f
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, filepath)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
         raise
+
+
+def _write_file_atomic(filepath: str, source) -> None:
+    with _atomic_replace(filepath) as f:
+        shutil.copyfileobj(source, f)
+
+
+def _write_json_atomic(filepath: str, data: dict) -> None:
+    with _atomic_replace(filepath) as f:
+        f.write(json.dumps(data, indent=2).encode())
 
 
 # Maps each file to its entry's format version; cache iterators must skip this key
@@ -775,8 +801,7 @@ async def create_file(
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-        with open(filepath, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        await asyncio.to_thread(_write_file_atomic, filepath, file.file)
 
         # Update metadata caches based on file type
         if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
@@ -948,12 +973,15 @@ async def delete_file(
     response_model=DownloadStatus,
     dependencies=[Depends(is_workspace_available)],
 )
-async def get_download_status(workspace_id: str, file_name: str):
+async def get_download_status(
+    workspace_id: str, file_name: str, upload_id: Optional[str] = None
+):
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
-    try:
-        return DOWNLOAD_STATUS[filepath]
-    except:  # noqa
+    status = DOWNLOAD_STATUS.get(filepath)
+    # Another upload's entry, e.g. an earlier one this worker ran, is not this one's
+    if status is None or upload_id not in (None, status.upload_id):
         raise HTTPException(status_code=404)
+    return status
 
 
 @router.post(
@@ -974,27 +1002,53 @@ async def download_file(
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         try:
-            res = requests.get(file.url, stream=True)
-            res.raise_for_status()
+            # Standalone: the user owns the server, and may fetch from their LAN
+            res = await asyncio.to_thread(
+                open_url, file.url, public_only=MODE.IS_MULTIUSER
+            )
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
-        background_tasks.add_task(download, res, path.name, workspace_id)
+
+        upload_id = uuid.uuid4().hex
+        filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, path.name])
+        # Replaces the previous same-name upload's entry, which reads as done
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(
+            total=_content_length(res), upload_id=upload_id
+        )
+        background_tasks.add_task(download, res, path.name, workspace_id, upload_id)
         # Only update image shape for TIFF files
         if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
             background_tasks.add_task(update_image_shape, workspace_id, path.name)
-        return {"file_name": path.name}
+        return {"file_name": path.name, "upload_id": upload_id}
     finally:
         release_request_session(db)
 
 
-def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
-    total = int(res.headers.get("content-length", 0))
+URL_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+def _content_length(res: Response) -> int:
+    """The response's Content-Length, or 0 when it is missing or invalid."""
+    try:
+        return int(res.headers.get("content-length", 0))
+    except ValueError:
+        return 0
+
+
+def download(
+    res: Response,
+    file_name: str,
+    workspace_id: str,
+    upload_id: Optional[str] = None,
+    chunk_size=URL_UPLOAD_CHUNK_SIZE,
+):
+    total = _content_length(res)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
     current = 0
 
     try:
         with (
-            open(filepath, "wb") as file,
+            _atomic_replace(filepath) as file,
             tqdm(
                 desc=filepath,
                 total=total,
@@ -1006,10 +1060,20 @@ def download(res: Response, file_name: str, workspace_id: str, chunk_size=1024):
             for data in res.iter_content(chunk_size=chunk_size):
                 size = file.write(data)
                 current += size
-                DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
+                DOWNLOAD_STATUS[filepath] = DownloadStatus(
+                    total=total, current=current, upload_id=upload_id
+                )
                 bar.update(size)
+        # done only once the file is in place: the frontend then uses it
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(
+            total=total, current=current, done=True, upload_id=upload_id
+        )
     except Exception as e:
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(error=str(e))
+        DOWNLOAD_STATUS[filepath] = DownloadStatus(
+            total=total, current=current, error=str(e), upload_id=upload_id
+        )
+    finally:
+        res.close()
 
     if WorkspaceDataCapacityService.is_available():
         _update_workspace_data_usage(workspace_id)
