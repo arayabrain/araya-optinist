@@ -2,154 +2,90 @@ import numpy as np
 import pytest
 import tifffile
 
-from studio.app.optinist.wrappers.suite2p import utils
-from studio.app.optinist.wrappers.suite2p.utils import binary_to_tiff
+from studio.app.optinist.wrappers.suite2p.utils import (
+    FrameCopies,
+    tiff_path,
+    writable_tiff,
+)
 
 FRAMES, LY, LX = 23, 6, 5
 
 
-class FakeBinaryFile:
-    """What binary_to_tiff uses of suite2p.io.BinaryFile (1.1.0): `shape` and
-    int16 frame slices read from a raw file."""
-
-    def __init__(self, path, Ly, Lx):
-        self.path, self.Ly, self.Lx = str(path), Ly, Lx
-
-    def _movie(self):
-        return np.fromfile(self.path, np.int16).reshape(-1, self.Ly, self.Lx)
-
-    @property
-    def shape(self):
-        return (len(self._movie()), self.Ly, self.Lx)
-
-    def __getitem__(self, indices):
-        return self._movie()[indices]
+def movie_of(shape):
+    return np.random.default_rng(0).integers(-3000, 30000, shape).astype(np.int16)
 
 
-def test_mc_images_is_byte_identical_to_writing_the_whole_movie(tmp_path):
-    movie = (
-        np.random.default_rng(0)
-        .integers(-3000, 30000, (FRAMES, LY, LX))
-        .astype(np.int16)
-    )
-    reg_file = tmp_path / "data.bin"
-    movie.tofile(reg_file)
+@pytest.mark.parametrize(
+    "shape",
+    # the last three are shapes tifffile stores as RGB
+    [(FRAMES, LY, LX), (1, LY, LX), (3, LY, LX), (4, LY, LX), (FRAMES, LY, 3)],
+)
+def test_a_filled_tiff_is_byte_identical_to_writing_the_whole_movie(tmp_path, shape):
+    movie = movie_of(shape)
 
-    # A batch size that does not divide the frame count
-    (path,) = binary_to_tiff(
-        FakeBinaryFile(reg_file, LY, LX), str(tmp_path / "out"), "mc_images", 7
-    )
+    with writable_tiff(str(tmp_path / "out"), "mc_images", shape) as frames:
+        assert frames.shape == shape
+        for t in range(shape[0]):  # filled frame by frame, as suite2p writes
+            frames[t : t + 1] = movie[t : t + 1]
 
+    path = tiff_path(str(tmp_path / "out"), "mc_images")
+    assert path == f"{tmp_path}/out/tiff/mc_images/mc_images.tif"
     expected = tmp_path / "expected.tif"
-    tifffile.imwrite(expected, movie)  # what ImageData(mv, ...) wrote before
+    tifffile.imwrite(expected, movie)  # what ImageData(movie, ...) writes
     assert open(path, "rb").read() == open(expected, "rb").read()
-    np.testing.assert_array_equal(tifffile.imread(path), movie)
-
-
-@pytest.mark.parametrize("shape", [(3, LY, LX), (4, LY, LX), (FRAMES, LY, 3)])
-def test_shapes_tifffile_reads_as_rgb_match_writing_the_whole_movie(tmp_path, shape):
-    movie = np.random.default_rng(0).integers(-3000, 30000, shape).astype(np.int16)
-    reg_file = tmp_path / "data.bin"
-    movie.tofile(reg_file)
-
-    (path,) = binary_to_tiff(
-        FakeBinaryFile(reg_file, shape[1], shape[2]),
-        str(tmp_path / "out"),
-        "mc_images",
-        2,
-    )
-
-    expected = tmp_path / "expected.tif"
-    tifffile.imwrite(expected, movie)
-    assert open(path, "rb").read() == open(expected, "rb").read()
-
-
-class SizedBinaryFile:
-    """Declares a shape without any data, for the BigTIFF decision."""
-
-    def __init__(self, shape):
-        self.shape = shape
-
-    def __getitem__(self, indices):
-        return np.zeros((0,) + self.shape[1:], np.int16)
 
 
 @pytest.mark.parametrize("extra_frames", [0, 1])
 def test_bigtiff_is_chosen_as_tifffile_chooses_it_for_the_whole_array(
-    tmp_path, monkeypatch, extra_frames
+    tmp_path, extra_frames
 ):
-    # 4096 x 4096 int16 frames: tifffile's threshold is then 127 frames. A frame
-    # iterator has no nbytes, so tifffile alone would never pick BigTIFF.
-    ly = lx = 4096
-    frames = 127 + extra_frames
-    # tifffile's own choice for the whole array: with no data it writes a sparse
-    # file of the declared shape, deciding BigTIFF from shape and dtype
+    # 4096 x 4096 int16 frames: tifffile's threshold is then 127 frames. Both
+    # files are sparse: no frame is written.
+    shape = (127 + extra_frames, 4096, 4096)
     whole = tmp_path / "whole.tif"
-    tifffile.imwrite(whole, shape=(frames, ly, lx), dtype=np.int16)
+    tifffile.imwrite(whole, shape=shape, dtype=np.int16)
     with tifffile.TiffFile(whole) as tif:
         expected = tif.is_bigtiff
     whole.unlink()
     assert expected is bool(extra_frames)
 
-    seen = {}
+    with writable_tiff(str(tmp_path), "mc_images", shape):
+        pass
 
-    def imwrite(path, data, **kwargs):
-        seen.update(kwargs)
-        open(path, "wb").close()
-
-    monkeypatch.setattr(tifffile, "imwrite", imwrite)
-
-    binary_to_tiff(SizedBinaryFile((frames, ly, lx)), str(tmp_path), "mc_images")
-    assert seen["bigtiff"] is expected
-    assert seen["shape"] == (frames, ly, lx)
-
-
-@pytest.mark.parametrize(
-    "ly, lx, batch_bytes",
-    [(2048, 2048, None), (6, 5, 59)],  # 59 bytes: less than one 6 x 5 frame
-)
-def test_default_batch_is_bounded_in_bytes(tmp_path, monkeypatch, ly, lx, batch_bytes):
-    if batch_bytes is not None:
-        monkeypatch.setattr(utils, "BATCH_BYTES", batch_bytes)
-    slices = []
-
-    class RecordingBinaryFile(FakeBinaryFile):
-        def __getitem__(self, indices):
-            slices.append(indices)
-            return super().__getitem__(indices)
-
-    reg_file = tmp_path / "data.bin"
-    np.zeros((9, ly, lx), np.int16).tofile(reg_file)
-    binary_to_tiff(
-        RecordingBinaryFile(reg_file, ly, lx), str(tmp_path / "out"), "mc_images"
-    )
-
-    batch_size = slices[0].stop - slices[0].start
-    frame_bytes = ly * lx * 2
-    # as many frames as fit, and at least one
-    assert batch_size == max(1, utils.BATCH_BYTES // frame_bytes)
-    assert batch_size == 1 or batch_size * frame_bytes <= utils.BATCH_BYTES
+    with tifffile.TiffFile(tiff_path(str(tmp_path), "mc_images")) as tif:
+        assert tif.is_bigtiff is expected
 
 
 @pytest.mark.parametrize("error", [OSError("disk full"), KeyboardInterrupt()])
-def test_a_failed_write_leaves_the_previous_tiff_untouched(tmp_path, error):
-    class FailingBinaryFile(FakeBinaryFile):
-        def __getitem__(self, indices):
-            if indices.start > 0:
-                raise error
-            return super().__getitem__(indices)
-
-    reg_file = tmp_path / "data.bin"
-    np.zeros((FRAMES, LY, LX), np.int16).tofile(reg_file)
+def test_a_failed_fill_leaves_the_previous_tiff_untouched(tmp_path, error):
     tiff_dir = tmp_path / "out" / "tiff" / "mc_images"
     tiff_dir.mkdir(parents=True)
     # mc_images.tif from an earlier run of the node
     previous = tiff_dir / "mc_images.tif"
     previous.write_bytes(b"earlier run")
+
     with pytest.raises(type(error)):
-        binary_to_tiff(
-            FailingBinaryFile(reg_file, LY, LX), str(tmp_path / "out"), "mc_images", 7
-        )
+        with writable_tiff(str(tmp_path / "out"), "mc_images", (FRAMES, LY, LX)):
+            raise error
+
     # no partial file, under the final name or beside it
     assert list(tiff_dir.iterdir()) == [previous]
     assert previous.read_bytes() == b"earlier run"
+
+
+def test_frame_copies_can_be_written_and_leave_the_movie_alone(tmp_path):
+    movie = movie_of((FRAMES, LY, LX))
+    path = tmp_path / "data.bin"
+    movie.tofile(path)
+    binary = np.memmap(path, np.int16, "r", shape=movie.shape)
+    assert not binary[0:2].flags.writeable
+
+    frames = FrameCopies(binary)
+    assert frames.shape == movie.shape
+    batch = frames[2:9]
+    # suite2p's in-place bidiphase shift on what it read
+    batch[:, 1::2, 1:] = batch[:, 1::2, :-1]
+    np.testing.assert_array_equal(frames[[0, 5]], movie[[0, 5]])
+
+    del binary
+    np.testing.assert_array_equal(np.fromfile(path, np.int16), movie.ravel())

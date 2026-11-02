@@ -130,9 +130,18 @@ def test_snakemake_execute(client):
     # the fixture's 64 px blocks on the 128 px movie run non-rigid registration
     assert registration["settings"]["registration"]["nonrigid"] is True
     assert registration["yoff1"].shape[0] == convert["nframes"]
-    assert os.path.exists(
+    mc_images = (
         f"{output_dirpath}/{node_ids['suite2p_registration']}"
         "/tiff/mc_images/mc_images.tif"
+    )
+    assert os.path.exists(mc_images)
+    # registration writes the registered movie there and leaves file
+    # conversion's binary as it wrote it: its mean is still the input's
+    assert registration["registered_tiff"] == mc_images
+    shape = (convert["nframes"], convert["Ly"], convert["Lx"])
+    binary = np.memmap(convert["reg_file"], np.int16, "r", shape=shape)
+    np.testing.assert_allclose(
+        binary.mean(axis=0, dtype=np.float64), convert["meanImg"], atol=1e-6
     )
 
     # pipeline()'s copies of the roi outputs are not kept beside the pickle

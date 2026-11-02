@@ -1,3 +1,4 @@
+import contextlib
 import os
 
 import numpy as np
@@ -7,11 +8,6 @@ from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
 )
 from studio.app.common.core.workflow.workflow_params import read_default_params
-
-# tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
-BIGTIFF_BYTES = 2**32 - 2**25
-# frames per read, bounded in bytes
-BATCH_BYTES = 64 << 20
 
 
 def merge_settings(defaults: dict, params: dict) -> dict:
@@ -49,48 +45,57 @@ def positive(value, name: str):
     return value
 
 
-def binary_to_tiff(binary, output_dir, file_name, batch_size=None):
-    """
-    Write an open suite2p BinaryFile to the TIFF path ImageData would use.
+def tiff_path(output_dir, file_name):
+    """The path ImageData writes an array of this file_name to."""
+    return join_filepath([output_dir, "tiff", file_name, f"{file_name}.tif"])
 
-    Byte-identical to writing the whole array, with one batch in memory.
-    tifffile picks BigTIFF from `data.nbytes`, which a frame iterator does not
-    have, so the choice is made here the same way. The file is written beside
-    the final path and moved there when complete, so a failed write leaves no
-    partial mc_images.tif.
+
+@contextlib.contextmanager
+def writable_tiff(output_dir, file_name, shape):
+    """
+    A new int16 TIFF stack at tiff_path, memory-mapped for writing.
+
+    The empty file is laid out as tifffile writes the whole array, so once
+    filled it is byte-identical to writing the array, BigTIFF included
+    (tifffile.memmap's own create would align the pixels to 4 KiB instead).
+    It is built beside the final path and moved there on a clean exit, so a
+    failure leaves no partial file and any earlier one untouched.
     """
     import tifffile
 
-    tiff_dir = join_filepath([output_dir, "tiff", file_name])
-    create_directory(tiff_dir)
-    tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
-    tmp_path = f"{tiff_path}.partial"
-
-    nframes, Ly, Lx = binary.shape
-    frame_bytes = Ly * Lx * np.dtype(np.int16).itemsize
-    if batch_size is None:
-        batch_size = max(1, BATCH_BYTES // frame_bytes)
-
-    def frames():
-        for start in range(0, nframes, batch_size):
-            yield from np.asarray(binary[start : start + batch_size], dtype=np.int16)
-
+    path = tiff_path(output_dir, file_name)
+    create_directory(os.path.dirname(path))
+    tmp_path = f"{path}.partial"
     try:
-        # tifffile stores these shapes as RGB, which 2022.3 cannot stream
-        if nframes in (3, 4) or Lx in (3, 4):
-            tifffile.imwrite(tmp_path, np.stack(list(frames())))
-        else:
-            tifffile.imwrite(
-                tmp_path,
-                frames(),
-                shape=(nframes, Ly, Lx),
-                dtype=np.int16,
-                bigtiff=nframes * frame_bytes > BIGTIFF_BYTES,
-            )
-        os.replace(tmp_path, tiff_path)
+        tifffile.imwrite(tmp_path, shape=shape, dtype=np.int16)
+        # mapped as its series, which has no frame axis for one frame
+        frames = tifffile.memmap(tmp_path, mode="r+").reshape(shape)
+        yield frames
+        frames.flush()
+        del frames
+        os.replace(tmp_path, path)
     except BaseException:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         raise
 
-    return [tiff_path]
+
+class FrameCopies:
+    """
+    A read-only movie whose slices are writable copies.
+
+    suite2p's registration shifts the bidiphase of the frames it reads in
+    place, through a tensor that shares their memory: on a read-only memory
+    map that write kills the process with no traceback, and on a writable one
+    it changes the file.
+    """
+
+    def __init__(self, movie):
+        self.movie = movie
+
+    @property
+    def shape(self):
+        return self.movie.shape
+
+    def __getitem__(self, indices):
+        return np.require(self.movie[indices], requirements="W")

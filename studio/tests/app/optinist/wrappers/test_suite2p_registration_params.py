@@ -9,6 +9,7 @@ import types
 
 import numpy as np
 import pytest
+import tifffile
 
 from studio.app.common.core.workflow.workflow_params import read_default_params
 from studio.app.optinist.dataclass import Suite2pData
@@ -30,9 +31,16 @@ def suite2p_stub(monkeypatch):
     calls = {}
 
     class BinaryFile:
+        """suite2p 1.1.0's: a memory map of the file, or zeros without one."""
+
         def __init__(self, Ly, Lx, filename, n_frames=None, write=False):
             calls["binary"] = dict(filename=filename, n_frames=n_frames, write=write)
             self.shape = (n_frames, Ly, Lx)
+            if os.path.exists(filename):
+                mode = "r+" if write else "r"
+                self.file = np.memmap(filename, np.int16, mode, shape=self.shape)
+            else:
+                self.file = np.zeros(self.shape, np.int16)
 
         def __enter__(self):
             return self
@@ -41,10 +49,9 @@ def suite2p_stub(monkeypatch):
             return False
 
         def __getitem__(self, indices):
-            n = len(range(*indices.indices(self.shape[0])))
-            return np.zeros((n,) + self.shape[1:], np.int16)
+            return self.file[indices]
 
-    def pipeline(save_path, f_reg, run_registration, settings, device):
+    def pipeline(save_path, f_reg, f_raw, run_registration, settings, device):
         calls["pipeline"] = dict(
             save_path=save_path,
             run_registration=run_registration,
@@ -52,6 +59,11 @@ def suite2p_stub(monkeypatch):
             device=device,
         )
         n, Ly, Lx = f_reg.shape
+        # what registration does with f_raw: reads its frames, shifts their
+        # bidiphase in place, and writes the registered frames into f_reg
+        frames = f_raw[0:n]
+        frames[:, 1::2] += 1
+        f_reg[0:n] = frames + 100
         reg_outputs = {
             "refImg": np.ones((Ly, Lx), np.float32),
             "meanImg": np.full((Ly, Lx), 2, np.float32),  # the input's is ones
@@ -168,15 +180,30 @@ def test_a_block_size_that_is_not_two_numbers_is_refused(
         suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
 
 
-def test_the_binary_is_registered_in_place(output_dir, tmp_path, suite2p_stub):
+def test_registration_writes_mc_images_and_leaves_the_binary_unregistered(
+    output_dir, tmp_path, suite2p_stub
+):
+    movie = np.arange(FRAMES * H * W, dtype=np.int16).reshape(FRAMES, H, W)
+    movie.tofile(tmp_path / "data.bin")
     params = read_default_params("suite2p_registration")
-    suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+
+    info = suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
 
     assert suite2p_stub["binary"] == {
         "filename": str(tmp_path / "data.bin"),
         "n_frames": FRAMES,
-        "write": True,
+        "write": False,
     }
+    np.testing.assert_array_equal(
+        np.fromfile(tmp_path / "data.bin", np.int16), movie.ravel()
+    )
+    registered = movie.copy()
+    registered[:, 1::2] += 1
+    (path,) = info["mc_images"].path
+    np.testing.assert_array_equal(tifffile.imread(path), registered + 100)
+    # the movie suite2p_roi and ROI editing read
+    assert info["ops"].data["registered_tiff"] == path
+    assert info["ops"].data["reg_file"] == str(tmp_path / "data.bin")
 
 
 def test_output_ops_keep_the_flat_contract_and_carry_the_settings(
@@ -187,7 +214,15 @@ def test_output_ops_keep_the_flat_contract_and_carry_the_settings(
 
     ops = info["ops"].data
     # what suite2p_roi, suite2p_spike_deconv and ROI editing read
-    for key in ("reg_file", "nframes", "Ly", "Lx", "batch_size", "meanImg"):
+    for key in (
+        "registered_tiff",
+        "reg_file",
+        "nframes",
+        "Ly",
+        "Lx",
+        "batch_size",
+        "meanImg",
+    ):
         assert key in ops, key
     for key in ("refImg", "meanImgE", "yrange", "xrange", "badframes"):
         assert key in ops, key

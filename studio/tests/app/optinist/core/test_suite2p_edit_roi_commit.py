@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
 
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_writer import (
@@ -109,6 +110,32 @@ def test_add_extracts_trace_and_neuropil_from_the_registered_movie(tmp_path):
     # whose coordinate variance is 2/3; the 2-sigma fit radius follows
     assert np.isclose(new["radius"], 2 * np.sqrt(2 / 3))
     assert data.add_roi == [2]
+
+
+def with_registered_tiff(ops, directory, movie):
+    """Registration's ops: the binary keeps the unregistered frames and the
+    registered movie is the TIFF."""
+    tiff = directory / "mc_images.tif"
+    tifffile.imwrite(tiff, movie.astype(np.int16))
+    ops["registered_tiff"] = str(tiff)
+    return ops
+
+
+def test_add_extracts_the_trace_from_the_registered_tiff(tmp_path):
+    flat = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX))
+    ops, im = build(tmp_path, flat)  # the unregistered binary has no cell
+    movie = flat.copy()
+    roi_y, roi_x = disk(NEW_ROI.posy, NEW_ROI.posx, 3)
+    movie[:, roi_y, roi_x] += 500
+    ops = with_registered_tiff(ops, tmp_path, movie)
+    data = EditRoiData(images=None, roi_masks=with_ellipse(im, NEW_ROI))
+    data.temp_add_roi[2] = NEW_ROI
+    iscell = np.array([CellType.ROI, CellType.ROI, CellType.TEMP_ADD])
+
+    info = commit_edit(data, Suite2pData(ops), iscell, str(tmp_path), "suite2p_roi_t")
+
+    assert np.allclose(info["ops"].data["F"][2], FLAT + 500, atol=1e-2)
+    assert np.array_equal(info["ops"].data["Fneu"][2], FLAT)
 
 
 def test_merge_averages_traces_and_unions_pixels(tmp_path):
@@ -339,7 +366,7 @@ def test_extraction_settings_are_read_from_a_1_1_0_pickle(tmp_path):
 
 def test_commit_never_reads_the_movie_edit_roi_data_carries(tmp_path):
     # suite2p_roi stores a reference to the input movie in EditRoiData; editing
-    # reads traces from the registered binary, so the reference is never opened
+    # reads traces from the registered movie, so the reference is never opened
     from studio.app.common.dataclass.image import ImageData
 
     movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
@@ -370,15 +397,23 @@ def experiments(monkeypatch):
         shutil.rmtree(path, ignore_errors=True)
 
 
-def test_a_commit_in_a_copied_experiment_reads_only_the_copy(experiments):
-    """Experiment copy must rewrite reg_file through suite2p 1.1.0's ops, whose
-    Vmap is an object array of maps of different sizes."""
+@pytest.mark.parametrize("registered", ["binary", "tiff"])
+def test_a_commit_in_a_copied_experiment_reads_only_the_copy(experiments, registered):
+    """Experiment copy must rewrite the movie's path (reg_file, or
+    registered_tiff) through suite2p 1.1.0's ops, whose Vmap is an object array
+    of maps of different sizes."""
     source, copied = experiments
     movie = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX)).copy()
     roi_y, roi_x = disk(NEW_ROI.posy, NEW_ROI.posx, 3)
     movie[:, roi_y, roi_x] += 500
     (source / "suite2p_roi_x").mkdir(parents=True)
-    ops, im = build(source / "suite2p_roi_x", movie)
+    if registered == "binary":  # a release that registered the binary in place
+        ops, im = build(source / "suite2p_roi_x", movie)
+    else:
+        flat = np.broadcast_to(FLAT[:, None, None], (FRAMES, LY, LX))
+        ops, im = build(source / "suite2p_roi_x", flat)
+        (source / "suite2p_registration_x").mkdir()
+        ops = with_registered_tiff(ops, source / "suite2p_registration_x", movie)
     ops["Vmap"] = np.empty(2, dtype=object)
     ops["Vmap"][0], ops["Vmap"][1] = np.zeros((4, 4)), np.zeros((2, 2))
     PickleWriter.write(

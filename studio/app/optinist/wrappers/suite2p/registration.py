@@ -3,10 +3,12 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
 from studio.app.optinist.wrappers.suite2p.utils import (
-    binary_to_tiff,
+    FrameCopies,
     load_settings,
     pair,
     positive,
+    tiff_path,
+    writable_tiff,
 )
 
 logger = AppLogger.get_logger()
@@ -50,25 +52,35 @@ def suite2p_registration(
 
     logger.info("registering in batches of %s frames", reg["batch_size"])
 
-    # Registers the binary in place and writes reg_outputs.npy into output_dir;
-    # mc_images.tif is copied from the registered binary batch by batch
+    # Registers the binary's frames into mc_images.tif, the one copy of the
+    # registered movie, and writes reg_outputs.npy into output_dir. The binary
+    # keeps the unregistered frames; ops["registered_tiff"] names the movie.
     with io.BinaryFile(
         Ly=ops["Ly"],
         Lx=ops["Lx"],
         filename=ops["reg_file"],
         n_frames=ops["nframes"],
-        write=True,
-    ) as f_reg:
+        write=False,
+    ) as f_raw, writable_tiff(output_dir, "mc_images", f_raw.shape) as f_reg:
         reg_outputs = pipeline(
-            output_dir, f_reg, run_registration=True, settings=settings, device=device
+            output_dir,
+            f_reg,
+            f_raw=FrameCopies(f_raw),
+            run_registration=True,
+            settings=settings,
+            device=device,
         )[0]
-        mc_images = ImageData(
-            binary_to_tiff(f_reg, output_dir, "mc_images"),
-            output_dir=output_dir,
-            file_name="mc_images",
-        )
+    registered_tiff = tiff_path(output_dir, "mc_images")
+    mc_images = ImageData(
+        [registered_tiff], output_dir=output_dir, file_name="mc_images"
+    )
 
-    ops = {**ops, **reg_outputs, "settings": settings}
+    ops = {
+        **ops,
+        **reg_outputs,
+        "settings": settings,
+        "registered_tiff": registered_tiff,
+    }
 
     info = {
         "meanImg": ImageData(

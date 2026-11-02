@@ -10,6 +10,7 @@ import types
 
 import numpy as np
 import pytest
+import tifffile
 
 from studio.app.common.core.workflow.workflow_params import read_default_params
 from studio.app.optinist.dataclass import Suite2pData
@@ -74,21 +75,11 @@ def output_dir(tmp_path):
 def suite2p_stub(monkeypatch):
     calls = {"result": _found()}
 
-    class BinaryFile:
-        def __init__(self, Ly, Lx, filename, n_frames=None, write=False):
-            calls["binary"] = dict(filename=filename, n_frames=n_frames, write=write)
-            self.shape = (n_frames, Ly, Lx)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
     def pipeline(save_path, f_reg, run_registration, settings, device):
         reg_path = os.path.join(save_path, "reg_outputs.npy")
         calls["pipeline"] = dict(
             save_path=save_path,
+            movie=np.array(f_reg),
             run_registration=run_registration,
             settings=copy.deepcopy(settings),
             device=device,
@@ -105,7 +96,6 @@ def suite2p_stub(monkeypatch):
 
     fake = types.ModuleType("suite2p")
     fake.default_settings = default_settings
-    fake.io = types.SimpleNamespace(BinaryFile=BinaryFile)
     fake.pipeline = pipeline
     run_s2p = types.ModuleType("suite2p.run_s2p")
     run_s2p._assign_torch_device = lambda name: f"device:{name}"
@@ -114,12 +104,21 @@ def suite2p_stub(monkeypatch):
     return calls
 
 
+def _movie(offset=0):
+    frames = np.arange(FRAMES * LY * LX).reshape(FRAMES, LY, LX)
+    return (frames % 1000 + offset).astype(np.int16)
+
+
 def _registered_ops(tmp_path, **extra):
+    """Ops without a registered TIFF: file conversion's binary is the movie."""
+    binary = tmp_path / "data.bin"
+    if not binary.exists():
+        _movie().tofile(binary)
     ops = {
         "Ly": LY,
         "Lx": LX,
         "nframes": FRAMES,
-        "reg_file": str(tmp_path / "data.bin"),
+        "reg_file": str(binary),
         "file_list": [str(tmp_path / "movie.tif")],
         "batch_size": 500,
         "yrange": [1, LY - 1],
@@ -153,8 +152,7 @@ def test_yaml_lands_in_the_settings_tree_and_detection_runs_on_the_binary(
     assert settings["detection"]["threshold_scaling"] == 2.5
     assert settings["tau"] == params["tau"]
     assert settings["diameter"] == [12.0, 12.0]
-    assert suite2p_stub["binary"]["filename"] == str(tmp_path / "data.bin")
-    assert suite2p_stub["binary"]["write"] is False
+    np.testing.assert_array_equal(call["movie"], _movie())
 
     # the registration step's frame range, where pipeline() reads it
     assert call["reg_outputs"]["yrange"] == [1, LY - 1]
@@ -172,6 +170,20 @@ def test_yaml_lands_in_the_settings_tree_and_detection_runs_on_the_binary(
     assert info["edit_roi_data"].images.path == [str(tmp_path / "movie.tif")]
     roi_masks = info["edit_roi_data"].roi_masks
     assert len(roi_masks) == len(CELLS) and roi_masks.shape == (LY, LX)
+
+
+def test_detection_runs_on_the_registered_tiff_not_the_binary(
+    output_dir, tmp_path, suite2p_stub
+):
+    # registration leaves the binary unregistered and writes mc_images.tif
+    tiff = tmp_path / "mc_images.tif"
+    tifffile.imwrite(tiff, _movie(offset=5000))
+    ops = _registered_ops(tmp_path, registered_tiff=str(tiff))
+
+    info = suite2p_roi(ops, output_dir, params=read_default_params("suite2p_roi"))
+
+    np.testing.assert_array_equal(suite2p_stub["pipeline"]["movie"], _movie(5000))
+    assert info["ops"].data["registered_tiff"] == str(tiff)
 
 
 def test_without_a_registration_node_suite2p_gets_the_full_frame(
