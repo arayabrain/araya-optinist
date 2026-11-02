@@ -60,10 +60,11 @@ infrastructure/scripts/benchmark/run_bench.sh \
 
 Only one row runs at a time (the container name is fixed).
 
-## Larger inputs
+## Inputs of other lengths
 
 `make_large_input.py <src.tif> <dst.tif> --repeat 2` repeats a recording's frames, streaming
-one page at a time. Keep the JSON it prints with the results; frame repetition is a caveat for
+one page at a time; `--frames N` uses only its first N frames (`--repeat 1 --frames N` makes a
+shorter input). Keep the JSON it prints with the results; frame repetition is a caveat for
 ROI detection, not for registration memory.
 
 ## Output of a row
