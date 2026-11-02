@@ -2,6 +2,7 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
+from studio.app.optinist.dataclass.suite2p import suite2p_movie
 from studio.app.optinist.wrappers.suite2p.utils import (
     FrameCopies,
     load_settings,
@@ -17,7 +18,7 @@ logger = AppLogger.get_logger()
 def suite2p_registration(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData, mc_images=ImageData, meanImg=ImageData, refImg=ImageData):
-    from suite2p import default_settings, io, pipeline
+    from suite2p import default_settings, pipeline
     from suite2p.run_s2p import _assign_torch_device
 
     function_id = ExptOutputPathIds(output_dir).function_id
@@ -52,24 +53,21 @@ def suite2p_registration(
 
     logger.info("registering in batches of %s frames", reg["batch_size"])
 
-    # Registers the binary's frames into mc_images.tif, the one copy of the
-    # registered movie, and writes reg_outputs.npy into output_dir. The binary
-    # keeps the unregistered frames; ops["registered_tiff"] names the movie.
-    with io.BinaryFile(
-        Ly=ops["Ly"],
-        Lx=ops["Lx"],
-        filename=ops["reg_file"],
-        n_frames=ops["nframes"],
-        write=False,
-    ) as f_raw, writable_tiff(output_dir, "mc_images", f_raw.shape) as f_reg:
+    # Registers the input movie (file conversion's binary, or an upstream
+    # registration's mc_images) into this node's mc_images.tif, the one copy
+    # of its result, and writes reg_outputs.npy into output_dir. The input is
+    # left as it was.
+    movie = suite2p_movie(ops)
+    with writable_tiff(output_dir, "mc_images", movie.shape) as f_reg:
         reg_outputs = pipeline(
             output_dir,
             f_reg,
-            f_raw=FrameCopies(f_raw),
+            f_raw=FrameCopies(movie),
             run_registration=True,
             settings=settings,
             device=device,
         )[0]
+    del movie
     registered_tiff = tiff_path(output_dir, "mc_images")
     mc_images = ImageData(
         [registered_tiff], output_dir=output_dir, file_name="mc_images"
@@ -81,6 +79,10 @@ def suite2p_registration(
         "settings": settings,
         "registered_tiff": registered_tiff,
     }
+    if "reg_file" in ops:
+        # an earlier release reads reg_file as the registered movie: renamed,
+        # its nodes stop with a KeyError instead of reading unregistered frames
+        ops["raw_file"] = ops.pop("reg_file")
 
     info = {
         "meanImg": ImageData(

@@ -4,7 +4,7 @@ from scipy.ndimage import percentile_filter
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData
 from studio.app.optinist.dataclass.roi import nwb_roi_label_image, nwb_roi_table
-from studio.app.optinist.dataclass.suite2p import registered_movie
+from studio.app.optinist.dataclass.suite2p import suite2p_movie
 
 # numpy ports of what suite2p's extraction does for a manually added ROI
 # (create_cell_pix, extendROI, create_neuropil_masks, extract_traces), so a
@@ -150,7 +150,7 @@ def neuropil_pixels(ypix, xpix, cell_pix, inner_radius, min_pixels, extend_by=5)
 def extract_traces(ops, stat, targets):
     """F and Fneu of `targets` from the registered movie; `stat` holds every ROI."""
     Ly, Lx = ops["Ly"], ops["Lx"]
-    mov = registered_movie(ops)
+    mov = suite2p_movie(ops)
     nframes = mov.shape[0]
     cell_pix = cell_pix_map(stat, Ly, Lx)
     # suite2p 1.1.0 ops nest these under settings; 0.10.3 ops hold them flat

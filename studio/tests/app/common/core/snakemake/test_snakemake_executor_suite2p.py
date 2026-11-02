@@ -138,6 +138,7 @@ def test_snakemake_execute(client):
     # registration writes the registered movie there and leaves file
     # conversion's binary as it wrote it: its mean is still the input's
     assert registration["registered_tiff"] == mc_images
+    assert registration["raw_file"] == convert["reg_file"]
     shape = (convert["nframes"], convert["Ly"], convert["Lx"])
     binary = np.memmap(convert["reg_file"], np.int16, "r", shape=shape)
     np.testing.assert_allclose(

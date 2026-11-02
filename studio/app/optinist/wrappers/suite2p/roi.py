@@ -18,7 +18,7 @@ from studio.app.optinist.dataclass.roi import (
     nwb_roi_label_image,
     nwb_roi_table,
 )
-from studio.app.optinist.dataclass.suite2p import registered_movie
+from studio.app.optinist.dataclass.suite2p import suite2p_movie
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -107,7 +107,7 @@ def suite2p_roi(
     try:
         out = pipeline(
             work_dir,
-            registered_movie(ops),
+            suite2p_movie(ops),
             run_registration=False,
             settings=settings,
             device=device,
@@ -209,7 +209,7 @@ def suite2p_roi(
             file_name="cell_roi",
         ),
         # A reference to the movie, not the movie: suite2p's ROI editing reads
-        # traces from the registered movie (registered_movie(ops)), never this
+        # traces from the registered movie (suite2p_movie(ops)), never this
         "edit_roi_data": EditRoiData(
             images=ImageData(ops.get("file_list") or ops["filelist"]),
             roi_masks=roi_masks,

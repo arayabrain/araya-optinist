@@ -183,10 +183,12 @@ def test_yaml_lands_in_the_settings_tree_and_detection_runs_on_the_binary(
 def test_detection_runs_on_the_registered_tiff_not_the_binary(
     output_dir, tmp_path, suite2p_stub
 ):
-    # registration leaves the binary unregistered and writes mc_images.tif
+    # registration leaves the binary unregistered, as raw_file, and writes
+    # mc_images.tif
     tiff = tmp_path / "mc_images.tif"
     tifffile.imwrite(tiff, _movie(offset=5000))
     ops = _registered_ops(tmp_path, registered_tiff=str(tiff))
+    ops.data["raw_file"] = ops.data.pop("reg_file")
 
     info = suite2p_roi(ops, output_dir, params=read_default_params("suite2p_roi"))
 

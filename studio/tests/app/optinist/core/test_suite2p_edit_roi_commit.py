@@ -113,11 +113,12 @@ def test_add_extracts_trace_and_neuropil_from_the_registered_movie(tmp_path):
 
 
 def with_registered_tiff(ops, directory, movie):
-    """Registration's ops: the binary keeps the unregistered frames and the
-    registered movie is the TIFF."""
+    """Registration's ops: the binary keeps the unregistered frames, as
+    raw_file, and the registered movie is the TIFF."""
     tiff = directory / "mc_images.tif"
     tifffile.imwrite(tiff, movie.astype(np.int16))
     ops["registered_tiff"] = str(tiff)
+    ops["raw_file"] = ops.pop("reg_file")
     return ops
 
 
