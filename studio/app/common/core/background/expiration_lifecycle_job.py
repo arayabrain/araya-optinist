@@ -687,9 +687,10 @@ class ExpirationLifecycleJob:
             total_deleted_bytes += size
             key_hash = hashlib.sha1(s3_key.encode()).hexdigest()
             try:
-                decrement_storage_idempotent(
+                if not decrement_storage_idempotent(
                     user_id, size, f"{idempotency_key}_{key_hash}"
-                )
+                ):
+                    raise RuntimeError(f"Storage decrement failed for {s3_key}")
                 if not flags_cleared:
                     cls._update_data_flags(tier, item)
                     flags_cleared = True

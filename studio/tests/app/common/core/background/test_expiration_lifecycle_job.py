@@ -912,6 +912,21 @@ class TestDeleteUnit:
         assert mock_bucket.delete_objects.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_failed_decrement_stops_the_unit(self):
+        """decrement_storage_idempotent reports failure by returning False."""
+        mock_bucket = MagicMock()
+        mock_bucket.delete_objects = AsyncMock(return_value={})
+        self.decrement.return_value = False
+        keys_with_sizes = [("prefix/key_0", 100), ("prefix/key_1", 50)]
+
+        with self._listing(keys_with_sizes), pytest.raises(_BookkeepingError) as exc:
+            await _delete_unit(mock_bucket)
+
+        assert exc.value.bytes_deleted == 100
+        assert mock_bucket.delete_objects.await_count == 1
+        self.flags.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_all_files_failing_keeps_the_flag(self):
         mock_bucket = MagicMock()
         mock_bucket.delete_objects = AsyncMock(side_effect=RuntimeError("down"))

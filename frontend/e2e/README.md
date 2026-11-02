@@ -373,7 +373,9 @@ PR description.
 
 ## The weekly regression, and running it on a branch
 
-Nothing opt-in runs per PR. `.github/workflows/e2e.yml` gathers all of it into
+The only opt-in lane that runs per PR is `make expiration_it`
+(`.github/workflows/expiration-it.yml`, on PRs that touch the deletion path).
+`.github/workflows/e2e.yml` gathers all of them into
 one Monday 00:00 UTC job: the Playwright suite with `RUN_SLOW=1`, the three
 real-database pytest lanes (`make premium_lock_it`, `make workflow_count_it`,
 `make expiration_it`), and a re-run of the per-PR unit lanes. A sheet row whose

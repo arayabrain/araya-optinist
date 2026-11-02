@@ -579,8 +579,8 @@ class SubscriptionService:
         reprocess cooldown and the over-quota-again notice count from the latest
         pass. A pass that leaves the user over quota carries the current warning
         forward (reprocess_notified_at = now): the user never went under quota,
-        so "over the quota again" would be wrong. New subscription records
-        created after re-subscribing start with deletion_processed_at = NULL.
+        so "over the quota again" would be wrong. After a renewal the stamp
+        predates the new expiration, so the next lapse starts a fresh cycle.
         """
         from studio.app.common.core.subscription.constants import SubscriptionPeriods
 
@@ -671,7 +671,7 @@ class SubscriptionService:
                 UserSubscription.expiration <= now,
                 or_(
                     UserSubscription.expiration > grace_cutoff,
-                    UserSubscription.deletion_processed_at.is_(None),
+                    SubscriptionService._deletion_unprocessed(),
                 ),
                 User.active.is_(True),
                 UserStorageUsage.storage_usage_bytes
@@ -715,6 +715,16 @@ class SubscriptionService:
     }
 
     @staticmethod
+    def _deletion_unprocessed():
+        """No deletion pass since the current expiration.
+
+        Renewal updates the same row, so a stamp from an earlier cycle predates
+        the expiration and counts as unprocessed, like the notification stamps.
+        """
+        processed = UserSubscription.deletion_processed_at
+        return or_(processed.is_(None), processed <= UserSubscription.expiration)
+
+    @staticmethod
     def _reprocess_notice_unsent(now: datetime):
         """No over-quota-again notice since the last pass, or one too old to count."""
         notified = UserSubscription.reprocess_notified_at
@@ -743,7 +753,7 @@ class SubscriptionService:
             .filter(
                 UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
                 UserSubscription.expiration <= grace_cutoff,
-                UserSubscription.deletion_processed_at.isnot(None),
+                UserSubscription.deletion_processed_at > UserSubscription.expiration,
                 User.active.is_(True),
                 UserStorageUsage.storage_usage_bytes
                 > ExpirationDeletion.FREE_QUOTA_BYTES,
@@ -818,7 +828,7 @@ class SubscriptionService:
 
         Finds users where:
         - Premium subscription expired > GRACE_PERIOD_DAYS ago
-        - deletion_processed_at is NULL on those records (not yet processed)
+        - no deletion pass on those records since their expiration
         - Storage usage exceeds free tier quota
 
         Also re-processes users whose storage has grown back above quota
@@ -897,7 +907,7 @@ class SubscriptionService:
             .filter(
                 UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
                 UserSubscription.expiration <= grace_cutoff,
-                UserSubscription.deletion_processed_at.is_(None),
+                SubscriptionService._deletion_unprocessed(),
                 UserStorageUsage.storage_usage_bytes
                 > ExpirationDeletion.FREE_QUOTA_BYTES,
                 ~has_active_sub,
@@ -916,7 +926,7 @@ class SubscriptionService:
             .filter(
                 UserSubscription.plan_id == SubscriptionPlanIds.PREMIUM,
                 UserSubscription.expiration <= grace_cutoff,
-                UserSubscription.deletion_processed_at.isnot(None),
+                UserSubscription.deletion_processed_at > UserSubscription.expiration,
                 UserSubscription.deletion_processed_at <= reprocess_cutoff,
                 UserStorageUsage.storage_usage_bytes
                 > ExpirationDeletion.FREE_QUOTA_BYTES,

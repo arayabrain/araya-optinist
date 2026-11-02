@@ -38,7 +38,8 @@ connections, `make workflow_count_it`) and
 with moto S3 and SES, `make expiration_it`). All collect and skip otherwise, and
 all run in the Monday `Weekly Regression`.
 
-The opt-in lanes never run per PR. `@slow` runs in the Monday `Weekly
+The opt-in lanes never run per PR, except `make expiration_it`, which
+`expiration-it.yml` runs on PRs that touch the deletion path. `@slow` runs in the Monday `Weekly
 Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`,
 the S3 lane and the two Stripe lanes (`CHECKOUT-0x`, `STRIPE-0x`) are excluded
 even from that, because each performs genuine work against the deployed dev

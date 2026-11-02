@@ -509,6 +509,39 @@ class TestExpirationDeletionOverRealStorage:
         mine = _subjects_to(seeded)
         assert len(mine) == 2 and "deletion completed" in mine[1]
 
+    def test_with_emails_on_a_second_lapse_starts_a_fresh_cycle(self):
+        from studio.app.common.core.subscription.constants import ExpirationDeletion
+
+        bucket = f"expiration-it-relapse-{uuid.uuid4().hex[:8]}"
+        _create_bucket(bucket)
+        seeded = _seed_user(days_expired=31, usage_over_quota=EXCESS, bucket=bucket)
+        keys = _put_experiment_data(bucket, seeded)
+        # Processed in an earlier cycle, then renewed (same row) and lapsed again
+        _set_subscription(
+            seeded,
+            grace_start_notified_at=_now() - timedelta(days=130),
+            grace_reminder_notified_at=_now() - timedelta(days=120),
+            deletion_processed_at=_now() - timedelta(days=100),
+        )
+
+        with _emails_on():
+            _run_job()
+
+            mine = _subjects_to(seeded)
+            assert len(mine) == 1 and "deletion notice" in mine[0]
+            assert _keys(bucket) == set(keys.values())
+
+            _set_subscription(
+                seeded,
+                grace_start_notified_at=_now()
+                - timedelta(days=ExpirationDeletion.MIN_NOTICE_DAYS + 1),
+            )
+            _run_job()
+
+        assert _keys(bucket) == {keys["config"], keys["output"]}
+        mine = _subjects_to(seeded)
+        assert len(mine) == 2 and "deletion completed" in mine[1]
+
     def test_with_emails_off_a_pass_that_leaves_the_user_over_records_no_notice(
         self,
     ):
