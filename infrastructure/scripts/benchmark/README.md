@@ -103,6 +103,13 @@ ROI detection, not for registration memory.
 - clones `BENCH_GIT_REF` (default `develop-main`) and pulls the image from ECR;
 - fetches the inputs from S3.
 
+`aws/run_cases.sh` then runs the case list at the tier's ceiling with its swap allowance
+(variant S) and copies each finished row to S3: one suite2p run as the reference, two
+suite2p runs together, suite2p beside CaImAn, and one run at about twice the length.
+`BENCH_SHORT_FRAMES` adds the two concurrent rows on an input cut to that many frames.
+Set `BENCH_UVICORN_WORKERS` (and `BENCH_MEMORY_MIB` / `BENCH_SWAP_MIB` if they differ from the
+defaults) to the tier being modelled.
+
 On native x86_64 Linux, wall clock is comparable with a deployment, and `provenance.json`
 records that and the EC2 instance type.
 
