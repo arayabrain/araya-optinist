@@ -26,10 +26,11 @@ WAIT_FOR_DATABASE_SH = (
 
 BASH = shutil.which("bash")
 
-# Records each call's arguments, then fails STUB_FAILURES times before
-# succeeding; with STUB_BLOCK set, a failing call blocks instead.
+# Records each call's arguments and MYSQL_PWD, then fails STUB_FAILURES times
+# before succeeding; with STUB_BLOCK set, a failing call blocks instead.
 MYSQL_STUB = """#!/bin/sh
 echo "$*" >> "$STUB_CALLS"
+echo "${MYSQL_PWD-}" >> "$STUB_PASSWORDS"
 if [ "$(wc -l < "$STUB_CALLS")" -gt "$STUB_FAILURES" ]; then
     exit 0
 fi
@@ -71,6 +72,8 @@ def _run_wait(
     stub.chmod(0o755)
     calls = tmp_path / "mysql_calls"
     calls.touch()
+    passwords = tmp_path / "mysql_passwords"
+    passwords.touch()
 
     env = {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -82,6 +85,7 @@ def _run_wait(
         "DB_ATTEMPT_TIMEOUT_SECONDS": str(attempt_timeout),
         "DB_RETRY_INTERVAL_SECONDS": str(retry_interval),
         "STUB_CALLS": str(calls),
+        "STUB_PASSWORDS": str(passwords),
         "STUB_FAILURES": str(failures),
     }
     if block:
@@ -151,6 +155,16 @@ class TestWaitForDatabase:
 
         assert result.returncode == 1
         assert len(calls) == 1, (len(calls), elapsed)
+
+    def test_passes_the_password_outside_the_arguments(self, tmp_path):
+        """The client masks a -p argument, but timeout keeps its own
+        arguments readable for the whole attempt."""
+        result, _, calls = _run_wait(tmp_path, failures=0)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "secret" not in calls[0]
+        passwords = (tmp_path / "mysql_passwords").read_text().splitlines()
+        assert passwords == ["secret"]
 
     @pytest.mark.parametrize(
         "ssl_mode,expected",

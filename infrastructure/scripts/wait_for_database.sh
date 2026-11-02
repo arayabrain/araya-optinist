@@ -40,9 +40,11 @@ fi
 deadline=$((SECONDS + wait_seconds))
 attempt=0
 
+# The password goes in MYSQL_PWD, not -p: the client masks its own arguments,
+# but timeout keeps them readable for the whole attempt.
 # `$?` at the top of the body is the attempt's status; 124 is a timeout.
-until timeout "$attempt_timeout" \
-    mysql "${ssl_opts[@]}" -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
+until MYSQL_PWD="${MYSQL_PASSWORD}" timeout "$attempt_timeout" \
+    mysql "${ssl_opts[@]}" -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
 do
     status=$?
     # Not `((attempt++))`: an arithmetic command that evaluates to 0 returns
