@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import shutil
@@ -573,8 +574,16 @@ def save_nwb(save_path, input_config, config):
 
     nwbfile = set_nwbconfig(nwbfile, config)
 
-    with NWBHDF5IO(save_path, "w") as f:
-        f.write(nwbfile)
+    f = NWBHDF5IO(save_path, "w")
+    try:
+        with f:
+            f.write(nwbfile)
+    except BaseException:
+        # a streamed raw movie is read during the write; a failed read must not
+        # leave a partial file at the path
+        with contextlib.suppress(OSError):
+            os.remove(save_path)
+        raise
 
 
 def overwrite_nwbfile(save_path, config):

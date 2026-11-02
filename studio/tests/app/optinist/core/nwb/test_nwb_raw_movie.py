@@ -100,6 +100,22 @@ def test_the_raw_movie_is_chunked_by_whole_frames(tmp_path, frame_shape, chunks)
         assert io.read().acquisition["TwoPhotonSeries"].data.chunks == chunks
 
 
+def test_a_frame_that_fails_to_read_leaves_no_file(tmp_path, monkeypatch):
+    # frames are read during the write, so the file is open with frames in it
+    paths, _ = tiffs(tmp_path, np.uint16, [5])
+    read = image_module.iter_frame_batches
+
+    def fails_at_the_last_frame(path, frames, batch_size):
+        yield next(read(path, frames, frames))[:-1]
+        raise OSError("read error")
+
+    monkeypatch.setattr(image_module, "iter_frame_batches", fails_at_the_last_frame)
+
+    with pytest.raises(OSError, match="read error"):
+        write_raw(tmp_path, ImageData(paths, ""))
+    assert not (tmp_path / "func.nwb").exists()
+
+
 def test_files_of_different_frame_shapes_are_refused(tmp_path):
     a, b = str(tmp_path / "a.tif"), str(tmp_path / "b.tif")
     tifffile.imwrite(a, np.zeros((3, 4, 3), np.uint16))
