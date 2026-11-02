@@ -234,9 +234,8 @@ test.describe("Record Management", () => {
     })
     const downloadPromise = page.waitForEvent("download", { timeout: 60_000 })
     await nwbButton.click()
-    // The button being enabled is not evidence the file exists: the imported
-    // tutorial metadata declares an nwb section but ships no .nwb, so the
-    // button enables for records that were never run and the route 404s.
+    // The button only enables once a run sets hasNWB, but that flag is not
+    // proof the file was written, so check the route answers 200.
     expect((await nwbResponse).status()).toBe(200)
 
     const download = await downloadPromise

@@ -98,9 +98,8 @@ def normalize_output_path(path: str) -> str:
     """
     Convert absolute output path to relative path.
 
-    Handles paths like:
-    - /tmp/studio/output/93/tutorial1/... → 93/tutorial1/...
-    - /app/studio_data/output/93/tutorial1/... → 93/tutorial1/...
+    Strips only this host's OUTPUT_DIR, e.g. with OPTINIST_DIR=/app/studio_data:
+    - /app/studio_data/output/93/tutorial1/... -> 93/tutorial1/...
 
     Args:
         path: The path to normalize (may be absolute or relative)
