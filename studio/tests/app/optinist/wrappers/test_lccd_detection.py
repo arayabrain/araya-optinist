@@ -308,7 +308,13 @@ def real_lccd(monkeypatch):
     results, one per chunk (skimage is not installed here)."""
     package = f"{lccd_detection.__package__}.lccd_python"
 
-    def build(chunks, blob_sparse=False, roi_sparse=False, roi_area=(1, 100)):
+    def build(
+        chunks,
+        blob_sparse=False,
+        roi_sparse=False,
+        roi_area=(1, 100),
+        overlap_threshold=0.25,
+    ):
         class ScriptedBlobDetector:
             def __init__(self, **kwargs):
                 self.chunks = iter(chunks)
@@ -328,7 +334,7 @@ def real_lccd(monkeypatch):
         config = {
             "blob_detector": {},
             "roi_integration": {
-                "overlap_threshold": 0.25,
+                "overlap_threshold": overlap_threshold,
                 "min_area": roi_area[0],
                 "max_area": roi_area[1],
                 "sparse": roi_sparse,
@@ -340,8 +346,8 @@ def real_lccd(monkeypatch):
     return build
 
 
-def mask(*pixel_ranges):
-    roi = np.zeros((16, len(pixel_ranges)))
+def mask(*pixel_ranges, n_pixels=16):
+    roi = np.zeros((n_pixels, len(pixel_ranges)))
     for i, (start, stop) in enumerate(pixel_ranges):
         roi[start:stop, i] = 1
     return roi
@@ -390,14 +396,38 @@ def overlapping_chunks(seed, n_chunks=4, n_rois=3):
     return chunks
 
 
+@pytest.mark.parametrize("overlap_threshold", [0.2, 0.25, 0.3])
 @pytest.mark.parametrize("seed", range(8))
-def test_dense_and_sparse_integration_find_the_same_rois(real_lccd, seed):
-    dense = real_lccd(overlapping_chunks(seed), roi_sparse=False)
+def test_dense_and_sparse_integration_find_the_same_rois(
+    real_lccd, seed, overlap_threshold
+):
+    dense = real_lccd(overlapping_chunks(seed), overlap_threshold=overlap_threshold)
     for blob_sparse in (False, True):
         sparse = real_lccd(
-            overlapping_chunks(seed), blob_sparse=blob_sparse, roi_sparse=True
+            overlapping_chunks(seed),
+            blob_sparse=blob_sparse,
+            roi_sparse=True,
+            overlap_threshold=overlap_threshold,
         )
         np.testing.assert_array_equal(sparse.toarray(), dense.toarray())
+
+
+@pytest.mark.parametrize(
+    "overlap_threshold, earlier, later, n_pixels",
+    [
+        (0.2, (0, 10), (9, 14), 16),  # overlap 1 of the later ROI's 5 pixels
+        (0.3, (0, 20), (17, 27), 27),  # overlap 3 of the later ROI's 10 pixels
+    ],
+)
+def test_an_overlap_ratio_equal_to_the_threshold_integrates_alike(
+    real_lccd, overlap_threshold, earlier, later, n_pixels
+):
+    # 0.2 and 0.3 have no exact binary form: the ratio must round the same way
+    # in both modes for the comparison with the threshold to agree
+    chunks = [mask(earlier, n_pixels=n_pixels), mask(later, n_pixels=n_pixels)]
+    dense = real_lccd(chunks, overlap_threshold=overlap_threshold)
+    sparse = real_lccd(chunks, roi_sparse=True, overlap_threshold=overlap_threshold)
+    np.testing.assert_array_equal(sparse.toarray(), dense.toarray())
 
 
 @pytest.fixture
