@@ -27,22 +27,13 @@ from fastapi import BackgroundTasks
 
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.workflow.workflow import RunItem
-from studio.app.common.core.workflow.workflow_params import read_default_params
+from studio.app.common.core.workflow.workflow_params import (
+    dict2nest,
+    read_default_params,
+)
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 
 STYLE = {"border": None, "height": None, "padding": None, "width": None}
-
-
-def dict2nest(params: dict, prefix: str = "") -> dict:
-    """Inverse of workflow_params.nest2dict: the shape the frontend sends."""
-    nested = {}
-    for key, value in params.items():
-        path = f"{prefix}/{key}" if prefix else key
-        if isinstance(value, dict):
-            nested[key] = {"type": "parent", "children": dict2nest(value, path)}
-        else:
-            nested[key] = {"type": "child", "value": value, "path": path}
-    return nested
 
 
 def apply_override(params: dict, dotted: str, raw_value: str) -> None:
