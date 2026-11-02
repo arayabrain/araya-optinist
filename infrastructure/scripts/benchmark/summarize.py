@@ -109,7 +109,9 @@ def cgroup_summary(rows, t_start, t_end):
     peak_cur = max((to_int(r["mem_current"]) or 0) for r in during) if during else None
     peak_hw = max((to_int(r["mem_peak"]) or 0) for r in rows)
     # anon = process memory; file = page cache, reclaimable, so not demand
+    baseline_anon = to_int(before[-1]["anon"]) if before else None
     peak_anon = max((to_int(r["anon"]) or 0) for r in rows)
+    rise_anon = None if baseline_anon is None else peak_anon - baseline_anon
     swap = max((to_int(r["swap_current"]) or 0) for r in rows)
     oom = max((to_int(r["oom_kill"]) or 0) for r in rows)
     first, last = rows[0], rows[-1]
@@ -122,11 +124,14 @@ def cgroup_summary(rows, t_start, t_end):
         [
             "| Measure | Value |",
             "|---|---|",
-            f"| API baseline before run (MB) | {mb(baseline)} |",
+            f"| API baseline before run, memory.current incl. page cache (MB) | "
+            f"{mb(baseline)} |",
             f"| Peak memory.current, 1 s samples (MB) | {mb(peak_cur)} |",
             f"| memory.peak, kernel high-water, incl. page cache (MB) | "
             f"{mb(peak_hw)} |",
+            f"| API baseline before run, anon (MB) | {mb(baseline_anon)} |",
             f"| **Peak anon — demand, excl. page cache (MB)** | {mb(peak_anon)} |",
+            f"| Rise in anon over the baseline (MB) | {mb(rise_anon)} |",
             f"| Peak swap (MB) | {mb(swap)} |",
             f"| OOM kills in cgroup | {oom} |",
             # Docker Desktop does not count bind-mount writes; see per-rule figures
@@ -204,13 +209,13 @@ def main():
     print(cgroup_summary(read_tsv(os.path.join(row, "cgroup.tsv")), t_start, t_end))
     if harness_mb:
         note = (
-            "; a deployed run's uvicorn worker would hold part of it"
+            " (a deployed run's uvicorn worker would hold part of it)"
             if start == "exec"
             else ""
         )
         print(
             f"\nThe harness's own processes held {harness_mb:,.0f} MB RssAnon at the"
-            f" end of the runs; peak anon includes it{note}."
+            f" end of the runs, included in peak anon{note}."
         )
     print("\n## API probe\n")
     print(probe_summary(read_tsv(os.path.join(row, "probe.tsv")), t_start, t_end))

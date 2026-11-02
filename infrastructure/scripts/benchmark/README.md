@@ -86,7 +86,7 @@ ROI detection, not for registration memory.
 | File | Content |
 |---|---|
 | `provenance.json` | Git SHA and dirty files, fixture and overrides, input bytes and SHA-256, image ID, memory and CPU flags, uvicorn workers, sampling intervals, host |
-| `rules-N.jsonl` | One line per rule: `peak_rss_mb` (kernel high-water mark, not sampled), `write_bytes`, process start / imports done / end times, per-step peaks (`phases`), and `status`, the rule process's own outcome. A function that fails writes its error as the rule's output, so its process still ends `ok`; the node's result is in the run's experiment record, and `summary.md` shows it per rule |
+| `rules-N.jsonl` | One line per rule: `peak_rss_mb` (kernel high-water mark, not sampled), `write_bytes`, process start / imports done / end times, per-step peaks (`phases`), and `status`, the rule process's own outcome. A function that fails writes its error as the rule's output, so its process still ends `ok`; the node's result is in the run's experiment record, and `summary.md` shows it per rule. The record is written when the run ends, so in a timed-out row finished nodes can still read `running` |
 | `cgroup.tsv` | Container memory, peak, swap, OOM-kill count, CPU — every second |
 | `probe.tsv` | `/health` status and latency every second (failure = non-200 or 10 s timeout) |
 | `summary.md` | The above reduced to tables |
@@ -95,7 +95,9 @@ ROI detection, not for registration memory.
 ## Reading the results
 
 - **Demand is the container's peak `anon`** (process memory, API included), not `memory.peak`:
-  the latter includes page cache, which the kernel reclaims under pressure.
+  the latter includes page cache, which the kernel reclaims under pressure. For what the runs
+  add, subtract the idle `anon` baseline (`summary.md` gives the rise), not the idle
+  `memory.current`.
 - **In `exec` rows, demand includes one driver process per run.** `summary.md` gives each
   driver's memory under the runs. It is an upper bound on the excess, not the excess: in a
   deployment the uvicorn worker that runs the workflow grows too. Use `--start api` for figures
