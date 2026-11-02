@@ -13,7 +13,7 @@ import {
 // directly rather than through a markdown parser.
 const Privacy = () => {
   return (
-    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-08-01">
+    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-11-02">
       <P>
         Araya Inc. (&quot;we,&quot; &quot;us,&quot; or &quot;Araya&quot;)
         provides the cloud service &quot;Araya-OptiNiSt Cloud&quot; (the
@@ -358,9 +358,8 @@ const Privacy = () => {
         actions (registering, signing in, running an analysis pipeline, and
         viewing public data), approximate location derived from IP address, and
         device and browser information. We do not send your name, email address,
-        or research data to Google Analytics, and the page addresses we send
-        exclude URL query parameters. This information is transmitted to and
-        stored by Google. For details, see Google&apos;s{" "}
+        or research data to Google Analytics. This information is transmitted to
+        and stored by Google. For details, see Google&apos;s{" "}
         <ExternalLink href="https://policies.google.com/privacy">
           Privacy Policy
         </ExternalLink>{" "}
@@ -380,15 +379,19 @@ const Privacy = () => {
         Consent: Analytics is opt-in for all visitors, wherever you are located.
         On your first visit, a notice asks whether to allow analytics cookies,
         with Accept and Decline options of equal prominence. Until you accept,
-        no analytics events are sent; if you decline, none are sent. You can
-        change your choice at any time: signed-in users can use the Analytics
-        Cookies setting on the Account page, and any visitor can clear this
-        site&apos;s stored data in their browser to see the notice again. Google
-        Analytics is configured with a data-retention period of 14 months,
-        Google Signals and advertising personalization disabled, and data
-        redaction enabled for email addresses and selected URL parameters.
-        Google Analytics does not log or store IP addresses; it uses them only
-        to derive approximate location.
+        no analytics events are sent; if you decline, none are sent. The Service
+        still loads the Google Tag Manager script from Google on every visit,
+        including after you decline; like any request to a website, that request
+        gives Google your IP address and browser information, but no analytics
+        cookies are set and no analytics events are sent. You can change your
+        choice at any time: signed-in users can use the Analytics Cookies
+        setting on the Account page, and any visitor can clear this site&apos;s
+        stored data in their browser to see the notice again. Google Analytics
+        is configured with a data-retention period of 14 months, Google Signals
+        and advertising personalization disabled, page addresses recorded
+        without URL query parameters, and data redaction enabled for email
+        addresses and selected URL parameters. Google Analytics does not log or
+        store IP addresses; it uses them only to derive approximate location.
       </P>
 
       <H2>6. Data Sharing and Publishing Features</H2>
