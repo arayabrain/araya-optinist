@@ -1,8 +1,14 @@
 """CORS_ORIGINS narrows the allowed origins; unset or "*" keeps the old wildcard."""
 
 import pytest
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
-from studio.app.common.core.middleware.cors_config import get_cors_allow_origins
+from studio.app.common.core.middleware.cors_config import (
+    get_cors_allow_origins,
+    get_cors_origin_options,
+)
 
 
 @pytest.mark.parametrize("raw", ["", "*", " * ", '"*"', "'*'", "https://a.example, *"])
@@ -39,3 +45,37 @@ def test_quotes_and_trailing_slash_are_removed():
         "https://app.example.org",
         "https://admin.example.org",
     ]
+
+
+def _client():
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware, **get_cors_origin_options(), allow_credentials=True
+    )
+    app.post("/auth/login")(lambda: {})
+    return TestClient(app)
+
+
+def test_wildcard_echoes_the_origin_of_a_cookieless_credentialed_request(
+    monkeypatch,
+):
+    """Browsers drop a credentialed response that says "*"."""
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+
+    response = _client().post(
+        "/auth/login", headers={"origin": "http://localhost:3000"}
+    )
+
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_a_narrowed_list_echoes_only_its_own_origins(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.example.org")
+    client = _client()
+
+    allowed = client.post("/auth/login", headers={"origin": "https://app.example.org"})
+    foreign = client.post("/auth/login", headers={"origin": "https://evil.example"})
+
+    assert allowed.headers["access-control-allow-origin"] == "https://app.example.org"
+    assert "access-control-allow-origin" not in foreign.headers
