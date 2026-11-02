@@ -3,6 +3,7 @@ import json
 import os
 
 import numpy as np
+from filelock import FileLock
 from hdmf.data_utils import GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
@@ -22,6 +23,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
@@ -576,8 +578,12 @@ def overwrite_nwb(config, save_path, nwb_file_name):
     nwb_path = join_filepath([save_path, nwb_file_name])
     tmp_nwb_path = join_filepath([save_path, "tmp_" + nwb_file_name])
 
+    # one rewrite at a time, as for whole.nwb: an ROI-edit commit and a data
+    # filter can rewrite the same file, and share its temporary
+    lock = FileLock(FileLockUtils.get_lockfile_path(nwb_path), timeout=120)
+
     # NWBファイルの読み込み
-    with _replacing(tmp_nwb_path, nwb_path), NWBHDF5IO(nwb_path, "r") as io:
+    with lock, _replacing(tmp_nwb_path, nwb_path), NWBHDF5IO(nwb_path, "r") as io:
         nwbfile = io.read()
         # acquisition を元ファイルから作成する
         new_nwbfile = NWBCreater.re_acquisition(nwbfile)

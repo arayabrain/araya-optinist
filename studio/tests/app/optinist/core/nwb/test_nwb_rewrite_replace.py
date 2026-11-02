@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -82,3 +84,37 @@ def test_a_failed_rewrite_leaves_the_old_file_and_no_temporary(
 
     assert os.listdir(nwb_path.parent) == [nwb_path.name]
     np.testing.assert_array_equal(node_image(nwb_path), np.full((4, 3), 1.0))
+
+
+def test_overlapping_node_nwb_rewrites_both_complete(nwb_path, monkeypatch):
+    """An ROI-edit commit and a data filter can rewrite one node NWB at once."""
+    first_writing, second_started = threading.Event(), threading.Event()
+    write = NWBHDF5IO.write
+
+    def write_after_the_second_starts(self, *args, **kwargs):
+        if not first_writing.is_set():
+            first_writing.set()
+            second_started.wait(5)
+            time.sleep(0.2)  # time for the second rewrite to reach the file
+        return write(self, *args, **kwargs)
+
+    monkeypatch.setattr(NWBHDF5IO, "write", write_after_the_second_starts)
+    errors = []
+
+    def rewrite_to(value):
+        try:
+            rewrite_node_nwb(nwb_path, config_with(value))
+        except Exception as e:
+            errors.append(e)
+
+    first = threading.Thread(target=rewrite_to, args=(2.0,))
+    first.start()
+    assert first_writing.wait(5)
+    second_started.set()
+    rewrite_to(3.0)
+    first.join(30)
+
+    assert errors == []
+    assert os.listdir(nwb_path.parent) == [nwb_path.name]
+    # the second waited for the first, then rewrote its result
+    np.testing.assert_array_equal(node_image(nwb_path), np.full((4, 3), 3.0))
