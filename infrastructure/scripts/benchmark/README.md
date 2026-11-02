@@ -92,6 +92,11 @@ ROI detection, not for registration memory.
   menu item is not enough); check with `docker info --format '{{.MemTotal}}'`.
 - Container-level write bytes exclude writes to bind mounts on Docker Desktop; use the per-rule
   `write_bytes` and `du-N.txt`.
+- `rule_windows.py <row dir> [...]` gives the container's peak `anon` within each rule's window,
+  beside the rule's own peak RSS, time and bytes written. A window starts at the rule's process
+  start, so for a short rule its peak can be the previous rule's exit; check the rule's own RSS.
+- The cgroup sampler reads once per second and can miss spikes shorter than that; the per-rule
+  `peak_rss_mb` is the kernel's high-water mark and does not.
 
 ## On AWS (real-infrastructure lane)
 
