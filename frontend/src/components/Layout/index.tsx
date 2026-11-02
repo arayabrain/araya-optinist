@@ -23,7 +23,7 @@ import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector
 import { getMe } from "store/slice/User/UserActions"
 import { selectCurrentUser } from "store/slice/User/UserSelector"
 import { AppDispatch } from "store/store"
-import { getToken, requiresAuth } from "utils/auth/AuthUtils"
+import { getToken, requiresAuth, restoreSession } from "utils/auth/AuthUtils"
 
 const STORAGE_REFRESH_TIMEOUT_MS = 10000
 const STORAGE_REFRESH_MAX_RETRIES = 2
@@ -99,7 +99,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
     const isAuthPage = (
       [AUTH_PATHS.LOGIN, AUTH_PATHS.REGISTER] as string[]
     ).includes(location.pathname)
-    const token = getToken()
+    const token = await restoreSession()
 
     // For all public routes, if there's a token, fetch user data to show correct header
     if (!user) {
@@ -138,7 +138,7 @@ const Layout = ({ children }: { children?: ReactNode }) => {
   }
 
   const checkAuth = async () => {
-    const token = getToken()
+    const token = await restoreSession()
     const isLogin = location.pathname === AUTH_PATHS.LOGIN
 
     // Always check token first, even if Redux has user data

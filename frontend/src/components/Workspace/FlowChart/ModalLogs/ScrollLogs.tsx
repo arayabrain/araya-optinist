@@ -94,18 +94,21 @@ const ScrollLogs = forwardRef(function ScrollLogsRef(
       const indexx = item.text
         .toLowerCase()
         .indexOf(keyword.trim().toLowerCase())
-      const keys = [
-        item.text.substring(0, indexx),
-        `<span style="background: ${searchId === item.id ? "#ff9632" : "#ffff00"}; color: #555f64">${item.text.substring(indexx, indexx + keyword.trim().length)}</span>`,
-        item.text.substring(indexx + keyword.trim().length, item.text.length),
-      ]
       if (indexx > -1) {
+        const end = indexx + keyword.trim().length
         return (
-          <BoxItem
-            dangerouslySetInnerHTML={{
-              __html: keys.join(""),
-            }}
-          />
+          <BoxItem>
+            {item.text.substring(0, indexx)}
+            <span
+              style={{
+                background: searchId === item.id ? "#ff9632" : "#ffff00",
+                color: "#555f64",
+              }}
+            >
+              {item.text.substring(indexx, end)}
+            </span>
+            {item.text.substring(end)}
+          </BoxItem>
         )
       }
       return <BoxItem>{item.text}</BoxItem>

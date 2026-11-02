@@ -490,10 +490,10 @@ Understanding these makes failures much easier to read:
   `DELETE /workspace/{id}` removes the workspace's input and output data with
   it, in S3 too when remote storage is on.
 - **API-based setup, UI-based assertions** (`helpers.ts`): specs that need a
-  workspace find-or-create it via the API (`ensureWorkspaceId`, reading the
-  app's Bearer token from localStorage) and navigate straight to
-  `/workspaces/{id}`. Only the workspace spec drives the grid UI, because
-  the grid is what it tests.
+  workspace find-or-create it via the API (`ensureWorkspaceId`, with a
+  Bearer token `apiHeaders()` gets from the browser context's refresh
+  cookie) and navigate straight to `/workspaces/{id}`. Only the workspace
+  spec drives the grid UI, because the grid is what it tests.
 - **Shared data workspace**: the workflow/record/file/dataview specs share
   one workspace named `e2e-data`; `ensureTutorialRecords` imports the sample
   data on first need, so the ~1 min import happens once per run and any spec

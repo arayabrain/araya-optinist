@@ -7,6 +7,9 @@ from studio.app.optinist.wrappers.optinist.neural_population_analysis.cross_corr
 from studio.app.optinist.wrappers.optinist.neural_population_analysis.granger import (
     Granger,
 )
+from studio.app.optinist.wrappers.optinist.neural_population_analysis.hierarchical_clustering import (  # noqa: E501
+    hierarchical_clustering,
+)
 
 neural_population_analysis_wrapper_dict = {
     "correlation": {
@@ -19,5 +22,8 @@ neural_population_analysis_wrapper_dict = {
     "granger": {
         "function": Granger,
         "conda_name": "optinist",
+    },
+    "hierarchical_clustering": {
+        "function": hierarchical_clustering,
     },
 }
