@@ -106,15 +106,30 @@ async def test_a_delete_only_commit_keeps_the_recording_rate(file_path):
 
 
 @pytest.mark.asyncio
-async def test_a_commit_exports_binary_footprints_as_nwb_masks(file_path):
+async def test_a_commit_keeps_the_runs_image_mask_setting(file_path):
+    pickle_path = f"{os.path.dirname(file_path)}/cnmf_multisession.pkl"
+    with open(pickle_path, "rb") as f:
+        info = pickle.load(f)
+    plane_segmentation = {"save_image_mask": True}
+    info["nwbfile"]["input"]["ophys"] = {"plane_segmentation": plane_segmentation}
+    PickleWriter.write(pickle_path=pickle_path, info=info)
+
+    EditROI(file_path=file_path).delete([0])
+    await EditROI(file_path=file_path).commit()
+
+    nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
+    assert nwbfile[NWBDATASET.ROI][NODE_ID]["image_mask_shape"] == SHAPE
+
+
+@pytest.mark.asyncio
+async def test_a_commit_exports_footprints_as_nwb_pixel_masks(file_path):
     EditROI(file_path=file_path).delete([2])
     await EditROI(file_path=file_path).commit()
 
     nwbfile = EditROI(file_path=file_path).output_info["nwbfile"]["cnmf_multisession"]
-    masks = [roi["image_mask"] for roi in nwbfile[NWBDATASET.ROI][NODE_ID]["roi_list"]]
+    masks = [roi["pixel_mask"] for roi in nwbfile[NWBDATASET.ROI][NODE_ID]["roi_list"]]
     for i in range(2):
-        expected = np.zeros(SHAPE)
-        expected[i, :] = 1
+        expected = [[i, col, 1.0] for col in range(SHAPE[1])]
         np.testing.assert_array_equal(masks[i], expected)
 
 

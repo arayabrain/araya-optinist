@@ -237,7 +237,8 @@ class EditROI:
         self.__drop_deleted_pending_rows()
         self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.ROI
 
-        # the same lookup the wrappers make for their series rate
+        # the run's NWB settings: the wrappers' series rate, and the ROI table's
+        # dense image_mask when the setting asks for one
         nwb_input = self.output_info.get("nwbfile", {}).get("input", {})
         rate = nwb_input.get("imaging_plane", {}).get("imaging_rate", 30)
 
@@ -252,6 +253,7 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                nwb_settings=nwb_input,
             )
         elif "lccd" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi import (
@@ -266,6 +268,7 @@ class EditROI:
                 self.node_dirpath,
                 self.function_id,
                 rate=rate,
+                nwb_settings=nwb_input,
             )
 
         elif "vacant_roi" in self.function_id:
@@ -281,6 +284,7 @@ class EditROI:
                 self.node_dirpath,
                 self.function_id,
                 rate=rate,
+                nwb_settings=nwb_input,
             )
 
         elif "caiman" in self.function_id or "cnmf_multisession" in self.function_id:
@@ -297,6 +301,7 @@ class EditROI:
                 self.function_id,
                 dff=self.output_info.get("dff"),
                 rate=rate,
+                nwb_settings=nwb_input,
             )
 
         iscell = info["iscell"].data

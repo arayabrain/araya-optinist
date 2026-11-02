@@ -15,6 +15,7 @@ import {
   BarData,
   HTMLData,
   ImageData,
+  ImagePreviewTooLarge,
   HeatMapData,
   HistogramData,
   LineData,
@@ -56,6 +57,8 @@ import {
 export interface RejectPayload {
   message: string
   status?: number
+  // Frames that fit, when an image preview was refused as too large
+  maxFrames?: number
 }
 
 export const SYNC_IN_PROGRESS_MESSAGE = "Syncing from cloud storage..."
@@ -87,13 +90,21 @@ export function getEditRoiErrorMessage(
 function extractErrorPayload(e: unknown): RejectPayload {
   if (e instanceof AxiosError) {
     const status = e.response?.status
-    const detail = (e.response?.data as { detail?: unknown })?.detail
-    return {
-      // a 422's detail is a list of validation errors, not a message
+    const body = e.response?.data as
+      | Partial<Record<keyof ImagePreviewTooLarge, unknown>>
+      | undefined
+    const payload: RejectPayload = {
+      // a validation 422's detail is a list of errors, not a message
       message:
-        typeof detail === "string" ? detail : (e.message ?? "Request failed"),
+        typeof body?.detail === "string"
+          ? body.detail
+          : (e.message ?? "Request failed"),
       status,
     }
+    if (typeof body?.max_frames === "number") {
+      payload.maxFrames = body.max_frames
+    }
+    return payload
   }
   if (e instanceof Error) {
     return { message: e.message }

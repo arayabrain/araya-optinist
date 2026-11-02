@@ -9,16 +9,6 @@ if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); 
     exit 1
 fi
 
-# === AWS CREDENTIAL DIAGNOSTIC (remove after investigation of #612) ===
-echo "=== AWS CREDENTIAL DIAGNOSTIC ==="
-echo "AWS_ACCESS_KEY_ID set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "YES (${AWS_ACCESS_KEY_ID:0:4}...)" || echo "NO")"
-echo "AWS_SECRET_ACCESS_KEY set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "YES" || echo "NO")"
-echo "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-NOT SET}"
-echo "Calling sts get-caller-identity..."
-aws sts get-caller-identity --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" 2>&1 || echo "STS CALL FAILED"
-echo "=== END DIAGNOSTIC ==="
-# === END DIAGNOSTIC ===
-
 # Map infrastructure environment variables (DB_*) to application expected variables (MYSQL_*)
 # This allows the application's config.py to find the correct environment variables
 # while maintaining infrastructure naming conventions
@@ -64,33 +54,8 @@ echo "DB_NAME: ${MYSQL_DATABASE}"
 # Wait for RDS to be available
 # This is necessary because RDS might still be initializing when container starts
 # (e.g., after dev scheduler starts the environment — RDS takes 5-10 min)
-# Tries 60 times with 10 second intervals (total 10 minutes timeout)
-max_tries=60
-counter=0
-
-# Build SSL options based on MYSQL_SSL_MODE
-if [ -n "${MYSQL_SSL_MODE}" ]; then
-    case "${MYSQL_SSL_MODE}" in
-        DISABLED)
-            ssl_opts="--skip-ssl"
-            ;;
-        *)
-            ssl_opts="--ssl"
-            ;;
-    esac
-else
-    ssl_opts=""
-fi
-
-until mysql ${ssl_opts} -h "${MYSQL_SERVER}" -u "${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e 'SELECT 1;'
-do
-    sleep 10
-    [[ counter -eq $max_tries ]] && echo "Failed to connect to Database" && exit 1
-    echo "Attempt $counter: Waiting for Database..."
-    ((counter++))
-done
-
-echo 'Database connection successful'
+# Bounded to 10 minutes; exits the task when the database stays unreachable
+bash /app/scripts/wait_for_database.sh
 
 # Run database migrations using alembic
 # This ensures all database tables and schemas are up to date
@@ -149,10 +114,10 @@ if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
 fi
 
 # Configure Uvicorn worker processes
-# Workers handle concurrent requests. Recommended formula: (2 × CPU cores) + 1
-# t3.large has 2 vCPUs, so optimal range is 2-5 workers
-# Set via environment variable UVICORN_WORKERS, defaults to 5 for production use
-UVICORN_WORKERS=${UVICORN_WORKERS:-5}
+# Each worker is a full app process, all from the memory the workflows use; the
+# supervisor above one worker does not load the app. Two keep /health answered
+# while one worker's event loop is blocked. Each task definition sets its own count.
+UVICORN_WORKERS=${UVICORN_WORKERS:-2}
 echo "Uvicorn workers: $UVICORN_WORKERS"
 
 # Get EC2 instance ID for free tier user tracking
@@ -276,7 +241,7 @@ check_load_balancer() {
             sleep ${WAIT_SECONDS}
             [[ $counter -eq $MAX_TRIES ]] && echo "Load balancer not ready after 5 minutes" && return 1
             echo "Attempt $counter: Waiting for load balancer..."
-            ((counter++))
+            counter=$((counter + 1))
         done
         echo "Load balancer is ready"
         return 0

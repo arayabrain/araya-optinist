@@ -44,7 +44,6 @@ import {
   deleteRoi,
   mergeRoi,
   promoteRoi,
-  getImageData,
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
@@ -64,6 +63,7 @@ import {
   selectStatusRoi,
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import {
+  getImageItemData,
   selectingImageArea,
   setImageItemClickedDataId,
 } from "store/slice/VisualizeItem/VisualizeItemActions"
@@ -81,6 +81,7 @@ import {
   selectRoiItemIndex,
   selectRoiItemNodeId,
   selectImageItemDuration,
+  selectVisualizeItemIsWorkflowDialog,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
   selectVisualizeSaveFilename,
@@ -144,27 +145,28 @@ export const ImagePlot = memo(function ImagePlot() {
   const { filePath: path, itemId } = useContext(DisplayDataContext)
 
   const workspaceId = useSelector(selectCurrentWorkspaceId)
-  const startIndex = useSelector(selectImageItemStartIndex(itemId))
-  const endIndex = useSelector(selectImageItemEndIndex(itemId))
   const isPending = useSelector(selectImageDataIsPending(path))
   const isInitialized = useSelector(selectImageDataIsInitialized(path))
   const isFulfilled = useSelector(selectImageDataIsFulfilled(path))
   const error = useSelector(selectImageDataError(path))
 
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const isWorkflowDialog = useSelector(
+    selectVisualizeItemIsWorkflowDialog(itemId),
+  )
 
   const dispatch = useDispatch<AppDispatch>()
+  // A dialog item fetches its own window when it mounts: frames cached for its
+  // path may be another item's window, or a refusal of one
+  useEffect(() => {
+    if (workspaceId && isWorkflowDialog) {
+      dispatch(getImageItemData({ itemId, path, workspaceId }))
+    }
+  }, [dispatch, isWorkflowDialog, itemId, path, workspaceId])
   useEffect(() => {
     if (workspaceId) {
-      if (!isInitialized) {
-        dispatch(
-          getImageData({
-            path,
-            workspaceId,
-            startIndex: startIndex ?? 1,
-            endIndex: endIndex ?? 10,
-          }),
-        )
+      if (!isWorkflowDialog && !isInitialized) {
+        dispatch(getImageItemData({ itemId, path, workspaceId }))
       }
       if (roiFilePath != null) {
         dispatch(getRoiData({ path: roiFilePath, workspaceId }))
@@ -173,10 +175,10 @@ export const ImagePlot = memo(function ImagePlot() {
   }, [
     dispatch,
     isInitialized,
+    isWorkflowDialog,
+    itemId,
     path,
     workspaceId,
-    startIndex,
-    endIndex,
     roiFilePath,
   ])
   if (isPending) {

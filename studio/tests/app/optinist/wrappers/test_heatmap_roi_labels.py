@@ -4,6 +4,7 @@ import pytest
 
 from studio.app.common.core.utils.file_reader import JsonReader
 from studio.app.common.dataclass import HeatMapData
+from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.optinist.basic_neural_analysis.eta import ETA
 from studio.app.optinist.wrappers.optinist.neural_population_analysis.correlation import (  # noqa: E501
@@ -101,3 +102,55 @@ def test_correlation_labels_both_axes_with_roi_numbers(output_dir, tmp_path):
     assert out.index == CELLS
     assert [int(c) for c in out.columns] == CELLS
     assert (out.meta.xaxis_type, out.meta.yaxis_type) == ("category", "category")
+
+
+def test_correlation_sort_by_cluster_permutes_rows_and_labels(output_dir):
+    rng = np.random.default_rng(2)
+    a, b = rng.normal(size=(2, 200))
+    # Interleave two assemblies so the unsorted matrix is not block-diagonal
+    X = np.array([(a if i % 2 else b) + 0.3 * rng.normal(size=200) for i in range(8)])
+    X[5] = 1.0  # a constant cell sorts last
+    plain = correlation(
+        FluoData(X, file_name="f"), output_dir, params={"transpose": False}
+    )
+    info = correlation(
+        FluoData(X, file_name="f"),
+        output_dir,
+        params={"transpose": False, "sort_by_cluster": True},
+    )
+    heat = info["corr"]
+    order = np.asarray(heat.index)
+
+    np.testing.assert_array_equal(heat.data, plain["corr"].data[np.ix_(order, order)])
+    assert list(heat.columns) == list(order) and order[-1] == 5
+    # Each assembly is one contiguous block
+    assembly = order[:-1] % 2
+    assert np.count_nonzero(np.diff(assembly)) == 1
+    (post,) = info["nwbfile"][NWBDATASET.POSTPROCESS].values()
+    np.testing.assert_array_equal(post["order"], order)
+    np.testing.assert_array_equal(post["corr"], plain["corr"].data)
+
+
+def test_correlation_sort_by_cluster_puts_nan_cell_last(output_dir):
+    X = np.random.default_rng(4).normal(size=(10, 300))
+    X[4, 7] = np.nan
+    info = correlation(
+        FluoData(X, file_name="f"),
+        output_dir,
+        params={"transpose": False, "sort_by_cluster": True},
+    )
+
+    assert list(info["corr"].index)[-1] == 4
+
+
+def test_correlation_sort_by_cluster_keeps_iscell_roi_numbers(output_dir):
+    X = np.random.default_rng(3).random((len(ISCELL), 40))
+    info = correlation(
+        FluoData(X, file_name="f"),
+        output_dir,
+        iscell=IscellData(ISCELL),
+        params={"transpose": False, "sort_by_cluster": True},
+    )
+
+    assert sorted(info["corr"].index) == CELLS
+    assert list(info["corr"].columns) == list(info["corr"].index)

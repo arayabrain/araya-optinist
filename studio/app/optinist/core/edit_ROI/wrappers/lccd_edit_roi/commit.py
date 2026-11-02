@@ -14,6 +14,7 @@ def commit_edit(
     node_dirpath,
     function_id,
     rate=30,
+    nwb_settings=None,
 ):
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
@@ -53,6 +54,8 @@ def commit_edit(
         "fluorescence": FluoData(new_fluorescences, file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "edit_roi_data": data,
-        "nwbfile": set_nwbfile(data, iscell, function_id, rate, new_fluorescences),
+        "nwbfile": set_nwbfile(
+            data, iscell, function_id, rate, new_fluorescences, nwb_settings
+        ),
     }
     return info

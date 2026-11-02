@@ -33,11 +33,9 @@ import {
 import { DATA_TYPE } from "store/slice/DisplayData/DisplayDataType"
 import { clearFlowElements } from "store/slice/FlowElement/FlowElementSlice"
 import { clearCurrentPipeline } from "store/slice/Pipeline/PipelineSlice"
+import { deleteWorkflowDialogItems } from "store/slice/VisualizeItem/VisualizeItemActions"
 import { selectVisualizeItemIdForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSelectors"
-import {
-  addItemForWorkflowDialog,
-  deleteAllItemForWorkflowDialog,
-} from "store/slice/VisualizeItem/VisualizeItemSlice"
+import { addItemForWorkflowDialog } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch } from "store/store"
 
 export type NodesViewProps = {
@@ -129,7 +127,7 @@ export const useDataviewVisualizationCleanup = (open: boolean) => {
     return () => {
       if (!open) {
         // Visualize components cleanup
-        dispatch(deleteAllItemForWorkflowDialog())
+        dispatch(deleteWorkflowDialogItems())
 
         // Reproduced workflow store cleanup
         const workspaceType = WORKSPACE_TYPE.DEFAULT // Currently a fixed value

@@ -461,7 +461,7 @@ def test_run_releases_the_request_session_on_failure(endpoint):
 def test_download_file_releases_the_request_session():
     db = Mock()
     background_tasks = BackgroundTasks()
-    with patch.object(files, "create_directory"), patch.object(files.requests, "get"):
+    with patch.object(files, "create_directory"), patch.object(files, "open_url"):
         result = asyncio.run(
             files.download_file(
                 workspace_id="1",
@@ -470,7 +470,7 @@ def test_download_file_releases_the_request_session():
                 db=db,
             )
         )
-    assert result == {"file_name": "data.csv"}
+    assert result["file_name"] == "data.csv"
     db.close.assert_called_once()
     task = background_tasks.tasks[0]
     assert task.func is files.download
@@ -594,10 +594,8 @@ def _call_create_file(db, background_tasks, over_quota=False):
         files, "get_effective_quota_bytes", return_value=1 if over_quota else 0
     ), patch.object(
         files, "create_directory"
-    ), patch(
-        "studio.app.common.routers.files.open", create=True
     ), patch.object(
-        files, "shutil"
+        files, "_write_file_atomic"
     ), patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=True
     ), patch.object(

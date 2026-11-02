@@ -7,7 +7,13 @@ import axiosLibrary, {
 import { refreshTokenApi } from "api/auth/Auth"
 import { API_TIMEOUT, BASE_URL } from "const/API"
 import { RoutingHeaders } from "const/Subscription"
-import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
+import {
+  getExToken,
+  getToken,
+  logout,
+  restoreSession,
+  saveToken,
+} from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
   DATAVIEW_PUBLIC_REQUEST_KEY,
@@ -38,8 +44,11 @@ const axios = axiosLibrary.create({
 
 axios.interceptors.request.use(
   async (config) => {
-    // Add authentication headers (skip if null to avoid "Bearer null")
-    const token = getToken()
+    // Add authentication headers (skip if null to avoid "Bearer null").
+    // After a reload the token is restored from the refresh cookie first.
+    const token =
+      getToken() ??
+      (config.url?.startsWith("/auth/") ? null : await restoreSession())
     const exToken = getExToken()
 
     if (token) {

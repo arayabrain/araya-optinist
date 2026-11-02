@@ -4,85 +4,33 @@ name: Tutorial4
 started_at: '2025-02-13 16:34:34'
 finished_at: '2025-02-13 16:35:04'
 success: success
-hasNWB: true
+hasNWB: false
 function:
   suite2p_file_convert_tlri58d268:
     unique_id: suite2p_file_convert_tlri58d268
     name: suite2p_file_convert
     success: success
-    hasNWB: true
+    hasNWB: false
     message: suite2p_file_convert success
-    outputPaths:
-      meanImg:
-        path: /tmp/studio/output/1/tutorial4/suite2p_file_convert_tlri58d268/meanImg.json
-        type: images
-        max_index: 1
-        data_shape: []
+    outputPaths: null
     started_at: null
     finished_at: '2025-02-13 16:34:50'
   suite2p_registration_xq4pexs8o7:
     unique_id: suite2p_registration_xq4pexs8o7
     name: suite2p_registration
     success: success
-    hasNWB: true
+    hasNWB: false
     message: suite2p_registration success
-    outputPaths:
-      refImg:
-        path: /tmp/studio/output/1/tutorial4/suite2p_registration_xq4pexs8o7/refImg.json
-        type: images
-        max_index: 1
-        data_shape: []
-      meanImgE:
-        path: /tmp/studio/output/1/tutorial4/suite2p_registration_xq4pexs8o7/meanImgE.json
-        type: images
-        max_index: 1
-        data_shape: []
-      mc_images:
-        path: /tmp/studio/output/1/tutorial4/suite2p_registration_xq4pexs8o7/tiff/mc_images/mc_images.tif
-        type: images
-        max_index: 500
-        data_shape: []
+    outputPaths: null
     started_at: null
     finished_at: '2025-02-13 16:34:55'
   suite2p_roi_yvqcdmsg0r:
     unique_id: suite2p_roi_yvqcdmsg0r
     name: suite2p_roi
     success: success
-    hasNWB: true
+    hasNWB: false
     message: suite2p_roi success
-    outputPaths:
-      max_proj:
-        path: /tmp/studio/output/1/tutorial4/suite2p_roi_yvqcdmsg0r/max_proj.json
-        type: images
-        max_index: 1
-        data_shape: []
-      Vcorr:
-        path: /tmp/studio/output/1/tutorial4/suite2p_roi_yvqcdmsg0r/Vcorr.json
-        type: images
-        max_index: 1
-        data_shape: []
-      fluorescence:
-        path: /tmp/studio/output/1/tutorial4/suite2p_roi_yvqcdmsg0r/fluorescence
-        type: timeseries
-        max_index: 96
-        data_shape:
-        - 96
-        - 500
-      all_roi:
-        path: /tmp/studio/output/1/tutorial4/suite2p_roi_yvqcdmsg0r/all_roi.json
-        type: roi
-        max_index: null
-        data_shape: []
-      non_cell_roi:
-        path: /tmp/studio/output/1/tutorial4/suite2p_roi_yvqcdmsg0r/noncell_roi.json
-        type: roi
-        max_index: null
-        data_shape: []
-      cell_roi:
-        path: /tmp/studio/output/1/tutorial4/suite2p_roi_yvqcdmsg0r/cell_roi.json
-        type: roi
-        max_index: null
-        data_shape: []
+    outputPaths: null
     started_at: null
     finished_at: '2025-02-13 16:35:00'
   input_6m0vw0sv6s:
@@ -98,19 +46,9 @@ function:
     unique_id: cca_e9mbfm8vck
     name: cca
     success: success
-    hasNWB: true
+    hasNWB: false
     message: cca success
-    outputPaths:
-      projectedNd:
-        path: /tmp/studio/output/1/tutorial4/cca_e9mbfm8vck/projectedNd.json
-        type: scatter
-        max_index: null
-        data_shape: []
-      coef:
-        path: /tmp/studio/output/1/tutorial4/cca_e9mbfm8vck/coef.json
-        type: bar
-        max_index: null
-        data_shape: []
+    outputPaths: null
     started_at: null
     finished_at: '2025-02-13 16:35:04'
   input_cpmiuzyroh:

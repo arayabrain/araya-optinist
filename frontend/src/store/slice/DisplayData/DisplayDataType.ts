@@ -120,7 +120,10 @@ export interface HeatMapDisplayData
   index: string[]
 }
 
-export interface ImageDisplayData extends BaseDisplay<"image", ImageData> {}
+export interface ImageDisplayData extends BaseDisplay<"image", ImageData> {
+  // The latest request for the path; only its result is stored
+  requestId?: string
+}
 
 export interface CsvDisplayData extends BaseDisplay<"csv", CsvData> {
   // columns: string[]

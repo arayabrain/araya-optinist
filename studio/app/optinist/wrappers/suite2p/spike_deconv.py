@@ -2,6 +2,7 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import SpikingActivityData, Suite2pData
+from studio.app.optinist.dataclass.roi import nwb_roi_table
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, positive
 
 logger = AppLogger.get_logger()
@@ -79,7 +80,12 @@ def suite2p_spike_deconv(
         ).T
         roi_list.append(kargs)
 
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
+    # the frame shape is read only with the image_mask setting on
+    nwbfile[NWBDATASET.ROI] = {
+        function_id: nwb_roi_table(
+            roi_list, (ops.get("Ly"), ops.get("Lx")), kwargs.get("nwbfile")
+        )
+    }
 
     # Fluorenceを追加
     nwbfile[NWBDATASET.FLUORESCENCE] = {
