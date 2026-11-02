@@ -101,7 +101,8 @@ def iter_frame_batches(path: str, frames: int, batch_size: int):
 def _stack_headers(paths: list) -> Optional[list]:
     """
     (shape, dtype) of series 0 of each file, from its headers, when every file
-    is a TIFF stack of 2-D frames; None otherwise.
+    is a TIFF stack of 2-D frames; None otherwise. Raises when the files' frame
+    shapes differ, which `data` cannot concatenate either.
     """
     headers = []
     try:
@@ -111,7 +112,16 @@ def _stack_headers(paths: list) -> Optional[list]:
                 headers.append((tuple(int(n) for n in series.shape), series.dtype))
     except Exception:
         return None
-    return headers if all(len(shape) == 3 for shape, _ in headers) else None
+    if not all(len(shape) == 3 for shape, _ in headers):
+        return None
+    frame_shape = headers[0][0][1:]
+    for path, (shape, _) in zip(paths, headers):
+        if shape[1:] != frame_shape:
+            raise ValueError(
+                f"{os.path.basename(path)}: frame shape {shape[1:]} differs from "
+                f"{frame_shape}, the frame shape of {os.path.basename(paths[0])}"
+            )
+    return headers
 
 
 def _iter_frames(paths: list, headers: list, dtype, batch_bytes: int):

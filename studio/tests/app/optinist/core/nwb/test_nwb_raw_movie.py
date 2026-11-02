@@ -100,6 +100,20 @@ def test_the_raw_movie_is_chunked_by_whole_frames(tmp_path, frame_shape, chunks)
         assert io.read().acquisition["TwoPhotonSeries"].data.chunks == chunks
 
 
+def test_files_of_different_frame_shapes_are_refused(tmp_path):
+    a, b = str(tmp_path / "a.tif"), str(tmp_path / "b.tif")
+    tifffile.imwrite(a, np.zeros((3, 4, 3), np.uint16))
+    tifffile.imwrite(b, np.zeros((2, 4, 5), np.uint16))
+
+    with pytest.raises(
+        ValueError,
+        match=r"b.tif: frame shape \(4, 5\) differs from \(4, 3\), "
+        r"the frame shape of a.tif",
+    ):
+        write_raw(tmp_path, ImageData([a, b], ""))
+    assert not (tmp_path / "func.nwb").exists()
+
+
 def test_an_input_that_is_not_a_tiff_stack_is_read_whole(tmp_path):
     class Frames:
         """An input such as a microscope file: frames through `data` only."""
