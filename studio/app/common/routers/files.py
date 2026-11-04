@@ -70,6 +70,15 @@ logger = AppLogger.get_logger()
 
 # Dedicated pool so slow NAS walks queue behind each other, not other executor work.
 _tree_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="filetree")
+_cache_edit_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cache")
+
+
+def edit_cache_off_loop(editor, *args):
+    """Run a metadata-cache editor, with its lock wait, on its own pool: on the
+    default pool enough waiters would starve the lock holder's own release."""
+    return asyncio.get_running_loop().run_in_executor(
+        _cache_edit_executor, editor, *args
+    )
 
 
 class DirTreeGetter:
@@ -785,7 +794,7 @@ async def sync_input_file(
 )
 async def set_shape(workspace_id: str, filepath: str):
     try:
-        update_image_shape(workspace_id, filepath)
+        await edit_cache_off_loop(update_image_shape, workspace_id, filepath)
     except Exception as e:
         raise HTTPException(status=422, detail=str(e))
     return True
@@ -960,7 +969,7 @@ async def delete_file(
             os.remove(filepath)
 
         # Clean up metadata cache entries
-        _remove_from_metadata_cache(workspace_id, filename)
+        await edit_cache_off_loop(_remove_from_metadata_cache, workspace_id, filename)
 
         # Upload updated metadata to S3 so it stays in sync
         await _update_and_upload_metadata(

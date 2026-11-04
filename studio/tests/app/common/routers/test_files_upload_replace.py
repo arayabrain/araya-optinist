@@ -43,7 +43,7 @@ def test_a_failed_write_leaves_the_old_file(tmp_path, monkeypatch):
 
 def test_a_long_file_name_still_works(tmp_path):
     """The temporary name does not grow with the target's (255-byte limit)."""
-    path = tmp_path / ("m" * 240 + ".tif")
+    path = tmp_path / ("m" * 251 + ".tif")
     _write_file_atomic(str(path), io.BytesIO(NEW))
     assert path.read_bytes() == NEW
 
@@ -80,8 +80,9 @@ def read_status(input_dir, upload_id=UPLOAD_ID):
 
 def lock_is_held(input_dir, name):
     """flock is per open file description: a fresh fd sees another's lock."""
-    os.makedirs(input_dir / ".locks", exist_ok=True)
-    fd = os.open(input_dir / ".locks" / f"{name}.lock", os.O_RDWR | os.O_CREAT)
+    lock_path = files.InputFileLock._lock_path(input_dir.name, name)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -463,7 +464,7 @@ def test_a_failed_copy_to_remote_storage_is_reported(input_dir):
 
 
 def test_a_long_file_name_still_uploads_by_url(input_dir):
-    name = "m" * 240 + ".tif"
+    name = "m" * 251 + ".tif"
     download(url_response(NEW, content_length=len(NEW)), name)
     assert (input_dir / name).read_bytes() == NEW
     assert read_status(input_dir).done

@@ -33,6 +33,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.routers.files import (
+    edit_cache_off_loop,
     update_hdf5_structure,
     update_image_shape,
     update_mat_structure,
@@ -291,7 +292,9 @@ async def import_sample_data(
             ]
             if tiff_files:
                 for tiff_file in tiff_files:
-                    update_image_shape(workspace_id, tiff_file.name)
+                    await edit_cache_off_loop(
+                        update_image_shape, workspace_id, tiff_file.name
+                    )
                 await remote_storage_controller.upload_input_data(
                     workspace_id, MetadataCacheFile.IMAGE_SHAPE
                 )
@@ -304,7 +307,9 @@ async def import_sample_data(
             ]
             if hdf5_files:
                 for hdf5_file in hdf5_files:
-                    update_hdf5_structure(workspace_id, hdf5_file.name)
+                    await edit_cache_off_loop(
+                        update_hdf5_structure, workspace_id, hdf5_file.name
+                    )
                 await remote_storage_controller.upload_input_data(
                     workspace_id, MetadataCacheFile.HDF5_STRUCTURE
                 )
@@ -317,7 +322,9 @@ async def import_sample_data(
             ]
             if mat_files:
                 for mat_file in mat_files:
-                    update_mat_structure(workspace_id, mat_file.name)
+                    await edit_cache_off_loop(
+                        update_mat_structure, workspace_id, mat_file.name
+                    )
                 await remote_storage_controller.upload_input_data(
                     workspace_id, MetadataCacheFile.MAT_STRUCTURE
                 )

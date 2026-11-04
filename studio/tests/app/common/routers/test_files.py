@@ -451,6 +451,25 @@ async def test_cache_write_waits_for_the_input_file_lock(ws):
     assert _cache(ws)["a.tif"]["shape"] == [2, 3]
 
 
+@pytest.mark.asyncio
+async def test_set_shape_waits_for_the_lock_off_the_event_loop(ws, monkeypatch, caplog):
+    """Waiting on the loop would stall the worker, the lock holder's release
+    with it, until the wait gives up and the edit goes ahead unlocked."""
+    import logging
+
+    monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 2)
+    _tif(ws / "a.tif", (2, 3))
+    with caplog.at_level(logging.WARNING):
+        async with InputFileLock.acquire("ws", MetadataCacheFile.IMAGE_SHAPE):
+            route = asyncio.create_task(files_module.set_shape("ws", "a.tif"))
+            await asyncio.sleep(0.3)
+            assert not route.done()
+            assert not (ws / MetadataCacheFile.IMAGE_SHAPE).exists()
+        assert await route
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+    assert not any("InputFileLock acquire timeout" in r.message for r in caplog.records)
+
+
 def test_cache_write_gives_up_on_a_wedged_lock(ws, monkeypatch, caplog):
     import logging
 
