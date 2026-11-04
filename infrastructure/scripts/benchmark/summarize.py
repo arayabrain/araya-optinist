@@ -105,14 +105,22 @@ def cgroup_summary(rows, t_start, t_end):
     during = [
         r for r in rows if to_int(r["epoch"]) and t_start <= to_int(r["epoch"]) <= t_end
     ]
+
+    def peak(column):
+        """Highest sample during the runs, or None."""
+        return max((to_int(r[column]) or 0) for r in during) if during else None
+
     baseline = to_int(before[-1]["mem_current"]) if before else None
-    peak_cur = max((to_int(r["mem_current"]) or 0) for r in during) if during else None
+    peak_cur = peak("mem_current")
+    # memory.peak and oom_kill are kept by the kernel since the container started
     peak_hw = max((to_int(r["mem_peak"]) or 0) for r in rows)
     # anon = process memory; file = page cache, reclaimable, so not demand
     baseline_anon = to_int(before[-1]["anon"]) if before else None
-    peak_anon = max((to_int(r["anon"]) or 0) for r in rows)
-    rise_anon = None if baseline_anon is None else peak_anon - baseline_anon
-    swap = max((to_int(r["swap_current"]) or 0) for r in rows)
+    peak_anon = peak("anon")
+    rise_anon = None
+    if baseline_anon is not None and peak_anon is not None:
+        rise_anon = peak_anon - baseline_anon
+    swap = peak("swap_current")
     oom = max((to_int(r["oom_kill"]) or 0) for r in rows)
     first, last = rows[0], rows[-1]
     written = (to_int(last["io_wbytes"]) or 0) - (to_int(first["io_wbytes"]) or 0)
@@ -126,14 +134,16 @@ def cgroup_summary(rows, t_start, t_end):
             "|---|---|",
             f"| API baseline before run, memory.current incl. page cache (MB) | "
             f"{mb(baseline)} |",
-            f"| Peak memory.current, 1 s samples (MB) | {mb(peak_cur)} |",
-            f"| memory.peak, kernel high-water, incl. page cache (MB) | "
-            f"{mb(peak_hw)} |",
+            f"| Peak memory.current during the runs, 1 s samples (MB) | "
+            f"{mb(peak_cur)} |",
+            f"| memory.peak, kernel high-water since container start, "
+            f"incl. page cache (MB) | {mb(peak_hw)} |",
             f"| API baseline before run, anon (MB) | {mb(baseline_anon)} |",
-            f"| **Peak anon — demand, excl. page cache (MB)** | {mb(peak_anon)} |",
+            f"| **Peak anon during the runs — demand, excl. page cache (MB)** | "
+            f"{mb(peak_anon)} |",
             f"| Rise in anon over the baseline (MB) | {mb(rise_anon)} |",
-            f"| Peak swap (MB) | {mb(swap)} |",
-            f"| OOM kills in cgroup | {oom} |",
+            f"| Peak swap during the runs (MB) | {mb(swap)} |",
+            f"| OOM kills in cgroup since container start | {oom} |",
             # Docker Desktop does not count bind-mount writes; see per-rule figures
             f"| Bytes written by cgroup, excl. bind mounts (MB) | {mb(written)} |",
             f"| Samples | {len(rows)} |",
