@@ -56,6 +56,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 from studio.app.common.db.database import get_db
 from studio.app.common.routers import (
     algolist,
+    announcement,
     auth,
     dataview,
     experiment,
@@ -83,6 +84,7 @@ APP_DIR = Path(studio.app.__file__).parent
 
 ROUTER_MODULES = [
     algolist,
+    announcement,
     auth,
     dataview,
     experiment,
