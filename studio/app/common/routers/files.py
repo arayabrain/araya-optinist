@@ -3,17 +3,20 @@ import json
 import os
 import re
 import shutil
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
+from dataclasses import asdict
 from pathlib import PurePath
-from typing import Callable, Dict, List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
 import tifffile
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from requests.models import Response
 from sqlmodel import Session
+from starlette.concurrency import run_in_threadpool
 from tqdm import tqdm
 
 from studio.app.common.core.auth.auth_dependencies import (
@@ -35,6 +38,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 )
 from studio.app.common.core.utils.file_reader import JsonReader
 from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
     create_directory,
     join_filepath,
 )
@@ -303,17 +307,34 @@ def is_atomic_replace_tmp(filename: str) -> bool:
     return _ATOMIC_TMP_NAME.fullmatch(filename) is not None
 
 
-@contextmanager
-def _atomic_replace(filepath: str):
-    """Yield a file that replaces filepath once the block ends without an error.
-    A reader of the old file keeps reading it; a failed write leaves it in place."""
+def _atomic_tmp_path(filepath: str) -> str:
     # Hidden, a fixed length whatever filepath's, default permissions (not 0600)
-    tmp_path = os.path.join(os.path.dirname(filepath), f".{uuid.uuid4().hex}.tmp")
+    return os.path.join(os.path.dirname(filepath), f".{uuid.uuid4().hex}.tmp")
+
+
+@contextmanager
+def _atomic_write(tmp_path: str):
+    """Yield a new file at tmp_path, synced to disk once the block ends without
+    an error and removed otherwise."""
     try:
         with open(tmp_path, "xb") as f:
             yield f
             f.flush()
             os.fsync(f.fileno())
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+@contextmanager
+def _atomic_replace(filepath: str):
+    """Yield a file that replaces filepath once the block ends without an error.
+    A reader of the old file keeps reading it; a failed write leaves it in place."""
+    tmp_path = _atomic_tmp_path(filepath)
+    try:
+        with _atomic_write(tmp_path) as f:
+            yield f
         os.replace(tmp_path, filepath)
     except BaseException:
         with suppress(OSError):
@@ -754,6 +775,60 @@ async def set_shape(workspace_id: str, filepath: str):
     return True
 
 
+async def _check_storage_quota(user_id: Optional[int]) -> None:
+    """403 once the user's storage is at or over quota (cached usage figure)."""
+    if user_id is None:
+        return
+    current_usage = await get_current_user_storage_usage(user_id, force_live=False)
+    storage_info = get_user_storage_usage(user_id)
+    quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
+    if quota_limit <= 0:
+        return
+    storage_usage_percent = (current_usage / quota_limit) * 100
+    if storage_usage_percent >= 100:
+        logger.warning(
+            f"File upload blocked for user {user_id}: storage quota exceeded "
+            f"({storage_usage_percent:.1f}% used)"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot upload file: Storage quota exceeded "
+            f"({storage_usage_percent:.1f}% used). "
+            f"Please free up space before uploading files.",
+        )
+
+
+def _metadata_cache_for(filename: str):
+    """The cache updater and cache file for the file's type, or (None, None)."""
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        return update_image_shape, MetadataCacheFile.IMAGE_SHAPE
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+        return update_hdf5_structure, MetadataCacheFile.HDF5_STRUCTURE
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+        return update_mat_structure, MetadataCacheFile.MAT_STRUCTURE
+    return None, None
+
+
+async def _publish_input(
+    workspace_id: str, filename: str, remote_bucket_name: Optional[str]
+) -> None:
+    """After an input file lands: update its metadata cache, then copy the file
+    and the cache to remote storage. Caller holds the file's InputFileLock."""
+    update_cache, cache_name = _metadata_cache_for(filename)
+    if update_cache is not None:
+        await asyncio.to_thread(update_cache, workspace_id, filename)
+    if not RemoteStorageController.is_available():
+        return
+    async with RemoteStorageSimpleWriter(remote_bucket_name) as remote:
+        if not await remote.upload_input_data(workspace_id, filename):
+            raise RuntimeError(f"Copy of {filename} to remote storage failed")
+        if cache_name is None:
+            return
+        async with InputFileLock.acquire(workspace_id, cache_name):
+            if not await remote.upload_input_data(workspace_id, cache_name):
+                raise RuntimeError(f"Copy of {cache_name} to remote storage failed")
+
+
 @router.post(
     "/{workspace_id}/upload/{filename}",
     response_model=FilePath,
@@ -770,72 +845,20 @@ async def create_file(
 ):
     try:
         user_id = current_user.id if current_user else None
-
-        # Check storage quota before allowing file upload
-        # (use cached data to avoid timeout)
-        if user_id is not None:
-            current_usage = await get_current_user_storage_usage(
-                user_id, force_live=False
-            )
-            storage_info = get_user_storage_usage(user_id)
-            quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
-
-            if quota_limit > 0:
-                storage_usage_percent = (current_usage / quota_limit) * 100
-
-                # Block file upload if over quota (100%)
-                if storage_usage_percent >= 100:
-                    logger.warning(
-                        f"File upload blocked for user {user_id}: "
-                        "storage quota exceeded "
-                        f"({storage_usage_percent:.1f}% used)"
-                    )
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Cannot upload file: Storage quota exceeded "
-                        f"({storage_usage_percent:.1f}% used). "
-                        f"Please free up space before uploading files.",
-                    )
+        await _check_storage_quota(user_id)
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-        await asyncio.to_thread(_write_file_atomic, filepath, file.file)
-
-        # Update metadata caches based on file type
-        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            update_image_shape(workspace_id, filename)
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-            update_hdf5_structure(workspace_id, filename)
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-            update_mat_structure(workspace_id, filename)
+        # The lock keeps a sync of the same name from putting an older remote
+        # copy back between the write and the copy to remote storage
+        async with InputFileLock.acquire(workspace_id, filename):
+            await asyncio.to_thread(_write_file_atomic, filepath, file.file)
+            await _publish_input(workspace_id, filename, remote_bucket_name)
 
         if WorkspaceDataCapacityService.is_available():
             background_tasks.add_task(_update_workspace_data_usage, workspace_id)
-
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
-            # upload input data to remote storage
-            async with RemoteStorageSimpleWriter(
-                remote_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.upload_input_data(
-                    workspace_id, filename
-                )
-                # Upload metadata files so they're available for remote-only files
-                if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, MetadataCacheFile.IMAGE_SHAPE
-                    )
-                elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, MetadataCacheFile.HDF5_STRUCTURE
-                    )
-                elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, MetadataCacheFile.MAT_STRUCTURE
-                    )
 
         # Refresh storage cache in background to keep it up-to-date
         if user_id is not None:
@@ -862,9 +885,6 @@ async def create_file(
         # The live storage refresh lists every S3 object of the user; do not
         # hold the guards' connection while it runs
         release_request_session(db)
-
-
-DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
 
 
 def _update_workspace_data_usage(workspace_id: str) -> None:
@@ -973,15 +993,12 @@ async def delete_file(
     response_model=DownloadStatus,
     dependencies=[Depends(is_workspace_available)],
 )
-async def get_download_status(
-    workspace_id: str, file_name: str, upload_id: Optional[str] = None
-):
-    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
-    status = DOWNLOAD_STATUS.get(filepath)
-    # Another upload's entry, e.g. an earlier one this worker ran, is not this one's
-    if status is None or upload_id not in (None, status.upload_id):
+async def get_download_status(workspace_id: str, upload_id: str):
+    try:
+        status_path = _download_status_path(workspace_id, upload_id)
+        return await asyncio.to_thread(_read_download_status, status_path)
+    except (InvalidPathError, FileNotFoundError):
         raise HTTPException(status_code=404)
-    return status
 
 
 @router.post(
@@ -992,12 +1009,17 @@ async def download_file(
     workspace_id: str,
     file: DownloadFileRequest,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
     try:
         path = PurePath(urlparse(file.url).path)
         if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
             raise HTTPException(status_code=400, detail="Invalid url")
+
+        user_id = current_user.id if current_user else None
+        await _check_storage_quota(user_id)
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
@@ -1010,21 +1032,69 @@ async def download_file(
             raise HTTPException(status_code=422, detail=str(e))
 
         upload_id = uuid.uuid4().hex
-        filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, path.name])
-        # Replaces the previous same-name upload's entry, which reads as done
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(
-            total=_content_length(res), upload_id=upload_id
+        await asyncio.to_thread(
+            _write_download_status,
+            _download_status_path(workspace_id, upload_id),
+            DownloadStatus(total=_content_length(res), upload_id=upload_id),
         )
-        background_tasks.add_task(download, res, path.name, workspace_id, upload_id)
-        # Only update image shape for TIFF files
-        if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            background_tasks.add_task(update_image_shape, workspace_id, path.name)
+        background_tasks.add_task(
+            download,
+            res,
+            path.name,
+            workspace_id,
+            upload_id,
+            remote_bucket_name,
+            user_id,
+        )
         return {"file_name": path.name, "upload_id": upload_id}
     finally:
         release_request_session(db)
 
 
 URL_UPLOAD_CHUNK_SIZE = 1024 * 1024
+# The status file is touched every heartbeat; a status not touched for the
+# stale age with the download still running means the worker died
+DOWNLOAD_HEARTBEAT_SECONDS = 10
+DOWNLOAD_STALE_SECONDS = 30
+DOWNLOAD_PROGRESS_WRITE_SECONDS = 1
+_UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _download_status_path(workspace_id: str, upload_id: str) -> str:
+    """Under .locks: every walker (file tree, cleanup, S3 check) skips it."""
+    if not _UPLOAD_ID.fullmatch(upload_id or ""):
+        raise InvalidPathError(f"invalid upload id {upload_id!r}")
+    return join_filepath(
+        [
+            DIRPATH.INPUT_DIR,
+            workspace_id,
+            InputFileLock.LOCKS_DIRNAME,
+            f"{upload_id}.download.json",
+        ]
+    )
+
+
+def _write_download_status(status_path: str, status: DownloadStatus) -> None:
+    try:
+        os.makedirs(os.path.dirname(status_path), exist_ok=True)
+        _write_json_atomic(status_path, asdict(status))
+    except OSError as e:
+        logger.warning(f"download status not written ({status_path}): {e}")
+
+
+def _read_download_status(status_path: str) -> DownloadStatus:
+    age = time.time() - os.stat(status_path).st_mtime
+    status = DownloadStatus(**_read_json_dict(status_path))
+    if not (status.done or status.error) and age > DOWNLOAD_STALE_SECONDS:
+        status.error = "The upload stopped"
+    return status
+
+
+async def _touch_every_heartbeat(status_path: str) -> None:
+    while True:
+        await asyncio.sleep(DOWNLOAD_HEARTBEAT_SECONDS)
+        with suppress(OSError):
+            os.utime(status_path)
 
 
 def _content_length(res: Response) -> int:
@@ -1035,45 +1105,65 @@ def _content_length(res: Response) -> int:
         return 0
 
 
-def download(
+def _stream_to_file(
+    res: Response, tmp_path: str, chunk_size: int, status_path: str, status
+) -> None:
+    last_write = 0.0
+    with (
+        _atomic_write(tmp_path) as file,
+        tqdm(
+            desc=tmp_path,
+            total=status.total,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar,
+    ):
+        for data in res.iter_content(chunk_size=chunk_size):
+            size = file.write(data)
+            status.current += size
+            bar.update(size)
+            if time.monotonic() - last_write >= DOWNLOAD_PROGRESS_WRITE_SECONDS:
+                _write_download_status(status_path, status)
+                last_write = time.monotonic()
+    _write_download_status(status_path, status)
+
+
+async def download(
     res: Response,
     file_name: str,
     workspace_id: str,
-    upload_id: Optional[str] = None,
+    upload_id: str,
+    remote_bucket_name: Optional[str] = None,
+    user_id: Optional[int] = None,
     chunk_size=URL_UPLOAD_CHUNK_SIZE,
 ):
-    total = _content_length(res)
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
-    current = 0
-
+    status_path = _download_status_path(workspace_id, upload_id)
+    status = DownloadStatus(total=_content_length(res), upload_id=upload_id)
+    tmp_path = _atomic_tmp_path(filepath)
+    heartbeat = asyncio.create_task(_touch_every_heartbeat(status_path))
     try:
-        with (
-            _atomic_replace(filepath) as file,
-            tqdm(
-                desc=filepath,
-                total=total,
-                unit="iB",
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as bar,
-        ):
-            for data in res.iter_content(chunk_size=chunk_size):
-                size = file.write(data)
-                current += size
-                DOWNLOAD_STATUS[filepath] = DownloadStatus(
-                    total=total, current=current, upload_id=upload_id
-                )
-                bar.update(size)
-        # done only once the file is in place: the frontend then uses it
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(
-            total=total, current=current, done=True, upload_id=upload_id
+        await run_in_threadpool(
+            _stream_to_file, res, tmp_path, chunk_size, status_path, status
         )
+        # Locked from the replace through the copy, so a sync of the same name
+        # cannot put an older remote copy back; after 300 s the lock falls through
+        async with InputFileLock.acquire(workspace_id, file_name):
+            await asyncio.to_thread(os.replace, tmp_path, filepath)
+            await _publish_input(workspace_id, file_name, remote_bucket_name)
+        # done means in place locally and on remote storage
+        status.done = True
     except Exception as e:
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(
-            total=total, current=current, error=str(e), upload_id=upload_id
-        )
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        status.error = str(e)
     finally:
+        heartbeat.cancel()
         res.close()
+        await asyncio.to_thread(_write_download_status, status_path, status)
 
     if WorkspaceDataCapacityService.is_available():
-        _update_workspace_data_usage(workspace_id)
+        await asyncio.to_thread(_update_workspace_data_usage, workspace_id)
+    if user_id is not None:
+        await get_current_user_storage_usage(user_id, force_live=True)

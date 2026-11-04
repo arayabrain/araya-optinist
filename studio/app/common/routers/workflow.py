@@ -263,7 +263,7 @@ async def import_sample_data(
                 [
                     p
                     for p in sample_data_dir.iterdir()
-                    if p.is_file() and p.name.startswith("sample_")
+                    if p.is_file() and not p.name.startswith(".")
                 ]
             )
 

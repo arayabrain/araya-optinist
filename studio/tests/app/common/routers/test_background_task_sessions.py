@@ -461,12 +461,16 @@ def test_run_releases_the_request_session_on_failure(endpoint):
 def test_download_file_releases_the_request_session():
     db = Mock()
     background_tasks = BackgroundTasks()
-    with patch.object(files, "create_directory"), patch.object(files, "open_url"):
+    with patch.object(files, "create_directory"), patch.object(
+        files, "open_url"
+    ), patch.object(files, "_write_download_status"):
         result = asyncio.run(
             files.download_file(
                 workspace_id="1",
                 file=DownloadFileRequest(url="https://example.com/data.csv"),
                 background_tasks=background_tasks,
+                current_user=None,
+                remote_bucket_name="bucket",
                 db=db,
             )
         )
@@ -486,6 +490,8 @@ def test_download_file_releases_the_request_session_on_failure():
                 workspace_id="1",
                 file=DownloadFileRequest(url="https://example.com/data.exe"),
                 background_tasks=background_tasks,
+                current_user=None,
+                remote_bucket_name="bucket",
                 db=db,
             )
         )
@@ -638,23 +644,25 @@ def test_create_file_releases_the_request_session_on_failure():
 # --------------------------------------------------------------------------
 
 
-def test_download_updates_usage_in_its_own_session(tmp_path):
+def test_download_updates_usage_in_its_own_session(tmp_path, monkeypatch):
     own_session = Mock()
 
     @contextmanager
     def fake_session_scope():
         yield own_session
 
+    monkeypatch.setattr(files.DIRPATH, "INPUT_DIR", str(tmp_path))
+    (tmp_path / "1").mkdir()
     response = Mock(headers={"content-length": "3"})
     response.iter_content.return_value = [b"abc"]
-    with patch.object(
-        files, "join_filepath", return_value=str(tmp_path / "data.csv")
-    ), patch.object(files, "session_scope", new=fake_session_scope), patch.object(
+    with patch.object(files, "session_scope", new=fake_session_scope), patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=True
     ), patch.object(
         files.WorkspaceDataCapacityService, "update_workspace_data_usage"
-    ) as update:
-        files.download(response, "data.csv", "1")
+    ) as update, patch.object(
+        files.RemoteStorageController, "is_available", return_value=False
+    ):
+        asyncio.run(files.download(response, "data.csv", "1", "0" * 32))
     update.assert_called_once_with(own_session, "1", auto_commit=False)
 
 
