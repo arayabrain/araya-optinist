@@ -448,16 +448,22 @@ class ExptDataWriter:
             [DIRPATH.OUTPUT_DIR, self.workspace_id, staging_name]
         )
 
-        # The cleanup below removes staging_dir, so it must be this copy's own
-        for path in (new_output_dir, staging_dir):
-            if os.path.exists(path):
-                logger.error(f"Copy destination already exists: {path}")
-                return False
+        if os.path.exists(new_output_dir):
+            logger.error(f"Copy destination already exists: {new_output_dir}")
+            return False
+
+        # The cleanup below removes staging_dir, so claim it first: mkdir fails
+        # when another copy holds it, even one that passed the check above
+        try:
+            os.mkdir(staging_dir)
+        except FileExistsError:
+            logger.error(f"Copy destination already exists: {staging_dir}")
+            return False
 
         succeeded = False
         try:
             # Copy directory
-            shutil.copytree(output_dir, staging_dir)
+            shutil.copytree(output_dir, staging_dir, dirs_exist_ok=True)
 
             # Update experiment configuration and unique IDs
             if not self.__copy_data_update_experiment_config_name(

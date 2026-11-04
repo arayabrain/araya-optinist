@@ -354,6 +354,27 @@ def test_copy_data_keeps_a_destination_it_did_not_create(copy_source, name):
     assert os.listdir(existing) == ["other.txt"]
 
 
+def test_a_copy_leaves_a_build_directory_claimed_after_its_check(
+    copy_source, monkeypatch
+):
+    """Two copies that draw the same id can both pass the existence check: the
+    one that loses the claim must not remove the other's build directory."""
+    os.makedirs(STAGING)
+    open(f"{STAGING}/other.txt", "w").close()  # the other copy's work
+    exists = os.path.exists
+
+    def checked_before_the_other_copy_claimed(path):
+        if os.path.normpath(path) == os.path.normpath(STAGING):
+            return False
+        return exists(path)
+
+    monkeypatch.setattr(os.path, "exists", checked_before_the_other_copy_claimed)
+
+    assert not copy_the_source()
+
+    assert os.listdir(STAGING) == ["other.txt"]
+
+
 def test_the_record_list_sees_the_copy_only_once_it_is_complete(
     copy_source, monkeypatch
 ):
