@@ -577,7 +577,7 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
     path_parts = relative_path.split(os.sep)
     if len(path_parts) < 2:
         return
-    trimmed_path = os.path.join(DIRPATH.OUTPUT_DIR, *path_parts[:2])
+    trimmed_path = join_filepath([DIRPATH.OUTPUT_DIR, *path_parts[:2]])
 
     # Extract IDs from path
     path_ids = ExptOutputPathIds(trimmed_path)
