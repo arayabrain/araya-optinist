@@ -267,7 +267,10 @@ class ND2Reader(MicroscopeDataReaderBase):
             z_slicenum = experiments[1]["count"]
             z_interval = experiments[1]["parameters"]["stepUm"]
         else:
-            if experiments[0]["type"] == ExperimentLoopType.NETimeLoop.value:
+            if experiments[0]["type"] in (
+                ExperimentLoopType.NETimeLoop.value,
+                ExperimentLoopType.TimeLoop.value,
+            ):
                 dimension_type = DimensionType.D_2D_MULTI.value
                 loop_count = experiments[0]["count"]
             elif experiments[0]["type"] == ExperimentLoopType.ZStackLoop.value:
