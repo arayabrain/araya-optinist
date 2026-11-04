@@ -4,6 +4,7 @@ import os
 import shutil
 
 import numpy as np
+from filelock import FileLock
 from hdmf.backends.hdf5.h5_utils import H5DataIO
 from hdmf.data_utils import DataChunkIterator, GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
@@ -24,6 +25,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.dataclass.image import BATCH_BYTES, ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
@@ -586,18 +588,33 @@ def save_nwb(save_path, input_config, config):
         raise
 
 
+@contextlib.contextmanager
+def _replacing(tmp_path, path):
+    """Replace path with tmp_path, which the block writes, in one rename once it
+    ends; delete tmp_path if anything fails. path is never written in place.
+    tmp_path reaches the disk before the rename, so after a crash path holds
+    the old file or the new one. path keeps its permission bits."""
+    try:
+        yield
+        shutil.copymode(path, tmp_path)
+        with open(tmp_path, "rb+") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def overwrite_nwbfile(save_path, config):
     tmp_save_path = join_filepath(
         [os.path.dirname(save_path), "tmp_" + os.path.basename(save_path)]
     )
-    with NWBHDF5IO(save_path, "r") as src_io:
+    with _replacing(tmp_save_path, save_path), NWBHDF5IO(save_path, "r") as src_io:
         old_nwbfile = src_io.read()
         nwbfile = set_nwbconfig(old_nwbfile, config)
         nwbfile.set_modified()
         with NWBHDF5IO(tmp_save_path, mode="w") as io:
             io.export(src_io=src_io, nwbfile=nwbfile)
-    shutil.copyfile(tmp_save_path, save_path)
-    os.remove(tmp_save_path)
 
 
 def overwrite_nwb(config, save_path, nwb_file_name):
@@ -605,18 +622,20 @@ def overwrite_nwb(config, save_path, nwb_file_name):
     nwb_path = join_filepath([save_path, nwb_file_name])
     tmp_nwb_path = join_filepath([save_path, "tmp_" + nwb_file_name])
 
+    # one rewrite at a time, as for whole.nwb: an ROI-edit commit and a data
+    # filter can rewrite the same file, and share its temporary
+    lock = FileLock(FileLockUtils.get_lockfile_path(nwb_path), timeout=120)
+
     # NWBファイルの読み込み
-    with NWBHDF5IO(nwb_path, "r") as io:
+    with lock, _replacing(tmp_nwb_path, nwb_path), NWBHDF5IO(nwb_path, "r") as io:
         nwbfile = io.read()
         # acquisition を元ファイルから作成する
         new_nwbfile = NWBCreater.re_acquisition(nwbfile)
         new_nwbfile = set_nwbconfig(new_nwbfile, config)
 
         with NWBHDF5IO(tmp_nwb_path, "w") as io:
-            # copy stored frames: a link would point at the file replaced below
+            # copy stored frames: a link would point at the file this replaces
             io.write(new_nwbfile, link_data=False)
-    shutil.copyfile(tmp_nwb_path, nwb_path)
-    os.remove(tmp_nwb_path)
 
 
 def merge_nwbfile(old_nwbfile, new_nwbfile):

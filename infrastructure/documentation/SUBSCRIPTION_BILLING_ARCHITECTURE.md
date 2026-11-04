@@ -25,7 +25,7 @@
 
 3. **Graceful Degradation After Expiration**
    - Premium users get 30-day grace period with full access after subscription expires
-   - Additional 30-day warning period before data cleanup
+   - Over-quota data is deleted once the grace period ends
    - Storage alerts only appear when usage exceeds the free tier limit (5 GB)
 
 4. **PCI Compliance by Design**
@@ -396,15 +396,7 @@ premium subscription, cancellation, grace periods, and eventual data cleanup.
        │                               │ Grace period ends (day 30)
        │                               ▼
        │                         ┌───────────┐
-       │   Storage <= 5 GB       │  WARNING  │  Days 30-60 after expiration
-       │   (no warning needed)   │  PERIOD   │  "Data will be deleted in X days"
-       │ <────────────────────── │           │
-       │                         └─────┬─────┘
-       │                               │
-       │                               │ Warning period ends (day 60)
-       │                               ▼
-       │                         ┌───────────┐
-       │   Storage <= 5 GB       │  OVERDUE  │  Day 60+ after expiration
+       │   Storage <= 5 GB       │  OVERDUE  │  Day 30+ after expiration
        │   (no warning needed)   │           │  "Data scheduled for deletion"
        │ <────────────────────── │           │
        │                         └───────────┘
@@ -420,24 +412,23 @@ back to free with no alerts, regardless of lifecycle stage.
 ### Timeline After Subscription Expiration
 
 ```
-Subscription    Grace Period     Warning Period     Overdue
-  Expires          Ends              Ends          (ongoing)
-    │                │                 │               │
-    T             T + 30d          T + 60d            ...
-    │                │                 │               │
-    ├────────────────┼─────────────────┼───────────────┤
-    │  GRACE (30d)   │  WARNING (30d)  │   OVERDUE     │
-    │                │                 │               │
-    │  Alert: GRACE  │  Alert: GRACE   │ Alert: OVERDUE│
-    │  "Subscription │  "Data deleted  │ "Scheduled    │
-    │   expired,     │   in X days"   │  for deletion"│
-    │   X days left" │                 │               │
-    └────────────────┴─────────────────┴───────────────┘
+Subscription    Grace Period     Overdue
+  Expires          Ends          (ongoing)
+    │                │               │
+    T             T + 30d           ...
+    │                │               │
+    ├────────────────┼───────────────┤
+    │  GRACE (30d)   │   OVERDUE     │
+    │                │               │
+    │  Alert: GRACE  │ Alert: OVERDUE│
+    │  "Data deleted │ "Scheduled    │
+    │   in X days"   │  for deletion"│
+    └────────────────┴───────────────┘
 
   Key dates computed by calculate_limit_warning():
     subscription_end  = UserSubscription.expiration
     grace_end         = subscription_end + 30 days (GRACE_PERIOD_DAYS)
-    deletion_date     = grace_end + 30 days (WARNING_PERIOD_DAYS)
+    deletion_date     = grace_end (ExpirationLifecycleJob starts deleting)
 ```
 
 ### Subscription Lifecycle States
@@ -447,8 +438,7 @@ Subscription    Grace Period     Warning Period     Overdue
 | `FREE` | Indefinite | 5 GB | 5 GB | `storage` (if over) | Full free features |
 | `ACTIVE` | Billing period | 200 GB | 200 GB | `storage` (if over) | Full premium features |
 | `GRACE` | Days 0-30 | 200 GB (retained) | 5 GB | `grace` | Full premium access, countdown warning |
-| `WARNING` | Days 30-60 | 5 GB | 5 GB | `grace` | "Data will be deleted in X days" |
-| `OVERDUE` | Day 60+ | 5 GB | 5 GB | `overdue` | "Data scheduled for deletion" |
+| `OVERDUE` | Day 30+ | 5 GB | 5 GB | `overdue` | "Data scheduled for deletion" |
 
 ### Limit Warning Decision Tree
 
@@ -489,8 +479,8 @@ Subscription    Grace Period     Warning Period     Overdue
 | 1 | Free, never premium | Under 5 GB | None | -- |
 | 2 | Free, never premium | Over 5 GB | `storage` | 30 (fixed) |
 | 3 | Premium active | Over 200 GB | `storage` | 30 (fixed) |
-| 4 | Grace/Warning period | Over 5 GB | `grace` | Countdown to grace_end or deletion_date |
-| 5 | Overdue (60+ days) | Over 5 GB | `overdue` | 0 |
+| 4 | Grace period | Over 5 GB | `grace` | Countdown to grace_end (= deletion_date) |
+| 5 | Overdue (30+ days) | Over 5 GB | `overdue` | 0 |
 
 ### LimitWarning Response Schema
 
@@ -512,7 +502,7 @@ class LimitWarning(BaseModel):
     # Subscription-related (only set for grace/warning/overdue alerts)
     subscription_end_date: Optional[str]  # ISO date when premium expired
     grace_end_date: Optional[str]         # ISO date when grace period ends (T+30d)
-    deletion_date: Optional[str]          # ISO date when data deletion begins (T+60d)
+    deletion_date: Optional[str]          # ISO date when data deletion begins (T+30d)
 ```
 
 ### Warning Messages by Status
@@ -536,7 +526,6 @@ StorageQuota.PREMIUM = 200                       # 200 GB
 
 # Lifecycle periods
 SubscriptionPeriods.GRACE_PERIOD_DAYS = 30       # Grace period after expiry
-SubscriptionPeriods.WARNING_PERIOD_DAYS = 30     # Warning period after grace
 SubscriptionPeriods.STORAGE_WARNING_DAYS = 30    # Days for free users to reduce
 SubscriptionPeriods.QUOTA_DROP_WARNING_DAYS = 3  # Warn before quota drops
 
@@ -554,13 +543,12 @@ SubscriptionPeriods.WARNING_THRESHOLD_DAYS = 14  # Yellow/warning
 class SubscriptionLifecycleStatus(StrEnum):
     ACTIVE = "active"      # Premium not yet expired
     GRACE = "grace"        # Days 0-30 after expiration
-    WARNING = "warning"    # Days 30-60 after expiration
-    OVERDUE = "overdue"    # Day 60+ after expiration
+    OVERDUE = "overdue"    # Day 30+ after expiration
     FREE = "free"          # Never had premium
 
 class AlertType(StrEnum):
     STORAGE = "storage"    # Storage quota exceeded (any plan)
-    GRACE = "grace"        # Grace or warning period (maps from GRACE + WARNING)
+    GRACE = "grace"        # Grace period
     OVERDUE = "overdue"    # Past all grace periods, deletion imminent
 
 class SubscriptionStatus(StrEnum):
