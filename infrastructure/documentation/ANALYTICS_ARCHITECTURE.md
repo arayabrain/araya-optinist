@@ -135,7 +135,7 @@ Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until 
 
 4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. Section 5.2 describes the consent flow, the events and the GA4 property settings; update it whenever any of those change.
 5. **Have the notice copy reviewed.** It has had no legal review.
-6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload. A restyle of either surface can regress this.
+6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload in that tab. Other open tabs keep their earlier choice until reloaded (nothing listens for the `analyticsConsent` storage key), and the policy tells visitors so. A restyle of either surface can regress this.
 
 ### Verification, once a container exists
 
@@ -149,6 +149,7 @@ The client-side test suite stops at `window.dataLayer`. A correct `dataLayer` do
 | 4   | Decline at the notice, then navigate          | DebugView receives nothing at all                                                                                                               |
 | 5   | Visit `/account-manager?email=...`, DebugView | `page_location` carries no email and no query string                                                                                            |
 | 6   | Trigger cross-check in the container          | All four custom-event triggers exist and fire                                                                                                   |
+| 7   | Privacy link from `/account-manager?email=`   | Accept in the new tab: `page_referrer` carries no email and no query string                                                                     |
 
 ---
 
@@ -158,6 +159,7 @@ The code side is inert without these console-side settings. Configure them **bef
 
 1. **GA4 configuration tag: automatic `page_view` OFF.** Add a Custom Event trigger on `route_change` and send `page_view` from it. Leaving the built-in pageview on produces two pageviews per navigation.
 2. **Override `page_location` and `page_title` on the GA4 tag** using the `page_location` and `page_path` dataLayer variables. GA4 otherwise defaults `page_location` to `document.location.href`, and live routes carry personal data in their query strings: `/account-manager?email=...&name=...`, `/dataview?user_name=...&uid=...&workspace_name=...` and `/subscription/thanks?session_id=...` and `/subscription/failed?session_id=...`. The frontend cannot prevent that from the tag's own default, and the privacy policy states page addresses are recorded without query parameters, so this override blocks setting the production container ID.
+   Override `page_referrer` the same way, with `document.referrer` stripped of its query string. GA4 defaults it to `document.referrer`, which keeps the full same-origin URL: the notice's Privacy Policy link opens a new tab with `rel="noopener"` only, so accepting there from `/account-manager?email=...` would send that URL as the referrer. This is a rollout gate too.
 3. **Enable GA4 "Redact data"** (IP and query-string redaction) as defence in depth.
 4. **Create Custom Event triggers** for `sign_up`, `login`, `run_pipeline` and `view_public_data`.
 5. **Do not put tags on the Initialization or All Pages triggers.** See the returning-visitor row under Edge Case Handling.
