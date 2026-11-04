@@ -296,6 +296,16 @@ resource "aws_ecs_task_definition" "background" {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
         },
+        # SES sender for expiration lifecycle emails; empty disables them
+        {
+          name  = "NOTIFICATION_FROM_EMAIL"
+          value = var.notification_from_email
+        },
+        # Sign-in link used in the lifecycle emails
+        {
+          name  = "FRONTEND_URL"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+        },
       ]
       mountPoints = [
         {

@@ -826,7 +826,6 @@ async def test_contract_overdue_alert_response_format():
 
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning_period = SubscriptionPeriods.WARNING_PERIOD_DAYS
 
     with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
         with patch(
@@ -838,15 +837,14 @@ async def test_contract_overdue_alert_response_format():
                 mock_db = Mock()
                 mock_scope.return_value.__enter__.return_value = mock_db
 
-                # Setup: User past grace and warning periods (overdue)
+                # Setup: User past the grace period (overdue)
                 mock_get_storage.return_value = {
                     "storage_usage_bytes": 10_000_000_000,  # 10GB
                     "storage_quota_bytes": 200_000_000_000,  # 200GB
                 }
                 mock_fresh.return_value = True
 
-                # Subscription expired long ago (past grace + warning periods)
-                days_expired = grace_period + warning_period + 5
+                days_expired = grace_period + 5
                 mock_subscription = Mock()
                 mock_subscription.expiration = get_current_datetime() - timedelta(
                     days=days_expired
