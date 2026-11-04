@@ -131,6 +131,8 @@ ROI detection, not for registration memory.
 to S3: one suite2p run as the reference, two
 suite2p runs together, suite2p beside CaImAn, and one run at about twice the length.
 `BENCH_SHORT_FRAMES` adds the two concurrent rows on an input cut to that many frames.
+It prints `ALL-ROWS-DONE` only once every row is in S3; a failed copy prints `SYNC-FAILED`
+(the next copy retries it), and a failed last copy ends the script with exit 1.
 Set `BENCH_UVICORN_WORKERS` (and `BENCH_MEMORY_MIB` / `BENCH_SWAP_MIB` if they differ from the
 defaults) to the tier being modelled.
 

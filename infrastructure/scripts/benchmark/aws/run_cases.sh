@@ -2,7 +2,8 @@
 # Run the real-infrastructure case list on one instance prepared by
 # bootstrap.sh, at the tier's container ceiling with its swap allowance
 # (variant S, which needs the host swap bootstrap.sh sets up). Copies each
-# finished row to S3 straight away, so a self-shutdown loses nothing.
+# finished row to S3 straight away, so a self-shutdown loses nothing, and
+# prints ALL-ROWS-DONE only once every row is there (else SYNC-FAILED, exit 1).
 #
 # Usage (as root, on the instance):
 #   BENCH_S3_PREFIX=s3://<bucket>/<prefix> run_cases.sh
@@ -36,7 +37,8 @@ row() {
   echo "ROW-START $label $(date -u +%H:%M)"
   "$B" --label "$label" --results-dir "$RES" "$@"
   echo "ROW-END $label exit=$? $(date -u +%H:%M)"
-  sync_results
+  # The next copy retries what this one missed
+  sync_results || echo "SYNC-FAILED $label $(date -u +%H:%M)"
 }
 
 warmup() {
@@ -68,5 +70,8 @@ if [[ -n "$SHORT_FRAMES" ]]; then
   row S2P-CM-short --algo suite2p,caiman --input "$ROOT/inputs/$SHORT" "${COMMON[@]}"
 fi
 
-sync_results
+sync_results || {
+  echo "SYNC-FAILED final $(date -u +%H:%M): some results are only on this instance"
+  exit 1
+}
 echo "ALL-ROWS-DONE $(date -u +%H:%M)"
