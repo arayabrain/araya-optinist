@@ -1,4 +1,4 @@
-import { ReactElement } from "react"
+import { ReactElement, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import { enqueueSnackbar } from "notistack"
@@ -52,19 +52,25 @@ const OutputsView = ({
   )
   const record = useSelector(selectDataviewPrivateRecord(workspaceId, uid))
   const hiddenOutputs = record?.hidden_outputs ?? []
+  const [saving, setSaving] = useState(false)
 
   const handleToggle = (item: VisualizationItemData, isPublic: boolean) => {
     if (!record) return
-    const hidden = isPublic
-      ? hiddenOutputs.filter((h) => !isSamePath(h, item.filePath))
-      : [...hiddenOutputs, item.filePath]
-    dispatch(putHiddenOutputs({ id: record.id, hiddenOutputs: hidden }))
+    setSaving(true)
+    dispatch(
+      putHiddenOutputs({
+        id: record.id,
+        path: item.filePath,
+        hidden: !isPublic,
+      }),
+    )
       .unwrap()
       .catch(() =>
         enqueueSnackbar(`Failed to update visibility of ${item.title}`, {
           variant: "error",
         }),
       )
+      .finally(() => setSaving(false))
   }
 
   const renderPublishSwitch =
@@ -79,6 +85,7 @@ const OutputsView = ({
                 checked={
                   !hiddenOutputs.some((h) => isSamePath(h, item.filePath))
                 }
+                disabled={saving}
                 onChange={(_, checked) => handleToggle(item, checked)}
                 inputProps={{ "aria-label": `Publish ${item.title}` }}
               />

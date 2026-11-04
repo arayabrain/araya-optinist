@@ -134,21 +134,29 @@ describe("OutputsView publish switch", () => {
     expect(screen.queryByRole("checkbox")).toBeNull()
   })
 
-  it("hiding an output sends the full hidden list", () => {
+  it("hiding an output sends only that change", () => {
     renderView(false)
     fireEvent.click(screen.getByLabelText("Publish fluorescence"))
     expect(mockPutHiddenOutputs).toHaveBeenCalledWith({
       id: 7,
-      hiddenOutputs: [HIDDEN_PATH, VISIBLE_PATH],
+      path: VISIBLE_PATH,
+      hidden: true,
     })
   })
 
-  it("re-publishing removes the output from the hidden list", () => {
+  it("re-publishing sends hidden false for that output", () => {
     renderView(false)
     fireEvent.click(screen.getByLabelText("Publish heatmap"))
     expect(mockPutHiddenOutputs).toHaveBeenCalledWith({
       id: 7,
-      hiddenOutputs: [],
+      path: HIDDEN_PATH,
+      hidden: false,
     })
+  })
+
+  it("disables the switches while a change is saving", () => {
+    renderView(false)
+    fireEvent.click(screen.getByLabelText("Publish heatmap"))
+    expect(screen.getByLabelText("Publish fluorescence")).toBeDisabled()
   })
 })

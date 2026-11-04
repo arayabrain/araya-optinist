@@ -72,6 +72,11 @@ class DataviewRecord(BaseModel):
         orm_mode = True
 
 
+class HiddenOutputChange(BaseModel):
+    path: str
+    hidden: bool
+
+
 class PublishValidationResult(BaseModel):
     """Result of validating whether an experiment can be published."""
 

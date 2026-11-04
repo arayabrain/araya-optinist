@@ -28,7 +28,6 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
-from studio.app.common.core.utils.filepath_creater import normalize_output_path
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
@@ -39,6 +38,7 @@ from studio.app.common.schemas.dataview import (
     DataviewRecord,
     DataviewRecordHeader,
     DataviewRecordSearchOptions,
+    HiddenOutputChange,
     LocalSyncStatus,
     PageWithHeader,
     PublishFlags,
@@ -370,7 +370,9 @@ async def public_reproduce_experiment(
             function["outputPaths"] = {
                 key: value
                 for key, value in (function.get("outputPaths") or {}).items()
-                if not DataviewService.is_hidden_output(record, value["path"])
+                if not DataviewService.is_hidden_output(
+                    record, (value or {}).get("path")
+                )
             }
     return result
 
@@ -748,12 +750,13 @@ async def publish_dataview_records(
     "/hidden_outputs/{id}",
     response_model=List[str],
     description="""
-- Replace the outputs hidden from public viewers of a Dataview record (owner only)
+- Hide one output of a Dataview record from public viewers, or show it again
+  (owner only). Responds with the record's full hidden list.
 """,
 )
 async def put_hidden_outputs(
     id: int,
-    hidden_outputs: List[str],
+    change: HiddenOutputChange,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -761,7 +764,20 @@ async def put_hidden_outputs(
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    paths = sorted({normalize_output_path(path) for path in hidden_outputs if path})
+    path = DataviewService.canonical_output_path(change.path)
+    if not path.startswith(f"{record.workspace_id}/{record.uid}/"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Path is not an output of this record",
+        )
+
+    # A delta against the stored list, so a stale client cannot re-publish others.
+    paths = set(record.hidden_outputs or [])
+    if change.hidden:
+        paths.add(path)
+    else:
+        paths.discard(path)
+    paths = sorted(paths)
 
     result = db.execute(
         update(models.ExperimentRecord)

@@ -1,5 +1,6 @@
 import json
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -269,12 +270,20 @@ class DataviewService:
 
         return record
 
+    @staticmethod
+    def canonical_output_path(path: str) -> str:
+        """Output-relative path with `//`, `/./` and `..` collapsed, as the file
+        routes resolve it through join_filepath."""
+        return posixpath.normpath(normalize_output_path(path)).lstrip("/")
+
     @classmethod
     def is_hidden_output(cls, record: ExperimentRecord, path: str) -> bool:
         """
         Check whether an output path (or a file under it) is hidden by the owner
         """
-        path = normalize_output_path(path)
+        if not path:
+            return False
+        path = cls.canonical_output_path(path)
         return any(
             path == hidden or path.startswith(hidden + "/")
             for hidden in record.hidden_outputs or []

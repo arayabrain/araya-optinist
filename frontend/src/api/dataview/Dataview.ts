@@ -73,11 +73,12 @@ export const putAttributesApi = async (
 
 export const putHiddenOutputsApi = async (
   id: number,
-  hiddenOutputs: string[],
+  path: string,
+  hidden: boolean,
 ): Promise<string[]> => {
-  const response = await axios.put(
-    `/api/dataview/hidden_outputs/${id}`,
-    hiddenOutputs,
-  )
+  const response = await axios.put(`/api/dataview/hidden_outputs/${id}`, {
+    path,
+    hidden,
+  })
   return response.data
 }

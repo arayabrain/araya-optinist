@@ -15,11 +15,14 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user_with_dataview_outputs_check,
 )
 from studio.app.common.core.dataview.dataview_services import DataviewService
+from studio.app.common.core.experiment.experiment_record_services import (
+    ExperimentRecordService,
+)
 from studio.app.common.routers.dataview import (
     public_reproduce_experiment,
     put_hidden_outputs,
 )
-from studio.app.common.schemas.dataview import LocalSyncStatus
+from studio.app.common.schemas.dataview import HiddenOutputChange, LocalSyncStatus
 from studio.app.common.schemas.workflow import WorkflowWithResults
 from studio.app.dir_path import DIRPATH
 
@@ -32,6 +35,8 @@ def _record(hidden_outputs):
     record = MagicMock()
     record.id = 7
     record.version = 3
+    record.workspace_id = 1
+    record.uid = "uid"
     record.hidden_outputs = hidden_outputs
     record.local_sync_status = LocalSyncStatus.synced.value
     return record
@@ -158,46 +163,94 @@ class TestPublicOutputsReadGate:
         )
         assert not DataviewService.is_hidden_output(record, HIDDEN + "_other")
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "1/uid/func1//heatmap/data.json",
+            "1/uid/func1/./heatmap/data.json",
+            "1//uid/func1/heatmap",
+            "1/uid/func1/heatmap/",
+            "1/uid/other/../func1/heatmap/data.json",
+            "/1/uid/func1/heatmap",
+        ],
+    )
+    def test_non_canonical_spellings_are_still_hidden(self, path):
+        assert DataviewService.is_hidden_output(_record([HIDDEN]), path)
+
+    @pytest.mark.asyncio
+    async def test_public_read_with_doubled_slash_is_403(self):
+        with patch(self._FIND, return_value=_record([HIDDEN])):
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user_with_dataview_outputs_check(
+                    req=_public_request(
+                        "/api/visualizations/inittimedata/1/uid/func1//heatmap"
+                    ),
+                    res=MagicMock(),
+                    ex_token=None,
+                    credential=None,
+                    db=MagicMock(),
+                )
+        assert exc.value.status_code == 403
+
+    def test_empty_path_is_not_hidden(self):
+        assert not DataviewService.is_hidden_output(_record([HIDDEN]), None)
+
     def test_thumbnail_path_is_not_hidden(self):
         record = _record([HIDDEN])
         assert not DataviewService.is_hidden_output(record, "1/uid/roi")
 
 
 class TestPutHiddenOutputs:
-    @pytest.mark.asyncio
-    async def test_normalizes_dedupes_and_guards_version(self):
+    @staticmethod
+    async def _put(change, stored=(), rowcount=1):
         mock_db = MagicMock()
-        mock_db.execute.return_value.rowcount = 1
+        mock_db.execute.return_value.rowcount = rowcount
         with patch(
             ROUTER + "DataviewService.find_user_owned_dataview_record",
-            return_value=_record([]),
+            return_value=_record(list(stored)),
         ):
             result = await put_hidden_outputs(
-                7,
-                [f"{DIRPATH.OUTPUT_DIR}/{HIDDEN}", HIDDEN, ""],
-                db=mock_db,
-                current_user=MagicMock(id=1),
+                7, change, db=mock_db, current_user=MagicMock(id=1)
             )
+        return result, mock_db
 
-        assert result == [HIDDEN]
+    @pytest.mark.asyncio
+    async def test_hide_adds_the_canonical_path_and_guards_version(self):
+        result, mock_db = await self._put(
+            HiddenOutputChange(
+                path=f"{DIRPATH.OUTPUT_DIR}/1/uid/func1//heatmap", hidden=True
+            ),
+            stored=[VISIBLE],
+        )
+
+        assert result == sorted([HIDDEN, VISIBLE])
         compiled = mock_db.execute.call_args[0][0].compile(dialect=mysql.dialect())
-        assert compiled.params["hidden_outputs"] == [HIDDEN]
+        assert compiled.params["hidden_outputs"] == sorted([HIDDEN, VISIBLE])
         versions = {k: v for k, v in compiled.params.items() if k.startswith("version")}
         assert sorted(versions.values()) == [1, 3]
         mock_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_show_removes_only_that_path(self):
+        # The stored list is the base, so other hidden outputs stay hidden.
+        result, _ = await self._put(
+            HiddenOutputChange(path=HIDDEN, hidden=False), stored=[HIDDEN, VISIBLE]
+        )
+        assert result == [VISIBLE]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path", ["1/other/func1/heatmap", "1/uid/../other/x", "/etc/passwd", "1/uid"]
+    )
+    async def test_path_outside_the_record_is_422(self, path):
+        with pytest.raises(HTTPException) as exc:
+            await self._put(HiddenOutputChange(path=path, hidden=True))
+        assert exc.value.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_version_conflict_is_409(self):
-        mock_db = MagicMock()
-        mock_db.execute.return_value.rowcount = 0
-        with patch(
-            ROUTER + "DataviewService.find_user_owned_dataview_record",
-            return_value=_record([]),
-        ):
-            with pytest.raises(HTTPException) as exc:
-                await put_hidden_outputs(
-                    7, [HIDDEN], db=mock_db, current_user=MagicMock(id=1)
-                )
+        with pytest.raises(HTTPException) as exc:
+            await self._put(HiddenOutputChange(path=HIDDEN, hidden=True), rowcount=0)
         assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
@@ -208,6 +261,19 @@ class TestPutHiddenOutputs:
         ):
             with pytest.raises(HTTPException) as exc:
                 await put_hidden_outputs(
-                    7, [HIDDEN], db=MagicMock(), current_user=MagicMock(id=1)
+                    7,
+                    HiddenOutputChange(path=HIDDEN, hidden=True),
+                    db=MagicMock(),
+                    current_user=MagicMock(id=1),
                 )
         assert exc.value.status_code == 404
+
+
+def test_a_copied_record_hides_the_same_outputs_under_its_own_uid():
+    source = MagicMock(hidden_outputs=[HIDDEN, "2/elsewhere/x"])
+    db = MagicMock()
+    db.query.return_value.filter.return_value.one.return_value = source
+
+    ExperimentRecordService.copy_record(db, "1", "uid", "uid2", "copy")
+
+    assert db.add.call_args.args[0].hidden_outputs == ["1/uid2/func1/heatmap"]

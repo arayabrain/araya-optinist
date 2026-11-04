@@ -128,12 +128,12 @@ export const putAttributes = createAsyncThunk<
 
 export const putHiddenOutputs = createAsyncThunk<
   string[],
-  { id: number; hiddenOutputs: string[] }
+  { id: number; path: string; hidden: boolean }
 >(
   `${DATAVIEW_SLICE_NAME}/putHiddenOutputs`,
-  async ({ id, hiddenOutputs }, thunkAPI) => {
+  async ({ id, path, hidden }, thunkAPI) => {
     try {
-      return await putHiddenOutputsApi(id, hiddenOutputs)
+      return await putHiddenOutputsApi(id, path, hidden)
     } catch (e) {
       return thunkAPI.rejectWithValue(e)
     }
