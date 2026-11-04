@@ -312,18 +312,21 @@ const Privacy = () => {
         recognitions), so they do not require Standard Contractual Clauses; your
         research data itself is not transferred to the United States or other
         third countries. (2) A limited set of personal data (such as your name,
-        email address, authentication tokens, and payment-related information,
-        but not your research data) is processed by Google (Firebase) and
-        Stripe, which may process it in the United States or other countries.
-        These transfers rely on the recipients&apos; EU-U.S. Data Privacy
-        Framework certifications and/or the European Commission&apos;s 2021
-        Standard Contractual Clauses (with the UK Addendum and Swiss
-        amendments), as set out in each provider&apos;s data processing terms.
-        Where required, we will carry out a transfer impact assessment in
-        respect of these onward transfers. Because the Service is operated from
-        Japan and is not directed at, and does not monitor the behaviour of,
-        individuals in the EEA/UK, we have not appointed a representative under
-        GDPR Article 27; we will reassess this if our activities change.
+        email address, authentication tokens, payment-related information and,
+        if you accept analytics, the usage data described in Section 5.2, but
+        not your research data) is processed by Google (Firebase and Google
+        Analytics) and Stripe, which may process it in the United States or
+        other countries. These transfers rely on the recipients&apos; EU-U.S.
+        Data Privacy Framework certifications and/or the European
+        Commission&apos;s 2021 Standard Contractual Clauses (with the UK
+        Addendum and Swiss amendments), as set out in each provider&apos;s data
+        processing terms. Where required, we will carry out a transfer impact
+        assessment in respect of these onward transfers. The Service is operated
+        from Japan, and with your consent the analytics described in Section 5.2
+        records how visitors, including visitors in the EEA/UK, use the Service.
+        We have not appointed a representative under Article 27 of the GDPR or
+        the UK GDPR; you can contact us directly using the details in Section
+        10.
       </P>
 
       <H3>4.3 Processing on behalf of organizations</H3>

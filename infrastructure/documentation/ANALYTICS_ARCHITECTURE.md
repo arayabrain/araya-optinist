@@ -136,6 +136,7 @@ Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until 
 4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. Section 5.2 describes the consent flow, the events and the GA4 property settings; update it whenever any of those change.
 5. **Have the notice copy reviewed.** It has had no legal review.
 6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload in that tab. Other open tabs keep their earlier choice until reloaded (nothing listens for the `analyticsConsent` storage key), and the policy tells visitors so. A restyle of either surface can regress this.
+7. **Settle the GDPR Article 27 position.** Analytics records how EEA/UK visitors use the Service, which is likely "monitoring" under Article 3(2)(b), and continuous analytics is hard to call "occasional" under the Article 27(2)(a) exemption. Privacy policy Section 4.2 now says only that no representative has been appointed. Legal either appoints one, and Section 4.2 then names them with contact details, or records why none is required.
 
 ### Verification, once a container exists
 
