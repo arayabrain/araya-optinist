@@ -5,9 +5,9 @@ script once ``wait -n`` returns. Each child must get SIGTERM once: uvicorn
 0.24's multi-worker parent can deadlock on a second one inside its signal
 handler, and the cleanup worker logs a traceback for it.
 
-Runs the script's own function definitions in bash, with ``kill`` replaced by
-a function that records its arguments, so the PIDs need no real processes.
-The trap is raised with the real ``kill`` builtin.
+Runs the script's own function definitions and trap in bash, with ``kill``
+replaced by a function that records its arguments, so the PIDs need no real
+processes. ``kill -0`` and the stop itself use the real ``kill`` builtin.
 """
 
 import re
@@ -41,6 +41,14 @@ def _function_definitions() -> str:
     return "".join(definitions)
 
 
+def _trap() -> str:
+    """The script's trap line."""
+    (trap,) = re.findall(
+        r"^trap .+ TERM INT$", CLOUD_STARTUP_SH.read_text(), re.MULTILINE
+    )
+    return trap
+
+
 def _run(tmp_path: Path, *steps: str, kill_status: int = 0):
     """Run the steps after the script's functions and its trap; return the
     result and the recorded kills."""
@@ -49,9 +57,12 @@ def _run(tmp_path: Path, *steps: str, kill_status: int = 0):
     script = "\n".join(
         [
             "set -e",
-            f'kill() {{ echo "$*" >> "{kills}"; return {kill_status}; }}',
+            "kill() {",
+            '    if [ "$1" = -0 ]; then builtin kill "$@"; return; fi',
+            f'    echo "$*" >> "{kills}"; return {kill_status}',
+            "}",
             _function_definitions(),
-            "trap _forward_shutdown TERM INT",
+            _trap(),
             *steps,
             'echo "reached the end"',
         ]
@@ -65,7 +76,8 @@ def _run(tmp_path: Path, *steps: str, kill_status: int = 0):
 @pytest.mark.skipif(BASH is None, reason="needs bash")
 class TestForwardShutdown:
     def test_a_stop_signals_each_child_once(self, tmp_path):
-        """The trap forwards, then ``wait -n`` returns and the end step runs."""
+        """The trap forwards, then ``wait -n`` returns and the end step runs.
+        Only the trap logs the stop."""
         result, kills = _run(
             tmp_path,
             f"CLEANUP_PID={CLEANUP} APP_PID={APP} LB_CHECK_PID={LB_CHECK}",
@@ -73,14 +85,29 @@ class TestForwardShutdown:
             END_STEP,
         )
 
-        assert result.stdout.splitlines() == [TRAP_LINE, TRAP_LINE, "reached the end"]
+        assert result.stdout.splitlines() == [TRAP_LINE, "reached the end"]
         assert kills == EACH_ONCE
 
-    def test_a_stop_in_the_startup_sleep_reaches_the_load_balancer_check(
+    def test_a_stop_in_the_startup_pause_is_forwarded_at_once(self, tmp_path):
+        """bash runs a trap only once a foreground command returns. A stop held
+        until the pause ends loses that time from the app's drain."""
+        result, kills = _run(
+            tmp_path,
+            f"CLEANUP_PID={CLEANUP} APP_PID={APP}",
+            f"( sleep 0.3; {STOP} ) &",
+            "_pause 3",
+            'echo "pause returned after $SECONDS s"',
+        )
+
+        assert kills == [f"-TERM {CLEANUP}", f"-TERM {APP}"]
+        (seconds,) = re.findall(r"pause returned after (\d+) s", result.stdout)
+        assert int(seconds) < 2, result.stdout
+
+    def test_a_stop_in_the_startup_pause_reaches_the_load_balancer_check(
         self, tmp_path
     ):
-        """bash runs the trap when the sleep returns, before the load balancer
-        check starts; only the end step can signal that check."""
+        """The trap runs before the load balancer check starts; only the end
+        step can signal that check."""
         result, kills = _run(
             tmp_path,
             f"CLEANUP_PID={CLEANUP} APP_PID={APP}",
@@ -107,8 +134,8 @@ class TestForwardShutdown:
         assert kills == EACH_ONCE
 
     def test_a_child_exiting_on_its_own_then_a_stop_signals_each_once(self, tmp_path):
-        """No trap ran, so the end step signals the rest; a stop arriving
-        during the drain that follows sends nothing more."""
+        """No trap ran, so the end step signals the rest, and logs no stop; a
+        stop arriving during the drain that follows sends nothing more."""
         result, kills = _run(
             tmp_path,
             f"CLEANUP_PID={CLEANUP} APP_PID={APP} LB_CHECK_PID={LB_CHECK}",
@@ -116,8 +143,29 @@ class TestForwardShutdown:
             STOP,
         )
 
-        assert result.stdout.splitlines() == [TRAP_LINE, TRAP_LINE, "reached the end"]
+        assert result.stdout.splitlines() == [TRAP_LINE, "reached the end"]
         assert kills == EACH_ONCE
+
+    def test_a_stop_during_the_drain_waits_for_the_app(self, tmp_path):
+        """A trapped signal ends ``wait`` while the app still drains. The
+        script exiting then would, as PID 1, kill the app mid-drain."""
+        drained = tmp_path / "drained"
+        result, kills = _run(
+            tmp_path,
+            f'( sleep 2; touch "{drained}" ) &',
+            "APP_PID=$!",
+            END_STEP,
+            f"( sleep 0.5; {STOP} ) &",
+            '_wait_exit "$APP_PID"',
+            f'[ -e "{drained}" ] && echo "the app drained"',
+        )
+
+        assert result.stdout.splitlines() == [
+            TRAP_LINE,
+            "the app drained",
+            "reached the end",
+        ]
+        assert len(kills) == 1
 
     def test_a_failed_kill_does_not_abort_the_trap(self, tmp_path):
         """``set -e`` applies inside the trap; a kill against an exited child
