@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from studio.app.common.core.rules import benchmark_recorder as recorder
 from studio.app.common.core.rules.benchmark_recorder import (
     ENV_FLAG,
     OUTPUT_DIRNAME,
@@ -18,6 +19,16 @@ linux_only = pytest.mark.skipif(
 
 class FileOpened(BaseException):
     """Not an Exception, so the recorder's own error handling cannot swallow it."""
+
+
+def touch_and_free(n_bytes):
+    buf = bytearray(n_bytes)
+    buf[::4096] = b"x" * len(buf[::4096])  # touch every page
+    del buf
+
+
+def fail_proc_read():
+    raise OSError("no /proc")
 
 
 def make_smk(tmp_path, create_output=True):
@@ -127,9 +138,7 @@ def test_phases_attribute_peaks_and_keep_the_rule_peak(tmp_path, monkeypatch):
     with BenchmarkRecorder.record(smk):
         with BenchmarkRecorder.phase("outer"):
             with BenchmarkRecorder.phase("alloc"):
-                buf = bytearray(big)
-                buf[::4096] = b"x" * len(buf[::4096])  # touch every page
-                del buf
+                touch_and_free(big)
             with BenchmarkRecorder.phase("idle"):
                 pass
 
@@ -141,6 +150,38 @@ def test_phases_attribute_peaks_and_keep_the_rule_peak(tmp_path, monkeypatch):
     # The parent carries its children's peak; resets do not hide the rule peak
     assert phases["outer"]["peak_rss_mb"] >= phases["alloc"]["peak_rss_mb"]
     assert record["peak_rss_mb"] >= phases["alloc"]["peak_rss_mb"]
+
+
+@linux_only
+def test_parent_phase_keeps_its_peak_from_before_a_child(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV_FLAG, "1")
+    smk = make_smk(tmp_path)
+
+    with BenchmarkRecorder.record(smk):
+        with BenchmarkRecorder.phase("outer"):
+            touch_and_free(300 * 1024 * 1024)
+            with BenchmarkRecorder.phase("inner"):
+                pass
+
+    (record,) = read_records(tmp_path)
+    phases = {p["name"]: p for p in record["phases"]}
+    assert phases["outer"]["peak_rss_mb"] >= phases["inner"]["peak_rss_mb"] + 250
+
+
+def test_phase_exit_failure_changes_no_outcome(monkeypatch):
+    monkeypatch.setenv(ENV_FLAG, "1")
+    monkeypatch.setattr(recorder, "_reset_hwm", lambda: None)
+
+    # The /proc read works on entry and fails on exit
+    monkeypatch.setattr(recorder, "_vm_hwm_kb", lambda: 1024)
+    with BenchmarkRecorder.phase("succeeds"):
+        monkeypatch.setattr(recorder, "_vm_hwm_kb", fail_proc_read)
+
+    monkeypatch.setattr(recorder, "_vm_hwm_kb", lambda: 1024)
+    with pytest.raises(ValueError, match="body"):
+        with BenchmarkRecorder.phase("fails"):
+            monkeypatch.setattr(recorder, "_vm_hwm_kb", fail_proc_read)
+            raise ValueError("body")
 
 
 def test_phase_is_inert_when_disabled(monkeypatch):

@@ -79,26 +79,36 @@ class BenchmarkRecorder:
             yield
             return
         try:
-            cls._peak_kb = max(cls._peak_kb, _vm_hwm_kb())
+            hwm = _vm_hwm_kb()
+            cls._peak_kb = max(cls._peak_kb, hwm)
+            if cls._phase_stack:
+                # The reset below would hide the parent's peak so far
+                parent = cls._phase_stack[-1]
+                parent["hidden_peak_kb"] = max(parent["hidden_peak_kb"], hwm)
             _reset_hwm()
-        except OSError:
+        except Exception:
             yield
             return
-        frame = {"name": name, "child_peak_kb": 0, "t0": time.time()}
+        # hidden_peak_kb: peaks the resets of nested phases took from VmHWM
+        frame = {"name": name, "hidden_peak_kb": 0, "t0": time.time()}
         cls._phase_stack.append(frame)
         try:
             yield
         finally:
             cls._phase_stack.pop()
-            hwm = _vm_hwm_kb()
-            peak = max(hwm, frame["child_peak_kb"])
+            cls._close_phase(frame)
+
+    @classmethod
+    def _close_phase(cls, frame: dict) -> None:
+        try:
+            peak = max(_vm_hwm_kb(), frame["hidden_peak_kb"])
             cls._peak_kb = max(cls._peak_kb, peak)
             if cls._phase_stack:
                 parent = cls._phase_stack[-1]
-                parent["child_peak_kb"] = max(parent["child_peak_kb"], peak)
+                parent["hidden_peak_kb"] = max(parent["hidden_peak_kb"], peak)
             cls._phases.append(
                 {
-                    "name": name,
+                    "name": frame["name"],
                     "depth": len(cls._phase_stack),
                     "peak_rss_mb": round(peak / 1024, 1),
                     "rss_at_end_mb": round(_vm_rss_kb() / 1024, 1),
@@ -108,6 +118,9 @@ class BenchmarkRecorder:
             )
             # The next step starts from a clean mark; the max so far is kept
             _reset_hwm()
+        except Exception:
+            # Recording must never change the outcome of the wrapped step
+            pass
 
     @classmethod
     def mark(cls, name: str) -> None:
