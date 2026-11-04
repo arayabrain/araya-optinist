@@ -282,23 +282,25 @@ const Privacy = () => {
           &quot;APPI&quot;):
         </strong>{" "}
         Your research data (research content) is stored in Japan; certain
-        account, authentication, and billing information may be processed
+        account, authentication, and billing information, and, if you accept
+        analytics, the usage data described in Section 5.2, may be processed
         outside Japan by the providers noted below. Where personal data is
         provided to a third party located in a foreign country (for example, to
         Google and Stripe in the United States for authentication, analytics,
         and payment processing), we obtain your consent to such transfer when
-        you create your account and the relevant recipients also maintain
-        systems that conform to recognized international frameworks (the EU-U.S.
-        Data Privacy Framework and Standard Contractual Clauses). On request, we
-        will provide information about the destination country (currently the
-        United States), that country&apos;s personal-information-protection
-        system, and the measures the recipient takes to protect personal data.
-        The Personal Information Protection Commission designates the EU and the
-        UK as having a protection regime equivalent to Japan&apos;s. In short,
-        your research data remains stored in Japan; the cross-border provision
-        of personal data is limited to account, authentication, and billing
-        information provided to Google and Stripe (currently in the United
-        States).
+        you create your account or, for analytics, when you accept the analytics
+        notice, and the relevant recipients also maintain systems that conform
+        to recognized international frameworks (the EU-U.S. Data Privacy
+        Framework and Standard Contractual Clauses). On request, we will provide
+        information about the destination country (currently the United States),
+        that country&apos;s personal-information-protection system, and the
+        measures the recipient takes to protect personal data. The Personal
+        Information Protection Commission designates the EU and the UK as having
+        a protection regime equivalent to Japan&apos;s. In short, your research
+        data remains stored in Japan; the cross-border provision of personal
+        data is limited to account, authentication, and billing information
+        provided to Google and Stripe, and, if you accept analytics, usage data
+        provided to Google (currently in the United States).
       </P>
       <P>
         <strong>
