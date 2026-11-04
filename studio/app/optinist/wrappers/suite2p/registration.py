@@ -67,6 +67,8 @@ def suite2p_registration(
             settings=settings,
             device=device,
         )[0]
+        # the map closes here, before writable_tiff renames the file
+        del f_reg
     del movie
     registered_tiff = tiff_path(output_dir, "mc_images")
     mc_images = ImageData(

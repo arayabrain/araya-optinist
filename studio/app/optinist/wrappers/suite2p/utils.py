@@ -77,12 +77,16 @@ def writable_tiff(output_dir, file_name, shape):
     Its blocks are reserved before it is mapped (reserve_blocks). It is built
     beside the final path and moved there on a clean exit, so a failure leaves
     no partial file and any earlier one untouched.
+
+    The caller drops its references to the map before the block ends: Windows
+    cannot rename a file that is still mapped.
     """
     import tifffile
 
     path = tiff_path(output_dir, file_name)
     create_directory(os.path.dirname(path))
     tmp_path = f"{path}.partial"
+    frames = None
     try:
         tifffile.imwrite(tmp_path, shape=shape, dtype=np.int16)
         reserve_blocks(tmp_path)
@@ -90,11 +94,15 @@ def writable_tiff(output_dir, file_name, shape):
         frames = tifffile.memmap(tmp_path, mode="r+").reshape(shape)
         yield frames
         frames.flush()
-        del frames
+        frames = None
         os.replace(tmp_path, path)
     except BaseException:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        frames = None
+        # on Windows the failing caller's traceback can still map the file:
+        # the original error matters more than the leftover
+        with contextlib.suppress(OSError):
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
         raise
 
 

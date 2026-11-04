@@ -6,6 +6,7 @@ import copy
 import os
 import sys
 import types
+import weakref
 
 import numpy as np
 import pytest
@@ -54,8 +55,9 @@ def suite2p_stub(monkeypatch):
         n, Ly, Lx = f_reg.shape
         # what registration does: reads f_raw's frames (f_reg's without one),
         # shifts their bidiphase in place, and writes the registered frames
-        # into f_reg
-        frames = (f_reg if f_raw is None else f_raw)[0:n]
+        # into f_reg. f_raw is tested for truth as assign_reg_io does, so a
+        # plain array there fails as it would in suite2p.
+        frames = (f_reg if not f_raw else f_raw)[0:n]
         calls["pipeline"] = dict(
             save_path=save_path,
             input=np.array(frames),
@@ -214,6 +216,32 @@ def test_registration_writes_mc_images_and_leaves_the_binary_unregistered(
     # not under reg_file, which an earlier release reads as registered
     assert ops["raw_file"] == str(tmp_path / "data.bin")
     assert "reg_file" not in ops
+
+
+def test_the_map_is_closed_before_mc_images_is_renamed(
+    output_dir, tmp_path, suite2p_stub, monkeypatch
+):
+    # Windows cannot rename a file that is still mapped
+    maps, mapped_at_rename = [], []
+    memmap, replace = tifffile.memmap, os.replace
+
+    def recording_memmap(*args, **kwargs):
+        mapped = memmap(*args, **kwargs)
+        maps.append(weakref.ref(mapped))
+        return mapped
+
+    def recording_replace(src, dst):
+        if str(src).endswith(".partial"):
+            mapped_at_rename.extend(ref() is not None for ref in maps)
+        replace(src, dst)
+
+    monkeypatch.setattr(tifffile, "memmap", recording_memmap)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    params = read_default_params("suite2p_registration")
+
+    suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+
+    assert mapped_at_rename == [False]
 
 
 def test_a_second_registration_registers_the_first_ones_result(

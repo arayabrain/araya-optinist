@@ -78,6 +78,20 @@ def test_a_failed_fill_leaves_the_previous_tiff_untouched(tmp_path, error):
     assert previous.read_bytes() == b"earlier run"
 
 
+def test_a_partial_file_that_cannot_be_removed_does_not_hide_the_error(
+    tmp_path, monkeypatch
+):
+    # Windows refuses to remove a file the failing caller still maps
+    def remove(path):
+        raise PermissionError(errno.EACCES, "in use", path)
+
+    monkeypatch.setattr(os, "remove", remove)
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        with writable_tiff(str(tmp_path), "mc_images", (FRAMES, LY, LX)):
+            raise RuntimeError("registration failed")
+
+
 def test_the_whole_file_is_reserved_before_it_is_mapped(tmp_path, monkeypatch):
     events = []
     memmap = tifffile.memmap
