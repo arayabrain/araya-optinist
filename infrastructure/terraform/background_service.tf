@@ -296,6 +296,16 @@ resource "aws_ecs_task_definition" "background" {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
         },
+        # SES sender for expiration lifecycle emails; empty disables them
+        {
+          name  = "NOTIFICATION_FROM_EMAIL"
+          value = var.notification_from_email
+        },
+        # Sign-in link used in the lifecycle emails
+        {
+          name  = "FRONTEND_URL"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+        },
       ]
       mountPoints = [
         {
@@ -369,6 +379,11 @@ resource "aws_ecs_service" "background" {
   }
 
   # No load balancer - background service doesn't serve HTTP traffic
+
+  # ECS applies the grace to container health checks too. Sized for
+  # cloud-startup.sh's DB wait (up to 600 s) plus app start; the container's
+  # startPeriod caps at 300 s.
+  health_check_grace_period_seconds = 900
 
   depends_on = [
     aws_instance.background,

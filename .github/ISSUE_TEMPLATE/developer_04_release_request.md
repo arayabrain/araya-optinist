@@ -289,7 +289,7 @@ assignees: ''
 
 - [ ] dev環境テスト結果: リスクレベルに応じた **System test cases (development)** が実施され、結果が記録されている
 - [ ] テスト対象のコミットSHAがリリース対象と一致している
-- [ ] 対象コミットで Weekly Regression が green である（unit / premium_lock / workflow_count / `@slow` e2e。実行できない場合は `make test_run_all`）
+- [ ] 対象コミットで Weekly Regression が green である（unit / premium_lock / workflow_count / expiration / `@slow` e2e。実行できない場合は `make test_run_all`）
 - [ ] System test cases を省略している場合、領域と省略根拠が手順シートに記載され妥当である
 - [ ] Buffer（不具合対応・再テスト）が完了している
 - [ ] 本番 Release test cases sheet の実施担当者・想定タイミングが手順シートに記載されている
