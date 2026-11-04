@@ -58,7 +58,7 @@ infrastructure/scripts/benchmark/run_bench.sh \
 | `--variant S` | The tier's container ceiling plus its swap allowance — needs host swap |
 | `--conc N` | N runs of the fixture started together in the same container (with a fixture list: the list's length) |
 | `--set node.path=value` | Override one default parameter (dotted path into the node's default yaml); `nwb.path=value` overrides the NWB defaults |
-| `--env KEY=VALUE` | Extra environment variable for the container |
+| `--env KEY=VALUE` | Extra environment variable for the container. Recorded as given in `provenance.json` and `summary.md`, which the AWS lane copies to S3: pass no secrets |
 | `--cpus` / `--cpuset` | CPU limit (default `--cpus 2`). `--cpuset` changes what the process sees as available CPUs, which caiman's `n_processes` clamp reads |
 | `--timeout` | Per-run cap in seconds (default 3 h). In `api` mode the run is then cancelled through the API |
 | `--keep-outputs` | Keep the runs' output directories |
