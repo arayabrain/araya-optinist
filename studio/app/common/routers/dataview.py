@@ -28,6 +28,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+from studio.app.common.core.utils.filepath_creater import normalize_output_path
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
@@ -143,6 +144,7 @@ def get_records_filtered_query(
 @public_router.get(
     "",
     response_model=PageWithHeader[DataviewRecord],
+    response_model_exclude={"items": {"__all__": {"hidden_outputs"}}},
     description="""
 - Search and respond to data for display in Public Dataview
 """,
@@ -362,7 +364,15 @@ async def public_reproduce_experiment(
                     f"already updated by another process"
                 )
 
-    return await reproduce_experiment(workspace_id, unique_id)
+    result = await reproduce_experiment(workspace_id, unique_id)
+    if record.hidden_outputs:
+        for function in result.function.values():
+            function["outputPaths"] = {
+                key: value
+                for key, value in (function.get("outputPaths") or {}).items()
+                if not DataviewService.is_hidden_output(record, value["path"])
+            }
+    return result
 
 
 # NOTE: This function is not specific to the dataview router module.
@@ -732,6 +742,40 @@ async def publish_dataview_records(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Failed to publish experiment after multiple retries",
     )
+
+
+@router.put(
+    "/hidden_outputs/{id}",
+    response_model=List[str],
+    description="""
+- Replace the outputs hidden from public viewers of a Dataview record (owner only)
+""",
+)
+async def put_hidden_outputs(
+    id: int,
+    hidden_outputs: List[str],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = DataviewService.find_user_owned_dataview_record(db, id, current_user.id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    paths = sorted({normalize_output_path(path) for path in hidden_outputs if path})
+
+    result = db.execute(
+        update(models.ExperimentRecord)
+        .where(models.ExperimentRecord.id == record.id)
+        .where(models.ExperimentRecord.version == record.version)
+        .values(hidden_outputs=paths, version=models.ExperimentRecord.version + 1)
+    )
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent modification detected. Please try again.",
+        )
+    return paths
 
 
 @router.post(

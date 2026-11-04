@@ -70,3 +70,14 @@ export const putAttributesApi = async (
   })
   return response.data
 }
+
+export const putHiddenOutputsApi = async (
+  id: number,
+  hiddenOutputs: string[],
+): Promise<string[]> => {
+  const response = await axios.put(
+    `/api/dataview/hidden_outputs/${id}`,
+    hiddenOutputs,
+  )
+  return response.data
+}

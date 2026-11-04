@@ -58,6 +58,8 @@ class ExperimentRecord(Base, TimestampMixin, table=True):
 
     thumbnails: Optional[Dict] = Field(default={}, sa_column=Column(JSON))
 
+    hidden_outputs: Optional[List] = Field(default=[], sa_column=Column(JSON))
+
     success: bool = Field(nullable=False, default=False)
 
     analyzed_at: Optional[datetime] = Field(sa_column=Column(DateTime(timezone=True)))

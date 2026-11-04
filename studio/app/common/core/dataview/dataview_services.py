@@ -270,6 +270,17 @@ class DataviewService:
         return record
 
     @classmethod
+    def is_hidden_output(cls, record: ExperimentRecord, path: str) -> bool:
+        """
+        Check whether an output path (or a file under it) is hidden by the owner
+        """
+        path = normalize_output_path(path)
+        return any(
+            path == hidden or path.startswith(hidden + "/")
+            for hidden in record.hidden_outputs or []
+        )
+
+    @classmethod
     def is_dataview_public_outputs_request(cls, req: Request) -> bool:
         """
         Check whether the access is to public output data (HTTP header check)
@@ -312,7 +323,9 @@ class DataviewService:
             record = DataviewService.find_dataview_record(
                 db, int(workspace_id), unique_id, published_only=True
             )
-            is_allowed_access = record is not None
+            is_allowed_access = record is not None and not cls.is_hidden_output(
+                record, data_file_path
+            )
 
         # Request case for input data
         else:

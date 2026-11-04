@@ -1,5 +1,7 @@
 import { ReactElement } from "react"
-import { useSelector } from "react-redux"
+import { useDispatch, useSelector } from "react-redux"
+
+import { enqueueSnackbar } from "notistack"
 
 import {
   Box,
@@ -7,13 +9,21 @@ import {
   Typography,
   Divider as MuiDivider,
   Chip,
+  FormControlLabel,
+  Switch,
 } from "@mui/material"
 
 import BaseNodesView, {
   renderVisualizationItems,
   useDataviewVisualizationCleanup,
+  VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
-import { selectOutputVisualizationItems } from "store/slice/Dataview/DataviewSelectors"
+import { putHiddenOutputs } from "store/slice/Dataview/DataviewActions"
+import {
+  selectDataviewPrivateRecord,
+  selectOutputVisualizationItems,
+} from "store/slice/Dataview/DataviewSelectors"
+import { AppDispatch } from "store/store"
 
 type OutputsViewProps = {
   open: boolean
@@ -23,6 +33,10 @@ type OutputsViewProps = {
   handleClose: () => void
 }
 
+// hidden_outputs are relative to the output dir; legacy records carry absolute paths
+const isSamePath = (hidden: string, path: string) =>
+  path === hidden || path.endsWith(`/${hidden}`)
+
 const OutputsView = ({
   open,
   is_public,
@@ -31,10 +45,47 @@ const OutputsView = ({
   handleClose,
 }: OutputsViewProps) => {
   useDataviewVisualizationCleanup(open)
+  const dispatch = useDispatch<AppDispatch>()
 
   const outputVisualizationItems = useSelector(
     selectOutputVisualizationItems(uid),
   )
+  const record = useSelector(selectDataviewPrivateRecord(workspaceId, uid))
+  const hiddenOutputs = record?.hidden_outputs ?? []
+
+  const handleToggle = (item: VisualizationItemData, isPublic: boolean) => {
+    if (!record) return
+    const hidden = isPublic
+      ? hiddenOutputs.filter((h) => !isSamePath(h, item.filePath))
+      : [...hiddenOutputs, item.filePath]
+    dispatch(putHiddenOutputs({ id: record.id, hiddenOutputs: hidden }))
+      .unwrap()
+      .catch(() =>
+        enqueueSnackbar(`Failed to update visibility of ${item.title}`, {
+          variant: "error",
+        }),
+      )
+  }
+
+  const renderPublishSwitch =
+    !is_public && record
+      ? (item: VisualizationItemData) => (
+          <FormControlLabel
+            label="Public"
+            labelPlacement="start"
+            control={
+              <Switch
+                size="small"
+                checked={
+                  !hiddenOutputs.some((h) => isSamePath(h, item.filePath))
+                }
+                onChange={(_, checked) => handleToggle(item, checked)}
+                inputProps={{ "aria-label": `Publish ${item.title}` }}
+              />
+            }
+          />
+        )
+      : undefined
 
   const renderData = (): ReactElement[] => {
     if (outputVisualizationItems.length === 0) {
@@ -58,7 +109,7 @@ const OutputsView = ({
             </Typography>
             <MuiDivider sx={{ mb: 3 }} />
             <Grid container spacing={2}>
-              {renderVisualizationItems(pathInfo.items)}
+              {renderVisualizationItems(pathInfo.items, renderPublishSwitch)}
             </Grid>
           </Box>,
         )

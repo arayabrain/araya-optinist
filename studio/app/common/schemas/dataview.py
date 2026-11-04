@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Generic, Optional, TypeVar
+from typing import Generic, List, Optional, TypeVar
 
 from fastapi_pagination import LimitOffsetPage
 from pydantic import BaseModel, Field
@@ -62,6 +62,7 @@ class DataviewRecord(BaseModel):
     workspace: Optional[DataviewWorkspace]
     attributes: Optional[dict] = {}
     thumbnails: Optional[DataviewThumbnails]
+    hidden_outputs: Optional[List[str]] = []
     analyzed_at: Optional[datetime]
     publish_status: int = 0
     created_at: Optional[datetime]
