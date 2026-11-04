@@ -10,8 +10,10 @@ from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
 from studio.app.optinist.wrappers.optinist.utils import (
+    nan_gaussian_1d,
     peak_order,
     recursive_flatten_params,
+    row_order_from,
 )
 
 logger = AppLogger.get_logger()
@@ -117,6 +119,7 @@ def ETA(
     behaviors_data: BehaviorData,
     output_dir: str,
     iscell: IscellData = None,
+    order_from: HeatMapData = None,
     params: dict = None,
     **kwargs,
 ) -> dict(mean=TimeSeriesData, mean_trace=TimeSeriesData, mean_heatmap=HeatMapData):
@@ -205,6 +208,15 @@ def ETA(
         pre_event,
         post_event,
     )
+
+    smooth_sigma = float(params.get("smooth_sigma_frames") or 0)
+    if smooth_sigma < 0:
+        raise ValueError(f"smooth_sigma_frames {smooth_sigma} must be >= 0")
+    if smooth_sigma > 0 and len(event_trigger_data):
+        dtype = event_trigger_data.dtype
+        event_trigger_data = nan_gaussian_1d(
+            event_trigger_data, smooth_sigma, axis=1
+        ).astype(dtype if np.issubdtype(dtype, np.floating) else float, copy=False)
 
     num_event = len(event_trigger_data)
     dropped_length = num_detected - len(trigger_idxs)
@@ -303,8 +315,16 @@ def ETA(
         np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
     )
     order = np.arange(len(mean))
-    if params.get("sort_by_peak", False):
+    if order_from is not None:
+        order = row_order_from(order_from, heatmap_cells)
+    elif params.get("sort_by_peak", False):
         order = peak_order(norm_mean)
+
+    title = f"n = {num_event} events"
+    if baseline_window:
+        title += ", per-event z-score"
+    if smooth_sigma > 0:
+        title += f", smoothed {smooth_sigma:g} frames"
 
     info = {}
     info["mean"] = TimeSeriesData(
@@ -320,13 +340,14 @@ def ETA(
         std=overall_band[np.newaxis],
         index=trace_index,
         file_name="mean_trace",
+        meta=PlotMetaData(title=f"{title}, {mean.shape[0]} cells"),
     )
     info["mean_heatmap"] = HeatMapData(
         norm_mean[order],
         columns=list(np.arange(pre_event, post_event + trigger_len)),
         index=heatmap_cells[order].tolist(),
         file_name="mean_heatmap",
-        meta=PlotMetaData(yaxis_type="category"),
+        meta=PlotMetaData(title=title, yaxis_type="category"),
     )
     info["nwbfile"] = nwbfile
     return info

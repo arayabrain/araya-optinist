@@ -355,3 +355,102 @@ def test_baseline_window_off_averages_the_raw_windows(
         assert got.dtype == want.dtype
         np.testing.assert_array_equal(got, want)
     assert info["mean"].data.dtype == dtype
+
+
+def _peaked_neural(peak_offsets):
+    # each cell fires once per event, peak_offsets frames after the onset
+    x = np.zeros((N_TIME, len(peak_offsets)))
+    for start in STARTS:
+        for c, offset in enumerate(peak_offsets):
+            x[start + offset, c] = 1.0
+    return FluoData(x, file_name="f")
+
+
+def test_order_from_overrides_sort_by_peak(behavior, output_dir):
+    from studio.app.common.dataclass import HeatMapData
+
+    reference = HeatMapData(np.zeros((3, 2)), index=[2, 0, 1])
+
+    info = ETA(
+        _peaked_neural([2, 1, 0]),
+        behavior,
+        output_dir,
+        order_from=reference,
+        params={**PARAMS, "sort_by_peak": True},
+    )
+
+    assert info["mean_heatmap"].index == [2, 0, 1]
+    assert list(np.argmax(info["mean_heatmap"].data, axis=1)) == [2, 4, 3]
+
+
+def test_order_from_matches_iscell_cell_numbers(behavior, output_dir):
+    from studio.app.common.dataclass import HeatMapData
+
+    reference = HeatMapData(np.zeros((4, 2)), index=[7, 2, 0, 1])
+
+    info = ETA(
+        _peaked_neural([2, 1, 0]),
+        behavior,
+        output_dir,
+        iscell=IscellData(np.array([1, 0, 1])),
+        order_from=reference,
+        params={**PARAMS, "sort_by_peak": True},
+    )
+
+    assert info["mean_heatmap"].index == [2, 0]
+
+
+def test_order_from_missing_a_cell_fails_with_a_clear_message(
+    neural, behavior, output_dir
+):
+    from studio.app.common.dataclass import HeatMapData
+
+    with pytest.raises(AssertionError, match="no row for 1 of 3 cells"):
+        ETA(
+            neural,
+            behavior,
+            output_dir,
+            order_from=HeatMapData(np.zeros((2, 2)), index=[0, 1]),
+            params=dict(PARAMS),
+        )
+
+
+def test_smoothing_equals_scipy_on_each_window(neural, behavior, output_dir):
+    from scipy.ndimage import gaussian_filter1d
+
+    info = ETA(
+        neural, behavior, output_dir, params={**PARAMS, "smooth_sigma_frames": 1.5}
+    )
+
+    windows = _windows(neural.data, pre=2)
+    smoothed = gaussian_filter1d(
+        windows, 1.5, axis=1, mode="constant"
+    ) / gaussian_filter1d(np.ones_like(windows), 1.5, axis=1, mode="constant")
+    np.testing.assert_allclose(info["mean"].data, smoothed.mean(axis=0).T)
+    np.testing.assert_allclose(info["mean"].std, smoothed.std(axis=0, ddof=1).T)
+    assert info["mean_heatmap"].meta.title == "n = 3 events, smoothed 1.5 frames"
+
+
+def test_smoothing_keeps_float32(behavior, output_dir):
+    x = np.random.default_rng(1).random((N_TIME, N_CELL)).astype(np.float32)
+    info = ETA(
+        FluoData(x, file_name="f"),
+        behavior,
+        output_dir,
+        params={**PARAMS, "smooth_sigma_frames": 1},
+    )
+    assert info["mean"].data.dtype == np.float32
+
+
+def test_negative_smoothing_fails_with_a_clear_message(neural, behavior, output_dir):
+    with pytest.raises(ValueError, match="smooth_sigma_frames -1.0 must be >= 0"):
+        ETA(neural, behavior, output_dir, params={**PARAMS, "smooth_sigma_frames": -1})
+
+
+def test_titles_carry_the_event_and_cell_counts(neural, behavior, output_dir):
+    info = ETA(neural, behavior, output_dir, params=dict(PARAMS))
+    assert info["mean_heatmap"].meta.title == "n = 3 events"
+    assert info["mean_trace"].meta.title == "n = 3 events, 3 cells"
+
+    z = ETA(neural, behavior, output_dir, params=dict(BASELINE_PARAMS))
+    assert z["mean_heatmap"].meta.title == "n = 3 events, per-event z-score"

@@ -376,3 +376,202 @@ def test_nested_params_are_flattened(tmp_path):
     )
 
     assert info["mean"].data.shape == (NUM_CELL, 4)
+
+
+def _trial_params(**extra):
+    return {"trial_col_index": 2, **extra}
+
+
+def _trial_behavior(samples_per_trial=12):
+    covariate = _covariate()
+    trial = np.arange(NUM_FRAME) // samples_per_trial
+    return np.column_stack([np.zeros(NUM_FRAME), covariate, trial])
+
+
+def test_trial_mode_averages_per_trial_then_across_trials(tmp_path):
+    fluo = _fluo()
+    behavior = _trial_behavior()
+
+    info = _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    out = _postprocess(info)
+
+    covariate, trial = behavior[:, 1], behavior[:, 2]
+    per_trial = np.array(
+        [
+            [
+                fluo[:, (trial == t) & (covariate == c)].mean(axis=1)
+                for c in _bin_centres()
+            ]
+            for t in range(10)
+        ]
+    )  # (trial, bin, cell)
+    np.testing.assert_allclose(info["mean"].data, per_trial.mean(axis=0).T)
+    np.testing.assert_allclose(out["std"], per_trial.std(axis=0, ddof=1).T)
+    np.testing.assert_allclose(
+        out["sem"], per_trial.std(axis=0, ddof=1).T / np.sqrt(10)
+    )
+    assert list(out["num_sample"]) == [10] * 4
+    assert info["mean_heatmap"].meta.title == "n = 10 trials, 10 to 10 per bin"
+
+
+def _bin_centres():
+    return [0.5, 1.5, 2.5, 3.5]
+
+
+def test_trial_mode_sem_is_over_trials_not_samples(tmp_path):
+    behavior = _trial_behavior()
+    fluo = np.tile(behavior[:, 2], (NUM_CELL, 1))  # each trial is flat at its id
+
+    out = _postprocess(
+        _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    )
+
+    np.testing.assert_allclose(out["std"], np.std(np.arange(10), ddof=1))
+    np.testing.assert_allclose(out["sem"], np.std(np.arange(10), ddof=1) / np.sqrt(10))
+
+
+def test_trial_mode_min_samples_drops_a_sparse_trial_bin(tmp_path, caplog):
+    behavior = _trial_behavior()
+    behavior[0, 1] = 10.0  # trial 0 keeps 2 of its 3 samples in bin 0
+    fluo = np.ones((NUM_CELL, NUM_FRAME))
+    fluo[:, :12] = 5.0  # trial 0 is the odd one out
+
+    dense = _postprocess(
+        _bin(
+            tmp_path, fluo=fluo, behavior=behavior, params=_trial_params(min_samples=3)
+        )
+    )
+    loose = _postprocess(
+        _bin(
+            tmp_path, fluo=fluo, behavior=behavior, params=_trial_params(min_samples=2)
+        )
+    )
+
+    assert list(dense["num_sample"]) == [9, 10, 10, 10]
+    np.testing.assert_allclose(dense["mean"][:, 0], 1.0)
+    assert list(loose["num_sample"]) == [10] * 4
+    np.testing.assert_allclose(loose["mean"][:, 0], 1.4)
+
+
+def test_trial_mode_ignores_samples_without_a_trial_id(tmp_path):
+    behavior = _trial_behavior()
+    behavior[:12, 2] = np.nan
+
+    out = _postprocess(_bin(tmp_path, behavior=behavior, params=_trial_params()))
+
+    assert list(out["num_sample"]) == [9] * 4
+
+
+def test_trial_mode_nan_sample_blanks_that_trial_bin_only(tmp_path):
+    behavior = _trial_behavior()
+    fluo = np.ones((NUM_CELL, NUM_FRAME))
+    fluo[0, 0] = np.nan  # cell 0, trial 0, bin 0
+
+    out = _postprocess(
+        _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    )
+
+    assert np.isfinite(out["mean"]).all()
+    assert list(out["num_sample"]) == [10] * 4
+
+
+def test_trial_col_out_of_range_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="trial_col_index 5 is out of range"):
+        _bin(tmp_path, params={"trial_col_index": 5})
+
+
+def test_min_samples_blanks_sparse_bins_in_sample_mode(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    covariate = np.array([0.5, 0.5, 2.5])
+    fluo = np.ones((NUM_CELL, 3))
+
+    out = _postprocess(
+        _bin(
+            tmp_path,
+            fluo=fluo,
+            behavior=_behavior(covariate),
+            params={"min_samples": 2},
+        )
+    )
+
+    np.testing.assert_allclose(out["mean"][:, 0], 1.0)
+    assert np.isnan(out["mean"][:, 2]).all()
+    assert list(out["num_sample"]) == [2, 0, 1, 0]
+    assert "1 of 4 bins have fewer than min_samples 2 and are NaN: [2]" in caplog.text
+
+
+def test_invalid_min_samples_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="min_samples must be >= 1"):
+        _bin(tmp_path, params={"min_samples": 0})
+
+
+def test_smoothing_changes_the_heatmap_not_the_mean(tmp_path):
+    from scipy.ndimage import gaussian_filter1d
+
+    fluo = _peaked_fluo([1.5, 2.5, 3.5])
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        params={"smooth_sigma_bins": 1, "heatmap_normalization": "none"},
+    )
+    out = _postprocess(info)
+
+    raw = np.eye(4)[1:]
+    np.testing.assert_allclose(info["mean"].data, raw)
+    np.testing.assert_allclose(out["mean"], raw)
+    expected = gaussian_filter1d(raw, 1, axis=1, mode="constant") / gaussian_filter1d(
+        np.ones_like(raw), 1, axis=1, mode="constant"
+    )
+    np.testing.assert_allclose(info["mean_heatmap"].data, expected)
+    np.testing.assert_allclose(out["mean_smoothed"], expected)
+    assert (
+        info["mean_heatmap"].meta.title == "30 to 30 samples per bin, smoothed 1 bins"
+    )
+
+
+def test_smoothing_leaves_an_empty_bin_blank_and_its_neighbours_finite(tmp_path):
+    covariate = np.tile([1.5, 2.5, 3.5], 40)
+    fluo = np.stack([(covariate == 2.5) * 1.0])
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(covariate),
+        params={"smooth_sigma_bins": 1, "heatmap_normalization": "none"},
+    )
+
+    row = info["mean_heatmap"].data[0]
+    assert np.isnan(row[0])
+    assert np.isfinite(row[1:]).all()
+    assert row[2] == np.nanmax(row) > row[1] > 0
+
+
+def test_sort_by_peak_follows_the_smoothed_row(tmp_path):
+    covariate = _covariate()
+    # cell 0 peaks in bin 3 with a wide shoulder in bins 0 and 1; smoothing moves it
+    fluo = np.stack(
+        [
+            np.select(
+                [covariate == 0.5, covariate == 1.5, covariate == 3.5], [0.9, 0.9, 1.0]
+            ),
+            (covariate == 2.5) * 1.0,
+        ]
+    )
+
+    raw = _bin(tmp_path, fluo=fluo, params={"sort_by_peak": True})
+    smooth = _bin(
+        tmp_path, fluo=fluo, params={"sort_by_peak": True, "smooth_sigma_bins": 1}
+    )
+
+    assert raw["mean_heatmap"].index == [1, 0]
+    assert smooth["mean_heatmap"].index == [0, 1]
+
+
+def test_invalid_smoothing_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="smooth_sigma_bins must be >= 0"):
+        _bin(tmp_path, params={"smooth_sigma_bins": -1})
+
+
+def test_default_title_reports_samples_per_bin(tmp_path):
+    info = _bin(tmp_path)
+    assert info["mean_heatmap"].meta.title == "30 to 30 samples per bin"

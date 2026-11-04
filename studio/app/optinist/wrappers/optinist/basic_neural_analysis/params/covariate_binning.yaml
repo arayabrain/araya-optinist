@@ -8,5 +8,8 @@ covariate_binning:
   use_data_range: True
   bin_min: 0.0
   bin_max: 1.0
+  trial_col_index: -1 # behaviour column holding a trial id; -1 averages time samples
+  min_samples: 1 # bins (trial-bins in trial mode) with fewer samples are NaN
+  smooth_sigma_bins: 0.0 # Gaussian s.d. along the bin axis for the heatmap, in bins; 0 = off
   sort_by_peak: True
   heatmap_normalization: 'minmax' # ['minmax', 'mean', 'none']
