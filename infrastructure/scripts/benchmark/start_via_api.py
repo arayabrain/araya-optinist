@@ -75,6 +75,9 @@ def main():
         run_item = f.read()
     signal.signal(signal.SIGTERM, on_sigterm)
 
+    # A timeout during submission takes effect once the run's id is known, so
+    # an accepted run can still be cancelled
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
     t_start = time.time()
     unique_id = post(f"{args.api}/run/{args.workspace}", run_item)
     print(f"BENCH_UID {unique_id}", flush=True)
@@ -89,6 +92,7 @@ def main():
     experiment = {}
     cancelled = None
     try:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
         while experiment.get("success") in (None, "running"):
             time.sleep(args.poll)
             experiment = read_experiment(experiment_path)
