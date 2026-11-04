@@ -12,7 +12,11 @@ import numpy as np
 import pytest
 import tifffile
 
+from studio.app.dir_path import DIRPATH
 from studio.app.optinist.microscopes.IsxdReader import IsxdReader
+from studio.app.optinist.microscopes.MicroscopeDataReaderBase import (
+    unpack_microscope_libs,
+)
 from studio.app.optinist.microscopes.ND2Reader import ND2Reader
 from studio.app.optinist.microscopes.OIRReader import OIRReader
 from studio.app.optinist.microscopes.ThorlabsReader import ThorlabsReader
@@ -28,6 +32,14 @@ linux_x86_64 = pytest.mark.skipif(
     (platform.system(), platform.machine()) != ("Linux", "x86_64"),
     reason="the SDK ships a Linux x86_64 library only",
 )
+
+
+def shipped(reader):
+    """Skip when libs.zip does not ship the reader's library; a shipped library
+    that will not unpack or load is a failure."""
+    member = reader.SDK_LIBRARY_FILES["Linux"]["main"].lstrip("/")
+    if member not in zipfile.ZipFile(DIRPATH.MICROSCOPE_LIB_ZIP).namelist():
+        pytest.skip(f"{member} is not in libs.zip")
 
 
 def sample(url):
@@ -46,6 +58,7 @@ def sample(url):
 
 @linux_x86_64
 def test_oir_reader():
+    shipped(OIRReader)
     reader = OIRReader()
     reader.load(sample(OIR_URL))
     ome = reader.ome_metadata
@@ -70,6 +83,7 @@ def test_oir_reader():
 
 @linux_x86_64
 def test_nd2_reader():
+    shipped(ND2Reader)
     reader = ND2Reader()
     reader.load(sample(ND2_URL))
     ome = reader.ome_metadata
@@ -89,6 +103,37 @@ def test_nd2_reader():
     assert (lab["Type"], lab["Loops"], lab["uiSequenceCount"]) == ("2Dm", 3, 3)
     stack = reader.get_image_stacks()
     assert stack.shape == (2, 3, 32, 32) and stack.dtype == np.uint16
+
+
+def test_unpack_publishes_the_sdk_directory_only_when_it_is_complete(
+    tmp_path, monkeypatch
+):
+    with zipfile.ZipFile(tmp_path / "libs.zip", "w") as zf:
+        zf.writestr("vendor/lib.so", b"x")
+    monkeypatch.setattr(DIRPATH, "MICROSCOPE_LIB_ZIP", str(tmp_path / "libs.zip"))
+    monkeypatch.setattr(DIRPATH, "MICROSCOPE_LIB_DIR", str(tmp_path / "libs"))
+    unpack = shutil.unpack_archive
+
+    def unpack_beside_the_target(archive, target):
+        assert target != str(tmp_path / "libs") and not (tmp_path / "libs").exists()
+        unpack(archive, target)
+
+    monkeypatch.setattr(shutil, "unpack_archive", unpack_beside_the_target)
+    unpack_microscope_libs()
+    assert (tmp_path / "libs" / "vendor" / "lib.so").read_bytes() == b"x"
+
+    # another process publishes between this one's unpack and its rename
+    shutil.rmtree(tmp_path / "libs")
+    rename = os.rename
+
+    def rename_after_a_winner(src, dst):
+        shutil.copytree(src, dst)
+        rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename_after_a_winner)
+    unpack_microscope_libs()
+    assert (tmp_path / "libs" / "vendor" / "lib.so").read_bytes() == b"x"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["libs", "libs.zip"]
 
 
 def test_isxd_reader():
