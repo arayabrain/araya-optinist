@@ -25,6 +25,9 @@ import {
 import {
   selectHeatMapItemColors,
   selectHeatMapItemRefItemId,
+  selectHeatMapItemZRange,
+  selectHeatMapItemZRangeMode,
+  selectHeatMapItemZRangePercentile,
   selectHeatMapLinkedDrawOrderList,
   selectHeatMapItemShowScale,
   selectVisualizeItemHeight,
@@ -96,8 +99,17 @@ const HeatMapImple = memo(function HeatMapImple() {
         : { z: rows.z, columns },
     [columnsAreRois, rows, columns, selectedRois],
   )
+  const zRangeMode = useSelector(selectHeatMapItemZRangeMode(itemId))
+  const zRangePercentile = useSelector(
+    selectHeatMapItemZRangePercentile(itemId),
+  )
+  const manualZRange = useSelector(selectHeatMapItemZRange(itemId))
   // Colour scale stays that of the whole matrix while rows are filtered.
-  const zRange = useMemo(() => heatMapZRange(heatMapData), [heatMapData])
+  const zRange = useMemo(
+    () =>
+      heatMapZRange(heatMapData, zRangeMode, zRangePercentile, manualZRange),
+    [heatMapData, zRangeMode, zRangePercentile, manualZRange],
+  )
 
   const data = useMemo(
     () =>

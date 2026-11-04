@@ -86,3 +86,37 @@ describe("heatMapZRange", () => {
     expect(heatMapZRange([[NaN]])).toBeUndefined()
   })
 })
+
+describe("heatMapZRange modes", () => {
+  // 101 values 0..100, one outlier
+  const matrix = [Array.from({ length: 101 }, (_, i) => i), [1000]]
+
+  it("auto spans the outlier", () => {
+    expect(heatMapZRange(matrix, "auto")).toEqual([0, 1000])
+  })
+
+  it("percentile clips both ends and drops the outlier", () => {
+    expect(heatMapZRange(matrix, "percentile", 2)).toEqual([2, 99])
+  })
+
+  it("percentile falls back to auto when the clip leaves no range", () => {
+    expect(heatMapZRange([[5, 5, 5]], "percentile", 10)).toEqual([5, 5])
+    expect(heatMapZRange(matrix, "percentile", 0)).toEqual([0, 1000])
+    expect(heatMapZRange(matrix, "percentile", 50)).toEqual([0, 1000])
+  })
+
+  it("manual uses the typed range and ignores the data", () => {
+    expect(heatMapZRange(matrix, "manual", 2, [0.8, 1.5])).toEqual([0.8, 1.5])
+  })
+
+  it("manual falls back to auto until the range is valid", () => {
+    expect(heatMapZRange(matrix, "manual", 2, null)).toEqual([0, 1000])
+    expect(heatMapZRange(matrix, "manual", 2, [3, 3])).toEqual([0, 1000])
+  })
+
+  it("skips NaN and null in every mode", () => {
+    const served = [[null, 1], [2, NaN], [3]] as unknown as number[][]
+    expect(heatMapZRange(served, "percentile", 10)).toEqual([1, 3])
+    expect(heatMapZRange(served, "manual", 2, null)).toEqual([1, 3])
+  })
+})

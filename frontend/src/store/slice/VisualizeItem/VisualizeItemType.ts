@@ -109,11 +109,18 @@ export interface TimeSeriesItem extends DisplayDataItemBaseType {
   drawOrderList: string[]
 }
 
+export type HeatMapZRangeMode = "auto" | "percentile" | "manual"
+
 export interface HeatMapItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.HEAT_MAP
   showscale: boolean
   colors: ColorType[]
   refItemId: number | null
+  zRangeMode: HeatMapZRangeMode
+  // percentile: clip the colour scale to [p, 100 - p] percent of the finite values
+  zRangePercentile: number
+  // manual: the typed colour range
+  zRange: [number, number] | null
 }
 export interface CsvItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.CSV
