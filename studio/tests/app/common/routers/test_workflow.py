@@ -90,5 +90,6 @@ def test_the_sample_import_fails_when_an_input_copy_fails(
     monkeypatch.setattr(
         MockStorageController, "upload_input_data", AsyncMock(return_value=False)
     )
-    with pytest.raises(RuntimeError, match="remote storage failed"):
-        client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/tutorial")
+    res = client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/tutorial")
+    assert res.status_code == 502
+    assert "remote storage failed" in res.json()["detail"]

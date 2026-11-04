@@ -796,7 +796,7 @@ async def set_shape(workspace_id: str, filepath: str):
     try:
         await edit_cache_off_loop(update_image_shape, workspace_id, filepath)
     except Exception as e:
-        raise HTTPException(status=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
     return True
 
 
@@ -1157,10 +1157,11 @@ async def download(
         # done means in place locally and on remote storage
         status.done = True
     except Exception as e:
-        with suppress(OSError):
-            os.unlink(tmp_path)
         status.error = str(e)
     finally:
+        # Also on cancellation, which skips `except Exception`; gone once replaced.
+        with suppress(OSError):
+            os.unlink(tmp_path)
         stop_heartbeat.set()
         res.close()
         await asyncio.to_thread(_write_download_status, status_path, status)

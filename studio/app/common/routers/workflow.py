@@ -216,6 +216,14 @@ async def import_workflow_config(file: UploadFile = File(...)):
         )
 
 
+def _raise_copy_failed(names) -> None:
+    """upload_input_data swallows its errors and returns False."""
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"Copy of {names} to remote storage failed",
+    )
+
+
 @router.get(
     "/sample_data/{workspace_id}/{category}",
     dependencies=[Depends(is_workspace_available)],
@@ -280,7 +288,7 @@ async def import_sample_data(
             copied = await asyncio.gather(*tasks)
             failed = [p.name for p, ok in zip(sample_data_subdir, copied) if not ok]
             if failed:
-                raise RuntimeError(f"Copy of {failed} to remote storage failed")
+                _raise_copy_failed(failed)
 
             # Generate metadata files for various file types and upload to S3
 
@@ -295,9 +303,10 @@ async def import_sample_data(
                     await edit_cache_off_loop(
                         update_image_shape, workspace_id, tiff_file.name
                     )
-                await remote_storage_controller.upload_input_data(
+                if not await remote_storage_controller.upload_input_data(
                     workspace_id, MetadataCacheFile.IMAGE_SHAPE
-                )
+                ):
+                    _raise_copy_failed([MetadataCacheFile.IMAGE_SHAPE])
 
             # HDF5 files: .hdf5_structure.json
             hdf5_files = [
@@ -310,9 +319,10 @@ async def import_sample_data(
                     await edit_cache_off_loop(
                         update_hdf5_structure, workspace_id, hdf5_file.name
                     )
-                await remote_storage_controller.upload_input_data(
+                if not await remote_storage_controller.upload_input_data(
                     workspace_id, MetadataCacheFile.HDF5_STRUCTURE
-                )
+                ):
+                    _raise_copy_failed([MetadataCacheFile.HDF5_STRUCTURE])
 
             # MATLAB files: .mat_structure.json
             mat_files = [
@@ -325,9 +335,10 @@ async def import_sample_data(
                     await edit_cache_off_loop(
                         update_mat_structure, workspace_id, mat_file.name
                     )
-                await remote_storage_controller.upload_input_data(
+                if not await remote_storage_controller.upload_input_data(
                     workspace_id, MetadataCacheFile.MAT_STRUCTURE
-                )
+                ):
+                    _raise_copy_failed([MetadataCacheFile.MAT_STRUCTURE])
 
             # ------------------------------------------------------------
             # Upload the output sample data to remote storage process.

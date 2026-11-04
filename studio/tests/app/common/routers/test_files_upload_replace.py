@@ -201,6 +201,21 @@ def test_a_url_upload_that_fails_midway_leaves_the_old_file(input_dir):
     assert data_files(input_dir) == ["data.csv"]
 
 
+def test_a_cancelled_url_upload_leaves_no_temporary_file(input_dir):
+    """Cancellation skips `except Exception`; the streamed file must still go."""
+
+    def stream(res, tmp_path, chunk_size, status_path, status):
+        with open(tmp_path, "xb") as f:
+            f.write(NEW)
+        raise asyncio.CancelledError
+
+    with patch.object(files, "_stream_to_file", side_effect=stream), pytest.raises(
+        asyncio.CancelledError
+    ):
+        download(url_response(NEW))
+    assert data_files(input_dir) == []
+
+
 def test_a_url_upload_is_done_only_once_the_file_is_in_place(input_dir, monkeypatch):
     """The frontend finishes on done and uses the file."""
     path = input_dir / "data.csv"
