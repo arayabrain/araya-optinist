@@ -1,4 +1,4 @@
-import { describe, it, expect } from "@jest/globals"
+import { describe, expect, it, jest } from "@jest/globals"
 
 import {
   filterHeatMapColumns,
@@ -118,5 +118,25 @@ describe("heatMapZRange modes", () => {
     const served = [[null, 1], [2, NaN], [3]] as unknown as number[][]
     expect(heatMapZRange(served, "percentile", 10)).toEqual([1, 3])
     expect(heatMapZRange(served, "manual", 2, null)).toEqual([1, 3])
+  })
+})
+
+describe("heatMapZRange auto mode", () => {
+  it("scans for the min and max without copying and sorting the values", () => {
+    const sort = jest.spyOn(Array.prototype, "sort")
+    try {
+      expect(
+        heatMapZRange(
+          [
+            [3, NaN],
+            [-1, 2],
+          ],
+          "auto",
+        ),
+      ).toEqual([-1, 3])
+      expect(sort).not.toHaveBeenCalled()
+    } finally {
+      sort.mockRestore()
+    }
   })
 })

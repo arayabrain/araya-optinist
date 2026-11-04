@@ -212,11 +212,8 @@ def ETA(
     smooth_sigma = float(params.get("smooth_sigma_frames") or 0)
     if smooth_sigma < 0:
         raise ValueError(f"smooth_sigma_frames {smooth_sigma} must be >= 0")
-    if smooth_sigma > 0 and len(event_trigger_data):
-        dtype = event_trigger_data.dtype
-        event_trigger_data = nan_gaussian_1d(
-            event_trigger_data, smooth_sigma, axis=1
-        ).astype(dtype if np.issubdtype(dtype, np.floating) else float, copy=False)
+    if smooth_sigma > 0 and not np.issubdtype(event_trigger_data.dtype, np.floating):
+        event_trigger_data = event_trigger_data.astype(float)
 
     num_event = len(event_trigger_data)
     dropped_length = num_detected - len(trigger_idxs)
@@ -257,6 +254,11 @@ def ETA(
                 int(skip.sum()),
                 cells[skip.any(axis=0)].tolist(),
             )
+    if smooth_sigma > 0:
+        # one window at a time: the float64 temporaries of a whole cube are GBs
+        for window in event_trigger_data:
+            window[...] = nan_gaussian_1d(window, smooth_sigma, axis=0)
+    if baseline_window:
         mean, std, n_event = nan_stats(event_trigger_data)
         empty = (n_event == 0).all(axis=0)
         if empty.any():

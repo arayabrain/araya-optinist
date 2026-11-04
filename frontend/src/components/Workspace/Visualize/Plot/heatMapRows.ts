@@ -43,19 +43,29 @@ export function heatMapZRange(
   if (mode === "manual" && manual != null && manual[0] < manual[1]) {
     return manual
   }
-  const values: number[] = []
+  let min = Infinity
+  let max = -Infinity
   z?.forEach((row) =>
     row.forEach((v) => {
-      if (Number.isFinite(v)) values.push(v)
+      if (Number.isFinite(v)) {
+        if (v < min) min = v
+        if (v > max) max = v
+      }
     }),
   )
-  if (values.length === 0) return undefined
-  values.sort((a, b) => a - b)
-  const last = values.length - 1
+  if (min > max) return undefined
   if (mode === "percentile" && percentile > 0 && percentile < 50) {
+    const values: number[] = []
+    z?.forEach((row) =>
+      row.forEach((v) => {
+        if (Number.isFinite(v)) values.push(v)
+      }),
+    )
+    values.sort((a, b) => a - b)
+    const last = values.length - 1
     const lo = values[Math.floor((last * percentile) / 100)]
     const hi = values[Math.ceil((last * (100 - percentile)) / 100)]
     if (lo < hi) return [lo, hi]
   }
-  return [values[0], values[last]]
+  return [min, max]
 }

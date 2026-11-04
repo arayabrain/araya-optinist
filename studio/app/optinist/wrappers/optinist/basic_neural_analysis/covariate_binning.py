@@ -21,7 +21,9 @@ HEATMAP_NORMALIZATION_OPTIONS = ("minmax", "mean", "none")
 
 
 def _trial_stats(X, in_range, bin_idx, trial, n_bins, min_samples):
-    """Mean per trial per bin, then mean, sample std and trial count across trials."""
+    """Mean per trial per bin, then mean, sample std, sem and trial count across
+    trials. A NaN sample drops that trial's bin for the cell, and its sem counts that;
+    num_sample is the occupancy, shared by the cells."""
     keep = in_range & np.isfinite(trial)
     assert keep.any(), "no in-range sample has a finite trial id"
     trial_ids, trial_pos = np.unique(trial[keep], return_inverse=True)
@@ -43,9 +45,11 @@ def _trial_stats(X, in_range, bin_idx, trial, n_bins, min_samples):
         warnings.simplefilter("ignore", RuntimeWarning)  # a bin with no trial is NaN
         mean = np.nanmean(per_trial, axis=1)
         std = np.nanstd(per_trial, axis=1, ddof=1)
-    std[np.sum(~np.isnan(per_trial), axis=1) < 2] = np.nan
+    n_valid = np.sum(~np.isnan(per_trial), axis=1)
+    std[n_valid < 2] = np.nan
+    sem = std / np.sqrt(np.maximum(n_valid, 1))
     num_sample = (counts >= min_samples).sum(axis=0)
-    return mean, std, num_sample, n_trial
+    return mean, std, sem, num_sample, n_trial
 
 
 def covariate_binning(
@@ -147,7 +151,7 @@ def covariate_binning(
     num_cell = X.shape[1]
     n_trial = None
     if trial_col >= 0:
-        mean, std, num_sample, n_trial = _trial_stats(
+        mean, std, sem, num_sample, n_trial = _trial_stats(
             X,
             in_range,
             bin_idx,
@@ -166,7 +170,7 @@ def covariate_binning(
                 mean[:, b] = samples.mean(axis=0)
             if num_sample[b] > 1 and num_sample[b] >= min_samples:
                 std[:, b] = samples.std(axis=0, ddof=1)
-    sem = std / np.sqrt(np.maximum(num_sample, 1))
+        sem = std / np.sqrt(np.maximum(num_sample, 1))
 
     if (num_sample == 0).any():
         logger.warning(

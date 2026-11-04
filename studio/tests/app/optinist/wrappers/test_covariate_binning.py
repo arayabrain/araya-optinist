@@ -430,6 +430,27 @@ def test_trial_mode_sem_is_over_trials_not_samples(tmp_path):
     np.testing.assert_allclose(out["sem"], np.std(np.arange(10), ddof=1) / np.sqrt(10))
 
 
+def test_trial_mode_sem_counts_the_trials_the_cell_has(tmp_path):
+    """A NaN sample drops that trial's bin for the cell; num_sample still counts
+    the occupancy, so the sem must not divide by it."""
+    behavior = _trial_behavior()
+    fluo = np.tile(behavior[:, 2], (NUM_CELL, 1)).astype(float)
+    in_trial_2_bin_0 = (behavior[:, 2] == 2) & (behavior[:, 1] == 0.5)
+    fluo[0, np.flatnonzero(in_trial_2_bin_0)[0]] = np.nan
+
+    out = _postprocess(
+        _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    )
+
+    left = np.array([0, 1, 3, 4, 5, 6, 7, 8, 9], dtype=float)
+    np.testing.assert_allclose(out["mean"][0, 0], left.mean())
+    np.testing.assert_allclose(out["sem"][0, 0], left.std(ddof=1) / 3)
+    np.testing.assert_allclose(
+        out["sem"][1, 0], np.std(np.arange(10), ddof=1) / np.sqrt(10)
+    )
+    assert list(out["num_sample"]) == [10] * 4
+
+
 def test_trial_mode_min_samples_drops_a_sparse_trial_bin(tmp_path, caplog):
     behavior = _trial_behavior()
     behavior[0, 1] = 10.0  # trial 0 keeps 2 of its 3 samples in bin 0

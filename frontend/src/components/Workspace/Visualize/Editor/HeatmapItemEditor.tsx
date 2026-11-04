@@ -1,7 +1,12 @@
-import { ChangeEvent, FC, useContext } from "react"
+import { ChangeEvent, FC, useContext, useState } from "react"
 import { useSelector, useDispatch } from "react-redux"
 
-import { Grid, MenuItem, SelectChangeEvent } from "@mui/material"
+import {
+  Grid,
+  MenuItem,
+  SelectChangeEvent,
+  TextFieldProps,
+} from "@mui/material"
 
 import { FieldLabel, ParamSection } from "components/common/ParamSection"
 import { ParamSelect } from "components/common/ParamSelect"
@@ -84,22 +89,11 @@ const ColorRange: FC = () => {
       }),
     )
   }
-  const onChangePercentile = (event: ChangeEvent<HTMLInputElement>) => {
-    const value = Number(event.target.value)
-    if (event.target.value !== "" && value >= 0 && value < 50) {
-      dispatch(
-        setHeatMapItemZRangePercentile({ itemId, zRangePercentile: value }),
-      )
-    }
+  const setBound = (bound: 0 | 1) => (value: number) => {
+    const next: [number, number] = [zRange?.[0] ?? 0, zRange?.[1] ?? 1]
+    next[bound] = value
+    dispatch(setHeatMapItemZRange({ itemId, zRange: next }))
   }
-  const onChangeBound =
-    (bound: 0 | 1) => (event: ChangeEvent<HTMLInputElement>) => {
-      const value = Number(event.target.value)
-      if (event.target.value === "" || !Number.isFinite(value)) return
-      const next: [number, number] = [zRange?.[0] ?? 0, zRange?.[1] ?? 1]
-      next[bound] = value
-      dispatch(setHeatMapItemZRange({ itemId, zRange: next }))
-    }
   return (
     <>
       <ParamSelect label="Color Range" value={mode} onChange={onChangeMode}>
@@ -108,30 +102,35 @@ const ColorRange: FC = () => {
         <MenuItem value="manual">Manual</MenuItem>
       </ParamSelect>
       {mode === "percentile" && (
-        <ParamTextField
-          type="number"
+        <DraftNumberField
           label="Clip percent (each end)"
           inputProps={{ min: 0, max: 49, step: 0.5 }}
           value={percentile}
-          onChange={onChangePercentile}
+          accepts={(value) => value >= 0 && value < 50}
+          onCommit={(value) =>
+            dispatch(
+              setHeatMapItemZRangePercentile({
+                itemId,
+                zRangePercentile: value,
+              }),
+            )
+          }
         />
       )}
       {mode === "manual" && (
         <Grid container spacing={1}>
           <Grid item xs={6}>
-            <ParamTextField
-              type="number"
+            <DraftNumberField
               label="Min"
-              value={zRange?.[0] ?? ""}
-              onChange={onChangeBound(0)}
+              value={zRange?.[0] ?? null}
+              onCommit={setBound(0)}
             />
           </Grid>
           <Grid item xs={6}>
-            <ParamTextField
-              type="number"
+            <DraftNumberField
               label="Max"
-              value={zRange?.[1] ?? ""}
-              onChange={onChangeBound(1)}
+              value={zRange?.[1] ?? null}
+              onCommit={setBound(1)}
             />
           </Grid>
         </Grid>
@@ -139,3 +138,34 @@ const ColorRange: FC = () => {
     </>
   )
 }
+
+// The field shows what was typed ("-", "", "1.50") and commits each finite value;
+// a value changed from outside (another item selected) shows through.
+export const DraftNumberField: FC<{
+  label: string
+  value: number | null
+  onCommit: (value: number) => void
+  accepts?: (value: number) => boolean
+  inputProps?: TextFieldProps["inputProps"]
+}> = ({ label, value, onCommit, accepts = () => true, inputProps }) => {
+  const [draft, setDraft] = useState({ text: asText(value), of: value })
+  const text = draft.of === value ? draft.text : asText(value)
+  const onChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const next = Number(event.target.value)
+    const ok =
+      event.target.value !== "" && Number.isFinite(next) && accepts(next)
+    setDraft({ text: event.target.value, of: ok ? next : value })
+    if (ok) onCommit(next)
+  }
+  return (
+    <ParamTextField
+      type="number"
+      label={label}
+      value={text}
+      onChange={onChange}
+      inputProps={inputProps}
+    />
+  )
+}
+
+const asText = (value: number | null) => (value == null ? "" : String(value))

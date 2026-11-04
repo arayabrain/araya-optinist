@@ -442,6 +442,46 @@ def test_smoothing_keeps_float32(behavior, output_dir):
     assert info["mean"].data.dtype == np.float32
 
 
+def test_smoothing_runs_on_the_z_scored_windows(neural, behavior, output_dir):
+    """The baseline statistics come from the unsmoothed window, so a response
+    smoothed into the baseline frames does not change them."""
+    from scipy.ndimage import gaussian_filter1d
+
+    info = ETA(
+        neural,
+        behavior,
+        output_dir,
+        params={**BASELINE_PARAMS, "smooth_sigma_frames": 1.5},
+    )
+
+    z = _baseline_z(_windows(neural.data))
+    smoothed = gaussian_filter1d(z, 1.5, axis=1, mode="constant") / gaussian_filter1d(
+        np.ones_like(z), 1.5, axis=1, mode="constant"
+    )
+    np.testing.assert_allclose(info["mean"].data, smoothed.mean(axis=0).T)
+    assert (
+        info["mean_heatmap"].meta.title
+        == "n = 3 events, per-event z-score, smoothed 1.5 frames"
+    )
+
+
+def test_a_constant_baseline_is_skipped_with_smoothing_on(
+    neural, behavior, output_dir, caplog
+):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    x = neural.data.copy()
+    x[STARTS[0] - 3 : STARTS[0], 2] = 0.5  # flat right before the response
+
+    ETA(
+        FluoData(x, file_name="f"),
+        behavior,
+        output_dir,
+        params={**BASELINE_PARAMS, "smooth_sigma_frames": 1.5},
+    )
+
+    assert "1 event-cell pairs skipped" in caplog.text
+
+
 def test_negative_smoothing_fails_with_a_clear_message(neural, behavior, output_dir):
     with pytest.raises(ValueError, match="smooth_sigma_frames -1.0 must be >= 0"):
         ETA(neural, behavior, output_dir, params={**PARAMS, "smooth_sigma_frames": -1})
