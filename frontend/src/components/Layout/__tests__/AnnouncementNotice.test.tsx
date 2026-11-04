@@ -10,9 +10,9 @@ import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import AnnouncementNotice, {
-  ANNOUNCEMENT_DISMISSED_KEY,
   ANNOUNCEMENT_POLL_INTERVAL_MS,
 } from "components/Layout/AnnouncementNotice"
+import { ANNOUNCEMENT_DISMISSED_KEY } from "const/Announcement"
 import { BASE_URL } from "const/API"
 import { tabSync, TabSyncMessage } from "utils/crossTabSync"
 

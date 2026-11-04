@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals"
 
+import { ANNOUNCEMENT_DISMISSED_KEY } from "const/Announcement"
 import type { User } from "store/slice/User/UserType"
 import type { RootState } from "store/store"
 
@@ -269,7 +270,7 @@ describe("UserSlice", () => {
       userSlice.reducer(state, loginFulfilledAction)
 
       expect(localStorageMock.removeItem).toHaveBeenCalledWith(
-        "announcementDismissed",
+        ANNOUNCEMENT_DISMISSED_KEY,
       )
     })
 

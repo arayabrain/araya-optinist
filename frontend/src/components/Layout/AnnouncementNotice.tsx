@@ -10,10 +10,10 @@ import DialogContentText from "@mui/material/DialogContentText"
 import DialogTitle from "@mui/material/DialogTitle"
 import Typography from "@mui/material/Typography"
 
+import { ANNOUNCEMENT_DISMISSED_KEY } from "const/Announcement"
 import { BASE_URL } from "const/API"
 import { tabSync } from "utils/crossTabSync"
 
-export const ANNOUNCEMENT_DISMISSED_KEY = "announcementDismissed"
 export const ANNOUNCEMENT_POLL_INTERVAL_MS = 10 * 60 * 1000
 const BROADCAST_PREFIX = "announcement:"
 
