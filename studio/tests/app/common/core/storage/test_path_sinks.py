@@ -97,14 +97,43 @@ def _s3_client():
 
 class TestS3StorageController:
     @pytest.mark.asyncio
-    async def test_input_download_keeps_every_key_under_input_dir(self, storage_dirs):
+    async def test_input_download_keeps_every_key_under_the_requested_input(
+        self, storage_dirs
+    ):
         controller = S3StorageController("bucket")
         keys = [
-            {"Key": f"{S3_BASE}/input/1/../../../etc/passwd", "Size": 1},
-            {"Key": f"{S3_BASE}/input//etc/passwd", "Size": 1},
-            {"Key": "elsewhere/input/1/x.tif", "Size": 1},
-            {"Key": f"{S3_BASE}/input/1/folder/", "Size": 0},
+            {"Key": f"{S3_BASE}/input/1/data/../../../etc/passwd", "Size": 1},
+            {"Key": f"{S3_BASE}/input/1/data/../../2/x.tif", "Size": 1},
+            {"Key": f"{S3_BASE}/input/1/data2/x.tif", "Size": 1},
+            {"Key": "elsewhere/input/1/data/x.tif", "Size": 1},
+            {"Key": f"{S3_BASE}/input/1/data/folder/", "Size": 0},
+            {"Key": f"{S3_BASE}/input/1/data/ok.tif", "Size": 1},
+        ]
+        targets = []
+
+        async def record(s3_client, s3_file_path, local_file_path, file_size, **kw):
+            targets.append(local_file_path)
+            return True
+
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=_s3_client()
+        ), patch.object(
+            controller, "_list_s3_objects_paginated", AsyncMock(return_value=keys)
+        ), patch.object(
+            controller, "_download_s3_with_update_check", record
+        ):
+            assert await controller.download_input_data("1", "data") is True
+
+        assert targets == [f"{DIRPATH.INPUT_DIR}/1/data/ok.tif"]
+
+    @pytest.mark.asyncio
+    async def test_input_download_of_a_single_file_ignores_its_siblings(
+        self, storage_dirs
+    ):
+        controller = S3StorageController("bucket")
+        keys = [
             {"Key": f"{S3_BASE}/input/1/ok.tif", "Size": 1},
+            {"Key": f"{S3_BASE}/input/1/ok.tif.bak", "Size": 1},
         ]
         targets = []
 
@@ -121,10 +150,20 @@ class TestS3StorageController:
         ):
             assert await controller.download_input_data("1", "ok.tif") is True
 
-        assert sorted(targets) == [
-            f"{DIRPATH.INPUT_DIR}/1/ok.tif",
-            f"{DIRPATH.INPUT_DIR}/etc/passwd",
-        ]
+        assert targets == [f"{DIRPATH.INPUT_DIR}/1/ok.tif"]
+
+    @pytest.mark.asyncio
+    async def test_input_download_of_only_a_folder_marker_is_missing(
+        self, storage_dirs
+    ):
+        controller = S3StorageController("bucket")
+        keys = [{"Key": f"{S3_BASE}/input/1/data/", "Size": 0}]
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=_s3_client()
+        ), patch.object(
+            controller, "_list_s3_objects_paginated", AsyncMock(return_value=keys)
+        ):
+            assert await controller.download_input_data("1", "data") is False
 
     @pytest.mark.asyncio
     async def test_experiment_download_skips_keys_outside_the_experiment(
@@ -142,16 +181,19 @@ class TestS3StorageController:
             targets.append(local_file_path)
             return True
 
+        listing = AsyncMock(return_value=keys)
         with patch.object(
             controller, "_S3StorageController__get_s3_client", return_value=_s3_client()
         ), patch.object(
-            controller, "_list_s3_objects_paginated", AsyncMock(return_value=keys)
+            controller, "_list_s3_objects_paginated", listing
         ), patch.object(
             controller, "_download_s3_with_update_check", record
         ):
             assert await controller.download_experiment("1", "exp") is True
 
         assert targets == [f"{DIRPATH.OUTPUT_DIR}/1/exp/ok.pkl"]
+        # The trailing slash keeps "exp10/" out of the listing and its file cap.
+        assert listing.call_args.args[1] == f"{S3_BASE}/output/1/exp/"
 
     @pytest.mark.asyncio
     async def test_all_metas_download_skips_an_experiment_prefix_with_dotdot(

@@ -358,6 +358,16 @@ class S3StorageController(BaseRemoteStorageController):
                 all_s3_objects = await self._list_s3_objects_paginated(
                     __s3_client, input_data_remote_path, max_files=MAX_DOWNLOAD_FILES
                 )
+                # The listing is a bare string prefix: "a.tif" also lists "a.tif2".
+                all_s3_objects = [
+                    obj
+                    for obj in all_s3_objects
+                    if obj["Key"] == input_data_remote_path
+                    or (
+                        obj["Key"].startswith(f"{input_data_remote_path}/")
+                        and not obj["Key"].endswith("/")
+                    )
+                ]
 
                 if not all_s3_objects:
                     logger.warning(
@@ -371,20 +381,18 @@ class S3StorageController(BaseRemoteStorageController):
                 all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
 
                 target_files_count = len(all_s3_objects)
-                s3_prefix = __class__.make_s3_input_prefix()
+                s3_prefix = __class__.make_s3_input_prefix(workspace_id)
+                local_root = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
 
                 for index, s3_object in enumerate(all_s3_objects):
                     s3_file_path = s3_object["Key"]
                     file_size = s3_object["Size"]
 
-                    if s3_file_path.endswith("/"):
-                        continue
-
                     # Compute local path from S3 path
                     # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
                     # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
                     local_file_path = local_path_for_remote_key(
-                        s3_file_path, s3_prefix, DIRPATH.INPUT_DIR
+                        s3_file_path, s3_prefix, local_root
                     )
                     if local_file_path is None:
                         continue
@@ -614,8 +622,8 @@ class S3StorageController(BaseRemoteStorageController):
                         file_remote_path = experiment_dir + metadata_filename
                         flie_local_path = local_path_for_remote_key(
                             file_remote_path,
-                            f"{__class__.S3_BASE_PATH}/",
-                            DIRPATH.DATA_DIR,
+                            __class__.make_s3_output_prefix(),
+                            DIRPATH.OUTPUT_DIR,
                         )
                         if flie_local_path is None:
                             continue
