@@ -3,11 +3,12 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, suppress
-from dataclasses import asdict
+from contextlib import contextmanager, nullcontext, suppress
+from dataclasses import asdict, fields
 from pathlib import PurePath
 from typing import Callable, List, Optional
 from urllib.parse import urlparse
@@ -221,7 +222,7 @@ def _merge_image_shape_dict(workspace_id: str, known: dict, new: dict) -> None:
         )
 
     try:
-        _locked_json_edit(workspace_id, MetadataCacheFile.IMAGE_SHAPE, merge)
+        _json_edit(workspace_id, MetadataCacheFile.IMAGE_SHAPE, merge)
     except OSError as e:
         logger.warning(f"image shape cache not written ({workspace_id}): {e}")
 
@@ -243,7 +244,7 @@ def _shape_entry(filepath: str, st: os.stat_result) -> dict:
     }
 
 
-def update_image_shape(workspace_id: str, relative_file_path: str):
+def update_image_shape(workspace_id: str, relative_file_path: str, locked=True):
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     filepath = join_filepath([dirpath, relative_file_path])
 
@@ -253,7 +254,7 @@ def update_image_shape(workspace_id: str, relative_file_path: str):
         return []
 
     _atomic_json_update(
-        workspace_id, MetadataCacheFile.IMAGE_SHAPE, {relative_file_path: entry}
+        workspace_id, MetadataCacheFile.IMAGE_SHAPE, {relative_file_path: entry}, locked
     )
 
     return entry["shape"]
@@ -283,17 +284,23 @@ def _structure_node_to_dict(node) -> dict:
     return result
 
 
-def _atomic_json_update(workspace_id: str, filename: str, entries: dict) -> None:
-    """Merge entries into a workspace JSON cache, replacing it atomically."""
-    _locked_json_edit(workspace_id, filename, lambda data: data.update(entries))
-
-
-def _locked_json_edit(
-    workspace_id: str, filename: str, edit: Callable[[dict], None]
+def _atomic_json_update(
+    workspace_id: str, filename: str, entries: dict, locked=True
 ) -> None:
-    """Read-modify-write a workspace JSON cache under its InputFileLock."""
+    """Merge entries into a workspace JSON cache, replacing it atomically."""
+    _json_edit(workspace_id, filename, lambda data: data.update(entries), locked)
+
+
+def _json_edit(
+    workspace_id: str, filename: str, edit: Callable[[dict], None], locked=True
+) -> None:
+    """Read-modify-write a workspace JSON cache under its InputFileLock, or
+    without taking it when the caller already holds it (locked=False)."""
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
-    with InputFileLock.acquire_sync(workspace_id, filename):
+    lock = (
+        InputFileLock.acquire_sync(workspace_id, filename) if locked else nullcontext()
+    )
+    with lock:
         data = _read_json_dict(filepath)
         edit(data)
         _write_json_atomic(filepath, data)
@@ -357,7 +364,9 @@ STRUCTURE_VERSION_KEY = "__version__"
 HDF5_STRUCTURE_VERSION = 2  # 2: compound datasets listed as folders of columns
 
 
-def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
+def update_hdf5_structure(
+    workspace_id: str, relative_file_path: str, locked=True
+) -> List[dict]:
     """
     Extract and cache HDF5 structure for a file.
 
@@ -391,12 +400,14 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
             versions[relative_file_path] = HDF5_STRUCTURE_VERSION
         data[STRUCTURE_VERSION_KEY] = versions
 
-    _locked_json_edit(workspace_id, MetadataCacheFile.HDF5_STRUCTURE, merge)
+    _json_edit(workspace_id, MetadataCacheFile.HDF5_STRUCTURE, merge, locked)
 
     return structure_dict
 
 
-def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
+def update_mat_structure(
+    workspace_id: str, relative_file_path: str, locked=True
+) -> List[dict]:
     """
     Extract and cache MATLAB structure for a file.
 
@@ -419,6 +430,7 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
         workspace_id,
         MetadataCacheFile.MAT_STRUCTURE,
         {relative_file_path: structure_dict},
+        locked,
     )
 
     return structure_dict
@@ -462,49 +474,53 @@ def get_mat_structure_dict(workspace_id: str) -> dict:
         return {}
 
 
+def _metadata_cache_for(filename: str):
+    """The cache updater and cache file for the file's type, or (None, None)."""
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        return update_image_shape, MetadataCacheFile.IMAGE_SHAPE
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+        return update_hdf5_structure, MetadataCacheFile.HDF5_STRUCTURE
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+        return update_mat_structure, MetadataCacheFile.MAT_STRUCTURE
+    return None, None
+
+
+async def _upload_or_raise(remote, workspace_id: str, filename: str) -> None:
+    """upload_input_data swallows its errors and returns False."""
+    if not await remote.upload_input_data(workspace_id, filename):
+        raise RuntimeError(f"Copy of {filename} to remote storage failed")
+
+
+async def _publish_cache(
+    workspace_id: str, filename: str, remote_bucket_name: Optional[str], update=True
+) -> None:
+    """Update the file's metadata cache and copy the cache to remote storage,
+    under the cache's lock throughout so a sync of the cache cannot put an older
+    remote copy back in between."""
+    update_cache, cache_name = _metadata_cache_for(filename)
+    if cache_name is None:
+        return
+    async with InputFileLock.acquire(workspace_id, cache_name):
+        if update:
+            await asyncio.to_thread(update_cache, workspace_id, filename, False)
+        if not RemoteStorageController.is_available():
+            return
+        async with RemoteStorageSimpleWriter(remote_bucket_name) as remote:
+            await _upload_or_raise(remote, workspace_id, cache_name)
+
+
 async def _update_and_upload_metadata(
     workspace_id: str,
     filename: str,
     remote_bucket_name: str,
     update_metadata: bool = True,
 ):
-    """Update metadata cache and upload to S3 if needed.
-
-    Called as a background task after syncing input files. This helps
-    backfill metadata (image shape, HDF5/MATLAB structure) for files
-    that were uploaded before structure caching was implemented.
-    """
+    """_publish_cache for background use: a failure is logged, not raised."""
     try:
-        # Determine file type and update appropriate metadata
-        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            if update_metadata:
-                update_image_shape(workspace_id, filename)
-            metadata_file = MetadataCacheFile.IMAGE_SHAPE
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-            if update_metadata:
-                update_hdf5_structure(workspace_id, filename)
-            metadata_file = MetadataCacheFile.HDF5_STRUCTURE
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-            if update_metadata:
-                update_mat_structure(workspace_id, filename)
-            metadata_file = MetadataCacheFile.MAT_STRUCTURE
-        else:
-            # No metadata to update for this file type
-            return
-
-        # Upload updated metadata to S3
-        async with RemoteStorageSimpleWriter(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.upload_input_data(
-                workspace_id, metadata_file
-            )
-        logger.debug(
-            f"Updated and uploaded metadata {metadata_file} "
-            f"for {workspace_id}/{filename}"
+        await _publish_cache(
+            workspace_id, filename, remote_bucket_name, update_metadata
         )
     except Exception as e:
-        # Don't fail the sync if metadata update fails - just log warning
         logger.warning(
             f"Failed to update/upload metadata for {workspace_id}/{filename}: {e}"
         )
@@ -798,35 +814,15 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
         )
 
 
-def _metadata_cache_for(filename: str):
-    """The cache updater and cache file for the file's type, or (None, None)."""
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        return update_image_shape, MetadataCacheFile.IMAGE_SHAPE
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-        return update_hdf5_structure, MetadataCacheFile.HDF5_STRUCTURE
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-        return update_mat_structure, MetadataCacheFile.MAT_STRUCTURE
-    return None, None
-
-
 async def _publish_input(
     workspace_id: str, filename: str, remote_bucket_name: Optional[str]
 ) -> None:
-    """After an input file lands: update its metadata cache, then copy the file
-    and the cache to remote storage. Caller holds the file's InputFileLock."""
-    update_cache, cache_name = _metadata_cache_for(filename)
-    if update_cache is not None:
-        await asyncio.to_thread(update_cache, workspace_id, filename)
-    if not RemoteStorageController.is_available():
-        return
-    async with RemoteStorageSimpleWriter(remote_bucket_name) as remote:
-        if not await remote.upload_input_data(workspace_id, filename):
-            raise RuntimeError(f"Copy of {filename} to remote storage failed")
-        if cache_name is None:
-            return
-        async with InputFileLock.acquire(workspace_id, cache_name):
-            if not await remote.upload_input_data(workspace_id, cache_name):
-                raise RuntimeError(f"Copy of {cache_name} to remote storage failed")
+    """After an input file lands: copy it to remote storage, then update its
+    metadata cache and copy that. Caller holds the file's InputFileLock."""
+    if RemoteStorageController.is_available():
+        async with RemoteStorageSimpleWriter(remote_bucket_name) as remote:
+            await _upload_or_raise(remote, workspace_id, filename)
+    await _publish_cache(workspace_id, filename, remote_bucket_name)
 
 
 @router.post(
@@ -897,19 +893,11 @@ def _update_workspace_data_usage(workspace_id: str) -> None:
 
 def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
     """Remove a file entry from metadata cache files."""
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
+    _, metadata_file = _metadata_cache_for(filename)
+    if metadata_file is None:
+        return
 
-    # Determine which metadata file to update based on file extension
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        metadata_file = MetadataCacheFile.IMAGE_SHAPE
-    elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-        metadata_file = MetadataCacheFile.HDF5_STRUCTURE
-    elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-        metadata_file = MetadataCacheFile.MAT_STRUCTURE
-    else:
-        return  # No metadata to clean up for this file type
-
-    metadata_path = join_filepath([dirpath, metadata_file])
+    metadata_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, metadata_file])
     if not os.path.exists(metadata_path):
         return
 
@@ -921,7 +909,7 @@ def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
             if isinstance(versions, dict):
                 versions.pop(filename, None)
 
-        _locked_json_edit(workspace_id, metadata_file, remove)
+        _json_edit(workspace_id, metadata_file, remove)
     except Exception as e:
         logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
 
@@ -1058,6 +1046,7 @@ DOWNLOAD_HEARTBEAT_SECONDS = 10
 DOWNLOAD_STALE_SECONDS = 30
 DOWNLOAD_PROGRESS_WRITE_SECONDS = 1
 _UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
+_STATUS_FIELDS = {f.name for f in fields(DownloadStatus)}
 
 
 def _download_status_path(workspace_id: str, upload_id: str) -> str:
@@ -1084,15 +1073,16 @@ def _write_download_status(status_path: str, status: DownloadStatus) -> None:
 
 def _read_download_status(status_path: str) -> DownloadStatus:
     age = time.time() - os.stat(status_path).st_mtime
-    status = DownloadStatus(**_read_json_dict(status_path))
+    data = _read_json_dict(status_path)
+    status = DownloadStatus(**{k: v for k, v in data.items() if k in _STATUS_FIELDS})
     if not (status.done or status.error) and age > DOWNLOAD_STALE_SECONDS:
         status.error = "The upload stopped"
     return status
 
 
-async def _touch_every_heartbeat(status_path: str) -> None:
-    while True:
-        await asyncio.sleep(DOWNLOAD_HEARTBEAT_SECONDS)
+def _touch_every_heartbeat(status_path: str, stop: threading.Event) -> None:
+    """In its own thread, so a stalled event loop does not read as a dead worker."""
+    while not stop.wait(DOWNLOAD_HEARTBEAT_SECONDS):
         with suppress(OSError):
             os.utime(status_path)
 
@@ -1142,7 +1132,10 @@ async def download(
     status_path = _download_status_path(workspace_id, upload_id)
     status = DownloadStatus(total=_content_length(res), upload_id=upload_id)
     tmp_path = _atomic_tmp_path(filepath)
-    heartbeat = asyncio.create_task(_touch_every_heartbeat(status_path))
+    stop_heartbeat = threading.Event()
+    threading.Thread(
+        target=_touch_every_heartbeat, args=(status_path, stop_heartbeat), daemon=True
+    ).start()
     try:
         await run_in_threadpool(
             _stream_to_file, res, tmp_path, chunk_size, status_path, status
@@ -1159,7 +1152,7 @@ async def download(
             os.unlink(tmp_path)
         status.error = str(e)
     finally:
-        heartbeat.cancel()
+        stop_heartbeat.set()
         res.close()
         await asyncio.to_thread(_write_download_status, status_path, status)
 

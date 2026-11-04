@@ -398,6 +398,35 @@ def test_the_upload_route_copies_the_file_and_its_cache_under_the_lock(input_dir
     ]
 
 
+def test_the_cache_is_updated_and_copied_in_one_hold_of_its_lock(input_dir):
+    """A merged-tree fetch replaces the local cache with the remote copy when
+    their sizes differ, and it takes the cache's lock to do so: released between
+    the update and the copy, the new entry could be rolled back and never reach
+    remote storage. The lock is not held during the file's own (long) copy."""
+    cache = MetadataCacheFile.IMAGE_SHAPE
+    events = []
+    update_image_shape = files.update_image_shape
+
+    def update(workspace_id, name, locked=True):
+        events.append(("update", locked, lock_is_held(input_dir, cache)))
+        update_image_shape(workspace_id, name, locked)
+
+    def copy(workspace_id, name):
+        events.append((f"copy {name}", lock_is_held(input_dir, cache)))
+        return True
+
+    with remote_writer(copy), patch.object(
+        files, "update_image_shape", side_effect=update
+    ):
+        download(url_response(NEW, content_length=len(NEW)), "data.tif", remote=True)
+    assert events == [
+        ("copy data.tif", False),
+        ("update", False, True),
+        (f"copy {cache}", True),
+    ]
+    assert not lock_is_held(input_dir, cache)
+
+
 def test_a_sync_of_the_same_name_waits_only_from_the_replace_to_the_copy(input_dir):
     """Locking the whole stream would make the visualization sync wait for
     minutes and then fall through, replacing the new file with the old copy."""
@@ -462,17 +491,17 @@ def test_a_status_the_downloading_worker_stopped_touching_reads_as_failed(
     assert (live.error, live.done, live.current) == (None, False, 10)
 
 
-@pytest.mark.parametrize("heartbeat_seconds, stops", [(0.1, False), (100, True)])
+@pytest.mark.parametrize("heartbeat_seconds, stops", [(0.25, False), (100, True)])
 def test_the_heartbeat_keeps_a_slow_download_alive(
     input_dir, monkeypatch, heartbeat_seconds, stops
 ):
     """Chunks can be minutes apart (the read timeout is per socket read, and
     a chunk is 1 MiB), and nothing streams during the lock wait or the copy."""
     monkeypatch.setattr(files, "DOWNLOAD_HEARTBEAT_SECONDS", heartbeat_seconds)
-    monkeypatch.setattr(files, "DOWNLOAD_STALE_SECONDS", 0.3)
+    monkeypatch.setattr(files, "DOWNLOAD_STALE_SECONDS", 1.0)
     monkeypatch.setattr(files, "DOWNLOAD_PROGRESS_WRITE_SECONDS", 100)
     write_running_status(input_dir, age_seconds=0)
-    response = url_response(NEW[:10], NEW[10:20], NEW[20:], delay=0.5)
+    response = url_response(NEW[:10], NEW[10:], delay=2.0)
 
     async def poll():
         errors = []

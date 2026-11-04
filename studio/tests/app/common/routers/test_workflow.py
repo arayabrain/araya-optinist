@@ -1,6 +1,7 @@
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -79,3 +80,15 @@ def test_the_sample_import_copies_every_input_to_remote_storage(
         sorted(p.name for p in remote.iterdir() if not p.name.startswith(".")) == inputs
     )
     assert (remote / ".image_shape.json").is_file()
+
+
+def test_the_sample_import_fails_when_an_input_copy_fails(
+    client, sample_workspace, monkeypatch
+):
+    """upload_input_data swallows its errors and returns False; dropped, the
+    input stays local only and the cleanup job never removes the workspace."""
+    monkeypatch.setattr(
+        MockStorageController, "upload_input_data", AsyncMock(return_value=False)
+    )
+    with pytest.raises(RuntimeError, match="remote storage failed"):
+        client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/tutorial")

@@ -276,7 +276,10 @@ async def import_sample_data(
                 remote_storage_controller.upload_input_data(workspace_id, filename.name)
                 for filename in sample_data_subdir
             ]
-            await asyncio.gather(*tasks)
+            copied = await asyncio.gather(*tasks)
+            failed = [p.name for p, ok in zip(sample_data_subdir, copied) if not ok]
+            if failed:
+                raise RuntimeError(f"Copy of {failed} to remote storage failed")
 
             # Generate metadata files for various file types and upload to S3
 
