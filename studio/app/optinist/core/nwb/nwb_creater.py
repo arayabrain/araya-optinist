@@ -5,7 +5,8 @@ import shutil
 
 import numpy as np
 from filelock import FileLock
-from hdmf.data_utils import GenericDataChunkIterator
+from hdmf.backends.hdf5.h5_utils import H5DataIO
+from hdmf.data_utils import DataChunkIterator, GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -26,13 +27,42 @@ from studio.app.common.core.utils.datetime_utils import (
 )
 from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.dataclass.image import BATCH_BYTES, ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
 # ROI frames an image_mask column holds in memory while it is written
 IMAGE_MASK_BUFFER = 16
+# HDF5 chunk of a streamed raw movie: whole frames, up to h5py's default chunk
+# cache, so a frame-by-frame reader reads each chunk once
+RAW_MOVIE_CHUNK_BYTES = 1 << 20
 # postprocess entries -> the name the same data had in files written before
 RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
+
+
+def _raw_movie(external_file):
+    """The input movie save_raw_image_to_nwb stores: a TIFF stack is written a
+    batch of frames at a time (its `data` holds the movie twice while it
+    concatenates the files); other inputs are read whole."""
+    stream = (
+        external_file.frame_stream() if isinstance(external_file, ImageData) else None
+    )
+    if stream is None:
+        return external_file.data
+    shape, dtype, frames = stream
+    frame_bytes = int(np.prod(shape[1:])) * dtype.itemsize
+    chunk_frames = min(max(1, RAW_MOVIE_CHUNK_BYTES // frame_bytes), shape[0])
+    # an iterator cannot be stored contiguous, and h5py's guessed chunks span
+    # dozens of frames
+    return H5DataIO(
+        data=DataChunkIterator(
+            data=frames,
+            maxshape=shape,
+            dtype=dtype,
+            buffer_size=max(1, BATCH_BYTES // frame_bytes),
+        ),
+        chunks=(chunk_frames,) + shape[1:],
+    )
 
 
 def _time_first(data, n_roi):
@@ -161,7 +191,7 @@ class NWBCreater:
                 starting_time=float(config[NWBDATASET.IMAGE_SERIES]["starting_time"]),
                 rate=float(config["imaging_plane"]["imaging_rate"]),
                 unit="normalized amplitude",
-                data=external_file.data if save_raw_image_to_nwb else None,
+                data=_raw_movie(external_file) if save_raw_image_to_nwb else None,
             )
             new_nwbfile.add_acquisition(image_series)
 
@@ -546,8 +576,16 @@ def save_nwb(save_path, input_config, config):
 
     nwbfile = set_nwbconfig(nwbfile, config)
 
-    with NWBHDF5IO(save_path, "w") as f:
-        f.write(nwbfile)
+    f = NWBHDF5IO(save_path, "w")
+    try:
+        with f:
+            f.write(nwbfile)
+    except BaseException:
+        # a streamed raw movie is read during the write; a failed read must not
+        # leave a partial file at the path
+        with contextlib.suppress(OSError):
+            os.remove(save_path)
+        raise
 
 
 @contextlib.contextmanager
