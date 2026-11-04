@@ -726,9 +726,18 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-07 - Long-expired premium: overdue modal requires acknowledgment", async ({
     page,
   }) => {
-    // Past expiry + 30-day grace + 30-day warning window → OVERDUE
-    setPlan(2, "INTERVAL -70 DAY")
-    setStorage(0, PREMIUM_QUOTA)
+    // Past the 30-day grace and over the free limit -> OVERDUE. Deployed, the
+    // only over-limit expired account is TEST_GRACE_OVER_*, and backdating it
+    // past the grace would hand its data to the deletion job.
+    test.skip(
+      !LOCAL,
+      "LC-07 needs an over-limit account past the grace; on deployed dev that " +
+        "makes TEST_GRACE_OVER_* eligible for deletion",
+    )
+    test.setTimeout(120_000)
+    ensureBallast(OVER_FREE_QUOTA)
+    setPlan(2, "INTERVAL -40 DAY")
+    setStorage(OVER_FREE_QUOTA, PREMIUM_QUOTA)
     await loginKeepWarnings(page)
 
     const modal = dialog(page)

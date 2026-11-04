@@ -281,8 +281,8 @@ round](#running-a-production-release-round).
 | `TEST_PREMIUM_EMAIL` / `TEST_PREMIUM_PASSWORD`     | optional                          | enables SUB-04/05 (premium subscription state)                                                                                                                                                                                     |
 | `TEST_LIFECYCLE_EMAIL` / `TEST_LIFECYCLE_PASSWORD` | optional                          | enables `11-lifecycle` (LC-01..05, LC-07..10, LC-14..15, LC-17..20, LC-24..31) and `23-subscription-lifecycle` (LC-06, LC-11..13, LC-16, LC-21..23). Both run on the local stack or against deployed dev, and both rewrite this account's plan, expiry and usage; LC-16 deletes a throwaway it registers itself - use a dedicated address, never a shared account. `11-lifecycle` registers and verifies the account itself on a local run; against a deployed environment that is not possible (forcing `email_verified` needs the Admin SDK), so create it once and verify it out of band |
 | `TEST_PREMIUM_OVER_EMAIL` / `TEST_PREMIUM_OVER_PASSWORD` | deployed `11-lifecycle` only | provisioned account already over its own storage quota, with the S3 data to prove it. LC-03 rents that state as-is; LC-04 moves its **quota** (never its data) to land on 95%, and restores it. Without it LC-03/04/08/18..20 skip with a named reason |
-| `TEST_GRACE_OVER_EMAIL` / `TEST_GRACE_OVER_PASSWORD` | deployed `11-lifecycle` only | provisioned expired-premium account holding more than the 5GiB free limit in real S3 data - the one state no quota dial can reach, because an expired premium is held to the hardcoded free limit whatever its quota column says. LC-18..20 re-stamp its `expiration` into the grace window per run and restore it |
-| `TEST_FREE_DOWNGRADE_EMAIL` / `TEST_FREE_DOWNGRADE_PASSWORD` | deployed `11-lifecycle` only | a real formerly-paid account carrying more than the free limit. LC-08 drops its premium row so `determine_lifecycle` reports FREE - a genuine downgrade rather than a faked one - then restores plan and quota |
+| `TEST_GRACE_OVER_EMAIL` / `TEST_GRACE_OVER_PASSWORD` | deployed `11-lifecycle` only | provisioned expired-premium account holding more than the 5GiB free limit in real S3 data - the one state no quota dial can reach, because an expired premium is held to the hardcoded free limit whatever its quota column says. LC-18..20 re-stamp its `expiration` into the grace window per run and restore it. Every expiration pass trims it under the limit, so run `infrastructure/scripts/restore_e2e_fixture_data.py` before a deployed round; without it the rows skip with a named drift reason |
+| `TEST_FREE_DOWNGRADE_EMAIL` / `TEST_FREE_DOWNGRADE_PASSWORD` | deployed `11-lifecycle` only | a real formerly-paid account carrying more than the free limit. LC-08 drops its premium row so `determine_lifecycle` reports FREE - a genuine downgrade rather than a faked one - then restores plan and quota. Trimmed and restored the same way as `TEST_GRACE_OVER_*` |
 | `TEST_ADMIN_EMAIL` / `TEST_ADMIN_PASSWORD`         | optional, local stack only        | enables ADMIN-01..22 (Account Manager). Defaults to `e2e_ci_admin@test.com` and the free user's password. The spec registers this account itself and promotes it to admin with one `user_roles` UPDATE, because registration always lands as an operator — use a dedicated address |
 | `BASE_URL`                                         | default `http://localhost:3000`   | frontend under test                                                                                                                                                                                                                |
 | `API_URL`                                          | default `BASE_URL` with port 8000 | backend, for setup/cleanup API calls                                                                                                                                                                                               |
@@ -373,11 +373,13 @@ PR description.
 
 ## The weekly regression, and running it on a branch
 
-Nothing opt-in runs per PR. `.github/workflows/e2e.yml` gathers all of it into
-one Monday 00:00 UTC job: the Playwright suite with `RUN_SLOW=1`, the two
-real-database pytest lanes (`make premium_lock_it`, `make workflow_count_it`),
-and a re-run of the per-PR unit lanes. A sheet row whose e2e citation ends in
-`@slow` is checked off by that run, not by a green PR.
+The only opt-in lane that runs per PR is `make expiration_it`
+(`.github/workflows/expiration-it.yml`, on PRs that touch the deletion path).
+`.github/workflows/e2e.yml` gathers all of them into
+one Monday 00:00 UTC job: the Playwright suite with `RUN_SLOW=1`, the three
+real-database pytest lanes (`make premium_lock_it`, `make workflow_count_it`,
+`make expiration_it`), and a re-run of the per-PR unit lanes. A sheet row whose
+e2e citation ends in `@slow` is checked off by that run, not by a green PR.
 
 The schedule only ever fires from the default branch. To exercise a feature
 branch's version of the workflow before it merges, dispatch it against that
@@ -390,7 +392,8 @@ gh run list --workflow e2e.yml -L 3
 
 `--ref` picks both the workflow definition and the checked-out code, so a job
 that exists only on the branch still runs. Locally the same lanes are
-`RUN_SLOW=1 yarn test:e2e`, `make premium_lock_it` and `make workflow_count_it`.
+`RUN_SLOW=1 yarn test:e2e`, `make premium_lock_it`, `make workflow_count_it`
+and `make expiration_it`.
 
 ## Running the tests
 
