@@ -422,7 +422,7 @@ Logs to `/var/log/app-setup.log` via tee:
 exec > >(tee -a "$LOGFILE") 2>&1
 ```
 
-Covers secrets retrieval, infrastructure discovery, config file creation, database initialization, and Firebase admin verification.
+Covers secrets retrieval, infrastructure discovery, database initialization, and Firebase admin verification.
 
 ### Container Startup
 
