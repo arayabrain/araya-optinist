@@ -34,6 +34,13 @@ def _ssm_client():
     )
 
 
+def _parse_time(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_announcement(raw: str, now: datetime) -> dict:
     """Return {"id", "message"} for a live announcement, {} otherwise."""
     try:
@@ -44,18 +51,19 @@ def parse_announcement(raw: str, now: datetime) -> dict:
     if not isinstance(data, dict) or not data:
         return {}
     message = data.get("message")
-    until_raw = data.get("until")
-    try:
-        until = datetime.fromisoformat(until_raw)
-    except (TypeError, ValueError):
-        until = None
+    until = _parse_time(data.get("until"))
+    start_raw = data.get("from")
+    start = None if start_raw is None else _parse_time(start_raw)
     if not isinstance(message, str) or not message.strip() or until is None:
         logger.warning("Announcement needs a message and an ISO 8601 until")
         return {}
-    if until.tzinfo is None:
-        logger.warning("Announcement until has no timezone; showing nothing")
+    if start_raw is not None and start is None:
+        logger.warning("Announcement from is not ISO 8601; showing nothing")
         return {}
-    if until <= now:
+    if any(t.tzinfo is None for t in (until, start) if t is not None):
+        logger.warning("Announcement time has no timezone; showing nothing")
+        return {}
+    if until <= now or (start is not None and start > now):
         return {}
     message = message.strip()[:MAX_MESSAGE_LENGTH]
     return {

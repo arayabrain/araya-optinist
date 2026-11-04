@@ -364,7 +364,7 @@ Two operator switches tell users about planned downtime. Neither needs a deploy 
 
 ### Announcement
 
-The value is JSON with two fields. `message` is plain text, up to 500 characters; state the date, time and time zone of the downtime in it. The header shows the first line; the window shows the whole text, so put details after a `\n\n`. `until` is an ISO 8601 time with a time zone; the notice disappears after it.
+The value is JSON. `message` is plain text, up to 500 characters; state the date, time and time zone of the downtime in it. The header shows the first line; the window shows the whole text, so put details after a `\n\n`. `until` is an ISO 8601 time with a time zone; the notice disappears after it. `from` is optional, in the same format; the notice appears only once it has passed, so it can be set ahead of time. Without `from` it shows at once.
 
 ```bash
 aws ssm put-parameter --overwrite --region ap-northeast-1 \
@@ -376,7 +376,7 @@ Clear it early with `--value '{}'`.
 
 - Each backend worker caches the value for 60 seconds. A fresh page load shows a change within about a minute; open tabs re-check every 10 minutes.
 - "Hide until next sign-in" in the window dismisses it. A dismissal lasts until the next sign-in in that browser, or until the message text changes. Editing the message shows it again to everyone.
-- A value that is not JSON, lacks a field, has an `until` without a time zone, or has an `until` in the past shows nothing and logs a warning starting `Announcement` in the ECS logs.
+- A value that is not JSON, lacks a field, or has a `from` or `until` that is not ISO 8601 or has no time zone shows nothing and logs a warning starting `Announcement` in the ECS logs. An `until` in the past or a `from` in the future also shows nothing, without a warning.
 - Standalone installs never show announcements.
 - Check it with `curl -s https://<host>/announcement`, which returns `{"id": ..., "message": ...}` while the notice is live.
 - Anyone with `ssm:PutParameter` on the parameter can change it. The ECS task role can only read it.

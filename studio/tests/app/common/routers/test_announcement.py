@@ -10,6 +10,7 @@ from studio.app.common.routers import announcement
 
 PARAMETER = "/test/optinist/announcement"
 NOW = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+U = "2026-11-02T00:00:00Z"
 
 
 @pytest.fixture(autouse=True)
@@ -65,10 +66,18 @@ class TestParseAnnouncement:
             json.dumps({"message": 5, "until": "2026-11-02T00:00:00Z"}),
             json.dumps({"message": "naive", "until": "2026-11-02T00:00:00"}),
             json.dumps({"message": "expired", "until": "2026-10-31T23:59:59Z"}),
+            json.dumps({"message": "x", "until": U, "from": "2026-11-01T00:00:01Z"}),
+            json.dumps({"message": "x", "until": U, "from": "soon"}),
+            json.dumps({"message": "x", "until": U, "from": "2026-10-31T00:00:00"}),
         ],
     )
-    def test_empty_malformed_naive_or_expired_shows_nothing(self, raw):
+    def test_empty_malformed_naive_expired_or_not_started_shows_nothing(self, raw):
         assert announcement.parse_announcement(raw, NOW) == {}
+
+    @pytest.mark.parametrize("start", ["2026-11-01T00:00:00Z", None])
+    def test_shows_once_from_has_passed_or_is_null(self, start):
+        raw = json.dumps({"message": "x", "until": U, "from": start})
+        assert announcement.parse_announcement(raw, NOW)["message"] == "x"
 
     def test_message_is_capped(self):
         raw = json.dumps({"message": "a" * 600, "until": "2026-11-02T00:00:00Z"})
