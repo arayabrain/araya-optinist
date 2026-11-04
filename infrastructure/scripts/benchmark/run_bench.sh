@@ -101,7 +101,8 @@ WORKSPACE="bench"
 RUN_ID="$(date +%Y%m%d-%H%M)-${LANE}-${ALGO//,/+}-${INPUT_NAME%%.*}-${VARIANT}-c${CONC}${LABEL:+-$LABEL}"
 mkdir -p "$RESULTS_DIR" "$DATA_DIR/input/$WORKSPACE"
 OUT="$(cd "$RESULTS_DIR" && pwd)/$RUN_ID"
-mkdir -p "$OUT"
+# The row ID has minute resolution: a retry within the minute must not mix rows
+mkdir "$OUT" || { echo "row directory already exists: $OUT" >&2; exit 1; }
 echo "== $RUN_ID"
 
 # The input node reads input/<workspace>/<file>; link to the read-only mount
@@ -228,7 +229,7 @@ python3 "$SCRIPT_DIR/write_provenance.py" \
   --container-state "$CONTAINER_STATE" ${OVERRIDES[@]+--overrides "${OVERRIDES[@]}"} \
   ${EXTRA_ENV[@]+--extra-env "${EXTRA_ENV[@]}"}
 
-kill "$PROBE_PID" 2>/dev/null; wait "$PROBE_PID" 2>/dev/null || true; PROBE_PID=""
+kill "$PROBE_PID" 2>/dev/null || true; wait "$PROBE_PID" 2>/dev/null || true; PROBE_PID=""
 python3 "$SCRIPT_DIR/summarize.py" "$OUT" > "$OUT/summary.md" || echo "summarize failed" >&2
 
 if [[ $KEEP_OUTPUTS -eq 0 ]]; then
