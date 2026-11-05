@@ -1,4 +1,6 @@
 import asyncio
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -67,6 +69,11 @@ logger = AppLogger.get_logger()
 # anyway, so a dead post-process can't strand the run in a spinner. Sized to
 # cover thumbnail generation on large experiments.
 RECORD_WRITE_GRACE_SEC = 300
+
+# A data filter rewrites the node's pickle, JSON outputs and NWB files. One at a
+# time per process, as on the event loop: two filters of a node do not
+# interleave here, and one filter's data is held at a time
+_filter_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="data-filter")
 
 
 def _finished_within_grace(expt_config: ExptConfig) -> bool:
@@ -449,10 +456,15 @@ async def apply_filter(
     background_tasks: BackgroundTasks,
     params: Optional[DataFilterParam] = None,
 ):
-    try:
+    def filter_node_data():
         WorkflowNodeDataFilter(
             workspace_id=workspace_id, unique_id=uid, node_id=node_id
         ).filter_node_data(params)
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            _filter_executor, contextvars.copy_context().run, filter_node_data
+        )
 
         background_tasks.add_task(
             WorkspaceDataCapacityService.update_experiment_data_usage, workspace_id, uid
