@@ -281,6 +281,7 @@ resource "aws_ecs_service" "public_dataview" {
 
   # The listener rules: CreateService refuses a target group that no rule or
   # listener forwards to, and the rules reference the target group, not this
+  # service
   depends_on = [
     aws_autoscaling_group.public_dataview,
     aws_db_instance.main,
