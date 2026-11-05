@@ -114,8 +114,9 @@ cleanup() {
   docker logs "$CONTAINER" > "$OUT/api.log" 2>&1 || true
   docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
 }
-trap cleanup EXIT
 
+# The trap is set once the container is ours: a second row started at the same
+# time fails here and must not remove the first row's container
 docker run -d --name "$CONTAINER" --platform linux/amd64 \
   ${MEM_FLAGS[@]+"${MEM_FLAGS[@]}"} "${CPU_FLAGS[@]}" \
   -p "127.0.0.1:$HOST_PORT:8000" \
@@ -129,6 +130,7 @@ docker run -d --name "$CONTAINER" --platform linux/amd64 \
   ${ENV_FLAGS[@]+"${ENV_FLAGS[@]}"} \
   -w /app --entrypoint "" "$IMAGE" \
   python main.py --host 0.0.0.0 --port 8000 --workers "$UVICORN_WORKERS" > /dev/null
+trap cleanup EXIT
 
 echo "-- waiting for /health"
 for _ in $(seq 1 180); do
@@ -138,11 +140,14 @@ done
 curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:$HOST_PORT/health" || {
   echo "API did not come up" >&2; exit 1; }
 
+SWAP_KB="$(docker exec "$CONTAINER" sed -n 's/^SwapTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo)"
 if [[ "$VARIANT" == S ]]; then
-  # Without host swap Docker still accepts --memory-swap, and the row runs as P
-  SWAP_KB="$(docker exec "$CONTAINER" sed -n 's/^SwapTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo)"
-  [[ "${SWAP_KB:-0}" -gt 0 ]] || {
-    echo "variant S needs host swap, and the container sees none" >&2; exit 2; }
+  # Docker accepts --memory-swap whatever the host has: with no swap the row
+  # runs as P, with less than the allowance it stops below the tier's bound.
+  # 1 % of slack for mkswap's header on a volume of exactly the allowance
+  [[ "${SWAP_KB:-0}" -gt 0 && $((SWAP_KB * 100)) -ge $((SWAP_MIB * 1024 * 99)) ]] || {
+    echo "variant S needs host swap of BENCH_SWAP_MIB=${SWAP_MIB} MiB; the container sees $((${SWAP_KB:-0} / 1024)) MiB" >&2
+    exit 2; }
 fi
 
 SET_ARGS=()
@@ -160,7 +165,7 @@ if [[ "$START" == api ]]; then
   done
 fi
 
-docker exec -d "$CONTAINER" sh /app/infrastructure/scripts/benchmark/sample_cgroup.sh \
+docker exec -d "$CONTAINER" bash /app/infrastructure/scripts/benchmark/sample_cgroup.sh \
   /bench_out/cgroup.tsv "$SAMPLE_INTERVAL"
 "$SCRIPT_DIR/probe.sh" "http://127.0.0.1:$HOST_PORT/health" "$OUT/probe.tsv" \
   "$PROBE_INTERVAL" "$PROBE_TIMEOUT" &
@@ -168,7 +173,12 @@ PROBE_PID=$!
 
 echo "-- idle ${IDLE_BEFORE_RUN}s (API baseline)"
 sleep "$IDLE_BEFORE_RUN"
-T_RUNS_START=$(date +%s)
+# Every memory figure comes from these columns; empty ones would read as 0 MB
+awk -F'\t' 'NR == 2 { ok = ($2 != "" && $5 != "") } END { exit !ok }' "$OUT/cgroup.tsv" || {
+  echo "the cgroup sampler reads no memory.current or anon (cgroup v2 needed)" >&2; exit 2; }
+# The run window on the container's clock, which the samples and rule records use
+container_now() { docker exec "$CONTAINER" date +%s.%N 2>/dev/null || date +%s; }
+T_RUNS_START="$(container_now)"
 
 PIDS=()
 for i in $(seq 1 "$CONC"); do
@@ -191,11 +201,23 @@ done
 RC_ALL=0
 for i in "${!PIDS[@]}"; do
   rc=0; wait "${PIDS[$i]}" || rc=$?
+  if [[ $rc -eq 124 && "$START" == exec ]]; then
+    # timeout's SIGTERM stops the rules, but the snakemake parent the driver
+    # forked outlives it: end what is left of this run
+    docker exec "$CONTAINER" python infrastructure/scripts/benchmark/workflow_processes.py \
+      --stop "${RUN_ID}-$((i + 1))" > /dev/null 2>&1 || true
+  fi
   echo "-- run $((i + 1)) exit $rc"
   echo "$rc" > "$OUT/run-$((i + 1)).rc"
   [[ $rc -ne 0 ]] && RC_ALL=$rc
 done
-T_RUNS_END=$(date +%s)
+T_RUNS_END="$(container_now)"
+# A workflow process still running now (a timed-out run still stopping) holds
+# memory that the row's figures attribute to the other runs: record it, and
+# give it up to 2 min to stop before the outputs are collected
+docker exec "$CONTAINER" python infrastructure/scripts/benchmark/workflow_processes.py \
+  --wait 120 > "$OUT/processes-after-runs.json" 2>/dev/null \
+  || echo '{"count": null}' > "$OUT/processes-after-runs.json"
 
 CONTAINER_STATE="$(docker inspect -f '{{.State.Status}} oom_killed={{.State.OOMKilled}} exit={{.State.ExitCode}}' "$CONTAINER" 2>/dev/null || echo gone)"
 
@@ -226,6 +248,7 @@ python3 "$SCRIPT_DIR/write_provenance.py" \
   --uvicorn-workers "$UVICORN_WORKERS" --sample-interval "$SAMPLE_INTERVAL" \
   --probe "interval=${PROBE_INTERVAL}s timeout=${PROBE_TIMEOUT}s" --timeout "$TIMEOUT" \
   --t-runs-start "$T_RUNS_START" --t-runs-end "$T_RUNS_END" \
+  --container-swap-kb "${SWAP_KB:-}" \
   --container-state "$CONTAINER_STATE" ${OVERRIDES[@]+--overrides "${OVERRIDES[@]}"} \
   ${EXTRA_ENV[@]+--extra-env "${EXTRA_ENV[@]}"}
 

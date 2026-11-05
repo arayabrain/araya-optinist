@@ -7,7 +7,8 @@ a deployed task. This process imports no application code (stdlib and PyYAML
 only), so it adds little to the container's memory; BENCH_RESULT records it.
 It polls the run's experiment.yaml, not /run/result, so the API does no
 result-polling work a browser would cause. On SIGTERM (the run's timeout) it
-cancels the run through the API.
+cancels the run through the API until the run has stopped; BENCH_RESULT records
+whether it did (still_running).
 
 Usage (inside the container; the RunItem from run_workflow.py --print-run-item):
   python infrastructure/scripts/benchmark/start_via_api.py \
@@ -31,23 +32,17 @@ class Cancelled(Exception):
     pass
 
 
-def post(url: str, body: bytes = b""):
+# How long a timed-out run is given to stop; later, the row records it as
+# still running (the container is removed when the row ends)
+STOP_DEADLINE_S = 120
+
+
+def post(url: str, body: bytes = b"", timeout: float = 120):
     request = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
-
-
-def cancel(api: str, workspace: str, unique_id: str, attempts: int = 5) -> bool:
-    """POST /run/cancel; it answers 404 while no rule process runs (between
-    rules), so try a few times. The container is removed when the row ends."""
-    for attempt in range(attempts):
-        try:
-            return bool(post(f"{api}/run/cancel/{workspace}/{unique_id}"))
-        except (urllib.error.URLError, OSError):
-            time.sleep(2)
-    return False
 
 
 def read_experiment(path: str) -> dict:
@@ -57,6 +52,29 @@ def read_experiment(path: str) -> dict:
     except (OSError, yaml.YAMLError):
         # Not written yet, or caught mid-write; the next poll reads it again
         return {}
+
+
+def is_running(experiment: dict) -> bool:
+    return experiment.get("success") in (None, "running")
+
+
+def stop(api: str, workspace: str, unique_id: str, experiment_path: str):
+    """Cancel a timed-out run until it has stopped, for up to STOP_DEADLINE_S.
+    POST /run/cancel stops the rule process running now and answers 404 while
+    none runs (between rules, during conda activation), so it is repeated
+    until the run's record is final. Returns (any cancel accepted, record)."""
+    deadline = time.time() + STOP_DEADLINE_S
+    accepted = False
+    experiment = read_experiment(experiment_path)
+    while is_running(experiment) and time.time() < deadline:
+        try:
+            url = f"{api}/run/cancel/{workspace}/{unique_id}"
+            accepted = bool(post(url, timeout=10)) or accepted
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(2)
+        experiment = read_experiment(experiment_path)
+    return accepted, experiment
 
 
 def on_sigterm(signum, frame):
@@ -90,18 +108,20 @@ def main():
     )
 
     experiment = {}
-    cancelled = None
+    cancelled = still_running = None
     try:
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
-        while experiment.get("success") in (None, "running"):
+        while is_running(experiment):
             time.sleep(args.poll)
             experiment = read_experiment(experiment_path)
         success = experiment["success"]
     except Cancelled:
         t_end = time.time()
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        cancelled = cancel(args.api, args.workspace, unique_id)
-        experiment = read_experiment(experiment_path)
+        cancelled, experiment = stop(
+            args.api, args.workspace, unique_id, experiment_path
+        )
+        still_running = is_running(experiment)
         success = "timeout"
     else:
         t_end = time.time()
@@ -119,6 +139,8 @@ def main():
     }
     if cancelled is not None:
         result["cancelled"] = cancelled
+        result["still_running"] = still_running
+        result["t_stopped"] = round(time.time(), 3)
     print("BENCH_RESULT " + json.dumps(result), flush=True)
     if success == "timeout":
         return 124

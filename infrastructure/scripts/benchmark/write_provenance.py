@@ -121,6 +121,7 @@ def main():
         "timeout",
         "t-runs-start",
         "t-runs-end",
+        "container-swap-kb",
         "container-state",
     ]:
         p.add_argument(f"--{name}", default="")
@@ -166,6 +167,10 @@ def main():
             "memory_flags": a.memory or "none",
             "cpu_flags": a.cpu,
             "uvicorn_workers": int(a.uvicorn_workers or 0),
+            # SwapTotal as the container sees it: the bound under variant S
+            "swap_seen_bytes": (
+                int(a.container_swap_kb) * 1024 if a.container_swap_kb else None
+            ),
             "state_after_runs": a.container_state,
         },
         "concurrency": int(a.conc or 1),
@@ -176,8 +181,9 @@ def main():
             "per_rule": "ru_maxrss + /proc/self/io at rule end (exact, not sampled)",
         },
         "timing": {
-            "t_runs_start": int(a.t_runs_start or 0),
-            "t_runs_end": int(a.t_runs_end or 0),
+            # The container's clock, as the cgroup samples and rule records
+            "t_runs_start": round(float(a.t_runs_start or 0), 3),
+            "t_runs_end": round(float(a.t_runs_end or 0), 3),
             "wall_clock_comparable_with_production": native_x86_linux(),
         },
         "conda_envs": "host volume",
