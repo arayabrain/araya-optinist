@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import h5py
 import numpy as np
@@ -53,6 +54,22 @@ def _table_file(path):
     with h5py.File(path, "w") as f:
         f["g/table"] = np.zeros(5, dtype=TABLE_DTYPE)
     return path
+
+
+def test_concurrent_extractions_keep_their_own_datasets(tmp_path):
+    """Uploads extract the structure in threads; the dataset list used to be
+    class state, so one extraction could return another file's datasets."""
+    paths = []
+    for i in range(4):
+        with h5py.File(tmp_path / f"{i}.h5", "w") as f:
+            for j in range(50):
+                f[f"g{i}/d{j}"] = np.zeros(2)
+        paths.append(str(tmp_path / f"{i}.h5"))
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(HDF5Getter.get, paths * 5))
+    for path, nodes in zip(paths * 5, results):
+        assert [n.name for n in nodes] == [f"g{path[-4]}"]
+        assert len(nodes[0].nodes) == 50
 
 
 def test_compound_dataset_lists_its_numeric_columns(tmp_path):

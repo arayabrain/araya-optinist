@@ -37,6 +37,7 @@ DATAVIEW_TYPE_OPTIONAL_FIELDS = {
     "thumbnails": dict,
     "attributes": dict,
     "publish_status": int,
+    "hidden_outputs": list,
 }
 
 # Owner nested object

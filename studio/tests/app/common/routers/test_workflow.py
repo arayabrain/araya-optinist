@@ -1,6 +1,7 @@
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -64,3 +65,31 @@ def test_a_reproduced_sample_claims_no_outputs(client, sample_workspace, categor
     assert data["hasNWB"] is False
     for node in data["function"].values():
         assert (node["outputPaths"], node["hasNWB"]) == (None, False)
+
+
+@pytest.mark.parametrize("category", ["tutorial", "maintenance"])
+def test_the_sample_import_copies_every_input_to_remote_storage(
+    client, sample_workspace, tmp_path, category
+):
+    """The maintenance input is not named sample_*; left on local disk only, it
+    kept the cleanup job from ever removing the workspace's inputs."""
+    assert client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/{category}").json()
+    inputs = sorted(p.name for p in (SAMPLE_DATA_DIR / category / "input").iterdir())
+    remote = tmp_path / "input" / SAMPLE_WORKSPACE_ID
+    assert (
+        sorted(p.name for p in remote.iterdir() if not p.name.startswith(".")) == inputs
+    )
+    assert (remote / ".image_shape.json").is_file()
+
+
+def test_the_sample_import_fails_when_an_input_copy_fails(
+    client, sample_workspace, monkeypatch
+):
+    """upload_input_data swallows its errors and returns False; dropped, the
+    input stays local only and the cleanup job never removes the workspace."""
+    monkeypatch.setattr(
+        MockStorageController, "upload_input_data", AsyncMock(return_value=False)
+    )
+    res = client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/tutorial")
+    assert res.status_code == 502
+    assert "remote storage failed" in res.json()["detail"]
