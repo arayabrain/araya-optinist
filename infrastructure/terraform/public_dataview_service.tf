@@ -1,7 +1,8 @@
 # Public DataView tier: the public task (INSTANCE_MODE=public) on its own
-# instances and target group. The listener sends anonymous DataView reads here
-# (p280, p300), so visitors do not share a process with sign-in, which stays on
-# the public tier (p305, p306). Mirrors public_service.tf; keep the two in step.
+# instances and target group. The listener sends the public DataView API here
+# (p280, p300), so those reads do not share a process with sign-in (p305,
+# p306). The page shell and static files stay on the public tier. Mirrors
+# public_service.tf; keep the two in step.
 
 resource "aws_lb_target_group" "public_dataview" {
   # Target group names cap at 32 characters
@@ -256,7 +257,8 @@ resource "aws_ecs_service" "public_dataview" {
   task_definition = aws_ecs_task_definition.public_dataview.arn
   desired_count   = var.public_dataview_asg_desired_capacity
   # An instance holds one task (host port 8000), so a lone task is replaced
-  # stop-first; with two or more, one keeps serving as on the public service
+  # stop-first: its target drains (deregistration_delay) before the new task
+  # can start. With two or more, one keeps serving as on the public service
   deployment_maximum_percent         = 200
   deployment_minimum_healthy_percent = var.public_dataview_asg_desired_capacity > 1 ? 50 : 0
 
@@ -277,9 +279,13 @@ resource "aws_ecs_service" "public_dataview" {
 
   health_check_grace_period_seconds = 900
 
+  # The listener rules: CreateService refuses a target group that no rule or
+  # listener forwards to, and the rules reference the target group, not this
   depends_on = [
     aws_autoscaling_group.public_dataview,
     aws_db_instance.main,
+    aws_lb_listener_rule.visualizations_public_header,
+    aws_lb_listener_rule.public_dataview_api,
   ]
 
   tags = {
@@ -303,8 +309,8 @@ output "public_dataview_service_name" {
   value       = aws_ecs_service.public_dataview.name
 }
 
-# The listener rules p280 / p300 forward here; on the first apply, confirm the
-# targets are healthy before those rules take traffic.
+# wait_for_capacity_timeout=0 means `terraform apply` returns before targets
+# are healthy; until they are, public DataView answers 503.
 output "public_dataview_tg_health_check_command" {
   description = "Run this to confirm public DataView targets are healthy"
   value       = "aws elbv2 describe-target-health --target-group-arn ${aws_lb_target_group.public_dataview.arn} --query 'TargetHealthDescriptions[*].[Target.Id,TargetHealth.State]' --output table"

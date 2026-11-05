@@ -425,7 +425,7 @@ variable "public_dataview_instance_type" {
 }
 
 variable "public_dataview_asg_min_size" {
-  description = "Minimum size of the public DataView ASG. With 1, a replaced instance takes public DataView down for its cold boot; sign-in is unaffected."
+  description = "Minimum size of the public DataView ASG. With 1, public DataView is down while its one instance is replaced (a cold boot) and on each deployment (the target group's deregistration delay, then the new task's start); sign-in is unaffected."
   type        = number
   default     = 1
 }

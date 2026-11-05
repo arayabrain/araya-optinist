@@ -5,7 +5,7 @@
 - **Public tier** is a dedicated always-on ECS service that runs the same image as the free/premium tiers with `INSTANCE_MODE=public`, serving the static SPA shell and a minimal API subset.
 - **Router gating** drops the heavy workflow/optinist routers in public mode, keeping only the routers needed to load the app and authenticate.
 - **Outage survival** means the SPA can boot and a user can log in even when the free tier is scaled to zero or unhealthy, instead of seeing a raw ALB 503.
-- **Published-dataview reads** are served from the **public DataView tier**: the same public-mode task on its own ASG and target group, so anonymous visitors to a public result neither reach the authenticated tiers nor slow sign-in on public.
+- **Published-dataview API reads** are served from the **public DataView tier**: the same public-mode task on its own ASG and target group, so the API calls of anonymous visitors to a public result neither reach the authenticated tiers nor share a process with sign-in on public. The page shell and static files they load stay on public.
 - **Startup cache warm** runs on the public-mode tiers, leader-elected across both, into the published-data EFS they share.
 - **Shared task-definition values** are duplicated across `compute.tf`, `public_service.tf`, and `background_service.tf`; a shared value must be changed in all three. The public DataView task reads the public task's environment (`local.public_task_environment`), replacing only its log group.
 
@@ -208,10 +208,14 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 
 **Problem:** The public DataView page needs no sign-in, so nothing bounds how many visitors open it. Its record list, thumbnails and output items, served from the process that answers `/auth/*` and `/users/me`, would slow every user's sign-in, and a large enough burst would fail the public target group's health check.
 
-**Solution:** A tier of its own:
+**Solution:** A tier of its own for the API:
 - ALB priorities 280 and 300 forward to the public DataView target group; sign-in (305, 306), the shell and static assets stay on public.
-- The tier runs the public task (`INSTANCE_MODE=public`, same environment and EFS caches) on its own ASG, so a visitor burst uses only its instances.
-- It defaults to one instance (`public_dataview_asg_*`). A replaced instance, or a deployment (stop-first with one task), leaves public DataView answering 503 until the new task is healthy; sign-in is unaffected. Two or more instances keep one serving.
+- The tier runs the public task (`INSTANCE_MODE=public`, same environment and EFS caches) on its own ASG, so a visitor burst's API calls use only its instances.
+- A visitor's first page load still fetches the shell and the static bundle from public. Those requests cannot be told apart from a signed-in user's page load, so they stay there. They are files, not encoded output items; their cost is for compression and caching of the bundle to bound, not for this tier.
+- It defaults to one instance (`public_dataview_asg_*`); sign-in is unaffected by any of the following. Two or more instances keep one serving.
+  - A replaced instance leaves public DataView answering 503 for the replacement's cold boot.
+  - A deployment is stop-first with one task: 503 while the old target drains (the target group's deregistration delay), then while the new task starts and passes its health checks.
+  - On the tier's first apply, the listener rules move to the new target group before its first task is healthy (the ECS service is created after the rules: a target group no rule forwards to is refused), so public DataView answers 503 for that first cold boot.
 - A premium user's requests that carry routing headers match their premium rule (100-199) first and never reach this tier.
 
 ---

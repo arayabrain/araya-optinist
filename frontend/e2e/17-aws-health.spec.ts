@@ -447,8 +447,8 @@ test.describe("Compute and routing", () => {
     expect(tierOf(byPath("/manifest.json")!), "static asset tier").toBe(
       "public",
     )
-    // Anonymous visitors to a public result must not load the tier that
-    // answers sign-in, so the public DataView reads have a tier of their own.
+    // The public DataView API, which anonymous visitors call without limit,
+    // must not load the tier that answers sign-in, so it has a tier of its own.
     expect(
       tierOf(byPath("/api/public/dataview")!),
       "public dataview tier",

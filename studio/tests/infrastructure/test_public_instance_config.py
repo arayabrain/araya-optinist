@@ -674,11 +674,11 @@ class TestPublicAsgCapacity:
 
 
 class TestPublicDataviewIsApartFromSignIn:
-    """Anonymous DataView reads and sign-in reach different target groups.
+    """The public DataView API and sign-in reach different target groups.
 
     The public page needs no sign-in, so nothing bounds how many visitors load
-    the tier serving it. On the target group that answers /auth and /users/me,
-    those visitors slow every user's sign-in.
+    the tier serving its API. On the target group that answers /auth and
+    /users/me, those reads slow every user's sign-in.
     """
 
     DATAVIEW_RULES = ("visualizations_public_header", "public_dataview_api")
@@ -843,12 +843,28 @@ class TestPublicDataviewPlacement:
             "[aws_lb_target_group.public_dataview.arn]"
         )
 
+    def test_the_service_is_created_after_the_rules_onto_its_target_group(self):
+        """CreateService refuses a target group no listener rule forwards to.
+        The rules reference the target group, not the service, so without an
+        explicit dependency a first apply may create the service first."""
+        forwarding = {
+            name
+            for name, block in _listener_rule_blocks().items()
+            if _rule_forward_target(block) == "public_dataview"
+        }
+        assert forwarding, "no listener rule forwards to the public DataView tier"
+        depends_on = re.search(r"depends_on\s*=\s*\[(.*?)\]", self.service, re.DOTALL)
+        assert depends_on, "public DataView service has no depends_on"
+        awaited = set(re.findall(r"aws_lb_listener_rule\.(\w+)", depends_on.group(1)))
+        assert forwarding <= awaited, f"not awaited: {forwarding - awaited}"
+
 
 class TestPublicDataviewAsgCapacity:
     """One instance by default.
 
-    A replaced instance takes public DataView down for its cold boot; sign-in
-    stays up on the public tier.
+    A replaced instance (its cold boot) or a deployment (the target's drain,
+    then the new task's start) takes public DataView down; sign-in stays up on
+    the public tier.
     """
 
     @pytest.fixture(autouse=True)
