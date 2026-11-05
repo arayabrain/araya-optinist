@@ -781,6 +781,34 @@ describe("DataviewRecords Component", () => {
     })
   })
 
+  describe("Hidden outputs indicator", () => {
+    it("shows how many outputs are hidden and opens the outputs", () => {
+      store = mockStore(
+        stateWithPrivateItems([
+          { ...mockDataviewRecord, hidden_outputs: ["1/a/x", "1/a/y"] },
+        ]),
+      )
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      fireEvent.click(screen.getByText("2 hidden"))
+      expect(screen.getByTestId("outputs-view")).toHaveAttribute(
+        "data-open",
+        "true",
+      )
+    })
+
+    it("shows nothing when every output is public", () => {
+      store = mockStore(
+        stateWithPrivateItems([{ ...mockDataviewRecord, hidden_outputs: [] }]),
+      )
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      expect(screen.queryByText(/hidden$/)).toBeNull()
+    })
+  })
+
   describe("Publish error handling", () => {
     it("shows an error snackbar with the backend detail when bulk publish is rejected", async () => {
       mockEnqueueSnackbar.mockClear()
