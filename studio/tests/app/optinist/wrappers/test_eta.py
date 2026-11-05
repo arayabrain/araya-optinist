@@ -503,6 +503,4 @@ def test_mean_trace_title_counts_only_the_cells_it_averages(neural, output_dir):
     info = _eta(x, output_dir)
 
     assert np.isnan(info["mean"].data[1]).all()
-    assert (
-        info["mean_trace"].meta.title == "n = 3 events, per-event z-score, 2 cells"
-    )
+    assert info["mean_trace"].meta.title == "n = 3 events, per-event z-score, 2 cells"
