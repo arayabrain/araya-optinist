@@ -53,7 +53,8 @@ const ConsentBanner: FC = () => {
       }}
     >
       <Typography variant="body2">
-        We use analytics cookies to measure site usage. See our{" "}
+        We use Google Analytics cookies to measure site usage; Google processes
+        this data in the United States. See our{" "}
         {/* Outside the router, so a plain link; a new tab keeps the notice. */}
         <Link
           href="/privacy"

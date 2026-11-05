@@ -159,7 +159,7 @@ export const getStatusLoadViaUrl = createAsyncThunk<
 })
 
 export const URL_UPLOAD_POLL_INTERVAL_MS = 1000
-// A poll that reaches a worker other than the downloading one gets a 404
+// A poll that reaches another instance than the downloading one gets a 404
 export const URL_UPLOAD_MAX_FAILED_POLLS = 30
 
 export const waitForUploadViaUrl = createAsyncThunk<

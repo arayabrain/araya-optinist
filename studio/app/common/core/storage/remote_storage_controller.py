@@ -1,5 +1,6 @@
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -10,7 +11,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -18,7 +19,10 @@ from studio.app.common.core.utils.datetime_utils import (
     datetime_from_timestamp,
     get_current_datetime,
 )
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
@@ -452,8 +456,12 @@ class InputFileLock:
 
     @classmethod
     def _lock_path(cls, workspace_id: str, filename: str) -> str:
+        # a 255-byte file name plus ".lock" is over the file name limit
+        head, name = os.path.split(os.path.normpath(filename))
+        if len(name.encode()) > 250:
+            name = hashlib.sha256(name.encode()).hexdigest()
         return join_filepath(
-            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, f"{filename}.lock"]
+            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, head, f"{name}.lock"]
         )
 
     @classmethod
@@ -518,6 +526,18 @@ class InputFileLock:
         finally:
             # close releases the flock; off-loop in case it blocks on NFS.
             await asyncio.to_thread(os.close, fd)
+
+
+def local_path_for_remote_key(key: str, prefix: str, local_root: str) -> Optional[str]:
+    """Local path for a remote key, or None (logged) if it leaves local_root."""
+    if not key.startswith(prefix):
+        logger.warning("Skip remote key outside the expected prefix: %r", key)
+        return None
+    try:
+        return join_filepath([local_root, key.removeprefix(prefix)])
+    except InvalidPathError as e:
+        logger.warning("Skip remote key: %s", e)
+        return None
 
 
 class BaseRemoteStorageController(metaclass=ABCMeta):

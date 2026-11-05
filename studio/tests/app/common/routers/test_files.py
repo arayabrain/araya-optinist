@@ -6,13 +6,18 @@ import os
 import threading
 import time
 from glob import glob
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import tifffile
+from fastapi import BackgroundTasks
 
+from studio.app.common.core.storage.mock_storage_controller import MockStorageController
 from studio.app.common.core.storage.remote_storage_controller import InputFileLock
+from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.routers import files as files_module
+from studio.app.common.routers import workflow as workflow_module
 from studio.app.common.routers.files import (
     DirTreeGetter,
     _build_tree_from_remote_files,
@@ -604,6 +609,66 @@ async def test_cache_write_waits_for_the_input_file_lock(ws):
     writer.join(timeout=5)
     assert not writer.is_alive()
     assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+CACHE_EDITORS = {
+    "set_shape": lambda name: files_module.set_shape("ws", name),
+    "delete_file": lambda name: files_module.delete_file(
+        "ws", name, BackgroundTasks(), None
+    ),
+    "sample_import": lambda name: workflow_module.import_sample_data(
+        "ws", "tiny", None
+    ),
+    "workflow_runner": lambda name: WorkflowRunner._update_and_upload_metadata(
+        SimpleNamespace(
+            workspace_id="ws", remote_bucket_name=None, logger=files_module.logger
+        ),
+        {(name, files_module._metadata_cache_for(name)[1])},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entry, name",
+    [("set_shape", "a.tif"), ("delete_file", "a.tif")]
+    + [
+        (entry, name)
+        for entry in ("sample_import", "workflow_runner")
+        for name in ("a.tif", "a.h5", "a.mat")
+    ],
+)
+async def test_cache_editors_wait_for_the_lock_off_the_event_loop(
+    tmp_path, monkeypatch, caplog, entry, name
+):
+    """Waiting on the loop would stall the worker, the lock holder's release
+    with it, until the wait gives up and the edit goes ahead unlocked."""
+    import logging
+
+    monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 2)
+    monkeypatch.setattr(DIRPATH, "ROOT_DIR", str(tmp_path))
+    monkeypatch.setattr(DIRPATH, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path / "input"))
+    monkeypatch.setattr(MockStorageController, "MOCK_INPUT_DIR", str(tmp_path / "s3"))
+    sample = tmp_path / "sample_data" / "tiny"
+    (sample / "output").mkdir(parents=True)
+    for d in (sample / "input", tmp_path / "input" / "ws"):
+        _tif(d / "a.tif", (2, 3))
+        (d / "a.h5").touch()
+        (d / "a.mat").touch()
+    cache_name = files_module._metadata_cache_for(name)[1]
+    cache = tmp_path / "input" / "ws" / cache_name
+    cache.write_text(json.dumps({name: "stale"}))
+
+    with caplog.at_level(logging.WARNING):
+        async with InputFileLock.acquire("ws", cache_name):
+            route = asyncio.create_task(CACHE_EDITORS[entry](name))
+            await asyncio.sleep(0.3)
+            assert not route.done()
+            assert json.loads(cache.read_text()) == {name: "stale"}
+        await route
+    assert json.loads(cache.read_text()).get(name) != "stale"
+    assert not any("InputFileLock acquire timeout" in r.message for r in caplog.records)
 
 
 def test_cache_write_gives_up_on_a_wedged_lock(ws, monkeypatch, caplog):

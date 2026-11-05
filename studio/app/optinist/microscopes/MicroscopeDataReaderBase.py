@@ -1,12 +1,37 @@
 import os
+import shutil
 from abc import ABCMeta, abstractmethod
 from ctypes import c_uint8, c_uint16, c_uint32
 from dataclasses import dataclass
 
+import requests
 from numpy import uint8 as np_uint8
 from numpy import uint16 as np_uint16
 from numpy import uint32 as np_uint32
 from numpy.typing import DTypeLike
+
+from studio.app.dir_path import DIRPATH
+
+
+def unpack_microscope_libs():
+    """Unpack the vendor SDKs once; another process sees the directory only
+    when it is complete."""
+    if os.path.isdir(DIRPATH.MICROSCOPE_LIB_DIR):
+        return
+    if not os.path.exists(DIRPATH.MICROSCOPE_LIB_ZIP):
+        response = requests.get(
+            "https://github.com/oist/optinist/raw/v1.2.1/studio/app/optinist/microscopes/libs.zip"  # noqa: E501
+        )
+        with open(DIRPATH.MICROSCOPE_LIB_ZIP, "wb") as f:
+            f.write(response.content)
+    staging = f"{DIRPATH.MICROSCOPE_LIB_DIR}.{os.getpid()}"
+    shutil.unpack_archive(DIRPATH.MICROSCOPE_LIB_ZIP, staging)
+    try:
+        os.rename(staging, DIRPATH.MICROSCOPE_LIB_DIR)
+    except OSError:  # another process published first
+        shutil.rmtree(staging, ignore_errors=True)
+        if not os.path.isdir(DIRPATH.MICROSCOPE_LIB_DIR):
+            raise
 
 
 @dataclass
