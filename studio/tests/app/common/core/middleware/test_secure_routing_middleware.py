@@ -26,11 +26,19 @@ REQUIREMENTS:
 - All dependencies from studio/app/common/
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
+
+from studio.tests.app.common.db_pool_probe import (
+    asgi_client,
+    one_connection_pool,
+    stub_firebase_verify,
+)
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -72,7 +80,7 @@ class TestJWTExtraction:
             # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -127,7 +135,7 @@ class TestJWTExtraction:
         # Mock Firebase verification failure via auth_helper
         with patch(
             "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
+            "extract_uid_from_firebase_jwt_async"
         ) as mock_extract:
             mock_extract.return_value = (None, "Invalid token")
 
@@ -341,7 +349,7 @@ class TestRoutingIDValidation:
         # Mock Firebase verification via auth_helper
         with patch(
             "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
+            "extract_uid_from_firebase_jwt_async"
         ) as mock_extract:
             mock_extract.return_value = (TEST_UID, None)
 
@@ -386,7 +394,7 @@ class TestRoutingIDValidation:
             # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -439,7 +447,7 @@ class TestRoutingIDValidation:
         with patch.object(MODE, "IS_STANDALONE", False):
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -483,7 +491,7 @@ class TestRoutingIDValidation:
         with patch.object(MODE, "IS_STANDALONE", False):
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -570,7 +578,7 @@ class TestHeaderInjection:
             # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -633,7 +641,7 @@ class TestHeaderInjection:
             # Mock Firebase verification via auth_helper
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -682,7 +690,7 @@ class TestMiddlewareIntegration:
 
         with patch(
             "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
+            "extract_uid_from_firebase_jwt_async"
         ) as mock_extract:
             await middleware(scope, AsyncMock(), AsyncMock())
 
@@ -704,7 +712,7 @@ class TestMiddlewareIntegration:
 
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 await middleware(scope, AsyncMock(), AsyncMock())
 
@@ -730,7 +738,7 @@ class TestMiddlewareIntegration:
 
         with patch.object(MODE, "IS_STANDALONE", True), patch(
             "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
+            "extract_uid_from_firebase_jwt_async"
         ) as mock_extract:
             await middleware(scope, AsyncMock(), AsyncMock())
 
@@ -751,7 +759,7 @@ class TestMiddlewareIntegration:
 
         with patch(
             "studio.app.common.core.middleware.secure_routing_middleware."
-            "extract_uid_from_firebase_jwt"
+            "extract_uid_from_firebase_jwt_async"
         ) as mock_extract:
             await middleware(scope, AsyncMock(), AsyncMock())
 
@@ -885,7 +893,7 @@ class TestInstanceHash:
         with patch.object(MODE, "IS_STANDALONE", False):
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -954,7 +962,7 @@ class TestInstanceHash:
         with patch.object(MODE, "IS_STANDALONE", False):
             with patch(
                 "studio.app.common.core.middleware.secure_routing_middleware."
-                "extract_uid_from_firebase_jwt"
+                "extract_uid_from_firebase_jwt_async"
             ) as mock_extract:
                 mock_extract.return_value = (TEST_UID, None)
 
@@ -987,6 +995,58 @@ class TestInstanceHash:
                         assert b"x-served-by-instance" in headers
                         # But not routing ID
                         assert b"x-routing-id" not in headers
+
+
+class TestTierLookupOffTheEventLoop:
+    """A tier cache miss on a real one-connection pool (db_pool_probe)."""
+
+    @pytest.mark.asyncio
+    async def test_a_tier_lookup_waiting_for_the_pool_leaves_the_loop_free(
+        self, tmp_path
+    ):
+        from studio.app.common.core.middleware import secure_routing_middleware
+        from studio.app.common.core.middleware.secure_routing_middleware import (
+            SecureRoutingMiddleware,
+            _tier_cache,
+        )
+        from studio.app.common.core.mode import MODE
+
+        app = FastAPI()
+
+        @app.get("/api/test")
+        async def endpoint():
+            return {}
+
+        @app.get("/health")
+        async def health_endpoint():
+            return {}
+
+        _tier_cache.clear()
+        with one_connection_pool(
+            tmp_path / "pool.db", timeout=3
+        ) as engine, stub_firebase_verify(TEST_UID), patch.object(
+            MODE, "IS_STANDALONE", False
+        ), patch.object(
+            secure_routing_middleware, "_get_instance_id", return_value=None
+        ):
+            async with asgi_client(SecureRoutingMiddleware(app)) as client:
+                with engine.connect():
+                    request = asyncio.create_task(
+                        client.get(
+                            "/api/test",
+                            headers={"Authorization": f"Bearer {TEST_JWT_TOKEN}"},
+                        )
+                    )
+                    # Long enough for the lookup to reach the pool wait
+                    await asyncio.sleep(0.2)
+                    health = await asyncio.wait_for(client.get("/health"), timeout=1)
+                    request_was_waiting = not request.done()
+                response = await request
+
+        assert health.status_code == 200
+        assert request_was_waiting
+        # The probe database has no users table: the lookup falls back to free
+        assert response.headers["x-user-tier"] == TEST_TIER_FREE
 
 
 if __name__ == "__main__":
