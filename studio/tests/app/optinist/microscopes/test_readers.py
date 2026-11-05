@@ -1,9 +1,12 @@
 """Every vendor reader on a real file. The Olympus and Nikon samples are public
 files fetched into samples/ on first run; the Inscopix movie beside this file
 was written by the vendor's isx 2.0.1 SDK; the Thorlabs scan is written here."""
+import io
+import itertools
 import os
 import platform
 import shutil
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -47,13 +50,28 @@ def sample(url):
     if not path.exists():
         SAMPLES.mkdir(exist_ok=True)
         try:
+            deadline = time.monotonic() + 120
             with urllib.request.urlopen(url, timeout=60) as response:
                 with open(f"{path}.part", "wb") as f:
-                    shutil.copyfileobj(response, f)
+                    while chunk := response.read1(1 << 16):
+                        if time.monotonic() > deadline:
+                            raise TimeoutError("still downloading after 120 s")
+                        f.write(chunk)
         except OSError as e:
             pytest.skip(f"could not download {url}: {e}")
         os.replace(f"{path}.part", path)
     return str(path)
+
+
+def test_sample_skips_a_download_that_outlasts_its_deadline(tmp_path, monkeypatch):
+    monkeypatch.setitem(globals(), "SAMPLES", tmp_path)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda url, timeout: io.BytesIO(b"x")
+    )
+    monkeypatch.setattr(time, "monotonic", itertools.count(step=121).__next__)
+    with pytest.raises(pytest.skip.Exception, match="after 120 s"):
+        sample("https://example.org/slow.oir")
+    assert not (tmp_path / "slow.oir").exists()
 
 
 @linux_x86_64
