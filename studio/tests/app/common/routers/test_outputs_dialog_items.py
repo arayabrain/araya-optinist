@@ -274,3 +274,16 @@ async def test_a_timeseries_read_not_started_in_time_is_refused(node_dir, monkey
     assert held.status_code == 200, held.text
     # The refused read never ran
     assert loaded == ["fluorescence"]
+
+
+def test_the_image_route_documents_columns_and_index_as_stored():
+    schema = app.openapi()
+    response = schema["paths"]["/api/visualizations/image/{filepath}"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+    model = schema["components"]["schemas"][response["$ref"].rsplit("/", 1)[-1]]
+
+    for name in ("columns", "index"):
+        assert model["properties"][name]["items"] == {
+            "anyOf": [{"type": "integer"}, {"type": "string"}]
+        }

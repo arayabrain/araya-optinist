@@ -52,6 +52,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
 from studio.app.common.db.database import get_db, release_request_session
 from studio.app.common.schemas.outputs import (
+    ImageOutputData,
     JsonTimeSeriesData,
     OutputData,
     PlotMetaData,
@@ -978,7 +979,8 @@ async def get_html(
 
 @router.get(
     "/image/{filepath:path}",
-    response_model=OutputData,
+    # Documents the body only: every branch returns a Response, which skips it
+    response_model=ImageOutputData,
     dependencies=[Depends(workspace_access)],
 )
 async def get_image(
