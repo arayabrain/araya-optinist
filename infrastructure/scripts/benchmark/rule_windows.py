@@ -22,11 +22,13 @@ MIB = 1024 * 1024
 
 
 def samples_of(row_dir):
+    """(epoch, anon, swap) per sample with an anon value; swap is 0 where the
+    cgroup does not account it."""
     with open(os.path.join(row_dir, "cgroup.tsv")) as f:
         return [
-            (float(r["epoch"]), int(r["anon"]), int(r["swap_current"]))
+            (float(r["epoch"]), int(r["anon"]), int(r["swap_current"] or 0))
             for r in csv.DictReader(f, delimiter="\t")
-            if r["anon"] and r["swap_current"]
+            if r["anon"]
         ]
 
 
@@ -84,10 +86,18 @@ def print_row(row_dir):
                 f"  written {(r.get('write_bytes') or 0) / 1e6:9,.0f}  {r['status']}"
             )
         last = max(r["t_end"] for r in rules)
+        # A rule writes its record as it ends: a killed one (OOM killer,
+        # cancel) has none, and its peak falls into "after the rules"
+        recorded = {r.get("node_id") for r in rules}
+        functions = (result or {}).get("functions", {})
+        unrecorded = [n for n in functions if n not in recorded]
+        for node_id in unrecorded:
+            print(f"    {node_id:28s} no record: killed, or never started")
         if result:
             after = peak(samples, last, result["t_end"])
+            label = "after the rules" if not unrecorded else "after the last record"
             print(
-                f"    {'after the rules':28s} anon {fmt(after)}"
+                f"    {label:28s} anon {fmt(after)}"
                 f"{'':30s}{result['t_end'] - last:6.0f} s"
             )
 

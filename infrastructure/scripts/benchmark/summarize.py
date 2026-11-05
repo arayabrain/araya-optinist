@@ -19,6 +19,14 @@ def read_tsv(path):
         return list(csv.DictReader(f, delimiter="\t"))
 
 
+def read_jsonl(path):
+    """The records in a rules-N.jsonl, or [] when the run wrote none."""
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def to_int(value):
     try:
         return int(float(value))
@@ -48,7 +56,7 @@ def rules_table(path, functions):
     """`functions`: the run's node results by node id, from BENCH_RESULT. A rule
     process ends ok when its function fails (the error is its output), so the
     node result is the one that shows a failure."""
-    rows = [json.loads(line) for line in open(path) if line.strip()]
+    rows = read_jsonl(path)
     rows.sort(key=lambda r: r.get("t_proc_start") or 0)
     out = [
         "| Rule | Node | Process | Peak RSS (MB) | Children peak (MB) | "
@@ -72,16 +80,22 @@ def rules_table(path, functions):
             f"{r['children_peak_rss_mb']:.0f} | {written:.0f} | "
             f"{fmt_s(imports)} | {fmt_s(work)} |"
         )
+    # A rule writes its record as it ends; a killed one (OOM killer, cancel)
+    # writes none, and its peak shows only in the container figures
+    recorded = {r.get("node_id") for r in rows}
+    for node_id, result in functions.items():
+        if node_id not in recorded:
+            out.append(
+                f"| {node_id} | {result or '–'} | **no record**: killed, or never "
+                "started | – | – | – | – | – |"
+            )
     return "\n".join(out)
 
 
 def phases_tables(path):
     """Per-step peaks for rules recorded with BenchmarkRecorder.phase()."""
     out = []
-    for line in open(path):
-        if not line.strip():
-            continue
-        r = json.loads(line)
+    for r in read_jsonl(path):
         if not r.get("phases"):
             continue
         out += [
@@ -98,75 +112,155 @@ def phases_tables(path):
     return "\n".join(out)
 
 
-def cgroup_summary(rows, t_start, t_end):
+def to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def in_window(rows, t_start, t_end):
+    """Rows whose epoch lies in [t_start, t_end]."""
+    out = []
+    for r in rows:
+        epoch = to_float(r["epoch"])
+        if epoch is not None and t_start <= epoch <= t_end:
+            out.append(r)
+    return out
+
+
+def highest(rows, value):
+    """Highest value(row) over the rows, or None when no row has one: an empty
+    cgroup field is missing, not 0."""
+    values = [v for v in map(value, rows) if v is not None]
+    return max(values) if values else None
+
+
+def anon_and_swap(row):
+    anon = to_int(row["anon"])
+    return None if anon is None else anon + (to_int(row["swap_current"]) or 0)
+
+
+def longest_gap(rows, t_start, t_end):
+    """Longest time between consecutive samples over the run window, in s."""
+    epochs = sorted(e for e in (to_float(r["epoch"]) for r in rows) if e is not None)
+    gaps = [b - a for a, b in zip(epochs, epochs[1:]) if b >= t_start and a <= t_end]
+    return max(gaps) if gaps else None
+
+
+def cgroup_summary(rows, t_start, t_end, interval):
     if not rows:
         return "No cgroup samples."
-    before = [r for r in rows if to_int(r["epoch"]) and to_int(r["epoch"]) < t_start]
-    during = [
-        r for r in rows if to_int(r["epoch"]) and t_start <= to_int(r["epoch"]) <= t_end
-    ]
+    before = [r for r in rows if (to_float(r["epoch"]) or float("inf")) < t_start]
+    during = in_window(rows, t_start, t_end)
+    last_before = before[-1] if before else {}
 
-    def peak(column):
-        """Highest sample during the runs, or None."""
-        return max((to_int(r[column]) or 0) for r in during) if during else None
-
-    baseline = to_int(before[-1]["mem_current"]) if before else None
-    peak_cur = peak("mem_current")
+    baseline = to_int(last_before.get("mem_current"))
+    peak_cur = highest(during, lambda r: to_int(r["mem_current"]))
     # memory.peak and oom_kill are kept by the kernel since the container started
-    peak_hw = max((to_int(r["mem_peak"]) or 0) for r in rows)
+    peak_hw = highest(rows, lambda r: to_int(r["mem_peak"]))
+    oom = highest(rows, lambda r: to_int(r["oom_kill"]))
     # anon = process memory; file = page cache, reclaimable, so not demand
-    baseline_anon = to_int(before[-1]["anon"]) if before else None
-    peak_anon = peak("anon")
+    baseline_anon = to_int(last_before.get("anon"))
+    peak_anon = highest(during, lambda r: to_int(r["anon"]))
     rise_anon = None
     if baseline_anon is not None and peak_anon is not None:
         rise_anon = peak_anon - baseline_anon
-    swap = peak("swap_current")
-    oom = max((to_int(r["oom_kill"]) or 0) for r in rows)
-    first, last = rows[0], rows[-1]
-    written = (to_int(last["io_wbytes"]) or 0) - (to_int(first["io_wbytes"]) or 0)
+    swap = highest(during, lambda r: to_int(r["swap_current"]))
+    # Pages swapped out leave anon; per sample, so not the sum of two peaks
+    peak_demand = highest(during, anon_and_swap)
+    gap = longest_gap(rows, t_start, t_end)
+    first_w, last_w = to_int(rows[0]["io_wbytes"]), to_int(rows[-1]["io_wbytes"])
+    written = None if first_w is None or last_w is None else last_w - first_w
+    # The sampler's earlier awk summed in 32 bits and stopped at 2^31 - 1
+    io_capped = last_w == 2**31 - 1
+    if io_capped:
+        written = None
 
     def mb(v):
-        return "–" if v is None else f"{v / MB:,.0f}"
+        return "n/a" if v is None else f"{v / MB:,.0f}"
 
-    return "\n".join(
-        [
-            "| Measure | Value |",
-            "|---|---|",
-            f"| API baseline before run, memory.current incl. page cache (MB) | "
-            f"{mb(baseline)} |",
-            f"| Peak memory.current during the runs, 1 s samples (MB) | "
-            f"{mb(peak_cur)} |",
-            f"| memory.peak, kernel high-water since container start, "
-            f"incl. page cache (MB) | {mb(peak_hw)} |",
-            f"| API baseline before run, anon (MB) | {mb(baseline_anon)} |",
-            f"| **Peak anon during the runs — demand, excl. page cache (MB)** | "
-            f"{mb(peak_anon)} |",
-            f"| Rise in anon over the baseline (MB) | {mb(rise_anon)} |",
-            f"| Peak swap during the runs (MB) | {mb(swap)} |",
-            f"| OOM kills in cgroup since container start | {oom} |",
-            # Docker Desktop does not count bind-mount writes; see per-rule figures
-            f"| Bytes written by cgroup, excl. bind mounts (MB) | {mb(written)} |",
-            f"| Samples | {len(rows)} |",
-        ]
-    )
+    table = [
+        "| Measure | Value |",
+        "|---|---|",
+        f"| API baseline before run, memory.current incl. page cache (MB) | "
+        f"{mb(baseline)} |",
+        f"| Peak memory.current during the runs, 1 s samples (MB) | "
+        f"{mb(peak_cur)} |",
+        f"| memory.peak, kernel high-water since container start, "
+        f"incl. page cache (MB) | {mb(peak_hw)} |",
+        f"| API baseline before run, anon (MB) | {mb(baseline_anon)} |",
+        f"| **Peak anon during the runs — demand, excl. page cache (MB)** | "
+        f"{mb(peak_anon)} |",
+        f"| Rise in anon over the baseline (MB) | {mb(rise_anon)} |",
+        f"| Peak swap during the runs (MB) | {mb(swap)} |",
+        f"| Peak anon + swap during the runs, per sample (MB) | {mb(peak_demand)} |",
+        f"| OOM kills in cgroup since container start | "
+        f"{'n/a' if oom is None else oom} |",
+        # Docker Desktop does not count bind-mount writes; see per-rule figures
+        f"| Bytes written by cgroup, excl. bind mounts (MB) | {mb(written)} |",
+        f"| Samples (all; during the runs) | {len(rows)}; {len(during)} |",
+        f"| Longest gap between samples during the runs (s) | "
+        f"{'n/a' if gap is None else f'{gap:.1f}'} |",
+    ]
+    notes = []
+    if swap:
+        notes.append(
+            "Swap was in use: anon leaves out swapped-out pages, so peak anon is a "
+            "lower bound on demand; peak anon + swap is the closer figure."
+        )
+    if gap is not None and gap > 3 * interval:
+        notes.append(
+            f"Samples were missing for up to {gap:.0f} s during the runs; the sampled "
+            "peaks are lower bounds (memory.peak is the kernel's, not sampled)."
+        )
+    if io_capped:
+        notes.append(
+            "Bytes written: n/a, the row's sampler stopped counting at 2 GiB; use "
+            "the per-rule figures."
+        )
+    if any(v is None for v in (baseline, peak_cur, peak_anon, swap, peak_hw, oom)):
+        notes.append(
+            "n/a: the cgroup did not provide that value (cgroup v2 is needed; "
+            "memory.peak needs Linux 5.19 or later)."
+        )
+    return "\n\n".join(["\n".join(table)] + notes)
 
 
 def probe_summary(rows, t_start, t_end):
-    during = [
-        r for r in rows if to_int(r["epoch"]) and t_start <= to_int(r["epoch"]) <= t_end
-    ]
+    during = in_window(rows, t_start, t_end)
     if not during:
         return "No probe samples during the run."
     failed = [r for r in during if r["http_code"] != "200"]
     times = sorted(float(r["time_total_s"]) for r in during if r["http_code"] == "200")
     p95 = times[int(len(times) * 0.95) - 1] if times else None
-    return (
-        f"{len(failed)} of {len(during)} probes failed "
-        f"({100 * len(failed) / len(during):.1f} %); "
-        f"p95 latency of successes {p95 * 1000:.0f} ms"
-        if p95 is not None
-        else f"{len(failed)} of {len(during)} probes failed"
-    )
+
+    # A failing probe waits up to its timeout, so failures under-count a stall:
+    # measure each stall from its first failure to the next answer instead
+    stalls, start = [], None
+    for r in during:
+        epoch = float(r["epoch"])
+        if r["http_code"] != "200":
+            if start is None:
+                start = epoch
+            stall_end = epoch + float(r["time_total_s"] or 0)
+        elif start is not None:
+            stalls.append((start, epoch))
+            start = None
+    if start is not None:
+        stalls.append((start, stall_end))
+    longest = max(stalls, key=lambda s: s[1] - s[0]) if stalls else None
+
+    parts = [f"{len(failed)} of {len(during)} probes failed"]
+    if stalls:
+        parts.append(
+            f"`/health` unanswered for {sum(e - s for s, e in stalls):.0f} s in "
+            f"{len(stalls)} stall(s), the longest {longest[1] - longest[0]:.0f} s "
+            f"from +{longest[0] - t_start:.0f} s"
+        )
+    if p95 is not None:
+        parts.append(f"p95 latency of successes {p95 * 1000:.0f} ms")
+    return "; ".join(parts)
 
 
 def main():
@@ -193,6 +287,9 @@ def main():
         + ("" if comparable else " (emulated: not comparable with a deployment)")
     )
     print(f"- container after runs: {prov['container']['state_after_runs']}")
+    swap_seen = prov["container"].get("swap_seen_bytes")
+    if swap_seen is not None:
+        print(f"- swap the container sees: {swap_seen / MB:,.0f} MiB")
     start = prov["workflow"].get("start", "exec")
     print(
         "- start: "
@@ -203,9 +300,13 @@ def main():
         )
     )
     harness_mb = 0.0
-    for rc_file in sorted(glob.glob(os.path.join(row, "run-*.rc"))):
-        run = os.path.basename(rc_file)[len("run-") : -len(".rc")]
-        harness = bench_result(row, run).get("harness_process") or {}
+    runs = sorted(
+        int(os.path.basename(p)[len("run-") : -len(".rc")])
+        for p in glob.glob(os.path.join(row, "run-*.rc"))
+    )
+    for run in runs:
+        result = bench_result(row, run)
+        harness = result.get("harness_process") or {}
         harness_mb += harness.get("rss_anon_mb", 0.0)
         memory = (
             f" · harness process RssAnon {harness['rss_anon_mb']:,.0f} MB"
@@ -213,10 +314,34 @@ def main():
             if "rss_anon_mb" in harness
             else ""
         )
-        print(f"- run-{run}: exit {open(rc_file).read().strip()}{memory}")
+        stop = ""
+        if "cancelled" in result:
+            stop = " · timed out, cancel " + (
+                "accepted" if result["cancelled"] else "**not accepted**"
+            )
+            if result.get("still_running"):
+                stop += ", **still running when the watcher gave up**"
+        rc = open(os.path.join(row, f"run-{run}.rc")).read().strip()
+        print(f"- run-{run}: exit {rc}{memory}{stop}")
+    leftover_path = os.path.join(row, "processes-after-runs.json")
+    if os.path.exists(leftover_path):
+        leftover = json.load(open(leftover_path))
+        if leftover.get("count"):
+            print(
+                f"- **{leftover['count']} workflow processes were still running"
+                f" {leftover.get('waited_s', 0):.0f} s after the runs ended**: a"
+                " stopped run's work went on beside the others"
+            )
+        elif leftover.get("count_at_end"):
+            print(
+                f"- {leftover['count_at_end']} workflow processes were still stopping"
+                f" when the runs ended; gone {leftover['waited_s']:.0f} s later"
+            )
 
+    interval = prov.get("sampling", {}).get("cgroup_interval_s") or 1
     print("\n## Container (cgroup)\n")
-    print(cgroup_summary(read_tsv(os.path.join(row, "cgroup.tsv")), t_start, t_end))
+    cgroup_rows = read_tsv(os.path.join(row, "cgroup.tsv"))
+    print(cgroup_summary(cgroup_rows, t_start, t_end, interval))
     if harness_mb:
         note = (
             " (a deployed run's uvicorn worker would hold part of it)"
@@ -231,9 +356,16 @@ def main():
     print(probe_summary(read_tsv(os.path.join(row, "probe.tsv")), t_start, t_end))
 
     algos = prov["workflow"]["algo"].split(",")
-    for path in sorted(glob.glob(os.path.join(row, "rules-*.jsonl"))):
+    print(
+        "\nPer-rule and per-step peaks are each rule process's own RSS high-water"
+        " mark. They include file-backed pages (memmapped data, shared libraries),"
+        " which the container's anon leaves out, and they leave out child"
+        " processes (Children peak is the largest finished child, not a sum), such"
+        " as a CaImAn worker pool. Read demand from the container's figures."
+    )
+    for run in runs:
+        path = os.path.join(row, f"rules-{run}.jsonl")
         # Several fixtures: run N used the N-th
-        run = int(os.path.basename(path)[len("rules-") : -len(".jsonl")])
         mixed = len(algos) > 1 and run <= len(algos)
         fixture = f" ({algos[run - 1]})" if mixed else ""
         print(f"\n## Per rule — {os.path.basename(path)}{fixture}\n")
