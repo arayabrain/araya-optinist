@@ -322,6 +322,7 @@ def ETA(
     elif params.get("sort_by_peak", False):
         order = peak_order(norm_mean)
 
+    trace_cells = int((~empty).sum()) if baseline_window else mean.shape[0]
     title = f"n = {num_event} events"
     if baseline_window:
         title += ", per-event z-score"
@@ -342,7 +343,7 @@ def ETA(
         std=overall_band[np.newaxis],
         index=trace_index,
         file_name="mean_trace",
-        meta=PlotMetaData(title=f"{title}, {mean.shape[0]} cells"),
+        meta=PlotMetaData(title=f"{title}, {trace_cells} cells"),
     )
     info["mean_heatmap"] = HeatMapData(
         norm_mean[order],

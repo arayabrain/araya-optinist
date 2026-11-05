@@ -45,23 +45,27 @@ export function heatMapZRange(
   }
   let min = Infinity
   let max = -Infinity
+  let count = 0
   z?.forEach((row) =>
     row.forEach((v) => {
       if (Number.isFinite(v)) {
         if (v < min) min = v
         if (v > max) max = v
+        count++
       }
     }),
   )
   if (min > max) return undefined
   if (mode === "percentile" && percentile > 0 && percentile < 50) {
-    const values: number[] = []
+    // a typed array sorts numerically without a comparator, several times faster
+    const values = new Float64Array(count)
+    let i = 0
     z?.forEach((row) =>
       row.forEach((v) => {
-        if (Number.isFinite(v)) values.push(v)
+        if (Number.isFinite(v)) values[i++] = v
       }),
     )
-    values.sort((a, b) => a - b)
+    values.sort()
     const last = values.length - 1
     const lo = values[Math.floor((last * percentile) / 100)]
     const hi = values[Math.ceil((last * (100 - percentile)) / 100)]

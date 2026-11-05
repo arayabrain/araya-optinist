@@ -494,3 +494,15 @@ def test_titles_carry_the_event_and_cell_counts(neural, behavior, output_dir):
 
     z = ETA(neural, behavior, output_dir, params=dict(BASELINE_PARAMS))
     assert z["mean_heatmap"].meta.title == "n = 3 events, per-event z-score"
+
+
+def test_mean_trace_title_counts_only_the_cells_it_averages(neural, output_dir):
+    x = neural.data.copy()
+    x[:, 1] = 0.0  # a silent cell: every baseline is constant, so it is NaN
+
+    info = _eta(x, output_dir)
+
+    assert np.isnan(info["mean"].data[1]).all()
+    assert (
+        info["mean_trace"].meta.title == "n = 3 events, per-event z-score, 2 cells"
+    )
