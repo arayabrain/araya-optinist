@@ -5,7 +5,7 @@ import configureStore from "redux-mock-store"
 import thunk from "redux-thunk"
 
 import { describe, it, expect, jest, beforeEach } from "@jest/globals"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { act, render, screen, fireEvent } from "@testing-library/react"
 
 import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 
@@ -431,6 +431,68 @@ describe("RoiPlotSimple Component", () => {
 
       // Should render plotly chart
       expect(screen.getByTestId("plotly-chart")).toBeDefined()
+    })
+  })
+
+  describe("Store entry wiped after the first fetch", () => {
+    const entry = (overrides: object) => ({
+      type: "roi",
+      data: [],
+      pending: false,
+      fulfilled: false,
+      error: null,
+      roiUniqueList: [],
+      ...overrides,
+    })
+    let roi: Record<string, unknown>
+    let liveStore: ReturnType<typeof mockStore>
+
+    const setRoi = (next: Record<string, unknown>) =>
+      act(() => {
+        roi = next
+        liveStore.dispatch({ type: "test/setRoi" })
+      })
+
+    beforeEach(() => {
+      roi = {}
+      liveStore = mockStore(() => ({
+        displayData: { roi, loading: false, loadingStack: [] },
+      }))
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+        liveStore,
+      )
+      setRoi({ "/test/path": entry({ pending: true }) })
+    })
+
+    it("fetches again and leaves the indicator once the data arrives", () => {
+      expect(mockGetRoiData).toHaveBeenCalledTimes(1)
+
+      setRoi({})
+      expect(mockGetRoiData).toHaveBeenCalledTimes(2)
+
+      setRoi({ "/test/path": entry({ pending: true }) })
+      setRoi({
+        "/test/path": entry({
+          data: [
+            [
+              [1, 2],
+              [3, 4],
+            ],
+          ],
+          fulfilled: true,
+        }),
+      })
+      expect(mockGetRoiData).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole("progressbar")).toBeNull()
+      expect(screen.getByTestId("plotly-chart")).toBeDefined()
+    })
+
+    it("does not fetch again after a failed fetch", () => {
+      setRoi({ "/test/path": entry({ error: "Data not synced" }) })
+
+      expect(mockGetRoiData).toHaveBeenCalledTimes(1)
+      expect(screen.getByText("Data not synced")).toBeDefined()
     })
   })
 

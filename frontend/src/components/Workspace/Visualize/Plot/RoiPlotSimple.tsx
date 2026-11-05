@@ -78,11 +78,16 @@ export const RoiPlotSimple = memo(function RoiPlotSimple({
     }
   }, [])
 
+  const wasInitialized = useRef(isInitialized)
+
   useEffect(() => {
-    if (workspaceId && filePath) {
+    // A wiped entry refetches; the rerun from this fetch's own pending entry does not.
+    const ownFetchRegistered = isInitialized && !wasInitialized.current
+    wasInitialized.current = isInitialized
+    if (workspaceId && filePath && !ownFetchRegistered) {
       dispatch(getRoiData({ path: filePath, workspaceId, uniqueId }))
     }
-  }, [dispatch, filePath, workspaceId, uniqueId])
+  }, [dispatch, filePath, workspaceId, uniqueId, isInitialized])
 
   if (!filePath) {
     return (
