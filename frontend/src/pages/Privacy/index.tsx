@@ -384,25 +384,27 @@ const Privacy = () => {
         Consent: Analytics is opt-in for all visitors, wherever you are located.
         On your first visit, a notice asks whether to allow analytics cookies,
         with Accept and Decline options of equal prominence. Until you accept,
-        no analytics events are sent; if you decline, none are sent. The Service
-        still loads the Google Tag Manager script from Google on every visit,
-        including after you decline; like any request to a website, that request
-        gives Google your IP address and browser information, but no analytics
-        cookies are set and no analytics events are sent. You can change your
-        choice at any time: signed-in users can use the Analytics Cookies
-        setting on the Account page, and any visitor can clear this site&apos;s
-        stored data in their browser and then reload the page to see the notice
-        again. A change applies at once in the tab where you make it; other tabs
-        of the Service that are already open keep your earlier choice until you
-        reload them. Google Analytics is configured with a data-retention period
-        of 14 months, Google Signals and advertising personalization disabled,
-        page addresses (including the address of the previous page) recorded
-        without URL query parameters, and data redaction enabled for email
-        addresses and selected URL parameters. According to Google, for visitors
-        in the EU, Switzerland and the UK, Google Analytics does not log or
-        store IP addresses and uses them only to derive approximate location;
-        for other visitors, Google also uses them to provide basic service
-        functionality and to detect spam, and discards them after use.
+        no analytics events are sent; if you accept, the pages viewed and
+        actions taken in that tab before accepting (up to ten) are sent at that
+        point; if you decline, none are sent. The Service still loads the Google
+        Tag Manager script from Google on every visit, including after you
+        decline; like any request to a website, that request gives Google your
+        IP address and browser information, but no analytics cookies are set and
+        no analytics events are sent. You can change your choice at any time:
+        signed-in users can use the Analytics Cookies setting on the Account
+        page, and any visitor can clear this site&apos;s stored data in their
+        browser and then reload the page to see the notice again. A change
+        applies at once in the tab where you make it; other tabs of the Service
+        that are already open keep your earlier choice until you reload them.
+        Google Analytics is configured with a data-retention period of 14
+        months, Google Signals and advertising personalization disabled, page
+        addresses (including the address of the previous page) recorded without
+        URL query parameters, and data redaction enabled for email addresses and
+        selected URL parameters. According to Google, for visitors in the EU,
+        Switzerland and the UK, Google Analytics does not log or store IP
+        addresses and uses them only to derive approximate location; for other
+        visitors, Google also uses them to provide basic service functionality
+        and to detect spam, and discards them after use.
       </P>
 
       <H2>6. Data Sharing and Publishing Features</H2>
