@@ -4,7 +4,7 @@ import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, fields, is_dataclass
 from typing import Optional
 
 import h5py
@@ -772,8 +772,13 @@ async def _read_timeseries(read, *args) -> Response:
 
 
 def _timeseries_body(read, *args) -> bytes:
+    data = read(*args)
+    # One level only: asdict would copy every value of every record
+    body = {field.name: getattr(data, field.name) for field in fields(data)}
+    if is_dataclass(data.meta):
+        body["meta"] = asdict(data.meta)
     return json.dumps(
-        asdict(read(*args)), ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        body, ensure_ascii=False, allow_nan=False, separators=(",", ":")
     ).encode()
 
 
