@@ -4,7 +4,7 @@ Storage usage tracking, calculation, and reconciliation.
 Extracted from cloud_utils.py for module cohesion.
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import update
@@ -569,8 +569,8 @@ def _get_active_user(user_id: int):
             raise StorageOwnerInactive(user_id) from None
 
 
-def _get_accessible_workspace_ids(user_id: int):
-    """Ids of the workspaces the user can access; runs in a worker thread."""
+def get_accessible_workspace_ids(user_id: int) -> List[int]:
+    """Ids of the workspaces the user owns or shares; blocking, for run_db_lookup."""
     from studio.app.common.core.workspace.workspace_services import WorkspaceService
 
     with session_scope() as db:
@@ -598,7 +598,7 @@ async def _calculate_local_user_storage(
         return 0
 
     try:
-        workspace_ids = await run_db_lookup(_get_accessible_workspace_ids, user_id)
+        workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
 
         total_usage = 0
         import os

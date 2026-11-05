@@ -88,7 +88,10 @@ async def test_streaming_with_large_dataset():
     with patch(
         "studio.app.common.core.cloud.s3_storage_monitor.boto3.client"
     ) as mock_boto:
-        with patch("studio.app.common.db.database.session_scope") as mock_session:
+        # The scan reads the workspace ids through get_accessible_workspace_ids
+        with patch(
+            "studio.app.common.core.cloud.storage_tracking.session_scope"
+        ) as mock_session:
             from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
 
             # Mock S3 client
