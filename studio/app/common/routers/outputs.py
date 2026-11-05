@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 import threading
+from dataclasses import asdict
 from typing import Optional
 
 import h5py
@@ -47,7 +49,11 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
 from studio.app.common.db.database import get_db, release_request_session
-from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
+from studio.app.common.schemas.outputs import (
+    JsonTimeSeriesData,
+    OutputData,
+    PlotMetaData,
+)
 from studio.app.common.schemas.users import User
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
@@ -699,6 +705,26 @@ async def get_inittimedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
+    body = await asyncio.to_thread(
+        _timeseries_body, _init_timeseries_data, abs_dirpath, isFull
+    )
+    return Response(content=body, media_type="application/json")
+
+
+def _timeseries_body(read, *args) -> bytes:
+    """
+    read(*args) encoded as the response model would, in the caller's thread:
+    the response model validates and encodes on the event loop.
+    """
+    return json.dumps(
+        asdict(read(*args)), ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    ).encode()
+
+
+def _init_timeseries_data(
+    abs_dirpath: str, isFull: Optional[bool]
+) -> JsonTimeSeriesData:
+    """The first record in full and the first point of every other."""
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -708,7 +734,8 @@ async def get_inittimedata(
     # Handle empty case
     if not file_numbers:
         return_data = get_initial_timeseries_data(abs_dirpath)
-        return_data.meta = {"title": "0 ROIs found"}  # Set informative message
+        # Informative title; as a PlotMetaData every meta field stays in the body
+        return_data.meta = PlotMetaData(title="0 ROIs found")
         return return_data
 
     # Get first cell data
@@ -755,6 +782,15 @@ async def get_timedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
+    body = await asyncio.to_thread(
+        _timeseries_body, _timeseries_record_data, abs_dirpath, index, isFull
+    )
+    return Response(content=body, media_type="application/json")
+
+
+def _timeseries_record_data(
+    abs_dirpath: str, index: int, isFull: Optional[bool]
+) -> JsonTimeSeriesData:
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
