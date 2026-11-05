@@ -9,6 +9,7 @@ from firebase_admin.auth import CertificateFetchError
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
@@ -193,8 +194,14 @@ async def get_current_user(
     - The request's session is closed once the user is read, so the route
       does not hold a connection it may not need; its own queries check out
       a new one.
-    - A database or key-fetch failure answers 503, not 401: the frontend
-      signs the user out after a 401 that a token refresh does not clear.
+    - No server-side failure answers 401: the frontend signs the user out
+      after a 401 that a token refresh does not clear.
+      - A pool wait that times out answers 429 with Retry-After: the process
+        is up but busy. The frontend takes any 502 / 503 for an unreachable
+        premium instance and tears down premium routing, even when the shared
+        public service answered it.
+      - Any other database failure, or a failure to fetch Firebase's public
+        keys, answers 503.
     - Errors are logged, not returned.
     """
     # Check for cached user in request state (request-scoped cache)
@@ -206,6 +213,13 @@ async def get_current_user(
     except ValidationError as e:
         logger.warning(e)
         raise HTTPException(status_code=422, detail=f"Validator Error: {e}")
+    except PoolTimeoutError as e:
+        logger.warning(e)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="The server is busy. Please retry.",
+            headers={"Retry-After": "5"},
+        )
     except (SQLAlchemyError, CertificateFetchError) as e:
         logger.warning(e)
         raise HTTPException(

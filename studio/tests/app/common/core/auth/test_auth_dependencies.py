@@ -12,6 +12,7 @@ from anyio import to_thread
 from fastapi import Depends, FastAPI
 from firebase_admin import auth as firebase_auth
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.auth_dependencies import (
@@ -682,14 +683,27 @@ class TestGetCurrentUserConnectionPool:
         assert response.json() == {"id": 1, "checked_out": 0}
 
     @pytest.mark.asyncio
-    async def test_a_pool_timeout_answers_503_without_the_pool_message(self, tmp_path):
+    async def test_a_pool_timeout_answers_429_without_the_pool_message(self, tmp_path):
         with one_connection_pool(tmp_path / "pool.db", timeout=0.5) as engine:
             with engine.connect():
                 async with asgi_client(_probe_app(engine)) as client:
                     response = await client.get("/me", headers=AUTH_HEADERS)
 
-        assert response.status_code == 503
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "5"
         assert "QueuePool" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_another_database_failure_answers_503(self, tmp_path):
+        error = OperationalError("SELECT", {}, Exception("database unreachable"))
+        with one_connection_pool(tmp_path / "pool.db", timeout=1) as engine, patch(
+            f"{_AUTH_MODULE}.__get_current_user_record", side_effect=error
+        ):
+            async with asgi_client(_probe_app(engine)) as client:
+                response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == 503
+        assert "database unreachable" not in response.text
 
     @pytest.mark.asyncio
     async def test_other_requests_are_answered_while_auth_waits_for_the_pool(
