@@ -192,6 +192,40 @@ class TestPublicOutputsReadGate:
                 )
         assert exc.value.status_code == 403
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path, query",
+        [
+            ("1//uid/func1/heatmap", {}),
+            ("/1/uid/func1/heatmap", {}),
+            ("input/data.tif", {}),
+            ("input/data.tif", {"workspace_id": "abc"}),
+        ],
+    )
+    async def test_unparsable_public_read_is_403_not_500(self, path, query):
+        req = _public_request(f"/api/visualizations/inittimedata/{path}")
+        req.query_params = query
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user_with_dataview_outputs_check(
+                req=req, res=MagicMock(), ex_token=None, credential=None, db=MagicMock()
+            )
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_public_input_read_with_a_workspace_id_reaches_the_lookup(self):
+        req = _public_request("/api/visualizations/inittimedata/input/data.tif")
+        req.query_params = {"workspace_id": "1"}
+        with patch.object(
+            DataviewService,
+            "find_published_dataview_record_input",
+            return_value=_record([]),
+        ) as find:
+            result = await get_current_user_with_dataview_outputs_check(
+                req=req, res=MagicMock(), ex_token=None, credential=None, db=MagicMock()
+            )
+        assert result is None
+        find.assert_called_once()
+
     def test_empty_path_is_not_hidden(self):
         assert not DataviewService.is_hidden_output(_record([HIDDEN]), None)
 

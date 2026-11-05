@@ -347,6 +347,8 @@ class DataviewService:
         else:
             query_params = dict(req.query_params)
             workspace_id = query_params.get("workspace_id")
+            if not (workspace_id or "").isdecimal():
+                return False
 
             # Check whether the data is in a public record
             record = cls.find_published_dataview_record_input(
