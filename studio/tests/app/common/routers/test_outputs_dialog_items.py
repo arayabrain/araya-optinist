@@ -1,7 +1,7 @@
 """Output items the DataView dialog requests at once: stored images from
 ``GET /api/visualizations/image`` and timeseries records from ``/inittimedata``
-and ``/timedata``, read and encoded off the event loop; timeseries records one
-at a time per process.
+and ``/timedata``, read and encoded off the event loop; per process, images two
+at a time at most and timeseries records one at a time.
 
 TIFF previews are ``test_outputs_tiff_preview.py``'s.
 """
@@ -133,6 +133,31 @@ async def test_another_request_is_answered_while_an_image_item_is_read(
     assert other.status_code == 200, other.text
     assert held.status_code == 200, held.text
     assert hold.released_by_answer == [True]
+
+
+@pytest.mark.asyncio
+async def test_image_items_are_read_two_at_a_time_at_most(node_dir, monkeypatch):
+    running, overlap = [], []
+
+    def counted_read_as_output_bytes(filepath):
+        token = object()
+        running.append(token)
+        overlap.append(len(running))
+        time.sleep(0.1)
+        running.remove(token)
+        return b'{"data":[]}'
+
+    monkeypatch.setattr(
+        JsonReader, "read_as_output_bytes", counted_read_as_output_bytes
+    )
+
+    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        responses = await asyncio.gather(
+            *(http.get(image_url(name)) for name in ["meanImg", "Vcorr"] * 2)
+        )
+
+    assert [r.status_code for r in responses] == [200] * 4
+    assert max(overlap) == 2
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,19 @@ _tiff_preview_thread_lock = threading.Lock()
 _timeseries_read_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="timeseries-read"
 )
+# A stored image item is stripped line by line under the GIL too, so more reads
+# at once add memory, not speed; two let one read's disk wait overlap the other
+_image_read_executor = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="image-read"
+)
+
+
+async def _run_in(executor: ThreadPoolExecutor, func, *args):
+    """func(*args) on executor, with the request's context, as to_thread runs it."""
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, context.run, func, *args
+    )
 
 
 async def get_or_generate_thumbnail(
@@ -722,10 +735,7 @@ async def _read_timeseries(read, *args) -> Response:
     read(*args) on the timeseries read thread, encoded there as the response
     model would: the response model validates and encodes on the event loop.
     """
-    context = contextvars.copy_context()
-    body = await asyncio.get_running_loop().run_in_executor(
-        _timeseries_read_executor, context.run, _timeseries_body, read, *args
-    )
+    body = await _run_in(_timeseries_read_executor, _timeseries_body, read, *args)
     return Response(content=body, media_type="application/json")
 
 
@@ -1007,7 +1017,9 @@ async def get_image(
         )
 
     _require_output_file(abs_filepath)
-    body = await asyncio.to_thread(JsonReader.read_as_output_bytes, abs_filepath)
+    body = await _run_in(
+        _image_read_executor, JsonReader.read_as_output_bytes, abs_filepath
+    )
     # Served as written: parsing and encoding it again would hold the event loop
     return Response(content=body, media_type="application/json")
 
