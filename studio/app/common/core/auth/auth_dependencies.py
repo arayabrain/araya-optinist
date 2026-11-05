@@ -4,9 +4,11 @@ from typing import Optional
 
 import sqlalchemy
 from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
 from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
@@ -183,27 +185,68 @@ async def get_current_user(
     within the same request. Cache is automatically cleared when request ends.
 
     Performance improvement: ~200x faster for cached hits (DB query avoided).
+
+    - The token check and the user query run in FastAPI's threadpool: a wait
+      for a pooled connection must not block the event loop, which also runs
+      the get_db teardowns that return connections.
+    - The request's session is closed once the user is read, so the route
+      does not hold a connection it may not need; its own queries check out
+      a new one.
+    - A database failure answers 503, not 401: the frontend signs the user
+      out after a 401 that a token refresh does not clear.
     """
     # Check for cached user in request state (request-scoped cache)
     if req is not None and hasattr(req.state, _REQUEST_USER_CACHE_KEY):
         return getattr(req.state, _REQUEST_USER_CACHE_KEY)
 
-    use_firebase_auth = AUTH_CONFIG.USE_FIREBASE_TOKEN
     try:
-        assert credential is not None if use_firebase_auth else True
-        assert ex_token is not None if not use_firebase_auth else True
+        user = await run_in_threadpool(_authenticate_user, ex_token, credential, db)
+    except ValidationError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=422, detail=f"Validator Error: {e}")
+    except SQLAlchemyError as e:
+        logger.warning(e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable",
+        )
+    except Exception as e:
+        logger.warning(e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": 'Bearer realm="auth_required"'},
+            detail=str(e) or "Could not validate credentials",
+        )
 
-        # Extract uid using helper functions
-        uid = None
-        err = None
-        if use_firebase_auth:
-            uid, err = extract_uid_from_firebase_credential(credential)
-        else:
-            uid, err = extract_uid_from_jwt_token(ex_token)
+    # Cache in request state for subsequent calls within this request
+    if req is not None:
+        setattr(req.state, _REQUEST_USER_CACHE_KEY, user)
 
-        assert err is None, str(err)
-        assert uid is not None, "Failed to extract user ID"
+    return user
 
+
+def _authenticate_user(
+    ex_token: Optional[str],
+    credential: Optional[HTTPAuthorizationCredentials],
+    db: Session,
+) -> User:
+    """Blocking part of get_current_user; runs in a worker thread."""
+    use_firebase_auth = AUTH_CONFIG.USE_FIREBASE_TOKEN
+    assert credential is not None if use_firebase_auth else True
+    assert ex_token is not None if not use_firebase_auth else True
+
+    # Extract uid using helper functions
+    uid = None
+    err = None
+    if use_firebase_auth:
+        uid, err = extract_uid_from_firebase_credential(credential)
+    else:
+        uid, err = extract_uid_from_jwt_token(ex_token)
+
+    assert err is None, str(err)
+    assert uid is not None, "Failed to extract user ID"
+
+    try:
         # Query user record
         user_data = __get_current_user_record(db, uid)
         assert user_data is not None, "Invalid user data"
@@ -236,24 +279,10 @@ async def get_current_user(
             subscription_plan_name,
         )
 
-        user = User.from_orm(authed_user)
-
-        # Cache in request state for subsequent calls within this request
-        if req is not None:
-            setattr(req.state, _REQUEST_USER_CACHE_KEY, user)
-
-        return user
-
-    except ValidationError as e:
-        logger.warning(e)
-        raise HTTPException(status_code=422, detail=f"Validator Error: {e}")
-    except Exception as e:
-        logger.warning(e)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            headers={"WWW-Authenticate": 'Bearer realm="auth_required"'},
-            detail=str(e) or "Could not validate credentials",
-        )
+        # Reads the lazy organization relationship, so before the close
+        return User.from_orm(authed_user)
+    finally:
+        db.close()
 
 
 def __get_current_user_record(db: Session, uid: str) -> sqlalchemy.engine.row.Row:
