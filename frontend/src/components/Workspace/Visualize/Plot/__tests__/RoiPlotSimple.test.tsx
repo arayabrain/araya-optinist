@@ -5,12 +5,9 @@ import configureStore from "redux-mock-store"
 import thunk from "redux-thunk"
 
 import { describe, it, expect, jest, beforeEach } from "@jest/globals"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { act, render, screen, fireEvent } from "@testing-library/react"
 
-import {
-  RoiPlotSimple,
-  RoiPlotSimpleWithLoading,
-} from "components/Workspace/Visualize/Plot/RoiPlotSimple"
+import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 
 const mockStore = configureStore([thunk])
 
@@ -317,6 +314,73 @@ describe("RoiPlotSimple Component", () => {
       // Should show loading progress bar
       expect(screen.getByRole("progressbar")).toBeDefined()
     })
+
+    // The fetch is dispatched from an effect, so the first painted frame has no
+    // store entry at all and used to fall through to the no-data branch.
+    it("shows the loading indicator before the fetch registers in the store", () => {
+      store = mockStore({
+        displayData: { roi: {}, loading: false, loadingStack: [] },
+      })
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      expect(
+        screen.getByRole("progressbar", { name: "Loading thumbnail" }),
+      ).toBeDefined()
+      expect(
+        screen.getByLabelText("May need to sync from cloud storage"),
+      ).toBeDefined()
+      expect(screen.queryByText("No ROI data")).toBeNull()
+    })
+
+    // Without a workspaceId the effect never dispatches, so an indicator would spin forever.
+    it("shows no data rather than a stuck indicator when workspaceId is missing", () => {
+      store = mockStore({
+        displayData: { roi: {}, loading: false, loadingStack: [] },
+      })
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={0} />,
+      )
+
+      expect(screen.queryByRole("progressbar")).toBeNull()
+      expect(screen.getByText("No ROI data")).toBeDefined()
+    })
+
+    // An all-zero mask fulfils with maxIndex 0, which is the production route
+    // into the no-data branch.
+    it("shows no data once a fetch resolves with an empty mask", () => {
+      store = mockStore({
+        displayData: {
+          roi: {
+            "/test/path": {
+              type: "roi",
+              data: [
+                [
+                  [0, 0],
+                  [0, 0],
+                ],
+              ],
+              pending: false,
+              fulfilled: true,
+              error: null,
+              roiUniqueList: [],
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      })
+
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+      )
+
+      expect(screen.queryByRole("progressbar")).toBeNull()
+      expect(screen.getByText("No ROI data")).toBeDefined()
+    })
   })
 
   describe("No data state", () => {
@@ -370,6 +434,68 @@ describe("RoiPlotSimple Component", () => {
     })
   })
 
+  describe("Store entry wiped after the first fetch", () => {
+    const entry = (overrides: object) => ({
+      type: "roi",
+      data: [],
+      pending: false,
+      fulfilled: false,
+      error: null,
+      roiUniqueList: [],
+      ...overrides,
+    })
+    let roi: Record<string, unknown>
+    let liveStore: ReturnType<typeof mockStore>
+
+    const setRoi = (next: Record<string, unknown>) =>
+      act(() => {
+        roi = next
+        liveStore.dispatch({ type: "test/setRoi" })
+      })
+
+    beforeEach(() => {
+      roi = {}
+      liveStore = mockStore(() => ({
+        displayData: { roi, loading: false, loadingStack: [] },
+      }))
+      renderWithProviders(
+        <RoiPlotSimple filePath="/test/path" workspaceId={1} />,
+        liveStore,
+      )
+      setRoi({ "/test/path": entry({ pending: true }) })
+    })
+
+    it("fetches again and leaves the indicator once the data arrives", () => {
+      expect(mockGetRoiData).toHaveBeenCalledTimes(1)
+
+      setRoi({})
+      expect(mockGetRoiData).toHaveBeenCalledTimes(2)
+
+      setRoi({ "/test/path": entry({ pending: true }) })
+      setRoi({
+        "/test/path": entry({
+          data: [
+            [
+              [1, 2],
+              [3, 4],
+            ],
+          ],
+          fulfilled: true,
+        }),
+      })
+      expect(mockGetRoiData).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole("progressbar")).toBeNull()
+      expect(screen.getByTestId("plotly-chart")).toBeDefined()
+    })
+
+    it("does not fetch again after a failed fetch", () => {
+      setRoi({ "/test/path": entry({ error: "Data not synced" }) })
+
+      expect(mockGetRoiData).toHaveBeenCalledTimes(1)
+      expect(screen.getByText("Data not synced")).toBeDefined()
+    })
+  })
+
   describe("Initial data fetch", () => {
     it("fetches data on mount", () => {
       const initialState = {
@@ -416,109 +542,6 @@ describe("RoiPlotSimple Component", () => {
         path: "/test/path",
         workspaceId: 1,
         uniqueId: "workflow-456",
-      })
-    })
-  })
-})
-
-describe("RoiPlotSimpleWithLoading Component", () => {
-  let store: ReturnType<typeof mockStore>
-
-  beforeEach(() => {
-    mockGetRoiData.mockClear()
-  })
-
-  const renderWithProviders = (
-    component: React.ReactElement,
-    customStore?: ReturnType<typeof mockStore>,
-  ) => {
-    return render(<Provider store={customStore || store}>{component}</Provider>)
-  }
-
-  // The sync overlay is not covered here, or anywhere: it cannot render for
-  // these states, because its gate wants a pending fetch with no roi data and
-  // the roi selector answers an empty array rather than nothing.
-  describe("Wrapper states", () => {
-    it("renders the inner pending progressbar while a fetch is pending", () => {
-      const initialState = {
-        displayData: {
-          roi: {
-            "/test/path": {
-              type: "roi",
-              data: [],
-              pending: true,
-              fulfilled: false,
-              error: null,
-              roiUniqueList: [],
-            },
-          },
-          loading: true,
-          loadingStack: [true],
-        },
-      }
-      store = mockStore(initialState)
-
-      renderWithProviders(
-        <RoiPlotSimpleWithLoading filePath="/test/path" workspaceId={1} />,
-      )
-
-      expect(screen.getByRole("progressbar")).toBeDefined()
-    })
-
-    it("renders the chart once the data is loaded", () => {
-      const initialState = {
-        displayData: {
-          roi: {
-            "/test/path": {
-              type: "roi",
-              data: [
-                [
-                  [1, 2, 3],
-                  [4, 5, 6],
-                ],
-              ],
-              pending: false,
-              fulfilled: true,
-              error: null,
-              roiUniqueList: ["1", "2", "3", "4", "5", "6"],
-            },
-          },
-          loading: false,
-          loadingStack: [],
-        },
-      }
-      store = mockStore(initialState)
-
-      renderWithProviders(
-        <RoiPlotSimpleWithLoading filePath="/test/path" workspaceId={1} />,
-      )
-
-      expect(screen.getByTestId("plotly-chart")).toBeDefined()
-    })
-
-    it("passes uniqueId to inner RoiPlotSimple component", () => {
-      const initialState = {
-        displayData: {
-          roi: {},
-          loading: false,
-          loadingStack: [],
-        },
-      }
-      store = mockStore(initialState)
-
-      renderWithProviders(
-        <RoiPlotSimpleWithLoading
-          filePath="/test/path"
-          workspaceId={1}
-          uniqueId="test-workflow-id"
-        />,
-      )
-
-      // Should dispatch with uniqueId
-      expect(mockGetRoiData).toHaveBeenCalledWith({
-        path: "/test/path",
-        workspaceId: 1,
-        uniqueId: "test-workflow-id",
       })
     })
   })

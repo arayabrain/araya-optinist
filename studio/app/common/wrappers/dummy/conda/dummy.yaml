@@ -1,4 +1,4 @@
 # Packages in conda env for [dummy]
 dependencies:
-  - python=3.9
+  - python=3.11
   - pip
