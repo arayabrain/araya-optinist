@@ -1,0 +1,1188 @@
+{
+  "measured_on": "2026-11-05",
+  "note": "Development, 15:37-17:05 JST: a build of develop-main with #1109, #1110, #1098 and #1099; the 5 shared free accounts; the #637-size suite2p record for the dialog and the public page. Each user sent its parallel requests at once. CPU (1-minute maximum) and the stop thresholds are from the run's notes; the top page's CPU was not read.",
+  "steps": [
+    {
+      "screen": "dashboard",
+      "vus": 1,
+      "stopped_by": "none",
+      "vu_done": 1,
+      "shown_max": 0.527,
+      "done_max": 3.444,
+      "dialog_max": null,
+      "public_probe_max": 0.028,
+      "free_probe_max": 0.43,
+      "requests": {
+        "auth_refresh": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.343,
+          "p95": 0.343,
+          "max": 0.343,
+          "bytes_total": 1013
+        },
+        "is_standalone": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.025,
+          "p95": 0.025,
+          "max": 0.025,
+          "bytes_total": 5
+        },
+        "users_me": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.159,
+          "p95": 0.159,
+          "max": 0.159,
+          "bytes_total": 515
+        },
+        "users_me_2": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.185,
+          "p95": 0.185,
+          "max": 0.185,
+          "bytes_total": 515
+        },
+        "limit_warning": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.509,
+          "p95": 0.509,
+          "max": 0.509,
+          "bytes_total": 4
+        },
+        "refresh_storage": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 2.917,
+          "p95": 2.917,
+          "max": 2.917,
+          "bytes_total": 115
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "dashboard",
+      "vus": 10,
+      "stopped_by": "free",
+      "vu_done": 5,
+      "shown_max": 2.29,
+      "done_max": 7.887,
+      "dialog_max": null,
+      "public_probe_max": 0.337,
+      "free_probe_max": 5.003,
+      "requests": {
+        "auth_refresh": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.941,
+          "p95": 1.538,
+          "max": 1.538,
+          "bytes_total": 10276
+        },
+        "is_standalone": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.591,
+          "p95": 1.183,
+          "max": 1.183,
+          "bytes_total": 50
+        },
+        "users_me": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.427,
+          "p95": 0.749,
+          "max": 0.749,
+          "bytes_total": 4948
+        },
+        "users_me_2": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.14,
+          "p95": 0.47,
+          "max": 0.47,
+          "bytes_total": 4948
+        },
+        "limit_warning": {
+          "count": 10,
+          "ok": 9,
+          "non_200": ["ClosedResourceError"],
+          "p50": 0.797,
+          "p95": 3.485,
+          "max": 3.485,
+          "bytes_total": 944
+        },
+        "refresh_storage": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 6.039,
+          "p95": 14.768,
+          "max": 14.768,
+          "bytes_total": 1150
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "dashboard",
+      "vus": 50,
+      "stopped_by": "public",
+      "vu_done": 0,
+      "shown_max": null,
+      "done_max": null,
+      "dialog_max": null,
+      "public_probe_max": 5.002,
+      "free_probe_max": 0.3,
+      "requests": {
+        "auth_refresh": {
+          "count": 50,
+          "ok": 50,
+          "non_200": [],
+          "p50": 3.943,
+          "p95": 7.776,
+          "max": 8.347,
+          "bytes_total": 51380
+        },
+        "is_standalone": {
+          "count": 44,
+          "ok": 44,
+          "non_200": [],
+          "p50": 4.123,
+          "p95": 6.626,
+          "max": 7.217,
+          "bytes_total": 220
+        },
+        "users_me": {
+          "count": 4,
+          "ok": 4,
+          "non_200": [],
+          "p50": 5.923,
+          "p95": 7.799,
+          "max": 7.799,
+          "bytes_total": 1959
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 10
+      }
+    },
+    {
+      "screen": "usersme",
+      "vus": 50,
+      "stopped_by": "none",
+      "vu_done": 50,
+      "shown_max": null,
+      "done_max": 2.166,
+      "dialog_max": null,
+      "public_probe_max": 0.069,
+      "free_probe_max": 0.068,
+      "requests": {
+        "users_me": {
+          "count": 50,
+          "ok": 50,
+          "non_200": [],
+          "p50": 1.209,
+          "p95": 1.299,
+          "max": 1.313,
+          "bytes_total": 24740
+        },
+        "users_me_2": {
+          "count": 50,
+          "ok": 50,
+          "non_200": [],
+          "p50": 0.61,
+          "p95": 1.413,
+          "max": 1.651,
+          "bytes_total": 24740
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 10
+      }
+    },
+    {
+      "screen": "dialog",
+      "vus": 1,
+      "stopped_by": "none",
+      "vu_done": 1,
+      "shown_max": null,
+      "done_max": 0.619,
+      "dialog_max": null,
+      "public_probe_max": 0.031,
+      "free_probe_max": 0.106,
+      "requests": {
+        "reproduce": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.147,
+          "p95": 0.147,
+          "max": 0.147,
+          "bytes_total": 10313
+        },
+        "image:mc_images.tif": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.142,
+          "p95": 0.142,
+          "max": 0.142,
+          "bytes_total": 6931880
+        },
+        "image:meanImg.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.261,
+          "p95": 0.261,
+          "max": 0.261,
+          "bytes_total": 3627146
+        },
+        "image:all_roi.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.343,
+          "p95": 0.343,
+          "max": 0.343,
+          "bytes_total": 1379614
+        },
+        "image:Vcorr.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.433,
+          "p95": 0.433,
+          "max": 0.433,
+          "bytes_total": 3313093
+        },
+        "inittimedata:fluorescence": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.469,
+          "p95": 0.469,
+          "max": 0.469,
+          "bytes_total": 137071
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "dialog",
+      "vus": 5,
+      "stopped_by": "none",
+      "vu_done": 5,
+      "shown_max": null,
+      "done_max": 2.747,
+      "dialog_max": null,
+      "public_probe_max": 0.03,
+      "free_probe_max": 0.752,
+      "requests": {
+        "reproduce": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.844,
+          "p95": 1.183,
+          "max": 1.183,
+          "bytes_total": 51565
+        },
+        "image:mc_images.tif": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.035,
+          "p95": 1.335,
+          "max": 1.335,
+          "bytes_total": 34659400
+        },
+        "inittimedata:fluorescence": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.187,
+          "p95": 1.659,
+          "max": 1.659,
+          "bytes_total": 685355
+        },
+        "image:Vcorr.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.173,
+          "p95": 1.656,
+          "max": 1.656,
+          "bytes_total": 16565465
+        },
+        "image:all_roi.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.272,
+          "p95": 1.828,
+          "max": 1.828,
+          "bytes_total": 6898070
+        },
+        "image:meanImg.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.258,
+          "p95": 1.664,
+          "max": 1.664,
+          "bytes_total": 18135730
+        }
+      },
+      "cpu_max_pct": {
+        "free": 12,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "dialog",
+      "vus": 10,
+      "stopped_by": "none",
+      "vu_done": 10,
+      "shown_max": null,
+      "done_max": 5.846,
+      "dialog_max": null,
+      "public_probe_max": 0.033,
+      "free_probe_max": 3.16,
+      "requests": {
+        "reproduce": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.365,
+          "p95": 0.666,
+          "max": 0.666,
+          "bytes_total": 103130
+        },
+        "image:mc_images.tif": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 5.146,
+          "p95": 5.504,
+          "max": 5.504,
+          "bytes_total": 69318800
+        },
+        "image:all_roi.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 5.082,
+          "p95": 5.545,
+          "max": 5.545,
+          "bytes_total": 13796140
+        },
+        "inittimedata:fluorescence": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 5.14,
+          "p95": 5.383,
+          "max": 5.383,
+          "bytes_total": 1370710
+        },
+        "image:meanImg.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 5.183,
+          "p95": 5.454,
+          "max": 5.454,
+          "bytes_total": 36271460
+        },
+        "image:Vcorr.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 5.038,
+          "p95": 5.338,
+          "max": 5.338,
+          "bytes_total": 33130930
+        }
+      },
+      "cpu_max_pct": {
+        "free": 18,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "dialog",
+      "vus": 20,
+      "stopped_by": "none",
+      "vu_done": 20,
+      "shown_max": null,
+      "done_max": 10.189,
+      "dialog_max": null,
+      "public_probe_max": 0.03,
+      "free_probe_max": 2.808,
+      "requests": {
+        "reproduce": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 1.427,
+          "p95": 3.376,
+          "max": 3.542,
+          "bytes_total": 206260
+        },
+        "image:mc_images.tif": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 7.527,
+          "p95": 8.487,
+          "max": 8.87,
+          "bytes_total": 138637600
+        },
+        "image:Vcorr.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 6.216,
+          "p95": 7.98,
+          "max": 8.761,
+          "bytes_total": 66261860
+        },
+        "inittimedata:fluorescence": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 6.279,
+          "p95": 7.787,
+          "max": 7.98,
+          "bytes_total": 2741420
+        },
+        "image:meanImg.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 7.058,
+          "p95": 8.04,
+          "max": 8.209,
+          "bytes_total": 72542920
+        },
+        "image:all_roi.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 6.286,
+          "p95": 7.91,
+          "max": 8.035,
+          "bytes_total": 27592280
+        }
+      },
+      "cpu_max_pct": {
+        "free": 49,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "public",
+      "vus": 1,
+      "stopped_by": "none",
+      "vu_done": 1,
+      "shown_max": 1.118,
+      "done_max": 1.664,
+      "dialog_max": 0.546,
+      "public_probe_max": 0.027,
+      "free_probe_max": 0.271,
+      "requests": {
+        "auth_refresh_anon": {
+          "count": 1,
+          "ok": 0,
+          "non_200": ["401"],
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "bytes_total": 30
+        },
+        "is_standalone": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.027,
+          "p95": 0.027,
+          "max": 0.027,
+          "bytes_total": 5
+        },
+        "public_list": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.147,
+          "p95": 0.147,
+          "max": 0.147,
+          "bytes_total": 4116
+        },
+        "thumbnail:input": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.561,
+          "p95": 0.891,
+          "max": 0.891,
+          "bytes_total": 991283
+        },
+        "thumbnail:roi": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.889,
+          "p95": 0.889,
+          "max": 0.889,
+          "bytes_total": 41690
+        },
+        "public_reproduce": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.139,
+          "p95": 0.139,
+          "max": 0.139,
+          "bytes_total": 9677
+        },
+        "image:cell_roi.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.283,
+          "p95": 0.283,
+          "max": 0.283,
+          "bytes_total": 1334771
+        },
+        "image:noncell_roi.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.284,
+          "p95": 0.284,
+          "max": 0.284,
+          "bytes_total": 1361441
+        },
+        "inittimedata:fluorescence": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.357,
+          "p95": 0.357,
+          "max": 0.357,
+          "bytes_total": 137071
+        },
+        "image:Vcorr.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.354,
+          "p95": 0.354,
+          "max": 0.354,
+          "bytes_total": 3313093
+        },
+        "image:max_proj.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.377,
+          "p95": 0.377,
+          "max": 0.377,
+          "bytes_total": 3488663
+        },
+        "image:all_roi.json": {
+          "count": 1,
+          "ok": 1,
+          "non_200": [],
+          "p50": 0.406,
+          "p95": 0.406,
+          "max": 0.406,
+          "bytes_total": 1379614
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": null
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "public",
+      "vus": 5,
+      "stopped_by": "none",
+      "vu_done": 5,
+      "shown_max": 3.087,
+      "done_max": 4.922,
+      "dialog_max": 2.597,
+      "public_probe_max": 0.445,
+      "free_probe_max": 0.038,
+      "requests": {
+        "auth_refresh_anon": {
+          "count": 5,
+          "ok": 0,
+          "non_200": ["401"],
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "bytes_total": 150
+        },
+        "is_standalone": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.039,
+          "p95": 0.104,
+          "max": 0.104,
+          "bytes_total": 25
+        },
+        "public_list": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.295,
+          "p95": 1.367,
+          "max": 1.367,
+          "bytes_total": 20580
+        },
+        "thumbnail:input": {
+          "count": 50,
+          "ok": 50,
+          "non_200": [],
+          "p50": 1.201,
+          "p95": 1.846,
+          "max": 1.851,
+          "bytes_total": 4956415
+        },
+        "thumbnail:roi": {
+          "count": 25,
+          "ok": 25,
+          "non_200": [],
+          "p50": 1.257,
+          "p95": 1.846,
+          "max": 1.847,
+          "bytes_total": 208450
+        },
+        "public_reproduce": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.254,
+          "p95": 1.6,
+          "max": 1.6,
+          "bytes_total": 48385
+        },
+        "inittimedata:fluorescence": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.648,
+          "p95": 1.357,
+          "max": 1.357,
+          "bytes_total": 685355
+        },
+        "image:Vcorr.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.442,
+          "p95": 1.667,
+          "max": 1.667,
+          "bytes_total": 16565465
+        },
+        "image:max_proj.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.995,
+          "p95": 1.668,
+          "max": 1.668,
+          "bytes_total": 17443315
+        },
+        "image:all_roi.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 0.357,
+          "p95": 1.29,
+          "max": 1.29,
+          "bytes_total": 6898070
+        },
+        "image:noncell_roi.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.313,
+          "p95": 1.663,
+          "max": 1.663,
+          "bytes_total": 6807205
+        },
+        "image:cell_roi.json": {
+          "count": 5,
+          "ok": 5,
+          "non_200": [],
+          "p50": 1.394,
+          "p95": 1.673,
+          "max": 1.673,
+          "bytes_total": 6673855
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": 11
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "public",
+      "vus": 10,
+      "stopped_by": "none",
+      "vu_done": 10,
+      "shown_max": 5.36,
+      "done_max": 9.587,
+      "dialog_max": 5.504,
+      "public_probe_max": 1.717,
+      "free_probe_max": 0.056,
+      "requests": {
+        "auth_refresh_anon": {
+          "count": 10,
+          "ok": 0,
+          "non_200": ["401"],
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "bytes_total": 300
+        },
+        "is_standalone": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.031,
+          "p95": 0.179,
+          "max": 0.179,
+          "bytes_total": 50
+        },
+        "public_list": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 1.533,
+          "p95": 2.797,
+          "max": 2.797,
+          "bytes_total": 41160
+        },
+        "thumbnail:input": {
+          "count": 100,
+          "ok": 100,
+          "non_200": [],
+          "p50": 1.103,
+          "p95": 2.818,
+          "max": 3.445,
+          "bytes_total": 9912830
+        },
+        "thumbnail:roi": {
+          "count": 50,
+          "ok": 50,
+          "non_200": [],
+          "p50": 1.096,
+          "p95": 3.44,
+          "max": 3.441,
+          "bytes_total": 416900
+        },
+        "public_reproduce": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 1.293,
+          "p95": 2.388,
+          "max": 2.388,
+          "bytes_total": 96770
+        },
+        "image:max_proj.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.607,
+          "p95": 2.201,
+          "max": 2.201,
+          "bytes_total": 34886630
+        },
+        "image:noncell_roi.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 2.188,
+          "p95": 3.113,
+          "max": 3.113,
+          "bytes_total": 13614410
+        },
+        "image:all_roi.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 1.407,
+          "p95": 2.936,
+          "max": 2.936,
+          "bytes_total": 13796140
+        },
+        "image:cell_roi.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.606,
+          "p95": 2.31,
+          "max": 2.31,
+          "bytes_total": 13347710
+        },
+        "image:Vcorr.json": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 0.466,
+          "p95": 2.871,
+          "max": 2.871,
+          "bytes_total": 33130930
+        },
+        "inittimedata:fluorescence": {
+          "count": 10,
+          "ok": 10,
+          "non_200": [],
+          "p50": 2.188,
+          "p95": 2.808,
+          "max": 2.808,
+          "bytes_total": 1370710
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": 25
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "public",
+      "vus": 20,
+      "stopped_by": "none",
+      "vu_done": 20,
+      "shown_max": 8.372,
+      "done_max": 15.14,
+      "dialog_max": 6.961,
+      "public_probe_max": 2.495,
+      "free_probe_max": 0.207,
+      "requests": {
+        "auth_refresh_anon": {
+          "count": 20,
+          "ok": 0,
+          "non_200": ["401"],
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "bytes_total": 600
+        },
+        "is_standalone": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 0.026,
+          "p95": 0.031,
+          "max": 0.031,
+          "bytes_total": 100
+        },
+        "public_list": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 0.405,
+          "p95": 0.694,
+          "max": 0.726,
+          "bytes_total": 82320
+        },
+        "thumbnail:input": {
+          "count": 200,
+          "ok": 200,
+          "non_200": [],
+          "p50": 6.642,
+          "p95": 7.7,
+          "max": 7.765,
+          "bytes_total": 19825660
+        },
+        "thumbnail:roi": {
+          "count": 100,
+          "ok": 100,
+          "non_200": [],
+          "p50": 6.62,
+          "p95": 7.703,
+          "max": 7.78,
+          "bytes_total": 833800
+        },
+        "public_reproduce": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 1.307,
+          "p95": 3.253,
+          "max": 3.689,
+          "bytes_total": 193540
+        },
+        "image:cell_roi.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 3.54,
+          "p95": 4.716,
+          "max": 4.867,
+          "bytes_total": 26695420
+        },
+        "image:noncell_roi.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 3.315,
+          "p95": 4.875,
+          "max": 5.104,
+          "bytes_total": 27228820
+        },
+        "image:Vcorr.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 3.483,
+          "p95": 4.595,
+          "max": 4.867,
+          "bytes_total": 66261860
+        },
+        "inittimedata:fluorescence": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 2.64,
+          "p95": 4.079,
+          "max": 4.587,
+          "bytes_total": 2741420
+        },
+        "image:all_roi.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 3.154,
+          "p95": 4.12,
+          "max": 5.354,
+          "bytes_total": 27592280
+        },
+        "image:max_proj.json": {
+          "count": 20,
+          "ok": 20,
+          "non_200": [],
+          "p50": 3.405,
+          "p95": 4.875,
+          "max": 5.094,
+          "bytes_total": 69773260
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": 35
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    },
+    {
+      "screen": "public",
+      "vus": 30,
+      "stopped_by": "none",
+      "vu_done": 30,
+      "shown_max": 13.657,
+      "done_max": 22.683,
+      "dialog_max": 10.63,
+      "public_probe_max": 3.465,
+      "free_probe_max": 0.034,
+      "requests": {
+        "auth_refresh_anon": {
+          "count": 30,
+          "ok": 0,
+          "non_200": ["401"],
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "bytes_total": 900
+        },
+        "is_standalone": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 0.028,
+          "p95": 0.034,
+          "max": 0.039,
+          "bytes_total": 150
+        },
+        "public_list": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 1.337,
+          "p95": 7.076,
+          "max": 7.462,
+          "bytes_total": 123480
+        },
+        "thumbnail:input": {
+          "count": 300,
+          "ok": 300,
+          "non_200": [],
+          "p50": 8.166,
+          "p95": 10.465,
+          "max": 10.659,
+          "bytes_total": 29738490
+        },
+        "thumbnail:roi": {
+          "count": 150,
+          "ok": 150,
+          "non_200": [],
+          "p50": 8.505,
+          "p95": 10.518,
+          "max": 10.65,
+          "bytes_total": 1250700
+        },
+        "public_reproduce": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 2.447,
+          "p95": 4.859,
+          "max": 6.507,
+          "bytes_total": 290310
+        },
+        "inittimedata:fluorescence": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 3.636,
+          "p95": 5.217,
+          "max": 5.33,
+          "bytes_total": 4112130
+        },
+        "image:noncell_roi.json": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 3.63,
+          "p95": 5.875,
+          "max": 6.092,
+          "bytes_total": 40843230
+        },
+        "image:cell_roi.json": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 3.698,
+          "p95": 5.589,
+          "max": 6.016,
+          "bytes_total": 40043130
+        },
+        "image:max_proj.json": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 4.122,
+          "p95": 5.816,
+          "max": 6.045,
+          "bytes_total": 104659890
+        },
+        "image:Vcorr.json": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 3.709,
+          "p95": 5.379,
+          "max": 5.724,
+          "bytes_total": 99392790
+        },
+        "image:all_roi.json": {
+          "count": 30,
+          "ok": 30,
+          "non_200": [],
+          "p50": 3.73,
+          "p95": 5.724,
+          "max": 5.737,
+          "bytes_total": 41388420
+        }
+      },
+      "cpu_max_pct": {
+        "free": null,
+        "public": 56
+      },
+      "probe_stop_s": {
+        "public": 5,
+        "free": 5
+      }
+    }
+  ]
+}

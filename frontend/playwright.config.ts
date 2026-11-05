@@ -60,10 +60,10 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-// Every flag here opts a lane into real spending or real infrastructure change,
-// so a retry re-does the mutation instead of re-observing it. RUN_SLOW and
-// RUN_CLEANUP are absent deliberately: CI sets both on every run and relies on
-// the retries that absorb CRA hydration no-ops.
+// Every flag here opts a lane into real spending, real infrastructure change or
+// real load on a shared environment, so a retry re-does it instead of
+// re-observing it. RUN_SLOW and RUN_CLEANUP are absent deliberately: CI sets
+// both on every run and relies on the retries that absorb CRA hydration no-ops.
 const MUTATING_FLAGS = [
   "RUN_PREMIUM_AWS",
   "RUN_S3_AWS",
@@ -71,6 +71,7 @@ const MUTATING_FLAGS = [
   "RUN_CHECKOUT_PROBE",
   "RUN_STRIPE_WRITE",
   "RUN_RESTART",
+  "RUN_LOAD_AWS",
 ]
 
 // One regex from the tags that are switched off, or undefined when none are:

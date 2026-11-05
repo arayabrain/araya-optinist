@@ -1,0 +1,22 @@
+{
+  "name": "parity",
+  "step_deadline_s": 120,
+  "cooldown_s": 240,
+  "settle_s": 600,
+  "cutoff_utc": "12:40",
+  "probe_stop_s": { "public": 5, "free": 5 },
+  "screens": [
+    {
+      "screen": "dashboard",
+      "cap": 5,
+      "steps": [{ "users": 1 }, { "users": 5 }]
+    },
+    {
+      "screen": "usersme",
+      "cap": 5,
+      "steps": [{ "users": 1 }, { "users": 5 }]
+    },
+    { "screen": "dialog", "cap": 5, "steps": [{ "users": 1 }, { "users": 5 }] },
+    { "screen": "public", "cap": 5, "steps": [{ "users": 1 }, { "users": 5 }] }
+  ]
+}
