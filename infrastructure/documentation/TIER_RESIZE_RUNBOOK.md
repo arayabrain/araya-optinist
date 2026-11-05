@@ -373,6 +373,11 @@ each phase, whether the raised floor keeps the free tier serving through the ref
 base premium instance is replaced or changed in place and the state it is left in, and the
 registered memory of the new types.
 
+The three-run limit (3.75 times one run) assumes one run uses every vCPU, so on the premium tier's
+4-vCPU next size it is a loose bound: one run did not use both vCPUs of today's type. The first
+three-run row measured there records its ratio and a single run's CPU use, and the limit is
+revisited with those figures.
+
 ---
 
 ## References
