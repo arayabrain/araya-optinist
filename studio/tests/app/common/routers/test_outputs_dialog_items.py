@@ -241,3 +241,36 @@ async def test_timeseries_records_are_read_one_at_a_time(node_dir, monkeypatch):
 
     assert [r.status_code for r in responses] == [200, 200, 200]
     assert overlap == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_timeseries_read_not_started_in_time_is_refused(node_dir, monkeypatch):
+    monkeypatch.setattr(outputs, "TIMESERIES_READ_WAIT_SECONDS", 0.3)
+    reading, released = threading.Event(), threading.Event()
+    loaded = []
+    load_timeseries_record = outputs._load_timeseries_record
+
+    def held_load_timeseries_record(dirpath, record_id):
+        loaded.append(os.path.basename(dirpath))
+        reading.set()
+        released.wait(5)
+        return load_timeseries_record(dirpath, record_id)
+
+    monkeypatch.setattr(outputs, "_load_timeseries_record", held_load_timeseries_record)
+
+    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        held = asyncio.create_task(http.get(timeseries_url("timedata", "fluorescence")))
+        for _ in range(500):
+            if reading.is_set():
+                break
+            await asyncio.sleep(0.01)
+        refused = await http.get(timeseries_url("timedata", "spks"))
+        released.set()
+        held = await held
+
+    assert refused.status_code == 429, refused.text
+    assert refused.headers["Retry-After"] == "5"
+    # The held read had started, so it is answered past the wait
+    assert held.status_code == 200, held.text
+    # The refused read never ran
+    assert loaded == ["fluorescence"]

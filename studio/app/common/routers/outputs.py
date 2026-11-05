@@ -106,6 +106,11 @@ _tiff_preview_thread_lock = threading.Lock()
 _timeseries_read_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="timeseries-read"
 )
+# A timeseries read not started within this is dropped and answered 429, as a
+# TIFF preview is. Not 503: the frontend takes a 503 for an unreachable instance
+TIMESERIES_READ_WAIT_SECONDS = 30
+# This process's timeseries reads, queued or running
+_timeseries_reads_in_flight = 0
 # A stored image item is stripped line by line under the GIL too, so more reads
 # at once add memory, not speed; two let one read's disk wait overlap the other
 _image_read_executor = ThreadPoolExecutor(
@@ -734,8 +739,35 @@ async def _read_timeseries(read, *args) -> Response:
     """
     read(*args) on the timeseries read thread, encoded there as the response
     model would: the response model validates and encodes on the event loop.
+    429 if the read does not start within TIMESERIES_READ_WAIT_SECONDS.
     """
-    body = await _run_in(_timeseries_read_executor, _timeseries_body, read, *args)
+    global _timeseries_reads_in_flight
+    context = contextvars.copy_context()
+    future = _timeseries_read_executor.submit(
+        context.run, _timeseries_body, read, *args
+    )
+    _timeseries_reads_in_flight += 1
+    try:
+        try:
+            async with asyncio.timeout(TIMESERIES_READ_WAIT_SECONDS):
+                body = await asyncio.wrap_future(future)
+        except TimeoutError:
+            # A started read cannot be stopped, so it is answered
+            if not future.cancel():
+                body = await asyncio.wrap_future(future)
+            else:
+                logger.warning(
+                    "Timeseries read not started in %s s; %d in flight",
+                    TIMESERIES_READ_WAIT_SECONDS,
+                    _timeseries_reads_in_flight,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Other timeseries are being read. Please retry.",
+                    headers={"Retry-After": "5"},
+                )
+    finally:
+        _timeseries_reads_in_flight -= 1
     return Response(content=body, media_type="application/json")
 
 
