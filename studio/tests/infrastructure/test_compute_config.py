@@ -39,6 +39,7 @@ from terraform_source import (
 
 COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
+PREMIUM_MANAGER_TF = TERRAFORM_DIR / "premium_manager.tf"
 WAIT_FOR_DATABASE_SH = (
     PROJECT_ROOT / "infrastructure" / "scripts" / "wait_for_database.sh"
 )
@@ -469,8 +470,8 @@ class TestWorkflowTierSizing:
 
     def test_fit_checks_read_the_type_the_tier_launches(self):
         """The task is checked against the type its instances launch as. For
-        premium the same variable also sizes the base instance and the
-        per-user instances (the premium manager's PREMIUM_INSTANCE_TYPE)."""
+        premium the base and per-user instances' types are pinned in
+        TestWorkflowTierGuardInputs."""
         data = data_block(self.tf, "aws_ec2_instance_type", self.tier)
         assert attribute(data, "instance_type") == f"var.{self.tier}_instance_type"
         assert attribute(self.launch_template, "instance_type") == (
@@ -505,6 +506,28 @@ class TestWorkflowTierGuardInputs:
         for template in WORKFLOW_TIERS.values():
             block = resource_block(self.tf, "aws_launch_template", template[2])
             assert attribute(block, "image_id") == "local.effective_ami_id"
+
+    def test_every_premium_instance_launches_as_the_checked_type(self):
+        """The premium task is checked against var.premium_instance_type, so
+        the check holds only while the base instance and the premium manager's
+        per-user launches (PREMIUM_INSTANCE_TYPE) take their type from it."""
+        base = resource_block(self.tf, "aws_instance", "premium")
+        assert attribute(base, "instance_type") == "var.premium_instance_type"
+        manager = resource_block(
+            read(PREMIUM_MANAGER_TF), "aws_lambda_function", "premium_manager"
+        )
+        assert attribute(manager, "PREMIUM_INSTANCE_TYPE") == (
+            "var.premium_instance_type"
+        )
+
+    def test_each_tiers_volume_rules_read_its_own_sizing(self):
+        """local.tier_volumes keys each tier to its own merged sizing, which
+        the tier's launch-template rules then read."""
+        block = _values(self.tf, "tier_volumes")[0]
+        tiers = ", ".join(
+            f"{tier} = local.{name}" for tier, (name, _, _) in WORKFLOW_TIERS.items()
+        )
+        assert block.startswith(f"{{for tier, sizing in {{{tiers}}} : tier => ")
 
     def test_the_root_snapshot_is_the_root_devices_mapping(self):
         assert _values(self.tf, "effective_ami_root_gib") == [
