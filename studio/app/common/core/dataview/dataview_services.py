@@ -276,6 +276,71 @@ class DataviewService:
         routes resolve it through join_filepath."""
         return posixpath.normpath(normalize_output_path(path)).lstrip("/")
 
+    PROCESSING_PACKAGES = ("suite2p/", "caiman/", "lccd/")
+    # Steps whose result researchers rarely show once a later step builds on it
+    INTERMEDIATE_STEPS = {
+        "suite2p/suite2p_file_convert",
+        "suite2p/suite2p_registration",
+        "caiman/caiman_mc",
+    }
+
+    @classmethod
+    def default_hidden_outputs(cls, workspace_id: str, unique_id: str) -> List[str]:
+        """
+        Outputs of intermediate steps (file conversion, motion correction) that
+        feed a later processing step. Cell detection, spike deconvolution and
+        analysis outputs stay public, as does a step that ends its pipeline.
+        """
+        workflow = WorkflowConfigReader.read(workspace_id, unique_id)
+        function = ExptConfigReader.read(workspace_id, unique_id).function
+        algorithm = {
+            node_id: node.data.path
+            for node_id, node in workflow.nodeDict.items()
+            if node.type == NodeType.ALGO
+        }
+        children = {}
+        for edge in workflow.edgeDict.values():
+            children.setdefault(edge.source, set()).add(edge.target)
+
+        def feeds_processing(node_id: str) -> bool:
+            seen, pending = set(), list(children.get(node_id, ()))
+            while pending:
+                child = pending.pop()
+                if child in seen:
+                    continue
+                seen.add(child)
+                if algorithm.get(child, "").startswith(cls.PROCESSING_PACKAGES):
+                    return True
+                pending.extend(children.get(child, ()))
+            return False
+
+        return sorted(
+            cls.canonical_output_path(output.path)
+            for node_id, node_function in function.items()
+            if algorithm.get(node_id) in cls.INTERMEDIATE_STEPS
+            and feeds_processing(node_id)
+            for output in (node_function.outputPaths or {}).values()
+            if output.path
+        )
+
+    @classmethod
+    def effective_hidden_outputs(cls, record: ExperimentRecord) -> List[str]:
+        """
+        The stored list. Unset means the defaults, or all public for a record
+        published before per-output visibility existed.
+        """
+        if record.hidden_outputs is not None:
+            return record.hidden_outputs
+        if record.publish_status == PublishStatus.on.value:
+            return []
+        try:
+            return cls.default_hidden_outputs(str(record.workspace_id), record.uid)
+        except Exception as e:
+            logger.warning(
+                f"Default hidden outputs unavailable for {record.id}, all public: {e}"
+            )
+            return []
+
     @classmethod
     def is_hidden_output(cls, record: ExperimentRecord, path: str) -> bool:
         """

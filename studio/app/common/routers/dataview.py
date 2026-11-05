@@ -687,15 +687,20 @@ async def publish_dataview_records(
 
             # Use SQLAlchemy's update() with WHERE clause for optimistic locking
             # This is the proper ORM way to implement optimistic locking
+            values = dict(
+                publish_status=new_publish_status,
+                local_sync_status=new_sync_status,
+                version=models.ExperimentRecord.version + 1,
+            )
+            if flag == PublishFlags.on and record.hidden_outputs is None:
+                values["hidden_outputs"] = DataviewService.effective_hidden_outputs(
+                    record
+                )
             stmt = (
                 update(models.ExperimentRecord)
                 .where(models.ExperimentRecord.id == record.id)
                 .where(models.ExperimentRecord.version == current_version)
-                .values(
-                    publish_status=new_publish_status,
-                    local_sync_status=new_sync_status,
-                    version=models.ExperimentRecord.version + 1,
-                )
+                .values(**values)
             )
 
             result = db.execute(stmt)
@@ -746,6 +751,25 @@ async def publish_dataview_records(
     )
 
 
+@router.get(
+    "/hidden_outputs/{id}",
+    response_model=List[str],
+    description="""
+- The outputs of a Dataview record hidden from public viewers (owner only),
+  the defaults if the owner has not chosen yet
+""",
+)
+async def get_hidden_outputs(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = DataviewService.find_user_owned_dataview_record(db, id, current_user.id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return DataviewService.effective_hidden_outputs(record)
+
+
 @router.put(
     "/hidden_outputs/{id}",
     response_model=List[str],
@@ -772,7 +796,7 @@ async def put_hidden_outputs(
         )
 
     # A delta against the stored list, so a stale client cannot re-publish others.
-    paths = set(record.hidden_outputs or [])
+    paths = set(DataviewService.effective_hidden_outputs(record))
     if change.hidden:
         paths.add(path)
     else:
@@ -897,6 +921,17 @@ async def multiple_publish_dataview_records(
             if len(failed_records) > 5:
                 detail += f"... and {len(failed_records) - 5} more"
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+        for _, record in owned_records:
+            if record.hidden_outputs is None and not record.publish_status:
+                db.execute(
+                    update(models.ExperimentRecord)
+                    .where(models.ExperimentRecord.id == record.id)
+                    .where(models.ExperimentRecord.hidden_outputs.is_(None))
+                    .values(
+                        hidden_outputs=DataviewService.effective_hidden_outputs(record)
+                    )
+                )
 
     DataviewService.multiple_publish_dataview_records(db, current_user.id, ids, flag)
 

@@ -5,7 +5,7 @@ import configureStore from "redux-mock-store"
 import thunk from "redux-thunk"
 
 import { describe, it, expect, jest, beforeEach } from "@jest/globals"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
 
 import { VisualizationItemData } from "components/Dataview/BaseNodesView"
 import OutputsView from "components/Dataview/OutputsView"
@@ -13,8 +13,15 @@ import OutputsView from "components/Dataview/OutputsView"
 const mockStore = configureStore([thunk])
 
 const mockPutHiddenOutputs = jest.fn()
+const mockGetHiddenOutputs = jest.fn()
 
 jest.mock("store/slice/Dataview/DataviewActions", () => ({
+  getHiddenOutputs: (arg: unknown) => {
+    mockGetHiddenOutputs(arg)
+    const thunkAction = () =>
+      Object.assign(Promise.resolve([]), { unwrap: () => Promise.resolve([]) })
+    return thunkAction
+  },
   putHiddenOutputs: (arg: unknown) => {
     mockPutHiddenOutputs(arg)
     const thunkAction = () =>
@@ -34,19 +41,18 @@ jest.mock("components/Dataview/BaseNodesView", () => ({
   }) => (
     <div data-testid="base-nodes-view">{data.length > 0 && renderData()}</div>
   ),
-  renderVisualizationItems: (
-    items: VisualizationItemData[],
-    renderAction?: (item: VisualizationItemData) => React.ReactNode,
-  ) =>
+  renderVisualizationItems: (items: VisualizationItemData[]) =>
     items.map((item) => (
       <div
         key={item.itemKey}
         data-testid={`visualization-item-${item.itemKey}`}
       >
         {item.title}
-        {renderAction?.(item)}
       </div>
     )),
+  BaseDisplayDataView: ({ filePath }: { filePath: string }) => (
+    <div data-testid="plot">{filePath}</div>
+  ),
   useDataviewVisualizationCleanup: () => undefined,
 }))
 
@@ -119,24 +125,51 @@ const renderView = (is_public: boolean, hiddenOutputs = [HIDDEN_PATH]) => {
   return store
 }
 
-describe("OutputsView publish switch", () => {
-  beforeEach(() => mockPutHiddenOutputs.mockClear())
+const switchFor = async (title: string) => {
+  const input = screen.getByLabelText(`Publish ${title}`)
+  await waitFor(() => expect(input).not.toBeDisabled())
+  return input
+}
 
-  it("shows a switch per output for the owner, off for hidden outputs", () => {
-    renderView(false)
-    expect(screen.getByLabelText("Publish heatmap")).not.toBeChecked()
-    expect(screen.getByLabelText("Publish fluorescence")).toBeChecked()
+describe("OutputsView publish switch", () => {
+  beforeEach(() => {
+    mockPutHiddenOutputs.mockClear()
+    mockGetHiddenOutputs.mockClear()
   })
 
-  it("shows no switch to public viewers", () => {
+  it("lists every output with a switch for the owner, off when hidden", async () => {
+    renderView(false)
+    expect(await switchFor("heatmap")).not.toBeChecked()
+    expect(await switchFor("fluorescence")).toBeChecked()
+    expect(screen.getByText("Public 1 / 2")).toBeTruthy()
+  })
+
+  it("loads the owner's visibility, with the defaults, when it opens", () => {
+    renderView(false)
+    expect(mockGetHiddenOutputs).toHaveBeenCalledWith({ id: 7 })
+  })
+
+  it("keeps the switches disabled until the visibility has loaded", () => {
+    renderView(false)
+    expect(screen.getByLabelText("Publish heatmap")).toBeDisabled()
+  })
+
+  it("shows the selected output's plot", async () => {
+    renderView(false)
+    fireEvent.click(screen.getByText("fluorescence"))
+    expect(screen.getByTestId("plot").textContent).toBe(VISIBLE_PATH)
+  })
+
+  it("shows the cards and no switch to public viewers", () => {
     renderView(true)
     expect(screen.getByTestId("visualization-item-func1-heatmap")).toBeTruthy()
     expect(screen.queryByRole("checkbox")).toBeNull()
+    expect(mockGetHiddenOutputs).not.toHaveBeenCalled()
   })
 
-  it("hiding an output sends only that change", () => {
+  it("hiding an output sends only that change", async () => {
     renderView(false)
-    fireEvent.click(screen.getByLabelText("Publish fluorescence"))
+    fireEvent.click(await switchFor("fluorescence"))
     expect(mockPutHiddenOutputs).toHaveBeenCalledWith({
       id: 7,
       path: VISIBLE_PATH,
@@ -144,9 +177,9 @@ describe("OutputsView publish switch", () => {
     })
   })
 
-  it("re-publishing sends hidden false for that output", () => {
+  it("re-publishing sends hidden false for that output", async () => {
     renderView(false)
-    fireEvent.click(screen.getByLabelText("Publish heatmap"))
+    fireEvent.click(await switchFor("heatmap"))
     expect(mockPutHiddenOutputs).toHaveBeenCalledWith({
       id: 7,
       path: HIDDEN_PATH,
@@ -154,9 +187,9 @@ describe("OutputsView publish switch", () => {
     })
   })
 
-  it("disables the switches while a change is saving", () => {
+  it("disables the switches while a change is saving", async () => {
     renderView(false)
-    fireEvent.click(screen.getByLabelText("Publish heatmap"))
+    fireEvent.click(await switchFor("heatmap"))
     expect(screen.getByLabelText("Publish fluorescence")).toBeDisabled()
   })
 })

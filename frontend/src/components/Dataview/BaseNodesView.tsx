@@ -1,4 +1,4 @@
-import { useCallback, useEffect, memo, ReactElement, ReactNode } from "react"
+import { useCallback, useEffect, memo, ReactElement } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import CloseIcon from "@mui/icons-material/Close"
@@ -94,17 +94,13 @@ export const BaseDisplayDataView = memo(function BaseDisplayDataView({
 
 export const renderVisualizationItems = (
   items: VisualizationItemData[],
-  renderAction?: (item: VisualizationItemData) => ReactNode,
 ): ReactElement[] => {
   return items.map((item) => (
     <VisualizationGrid item xs={12} md={6} lg={5} xl={4} key={item.itemKey}>
       <VisualizationPaper elevation={2}>
-        <Box display="flex" justifyContent="space-between" alignItems="center">
-          <Typography variant="h6" gutterBottom>
-            {item.title}
-          </Typography>
-          {renderAction?.(item)}
-        </Box>
+        <Typography variant="h6" gutterBottom>
+          {item.title}
+        </Typography>
         {item.subtitle && (
           <Box mb={1}>
             <Chip label={item.subtitle} color="default" size="small" />

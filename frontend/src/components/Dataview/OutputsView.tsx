@@ -1,4 +1,4 @@
-import { ReactElement, useState } from "react"
+import { ReactElement, useEffect, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 
 import { enqueueSnackbar } from "notistack"
@@ -9,8 +9,6 @@ import {
   Typography,
   Divider as MuiDivider,
   Chip,
-  FormControlLabel,
-  Switch,
 } from "@mui/material"
 
 import BaseNodesView, {
@@ -18,7 +16,11 @@ import BaseNodesView, {
   useDataviewVisualizationCleanup,
   VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
-import { putHiddenOutputs } from "store/slice/Dataview/DataviewActions"
+import OutputsOutline from "components/Dataview/OutputsOutline"
+import {
+  getHiddenOutputs,
+  putHiddenOutputs,
+} from "store/slice/Dataview/DataviewActions"
 import {
   selectDataviewPrivateRecord,
   selectOutputVisualizationItems,
@@ -51,17 +53,37 @@ const OutputsView = ({
     selectOutputVisualizationItems(uid),
   )
   const record = useSelector(selectDataviewPrivateRecord(workspaceId, uid))
+  const recordId = record?.id
   const hiddenOutputs = record?.hidden_outputs ?? []
+  const editable = !is_public && recordId != null
+  const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const handleToggle = (item: VisualizationItemData, isPublic: boolean) => {
-    if (!record) return
+  // The stored list, or the defaults if the owner has not chosen yet
+  useEffect(() => {
+    if (!open || !editable || recordId == null) return
+    setLoaded(false)
+    dispatch(getHiddenOutputs({ id: recordId }))
+      .unwrap()
+      .catch(() =>
+        enqueueSnackbar("Failed to load output visibility", {
+          variant: "error",
+        }),
+      )
+      .finally(() => setLoaded(true))
+  }, [dispatch, open, editable, recordId])
+
+  const isPublic = (item: VisualizationItemData) =>
+    !hiddenOutputs.some((h) => isSamePath(h, item.filePath))
+
+  const handleToggle = (item: VisualizationItemData, toPublic: boolean) => {
+    if (recordId == null) return
     setSaving(true)
     dispatch(
       putHiddenOutputs({
-        id: record.id,
+        id: recordId,
         path: item.filePath,
-        hidden: !isPublic,
+        hidden: !toPublic,
       }),
     )
       .unwrap()
@@ -73,37 +95,29 @@ const OutputsView = ({
       .finally(() => setSaving(false))
   }
 
-  const renderPublishSwitch =
-    !is_public && record
-      ? (item: VisualizationItemData) => (
-          <FormControlLabel
-            label="Public"
-            labelPlacement="start"
-            control={
-              <Switch
-                size="small"
-                checked={
-                  !hiddenOutputs.some((h) => isSamePath(h, item.filePath))
-                }
-                disabled={saving}
-                onChange={(_, checked) => handleToggle(item, checked)}
-                inputProps={{ "aria-label": `Publish ${item.title}` }}
-              />
-            }
-          />
-        )
-      : undefined
-
   const renderData = (): ReactElement[] => {
-    if (outputVisualizationItems.length === 0) {
+    const sections = outputVisualizationItems.filter(
+      (pathInfo) => pathInfo.items.length > 0,
+    )
+    if (sections.length === 0) {
       return []
     }
 
-    const visualizationSections: ReactElement[] = []
+    if (editable) {
+      return [
+        <OutputsOutline
+          key="outputs-outline"
+          sections={sections}
+          isPublic={isPublic}
+          onToggle={handleToggle}
+          disabled={saving || !loaded}
+        />,
+      ]
+    }
 
-    outputVisualizationItems.forEach((pathInfo) => {
-      if (pathInfo.items.length > 0) {
-        visualizationSections.push(
+    return [
+      <Box key="visualization-container" sx={{ p: 2 }}>
+        {sections.map((pathInfo) => (
           <Box key={`node-section-${pathInfo.nodeId}`} sx={{ mb: 4 }}>
             <Typography variant="h5" gutterBottom sx={{ mb: 2 }}>
               {pathInfo.nodeName}
@@ -116,16 +130,10 @@ const OutputsView = ({
             </Typography>
             <MuiDivider sx={{ mb: 3 }} />
             <Grid container spacing={2}>
-              {renderVisualizationItems(pathInfo.items, renderPublishSwitch)}
+              {renderVisualizationItems(pathInfo.items)}
             </Grid>
-          </Box>,
-        )
-      }
-    })
-
-    return [
-      <Box key="visualization-container" sx={{ p: 2 }}>
-        {visualizationSections}
+          </Box>
+        ))}
       </Box>,
     ]
   }

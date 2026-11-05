@@ -16,6 +16,7 @@ import ImageIcon from "@mui/icons-material/Image"
 import InsightsIcon from "@mui/icons-material/Insights"
 import PublicIcon from "@mui/icons-material/Public"
 import PublicOffIcon from "@mui/icons-material/PublicOff"
+import VisibilityOffIcon from "@mui/icons-material/VisibilityOff"
 import {
   Alert,
   Box,
@@ -465,6 +466,15 @@ const defineColumns = (
               </Box>
             )}
           </Box>
+          {!!params?.row?.hidden_outputs?.length && (
+            <Chip
+              size="small"
+              variant="outlined"
+              icon={<VisibilityOffIcon />}
+              label={`${params.row.hidden_outputs.length} hidden`}
+              onClick={() => handleOpenOutputsView(workspaceId, uniqueId)}
+            />
+          )}
         </Box>
       )
     },
