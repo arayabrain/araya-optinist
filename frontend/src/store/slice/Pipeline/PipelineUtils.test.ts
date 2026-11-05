@@ -1,13 +1,32 @@
+import { ReactElement } from "react"
+
 import { OptionsObject, SnackbarKey } from "notistack"
 
 import { describe, expect, jest, test } from "@jest/globals"
+import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 
+import {
+  WORKFLOW_CONCURRENCY_LIMIT,
+  WorkflowConcurrencyLimitDetail,
+} from "api/run/Run"
 import { NODE_RESULT_STATUS } from "store/slice/Pipeline/PipelineType"
 import {
   convertToRunResult,
   handleWorkflowYamlError,
   WORKFLOW_YAML_ERROR,
 } from "store/slice/Pipeline/PipelineUtils"
+
+type EnqueueMock = { mock: { calls: [string, OptionsObject?][] } }
+
+// Render the snackbar's action and return its link
+const renderedLink = (snackbar: EnqueueMock, name: string) => {
+  const action = snackbar.mock.calls[0][1]?.action as (
+    key: SnackbarKey,
+  ) => ReactElement
+  render(action("key"))
+  return screen.getByRole("link", { name })
+}
 
 describe("convertToRunResult", () => {
   test("a success node with no outputPaths stays a success", () => {
@@ -66,6 +85,17 @@ describe("handleWorkflowYamlError", () => {
     expect(snackbar.mock.calls[0][1]).toHaveProperty("action")
   })
 
+  test("the FAQ action links to the FAQ entry in a new tab", () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError({ response: { status: 422 } }, snackbar)
+    const link = renderedLink(snackbar, "Click here")
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/oist/optinist/wiki/FAQ#error-yaml-file-error",
+    )
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+  })
+
   test("a 422 without detail keeps the FAQ snackbar", () => {
     const snackbar = enqueue()
     handleWorkflowYamlError({ response: { status: 422 } }, snackbar)
@@ -88,6 +118,88 @@ describe("handleWorkflowYamlError", () => {
   test("any other status is the generic failure", () => {
     const snackbar = enqueue()
     handleWorkflowYamlError({ response: { status: 500 } }, snackbar)
+    expect(snackbar.mock.calls[0][0]).toBe("Failed to Run workflow")
+  })
+})
+
+describe("handleWorkflowYamlError at the concurrent-run limit", () => {
+  const enqueue = () =>
+    jest.fn<SnackbarKey, [string, OptionsObject?]>(() => "key")
+
+  const limitDetail = (
+    upgradeAvailable: boolean,
+  ): WorkflowConcurrencyLimitDetail => ({
+    code: WORKFLOW_CONCURRENCY_LIMIT,
+    message: "You already have 1 workflow running, and the Free plan ...",
+    plan: "Free",
+    limit: 1,
+    active: 1,
+    upgrade_available: upgradeAvailable,
+  })
+
+  test("shows the server's message as a warning, not the generic failure", () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      { response: { status: 429, data: { detail: limitDetail(false) } } },
+      snackbar,
+    )
+    expect(snackbar.mock.calls[0][0]).toBe(limitDetail(false).message)
+    expect(snackbar.mock.calls[0][1]).toMatchObject({ variant: "warning" })
+    expect(snackbar.mock.calls[0][1]?.action).toBeUndefined()
+  })
+
+  test("offers the plan page when another plan allows more runs", () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      { response: { status: 429, data: { detail: limitDetail(true) } } },
+      snackbar,
+    )
+    const link = renderedLink(snackbar, "See plans")
+    expect(link.getAttribute("href")).toBe("/subscription")
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+  })
+
+  test("the plan link is reached and opened from the keyboard", async () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      { response: { status: 429, data: { detail: limitDetail(true) } } },
+      snackbar,
+    )
+    const link = renderedLink(snackbar, "See plans")
+    const opened = jest.fn()
+    link.addEventListener("click", (e) => {
+      e.preventDefault()
+      opened()
+    })
+    const user = userEvent.setup()
+
+    await user.tab()
+    expect(document.activeElement).toBe(link)
+    await user.keyboard("{Enter}")
+    expect(opened).toHaveBeenCalledTimes(1)
+  })
+
+  test("a 429 without the limit's code is the generic failure", () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      { response: { status: 429, data: { detail: "Too Many Requests" } } },
+      snackbar,
+    )
+    expect(snackbar.mock.calls[0][0]).toBe("Failed to Run workflow")
+  })
+
+  test("a 429 with another code is the generic failure", () => {
+    const snackbar = enqueue()
+    handleWorkflowYamlError(
+      {
+        response: {
+          status: 429,
+          data: { detail: { code: "other", message: "Slow down" } },
+        },
+      },
+      snackbar,
+    )
     expect(snackbar.mock.calls[0][0]).toBe("Failed to Run workflow")
   })
 })

@@ -2,9 +2,10 @@ import asyncio
 import logging
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from snakemake.api import (
     DAGSettings,
@@ -53,6 +54,8 @@ def snakemake_execute(
     params: SmkParam,
     user_id: int = None,
     generation: str = None,
+    counted_tier: Optional[str] = None,
+    slot_id: Optional[int] = None,
 ):
     """
     Main entry point for Snakemake execution.
@@ -63,6 +66,8 @@ def snakemake_execute(
         params: Snakemake parameters
         user_id: User ID (for tracking free tier workflow counts)
         generation: started_at of the run that scheduled this execution
+        counted_tier: the tier the run start was counted on; None = not counted
+        slot_id: the run's slot in its plan's concurrent-run limit; None = none
     """
     client_id = get_client_id_for_subprocess()
 
@@ -79,7 +84,7 @@ def snakemake_execute(
                 generation=generation,
                 client_id=client_id,
             )
-            future_result = future.result()
+            future_result = _wait_renewing_slot(future, slot_id)
 
         # Update user storage after workflow completion
         asyncio.run(update_user_storage_after_workflow(workspace_id))
@@ -87,18 +92,43 @@ def snakemake_execute(
         return future_result
 
     finally:
+        if slot_id is not None:
+            from studio.app.common.core.workflow.workflow_concurrency import (
+                release_workflow_slot,
+            )
+
+            release_workflow_slot(slot_id)
+
         # Decrement workflow count in finally block to ensure it ALWAYS runs
         # This prevents workflow count leaks when exceptions occur during execution
-        if user_id is not None:
+        if user_id is not None and counted_tier is not None:
             try:
                 from studio.app.common.core.workflow.workflow_tracking import (
                     decrement_workflow_count,
                 )
 
-                decrement_workflow_count(user_id)
+                decrement_workflow_count(user_id, tier=counted_tier)
                 logger.info(f"Decremented workflow count for user {user_id}")
             except Exception as e:
                 logger.error(f"Failed to decrement workflow count: {e}", exc_info=True)
+
+
+def _wait_renewing_slot(future: Future, slot_id: Optional[int]):
+    """The run's result; its slot is renewed while the run lives."""
+    from studio.app.common.core.workflow.workflow_concurrency import (
+        WORKFLOW_SLOT_RENEW_SECONDS,
+        renew_workflow_slot,
+    )
+
+    while True:
+        try:
+            return future.result(timeout=WORKFLOW_SLOT_RENEW_SECONDS)
+        except FutureTimeoutError:
+            # Done by now (it may have finished after the wait timed out): its
+            # own result or exception, including a TimeoutError it raised
+            if future.done():
+                return future.result()
+            renew_workflow_slot(slot_id)
 
 
 @with_client_id_context  # Automatically set client_id for logging

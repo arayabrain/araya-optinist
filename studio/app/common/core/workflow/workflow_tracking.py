@@ -12,6 +12,7 @@ This enables the Manager Lambdas to:
 
 from typing import Optional, Tuple
 
+from sqlalchemy import case, func, update
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
@@ -24,6 +25,13 @@ logger = AppLogger.get_logger()
 # Tier constants
 TIER_FREE = "free"
 TIER_PREMIUM = "premium"
+
+_TABLE_OF_TIER = {TIER_FREE: FreeUserAssignment, TIER_PREMIUM: PremiumUserAssignment}
+_TIER_OF_TABLE = {table: tier for tier, table in _TABLE_OF_TIER.items()}
+
+# The premium manager's assign moves a free row's count to the new premium row
+# and deletes the free row; premium rows are deleted without a hand-over
+_COUNT_HANDED_OVER_TO = {FreeUserAssignment: PremiumUserAssignment}
 
 
 def _get_user_tier(user_id: int) -> Tuple[Optional[str], bool, bool]:
@@ -103,6 +111,26 @@ def _get_user_tier(user_id: int) -> Tuple[Optional[str], bool, bool]:
     return tier, has_free_record, has_premium_record
 
 
+def _counted_table(
+    tier: Optional[str], has_free_record: bool, has_premium_record: bool
+) -> Optional[type]:
+    """The assignment table a user's runs are counted on.
+
+    - the subscription tier's table, when the user has that row
+    - otherwise whichever row exists, premium first
+    - None: no row, nothing to count on
+    """
+    if tier == TIER_PREMIUM and has_premium_record:
+        return PremiumUserAssignment
+    if tier == TIER_FREE and has_free_record:
+        return FreeUserAssignment
+    if has_premium_record:
+        return PremiumUserAssignment
+    if has_free_record:
+        return FreeUserAssignment
+    return None
+
+
 def _execution_host() -> Optional[str]:
     """The EC2 instance this process runs on; None off EC2 (local, tests)."""
     from studio.app.common.core.middleware.user_activity_middleware import (
@@ -113,266 +141,172 @@ def _execution_host() -> Optional[str]:
     return host if host and host != "local" else None
 
 
-def _free_increment_values(host: Optional[str]) -> dict:
-    """SET clause of the free-tier increment.
+def _increment_statement(table: type, user_id: int, host: Optional[str]):
+    """The run-start UPDATE.
 
     - active_workflow_count: computed in SQL, so concurrent starts cannot lose one
-    - instance_id: the first workflow pins the row to this host; a later one
-      does not move it. The free scale-in reads this column to spare the host
-      a workflow runs on, so it must name that host, not the last instance
-      that served a request
+    - instance_id (free tier, on EC2): the first workflow pins the row to this
+      host; a later one does not move it. The free scale-in reads this column to
+      spare the host a workflow runs on, so it must name that host, not the last
+      instance that served a request
+    - SET order is fixed: MySQL assigns left to right, so the pin's CASE must
+      come before the count it reads
     """
-    from sqlalchemy import case, func
-
-    values = {
-        "active_workflow_count": FreeUserAssignment.active_workflow_count + 1,
-        "last_workflow_start": func.now(),
-    }
-    if host:
-        values["instance_id"] = case(
-            (
-                FreeUserAssignment.active_workflow_count > 0,
-                FreeUserAssignment.instance_id,
-            ),
-            else_=host,
+    count = table.active_workflow_count
+    values = []
+    if table is FreeUserAssignment and host:
+        values.append(
+            (table.instance_id, case((count > 0, table.instance_id), else_=host))
         )
-    return values
+    values += [(count, count + 1), (table.last_workflow_start, func.now())]
+    return update(table).where(table.user_id == user_id).ordered_values(*values)
 
 
-def increment_workflow_count(user_id: Optional[int]) -> None:
+def increment_workflow_count(user_id: Optional[int]) -> Optional[str]:
     """
-    Increment the active_workflow_count for a user (free or premium tier).
+    Count a starting workflow on the table _counted_table picks.
 
-    Called when a workflow starts. Checks user's subscription tier first,
-    then updates the appropriate table. Falls back to the other table if
-    the primary table doesn't have a record. For the free tier the row is
-    also pinned to this host (see _free_increment_values).
+    Called when a workflow starts. Standalone, no assignment row, or a database
+    error → not counted.
 
     Args:
         user_id: User ID of the user starting the workflow
+
+    Returns:
+        The tier whose table was counted, for the release; None if nothing was
+        counted
     """
     if MODE.IS_STANDALONE or user_id is None:
-        return
+        return None
 
     try:
-        from sqlalchemy import func, update
-
-        # Determine user's tier and which tables have records
         tier, has_free_record, has_premium_record = _get_user_tier(user_id)
-        host = _execution_host()
+        table = _counted_table(tier, has_free_record, has_premium_record)
 
         logger.info(
             f"Workflow count increment for user {user_id}: "
             f"tier={tier}, has_free={has_free_record}, has_premium={has_premium_record}"
         )
 
+        if table is None:
+            logger.warning(
+                f"User {user_id} not in free or premium assignments table "
+                f"(tier={tier}, no records found)"
+            )
+            return None
+
+        statement = _increment_statement(table, user_id, _execution_host())
+
         with session_scope() as session:
-            updated = False
-
-            # Priority 1: Update based on actual subscription tier
-            if tier == TIER_PREMIUM and has_premium_record:
-                new_count = PremiumUserAssignment.active_workflow_count + 1
-                stmt = (
-                    update(PremiumUserAssignment)
-                    .where(PremiumUserAssignment.user_id == user_id)
-                    .values(
-                        active_workflow_count=new_count,
-                        last_workflow_start=func.now(),
-                    )
+            result = session.execute(statement)
+            if result.rowcount > 0:
+                session.commit()
+                logger.debug(
+                    f"Incremented workflow count for user {user_id} "
+                    f"({table.__tablename__})"
                 )
-                result = session.execute(stmt)
-                if result.rowcount > 0:
-                    session.commit()
-                    logger.debug(
-                        f"Incremented workflow count for user {user_id} "
-                        "(premium tier - primary)"
-                    )
-                    updated = True
+                return _TIER_OF_TABLE[table]
 
-            elif tier == TIER_FREE and has_free_record:
-                stmt = (
-                    update(FreeUserAssignment)
-                    .where(FreeUserAssignment.user_id == user_id)
-                    .values(**_free_increment_values(host))
-                )
-                result = session.execute(stmt)
-                if result.rowcount > 0:
-                    session.commit()
-                    logger.debug(
-                        f"Incremented workflow count for user {user_id} "
-                        f"(free tier - primary)"
-                    )
-                    updated = True
-
-            # Priority 2: Fallback - try available record if tier didn't match
-            if not updated:
-                # Try premium first (preferred for premium users without record)
-                if has_premium_record:
-                    new_count = PremiumUserAssignment.active_workflow_count + 1
-                    stmt = (
-                        update(PremiumUserAssignment)
-                        .where(PremiumUserAssignment.user_id == user_id)
-                        .values(
-                            active_workflow_count=new_count,
-                            last_workflow_start=func.now(),
-                        )
-                    )
-                    result = session.execute(stmt)
-                    if result.rowcount > 0:
-                        session.commit()
-                        logger.debug(
-                            f"Incremented workflow count for user {user_id} "
-                            "(premium tier - fallback)"
-                        )
-                        updated = True
-
-                elif has_free_record:
-                    stmt = (
-                        update(FreeUserAssignment)
-                        .where(FreeUserAssignment.user_id == user_id)
-                        .values(**_free_increment_values(host))
-                    )
-                    result = session.execute(stmt)
-                    if result.rowcount > 0:
-                        session.commit()
-                        logger.debug(
-                            f"Incremented workflow count for user {user_id} "
-                            "(free tier - fallback)"
-                        )
-                        updated = True
-
-            if not updated:
-                logger.warning(
-                    f"User {user_id} not in free or premium assignments table "
-                    f"(tier={tier}, no records found)"
-                )
+        logger.warning(
+            f"User {user_id}'s {table.__tablename__} row went away before the "
+            "workflow count increment"
+        )
+        return None
 
     except Exception as e:
         logger.error(
             f"Failed to increment workflow count for user {user_id}: {e}",
             exc_info=True,
         )
+        return None
 
 
-def decrement_workflow_count(user_id: Optional[int]) -> None:
+def _update_counted_row(session, table: type, user_id: int, statement_for):
+    """Execute statement_for(table, user_id) on the row holding the run's count.
+
+    - the counted table's row, while it exists
+    - free row gone: the premium row its count was handed over to
+
+    Returns:
+        The table written; None when neither row exists
+    """
+    for candidate in (table, _COUNT_HANDED_OVER_TO.get(table)):
+        if candidate is None:
+            break
+        if session.execute(statement_for(candidate, user_id)).rowcount > 0:
+            return candidate
+    return None
+
+
+def _decrement_statement(table: type, user_id: int):
+    count = table.active_workflow_count
+    return (
+        update(table)
+        .where(table.user_id == user_id)
+        .values(
+            active_workflow_count=func.greatest(0, count - 1),
+            last_workflow_end=func.now(),
+        )
+    )
+
+
+def decrement_workflow_count(
+    user_id: Optional[int], tier: Optional[str] = None
+) -> None:
     """
     Decrement the active_workflow_count for a user (free or premium tier).
 
-    Called when a workflow completes (success or failure). Checks user's
-    subscription tier first, then updates the appropriate table. Falls back
-    to the other table if the primary table doesn't have a record.
+    Called when a workflow completes (success or failure), or when a counted
+    start is not scheduled.
+
+    - tier given (what increment_workflow_count returned): that table, so a
+      plan lapse during the run cannot move the release to the other row
+    - tier None: the table _counted_table picks now
+    - either way, the row holding the count (_update_counted_row): after an
+      upgrade during the run, the premium row the count was handed over to
 
     Uses SQLAlchemy's update() with func.greatest() to ensure count never
     goes below 0, preventing race conditions.
 
     Args:
         user_id: User ID of the user whose workflow completed
+        tier: The tier the workflow was counted on, if known
     """
     if MODE.IS_STANDALONE or user_id is None:
         return
 
     try:
-        from sqlalchemy import func, update
+        if tier is None:
+            # Determine user's tier and which tables have records
+            tier, has_free_record, has_premium_record = _get_user_tier(user_id)
+            table = _counted_table(tier, has_free_record, has_premium_record)
 
-        # Determine user's tier and which tables have records
-        tier, has_free_record, has_premium_record = _get_user_tier(user_id)
+            logger.info(
+                f"Workflow count decrement for user {user_id}: tier={tier}, "
+                f"has_free={has_free_record}, has_premium={has_premium_record}"
+            )
+        else:
+            table = _TABLE_OF_TIER.get(tier)
 
-        logger.info(
-            f"Workflow count decrement for user {user_id}: "
-            f"tier={tier}, has_free={has_free_record}, has_premium={has_premium_record}"
-        )
+        if table is None:
+            logger.warning(
+                f"User {user_id} not in free or premium assignments table "
+                f"(tier={tier}, no records found)"
+            )
+            return
 
         with session_scope() as session:
-            updated = False
-
-            # Priority 1: Update based on actual subscription tier
-            if tier == TIER_PREMIUM and has_premium_record:
-                current = PremiumUserAssignment.active_workflow_count
-                new_count = func.greatest(0, current - 1)
-                stmt = (
-                    update(PremiumUserAssignment)
-                    .where(PremiumUserAssignment.user_id == user_id)
-                    .values(
-                        active_workflow_count=new_count,
-                        last_workflow_end=func.now(),
-                    )
+            written = _update_counted_row(session, table, user_id, _decrement_statement)
+            if written is not None:
+                session.commit()
+                logger.debug(
+                    f"Decremented workflow count for user {user_id} "
+                    f"({written.__tablename__})"
                 )
-                result = session.execute(stmt)
-                if result.rowcount > 0:
-                    session.commit()
-                    logger.debug(
-                        f"Decremented workflow count for user {user_id} "
-                        "(premium tier - primary)"
-                    )
-                    updated = True
-
-            elif tier == TIER_FREE and has_free_record:
-                current = FreeUserAssignment.active_workflow_count
-                new_count = func.greatest(0, current - 1)
-                stmt = (
-                    update(FreeUserAssignment)
-                    .where(FreeUserAssignment.user_id == user_id)
-                    .values(
-                        active_workflow_count=new_count,
-                        last_workflow_end=func.now(),
-                    )
-                )
-                result = session.execute(stmt)
-                if result.rowcount > 0:
-                    session.commit()
-                    logger.debug(
-                        f"Decremented workflow count for user {user_id} "
-                        "(free tier - primary)"
-                    )
-                    updated = True
-
-            # Priority 2: Fallback - try available record if tier didn't match
-            if not updated:
-                # Try premium first (preferred for premium users without record)
-                if has_premium_record:
-                    current = PremiumUserAssignment.active_workflow_count
-                    new_count = func.greatest(0, current - 1)
-                    stmt = (
-                        update(PremiumUserAssignment)
-                        .where(PremiumUserAssignment.user_id == user_id)
-                        .values(
-                            active_workflow_count=new_count,
-                            last_workflow_end=func.now(),
-                        )
-                    )
-                    result = session.execute(stmt)
-                    if result.rowcount > 0:
-                        session.commit()
-                        logger.debug(
-                            f"Decremented workflow count for user {user_id} "
-                            "(premium tier - fallback)"
-                        )
-                        updated = True
-
-                elif has_free_record:
-                    current = FreeUserAssignment.active_workflow_count
-                    new_count = func.greatest(0, current - 1)
-                    stmt = (
-                        update(FreeUserAssignment)
-                        .where(FreeUserAssignment.user_id == user_id)
-                        .values(
-                            active_workflow_count=new_count,
-                            last_workflow_end=func.now(),
-                        )
-                    )
-                    result = session.execute(stmt)
-                    if result.rowcount > 0:
-                        session.commit()
-                        logger.debug(
-                            f"Decremented workflow count for user {user_id} "
-                            "(free tier - fallback)"
-                        )
-                        updated = True
-
-            if not updated:
+            else:
                 logger.warning(
-                    f"User {user_id} not in free or premium assignments table "
-                    f"(tier={tier}, no records found)"
+                    f"User {user_id}'s {table.__tablename__} row went away before "
+                    "the workflow count decrement"
                 )
 
     except Exception as e:

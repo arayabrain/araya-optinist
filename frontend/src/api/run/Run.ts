@@ -69,6 +69,18 @@ export async function runApi(
   return response.data
 }
 
+// `detail` of the HTTP 429 a run start gets at the plan's concurrent-run limit
+export const WORKFLOW_CONCURRENCY_LIMIT = "workflow_concurrency_limit"
+
+export type WorkflowConcurrencyLimitDetail = {
+  code: typeof WORKFLOW_CONCURRENCY_LIMIT
+  message: string
+  plan: string
+  limit: number
+  active: number
+  upgrade_available: boolean
+}
+
 export async function runByUidApi(
   workspaceId: number,
   uid: string,

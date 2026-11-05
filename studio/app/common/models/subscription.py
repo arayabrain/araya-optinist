@@ -64,6 +64,14 @@ class SubscriptionPlans(SQLModel, table=True):
         default=None,
         description="Stripe price ID for this subscription plan",
     )
+    max_concurrent_workflows: Optional[int] = Field(
+        sa_column=Column(
+            INTEGER,
+            nullable=True,
+            comment="Concurrent workflow runs per user of this plan; NULL = no limit",
+        ),
+        default=None,
+    )
     created_at: Optional[datetime] = Field(
         sa_column=Column(TIMESTAMP, nullable=False, server_default=current_timestamp()),
     )
