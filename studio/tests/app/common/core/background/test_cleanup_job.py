@@ -311,6 +311,52 @@ class TestCleanupUserData:
         assert result == CleanupOutcome.ERROR
         mock_rmtree.assert_not_called()
 
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_input_tiff_cache_is_removed_without_an_s3_check(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        """The cache is never uploaded, so verifying it against S3 would keep
+        the workspace (and report ERROR) forever."""
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=True
+        ) as verify:
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["exp123", "input_tiff"]):
+                        with patch("shutil.rmtree") as mock_rmtree:
+                            result = DataCleanupJob._cleanup_user_data(
+                                "123", ["workspace1"]
+                            )
+
+        from studio.app.dir_path import DIRPATH
+
+        assert result == CleanupOutcome.CLEANED
+        assert [call.args[2] for call in verify.call_args_list] == ["exp123"]
+        deleted = [call[0][0] for call in mock_rmtree.call_args_list]
+        assert f"{DIRPATH.OUTPUT_DIR}/workspace1/exp123" in deleted
+        assert f"{DIRPATH.OUTPUT_DIR}/workspace1/input_tiff" in deleted
+
+
+def test_input_verification_skips_caiman_memmaps(tmp_path, monkeypatch):
+    """A crashed CNMF run leaves `<input>.mmap` beside the input; it is never
+    uploaded, so it must not fail the backup check."""
+    from studio.app.dir_path import DIRPATH
+
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    ws = tmp_path / "ws1"
+    ws.mkdir()
+    (ws / "data.tif").write_bytes(b"x")
+    (ws / "data.tif.caiman_cnmf_d1_9_d2_7_d3_1_order_C_frames_5.mmap").write_bytes(b"x")
+    s3 = MagicMock()
+    with patch("boto3.client", return_value=s3):
+        assert DataCleanupJob._verify_s3_input_backup_exists("bucket", "ws1")
+    keys = [call.kwargs["Key"] for call in s3.head_object.call_args_list]
+    assert [k.rsplit("/", 1)[1] for k in keys] == ["data.tif"]
+
 
 class TestVerifyNoActiveWorkflows:
     """Test workflow verification before cleanup"""

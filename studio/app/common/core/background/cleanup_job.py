@@ -40,6 +40,7 @@ from studio.app.common.models import (
     Workspace,
 )
 from studio.app.common.models.instance_usage import UsageTier
+from studio.app.const import INPUT_TIFF_CACHE_DIRNAME
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -353,9 +354,9 @@ class DataCleanupJob:
                 # Skip the per-file flock working dir; it is never uploaded.
                 dirs[:] = [d for d in dirs if d != InputFileLock.LOCKS_DIRNAME]
                 for filename in files:
-                    # A killed upload's temporary file: never uploaded, and
-                    # deleted with the directory
-                    if is_atomic_replace_tmp(filename):
+                    # A killed upload's temporary file and CaImAn's memmap of
+                    # the input: never uploaded, deleted with the directory
+                    if is_atomic_replace_tmp(filename) or filename.endswith(".mmap"):
                         continue
                     rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
                     s3_key = f"{s3_prefix}{rel_path}"
@@ -525,6 +526,12 @@ class DataCleanupJob:
                         for experiment_id in os.listdir(output_dir):
                             experiment_path = os.path.join(output_dir, experiment_id)
                             if not os.path.isdir(experiment_path):
+                                continue
+
+                            # The cached input TIFFs are never uploaded: they go
+                            # with the workspace, as on a host recycle
+                            if experiment_id == INPUT_TIFF_CACHE_DIRNAME:
+                                experiments_to_delete.append(experiment_id)
                                 continue
 
                             # Verify S3 backup exists
