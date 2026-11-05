@@ -314,3 +314,60 @@ class TestPostProcessObserveLockConflict:
             "verified via remote sync status" in record.message
             for record in caplog.records
         )
+
+
+class TestPostProcessDiskFull:
+    """ENOSPC while finalizing: free other runs' leftovers once, then retry,
+    rather than leave the run RUNNING forever."""
+
+    GUARD = "studio.app.common.core.storage.local_disk_guard"
+
+    @pytest.fixture(autouse=True)
+    def _suppress_error_traceback(self):
+        with patch(f"{MODULE}.logger.error"):
+            yield
+
+    @pytest.fixture()
+    def reclaim(self):
+        with patch(f"{self.GUARD}.reclaim_local_caches") as mock_reclaim, patch(
+            f"{self.GUARD}.min_free_bytes", return_value=8
+        ):
+            yield mock_reclaim
+
+    @staticmethod
+    def _enospc():
+        import errno
+
+        return OSError(errno.ENOSPC, "No space left on device")
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_reclaims_once_then_succeeds(self, mock_observe, reclaim):
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _observe_overall_with_lock_retry,
+        )
+
+        mock_observe.observe_overall = AsyncMock(side_effect=[self._enospc(), None])
+
+        result = _observe_overall_with_lock_retry(WORKSPACE_ID, UNIQUE_ID)
+
+        assert result == (True, False, True)
+        reclaim.assert_called_once_with(
+            target_free_bytes=8, exclude=(WORKSPACE_ID, UNIQUE_ID)
+        )
+        assert mock_observe.observe_overall.await_count == 2
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_a_second_enospc_gives_up(self, mock_observe, reclaim):
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _observe_overall_with_lock_retry,
+        )
+
+        mock_observe.observe_overall = AsyncMock(
+            side_effect=[self._enospc(), self._enospc(), None]
+        )
+
+        result = _observe_overall_with_lock_retry(WORKSPACE_ID, UNIQUE_ID)
+
+        assert result[0] is False
+        reclaim.assert_called_once()
+        assert mock_observe.observe_overall.await_count == 2
