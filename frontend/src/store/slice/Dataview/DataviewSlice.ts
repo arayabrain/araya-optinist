@@ -6,6 +6,8 @@ import {
   postPublish,
   postPublishAll,
   putAttributes,
+  putHiddenOutputs,
+  getHiddenOutputs,
 } from "store/slice/Dataview/DataviewActions"
 import {
   DATAVIEW_SLICE_NAME,
@@ -83,6 +85,18 @@ export const databaseSlice = createSlice({
         // Keep previous data on error, but set error state
         state.loading = false
         state.error.public = action.error.message || "Failed to load data"
+      })
+      .addCase(getHiddenOutputs.fulfilled, (state, action) => {
+        const record = state.data.private.items.find(
+          (item) => item.id === action.meta.arg.id,
+        )
+        if (record) record.hidden_outputs = action.payload
+      })
+      .addCase(putHiddenOutputs.fulfilled, (state, action) => {
+        const record = state.data.private.items.find(
+          (item) => item.id === action.meta.arg.id,
+        )
+        if (record) record.hidden_outputs = action.payload
       })
       // addMatcher calls come after all addCase calls
       .addMatcher(

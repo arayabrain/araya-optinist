@@ -168,6 +168,13 @@ class ExperimentRecordService:
             new_exp_data["uid"] = new_unique_id
             new_exp_data["name"] = _new_name
             new_exp_data["publish_status"] = False
+            old_prefix = f"{workspace_id}/{unique_id}/"
+            if exp.hidden_outputs is not None:
+                new_exp_data["hidden_outputs"] = [
+                    f"{workspace_id}/{new_unique_id}/{p[len(old_prefix):]}"
+                    for p in exp.hidden_outputs
+                    if p.startswith(old_prefix)
+                ]
 
             new_exp = ExperimentRecord(**new_exp_data)
             db.add(new_exp)
