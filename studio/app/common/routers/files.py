@@ -793,9 +793,10 @@ async def create_file(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
+    user_id = current_user.id if current_user else None
+    # The body transfer can take minutes; do not hold a pooled connection for it
+    release_request_session(db)
     try:
-        user_id = current_user.id if current_user else None
-
         # Check storage quota before allowing file upload
         # (use cached data to avoid timeout)
         if user_id is not None:
@@ -830,7 +831,7 @@ async def create_file(
             declared = int(request.headers.get("content-length", 0))
         except ValueError:
             declared = 0
-        await _require_upload_headroom(request, declared)
+        await _require_upload_headroom(declared, request)
         try:
             form = await request.form()
         except StarletteHTTPException as e:
@@ -848,7 +849,7 @@ async def create_file(
         file = form.get("file")
         if not isinstance(file, UploadFile):
             raise HTTPException(status_code=422, detail="Missing file")
-        await _require_upload_headroom(request, file.size or 0)
+        await _require_upload_headroom(file.size or 0)
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
@@ -914,9 +915,6 @@ async def create_file(
     finally:
         with contextlib.suppress(Exception):
             await request.close()
-        # The live storage refresh lists every S3 object of the user; do not
-        # hold the guards' connection while it runs
-        release_request_session(db)
 
 
 async def _refuse_upload(request: Request, status_code: int, detail: str) -> None:
@@ -929,11 +927,16 @@ async def _refuse_upload(request: Request, status_code: int, detail: str) -> Non
     raise HTTPException(status_code=status_code, detail=detail)
 
 
-async def _require_upload_headroom(request: Request, nbytes: int) -> None:
+async def _require_upload_headroom(
+    nbytes: int, unread_request: Optional[Request] = None
+) -> None:
     try:
         await asyncio.to_thread(ensure_local_disk_headroom, nbytes)
     except LocalDiskFullError as e:
-        await _refuse_upload(request, 507, f"Cannot upload file: {e} {USER_HINT}")
+        detail = f"Cannot upload file: {e} {USER_HINT}"
+        if unread_request is None:
+            raise HTTPException(status_code=507, detail=detail)
+        await _refuse_upload(unread_request, 507, detail)
 
 
 DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}

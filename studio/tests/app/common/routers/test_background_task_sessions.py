@@ -588,23 +588,27 @@ def _queued_usage_updates(background_tasks):
     ]
 
 
-def _upload_request(data=b""):
-    """A request whose multipart body holds the upload, as the route parses it"""
+def _upload_request(events):
+    """A request whose multipart body holds the upload; each body read is logged"""
     from starlette.datastructures import UploadFile
 
     async def stream():
+        events.append("read body")
         yield b""
 
+    async def form():
+        events.append("read body")
+        return {"file": UploadFile(io.BytesIO(b""), size=0)}
+
     request = Mock(headers={})
-    request.form = AsyncMock(
-        return_value={"file": UploadFile(io.BytesIO(data), size=len(data))}
-    )
+    request.form = form
     request.stream = stream
     request.close = AsyncMock()
     return request
 
 
-def _call_create_file(db, background_tasks, over_quota=False):
+def _call_create_file(db, background_tasks, events, over_quota=False):
+    db.close.side_effect = lambda: events.append("release session")
     with patch.object(
         files,
         "get_current_user_storage_usage",
@@ -625,7 +629,7 @@ def _call_create_file(db, background_tasks, over_quota=False):
                 workspace_id="1",
                 filename="data.csv",
                 background_tasks=background_tasks,
-                request=_upload_request(),
+                request=_upload_request(events),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=db,
@@ -633,23 +637,24 @@ def _call_create_file(db, background_tasks, over_quota=False):
         )
 
 
-def test_create_file_releases_the_request_session():
-    db = Mock()
+def test_create_file_releases_the_request_session_before_reading_the_body():
+    db, events = Mock(), []
     background_tasks = BackgroundTasks()
-    assert _call_create_file(db, background_tasks) == {"file_path": "data.csv"}
-    db.close.assert_called_once()
+    result = _call_create_file(db, background_tasks, events)
+    assert result == {"file_path": "data.csv"}
+    assert events == ["release session", "read body"]
     # Both tasks are still queued: the usage update and the live storage refresh
     assert _queued_usage_updates(background_tasks) == [("1",)]
     assert len(background_tasks.tasks) == 2
     assert all(db not in task.args for task in background_tasks.tasks)
 
 
-def test_create_file_releases_the_request_session_on_failure():
-    db = Mock()
+def test_create_file_releases_the_request_session_before_draining_a_refusal():
+    db, events = Mock(), []
     with pytest.raises(HTTPException) as raised:
-        _call_create_file(db, BackgroundTasks(), over_quota=True)
+        _call_create_file(db, BackgroundTasks(), events, over_quota=True)
     assert raised.value.status_code == 403
-    db.close.assert_called_once()
+    assert events == ["release session", "read body"]
 
 
 # --------------------------------------------------------------------------

@@ -110,6 +110,30 @@ def test_upload_checks_the_destination_copy_after_parsing(
     assert checked == [int(response.request.headers["content-length"]), 16]
 
 
+def test_upload_refused_when_only_the_destination_copy_does_not_fit(
+    client, tmp_path, monkeypatch
+):
+    """The body is already read by then, so the 507 is raised without draining"""
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    seen = {}
+    full = _disk_full(seen)
+    monkeypatch.setattr(
+        files_module,
+        "ensure_local_disk_headroom",
+        lambda n=0: full(n) if n == 16 else None,
+    )
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["detail"].startswith("Cannot upload file: ")
+    assert seen["extra_bytes"] == 16
+    assert not (tmp_path / workspace_id).exists()
+
+
 def test_a_refused_upload_reads_the_body_out_before_answering():
     """A response sent while the client is still sending arrives as a reset."""
     from fastapi import HTTPException
