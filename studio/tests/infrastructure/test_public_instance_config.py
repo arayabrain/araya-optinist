@@ -694,9 +694,9 @@ class TestPublicDataviewIsApartFromSignIn:
 class TestPublicDataviewMatchesPublic:
     """The public DataView tier runs the public task on its own instances.
 
-    It serves the published data the public tier served, so the mode, the
-    environment, the EFS caches and the health check match public's; only its
-    names, log group and capacity are its own.
+    It serves the published data the public tier syncs into the shared EFS, so
+    the mode, the environment, the EFS caches and the health check match
+    public's; only its names, log group and capacity are its own.
     """
 
     @pytest.fixture(autouse=True)
