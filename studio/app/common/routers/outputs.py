@@ -1,6 +1,10 @@
 import asyncio
+import contextvars
+import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, fields, is_dataclass
 from typing import Optional
 
 import h5py
@@ -47,7 +51,12 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
 from studio.app.common.db.database import get_db, release_request_session
-from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
+from studio.app.common.schemas.outputs import (
+    ImageOutputData,
+    JsonTimeSeriesData,
+    OutputData,
+    PlotMetaData,
+)
 from studio.app.common.schemas.users import User
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
@@ -91,6 +100,31 @@ TIFF_PREVIEW_WAIT_SECONDS = 30
 _tiff_preview_lock = asyncio.Lock()
 # Also held by the thread, which outlives a cancelled request's await
 _tiff_preview_thread_lock = threading.Lock()
+
+# A timeseries record is read by parsing its whole chunk, which holds the GIL
+# throughout. One read at a time per process holds one parsed chunk and keeps
+# the event loop's waits short; more at once would not finish sooner
+_timeseries_read_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="timeseries-read"
+)
+# A timeseries read not started within this is dropped and answered 429, as a
+# TIFF preview is. Not 503: the frontend takes a 503 for an unreachable instance
+TIMESERIES_READ_WAIT_SECONDS = 30
+# This process's timeseries reads, queued or running
+_timeseries_reads_in_flight = 0
+# A stored image item is stripped line by line under the GIL too, so more reads
+# at once add memory, not speed; two let one read's disk wait overlap the other
+_image_read_executor = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="image-read"
+)
+
+
+async def _run_in(executor: ThreadPoolExecutor, func, *args):
+    """func(*args) on executor, with the request's context, as to_thread runs it."""
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, context.run, func, *args
+    )
 
 
 async def get_or_generate_thumbnail(
@@ -699,6 +733,60 @@ async def get_inittimedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
+    return await _read_timeseries(_init_timeseries_data, abs_dirpath, isFull)
+
+
+async def _read_timeseries(read, *args) -> Response:
+    """
+    read(*args) on the timeseries read thread, encoded there as the response
+    model would: the response model validates and encodes on the event loop.
+    429 if the read does not start within TIMESERIES_READ_WAIT_SECONDS.
+    """
+    global _timeseries_reads_in_flight
+    context = contextvars.copy_context()
+    future = _timeseries_read_executor.submit(
+        context.run, _timeseries_body, read, *args
+    )
+    _timeseries_reads_in_flight += 1
+    try:
+        try:
+            async with asyncio.timeout(TIMESERIES_READ_WAIT_SECONDS):
+                body = await asyncio.wrap_future(future)
+        except TimeoutError:
+            # A started read cannot be stopped, so it is answered
+            if not future.cancel():
+                body = await asyncio.wrap_future(future)
+            else:
+                logger.warning(
+                    "Timeseries read not started in %s s; %d in flight",
+                    TIMESERIES_READ_WAIT_SECONDS,
+                    _timeseries_reads_in_flight,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Other timeseries are being read. Please retry.",
+                    headers={"Retry-After": "5"},
+                )
+    finally:
+        _timeseries_reads_in_flight -= 1
+    return Response(content=body, media_type="application/json")
+
+
+def _timeseries_body(read, *args) -> bytes:
+    data = read(*args)
+    # One level only: asdict would copy every value of every record
+    body = {field.name: getattr(data, field.name) for field in fields(data)}
+    if is_dataclass(data.meta):
+        body["meta"] = asdict(data.meta)
+    return json.dumps(
+        body, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    ).encode()
+
+
+def _init_timeseries_data(
+    abs_dirpath: str, isFull: Optional[bool]
+) -> JsonTimeSeriesData:
+    """The first record in full and the first point of every other."""
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -708,7 +796,8 @@ async def get_inittimedata(
     # Handle empty case
     if not file_numbers:
         return_data = get_initial_timeseries_data(abs_dirpath)
-        return_data.meta = {"title": "0 ROIs found"}  # Set informative message
+        # Informative title; as a PlotMetaData every meta field stays in the body
+        return_data.meta = PlotMetaData(title="0 ROIs found")
         return return_data
 
     # Get first cell data
@@ -755,6 +844,12 @@ async def get_timedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
+    return await _read_timeseries(_timeseries_record_data, abs_dirpath, index, isFull)
+
+
+def _timeseries_record_data(
+    abs_dirpath: str, index: int, isFull: Optional[bool]
+) -> JsonTimeSeriesData:
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -884,7 +979,8 @@ async def get_html(
 
 @router.get(
     "/image/{filepath:path}",
-    response_model=OutputData,
+    # Documents the body only: every branch returns a Response, which skips it
+    response_model=ImageOutputData,
     dependencies=[Depends(workspace_access)],
 )
 async def get_image(
@@ -958,11 +1054,13 @@ async def get_image(
         return await _read_tiff_preview(
             abs_filepath, save_dirpath, json_filepath, start_index, end_index
         )
-    else:
-        json_filepath = abs_filepath
-        _require_output_file(json_filepath)
 
-    return JsonReader.read_as_output(json_filepath)
+    _require_output_file(abs_filepath)
+    body = await _run_in(
+        _image_read_executor, JsonReader.read_as_output_bytes, abs_filepath
+    )
+    # Served as written: parsing and encoding it again would hold the event loop
+    return Response(content=body, media_type="application/json")
 
 
 def _tiff_preview_body(
