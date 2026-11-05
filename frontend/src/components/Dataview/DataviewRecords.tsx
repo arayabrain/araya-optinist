@@ -54,8 +54,8 @@ import InputsView from "components/Dataview/InputsView"
 import OutputsView from "components/Dataview/OutputsView"
 import { ThumbnailImage } from "components/Dataview/ThumbnailImage"
 import { WorkflowDetailsView } from "components/Dataview/WorkflowDetailsView"
-import { ImagePlotSimpleWithLoading } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
-import { RoiPlotSimpleWithLoading } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
+import { ImagePlotSimple } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
+import { RoiPlotSimple } from "components/Workspace/Visualize/Plot/RoiPlotSimple"
 import { DELAY_TIME_INPUT_CONFIRMED } from "const/Form"
 import {
   getDataviewRecords,
@@ -375,8 +375,8 @@ const defineColumns = (
                   alt="Input thumbnail"
                 />
               ) : (
-                // Legacy TIFF - may need on-demand sync, show with loading indicator
-                <ImagePlotSimpleWithLoading
+                // Legacy TIFF - fetched on demand, may need a sync from S3 first
+                <ImagePlotSimple
                   filePath={filePath}
                   workspaceId={workspaceId}
                   uniqueId={uniqueId}
@@ -442,8 +442,8 @@ const defineColumns = (
                   alt="ROI thumbnail"
                 />
               ) : (
-                // Legacy JSON - may need on-demand sync, show with loading indicator
-                <RoiPlotSimpleWithLoading
+                // Legacy JSON - fetched on demand, may need a sync from S3 first
+                <RoiPlotSimple
                   filePath={filePath}
                   workspaceId={workspaceId}
                   uniqueId={uniqueId}
