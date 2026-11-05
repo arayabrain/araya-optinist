@@ -25,6 +25,7 @@ from terraform_source import (
 
 PUBLIC_ALB_RULES_TF = TERRAFORM_DIR / "public_alb_rules.tf"
 PUBLIC_SERVICE_TF = TERRAFORM_DIR / "public_service.tf"
+PUBLIC_DATAVIEW_SERVICE_TF = TERRAFORM_DIR / "public_dataview_service.tf"
 PUBLIC_CLEANUP_TF = TERRAFORM_DIR / "public_cleanup.tf"
 INFRASTRUCTURE_TF = TERRAFORM_DIR / "infrastructure.tf"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
@@ -34,6 +35,10 @@ MONITORING_TF = TERRAFORM_DIR / "monitoring.tf"
 PREMIUM_BAND_START = 100
 
 PUBLISHED_DATA_VOLUME = "${local.env_prefix}-public-published-data-volume"
+INPUT_CACHE_VOLUME = "${local.env_prefix}-public-input-cache-volume"
+
+# The longest environment name in use; resource names are rendered with it
+LONGEST_ENVIRONMENT = "development"
 
 EXPECTED_ALB_ROUTING = {
     "sync_experiment_to_public": (
@@ -46,11 +51,15 @@ EXPECTED_ALB_ROUTING = {
         ("/system-internal/sync-experiments/*",),
         "autoscaling",
     ),
-    "visualizations_public_header": (280, ("/api/visualizations/*",), "public"),
+    "visualizations_public_header": (
+        280,
+        ("/api/visualizations/*",),
+        "public_dataview",
+    ),
     "public_dataview_api": (
         300,
         ("/api/public/dataview", "/api/public/dataview/*"),
-        "public",
+        "public_dataview",
     ),
     "auth_to_public": (305, ("/auth/*",), "public"),
     "users_me_to_public": (306, ("/users/me", "/users/me/*"), "public"),
@@ -662,6 +671,246 @@ class TestPublicAsgCapacity:
         assert re.search(
             r"desired_count\s*=\s*var\.public_asg_desired_capacity", service
         )
+
+
+class TestPublicDataviewIsApartFromSignIn:
+    """Anonymous DataView reads and sign-in reach different target groups.
+
+    The public page needs no sign-in, so nothing bounds how many visitors load
+    the tier serving it. On the target group that answers /auth and /users/me,
+    those visitors slow every user's sign-in.
+    """
+
+    DATAVIEW_RULES = ("visualizations_public_header", "public_dataview_api")
+    SIGN_IN_RULES = ("auth_to_public", "users_me_to_public")
+
+    def test_no_dataview_rule_shares_a_target_group_with_sign_in(self):
+        blocks = _listener_rule_blocks()
+        dataview = {_rule_forward_target(blocks[name]) for name in self.DATAVIEW_RULES}
+        sign_in = {_rule_forward_target(blocks[name]) for name in self.SIGN_IN_RULES}
+        assert not dataview & sign_in, f"shared target groups: {dataview & sign_in}"
+
+
+class TestPublicDataviewMatchesPublic:
+    """The public DataView tier runs the public task on its own instances.
+
+    It serves the published data the public tier served, so the mode, the
+    environment, the EFS caches and the health check match public's; only its
+    names, log group and capacity are its own.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.public_tf = read(PUBLIC_SERVICE_TF)
+        self.tf = read(PUBLIC_DATAVIEW_SERVICE_TF)
+        self.public_task = resource_block(
+            self.public_tf, "aws_ecs_task_definition", "public"
+        )
+        self.task = resource_block(
+            self.tf, "aws_ecs_task_definition", "public_dataview"
+        )
+
+    def test_the_target_group_health_check_matches_public(self):
+        ours = resource_block(self.tf, "aws_lb_target_group", "public_dataview")
+        public = resource_block(self.public_tf, "aws_lb_target_group", "public")
+        assert _nested_block(ours, "health_check") == _nested_block(
+            public, "health_check"
+        )
+        assert int(attribute(ours, "deregistration_delay")) == 600
+
+    def test_the_target_group_name_fits_the_alb_limit(self):
+        """ALB target group names cap at 32 characters; a longer one fails the
+        apply only once it reaches AWS."""
+        env_prefix = attribute(read(MAIN_TF), "env_prefix").strip('"')
+        target_group = resource_block(self.tf, "aws_lb_target_group", "public_dataview")
+        name = (
+            attribute(target_group, "name")
+            .strip('"')
+            .replace("${local.env_prefix}", env_prefix)
+            .replace("${var.environment}", LONGEST_ENVIRONMENT)
+        )
+        assert len(name) <= 32, f"{name} is {len(name)} characters"
+
+    def test_both_task_definitions_read_the_shared_environment(self):
+        assert re.search(
+            r"^\s*environment\s*=\s*local\.public_task_environment\s*$",
+            self.public_task,
+            re.MULTILINE,
+        ), "the public task no longer reads local.public_task_environment"
+        assert re.search(r"for\s+\w+\s+in\s+local\.public_task_environment", self.task)
+
+    def test_the_shared_environment_runs_public_mode(self):
+        """Public mode gates out the workflow routers an anonymous visitor
+        must never reach."""
+        local = re.search(
+            r"public_task_environment\s*=\s*\[(.*?)^\s*\]",
+            self.public_tf,
+            re.DOTALL | re.MULTILINE,
+        )
+        assert local, "local.public_task_environment not found"
+        assert '{ name = "INSTANCE_MODE", value = "public" }' in local.group(1)
+
+    def test_only_the_log_group_is_replaced_in_the_environment(self):
+        match = re.search(
+            r"environment\s*=\s*\[\s*for\s+\w+\s+in\s+"
+            r"local\.public_task_environment\s*:(.*?)\n\s*\]",
+            self.task,
+            re.DOTALL,
+        )
+        assert match, "the environment is not derived from the public task's"
+        assert re.findall(r'\.name\s*==\s*"(\w+)"', match.group(1)) == [
+            "CLOUDWATCH_LOG_GROUP"
+        ]
+        assert "aws_cloudwatch_log_group.public_dataview_optinist.name" in (
+            match.group(1)
+        )
+
+    @pytest.mark.parametrize(
+        "volume, container_path, access_point",
+        [
+            (PUBLISHED_DATA_VOLUME, "/app/studio_data/output", "published_data"),
+            (INPUT_CACHE_VOLUME, "/app/studio_data/input", "published_data_input"),
+        ],
+    )
+    def test_both_tiers_mount_the_same_efs_caches(
+        self, volume, container_path, access_point
+    ):
+        """One published copy for both tiers: a publish synced through the
+        public tier is what the DataView tier serves."""
+        for name, task in (("public", self.public_task), ("dataview", self.task)):
+            mount = re.search(
+                r'sourceVolume\s*=\s*"%s"\s*\n\s*containerPath\s*=\s*"([^"]+)"'
+                % re.escape(volume),
+                task,
+            )
+            assert mount, f"{volume} is absent from the {name} task's mountPoints"
+            assert mount.group(1) == container_path
+            resolved = re.search(
+                r'volume\s*\{\s*name\s*=\s*"%s".*?'
+                r"access_point_id\s*=\s*aws_efs_access_point\.(\w+)\.id"
+                % re.escape(volume),
+                task,
+                re.DOTALL,
+            )
+            assert resolved, f"no efs_volume_configuration for {volume} ({name})"
+            assert resolved.group(1) == access_point
+
+    def test_the_task_logs_into_its_own_group(self):
+        match = re.search(
+            r'"awslogs-group"\s*=\s*([^\n]+?)\s*$', self.task, re.MULTILINE
+        )
+        assert match, "public DataView task definition has no awslogs-group"
+        assert (
+            match.group(1) == "aws_cloudwatch_log_group.public_dataview_optinist.name"
+        )
+        group = resource_block(
+            self.tf, "aws_cloudwatch_log_group", "public_dataview_optinist"
+        )
+        assert attribute(group, "name") == (
+            '"/ecs/${var.environment}-public-dataview-optinist-cloud-taskdef"'
+        )
+        assert int(attribute(group, "retention_in_days")) == 30
+
+
+class TestPublicDataviewPlacement:
+    """The tier's tasks land on its own instances, in its own target group."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        tf = read(PUBLIC_DATAVIEW_SERVICE_TF)
+        self.service = resource_block(tf, "aws_ecs_service", "public_dataview")
+        self.template = resource_block(tf, "aws_launch_template", "public_dataview")
+        self.asg = resource_block(tf, "aws_autoscaling_group", "public_dataview")
+
+    def test_the_constraint_names_the_tier_its_instances_register(self):
+        """The service's constraint and the launch template's ECS attribute
+        must name the same tier, or the task is never placed."""
+        constraint = _nested_block(self.service, "placement_constraints")
+        assert attribute(constraint, "type") == '"memberOf"'
+        assert attribute(constraint, "expression") == (
+            '"attribute:tier == public-dataview"'
+        )
+        assert attribute(self.template, "tier") == '"public-dataview"'
+
+    def test_the_service_and_its_asg_register_into_its_target_group(self):
+        # Not _nested_block: container_name interpolates, so the block has braces
+        load_balancer = re.search(
+            r"load_balancer\s*\{\s*\n\s*target_group_arn\s*=\s*(\S+)", self.service
+        )
+        assert load_balancer, "public DataView service has no load_balancer block"
+        assert load_balancer.group(1) == "aws_lb_target_group.public_dataview.arn"
+        assert attribute(self.asg, "target_group_arns") == (
+            "[aws_lb_target_group.public_dataview.arn]"
+        )
+
+
+class TestPublicDataviewAsgCapacity:
+    """One instance by default.
+
+    A replaced instance takes public DataView down for its cold boot; sign-in
+    stays up on the public tier.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        tf = read(PUBLIC_DATAVIEW_SERVICE_TF)
+        self.asg = resource_block(tf, "aws_autoscaling_group", "public_dataview")
+        self.service = resource_block(tf, "aws_ecs_service", "public_dataview")
+        main_tf = read(MAIN_TF)
+        self.min_size = int(_variable_default(main_tf, "public_dataview_asg_min_size"))
+        self.max_size = int(_variable_default(main_tf, "public_dataview_asg_max_size"))
+        self.desired = int(
+            _variable_default(main_tf, "public_dataview_asg_desired_capacity")
+        )
+
+    def test_asg_reads_its_own_capacity_variables(self):
+        """Not the public tier's ``public_asg_*`` variables, and not a literal."""
+        assert re.search(r"min_size\s*=\s*var\.public_dataview_asg_min_size", self.asg)
+        assert re.search(r"max_size\s*=\s*var\.public_dataview_asg_max_size", self.asg)
+        assert re.search(
+            r"desired_capacity\s*=\s*var\.public_dataview_asg_desired_capacity",
+            self.asg,
+        )
+
+    def test_capacity_defaults_to_one_instance(self):
+        assert self.min_size == 1
+        assert self.min_size <= self.desired <= self.max_size
+
+    def test_asg_replaces_instances_the_load_balancer_reports_unhealthy(self):
+        assert attribute(self.asg, "health_check_type") == '"ELB"'
+        assert int(attribute(self.asg, "health_check_grace_period")) == 900
+
+    def test_ecs_desired_count_tracks_the_asg(self):
+        assert re.search(
+            r"desired_count\s*=\s*var\.public_dataview_asg_desired_capacity",
+            self.service,
+        )
+
+    def test_a_lone_task_is_replaced_stop_first(self):
+        """An instance holds one task (host port 8000). With one instance, a
+        minimum healthy percent above 0 rounds up to the running task, so a
+        deployment can neither stop it nor place its replacement."""
+        assert attribute(self.service, "deployment_minimum_healthy_percent") == (
+            "var.public_dataview_asg_desired_capacity > 1 ? 50 : 0"
+        )
+
+
+class TestPublicDataviewAlarms:
+    """The tier's target group has its own unhealthy-host and latency alarms."""
+
+    @pytest.mark.parametrize("alarm", ["tg_unhealthy_hosts", "alb_response_time_high"])
+    def test_a_key_watches_the_public_dataview_target_group(self, alarm):
+        block = resource_block(
+            read(MONITORING_TF), "aws_cloudwatch_metric_alarm", alarm
+        )
+        match = re.search(
+            r'^\s*"public-dataview"\s*=\s*\{\s*\n\s*'
+            r"tg_arn_suffix\s*=\s*aws_lb_target_group\.(\w+)\.arn_suffix",
+            block,
+            re.MULTILINE,
+        )
+        assert match, f"{alarm} has no public-dataview for_each key"
+        assert match.group(1) == "public_dataview"
 
 
 def _fake_elbv2_rules(describe_rules_response):
