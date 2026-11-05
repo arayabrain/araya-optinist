@@ -27,6 +27,11 @@ from studio.app.common.core.cloud.storage_tracking import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.storage.local_disk_guard import (
+    USER_HINT,
+    LocalDiskFullError,
+    ensure_local_disk_headroom,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
     InputFileLock,
     RemoteStorageController,
@@ -797,6 +802,14 @@ async def create_file(
                         f"Please free up space before uploading files.",
                     )
 
+        # Before anything is written: the host's disk, not the user's quota
+        try:
+            await asyncio.to_thread(ensure_local_disk_headroom, file.size or 0)
+        except LocalDiskFullError as e:
+            raise HTTPException(
+                status_code=507, detail=f"Cannot upload file: {e} {USER_HINT}"
+            )
+
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
@@ -1008,6 +1021,16 @@ async def download_file(
             )
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
+
+        # The response is open: release it before refusing. No Content-Length
+        # means only the reserve is checked.
+        try:
+            await asyncio.to_thread(ensure_local_disk_headroom, _content_length(res))
+        except LocalDiskFullError as e:
+            res.close()
+            raise HTTPException(
+                status_code=507, detail=f"Cannot download file: {e} {USER_HINT}"
+            )
 
         upload_id = uuid.uuid4().hex
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, path.name])

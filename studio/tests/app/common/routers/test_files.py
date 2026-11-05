@@ -57,6 +57,58 @@ def test_upload_tiff_without_user(client, tmp_path, monkeypatch):
     assert (tmp_path / workspace_id / "upload.tif").read_bytes() == tiff.read_bytes()
 
 
+def _disk_full(seen):
+    from studio.app.common.core.storage.local_disk_guard import LocalDiskFullError
+
+    def guard(extra_bytes=0):
+        seen["extra_bytes"] = extra_bytes
+        raise LocalDiskFullError(3 * 1024**3, 8 * 1024**3 + extra_bytes)
+
+    return guard
+
+
+def test_upload_refused_before_anything_is_written_when_the_disk_is_full(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", _disk_full(seen))
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 507, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith("Cannot upload file: ")
+    assert "not your storage quota" in detail
+    assert "Delete records you no longer need" in detail
+    assert seen["extra_bytes"] == 16
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_url_download_refused_and_the_response_closed_when_the_disk_is_full(
+    client, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    res = MagicMock(headers={"content-length": "1024"})
+    monkeypatch.setattr(files_module, "open_url", lambda url, public_only: res)
+    seen = {}
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", _disk_full(seen))
+
+    response = client.post(
+        f"/files/{workspace_id}/download", json={"url": "https://example.com/a.tif"}
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["detail"].startswith("Cannot download file: ")
+    assert seen["extra_bytes"] == 1024
+    res.close.assert_called_once()
+
+
 def test_DirTreeGetter_tif():
     output = DirTreeGetter.get_tree(
         workspace_id, [".tif", ".tiff", ".TIF", ".TIFF"], "files"
