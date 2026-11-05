@@ -20,26 +20,89 @@ logger = AppLogger.get_logger()
 HEATMAP_NORMALIZATION_OPTIONS = ("minmax", "mean", "none")
 
 
+def _not_a_trial_id(trial, in_range, n_bins):
+    """Why this behaviour column cannot be a trial id, or None if it can. A trial id
+    covers one stretch of frames per trial, and the (trial, bin) table it sizes is
+    never larger than the binned samples."""
+    keep = in_range & np.isfinite(trial)
+    if not keep.any():
+        return "no in-range sample has a finite value"
+    n_kept = np.count_nonzero(keep)
+    n_trial = len(np.unique(trial[keep]))
+    if n_trial * n_bins > n_kept:
+        return (
+            f"{n_trial:,} distinct values over {n_kept:,} binned samples, fewer than "
+            f"one sample per trial and bin"
+        )
+    finite = trial[np.isfinite(trial)]
+    run_ids = finite[np.r_[True, np.diff(finite) != 0]]
+    ids, n_runs = np.unique(run_ids, return_counts=True)
+    recurring = ids[n_runs > 1]
+    if len(recurring) == 1:
+        return (
+            f"value {recurring[0]:g} recurs in {n_runs.max():,} separate stretches "
+            f"of frames; if it marks the frames between trials, drop them with "
+            f"condition_split first"
+        )
+    if len(recurring) > 1:
+        return (
+            f"its {len(ids):,} values recur in {len(run_ids):,} separate stretches "
+            f"of frames"
+        )
+    return None
+
+
+def _check_trial_col(Y, trial_col, in_range, n_bins, event_col):
+    problem = _not_a_trial_id(Y[:, trial_col].astype(float), in_range, n_bins)
+    if problem is None:
+        return
+    candidates = [
+        c
+        for c in range(Y.shape[1])
+        if c not in (trial_col, event_col)
+        and _not_a_trial_id(Y[:, c].astype(float), in_range, n_bins) is None
+        and np.nanmax(Y[in_range, c]) > np.nanmin(Y[in_range, c])
+    ]
+    if len(candidates) == 1:
+        hint = f"Column {candidates[0]} looks like one."
+    elif candidates:
+        hint = f"Columns {', '.join(map(str, candidates))} look like one."
+    else:
+        hint = "No other column looks like one; -1 averages time samples instead."
+    raise AssertionError(
+        f"trial_col_index {trial_col} does not look like a trial id: {problem}. "
+        f"A trial column repeats one id over each trial's frames "
+        f"(1, 1, 1, 2, 2, ...). {hint}"
+    )
+
+
 def _trial_stats(X, in_range, bin_idx, trial, n_bins, min_samples):
     """Mean per trial per bin, then mean, sample std, sem and trial count across
     trials. A NaN sample drops that trial's bin for the cell, and its sem counts that;
     num_sample is the occupancy, shared by the cells."""
     keep = in_range & np.isfinite(trial)
-    assert keep.any(), "no in-range sample has a finite trial id"
     trial_ids, trial_pos = np.unique(trial[keep], return_inverse=True)
     n_trial = len(trial_ids)
     group = trial_pos * n_bins + bin_idx[keep]
     counts = np.bincount(group, minlength=n_trial * n_bins).reshape(n_trial, n_bins)
-    Xk = X[keep]
     # a NaN sample makes that trial's bin NaN for that cell, as in the sample mode
-    sums = np.stack(
-        [
-            np.bincount(group, weights=Xk[:, c], minlength=n_trial * n_bins)
-            for c in range(X.shape[1])
-        ]
-    ).reshape(X.shape[1], n_trial, n_bins)
+    per_trial = np.empty((X.shape[1], n_trial * n_bins))
+    for c in range(X.shape[1]):
+        per_trial[c] = np.bincount(
+            group, weights=X[keep, c], minlength=n_trial * n_bins
+        )
+    per_trial = per_trial.reshape(X.shape[1], n_trial, n_bins)
     with np.errstate(invalid="ignore", divide="ignore"):
-        per_trial = sums / counts
+        per_trial /= counts
+    sparse = (counts > 0) & (counts < min_samples)
+    if sparse.any():
+        logger.warning(
+            "covariate_binning: %d of %d trial-bins with samples have fewer than "
+            "min_samples %d and are NaN",
+            np.count_nonzero(sparse),
+            np.count_nonzero(counts),
+            min_samples,
+        )
     per_trial[:, counts < min_samples] = np.nan
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # a bin with no trial is NaN
@@ -151,6 +214,7 @@ def covariate_binning(
     num_cell = X.shape[1]
     n_trial = None
     if trial_col >= 0:
+        _check_trial_col(Y, trial_col, in_range, n_bins, col)
         mean, std, sem, num_sample, n_trial = _trial_stats(
             X,
             in_range,
@@ -180,7 +244,7 @@ def covariate_binning(
             np.flatnonzero(num_sample == 0).tolist(),
         )
     sparse = (num_sample > 0) & (num_sample < min_samples)
-    if sparse.any():
+    if n_trial is None and sparse.any():
         logger.warning(
             "covariate_binning: %d of %d bins have fewer than min_samples %d "
             "and are NaN: %s",

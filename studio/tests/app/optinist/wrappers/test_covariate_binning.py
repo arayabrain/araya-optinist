@@ -452,6 +452,7 @@ def test_trial_mode_sem_counts_the_trials_the_cell_has(tmp_path):
 
 
 def test_trial_mode_min_samples_drops_a_sparse_trial_bin(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
     behavior = _trial_behavior()
     behavior[0, 1] = 10.0  # trial 0 keeps 2 of its 3 samples in bin 0
     fluo = np.ones((NUM_CELL, NUM_FRAME))
@@ -470,6 +471,10 @@ def test_trial_mode_min_samples_drops_a_sparse_trial_bin(tmp_path, caplog):
 
     assert list(dense["num_sample"]) == [9, 10, 10, 10]
     np.testing.assert_allclose(dense["mean"][:, 0], 1.0)
+    assert (
+        "1 of 40 trial-bins with samples have fewer than min_samples 3" in caplog.text
+    )
+    assert "bins have fewer than min_samples" not in caplog.text
     assert list(loose["num_sample"]) == [10] * 4
     np.testing.assert_allclose(loose["mean"][:, 0], 1.4)
 
@@ -499,6 +504,47 @@ def test_trial_mode_nan_sample_blanks_that_trial_bin_only(tmp_path):
 def test_trial_col_out_of_range_fails_with_a_clear_message(tmp_path):
     with pytest.raises(AssertionError, match="trial_col_index 5 is out of range"):
         _bin(tmp_path, params={"trial_col_index": 5})
+
+
+def _with_column(behavior, column):
+    return np.column_stack([behavior, column])
+
+
+def test_continuous_trial_column_fails_before_allocating(tmp_path):
+    speed = np.random.default_rng(1).random(NUM_FRAME)
+    behavior = _with_column(_trial_behavior(), speed)
+
+    with pytest.raises(AssertionError) as error:
+        _bin(tmp_path, behavior=behavior, params={"trial_col_index": 3})
+
+    message = str(error.value)
+    assert "trial_col_index 3 does not look like a trial id" in message
+    assert "120 distinct values over 120 binned samples" in message
+    assert message.endswith("Column 2 looks like one.")
+
+
+def test_event_code_trial_column_fails_with_a_clear_message(tmp_path):
+    lick = np.tile([0, 0, 1, 2, 0, 1], NUM_FRAME // 6)
+    behavior = _with_column(_trial_behavior(), lick)
+
+    with pytest.raises(
+        AssertionError, match="its 3 values recur in 100 separate stretches of frames"
+    ):
+        _bin(tmp_path, behavior=behavior, params={"trial_col_index": 3})
+
+
+def test_trial_column_with_a_between_trials_code_points_at_condition_split(tmp_path):
+    behavior = _trial_behavior()
+    trial = behavior[:, 2] + 1
+    trial[trial % 2 == 0] = 0  # every other block of frames is between trials
+    behavior[:, 2] = trial
+
+    with pytest.raises(
+        AssertionError,
+        match="value 0 recurs in 5 separate stretches.*condition_split first.*"
+        "No other column looks like one",
+    ):
+        _bin(tmp_path, behavior=behavior, params=_trial_params())
 
 
 def test_min_samples_blanks_sparse_bins_in_sample_mode(tmp_path, caplog):
