@@ -8,7 +8,7 @@
 - **Backend validation** regenerates routing IDs from JWT and rejects mismatches with 403
 - **Immediate tier changes** via webhook-triggered cache invalidation (no TTL delay)
 - **503 fallback** automatically retries on free tier when premium instance is unavailable, and raises a user-visible warning plus a half-open circuit that re-probes the instance for recovery
-- **Static rule band** (priorities 200-320) splits unauthenticated, bootstrap, and public-dataview traffic onto the public tier, with the listener default action serving the SPA shell from public
+- **Static rule band** (priorities 200-320) splits unauthenticated and bootstrap traffic onto the public tier and public-dataview reads onto the public DataView tier, with the listener default action serving the SPA shell from public
 - **Instance identity** (`X-Served-By-Instance`) uses a domain-separated HMAC of the EC2 instance ID to detect ALB fallback to the shared backend without exposing infrastructure details
 
 > **Sister document:**
@@ -93,7 +93,7 @@ sequenceDiagram
 
 ## Static Listener Rule Band (Tier Split)
 
-Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager Lambda). The static rules below, defined in `infrastructure/terraform/public_alb_rules.tf`, split the remaining traffic between the public tier and the free tier. Lower priority numbers win; the listener default action is the final fallback.
+Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager Lambda). The static rules below, defined in `infrastructure/terraform/public_alb_rules.tf`, split the remaining traffic between the public tier, the public DataView tier and the free tier. Lower priority numbers win; the listener default action is the final fallback.
 
 Priority 10 is reserved for the maintenance page. While it is on it answers every request ahead of all other rules; see "Planned Downtime: Announcement and Maintenance Page" in `MAINTENANCE_PROCEDURES.md`. A rule below 10 would bypass it.
 
@@ -103,8 +103,8 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 | 100-199 | premium dynamic rules | Premium instance | `X-Routing-ID` + `X-User-Tier` (Lambda-created) |
 | 200 | `sync_experiment_to_public` | Public | `/system-internal/sync-experiment/*` |
 | 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |
-| 280 | `visualizations_public_header` | Public | `/api/visualizations/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
-| 300 | `public_dataview_api` | Public | `/api/public/dataview`, `/api/public/dataview/*` |
+| 280 | `visualizations_public_header` | Public DataView | `/api/visualizations/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
+| 300 | `public_dataview_api` | Public DataView | `/api/public/dataview`, `/api/public/dataview/*` |
 | 305 | `auth_to_public` | Public | `/auth/*` |
 | 306 | `users_me_to_public` | Public | `/users/me`, `/users/me/*` |
 | 307 | `log_report_to_public` | Public | `/log-report/*` |
@@ -117,6 +117,8 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 | default | listener default action | Public | no rule match (SPA document requests) |
 
 **Why bootstrap routes go to public:** `auth`, `users_me`, and `log-report` are served from the public tier so login, the post-login bootstrap calls, and client-error reporting keep working when the free tier is scaled to zero. Without these rules those requests would hit the priority-320 Bearer catch-all and 503 during a free outage.
+
+**Why public-dataview reads have their own tier:** the public DataView page needs no sign-in, so nothing bounds how many visitors load the tier serving it. Served from public, those visitors would slow every user's sign-in and `/users/me`. The public DataView tier runs the same public-mode task on its own instances and target group; see `PUBLIC_INSTANCE_ARCHITECTURE.md`. A premium user's requests that carry routing headers still match their premium rule (100-199) first.
 
 **Why the default action is public:** open-ended SPA routes (e.g. `/workspaces/15`) cannot be enumerated as rules. A browser document request carries `Accept: text/html` and no `Authorization` header, so it misses every rule and falls through to the default action, which serves the static SPA shell from public via `SPARoutingMiddleware`. See `PUBLIC_INSTANCE_ARCHITECTURE.md`.
 
