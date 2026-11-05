@@ -29,6 +29,11 @@ def _not_a_trial_id(trial, covariate, in_range, lo, hi):
     finite = np.isfinite(trial)
     if not (in_range & finite).any():
         return "no in-range sample has a finite value"
+    n_binned = len(np.unique(trial[in_range & finite]))
+    if n_binned < 2:
+        return (
+            "it has one value over the binned samples, and trial mode needs two trials"
+        )
     values = trial[finite]
     whole = values == np.round(values)
     if not whole.all() and whole.mean() >= 0.5:
@@ -90,7 +95,8 @@ def _check_trial_col(Y, trial_col, event_col, in_range, lo, hi, n_bins):
         for c in range(Y.shape[1])
         if c not in (trial_col, event_col)
         and _not_a_trial_id(Y[:, c].astype(float), covariate, in_range, lo, hi) is None
-        and np.nanmax(Y[in_range, c]) > np.nanmin(Y[in_range, c])
+        # a block or phase code (two values) is not offered as a trial id
+        and len(np.unique(Y[in_range, c][np.isfinite(Y[in_range, c])])) >= 3
     ]
     if len(candidates) == 1:
         hint = f"Column {candidates[0]} looks like one."

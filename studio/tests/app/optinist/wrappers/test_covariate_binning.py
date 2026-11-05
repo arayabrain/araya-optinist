@@ -746,3 +746,28 @@ def test_invalid_smoothing_fails_with_a_clear_message(tmp_path):
 def test_default_title_reports_samples_per_bin(tmp_path):
     info = _bin(tmp_path)
     assert info["mean_heatmap"].meta.title == "30 to 30 samples per bin"
+
+
+def test_single_trial_column_is_refused(tmp_path):
+    behavior = _trial_behavior()
+    behavior[:, 2] = 7.0  # one id throughout, like an experiment-phase code
+
+    with pytest.raises(AssertionError, match="trial mode needs two trials"):
+        _bin(tmp_path, behavior=behavior, params=_trial_params())
+
+
+def test_hint_skips_a_two_value_block_code(tmp_path):
+    behavior = _lap_behavior()
+    block = (np.arange(len(behavior)) >= len(behavior) // 2).astype(float)
+    behavior = _with_column(_with_column(behavior, block), np.zeros(len(behavior)))
+    behavior[:, 4] = np.tile([0, 0, 1, 2, 0, 1, 0, 0], len(behavior) // 8)
+
+    with pytest.raises(AssertionError) as error:
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params={"trial_col_index": 4},
+        )
+
+    assert str(error.value).endswith("Column 2 looks like one.")
