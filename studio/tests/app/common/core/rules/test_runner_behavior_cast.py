@@ -257,10 +257,10 @@ def test_numpy_consumers_run_on_the_cast_column_0(
     assert result[output].data.shape[0] == 3
 
 
-def test_eta_col_index_1_on_cast_column_fails_with_out_of_bounds(tmp_path):
+def test_eta_col_index_1_on_cast_column_fails_out_of_range(tmp_path):
     info = _eta_inputs(tmp_path)
     _cast_behavior_inputs(ETA, info)
 
     params = dict(ETA_PARAMS, event_col_index=1)
-    with pytest.raises(IndexError, match="out of bounds"):
+    with pytest.raises(AssertionError, match="out of range"):
         ETA(**info, output_dir="w1/u1/eta-1", params=params)
