@@ -29,6 +29,22 @@ def test_the_file_is_served_with_the_plot_meta_added(tmp_path, indent, plot_meta
     assert served == expected
 
 
+@pytest.mark.parametrize("cut", ["empty", "half", "last_line"])
+def test_a_file_cut_short_is_refused(tmp_path, cut):
+    text = pd.DataFrame(FRAMES).to_json(orient="split", indent=4)
+    path = tmp_path / "stack_1_2.json"
+    path.write_text(
+        {
+            "empty": "",
+            "half": text[: len(text) // 2],
+            "last_line": text[: text.rindex("\n")],
+        }[cut]
+    )
+
+    with pytest.raises(ValueError, match="whole JSON object"):
+        JsonReader.read_as_output_bytes(str(path))
+
+
 @pytest.mark.parametrize("batch_bytes", [1 << 20, 16], ids=["one_batch", "batches"])
 def test_line_breaks_and_indentation_are_dropped_and_strings_kept(
     tmp_path, monkeypatch, batch_bytes

@@ -61,7 +61,7 @@ class JsonReader:
         """
         A file's JSON object with its plot meta added, without parsing the file.
         Its members are served as written, without line breaks and indentation:
-        no OutputData conversion.
+        no OutputData conversion. ValueError if the file is not a whole object.
         """
         plot_metadata_path = f"{os.path.splitext(filepath)[0]}.plot-meta.json"
         meta = json.dumps(asdict(cls.read_as_plot_meta(plot_metadata_path)))
@@ -72,6 +72,9 @@ class JsonReader:
                 b"".join(line.strip() for line in lines)
                 for lines in iter(lambda: f.readlines(cls.READ_BATCH_BYTES), [])
             )
+        # A file read while it is rewritten is cut short: fail as a parse would
+        if not (body.startswith(b"{") and body.endswith(b"}")):
+            raise ValueError(f"{filepath} does not hold a whole JSON object")
         # "meta" goes first, after the object's opening brace
         return b"".join((b'{"meta":', meta.encode(), b",", memoryview(body)[1:]))
 
