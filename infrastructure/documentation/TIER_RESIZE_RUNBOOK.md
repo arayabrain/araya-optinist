@@ -36,7 +36,7 @@ Measure with the benchmark's AWS lane (`infrastructure/scripts/benchmark/README.
 | Trigger | Read from the rows | Fires when |
 |---|---|---|
 | Two concurrent runs do not both complete | `ROWS-WITH-FAILED-RUNS` at the end of `run_cases.sh`; `OOM kills in cgroup` in a two-run row's `summary.md` | a two-run row is listed, or its OOM kill count is above 0 |
-| A pair takes too long | `wall clock of the runs` in each `summary.md` | a two-run row's wall clock exceeds 2.5 times the single run's (CPU sharing alone gives about 2 times) |
+| A pair takes too long | `wall clock of the runs` in each `summary.md` | a two-run row on the single run's input (`S2P-2`, `S2P-CM`) takes more than 2.5 times the single run (`S2P-1`); CPU sharing alone gives about 2 times |
 | The API stops answering | the `/health` line in each `summary.md` | the longest stall is 120 s or more (two of the load balancer's 60 s checks; five replace the instance) |
 
 A trigger names the tier that needs the resize; it does not by itself prove the next size clears it.
@@ -57,10 +57,12 @@ BENCH_LANE=aws /opt/bench/repo/infrastructure/scripts/benchmark/run_bench.sh --l
 aws s3 sync /opt/bench/results/ "$BENCH_S3_PREFIX/results/"
 ```
 
-A row of k concurrent runs clears a size when every run completes with no OOM kill, its wall clock
-is within 1.25 × k times the single run's (`S2P-1` on the same instance), and the longest `/health`
-stall is under 120 s. For a pair that is the trigger's 2.5 times: CPU sharing alone makes k runs take
-at most k times one run, and the rule allows a quarter more. Three runs clear it within 3.75 times.
+A row clears a size when every run completes with no OOM kill and the longest `/health` stall is
+under 120 s. A row of k concurrent runs on the single run's input (`S2P-2`, `S2P-CM`, `S2P-3`) must
+also take at most 1.25 × k times `S2P-1` on the same instance. For a pair that is the trigger's 2.5
+times: CPU sharing alone makes k runs take at most k times one run, and the rule allows a quarter
+more. Three runs clear it within 3.75 times. The long row (`S2P-L`) and the short rows have no single
+run of their own length to compare with, so only the first sentence applies to them.
 
 ---
 
@@ -273,8 +275,9 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
 
    The base instance changes to the new type, interrupting a user on it, and the premium manager
    launches new per-user instances at the new type. If the base instance was stopped and the apply
-   leaves it running, stop it (`aws ec2 stop-instances --instance-ids <id>`): the premium manager's
-   idle stop always keeps the last running instance up, so it would stay running.
+   leaves it running, stop it (`aws ec2 stop-instances --instance-ids <id>`). The premium manager's
+   periodic scale-down always keeps the last running instance up, and only a sign-out that leaves
+   no premium user stops every idle instance, so it would stay running until then.
 3. Remove the per-user instances of the old type. The premium manager stops an idle instance and
    starts it again at the next sign-in, so without this they keep the old type. This terminates every
    per-user instance, running or stopped, and clears its records; the base instance stays.
