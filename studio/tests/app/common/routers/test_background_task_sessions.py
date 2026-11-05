@@ -117,6 +117,7 @@ RELEASING_ENDPOINTS = {
     ("run", "run_result"),
     ("files", "create_file"),
     ("files", "download_file"),
+    ("files", "get_download_status"),
     ("outputs", "sync_visualization_files"),
     ("internal", "sync_user_experiments"),
 }
@@ -500,6 +501,18 @@ def test_download_file_releases_the_request_session_on_failure():
     assert raised.value.status_code == 400
     db.close.assert_called_once()
     assert background_tasks.tasks == []
+
+
+def test_a_status_poll_that_finishes_a_copy_releases_the_request_session():
+    db = Mock()
+    background_tasks = BackgroundTasks()
+    landed = {"file_name": "data.csv", "remote_bucket_name": "b", "user_id": 1}
+    with patch.object(files, "_read_download_status", return_value=(Mock(), landed)):
+        asyncio.run(files.get_download_status("1", "0" * 32, background_tasks, db=db))
+    db.close.assert_called_once()
+    task = background_tasks.tasks[0]
+    assert task.func is files._finish_landed_upload
+    assert db not in task.args
 
 
 @contextmanager

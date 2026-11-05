@@ -8,6 +8,7 @@ import asyncio
 import errno
 import fcntl
 import io
+import json
 import os
 import stat
 import threading
@@ -75,7 +76,7 @@ def data_files(input_dir):
 def read_status(input_dir, upload_id=UPLOAD_ID):
     return files._read_download_status(
         str(input_dir / ".locks" / f"{upload_id}.download.json")
-    )
+    )[0]
 
 
 def lock_is_held(input_dir, name):
@@ -239,7 +240,7 @@ def test_the_status_is_a_file_every_worker_of_the_instance_can_read(input_dir):
     download(url_response(NEW, content_length=len(NEW)))
     status_file = input_dir / ".locks" / f"{UPLOAD_ID}.download.json"
     assert status_file.is_file()
-    status = asyncio.run(files.get_download_status("1", UPLOAD_ID))
+    status = asyncio.run(files.get_download_status("1", UPLOAD_ID, BackgroundTasks()))
     assert (status.done, status.upload_id) == (True, UPLOAD_ID)
     assert not hasattr(files, "DOWNLOAD_STATUS")
 
@@ -499,12 +500,159 @@ def test_a_status_the_downloading_worker_stopped_touching_reads_as_failed(
 ):
     """A worker killed mid-download leaves a status that would poll forever."""
     write_running_status(input_dir, age_seconds=60)
-    stale = asyncio.run(files.get_download_status("1", UPLOAD_ID))
+    stale = asyncio.run(files.get_download_status("1", UPLOAD_ID, BackgroundTasks()))
     assert (stale.error, stale.done, stale.current) == ("The upload stopped", False, 10)
 
     write_running_status(input_dir, age_seconds=5)
-    live = asyncio.run(files.get_download_status("1", UPLOAD_ID))
+    live = asyncio.run(files.get_download_status("1", UPLOAD_ID, BackgroundTasks()))
     assert (live.error, live.done, live.current) == (None, False, 10)
+
+
+def status_file(input_dir, upload_id=UPLOAD_ID):
+    return input_dir / ".locks" / f"{upload_id}.download.json"
+
+
+def age(path, seconds):
+    then = time.time() - seconds
+    os.utime(path, (then, then))
+
+
+def poll(upload_id=UPLOAD_ID):
+    tasks = BackgroundTasks()
+    status = files.get_download_status("1", upload_id, tasks, db=Mock())
+    return asyncio.run(status), tasks
+
+
+def land_and_die(input_dir, name="data.tif"):
+    """A URL upload whose worker dies once the file is in place, as its copy to
+    remote storage starts: the status file stays as the copy found it."""
+    at_replace, left = [], []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if os.path.basename(dst) == name:
+            at_replace.append(json.loads(status_file(input_dir).read_bytes()))
+        real_replace(src, dst)
+
+    def copy(workspace_id, copied):
+        left.append(status_file(input_dir).read_bytes())
+        return False
+
+    response = url_response(NEW, content_length=len(NEW))
+    with no_quota_or_usage(), remote_writer(copy), patch.object(
+        files.os, "replace", side_effect=replace
+    ):
+        asyncio.run(files.download(response, name, "1", UPLOAD_ID, "bucket", 7))
+    # Landed only once the replace is done: before it, the file is an old one
+    assert at_replace[0]["landed"] is None
+    status_file(input_dir).write_bytes(left[0])
+    assert (input_dir / name).read_bytes() == NEW
+
+
+def test_a_poll_finishes_the_copy_a_dead_worker_left_after_the_file_landed(
+    input_dir,
+):
+    land_and_die(input_dir)
+    status, tasks = poll()
+    assert (status.done, status.error, tasks.tasks) == (False, None, [])
+
+    age(status_file(input_dir), 60)
+    status, tasks = poll()
+    assert (status.done, status.error, len(tasks.tasks)) == (False, None, 1)
+
+    copies = []
+
+    def copy(workspace_id, name):
+        copies.append((name, lock_is_held(input_dir, "data.tif")))
+        return True
+
+    usage = AsyncMock()
+    with remote_writer(copy), patch.object(
+        files, "get_current_user_storage_usage", new=usage
+    ), patch.object(
+        files.WorkspaceDataCapacityService, "is_available", return_value=False
+    ):
+        asyncio.run(tasks())
+        assert files.RemoteStorageSimpleWriter.call_args_list[0].args == ("bucket",)
+    assert copies == [("data.tif", True), (MetadataCacheFile.IMAGE_SHAPE, True)]
+    usage.assert_awaited_once_with(7, force_live=True)
+    assert "data.tif" in json.loads(
+        (input_dir / MetadataCacheFile.IMAGE_SHAPE).read_text()
+    )
+    assert poll()[0].done
+
+
+def test_a_poll_never_copies_what_a_worker_left_mid_download(input_dir):
+    """Dead before the replace: the temporary file is partial, and the file
+    under the name, if any, is an older upload's."""
+    (input_dir / "data.csv").write_bytes(OLD)
+    left = []
+
+    def chunks(chunk_size):
+        yield NEW[:50]
+        left.append(status_file(input_dir).read_bytes())
+        raise ConnectionError("worker killed")
+
+    with remote_writer(lambda workspace_id, name: True) as copy:
+        download(Mock(headers={}, iter_content=chunks), remote=True)
+        status_file(input_dir).write_bytes(left[0])
+        age(status_file(input_dir), 60)
+        status, tasks = poll()
+        asyncio.run(tasks())
+    assert (status.error, status.current, tasks.tasks) == ("The upload stopped", 50, [])
+    copy.assert_not_called()
+    assert (input_dir / "data.csv").read_bytes() == OLD
+
+
+def test_a_failed_copy_stays_an_error_and_is_not_retried(input_dir):
+    """The frontend stops polling on an error, and an S3 failure that just
+    happened is likely to happen again."""
+    with remote_writer(lambda workspace_id, name: False):
+        download(url_response(NEW, content_length=len(NEW)), remote=True)
+    age(status_file(input_dir), 60)
+    status, tasks = poll()
+    assert "remote storage failed" in status.error
+    assert tasks.tasks == []
+
+
+def test_an_upload_cancelled_during_its_copy_can_still_be_finished(input_dir):
+    """A graceful shutdown cancels the background task; its last status write
+    keeps the landed record so a later poll finishes the copy."""
+
+    def copy(workspace_id, name):
+        raise asyncio.CancelledError
+
+    with remote_writer(copy), pytest.raises(asyncio.CancelledError):
+        download(url_response(NEW, content_length=len(NEW)), remote=True)
+    age(status_file(input_dir), 60)
+    status, tasks = poll()
+    assert (status.error, len(tasks.tasks)) == (None, 1)
+
+
+@pytest.mark.parametrize("lock_wait_seconds", [300, 0.1])
+def test_two_polls_of_a_dead_upload_copy_once(
+    input_dir, monkeypatch, lock_wait_seconds
+):
+    """Two tabs, or two workers: the second waits for the file's lock and then
+    sees the first's result, or, once its wait falls through, its heartbeat."""
+    monkeypatch.setattr(files.InputFileLock, "LOCK_WAIT_MAX_SECONDS", lock_wait_seconds)
+    land_and_die(input_dir)
+    age(status_file(input_dir), 60)
+    (_, first), (_, second) = poll(), poll()
+    copies = []
+
+    async def copy(workspace_id, name):
+        copies.append(name)
+        await asyncio.sleep(0.5)
+        return True
+
+    async def both():
+        await asyncio.gather(first(), second())
+
+    with no_quota_or_usage(), remote_writer(copy):
+        asyncio.run(both())
+    assert copies == ["data.tif", MetadataCacheFile.IMAGE_SHAPE]
+    assert poll()[0].done
 
 
 @pytest.mark.parametrize("heartbeat_seconds, stops", [(0.25, False), (100, True)])
@@ -523,7 +671,7 @@ def test_the_heartbeat_keeps_a_slow_download_alive(
         errors = []
         while True:
             await asyncio.sleep(0.1)
-            status = await files.get_download_status("1", UPLOAD_ID)
+            status = await files.get_download_status("1", UPLOAD_ID, BackgroundTasks())
             errors.append(status.error)
             if status.done or status.error:
                 return errors
@@ -544,15 +692,18 @@ def test_the_heartbeat_keeps_a_slow_download_alive(
 def test_the_status_route_answers_only_for_the_upload_asked_about(input_dir):
     write_running_status(input_dir, age_seconds=0, upload_id=OTHER_ID)
     with pytest.raises(files.HTTPException) as raised:
-        asyncio.run(files.get_download_status("1", UPLOAD_ID))
+        asyncio.run(files.get_download_status("1", UPLOAD_ID, BackgroundTasks()))
     assert raised.value.status_code == 404
-    assert asyncio.run(files.get_download_status("1", OTHER_ID)).current == 10
+    assert (
+        asyncio.run(files.get_download_status("1", OTHER_ID, BackgroundTasks())).current
+        == 10
+    )
 
 
 @pytest.mark.parametrize("upload_id", ["../x", UPLOAD_ID[:31], UPLOAD_ID + "0", ""])
 def test_the_status_route_refuses_an_upload_id_that_is_not_one(input_dir, upload_id):
     with patch.object(files, "_read_download_status") as read:
         with pytest.raises(files.HTTPException) as raised:
-            asyncio.run(files.get_download_status("1", upload_id))
+            asyncio.run(files.get_download_status("1", upload_id, BackgroundTasks()))
     assert raised.value.status_code == 404
     read.assert_not_called()

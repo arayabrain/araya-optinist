@@ -990,12 +990,23 @@ async def delete_file(
     response_model=DownloadStatus,
     dependencies=[Depends(is_workspace_available)],
 )
-async def get_download_status(workspace_id: str, upload_id: str):
+async def get_download_status(
+    workspace_id: str,
+    upload_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     try:
         status_path = _download_status_path(workspace_id, upload_id)
-        return await asyncio.to_thread(_read_download_status, status_path)
+        status, landed = await asyncio.to_thread(_read_download_status, status_path)
     except (InvalidPathError, FileNotFoundError):
         raise HTTPException(status_code=404)
+    if landed is not None:
+        release_request_session(db)
+        background_tasks.add_task(
+            _finish_landed_upload, workspace_id, status_path, landed
+        )
+    return status
 
 
 @router.post(
@@ -1072,21 +1083,30 @@ def _download_status_path(workspace_id: str, upload_id: str) -> str:
     )
 
 
-def _write_download_status(status_path: str, status: DownloadStatus) -> None:
+def _write_download_status(
+    status_path: str, status: DownloadStatus, landed: Optional[dict] = None
+) -> None:
+    """landed: set once the file is in place, what finishing its copy needs."""
     try:
         os.makedirs(os.path.dirname(status_path), exist_ok=True)
-        _write_json_atomic(status_path, asdict(status))
+        _write_json_atomic(status_path, {**asdict(status), "landed": landed})
     except OSError as e:
         logger.warning(f"download status not written ({status_path}): {e}")
 
 
-def _read_download_status(status_path: str) -> DownloadStatus:
+def _read_download_status(status_path: str) -> tuple[DownloadStatus, Optional[dict]]:
+    """The status, and its landed record when the worker died after the file
+    was in place but before its copy to remote storage ended."""
     age = time.time() - os.stat(status_path).st_mtime
     data = _read_json_dict(status_path)
     status = DownloadStatus(**{k: v for k, v in data.items() if k in _STATUS_FIELDS})
-    if not (status.done or status.error) and age > DOWNLOAD_STALE_SECONDS:
-        status.error = "The upload stopped"
-    return status
+    if status.done or status.error or age <= DOWNLOAD_STALE_SECONDS:
+        return status, None
+    landed = data.get("landed")
+    if isinstance(landed, dict):
+        return status, landed
+    status.error = "The upload stopped"
+    return status, None
 
 
 def _touch_every_heartbeat(status_path: str, stop: threading.Event) -> None:
@@ -1094,6 +1114,45 @@ def _touch_every_heartbeat(status_path: str, stop: threading.Event) -> None:
     while not stop.wait(DOWNLOAD_HEARTBEAT_SECONDS):
         with suppress(OSError):
             os.utime(status_path)
+
+
+def _start_heartbeat(status_path: str) -> threading.Event:
+    stop = threading.Event()
+    threading.Thread(
+        target=_touch_every_heartbeat, args=(status_path, stop), daemon=True
+    ).start()
+    return stop
+
+
+async def _refresh_usage(workspace_id: str, user_id: Optional[int]) -> None:
+    if WorkspaceDataCapacityService.is_available():
+        await asyncio.to_thread(_update_workspace_data_usage, workspace_id)
+    if user_id is not None:
+        await get_current_user_storage_usage(user_id, force_live=True)
+
+
+async def _finish_landed_upload(
+    workspace_id: str, status_path: str, landed: dict
+) -> None:
+    """Copy a file whose URL upload's worker died after the file landed. The
+    status is read again under the file's lock, so of several pollers one copies
+    and the rest see its heartbeat or its result."""
+    file_name = landed["file_name"]
+    async with InputFileLock.acquire(workspace_id, file_name):
+        status, landed = await asyncio.to_thread(_read_download_status, status_path)
+        if landed is None:
+            return
+        await asyncio.to_thread(os.utime, status_path)
+        stop_heartbeat = _start_heartbeat(status_path)
+        try:
+            await _publish_input(workspace_id, file_name, landed["remote_bucket_name"])
+            status.done = True
+        except Exception as e:
+            status.error = str(e)
+        finally:
+            stop_heartbeat.set()
+            await asyncio.to_thread(_write_download_status, status_path, status, landed)
+    await _refresh_usage(workspace_id, landed["user_id"])
 
 
 def _content_length(res: Response) -> int:
@@ -1141,10 +1200,8 @@ async def download(
     status_path = _download_status_path(workspace_id, upload_id)
     status = DownloadStatus(total=_content_length(res), upload_id=upload_id)
     tmp_path = _atomic_tmp_path(filepath)
-    stop_heartbeat = threading.Event()
-    threading.Thread(
-        target=_touch_every_heartbeat, args=(status_path, stop_heartbeat), daemon=True
-    ).start()
+    landed = None
+    stop_heartbeat = _start_heartbeat(status_path)
     try:
         await run_in_threadpool(
             _stream_to_file, res, tmp_path, chunk_size, status_path, status
@@ -1153,6 +1210,12 @@ async def download(
         # cannot put an older remote copy back; after 300 s the lock falls through
         async with InputFileLock.acquire(workspace_id, file_name):
             await asyncio.to_thread(os.replace, tmp_path, filepath)
+            landed = {
+                "file_name": file_name,
+                "remote_bucket_name": remote_bucket_name,
+                "user_id": user_id,
+            }
+            await asyncio.to_thread(_write_download_status, status_path, status, landed)
             await _publish_input(workspace_id, file_name, remote_bucket_name)
         # done means in place locally and on remote storage
         status.done = True
@@ -1164,9 +1227,6 @@ async def download(
             os.unlink(tmp_path)
         stop_heartbeat.set()
         res.close()
-        await asyncio.to_thread(_write_download_status, status_path, status)
+        await asyncio.to_thread(_write_download_status, status_path, status, landed)
 
-    if WorkspaceDataCapacityService.is_available():
-        await asyncio.to_thread(_update_workspace_data_usage, workspace_id)
-    if user_id is not None:
-        await get_current_user_storage_usage(user_id, force_live=True)
+    await _refresh_usage(workspace_id, user_id)
