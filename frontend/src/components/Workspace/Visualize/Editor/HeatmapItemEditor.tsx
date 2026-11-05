@@ -46,7 +46,7 @@ export const HeatmapItemEditor: FC = () => {
     <>
       <ParamSection title="Heatmap">
         <ShowScale />
-        <ColorRange />
+        <ColorRange key={itemId} />
         <Grid container component="label" alignItems="center">
           <Grid item xs={8}>
             <FieldLabel>Pick Color</FieldLabel>
@@ -153,7 +153,7 @@ const ColorRange: FC = () => {
 }
 
 // The field shows what was typed ("-", "", "1.50") and commits each finite value;
-// a value changed from outside (another item selected) shows through. With onClear,
+// a value changed from outside shows through. With onClear,
 // emptying the field commits that too.
 export const DraftNumberField: FC<{
   label: string
