@@ -133,9 +133,10 @@ Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until 
 
 ### Compliance
 
-4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. The policy still describes Google Analytics as planned and not yet active; update it in the same release that sets the production container ID.
-5. **Have the notice copy reviewed.** It has had no legal review.
-6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload. A restyle of either surface can regress this.
+4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. Section 5.2 describes the consent flow, the events and the GA4 property settings; update it whenever any of those change. The policy describes analytics as active, which holds only in a build with `REACT_APP_GTM_ID_SUBSCR` set: ship it in the same release that sets the production container ID.
+5. **Have the notice copy reviewed.** It has had no legal review. Put these points to that review: APPI Article 28(2) asks for the destination country's protection system and the recipient's measures to be given when consent is sought, while privacy policy Section 4.2 offers them on request; the notice says Google processes data in the United States, while the Section 4.2 table says United States and other countries; and `gtm.js` and the Google Fonts stylesheets in `public/index.html` send the visitor's IP address and browser information to Google on every visit whatever the consent choice, while Sections 4.1, 4.2 and 9 describe Google's analytics processing as consent-only.
+6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload in that tab. Other open tabs keep their earlier choice until reloaded (nothing listens for the `analyticsConsent` storage key), and the policy tells visitors so. A restyle of either surface can regress this.
+7. **Settle the GDPR Article 27 position.** Analytics records how EEA/UK visitors use the Service, which is likely "monitoring" under Article 3(2)(b), and continuous analytics is hard to call "occasional" under the Article 27(2)(a) exemption. Privacy policy Section 4.2 now says only that no representative has been appointed. Legal either appoints one, and Section 4.2 then names them with contact details, or records why none is required.
 
 ### Verification, once a container exists
 
@@ -149,6 +150,8 @@ The client-side test suite stops at `window.dataLayer`. A correct `dataLayer` do
 | 4   | Decline at the notice, then navigate          | DebugView receives nothing at all                                                                                                               |
 | 5   | Visit `/account-manager?email=...`, DebugView | `page_location` carries no email and no query string                                                                                            |
 | 6   | Trigger cross-check in the container          | All four custom-event triggers exist and fire                                                                                                   |
+| 7   | Privacy link from `/account-manager?email=`   | Accept in the new tab: `page_referrer` carries no email and no query string                                                                     |
+| 8   | Accept, then switch off on `/account`         | Scroll, click an outbound link and navigate: the browser's network panel shows no further `/g/collect` request                                  |
 
 ---
 
@@ -157,11 +160,13 @@ The client-side test suite stops at `window.dataLayer`. A correct `dataLayer` do
 The code side is inert without these console-side settings. Configure them **before** setting `REACT_APP_GTM_ID`, or measurement will be wrong from the first hit.
 
 1. **GA4 configuration tag: automatic `page_view` OFF.** Add a Custom Event trigger on `route_change` and send `page_view` from it. Leaving the built-in pageview on produces two pageviews per navigation.
-2. **Override `page_location` and `page_title` on the GA4 tag** using the `page_location` and `page_path` dataLayer variables. GA4 otherwise defaults `page_location` to `document.location.href`, and two live routes carry personal data in their query strings: `/account-manager?email=...&name=...` and `/subscription/thanks?session_id=...`. The frontend cannot prevent that from the tag's own default.
-3. **Enable GA4 "Redact data"** (IP and query-string redaction) as defence in depth.
+2. **Override `page_location` and `page_title` on the GA4 tag** using the `page_location` and `page_path` dataLayer variables. GA4 otherwise defaults `page_location` to `document.location.href`, and live routes carry personal data in their query strings: `/account-manager?email=...&name=...`, `/dataview` and `/public` (`?user_name=...&uid=...&name=...&workspace_name=...`), and `/subscription/thanks?session_id=...` and `/subscription/failed?session_id=...`. The frontend cannot prevent that from the tag's own default, and the privacy policy states page addresses are recorded without query parameters, so this override blocks setting the production container ID.
+   Override `page_referrer` the same way, with `document.referrer` stripped of its query string. GA4 defaults it to `document.referrer`, which keeps the full same-origin URL: the notice's Privacy Policy link opens a new tab with `rel="noopener"` only, so accepting there from `/account-manager?email=...` would send that URL as the referrer. This is a rollout gate too.
+3. **Enable GA4 "Redact data"** (email and query-parameter redaction) as defence in depth, with the query parameters `email`, `name`, `session_id`, `user_name`, `uid` and `workspace_name`. It does not cover IP addresses.
 4. **Create Custom Event triggers** for `sign_up`, `login`, `run_pipeline` and `view_public_data`.
 5. **Do not put tags on the Initialization or All Pages triggers.** See the returning-visitor row under Edge Case Handling.
 6. **`sign_up` fires when registration is submitted, not when the email is verified.** Verification is a separate later step, so this metric counts attempted registrations.
+7. **Turn enhanced measurement off on the GA4 web data stream**, including page changes based on browser history events. Its scroll, outbound-click, site-search, form, video and file-download events and its history-change pageviews come from the Google tag's own listeners, not from `trackEvent`: they would collect more than the actions the privacy policy lists, add a second pageview per client-side navigation, and withdrawal on `/account` stops `trackEvent`, not those listeners. This blocks setting the production container ID.
 
 ---
 
