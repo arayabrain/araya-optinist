@@ -2,10 +2,13 @@
 # Run the real-infrastructure case list on one instance prepared by
 # bootstrap.sh, at the tier's container ceiling with its swap allowance
 # (variant S, which needs the host swap bootstrap.sh sets up). Copies each
-# finished row to S3 straight away, so a self-shutdown loses nothing, and
-# prints ALL-ROWS-DONE only once every row is there (else SYNC-FAILED, exit 1).
+# finished row to S3 straight away, so a self-shutdown loses nothing.
+# Ends with ALL-ROWS-DONE (exit 0) only when every row produced its summary
+# and every result is in S3; otherwise ROWS-INCOMPLETE or SYNC-FAILED (exit 1).
 #
-# Usage (as root, on the instance):
+# bootstrap.sh does not start this script: start it separately once bootstrap
+# has finished (e.g. through SSM Run Command), as root, with its environment
+# set in that command, not in the user data:
 #   BENCH_S3_PREFIX=s3://<bucket>/<prefix> run_cases.sh
 # Environment passed on to run_bench.sh, for the tier being modelled:
 #   BENCH_UVICORN_WORKERS, BENCH_MEMORY_MIB, BENCH_SWAP_MIB
@@ -32,11 +35,24 @@ export BENCH_LANE="aws"
 
 sync_results() { aws s3 sync --quiet "$RES/" "$BENCH_S3_PREFIX/results/"; }
 
+INCOMPLETE=()   # rows that produced no summary
+FAILED_RUNS=()  # rows with a summary whose runs did not all succeed (a result)
+
 row() {
   local label=$1; shift
+  local marker rc=0
+  marker="$(mktemp)"
   echo "ROW-START $label $(date -u +%H:%M)"
-  "$B" --label "$label" --results-dir "$RES" "$@"
-  echo "ROW-END $label exit=$? $(date -u +%H:%M)"
+  "$B" --label "$label" --results-dir "$RES" "$@" || rc=$?
+  echo "ROW-END $label exit=$rc $(date -u +%H:%M)"
+  # A row directory ends in its label; a row stopped before measuring (input
+  # missing, swap check, container left over) has no summary written since
+  if [[ -z "$(find "$RES" -maxdepth 2 -path "*-$label/summary.md" -newer "$marker")" ]]; then
+    INCOMPLETE+=("$label")
+  elif [[ $rc -ne 0 ]]; then
+    FAILED_RUNS+=("$label(exit $rc)")
+  fi
+  rm -f "$marker"
   # The next copy retries what this one missed
   sync_results || echo "SYNC-FAILED $label $(date -u +%H:%M)"
 }
@@ -60,18 +76,27 @@ row S2P-L --algo suite2p --input "$L" "${COMMON[@]}"
 
 if [[ -n "$SHORT_FRAMES" ]]; then
   SHORT="neurofinder.00.10_stack_f${SHORT_FRAMES}.tif"
-  docker run --rm --platform linux/amd64 \
+  if docker run --rm --platform linux/amd64 \
     -v "$ROOT/repo:/app" -v "$ROOT/inputs:/inputs" -w /app --entrypoint "" \
     development-optinist-for-cloud:latest \
     python infrastructure/scripts/benchmark/make_large_input.py \
     "/inputs/$(basename "$M")" "/inputs/$SHORT" --repeat 1 --frames "$SHORT_FRAMES" \
-    > "$RES/input-$SHORT.json"
-  row S2P-2-short --algo suite2p --input "$ROOT/inputs/$SHORT" --conc 2 "${COMMON[@]}"
-  row S2P-CM-short --algo suite2p,caiman --input "$ROOT/inputs/$SHORT" "${COMMON[@]}"
+    > "$RES/input-$SHORT.json"; then
+    row S2P-2-short --algo suite2p --input "$ROOT/inputs/$SHORT" --conc 2 "${COMMON[@]}"
+    row S2P-CM-short --algo suite2p,caiman --input "$ROOT/inputs/$SHORT" "${COMMON[@]}"
+  else
+    echo "SHORT-INPUT-FAILED $(date -u +%H:%M)"
+    INCOMPLETE+=(S2P-2-short S2P-CM-short)
+  fi
 fi
 
 sync_results || {
   echo "SYNC-FAILED final $(date -u +%H:%M): some results are only on this instance"
   exit 1
 }
+[[ ${#FAILED_RUNS[@]} -eq 0 ]] || echo "ROWS-WITH-FAILED-RUNS ${FAILED_RUNS[*]}"
+if [[ ${#INCOMPLETE[@]} -gt 0 ]]; then
+  echo "ROWS-INCOMPLETE ${INCOMPLETE[*]} $(date -u +%H:%M)"
+  exit 1
+fi
 echo "ALL-ROWS-DONE $(date -u +%H:%M)"
