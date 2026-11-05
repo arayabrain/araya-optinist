@@ -2,7 +2,10 @@ import { AxiosError } from "axios"
 
 import { describe, expect, it } from "@jest/globals"
 
-import { uploadFile } from "store/slice/FileUploader/FileUploaderActions"
+import {
+  uploadFile,
+  uploadRejectionMessage,
+} from "store/slice/FileUploader/FileUploaderActions"
 import reducer from "store/slice/FileUploader/FileUploaderSlice"
 
 const arg = {
@@ -18,6 +21,36 @@ const rejected = (status: number, detail: unknown) => {
   error.response = { status, data: { detail } } as AxiosError["response"]
   return uploadFile.rejected(error, "id", arg, error)
 }
+
+describe("uploadRejectionMessage", () => {
+  // The URL upload dialog shows the same detail; it has no reducer case
+  it("shows a 507 detail from a URL upload", () => {
+    const error = new AxiosError("Request failed with status code 507")
+    error.response = {
+      status: 507,
+      data: {
+        detail: "Cannot download file: the server's disk is nearly full.",
+      },
+    } as AxiosError["response"]
+    expect(uploadRejectionMessage(error, "Url does not exist!")).toContain(
+      "disk is nearly full",
+    )
+  })
+
+  it("keeps the fallback for a network error or an array detail", () => {
+    expect(uploadRejectionMessage(undefined, "Url does not exist!")).toBe(
+      "Url does not exist!",
+    )
+    const error = new AxiosError("Request failed with status code 422")
+    error.response = {
+      status: 422,
+      data: { detail: [{ msg: "field required" }] },
+    } as AxiosError["response"]
+    expect(uploadRejectionMessage(error, "Url does not exist!")).toBe(
+      "Url does not exist!",
+    )
+  })
+})
 
 describe("uploadFile.rejected", () => {
   it("shows the server's string detail (507 local disk full)", () => {

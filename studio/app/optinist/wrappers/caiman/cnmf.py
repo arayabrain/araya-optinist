@@ -1,5 +1,4 @@
 import contextlib
-import errno
 import gc
 import os
 
@@ -10,7 +9,7 @@ from urllib3.util.retry import Retry
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.local_disk_guard import require_free_bytes
+from studio.app.common.core.storage.local_disk_guard import reserve_file
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
@@ -258,25 +257,10 @@ def util_get_image_memmap_from_files(
     mmap_path = join_filepath([dir_path, fname_tot])
 
     # The whole file is reserved up front: a sparse memmap on a disk that fills
-    # mid-fill dies with SIGBUS, which nothing can catch or record. The reserve
-    # check keeps the host's headroom even when the movie itself would fit.
-    # numpy's "w+" reopens with "w+b" and truncates, so the file is reserved
-    # here and mapped "r+". Where fallocate is unsupported (macOS) it stays
-    # sparse, as before.
+    # mid-fill dies with SIGBUS, which nothing can catch or record. numpy's
+    # "w+" reopens with "w+b" and truncates, so the reserved file is mapped "r+".
     nbytes = int(np.prod(shape_mov)) * np.dtype(np.float32).itemsize
-    require_free_bytes(nbytes, dir_path)
-    fd = os.open(mmap_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
-    try:
-        if hasattr(os, "posix_fallocate") and nbytes:
-            try:
-                os.posix_fallocate(fd, 0, nbytes)
-            except OSError as e:
-                if e.errno in (errno.ENOSPC, errno.EFBIG):
-                    with contextlib.suppress(OSError):
-                        os.remove(mmap_path)
-                    raise
-    finally:
-        os.close(fd)
+    reserve_file(mmap_path, nbytes)
     mmap = np.memmap(
         mmap_path,
         mode="r+",

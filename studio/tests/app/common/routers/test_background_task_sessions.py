@@ -27,6 +27,7 @@ queues long work stays green until someone re-checks the list.
 import ast
 import asyncio
 import inspect
+import io
 import re
 import textwrap
 from contextlib import contextmanager
@@ -587,6 +588,22 @@ def _queued_usage_updates(background_tasks):
     ]
 
 
+def _upload_request(data=b""):
+    """A request whose multipart body holds the upload, as the route parses it"""
+    from starlette.datastructures import UploadFile
+
+    async def stream():
+        yield b""
+
+    request = Mock(headers={})
+    request.form = AsyncMock(
+        return_value={"file": UploadFile(io.BytesIO(data), size=len(data))}
+    )
+    request.stream = stream
+    request.close = AsyncMock()
+    return request
+
+
 def _call_create_file(db, background_tasks, over_quota=False):
     with patch.object(
         files,
@@ -608,7 +625,7 @@ def _call_create_file(db, background_tasks, over_quota=False):
                 workspace_id="1",
                 filename="data.csv",
                 background_tasks=background_tasks,
-                file=Mock(),
+                request=_upload_request(),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=db,

@@ -340,6 +340,51 @@ class TestCleanupUserData:
         assert f"{DIRPATH.OUTPUT_DIR}/workspace1/exp123" in deleted
         assert f"{DIRPATH.OUTPUT_DIR}/workspace1/input_tiff" in deleted
 
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=False)
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_input_tiff_cache_stays_while_an_experiment_is_kept(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        """A kept experiment's pickle and NWB point at the cached TIFF."""
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=False
+        ):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["exp123", "input_tiff"]):
+                        with patch("shutil.rmtree") as mock_rmtree:
+                            DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+
+        assert [call[0][0] for call in mock_rmtree.call_args_list] == []
+
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=False)
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_input_tiff_cache_stays_when_an_experiment_deletion_fails(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=True
+        ):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["input_tiff", "exp123"]):
+                        with patch(
+                            "shutil.rmtree", side_effect=OSError("busy")
+                        ) as mock_rmtree:
+                            result = DataCleanupJob._cleanup_user_data(
+                                "123", ["workspace1"]
+                            )
+
+        assert result == CleanupOutcome.ERROR
+        deleted = [call[0][0] for call in mock_rmtree.call_args_list]
+        assert [os.path.basename(p) for p in deleted] == ["exp123"]
+
 
 def test_input_verification_skips_caiman_memmaps(tmp_path, monkeypatch):
     """A crashed CNMF run leaves `<input>.mmap` beside the input; it is never

@@ -357,6 +357,26 @@ class TestPostProcessDiskFull:
         assert mock_observe.observe_overall.await_count == 2
 
     @pytest.mark.usefixtures("_patch_snakemake_execution")
+    def test_enospc_on_the_last_lock_retry_still_retries(self, mock_observe, reclaim):
+        from studio.app.common.core.snakemake.snakemake_executor import (
+            _observe_overall_with_lock_retry,
+        )
+        from studio.app.common.core.storage.remote_storage_controller import (
+            RemoteStorageLockError,
+        )
+
+        lock = RemoteStorageLockError(WORKSPACE_ID, UNIQUE_ID)
+        mock_observe.observe_overall = AsyncMock(
+            side_effect=[lock, lock, self._enospc(), None]
+        )
+
+        result = _observe_overall_with_lock_retry(WORKSPACE_ID, UNIQUE_ID)
+
+        assert result == (True, True, True)
+        reclaim.assert_called_once()
+        assert mock_observe.observe_overall.await_count == 4
+
+    @pytest.mark.usefixtures("_patch_snakemake_execution")
     def test_a_second_enospc_gives_up(self, mock_observe, reclaim):
         from studio.app.common.core.snakemake.snakemake_executor import (
             _observe_overall_with_lock_retry,

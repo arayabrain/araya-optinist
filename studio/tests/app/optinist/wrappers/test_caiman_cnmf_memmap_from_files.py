@@ -213,20 +213,31 @@ def test_caiman_cnmf_fills_the_memmap_from_every_file(tmp_path, monkeypatch):
     assert called.value.args[0] == paths
 
 
-def test_the_memmap_is_reserved_up_front(tmp_path):
+def test_the_memmap_is_reserved_before_it_is_mapped(tmp_path, monkeypatch):
     """A sparse memmap on a disk that fills mid-fill dies with SIGBUS; the
-    whole file is allocated first where the OS supports it."""
+    whole file is allocated before the first mapped write, and mapped "r+"
+    (numpy's "w+" would truncate the reservation)."""
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    seen = {}
+    real_memmap = np.memmap
+
+    def observe(filename, dtype=np.uint8, mode="r+", *args, **kwargs):
+        if str(filename).endswith(".mmap"):
+            st = os.stat(filename)
+            seen.update(mode=mode, size=st.st_size, allocated=st.st_blocks * 512)
+        return real_memmap(filename, dtype, mode, *args, **kwargs)
+
+    monkeypatch.setattr(cnmf.np, "memmap", observe)
     path = write(tmp_path / "m.tif", 6, np.uint16)
     out = tmp_path / "out"
     out.mkdir()
-    _, _, mmap_path = util_get_image_memmap_from_files(
-        "fid", [path], str(out / "m.tif")
-    )
+    util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
     nbytes = 6 * 9 * 7 * 4
-    st = os.stat(mmap_path)
-    assert st.st_size == nbytes
+    assert seen["mode"] == "r+"
+    assert seen["size"] == nbytes
     if hasattr(os, "posix_fallocate"):
-        assert st.st_blocks * 512 >= nbytes
+        assert seen["allocated"] >= nbytes
 
 
 def test_a_full_disk_at_reservation_leaves_no_file(tmp_path, monkeypatch):

@@ -60,6 +60,22 @@ def input_dir(tmp_path, monkeypatch):
     return tmp_path / "1"
 
 
+def _upload_request(data=b""):
+    """A request whose multipart body holds the upload, as the route parses it"""
+    from starlette.datastructures import UploadFile
+
+    async def stream():
+        yield b""
+
+    request = Mock(headers={})
+    request.form = AsyncMock(
+        return_value={"file": UploadFile(io.BytesIO(data), size=len(data))}
+    )
+    request.stream = stream
+    request.close = AsyncMock()
+    return request
+
+
 def test_the_upload_route_replaces_the_file_under_an_open_reader(input_dir):
     path = input_dir / "data.csv"
     path.write_bytes(OLD)
@@ -79,7 +95,7 @@ def test_the_upload_route_replaces_the_file_under_an_open_reader(input_dir):
                 workspace_id="1",
                 filename="data.csv",
                 background_tasks=BackgroundTasks(),
-                file=Mock(file=io.BytesIO(NEW)),
+                request=_upload_request(NEW),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=Mock(),
@@ -260,7 +276,7 @@ def test_the_upload_routes_fetch_and_copy_off_the_event_loop(input_dir):
                 workspace_id="1",
                 filename="data.csv",
                 background_tasks=BackgroundTasks(),
-                file=Mock(file=io.BytesIO(NEW)),
+                request=_upload_request(NEW),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=Mock(),

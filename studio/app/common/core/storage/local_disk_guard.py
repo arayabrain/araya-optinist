@@ -11,6 +11,7 @@ level imports only the stdlib, DIRPATH, MODE and the logger; anything that
 pulls in the workflow machinery is imported inside the function that needs it.
 """
 
+import contextlib
 import errno
 import os
 import re
@@ -112,6 +113,46 @@ def require_free_bytes(nbytes: int, path: str) -> None:
             f"{_gb(free)} GB is free, and {_gb(reserve)} GB must stay free for "
             "the host. Delete records you no longer need, or try a smaller movie.",
         )
+
+
+def reserve_file(path: str, nbytes: int) -> None:
+    """Create path with nbytes allocated up front (posix_fallocate), under one
+    lock per container (one app task per host) so two workers cannot both
+    pass the reserve check on the same free space; a lock that cannot be
+    taken within the timeout is skipped. ENOSPC and EFBIG leave no file;
+    where fallocate is unsupported the file stays sparse."""
+    from filelock import FileLock, Timeout
+
+    from studio.app.common.core.utils.filelock_handler import FileLockUtils
+
+    lock = FileLock(
+        FileLockUtils.get_lockfile_path(
+            os.path.join(DIRPATH.OUTPUT_DIR, "reserve_local_disk")
+        ),
+        timeout=120,
+    )
+    try:
+        lock.acquire()
+    except (Timeout, OSError) as e:
+        logger.warning("reserve_file: no lock (%s), proceeding", e)
+        lock = None
+    try:
+        require_free_bytes(nbytes, os.path.dirname(path))
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            if hasattr(os, "posix_fallocate") and nbytes:
+                try:
+                    os.posix_fallocate(fd, 0, nbytes)
+                except OSError as e:
+                    if e.errno in (errno.ENOSPC, errno.EFBIG):
+                        with contextlib.suppress(OSError):
+                            os.remove(path)
+                        raise
+        finally:
+            os.close(fd)
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def ensure_local_disk_headroom(extra_bytes: int = 0) -> None:
@@ -230,8 +271,21 @@ def _is_leftover(filename: str) -> bool:
     return filename.endswith(_LEFTOVER_SUFFIXES) or bool(_ATOMIC_TMP.search(filename))
 
 
+def _stamp(st: os.stat_result) -> tuple:
+    return (st.st_ino, st.st_mtime_ns)
+
+
+def _unchanged(path: str, stamp: tuple) -> bool:
+    """False once a rerun has recreated or written the candidate."""
+    try:
+        return _stamp(os.stat(path)) == stamp
+    except OSError:
+        return False
+
+
 def _old_files(root: str, cutoff: float, match) -> list:
-    """(size, path) of the files under root older than cutoff that match."""
+    """(size, path, False, stamp) of the files under root older than cutoff
+    that match."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIPPED_DIRS]
@@ -244,7 +298,7 @@ def _old_files(root: str, cutoff: float, match) -> list:
             except OSError:
                 continue
             if st.st_mtime < cutoff:
-                found.append((st.st_size, path))
+                found.append((st.st_size, path, False, _stamp(st)))
     return found
 
 
@@ -259,18 +313,28 @@ def _dir_size(path: str) -> int:
     return total
 
 
+def _workspace_ids() -> list:
+    """From both data roots: an interrupted upload leaves input/<ws> before
+    the workspace has any output."""
+    ids = set()
+    for root in (DIRPATH.OUTPUT_DIR, DIRPATH.INPUT_DIR):
+        try:
+            ids.update(n for n in os.listdir(root) if not n.startswith("."))
+        except OSError:
+            pass
+    return sorted(ids)
+
+
 def _reclaim_candidates(max_age_sec: float, exclude: Optional[Tuple[str, str]]) -> list:
-    """(size, path, is_dir) of everything on the allowlist that no running
-    experiment can still need."""
+    """(size, path, is_dir, stamp) of everything on the allowlist that no
+    running experiment can still need."""
     cutoff = time.time() - max_age_sec
     is_mmap = lambda name: name.endswith(".mmap")  # noqa: E731
     candidates = []
     running_uids = set()
 
-    for workspace_id in sorted(os.listdir(DIRPATH.OUTPUT_DIR)):
+    for workspace_id in _workspace_ids():
         workspace_dir = os.path.join(DIRPATH.OUTPUT_DIR, workspace_id)
-        if not os.path.isdir(workspace_dir):
-            continue
         workspace_idle = True
         for unique_id in _experiment_ids(workspace_dir):
             if (workspace_id, unique_id) == exclude or experiment_is_running(
@@ -279,25 +343,22 @@ def _reclaim_candidates(max_age_sec: float, exclude: Optional[Tuple[str, str]]) 
                 workspace_idle = False
                 running_uids.add(unique_id)
                 continue
-            files = _old_files(
+            candidates += _old_files(
                 os.path.join(workspace_dir, unique_id), cutoff, _is_leftover
             )
-            candidates += [(size, path, False) for size, path in files]
         if workspace_idle:
             # Only the memmaps CaImAn writes next to the cached input TIFF: the
             # TIFF itself is referenced by the input node's pickle
             cache_dir = os.path.join(workspace_dir, INPUT_TIFF_CACHE_DIRNAME)
             if os.path.isdir(cache_dir):
-                files = _old_files(cache_dir, cutoff, is_mmap)
-                candidates += [(size, path, False) for size, path in files]
+                candidates += _old_files(cache_dir, cutoff, is_mmap)
             input_dir = os.path.join(DIRPATH.INPUT_DIR, workspace_id)
             if os.path.isdir(input_dir):
-                files = _old_files(
+                candidates += _old_files(
                     input_dir,
                     cutoff,
                     lambda name: is_mmap(name) or bool(_ATOMIC_TMP.fullmatch(name)),
                 )
-                candidates += [(size, path, False) for size, path in files]
 
     temp_root = caiman_temp_root()
     if os.path.isdir(temp_root):
@@ -307,11 +368,12 @@ def _reclaim_candidates(max_age_sec: float, exclude: Optional[Tuple[str, str]]) 
             if not os.path.isdir(path) or unique_id in running_uids:
                 continue
             try:
-                if os.path.getmtime(path) >= cutoff:
-                    continue
+                st = os.stat(path)
             except OSError:
                 continue
-            candidates.append((_dir_size(path), path, True))
+            if st.st_mtime >= cutoff:
+                continue
+            candidates.append((_dir_size(path), path, True, _stamp(st)))
     return candidates
 
 
@@ -342,11 +404,14 @@ def reclaim_local_caches(
     try:
         freed = 0
         candidates = _reclaim_candidates(max_age_hours * 3600, exclude)
-        for size, path, is_dir in sorted(candidates, reverse=True):
+        for size, path, is_dir, stamp in sorted(candidates, reverse=True):
             if target_free_bytes is not None:
                 free = get_free_bytes()
                 if free is not None and free >= target_free_bytes:
                     break
+            # A rerun may have recreated it since discovery
+            if not _unchanged(path, stamp):
+                continue
             try:
                 if is_dir:
                     shutil.rmtree(path)

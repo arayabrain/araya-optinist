@@ -204,6 +204,32 @@ def test_mc_refuses_before_motion_correct_when_the_reserve_would_go(
     assert os.listdir(caiman["temp_root"]) == []
 
 
+def test_mc_budgets_the_memmap_its_copy_and_the_output_tiff(
+    caiman, experiment, monkeypatch
+):
+    import errno
+    from types import SimpleNamespace
+
+    from studio.app.common.core.storage import local_disk_guard as guard
+    from studio.app.optinist.wrappers.caiman.motion_correction import (
+        _movie_float32_bytes,
+        caiman_mc,
+    )
+
+    nbytes = _movie_float32_bytes(experiment["movie"])
+    monkeypatch.setenv(guard.MIN_FREE_DISK_ENV, "8")
+    monkeypatch.setattr(
+        guard.shutil,
+        "disk_usage",
+        lambda p: SimpleNamespace(free=8 * guard.GIB + 2 * nbytes + 1, total=0, used=0),
+    )
+    output_dir = experiment["node"]("caiman_mc")
+    with pytest.raises(OSError) as info:
+        caiman_mc(ImageData([experiment["movie"]]), output_dir, {})
+    assert info.value.errno == errno.ENOSPC
+    assert caiman["mc_calls"] == 0
+
+
 def test_mc_skips_the_check_when_a_header_cannot_be_read(
     caiman, experiment, monkeypatch
 ):

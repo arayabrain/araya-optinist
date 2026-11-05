@@ -351,7 +351,9 @@ def _observe_overall_with_lock_retry(
     reclaimed_disk = False
     retry_max = RemoteSyncLockFileUtil.LOCK_CONFLICT_RETRY_MAX
 
-    for attempt in range(1, retry_max + 1):
+    attempt = 0
+    while attempt < retry_max:
+        attempt += 1
         try:
             asyncio.run(
                 WorkflowResult(workspace_id, unique_id).observe_overall(generation)
@@ -409,6 +411,7 @@ def _observe_overall_with_lock_retry(
                     target_free_bytes=min_free_bytes(),
                     exclude=(workspace_id, unique_id),
                 )
+                attempt -= 1  # the disk retry is not a lock retry
                 continue
             logger.error(
                 f"snakemake_execute post process (WorkflowResult) failed: {e}",

@@ -521,6 +521,7 @@ class DataCleanupJob:
                     # Verify each experiment has S3 backup before deletion
                     experiments_to_delete = []
                     experiments_to_keep = []
+                    has_input_tiff_cache = False
 
                     if os.path.isdir(output_dir):
                         for experiment_id in os.listdir(output_dir):
@@ -528,10 +529,8 @@ class DataCleanupJob:
                             if not os.path.isdir(experiment_path):
                                 continue
 
-                            # The cached input TIFFs are never uploaded: they go
-                            # with the workspace, as on a host recycle
                             if experiment_id == INPUT_TIFF_CACHE_DIRNAME:
-                                experiments_to_delete.append(experiment_id)
+                                has_input_tiff_cache = True
                                 continue
 
                             # Verify S3 backup exists
@@ -561,8 +560,17 @@ class DataCleanupJob:
                         )
                         shutil.rmtree(experiment_path)
 
+                    # The cached input TIFFs are never uploaded; kept
+                    # experiments still reference them, so they go last
+                    if has_input_tiff_cache and not experiments_to_keep:
+                        cache_dir = os.path.join(output_dir, INPUT_TIFF_CACHE_DIRNAME)
+                        logger.debug(f"Deleting input TIFF cache: {cache_dir}")
+                        shutil.rmtree(cache_dir)
+
                     # If all experiments deleted, remove workspace output dir
-                    if experiments_to_delete and not experiments_to_keep:
+                    if (
+                        experiments_to_delete or has_input_tiff_cache
+                    ) and not experiments_to_keep:
                         if os.path.exists(output_dir) and not os.listdir(output_dir):
                             logger.debug(
                                 f"Deleting empty output directory: {output_dir}"

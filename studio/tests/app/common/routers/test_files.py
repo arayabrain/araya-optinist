@@ -85,7 +85,86 @@ def test_upload_refused_before_anything_is_written_when_the_disk_is_full(
     assert detail.startswith("Cannot upload file: ")
     assert "not your storage quota" in detail
     assert "Delete records you no longer need" in detail
-    assert seen["extra_bytes"] == 16
+    # Checked against Content-Length, before the multipart body is spooled
+    assert seen["extra_bytes"] == int(response.request.headers["content-length"])
+    assert seen["extra_bytes"] > 16
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_upload_checks_the_destination_copy_after_parsing(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    checked = []
+    monkeypatch.setattr(
+        files_module, "ensure_local_disk_headroom", lambda n=0: checked.append(n)
+    )
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert checked == [int(response.request.headers["content-length"]), 16]
+
+
+def test_a_refused_upload_reads_the_body_out_before_answering():
+    """A response sent while the client is still sending arrives as a reset."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    chunks = [b"abc", b"def"]
+    received = []
+
+    async def receive():
+        chunk = chunks.pop(0)
+        received.append(chunk)
+        return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    with pytest.raises(HTTPException) as info:
+        asyncio.run(files_module._refuse_upload(request, 507, "full"))
+    assert info.value.status_code == 507
+    assert received == [b"abc", b"def"]
+
+
+def test_a_malformed_multipart_body_is_400_not_500(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", lambda n=0: None)
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        content=b"not multipart",
+        headers={"content-type": "multipart/form-data"},
+    )
+    assert response.status_code == 400, response.text
+
+
+def test_a_disk_that_fills_while_receiving_is_507(client, tmp_path, monkeypatch):
+    import errno
+
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", lambda n=0: None)
+
+    async def enospc(self):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(files_module.Request, "form", enospc)
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+    assert response.status_code == 507, response.text
+    assert "filled while receiving" in response.json()["detail"]
+
+
+def test_upload_without_a_file_field_is_422(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif", data={"other": "x"}
+    )
+    assert response.status_code == 422
     assert not (tmp_path / workspace_id).exists()
 
 

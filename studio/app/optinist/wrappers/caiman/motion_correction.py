@@ -50,11 +50,11 @@ def caiman_mc(
                 params_dict=distribute_params_to_groups(params, vars(opts))
             )
 
-        # MotionCorrect writes a float32 memmap of the movie and save_memmap
-        # may copy it: refuse before either would take the host's reserve
+        # Peak disk: MotionCorrect's float32 memmap, save_memmap's copy of it
+        # (fallback path) and the float32 output TIFF, all present at once
         nbytes = _movie_float32_bytes(image.path)
         if nbytes is not None:
-            require_free_bytes(nbytes * 2, caiman_temp_root())
+            require_free_bytes(nbytes * 3, caiman_temp_root())
         with caiman_cluster() as (dview, n_processes):
             mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
 

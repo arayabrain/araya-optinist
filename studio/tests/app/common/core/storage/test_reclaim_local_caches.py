@@ -130,6 +130,27 @@ class TestWorkspaceCaches:
         assert os.path.exists(input_tif)
         assert os.path.exists(lock)
 
+    def test_upload_temp_in_a_workspace_without_output_is_reclaimed(self, data):
+        upload_tmp = _file(data["input"] / "7" / f".{HEX}.tmp", 200)
+        kept = _file(data["input"] / "7" / "data.tif", 100)
+        assert guard.reclaim_local_caches() == 200
+        assert not os.path.exists(upload_tmp)
+        assert os.path.exists(kept)
+
+    def test_a_candidate_recreated_since_discovery_is_kept(self, data, monkeypatch):
+        _, cache_mmap, *_ = self._workspace(data)
+        real = guard._reclaim_candidates
+
+        def discover_then_rerun(*args, **kwargs):
+            candidates = real(*args, **kwargs)
+            os.remove(cache_mmap)
+            _file(cache_mmap, 500, mtime=time.time())
+            return candidates
+
+        monkeypatch.setattr(guard, "_reclaim_candidates", discover_then_rerun)
+        guard.reclaim_local_caches()
+        assert os.path.exists(cache_mmap)
+
     def test_busy_workspace_keeps_them(self, data):
         files = self._workspace(data)
         _file(data["output"] / "1" / "expB" / "experiment.yaml")

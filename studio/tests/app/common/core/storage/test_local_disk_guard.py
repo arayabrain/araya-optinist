@@ -2,6 +2,7 @@
 
 import errno
 import logging
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -181,6 +182,68 @@ class TestRequireFreeBytes:
 
         monkeypatch.setattr(guard.shutil, "disk_usage", broken)
         guard.require_free_bytes(10**12, "/data")
+
+
+class TestReserveFile:
+    """The reserve check and the allocation happen under one host-wide lock,
+    so two workers cannot both pass the check on the same free space."""
+
+    @pytest.fixture
+    def events(self, monkeypatch):
+        import filelock
+
+        log = []
+
+        class Lock:
+            def __init__(self, path, timeout):
+                log.append(("lock", os.path.basename(path), timeout))
+
+            def acquire(self):
+                log.append("acquire")
+
+            def release(self):
+                log.append("release")
+
+        monkeypatch.setattr(filelock, "FileLock", Lock)
+        monkeypatch.setattr(
+            os,
+            "posix_fallocate",
+            lambda fd, off, n: log.append(("fallocate", n)),
+            raising=False,
+        )
+        monkeypatch.setattr(guard.shutil, "disk_usage", _usage(20 * GIB))
+        return log
+
+    def test_checks_and_allocates_under_the_lock(self, tmp_path, events):
+        path = str(tmp_path / "a.mmap")
+        guard.reserve_file(path, 4096)
+        assert os.path.exists(path)
+        assert events[1:] == ["acquire", ("fallocate", 4096), "release"]
+        assert events[0][1].endswith("reserve_local_disk.lock")
+
+    def test_a_refused_reservation_leaves_no_file(self, tmp_path, events, monkeypatch):
+        monkeypatch.setattr(guard.shutil, "disk_usage", _usage(9 * GIB))
+        path = str(tmp_path / "a.mmap")
+        with pytest.raises(OSError) as info:
+            guard.reserve_file(path, 2 * GIB)
+        assert info.value.errno == errno.ENOSPC
+        assert not os.path.exists(path)
+        assert events[-1] == "release"
+
+    def test_a_busy_lock_proceeds_unlocked(self, tmp_path, events, monkeypatch):
+        import filelock
+
+        class Busy:
+            def __init__(self, *a, **k):
+                pass
+
+            def acquire(self):
+                raise filelock.Timeout("busy")
+
+        monkeypatch.setattr(filelock, "FileLock", Busy)
+        path = str(tmp_path / "a.mmap")
+        guard.reserve_file(path, 4096)
+        assert os.path.exists(path)
 
 
 class TestCaimanTempRoot:

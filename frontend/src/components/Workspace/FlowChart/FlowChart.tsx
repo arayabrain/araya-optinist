@@ -39,6 +39,7 @@ import PopupInputUrl from "components/Workspace/PopupInputUrl"
 import { CONTENT_HEIGHT, RIGHT_DRAWER_WIDTH } from "const/Layout"
 import { getAlgoList } from "store/slice/AlgorithmList/AlgorithmListActions"
 import {
+  uploadRejectionMessage,
   uploadViaUrl,
   waitForUploadViaUrl,
 } from "store/slice/FileUploader/FileUploaderActions"
@@ -127,7 +128,10 @@ const FlowChart = memo(function FlowChart(props: UseRunPipelineReturnType) {
       }),
     )
     if (!uploadViaUrl.fulfilled.match(data)) {
-      handleClickVariant("error", "Url does not exist!")
+      handleClickVariant(
+        "error",
+        uploadRejectionMessage(data.payload, "Url does not exist!"),
+      )
       return
     }
     const { file_name, upload_id } = data.payload

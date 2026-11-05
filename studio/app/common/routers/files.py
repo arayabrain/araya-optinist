@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import errno
 import json
 import os
 import re
@@ -11,9 +13,12 @@ from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import tifffile
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from requests.models import Response
 from sqlmodel import Session
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 from tqdm import tqdm
 
 from studio.app.common.core.auth.auth_dependencies import (
@@ -763,12 +768,27 @@ async def set_shape(workspace_id: str, filepath: str):
     "/{workspace_id}/upload/{filename}",
     response_model=FilePath,
     dependencies=[Depends(is_workspace_owner)],
+    # The body is parsed by hand (see below), so the schema is declared here
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["file"],
+                        "properties": {"file": {"type": "string", "format": "binary"}},
+                    }
+                }
+            },
+        }
+    },
 )
 async def create_file(
     workspace_id: str,
     filename: str,
+    request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
@@ -795,20 +815,40 @@ async def create_file(
                         "storage quota exceeded "
                         f"({storage_usage_percent:.1f}% used)"
                     )
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Cannot upload file: Storage quota exceeded "
+                    await _refuse_upload(
+                        request,
+                        403,
+                        f"Cannot upload file: Storage quota exceeded "
                         f"({storage_usage_percent:.1f}% used). "
                         f"Please free up space before uploading files.",
                     )
 
-        # Before anything is written: the host's disk, not the user's quota
+        # The multipart body is spooled to the host's disk as it is parsed,
+        # so the reserve is checked against Content-Length before reading it,
+        # and again for the destination copy while the spool still exists
         try:
-            await asyncio.to_thread(ensure_local_disk_headroom, file.size or 0)
-        except LocalDiskFullError as e:
+            declared = int(request.headers.get("content-length", 0))
+        except ValueError:
+            declared = 0
+        await _require_upload_headroom(request, declared)
+        try:
+            form = await request.form()
+        except StarletteHTTPException as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
+        except ClientDisconnect:
+            raise HTTPException(status_code=400, detail="Upload interrupted")
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                raise
             raise HTTPException(
-                status_code=507, detail=f"Cannot upload file: {e} {USER_HINT}"
+                status_code=507,
+                detail="Cannot upload file: the analysis server's local disk "
+                f"filled while receiving it. {USER_HINT}",
             )
+        file = form.get("file")
+        if not isinstance(file, UploadFile):
+            raise HTTPException(status_code=422, detail="Missing file")
+        await _require_upload_headroom(request, file.size or 0)
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
@@ -872,9 +912,28 @@ async def create_file(
         )
 
     finally:
+        with contextlib.suppress(Exception):
+            await request.close()
         # The live storage refresh lists every S3 object of the user; do not
         # hold the guards' connection while it runs
         release_request_session(db)
+
+
+async def _refuse_upload(request: Request, status_code: int, detail: str) -> None:
+    """Raise HTTPException after reading out the rest of the body (to nowhere):
+    a response sent while the client is still uploading reaches the browser
+    as a connection reset, not as this message."""
+    with contextlib.suppress(ClientDisconnect):
+        async for _ in request.stream():
+            pass
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+async def _require_upload_headroom(request: Request, nbytes: int) -> None:
+    try:
+        await asyncio.to_thread(ensure_local_disk_headroom, nbytes)
+    except LocalDiskFullError as e:
+        await _refuse_upload(request, 507, f"Cannot upload file: {e} {USER_HINT}")
 
 
 DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}

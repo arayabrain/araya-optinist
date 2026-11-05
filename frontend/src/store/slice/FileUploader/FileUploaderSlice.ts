@@ -1,11 +1,10 @@
-import { AxiosError } from "axios"
-
 import { createSlice, PayloadAction } from "@reduxjs/toolkit"
 
 import {
   getStatusLoadViaUrl,
   setUploadProgress,
   uploadFile,
+  uploadRejectionMessage,
   waitForUploadViaUrl,
 } from "store/slice/FileUploader/FileUploaderActions"
 import { inistialUploaderState } from "store/slice/FileUploader/FileUploaderInitlalState"
@@ -56,17 +55,14 @@ export const fileUploaderSlice = createSlice({
       .addCase(uploadFile.rejected, (state, action) => {
         const { requestId } = action.meta.arg
         const currentState = state[requestId]
-        // The thunk rejects with the axios error; a string detail (507 disk
-        // full, 403 quota) says what to do. A 422 detail is an array: fall
-        // back to the message rather than render it.
-        const detail = (
-          action.payload as AxiosError<{ detail?: unknown }> | undefined
-        )?.response?.data?.detail
         state[requestId] = {
           ...currentState,
           pending: false,
           fulfilled: false,
-          error: typeof detail === "string" ? detail : action.error.message,
+          error: uploadRejectionMessage(
+            action.payload,
+            action.error.message ?? "Upload failed",
+          ),
         }
       })
       .addCase(getStatusLoadViaUrl.pending, (state, action) => {
