@@ -55,6 +55,21 @@ def stub_token_and_user_row():
 
 
 @contextmanager
+def stub_firebase_verify(uid: str):
+    """Stub only Firebase's token check; the token cache is emptied around it."""
+    from studio.app.common.core.auth import auth_helper
+
+    auth_helper._token_cache.clear()
+    try:
+        with patch.object(
+            auth_helper.firebase_auth, "verify_id_token", return_value={"uid": uid}
+        ):
+            yield
+    finally:
+        auth_helper._token_cache.clear()
+
+
+@contextmanager
 def one_connection_pool(db_path, timeout: float):
     """Serve get_db and get_session from a SQLite file pool of one connection."""
     engine = create_engine(

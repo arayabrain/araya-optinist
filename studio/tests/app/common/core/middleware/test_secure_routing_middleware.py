@@ -34,7 +34,11 @@ import pytest
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from studio.tests.app.common.db_pool_probe import asgi_client, one_connection_pool
+from studio.tests.app.common.db_pool_probe import (
+    asgi_client,
+    one_connection_pool,
+    stub_firebase_verify,
+)
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -1020,11 +1024,7 @@ class TestTierLookupOffTheEventLoop:
         _tier_cache.clear()
         with one_connection_pool(
             tmp_path / "pool.db", timeout=3
-        ) as engine, patch.object(
-            secure_routing_middleware,
-            "extract_uid_from_firebase_jwt_async",
-            return_value=(TEST_UID, None),
-        ), patch.object(
+        ) as engine, stub_firebase_verify(TEST_UID), patch.object(
             MODE, "IS_STANDALONE", False
         ), patch.object(
             secure_routing_middleware, "_get_instance_id", return_value=None

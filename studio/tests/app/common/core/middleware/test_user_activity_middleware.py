@@ -29,7 +29,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 
-from studio.tests.app.common.db_pool_probe import asgi_client, one_connection_pool
+from studio.tests.app.common.db_pool_probe import (
+    asgi_client,
+    one_connection_pool,
+    stub_firebase_verify,
+)
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -1064,7 +1068,6 @@ class TestTierLookupOffTheEventLoop:
     async def test_a_tier_lookup_waiting_for_the_pool_leaves_the_loop_free(
         self, tmp_path
     ):
-        from studio.app.common.core.middleware import user_activity_middleware
         from studio.app.common.core.middleware.user_activity_middleware import (
             UserActivityMiddleware,
             _user_tier_cache,
@@ -1084,11 +1087,7 @@ class TestTierLookupOffTheEventLoop:
         _user_tier_cache.clear()
         with one_connection_pool(
             tmp_path / "pool.db", timeout=3
-        ) as engine, patch.object(
-            user_activity_middleware,
-            "extract_uid_from_firebase_jwt_async",
-            return_value=(TEST_UID, None),
-        ), patch.object(
+        ) as engine, stub_firebase_verify(TEST_UID), patch.object(
             MODE, "IS_STANDALONE", False
         ):
             async with asgi_client(UserActivityMiddleware(app)) as client:
