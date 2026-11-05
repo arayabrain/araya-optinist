@@ -72,11 +72,13 @@ const EXPECTED_ALARMS = [
   `${ENV}-optinist-ebs-queue-length-high`,
   `${ENV}-optinist-efs-burst-credits-low`,
   `${ENV}-optinist-efs-throughput-high`,
+  `${ENV}-optinist-free-serving-below-desired`,
   `${ENV}-optinist-free-tg-response-time-high`,
   `${ENV}-optinist-free-tg-unhealthy-hosts`,
   `${ENV}-optinist-high-iowait`,
   `${ENV}-optinist-load-average-high`,
   `${ENV}-optinist-memory-high`,
+  `${ENV}-optinist-public-serving-below-desired`,
   `${ENV}-optinist-public-tg-response-time-high`,
   `${ENV}-optinist-public-tg-unhealthy-hosts`,
   `${ENV}-optinist-rds-connections-high`,
@@ -100,6 +102,8 @@ const COST_ALARM = `${ENV}-monthly-cost-high`
 
 // An alarm's own metric, over the window it evaluates. Only ever called for an
 // alarm already in ALARM, so the happy path pays nothing.
+type MetricQuery = { Id: string; ReturnData?: boolean; [key: string]: unknown }
+
 type AlarmDetail = {
   name: string
   state: string
@@ -113,6 +117,7 @@ type AlarmDetail = {
   threshold: number
   operator: string
   evaluationPeriods: number
+  metrics: MetricQuery[] | null
 }
 
 function breaches(value: number, threshold: number, operator: string): boolean {
@@ -143,30 +148,36 @@ function breaches(value: number, threshold: number, operator: string): boolean {
 // either way, where get-metric-statistics puts a plain statistic at the
 // datapoint's top level and a percentile inside ExtendedStatistics.
 function stillBreaching(alarm: AlarmDetail): boolean {
-  const window = Math.max(alarm.period * alarm.evaluationPeriods, 300)
-  const query = JSON.stringify([
-    {
-      Id: "m",
-      MetricStat: {
-        Metric: {
-          Namespace: alarm.namespace,
-          MetricName: alarm.metric,
-          Dimensions: alarm.dimensions,
+  // A metric-math alarm carries its own queries and no top-level period.
+  const window = Math.max((alarm.period ?? 60) * alarm.evaluationPeriods, 300)
+  const queries: MetricQuery[] = alarm.metrics?.length
+    ? alarm.metrics
+    : [
+        {
+          Id: "m",
+          MetricStat: {
+            Metric: {
+              Namespace: alarm.namespace,
+              MetricName: alarm.metric,
+              Dimensions: alarm.dimensions,
+            },
+            Period: alarm.period,
+            Stat: alarm.extendedStatistic || alarm.statistic || "Maximum",
+          },
         },
-        Period: alarm.period,
-        Stat: alarm.extendedStatistic || alarm.statistic || "Maximum",
-      },
-    },
-  ])
+      ]
+  const resultId = queries.find((q) => q.ReturnData !== false)!.Id
+  const query = JSON.stringify(queries)
   // The query rides inside single quotes in the shell command below.
   expect(query, "alarm metadata carries a quote character").not.toContain("'")
-  const values = awsJson<number[]>(
-    `cloudwatch get-metric-data --metric-data-queries '${query}' ` +
-      `--start-time ${new Date(Date.now() - window * 1000).toISOString()} ` +
-      `--end-time ${new Date().toISOString()} ` +
-      `--scan-by TimestampDescending ` +
-      `--query 'MetricDataResults[0].Values'`,
-  )
+  const values =
+    awsJson<{ Id: string; Values: number[] }[]>(
+      `cloudwatch get-metric-data --metric-data-queries '${query}' ` +
+        `--start-time ${new Date(Date.now() - window * 1000).toISOString()} ` +
+        `--end-time ${new Date().toISOString()} ` +
+        `--scan-by TimestampDescending ` +
+        `--query 'MetricDataResults[].{Id:Id,Values:Values}'`,
+    ).find((r) => r.Id === resultId)?.Values ?? []
   if (!values.length) return true
   return breaches(values[0], alarm.threshold, alarm.operator)
 }
@@ -728,7 +739,8 @@ test.describe("Alarms, logs and metrics", () => {
         `actions:AlarmActions,namespace:Namespace,metric:MetricName,` +
         `dimensions:Dimensions,period:Period,statistic:Statistic,` +
         `extendedStatistic:ExtendedStatistic,threshold:Threshold,` +
-        `operator:ComparisonOperator,evaluationPeriods:EvaluationPeriods}'`,
+        `operator:ComparisonOperator,evaluationPeriods:EvaluationPeriods,` +
+        `metrics:Metrics}'`,
     )
     // Filtering server-side on ALARM would let a mistyped prefix answer with an
     // empty list, which reads as "nothing is firing" instead of "nothing was

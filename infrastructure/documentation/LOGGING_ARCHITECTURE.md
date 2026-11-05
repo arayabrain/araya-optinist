@@ -695,6 +695,8 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 | `subscr-optinist-public-tg-response-time-high` | TargetResponseTime | p95 > 5s (25/30 min) | AWS/ApplicationELB |
 | `subscr-optinist-free-tg-unhealthy-hosts`   | UnHealthyHostCount  | > 0          | AWS/ApplicationELB     |
 | `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount  | > 0          | AWS/ApplicationELB     |
+| `subscr-optinist-free-serving-below-desired` | DesiredTaskCount - HealthyHostCount | > 0 (25/30 min, not while DeploymentCount > 1) | ECS/ContainerInsights, AWS/ApplicationELB |
+| `subscr-optinist-public-serving-below-desired` | DesiredTaskCount - HealthyHostCount | > 0 (25/30 min, not while DeploymentCount > 1) | ECS/ContainerInsights, AWS/ApplicationELB |
 | `subscr-premium-<user_id>-tg-unhealthy-hosts` | UnHealthyHostCount | > 0 (created per-user by the premium-manager Lambda) | AWS/ApplicationELB |
 | `subscr-background-task-stopped`   | RunningTaskCount          | < 1          | ECS/ContainerInsights  |
 | `subscr-background-cpu-high`       | CpuUtilized               | > 400 units  | ECS/ContainerInsights  |

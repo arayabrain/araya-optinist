@@ -137,6 +137,14 @@ class TestFreeAsgScaleIn:
         )
         assert constraints == ["attribute:tier == free"]
 
+    def test_asg_replaces_hosts_ecs_cannot_fix(self):
+        """ECS replaces an unhealthy task by itself; only the target group
+        check replaces a host that never gets a task or that ECS keeps
+        re-placing onto while it is wedged, the only free host. ``EC2`` would
+        leave both until someone acts. The cost: past the ASG grace, a task
+        restart that does not serve within about 300 s loses its instance."""
+        assert attribute(self.asg, "health_check_type") == '"ELB"'
+
     def test_asg_declares_no_initial_lifecycle_hook(self):
         """Guards the ``ignore_changes`` carve-out: a block added here, plain
         or ``dynamic``, would be silently ignored on existing groups. A hook

@@ -102,7 +102,7 @@ resource "aws_autoscaling_group" "public" {
   name                = "${local.env_prefix}-public-asg"
   vpc_zone_identifier = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns   = [aws_lb_target_group.public.arn]
-  health_check_type   = "ELB"
+  health_check_type   = "ELB" # not EC2: only the TG check replaces a registered host with no task, or a wedged one
   # Cold boot (ECR pull + container start + ASGI lifespan + startup-sync S3
   # warm) routinely takes >5 min; 300s tripped premature unhealthy replacements.
   health_check_grace_period = 900
