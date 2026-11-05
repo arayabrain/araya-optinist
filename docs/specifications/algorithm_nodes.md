@@ -124,7 +124,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
 
 ###### suite2p_registration
 
-- **Description:** Motion correction. suite2p computes its own reference image from `nimg_init` frames and registers the binary written by suite2p_file_convert in place, so re-running only this node registers an already registered movie. The 1P pre-filtering of suite2p 0.10.3 (`1Preg`, `spatial_hp_reg`, `pre_smooth`) was removed upstream; raise `smooth_sigma` and `spatial_taper` for 1P data instead.
+- **Description:** Motion correction. suite2p computes its own reference image from `nimg_init` frames and registers the frames of the binary written by suite2p_file_convert (below another registration node, that node's `mc_images`) into `mc_images`, the one copy of the registered movie, which suite2p_roi and ROI editing read. The binary keeps the unregistered frames, so re-running only this node registers the original movie again. The 1P pre-filtering of suite2p 0.10.3 (`1Preg`, `spatial_hp_reg`, `pre_smooth`) was removed upstream; raise `smooth_sigma` and `spatial_taper` for 1P data instead.
 - **Input:** Suite2pData
 - **Output:** ops (Suite2pData), mc_images (ImageData), meanImg (ImageData: mean of the registered movie; suite2p_file_convert's meanImg is the unregistered one), refImg (ImageData: the reference frames were aligned to)
 - **Parameters:**
@@ -148,7 +148,7 @@ suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter 
     - **spatial_taper** [float, default: 3.45]: Slope in pixels of the sigmoid that fades the frame edges before phase correlation; its midpoint sits 2 x this value in from each edge. Larger may help 1P recordings. suite2p 0.10.3 used its `spatial_taper` (default 40) only with `1Preg` on and otherwise tapered with 3 x `smooth_sigma`, which is 3.45, the new default: carrying an old 1P value of 40 forward attenuates most of a small frame.
     - **do_bidiphase** [bool, default: False]: Whether to estimate the bidirectional phase offset from the data.
     - **bidiphase** [int, default: 0]: Bidirectional phase offset in pixels, applied when it is not estimated.
-    - **reg_tif** [bool, default: False]: Whether or not to write the registered binary to tiff files, one file per registration batch
+    - **reg_tif** [bool, default: False]: Whether or not to also write the registered frames to tiff files in the suite2p folder, one file per registration batch
     - **nonrigid** [bool, default: True]: Whether to use nonrigid registration, which splits the field of view into blocks and computes registration offsets in each block separately.
     - **block_size** [list of int, default: [128, 128]]: Size of blocks for non-rigid registration, in pixels. HIGHLY recommend keeping this a power of 2 and/or 3 (e.g. 128, 256, 384, etc) for efficient fft. Must be smaller than the frame along both axes: with a single block suite2p 1.1.0 cannot interpolate the block shifts, so the node then registers rigidly and logs a warning.
     - **snr_thresh** [float, default: 1.2]: How big the phase correlation peak has to be relative to the noise in the phase correlation map for the block shift to be accepted. In low SNR recordings like one-photon, I’d recommend a larger value like 1.5, so that block shifts are only accepted if there is significant SNR in the phase correlation.
