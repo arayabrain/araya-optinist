@@ -12,14 +12,22 @@ import OutputsView from "components/Dataview/OutputsView"
 
 const mockStore = configureStore([thunk])
 
+const mockEnqueueSnackbar = jest.fn()
+jest.mock("notistack", () => ({
+  enqueueSnackbar: (...args: unknown[]) => mockEnqueueSnackbar(...args),
+}))
+
 const mockPutHiddenOutputs = jest.fn()
 const mockGetHiddenOutputs = jest.fn()
 
 jest.mock("store/slice/Dataview/DataviewActions", () => ({
   getHiddenOutputs: (arg: unknown) => {
-    mockGetHiddenOutputs(arg)
+    const failed = mockGetHiddenOutputs(arg) === "fail"
     const thunkAction = () =>
-      Object.assign(Promise.resolve([]), { unwrap: () => Promise.resolve([]) })
+      Object.assign(Promise.resolve([]), {
+        unwrap: () =>
+          failed ? Promise.reject(new Error()) : Promise.resolve([]),
+      })
     return thunkAction
   },
   putHiddenOutputs: (arg: unknown) => {
@@ -61,7 +69,12 @@ const UID = "uid-1"
 const HIDDEN_PATH = "1/uid-1/func1/heatmap"
 const VISIBLE_PATH = "1/uid-1/func1/fluorescence"
 
-const buildState = (hiddenOutputs: string[]) => ({
+const buildState = (
+  hiddenOutputs: string[],
+  heatmapPath = HIDDEN_PATH,
+  withOutputs = true,
+  pipelineUid = UID,
+) => ({
   dataview: {
     data: {
       private: {
@@ -87,30 +100,37 @@ const buildState = (hiddenOutputs: string[]) => ({
     flowEdges: [],
   },
   pipeline: {
+    currentPipeline: { uid: pipelineUid },
     run: {
       uid: UID,
       status: "Finished",
       runPostData: {},
-      runResult: {
-        func1: {
-          status: "success",
-          name: "func1",
-          outputPaths: {
-            heatmap: { path: HIDDEN_PATH, type: "heatMap", max_index: 1 },
-            fluorescence: {
-              path: VISIBLE_PATH,
-              type: "timeSeries",
-              max_index: 1,
+      runResult: withOutputs
+        ? {
+            func1: {
+              status: "success",
+              name: "func1",
+              outputPaths: {
+                heatmap: { path: heatmapPath, type: "heatMap", max_index: 1 },
+                fluorescence: {
+                  path: VISIBLE_PATH,
+                  type: "timeSeries",
+                  max_index: 1,
+                },
+              },
             },
-          },
-        },
-      },
+          }
+        : {},
     },
   },
 })
 
-const renderView = (is_public: boolean, hiddenOutputs = [HIDDEN_PATH]) => {
-  const store = mockStore(buildState(hiddenOutputs))
+const renderView = (
+  is_public: boolean,
+  hiddenOutputs = [HIDDEN_PATH],
+  ...rest: [string?, boolean?, string?]
+) => {
+  const store = mockStore(buildState(hiddenOutputs, ...rest))
   render(
     <Provider store={store}>
       <OutputsView
@@ -134,7 +154,35 @@ const switchFor = async (title: string) => {
 describe("OutputsView publish switch", () => {
   beforeEach(() => {
     mockPutHiddenOutputs.mockClear()
-    mockGetHiddenOutputs.mockClear()
+    mockGetHiddenOutputs.mockReset()
+    mockEnqueueSnackbar.mockClear()
+  })
+
+  it("matches a hidden entry against a non-canonical output path", async () => {
+    renderView(
+      false,
+      [HIDDEN_PATH],
+      "/app/studio_data/output/1/uid-1/func1//./heatmap",
+    )
+    expect(await switchFor("heatmap")).not.toBeChecked()
+    expect(await switchFor("fluorescence")).toBeChecked()
+  })
+
+  it("keeps the switches disabled when the visibility fails to load", async () => {
+    mockGetHiddenOutputs.mockReturnValue("fail")
+    renderView(false, [])
+    await waitFor(() => expect(mockEnqueueSnackbar).toHaveBeenCalled())
+    expect(screen.getByLabelText("Publish heatmap")).toBeDisabled()
+  })
+
+  it("loads the visibility only once the outputs have loaded", () => {
+    renderView(false, [], HIDDEN_PATH, false)
+    expect(mockGetHiddenOutputs).not.toHaveBeenCalled()
+  })
+
+  it("does not load the visibility over another record's outputs", () => {
+    renderView(false, [], HIDDEN_PATH, true, "previous-uid")
+    expect(mockGetHiddenOutputs).not.toHaveBeenCalled()
   })
 
   it("lists every output with a switch for the owner, off when hidden", async () => {

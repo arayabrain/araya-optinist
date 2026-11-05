@@ -8,12 +8,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlalchemy.dialects import mysql
+from sqlmodel import select
 
 from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
+from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.routers.dataview import (
     PublishFlags,
     get_hidden_outputs,
@@ -22,6 +25,7 @@ from studio.app.common.routers.dataview import (
     put_hidden_outputs,
 )
 from studio.app.common.schemas.dataview import HiddenOutputChange, LocalSyncStatus
+from studio.tests.app.common.sqlite_harness import sqlite_session
 
 SERVICES = "studio.app.common.core.dataview.dataview_services."
 ROUTER = "studio.app.common.routers.dataview."
@@ -158,6 +162,29 @@ class TestEffectiveHiddenOutputs:
 
 class TestRoutes:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("route", ["get", "put"])
+    async def test_unreadable_defaults_are_409_not_all_public(self, route):
+        db = MagicMock()
+        with patch(
+            ROUTER + "DataviewService.find_user_owned_dataview_record",
+            return_value=_record(None),
+        ), patch.object(
+            DataviewService, "default_hidden_outputs", side_effect=FileNotFoundError
+        ):
+            with pytest.raises(HTTPException) as exc:
+                if route == "get":
+                    await get_hidden_outputs(7, db=db, current_user=MagicMock(id=1))
+                else:
+                    await put_hidden_outputs(
+                        7,
+                        HiddenOutputChange(path="1/uid/b", hidden=True),
+                        db=db,
+                        current_user=MagicMock(id=1),
+                    )
+        assert exc.value.status_code == 409
+        db.execute.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_get_returns_the_defaults_without_writing(self):
         db = MagicMock()
         with patch(
@@ -237,34 +264,69 @@ class TestRoutes:
 
     @pytest.mark.asyncio
     async def test_bulk_publish_stores_the_defaults_only_where_unset(self):
-        db = MagicMock()
-        records = {1: _record(None), 2: _record(["1/uid/kept"])}
-        with patch(
-            ROUTER + "DataviewService.find_user_owned_dataview_record",
-            side_effect=lambda _db, record_id, _user: records[record_id],
-        ), patch(
-            ROUTER + "RemoteStorageController.is_available", return_value=False
-        ), patch(
-            ROUTER + "PublishValidator.validate",
-            return_value=MagicMock(can_publish=True),
-        ), patch(
-            ROUTER + "DataviewService.multiple_publish_dataview_records"
-        ), patch.object(
-            DataviewService, "default_hidden_outputs", return_value=["1/uid/a"]
-        ):
-            await multiple_publish_dataview_records(
-                [1, 2],
-                PublishFlags.on,
-                db=db,
-                current_user=MagicMock(remote_bucket_name="b"),
+        with sqlite_session([ExperimentRecord.__table__]) as db:
+            for uid, hidden, published in [
+                ("a", None, 0),
+                ("b", ["1/b/kept"], 0),
+                ("c", None, 0),
+                ("d", None, 1),
+                ("e", None, 0),
+            ]:
+                db.add(
+                    ExperimentRecord(
+                        workspace_id=1,
+                        uid=uid,
+                        hidden_outputs=hidden,
+                        publish_status=published,
+                    )
+                )
+            db.commit()
+            records = {r.id: r for r in db.exec(select(ExperimentRecord)).all()}
+            # the owner chose for "c" after the route read it
+            db.execute(
+                update(ExperimentRecord)
+                .where(ExperimentRecord.uid == "c")
+                .values(hidden_outputs=["1/c/owner"])
+                .execution_options(synchronize_session=False)
             )
-        writes = [
-            c.args[0].compile(dialect=mysql.dialect())
-            for c in db.execute.call_args_list
-        ]
-        assert len(writes) == 1
-        assert "hidden_outputs IS NULL" in str(writes[0])
-        assert writes[0].params["hidden_outputs"] == ["1/uid/a"]
+            execute = MagicMock(wraps=db.execute)
+            with patch.object(db, "execute", execute), patch(
+                ROUTER + "HIDDEN_OUTPUTS_BATCH", 2
+            ), patch(
+                ROUTER + "DataviewService.find_user_owned_dataview_record",
+                side_effect=lambda _db, record_id, _user: records[record_id],
+            ), patch(
+                ROUTER + "RemoteStorageController.is_available", return_value=False
+            ), patch(
+                ROUTER + "PublishValidator.validate",
+                return_value=MagicMock(can_publish=True),
+            ), patch(
+                ROUTER + "DataviewService.multiple_publish_dataview_records"
+            ), patch.object(
+                DataviewService,
+                "default_hidden_outputs",
+                side_effect=lambda ws, uid: [] if uid == "e" else [f"{ws}/{uid}/x"],
+            ):
+                await multiple_publish_dataview_records(
+                    list(records),
+                    PublishFlags.on,
+                    db=db,
+                    current_user=MagicMock(remote_bucket_name="b"),
+                )
+            db.commit()
+            db.expire_all()
+            stored = {
+                r.uid: r.hidden_outputs for r in db.exec(select(ExperimentRecord))
+            }
+        # three unset unpublished records in batches of two
+        assert execute.call_count == 2
+        assert stored == {
+            "a": ["1/a/x"],
+            "b": ["1/b/kept"],
+            "c": ["1/c/owner"],
+            "d": None,
+            "e": [],
+        }
 
 
 def test_a_copy_of_an_unset_record_stays_unset():

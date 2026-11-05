@@ -324,10 +324,13 @@ class DataviewService:
         )
 
     @classmethod
-    def effective_hidden_outputs(cls, record: ExperimentRecord) -> List[str]:
+    def effective_hidden_outputs(
+        cls, record: ExperimentRecord, strict: bool = False
+    ) -> List[str]:
         """
         The stored list. Unset means the defaults, or all public for a record
-        published before per-output visibility existed.
+        published before per-output visibility existed. Unreadable defaults
+        fall back to all public, or raise when strict.
         """
         if record.hidden_outputs is not None:
             return record.hidden_outputs
@@ -336,6 +339,8 @@ class DataviewService:
         try:
             return cls.default_hidden_outputs(str(record.workspace_id), record.uid)
         except Exception as e:
+            if strict:
+                raise
             logger.warning(
                 f"Default hidden outputs unavailable for {record.id}, all public: {e}"
             )

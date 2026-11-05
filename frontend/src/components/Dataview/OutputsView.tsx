@@ -25,6 +25,7 @@ import {
   selectDataviewPrivateRecord,
   selectOutputVisualizationItems,
 } from "store/slice/Dataview/DataviewSelectors"
+import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import { AppDispatch } from "store/store"
 
 type OutputsViewProps = {
@@ -35,9 +36,22 @@ type OutputsViewProps = {
   handleClose: () => void
 }
 
+// Collapses `//`, `.` and `..` the way the backend stores hidden paths
+const canonicalPath = (path: string) =>
+  path
+    .split("/")
+    .reduce<string[]>((parts, part) => {
+      if (part === "..") parts.pop()
+      else if (part !== "" && part !== ".") parts.push(part)
+      return parts
+    }, [])
+    .join("/")
+
 // hidden_outputs are relative to the output dir; legacy records carry absolute paths
-const isSamePath = (hidden: string, path: string) =>
-  path === hidden || path.endsWith(`/${hidden}`)
+const isSamePath = (hidden: string, path: string) => {
+  const canonical = canonicalPath(path)
+  return canonical === hidden || canonical.endsWith(`/${hidden}`)
+}
 
 const OutputsView = ({
   open,
@@ -59,19 +73,31 @@ const OutputsView = ({
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // The stored list, or the defaults if the owner has not chosen yet
+  // The store can still hold the previous record's pipeline on the first render
+  const pipelineUid = useSelector(selectPipelineLatestUid)
+  const hasOutputs =
+    pipelineUid === uid &&
+    outputVisualizationItems.some((s) => s.items.length > 0)
+
+  // Stored list or defaults; waits for reproduce, which downloads the metadata
   useEffect(() => {
-    if (!open || !editable || recordId == null) return
     setLoaded(false)
+    if (!open || !editable || recordId == null || !hasOutputs) return
+    let current = true
     dispatch(getHiddenOutputs({ id: recordId }))
       .unwrap()
-      .catch(() =>
-        enqueueSnackbar("Failed to load output visibility", {
-          variant: "error",
-        }),
+      .then(() => current && setLoaded(true))
+      .catch(
+        () =>
+          current &&
+          enqueueSnackbar("Failed to load output visibility", {
+            variant: "error",
+          }),
       )
-      .finally(() => setLoaded(true))
-  }, [dispatch, open, editable, recordId])
+    return () => {
+      current = false
+    }
+  }, [dispatch, open, editable, recordId, hasOutputs])
 
   const isPublic = (item: VisualizationItemData) =>
     !hiddenOutputs.some((h) => isSamePath(h, item.filePath))
