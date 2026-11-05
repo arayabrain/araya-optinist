@@ -255,8 +255,14 @@ python3 "$SCRIPT_DIR/write_provenance.py" \
 kill "$PROBE_PID" 2>/dev/null || true; wait "$PROBE_PID" 2>/dev/null || true; PROBE_PID=""
 python3 "$SCRIPT_DIR/summarize.py" "$OUT" > "$OUT/summary.md" || echo "summarize failed" >&2
 
+# The API can still be writing into the run directories: remove the container
+# before deleting them. The row's exit status is its runs', not the cleanup's
+cleanup
+trap - EXIT
 if [[ $KEEP_OUTPUTS -eq 0 ]]; then
-  for d in ${RUN_DIRS[@]+"${RUN_DIRS[@]}"}; do rm -rf "${d:?}"; done
+  for d in ${RUN_DIRS[@]+"${RUN_DIRS[@]}"}; do
+    rm -rf "${d:?}" || echo "could not delete the run outputs in $d" >&2
+  done
 fi
 echo "== done: $OUT (container: $CONTAINER_STATE)"
 exit "$RC_ALL"
