@@ -3,6 +3,7 @@ downloads, streams and other types pass through. The bundle's gzip copies are
 served by PrecompressedStaticFiles."""
 
 import gzip
+import random
 import threading
 
 import pytest
@@ -22,6 +23,9 @@ from studio.app.common.core.middleware.compression_middleware import (
 
 GZIP = {"accept-encoding": "gzip, deflate"}
 IDENTITY = {"accept-encoding": "identity"}
+# Random bytes do not compress, so their gzip form stays above MINIMUM_SIZE
+RANDOM_BYTES = random.Random(0).randbytes(4096)
+ENCODED = gzip.compress(RANDOM_BYTES)
 
 
 def _body(size: int) -> bytes:
@@ -58,7 +62,7 @@ def client(tmp_path, loop_threads):
     @app.get("/encoded")
     async def encoded():
         return Response(
-            content=gzip.compress(_body(10_000)),
+            content=ENCODED,
             media_type="application/json",
             headers={"Content-Encoding": "gzip"},
         )
@@ -151,10 +155,13 @@ def test_a_streamed_response_passes_through(client):
 
 
 def test_an_encoded_body_is_not_compressed_again(client):
+    assert len(ENCODED) >= MINIMUM_SIZE
+
     response = client.get("/encoded", headers=GZIP)
 
     assert response.headers["content-encoding"] == "gzip"
-    assert response.content == _body(10_000)
+    assert response.num_bytes_downloaded == len(ENCODED)
+    assert response.content == RANDOM_BYTES
 
 
 @pytest.mark.parametrize(
@@ -230,3 +237,25 @@ class TestPrecompressedStaticFiles:
         assert compressed.headers["etag"] != plain.headers["etag"]
         assert revalidated.status_code == 304
         assert "accept-encoding" in revalidated.headers["vary"].lower()
+
+    def test_a_small_copy_passes_the_middleware_as_it_is(self, tmp_path):
+        """A copy under one FileResponse chunk reaches the middleware as one
+        whole stylesheet body; it must go out as the copy, not gzipped again."""
+        rng = random.Random(0)
+        stylesheet = "".join(
+            f".c{i}{{color:#{rng.randrange(1 << 24):06x}}}\n" for i in range(2000)
+        ).encode()
+        copy = gzip.compress(stylesheet)
+        assert MINIMUM_SIZE <= len(copy) < FileResponse.chunk_size
+        (tmp_path / "main.css").write_bytes(stylesheet)
+        (tmp_path / "main.css.gz").write_bytes(copy)
+        app = FastAPI()
+        app.add_middleware(CompressionMiddleware)
+        app.mount("/static", PrecompressedStaticFiles(directory=tmp_path))
+
+        with TestClient(app) as test_client:
+            response = test_client.get("/static/main.css", headers=GZIP)
+
+        assert response.headers["content-encoding"] == "gzip"
+        assert response.num_bytes_downloaded == len(copy)
+        assert response.content == stylesheet
