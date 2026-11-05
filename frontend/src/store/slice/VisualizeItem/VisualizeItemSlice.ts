@@ -19,6 +19,8 @@ import {
   TimeSeriesItem,
   RoiItem,
   HeatMapItem,
+  HeatMapZRange,
+  HeatMapZRangeMode,
   ScatterItem,
   VisualaizeItem,
   VISUALIZE_ITEM_TYPE_SET,
@@ -119,6 +121,9 @@ const heatMapItemInitialValue: HeatMapItem = {
     { rgb: "rgb(200, 200, 200)", offset: "0.5" },
     { rgb: "rgb(255, 0, 0)", offset: "1.0" },
   ],
+  zRangeMode: "auto",
+  zRangePercentile: 2,
+  zRange: null,
 }
 const csvItemInitialValue: CsvItem = {
   ...displayDataCommonInitialValue,
@@ -805,6 +810,36 @@ export const visualaizeItemSlice = createSlice({
         targetItem.colors = action.payload.colors
       }
     },
+    setHeatMapItemZRangeMode: (
+      state,
+      action: PayloadAction<{ itemId: number; zRangeMode: HeatMapZRangeMode }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.zRangeMode = action.payload.zRangeMode
+      }
+    },
+    setHeatMapItemZRangePercentile: (
+      state,
+      action: PayloadAction<{ itemId: number; zRangePercentile: number }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.zRangePercentile = action.payload.zRangePercentile
+      }
+    },
+    setHeatMapItemZRange: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        zRange: HeatMapZRange | null
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.zRange = action.payload.zRange
+      }
+    },
     setCsvItemTranspose: (
       state,
       action: PayloadAction<{
@@ -1132,6 +1167,9 @@ export const {
   setHeatMapRefItemId,
   setHeatMapItemShowScale,
   setHeatMapItemColors,
+  setHeatMapItemZRangeMode,
+  setHeatMapItemZRangePercentile,
+  setHeatMapItemZRange,
   setCsvItemTranspose,
   setCsvItemSetHeader,
   setCsvItemSetIndex,
