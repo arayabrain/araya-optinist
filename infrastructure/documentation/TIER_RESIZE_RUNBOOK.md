@@ -41,9 +41,26 @@ Measure with the benchmark's AWS lane (`infrastructure/scripts/benchmark/README.
 
 A trigger names the tier that needs the resize; it does not by itself prove the next size clears it.
 Before the window, run the same rows on one instance of the next size, with `BENCH_MEMORY_MIB` set to
-the value set's `container_memory_mib`, and check that none fires. For the premium tier's next size,
-which is for three runs per user, add a three-run row:
-`run_bench.sh --algo suite2p --conc 3 --variant S --start api`.
+the value set's `container_memory_mib`, and check that every row clears it (below).
+
+The premium tier's next size is for three runs per user, so add a three-run row on that instance
+after `run_cases.sh` has finished (it has built the conda environments and fetched the inputs). Give
+it `run_cases.sh`'s row options, every vCPU included (`run_bench.sh` alone limits the container to 2),
+in the same environment (`BENCH_S3_PREFIX`, `BENCH_UVICORN_WORKERS`, `BENCH_MEMORY_MIB`,
+`BENCH_SWAP_MIB`):
+
+```bash
+BENCH_LANE=aws /opt/bench/repo/infrastructure/scripts/benchmark/run_bench.sh --label S2P-3 \
+  --results-dir /opt/bench/results --algo suite2p \
+  --input /opt/bench/inputs/neurofinder.00.10_stack.tif --conc 3 \
+  --variant S --start api --cpus "$(nproc)" --timeout 3600
+aws s3 sync /opt/bench/results/ "$BENCH_S3_PREFIX/results/"
+```
+
+A row of k concurrent runs clears a size when every run completes with no OOM kill, its wall clock
+is within 1.25 × k times the single run's (`S2P-1` on the same instance), and the longest `/health`
+stall is under 120 s. For a pair that is the trigger's 2.5 times: CPU sharing alone makes k runs take
+at most k times one run, and the rule allows a quarter more. Three runs clear it within 3.75 times.
 
 ---
 
@@ -147,6 +164,15 @@ naming the field.
 The checks read the configured instance type, not the running instances. That is why phase 2 waits
 until every instance of the tier runs the new type.
 
+**If the custom AMI is gone, every plan fails.** The AMI check looks the image up by the ID the
+templates boot. With `use_custom_ami`, that ID is the SSM parameter, which is updated by hand after
+each pipeline build, while the Image Builder lifecycle deletes the project's images after 90 days.
+A parameter left on a deleted image fails every plan at `data.aws_ami.effective` with "Your query
+returned no results", whatever the plan changes; launches from the templates already fail by then.
+Recover by pointing the parameter at a live image (`CUSTOM_AMI_ARCHITECTURE.md`, Procedure B,
+steps 4 and 5), then plan again. Do not switch `use_custom_ami` off to get past it: that also removes the
+Image Builder pipeline and the parameter.
+
 ---
 
 ## Before the Window
@@ -235,8 +261,20 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
    # instance is replaced, the Lambdas and the dashboard that name its ID are updated too
    ```
 
-2. Apply. The base premium instance changes to the new type, interrupting a user on it, and the
-   premium manager launches new per-user instances at the new type.
+2. Note the base premium instance's state, apply, and read it again:
+
+   ```bash
+   aws ec2 describe-instances --region ap-northeast-1 \
+     --filters "Name=tag:Name,Values=<env>-premium-initial" \
+       "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+     --query 'Reservations[].Instances[].[InstanceId,InstanceType,State.Name]' --output text
+   # Expected after the apply: the new type, in the state it had before
+   ```
+
+   The base instance changes to the new type, interrupting a user on it, and the premium manager
+   launches new per-user instances at the new type. If the base instance was stopped and the apply
+   leaves it running, stop it (`aws ec2 stop-instances --instance-ids <id>`): the premium manager's
+   idle stop always keeps the last running instance up, so it would stay running.
 3. Remove the per-user instances of the old type. The premium manager stops an idle instance and
    starts it again at the next sign-in, so without this they keep the old type. This terminates every
    per-user instance, running or stopped, and clears its records; the base instance stays.
@@ -302,9 +340,10 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
 3. **`/health` answers**: free, the pre-provisioning runbook's step 4 chain (healthy targets = running
    tasks); premium, the task's health status is `HEALTHY` in `aws ecs describe-tasks`. In a maintenance
    window, check `/health` from inside the container (`MAINTENANCE_PROCEDURES.md`, its runbook step 3).
-4. **The load it was sized for completes**: from the Web UI, two suite2p runs at once on the
-   benchmark's reference input (about 1.45 GB) for the free tier, three for the premium tier. Each
-   completes, and the pair's time stays within 2.5 times one run's.
+4. **The load it was sized for completes**: from the Web UI, one suite2p run alone on the
+   benchmark's reference input (about 1.45 GB), then two at once for the free tier, three for the
+   premium tier. Each completes, and the k runs together take at most 1.25 × k times the single
+   run's time: 2.5 times for two, 3.75 times for three (When to Resize).
 
 ---
 
@@ -316,8 +355,9 @@ Delete the tier's lines from the tfvars in two steps, the reverse of the apply:
    and apply. The default task fits the larger host; the tier's tasks restart.
 2. **Phase 1 back**: delete the block, plan and apply.
    - Free: the floor, the refresh and the floor again, as in phase 1, steps 3–5.
-   - Premium: the base instance returns to the default type; then terminate the per-user instances
-     of the larger type as in phase 1, step 3, so that they stop costing the larger size.
+   - Premium: the base instance returns to the default type (its state checked as in phase 1,
+     step 2); then terminate the per-user instances of the larger type as in phase 1, step 3, so
+     that they stop costing the larger size.
 3. Verify, steps 1–3, at the default size.
 
 ---
@@ -327,7 +367,8 @@ Delete the tier's lines from the tfvars in two steps, the reverse of the apply:
 Not yet rehearsed. The rehearsal applies both tiers' sets on development, phase by phase, verifies
 them, and reverts them. It also settles what this runbook states without a measurement: the time of
 each phase, whether the raised floor keeps the free tier serving through the refresh, whether the
-base premium instance is replaced or changed in place, and the registered memory of the new types.
+base premium instance is replaced or changed in place and the state it is left in, and the
+registered memory of the new types.
 
 ---
 
