@@ -1,9 +1,10 @@
 import asyncio
+import contextvars
 import math
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
-from typing import Tuple
+from typing import Callable, Tuple, TypeVar
 
 import numpy as np
 from fastapi import HTTPException, status
@@ -25,6 +26,14 @@ from studio.app.optinist.schemas.roi import RoiPos
 
 logger = AppLogger.get_logger()
 
+_T = TypeVar("_T")
+
+# ROI edits, and a commit's taking of the experiment lock, one at a time per
+# process, as on the event loop: an edit under way finishes before a commit
+# takes the lock, one queued behind the commit finds it taken, and one edit's
+# data is held at a time
+_edit_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="roi-edit")
+
 
 class EditRoiUtils:
     @classmethod
@@ -33,6 +42,14 @@ class EditRoiUtils:
         if not algo:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
         return algo
+
+    @classmethod
+    async def run_on_edit_thread(cls, func: Callable[[], _T]) -> _T:
+        """func() on the ROI edit thread, with the request's context."""
+        context = contextvars.copy_context()
+        return await asyncio.get_running_loop().run_in_executor(
+            _edit_executor, context.run, func
+        )
 
     @classmethod
     async def execute(cls, filepath: str, remote_bucket_name: str):
@@ -47,10 +64,13 @@ class EditRoiUtils:
         # The commit rewrites the node pickle, its JSON and whole.nwb in place, so
         # the experiment takes the lock whether or not remote storage is enabled.
         # - If lock file exists, an exception is raised (raise_error=True)
-        RemoteSyncLockFileUtil.check_sync_lock_file(
-            workspace_id, unique_id, raise_error=True
-        )
-        token = RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+        def take_lock() -> str:
+            RemoteSyncLockFileUtil.check_sync_lock_file(
+                workspace_id, unique_id, raise_error=True
+            )
+            return RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+
+        token = await cls.run_on_edit_thread(take_lock)
 
         try:
             # Operate remote storage data.
