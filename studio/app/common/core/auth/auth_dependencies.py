@@ -4,8 +4,8 @@ from typing import Optional
 
 import sqlalchemy
 from fastapi import Depends, HTTPException, Request, Response, status
-from fastapi.concurrency import run_in_threadpool
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from firebase_admin.auth import CertificateFetchError
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,7 +25,7 @@ from studio.app.common.core.subscription.subscription_service import (
     derive_subscription_status,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
-from studio.app.common.db.database import get_db
+from studio.app.common.db.database import get_db, run_db_lookup
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserRole as UserRoleModel
 from studio.app.common.models.subscription import (
@@ -186,25 +186,27 @@ async def get_current_user(
 
     Performance improvement: ~200x faster for cached hits (DB query avoided).
 
-    - The token check and the user query run in FastAPI's threadpool: a wait
-      for a pooled connection must not block the event loop, which also runs
-      the get_db teardowns that return connections.
+    - The token check and the user query run in a worker thread
+      (run_db_lookup): a wait for a pooled connection must not block the
+      event loop, which also runs the get_db teardowns that return
+      connections.
     - The request's session is closed once the user is read, so the route
       does not hold a connection it may not need; its own queries check out
       a new one.
-    - A database failure answers 503, not 401: the frontend signs the user
-      out after a 401 that a token refresh does not clear.
+    - A database or key-fetch failure answers 503, not 401: the frontend
+      signs the user out after a 401 that a token refresh does not clear.
+    - Errors are logged, not returned.
     """
     # Check for cached user in request state (request-scoped cache)
     if req is not None and hasattr(req.state, _REQUEST_USER_CACHE_KEY):
         return getattr(req.state, _REQUEST_USER_CACHE_KEY)
 
     try:
-        user = await run_in_threadpool(_authenticate_user, ex_token, credential, db)
+        user = await run_db_lookup(_authenticate_user, ex_token, credential, db)
     except ValidationError as e:
         logger.warning(e)
         raise HTTPException(status_code=422, detail=f"Validator Error: {e}")
-    except SQLAlchemyError as e:
+    except (SQLAlchemyError, CertificateFetchError) as e:
         logger.warning(e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -215,7 +217,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             headers={"WWW-Authenticate": 'Bearer realm="auth_required"'},
-            detail=str(e) or "Could not validate credentials",
+            detail="Could not validate credentials",
         )
 
     # Cache in request state for subsequent calls within this request
@@ -246,6 +248,9 @@ def _authenticate_user(
     assert err is None, str(err)
     assert uid is not None, "Failed to extract user ID"
 
+    # Close only a session no earlier dependency used: the close would detach
+    # the objects it loaded
+    release_session = not _session_in_use(db)
     try:
         # Query user record
         user_data = __get_current_user_record(db, uid)
@@ -282,7 +287,13 @@ def _authenticate_user(
         # Reads the lazy organization relationship, so before the close
         return User.from_orm(authed_user)
     finally:
-        db.close()
+        if release_session:
+            db.close()
+
+
+def _session_in_use(db: Session) -> bool:
+    """True if the session has an open transaction or holds objects."""
+    return db.in_transaction() or bool(db.identity_map) or bool(db.new)
 
 
 def __get_current_user_record(db: Session, uid: str) -> sqlalchemy.engine.row.Row:

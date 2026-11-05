@@ -22,10 +22,14 @@ REQUIREMENTS:
 - pytest-asyncio
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+
+from studio.tests.app.common.db_pool_probe import asgi_client, one_connection_pool
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -1051,3 +1055,56 @@ class TestFreeUserActivityInstanceIdWrite:
 
         assert result is False
         mock_session.add.assert_not_called()  # no INSERT / no usage-log resurrect
+
+
+class TestTierLookupOffTheEventLoop:
+    """A tier cache miss on a real one-connection pool (db_pool_probe)."""
+
+    @pytest.mark.asyncio
+    async def test_a_tier_lookup_waiting_for_the_pool_leaves_the_loop_free(
+        self, tmp_path
+    ):
+        from studio.app.common.core.middleware import user_activity_middleware
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            UserActivityMiddleware,
+            _user_tier_cache,
+        )
+        from studio.app.common.core.mode import MODE
+
+        app = FastAPI()
+
+        @app.get("/api/test")
+        async def endpoint():
+            return {}
+
+        @app.get("/health")
+        async def health_endpoint():
+            return {}
+
+        _user_tier_cache.clear()
+        with one_connection_pool(
+            tmp_path / "pool.db", timeout=3
+        ) as engine, patch.object(
+            user_activity_middleware,
+            "extract_uid_from_firebase_jwt_async",
+            return_value=(TEST_UID, None),
+        ), patch.object(
+            MODE, "IS_STANDALONE", False
+        ):
+            async with asgi_client(UserActivityMiddleware(app)) as client:
+                with engine.connect():
+                    request = asyncio.create_task(
+                        client.get(
+                            "/api/test",
+                            headers={"Authorization": f"Bearer {TEST_JWT_TOKEN}"},
+                        )
+                    )
+                    # Long enough for the lookup to reach the pool wait
+                    await asyncio.sleep(0.2)
+                    health = await asyncio.wait_for(client.get("/health"), timeout=1)
+                    request_was_waiting = not request.done()
+                response = await request
+
+        assert health.status_code == 200
+        assert request_was_waiting
+        assert response.status_code == 200
