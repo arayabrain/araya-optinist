@@ -178,6 +178,7 @@ def test_a_large_body_is_compressed_off_the_event_loop(
 
     assert response.headers["content-encoding"] == "gzip"
     assert response.content == _body(size)
+    assert len(compress_threads) == len(loop_threads) == 1
     assert (compress_threads != loop_threads) is off_loop
 
 
