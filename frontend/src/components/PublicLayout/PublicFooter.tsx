@@ -3,6 +3,7 @@ import { Link } from "react-router-dom"
 
 import { Box, Divider, styled, Typography } from "@mui/material"
 
+import { CookieSettingsLink } from "components/common/ConsentBanner"
 import { FONT_SIZE, TEXT_COLOR } from "const/Style"
 
 // Fixed footer height so the public page can reserve space for the footer.
@@ -16,6 +17,7 @@ const PublicFooter: FC = () => {
         <FooterLegal>
           <LegalLink to="/terms">Terms of Service</LegalLink>
           <LegalLink to="/privacy">Privacy Policy</LegalLink>
+          <CookieSettingsLink />
         </FooterLegal>
         <FooterCopyright>
           &copy; {`${new Date().getFullYear()}`} ARAYA Inc.

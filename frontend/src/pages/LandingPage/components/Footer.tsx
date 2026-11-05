@@ -2,6 +2,7 @@ import { Link } from "react-router-dom"
 
 import { Box, styled, Typography } from "@mui/material"
 
+import { CookieSettingsLink } from "components/common/ConsentBanner"
 import {
   FONT_SIZE,
   FONT_WEIGHT,
@@ -76,6 +77,7 @@ export const Footer = () => {
           <FooterLegal>
             <LegalLink to="/terms">Terms of Service</LegalLink>
             <LegalLink to="/privacy">Privacy Policy</LegalLink>
+            <CookieSettingsLink />
           </FooterLegal>
           <FooterCopyright>
             &copy; {`${new Date().getFullYear()}`} ARAYA Inc.

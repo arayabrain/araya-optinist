@@ -1,4 +1,4 @@
-import { FC, useState } from "react"
+import { FC, useEffect, useState } from "react"
 import { useSelector } from "react-redux"
 
 import Box from "@mui/material/Box"
@@ -8,6 +8,7 @@ import Paper from "@mui/material/Paper"
 import Typography from "@mui/material/Typography"
 
 import { Z_INDEX } from "const/Layout"
+import { FONT_SIZE, TEXT_COLOR } from "const/Style"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
 import {
   ConsentDecision,
@@ -15,6 +16,30 @@ import {
   isGtmEnabled,
   setAnalyticsConsent,
 } from "utils/analytics"
+
+const REOPEN_EVENT = "consent-banner-reopen"
+
+// Leaves the stored choice in force until the visitor answers the reopened notice.
+export const CookieSettingsLink: FC = () => {
+  if (!isGtmEnabled()) return null
+  return (
+    <Link
+      component="button"
+      type="button"
+      onClick={() => window.dispatchEvent(new Event(REOPEN_EVENT))}
+      sx={{
+        fontFamily: "inherit",
+        fontSize: FONT_SIZE.SMALL,
+        color: TEXT_COLOR.SECONDARY,
+        textDecorationColor: "currentColor",
+        transition: "color 0.2s",
+        "&:hover": { color: TEXT_COLOR.ACCENT },
+      }}
+    >
+      Cookie settings
+    </Link>
+  )
+}
 
 const ConsentBanner: FC = () => {
   const isStandalone = useSelector(selectModeStandalone)
@@ -24,6 +49,12 @@ const ConsentBanner: FC = () => {
     setAnalyticsConsent(decision)
     setDecided(true)
   }
+
+  useEffect(() => {
+    const reopen = () => setDecided(false)
+    window.addEventListener(REOPEN_EVENT, reopen)
+    return () => window.removeEventListener(REOPEN_EVENT, reopen)
+  }, [])
 
   // Only once the backend has confirmed hosted mode: standalone is a local
   // install, and an unresolved mode means the app itself is not usable yet.

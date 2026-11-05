@@ -7,7 +7,9 @@ import { beforeEach, afterEach, describe, it } from "@jest/globals"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
-import ConsentBanner from "components/common/ConsentBanner"
+import ConsentBanner, {
+  CookieSettingsLink,
+} from "components/common/ConsentBanner"
 import { ModeType } from "store/slice/Standalone/StandaloneType"
 import { CONSENT_STORAGE_KEY, trackEvent } from "utils/analytics"
 import {
@@ -26,6 +28,17 @@ const renderBanner = (mode: ModeType = { mode: false, loading: false }) =>
       <ConsentBanner />
     </Provider>,
   )
+
+const renderWithCookieSettings = () =>
+  render(
+    <Provider store={mockStore({ mode: { mode: false, loading: false } })}>
+      <CookieSettingsLink />
+      <ConsentBanner />
+    </Provider>,
+  )
+
+const cookieSettings = () =>
+  screen.queryByRole("button", { name: "Cookie settings" })
 
 describe("ConsentBanner", () => {
   let gtag: ReturnType<typeof setUpAnalyticsTest>
@@ -129,5 +142,42 @@ describe("ConsentBanner", () => {
     expect(
       screen.getByRole("region", { name: "Analytics cookie consent" }),
     ).toBeInTheDocument()
+  })
+
+  it("reopens from Cookie settings with the stored choice still in force", async () => {
+    localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
+    renderWithCookieSettings()
+    expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
+
+    await userEvent.click(cookieSettings() as HTMLElement)
+
+    expect(screen.getByTestId("consent-banner")).toBeInTheDocument()
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe("granted")
+  })
+
+  it("withdraws consent when Decline is chosen after reopening", async () => {
+    localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
+    renderWithCookieSettings()
+    trackEvent("route_change", { page_path: "/" })
+
+    await userEvent.click(cookieSettings() as HTMLElement)
+    await userEvent.click(screen.getByTestId("consent-decline"))
+
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe("denied")
+    expect(gtag).toHaveBeenCalledWith("consent", "update", {
+      analytics_storage: "denied",
+    })
+    expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
+
+    trackEvent("route_change", { page_path: "/public" })
+    expect(window.dataLayer).toEqual([
+      { event: "route_change", page_path: "/" },
+    ])
+  })
+
+  it("hides Cookie settings when GTM is not configured", () => {
+    disableGtm()
+    renderWithCookieSettings()
+    expect(cookieSettings()).not.toBeInTheDocument()
   })
 })
