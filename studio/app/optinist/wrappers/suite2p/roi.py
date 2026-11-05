@@ -18,6 +18,7 @@ from studio.app.optinist.dataclass.roi import (
     nwb_roi_label_image,
     nwb_roi_table,
 )
+from studio.app.optinist.dataclass.suite2p import suite2p_movie
 from studio.app.optinist.wrappers.suite2p.utils import load_settings, pair, positive
 
 logger = AppLogger.get_logger()
@@ -31,7 +32,7 @@ def suite2p_roi(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
 ) -> dict(ops=Suite2pData, fluorescence=FluoData, iscell=IscellData):
     import numpy as np
-    from suite2p import default_settings, io, pipeline
+    from suite2p import default_settings, pipeline
     from suite2p.run_s2p import _assign_torch_device
 
     function_id = ExptOutputPathIds(output_dir).function_id
@@ -104,16 +105,13 @@ def suite2p_roi(
     ops["diameter"] = settings["diameter"]
 
     try:
-        with io.BinaryFile(
-            Ly=Ly, Lx=Lx, filename=ops["reg_file"], n_frames=nframes
-        ) as f_reg:
-            out = pipeline(
-                work_dir,
-                f_reg,
-                run_registration=False,
-                settings=settings,
-                device=device,
-            )
+        out = pipeline(
+            work_dir,
+            suite2p_movie(ops),
+            run_registration=False,
+            settings=settings,
+            device=device,
+        )
     except ValueError as e:
         # suite2p raises when detection, or preclassify, leaves no ROI; any
         # other error fails the node
@@ -211,7 +209,7 @@ def suite2p_roi(
             file_name="cell_roi",
         ),
         # A reference to the movie, not the movie: suite2p's ROI editing reads
-        # traces from the registered binary (ops["reg_file"]), never from this
+        # traces from the registered movie (suite2p_movie(ops)), never this
         "edit_roi_data": EditRoiData(
             images=ImageData(ops.get("file_list") or ops["filelist"]),
             roi_masks=roi_masks,
