@@ -9,6 +9,12 @@ echo ECS_CLUSTER=${cluster_name} >> /etc/ecs/ecs.config
 echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
 echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
 echo ECS_INSTANCE_ATTRIBUTES='{"tier":"${tier}"}' >> /etc/ecs/ecs.config
+# Agent-side cleanup, faster than the defaults (3h / 30m / 1h / 5). New launches
+# only; the docker-hygiene SSM association is the cleanup every host gets.
+echo ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=15m >> /etc/ecs/ecs.config
+echo ECS_IMAGE_CLEANUP_INTERVAL=10m >> /etc/ecs/ecs.config
+echo ECS_IMAGE_MINIMUM_CLEANUP_AGE=30m >> /etc/ecs/ecs.config
+echo ECS_NUM_IMAGES_DELETE_PER_CYCLE=10 >> /etc/ecs/ecs.config
 
 # Only premium standbys are reaped while stopped, so only they must wipe the stale checkpoint on boot to re-register.
 if [ "${tier}" = "premium" ]; then
