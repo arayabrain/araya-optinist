@@ -50,7 +50,8 @@ def _not_a_trial_id(trial, covariate, in_range, lo, hi):
     high = np.full(len(ids), -np.inf)
     np.minimum.at(low, pos, clipped)
     np.maximum.at(high, pos, clipped)
-    coverage = float(np.median((high - low) / (hi - lo)))
+    binned = np.isin(ids, trial[in_range & finite])
+    coverage = float(np.median(((high - low) / (hi - lo))[binned]))
     if coverage < MIN_TRIAL_COVERAGE:
         return (
             f"a typical value spans {coverage:.0%} of the binned range {lo:g} to "
@@ -120,15 +121,6 @@ def _trial_stats(X, in_range, bin_idx, trial, n_bins, min_samples):
     n_trial = len(trial_ids)
     group = trial_pos * n_bins + bin_idx[keep]
     counts = np.bincount(group, minlength=n_trial * n_bins).reshape(n_trial, n_bins)
-    # a NaN sample makes that trial's bin NaN for that cell, as in the sample mode
-    per_trial = np.empty((X.shape[1], n_trial * n_bins))
-    for c in range(X.shape[1]):
-        per_trial[c] = np.bincount(
-            group, weights=X[keep, c], minlength=n_trial * n_bins
-        )
-    per_trial = per_trial.reshape(X.shape[1], n_trial, n_bins)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        per_trial /= counts
     sparse = (counts > 0) & (counts < min_samples)
     if sparse.any():
         logger.warning(
@@ -138,12 +130,23 @@ def _trial_stats(X, in_range, bin_idx, trial, n_bins, min_samples):
             np.count_nonzero(counts),
             min_samples,
         )
-    per_trial[:, counts < min_samples] = np.nan
-    with warnings.catch_warnings():
+    thin = counts < min_samples
+    n_cell = X.shape[1]
+    mean = np.empty((n_cell, n_bins))
+    std = np.empty((n_cell, n_bins))
+    n_valid = np.empty((n_cell, n_bins), dtype=int)
+    # one cell's trial-bin table at a time; a NaN sample blanks that trial's bin
+    with warnings.catch_warnings(), np.errstate(invalid="ignore", divide="ignore"):
         warnings.simplefilter("ignore", RuntimeWarning)  # a bin with no trial is NaN
-        mean = np.nanmean(per_trial, axis=1)
-        std = np.nanstd(per_trial, axis=1, ddof=1)
-    n_valid = np.sum(~np.isnan(per_trial), axis=1)
+        for c in range(n_cell):
+            per_trial = np.bincount(
+                group, weights=X[keep, c], minlength=n_trial * n_bins
+            ).reshape(n_trial, n_bins)
+            per_trial /= counts
+            per_trial[thin] = np.nan
+            mean[c] = np.nanmean(per_trial, axis=0)
+            std[c] = np.nanstd(per_trial, axis=0, ddof=1)
+            n_valid[c] = np.count_nonzero(~np.isnan(per_trial), axis=0)
     std[n_valid < 2] = np.nan
     sem = std / np.sqrt(np.maximum(n_valid, 1))
     num_sample = (counts >= min_samples).sum(axis=0)

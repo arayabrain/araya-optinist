@@ -1,5 +1,6 @@
 import json
 import logging
+import tracemalloc
 
 import numpy as np
 import pytest
@@ -771,3 +772,42 @@ def test_hint_skips_a_two_value_block_code(tmp_path):
         )
 
     assert str(error.value).endswith("Column 2 looks like one.")
+
+
+def test_trial_coverage_ignores_trials_outside_the_bin_range(tmp_path):
+    laps = _lap_behavior(n_laps=2)
+    away = np.column_stack(
+        [np.zeros(120), np.linspace(10, 14, 120), np.repeat([2.0, 3.0, 4.0], 40)]
+    )
+    behavior = np.vstack([laps, away])
+
+    info = _bin(
+        tmp_path, fluo=_lap_fluo(behavior), behavior=behavior, params=_trial_params()
+    )
+
+    assert info["mean_heatmap"].meta.title.startswith("n = 2 trials")
+
+
+def test_trial_mode_does_not_hold_a_cells_by_trials_by_bins_table(tmp_path):
+    n_cell, n_trial, n_bins = 300, 300, 20
+    behavior = _lap_behavior(n_laps=n_trial, frames=n_bins)
+    fluo = np.random.default_rng(3).random((n_cell, len(behavior)))
+    fluo_data = FluoData(fluo, file_name="f")
+    behavior_data = BehaviorData(behavior, file_name="b")
+    dense = n_cell * n_trial * n_bins * 8
+    if tracemalloc.is_tracing():
+        pytest.skip("tracemalloc is already tracing this process")
+
+    tracemalloc.start()
+    try:
+        covariate_binning(
+            fluo_data,
+            behavior_data,
+            str(tmp_path / "default" / "uid" / "covariate_binning_1"),
+            params={**PARAMS, **_trial_params(n_bins=n_bins)},
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < dense / 4
