@@ -72,7 +72,8 @@ class JsonReader:
                 b"".join(line.strip() for line in lines)
                 for lines in iter(lambda: f.readlines(cls.READ_BATCH_BYTES), [])
             )
-        # A file read while it is rewritten is cut short: fail as a parse would
+        # JsonWriter replaces a file whole; one written in place can be read cut
+        # short: fail as a parse would
         if not (body.startswith(b"{") and body.endswith(b"}")):
             raise ValueError(f"{filepath} does not hold a whole JSON object")
         # "meta" goes first, after the object's opening brace

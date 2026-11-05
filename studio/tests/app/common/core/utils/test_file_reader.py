@@ -1,12 +1,16 @@
 """``JsonReader.read_as_output_bytes``: a JSON file served without parsing it."""
 
 import json
+import os
 from dataclasses import asdict
 
+import numpy as np
 import pandas as pd
 import pytest
 
+from studio.app.common.core.utils import file_reader
 from studio.app.common.core.utils.file_reader import JsonReader
+from studio.app.common.core.utils.json_writer import JsonWriter
 from studio.app.common.schemas.outputs import PlotMetaData
 
 FRAMES = [[[0, 1], [2, 3]], [[4.5, 5], [6, 7]]]
@@ -62,3 +66,49 @@ def test_line_breaks_and_indentation_are_dropped_and_strings_kept(
     expected = json.loads(path.read_text())
     assert json.loads(served) == {**expected, "meta": asdict(PlotMetaData())}
     assert json.loads(served)["columns"] == columns
+
+
+class RewrittenAfterFirstBatch:
+    """A file handle whose file is rewritten once its first batch is read."""
+
+    def __init__(self, f, rewrite):
+        self.f, self.rewrite, self.batches = f, rewrite, 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.f.close()
+
+    def readlines(self, hint):
+        lines = self.f.readlines(hint)
+        self.batches += 1
+        if self.batches == 1:
+            self.rewrite()
+        return lines
+
+
+def test_a_file_rewritten_during_the_read_is_served_as_it_was(tmp_path, monkeypatch):
+    monkeypatch.setattr(JsonReader, "READ_BATCH_BYTES", 64 << 10)
+    path = str(tmp_path / "cell_roi.json")
+    # The first batch ends in the data's first rows, which run on far past it
+    # and the read buffer
+    old = np.arange(300 * 300, dtype=float).reshape(300, 300)
+    JsonWriter.write_as_split(path, old)
+
+    def open_rewritten(file, *args, **kwargs):
+        f = open(file, *args, **kwargs)
+        if file != path:
+            return f
+        return RewrittenAfterFirstBatch(
+            f, lambda: JsonWriter.write_as_split(path, old + 0.5)
+        )
+
+    monkeypatch.setattr(file_reader, "open", open_rewritten, raising=False)
+    served = json.loads(JsonReader.read_as_output_bytes(path))
+
+    assert served["data"] == old.tolist()
+    # the rewrite took effect and left nothing beside it
+    rewritten = json.loads((tmp_path / "cell_roi.json").read_text())
+    assert rewritten["data"] == (old + 0.5).tolist()
+    assert os.listdir(tmp_path) == ["cell_roi.json"]
