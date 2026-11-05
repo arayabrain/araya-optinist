@@ -1176,7 +1176,7 @@ test.describe("HTTP contract", () => {
     const bad = responses.map((r) => r.status()).filter((s) => s !== 200)
     expect(bad, "non-200 responses under concurrent load").toEqual([])
     // The sheet's floor. Generous on purpose: this is a smoke test for the
-    // public tier serving in parallel, not a benchmark.
+    // public DataView tier serving in parallel, not a benchmark.
     expect(
       responses.length / elapsed,
       `throughput was ${(responses.length / elapsed).toFixed(1)}/s`,
