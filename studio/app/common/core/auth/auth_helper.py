@@ -164,6 +164,11 @@ def extract_uid_from_firebase_credential(
 
     Returns:
         Tuple of (uid, error_message). If successful, error_message is None.
+
+    Raises:
+        firebase_auth.CertificateFetchError: Google's public keys could not be
+            fetched (timeout, 5xx). The token was not checked, so this is not
+            a token failure.
     """
     try:
         user = firebase_auth.verify_id_token(
@@ -171,6 +176,8 @@ def extract_uid_from_firebase_credential(
         )
         uid = user.get("uid")
         return uid, None
+    except firebase_auth.CertificateFetchError:
+        raise
     except Exception as e:
         return None, f"Firebase token validation failed: {e}"
 
@@ -203,6 +210,25 @@ def extract_uid_from_firebase_jwt(token: str) -> Tuple[Optional[str], Optional[s
         return uid, None
     else:
         return None, "Firebase token validation failed"
+
+
+async def extract_uid_from_firebase_jwt_async(
+    token: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    extract_uid_from_firebase_jwt for the event loop.
+
+    A cached token is answered at once. A new one is verified in the Firebase
+    thread pool: the check may fetch Google's public keys.
+    """
+    cached_uid = _get_cached_uid(token)
+    if cached_uid is not None:
+        return cached_uid, None
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _thread_pool, extract_uid_from_firebase_jwt, token
+    )
 
 
 def extract_uid_from_jwt_token(ex_token: str) -> Tuple[Optional[str], Optional[str]]:
