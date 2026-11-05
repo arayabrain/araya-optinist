@@ -178,6 +178,7 @@ resource "aws_ecs_task_definition" "public" {
       environment = [
         { name = "ENV_PREFIX", value = var.environment },
         { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+        { name = "ANNOUNCEMENT_SSM_PARAMETER", value = aws_ssm_parameter.announcement.name },
         { name = "CLOUDWATCH_LOG_GROUP", value = aws_cloudwatch_log_group.public_optinist.name },
         { name = "PYTHONPATH", value = "/app/" },
         { name = "TZ", value = "Asia/Tokyo" },

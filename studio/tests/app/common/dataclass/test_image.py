@@ -432,6 +432,20 @@ def test_split_refuses_a_file_that_reads_fewer_frames_than_its_headers(
         image_data.split_image(str(tmp_path), n_files=2)
 
 
+def test_split_refuses_files_of_different_frame_shapes(tmp_path):
+    a, b = tmp_path / "a.tif", tmp_path / "b.tif"
+    tifffile.imwrite(a, np.zeros((3, 4, 3), np.uint16))
+    tifffile.imwrite(b, np.zeros((2, 4, 5), np.uint16))
+    out = tmp_path / "new"
+    with pytest.raises(
+        ValueError,
+        match=r"b.tif: frame shape \(4, 5\) differs from \(4, 3\), "
+        r"the frame shape of a.tif",
+    ):
+        ImageData([str(a), str(b)]).split_image(str(out), n_files=2)
+    assert not out.exists()
+
+
 @pytest.mark.parametrize(
     "write, batches", [(_stack, [11]), (_zlib_stack, [4, 4, 3])], ids=["mapped", "zlib"]
 )

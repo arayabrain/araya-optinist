@@ -1,9 +1,12 @@
+import contextlib
 import json
 import os
 import shutil
 
 import numpy as np
-from hdmf.data_utils import GenericDataChunkIterator
+from filelock import FileLock
+from hdmf.backends.hdf5.h5_utils import H5DataIO
+from hdmf.data_utils import DataChunkIterator, GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -22,14 +25,44 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.dataclass.image import BATCH_BYTES, ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
 
 # ROI frames an image_mask column holds in memory while it is written
 IMAGE_MASK_BUFFER = 16
+# HDF5 chunk of a streamed raw movie: whole frames, up to h5py's default chunk
+# cache, so a frame-by-frame reader reads each chunk once
+RAW_MOVIE_CHUNK_BYTES = 1 << 20
 # postprocess entries -> the name the same data had in files written before
 RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
+
+
+def _raw_movie(external_file):
+    """The input movie save_raw_image_to_nwb stores: a TIFF stack is written a
+    batch of frames at a time (its `data` holds the movie twice while it
+    concatenates the files); other inputs are read whole."""
+    stream = (
+        external_file.frame_stream() if isinstance(external_file, ImageData) else None
+    )
+    if stream is None:
+        return external_file.data
+    shape, dtype, frames = stream
+    frame_bytes = int(np.prod(shape[1:])) * dtype.itemsize
+    chunk_frames = min(max(1, RAW_MOVIE_CHUNK_BYTES // frame_bytes), shape[0])
+    # an iterator cannot be stored contiguous, and h5py's guessed chunks span
+    # dozens of frames
+    return H5DataIO(
+        data=DataChunkIterator(
+            data=frames,
+            maxshape=shape,
+            dtype=dtype,
+            buffer_size=max(1, BATCH_BYTES // frame_bytes),
+        ),
+        chunks=(chunk_frames,) + shape[1:],
+    )
 
 
 def _time_first(data, n_roi):
@@ -158,7 +191,7 @@ class NWBCreater:
                 starting_time=float(config[NWBDATASET.IMAGE_SERIES]["starting_time"]),
                 rate=float(config["imaging_plane"]["imaging_rate"]),
                 unit="normalized amplitude",
-                data=external_file.data if save_raw_image_to_nwb else None,
+                data=_raw_movie(external_file) if save_raw_image_to_nwb else None,
             )
             new_nwbfile.add_acquisition(image_series)
 
@@ -543,22 +576,45 @@ def save_nwb(save_path, input_config, config):
 
     nwbfile = set_nwbconfig(nwbfile, config)
 
-    with NWBHDF5IO(save_path, "w") as f:
-        f.write(nwbfile)
+    f = NWBHDF5IO(save_path, "w")
+    try:
+        with f:
+            f.write(nwbfile)
+    except BaseException:
+        # a streamed raw movie is read during the write; a failed read must not
+        # leave a partial file at the path
+        with contextlib.suppress(OSError):
+            os.remove(save_path)
+        raise
+
+
+@contextlib.contextmanager
+def _replacing(tmp_path, path):
+    """Replace path with tmp_path, which the block writes, in one rename once it
+    ends; delete tmp_path if anything fails. path is never written in place.
+    tmp_path reaches the disk before the rename, so after a crash path holds
+    the old file or the new one. path keeps its permission bits."""
+    try:
+        yield
+        shutil.copymode(path, tmp_path)
+        with open(tmp_path, "rb+") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def overwrite_nwbfile(save_path, config):
     tmp_save_path = join_filepath(
         [os.path.dirname(save_path), "tmp_" + os.path.basename(save_path)]
     )
-    with NWBHDF5IO(save_path, "r") as src_io:
+    with _replacing(tmp_save_path, save_path), NWBHDF5IO(save_path, "r") as src_io:
         old_nwbfile = src_io.read()
         nwbfile = set_nwbconfig(old_nwbfile, config)
         nwbfile.set_modified()
         with NWBHDF5IO(tmp_save_path, mode="w") as io:
             io.export(src_io=src_io, nwbfile=nwbfile)
-    shutil.copyfile(tmp_save_path, save_path)
-    os.remove(tmp_save_path)
 
 
 def overwrite_nwb(config, save_path, nwb_file_name):
@@ -566,18 +622,20 @@ def overwrite_nwb(config, save_path, nwb_file_name):
     nwb_path = join_filepath([save_path, nwb_file_name])
     tmp_nwb_path = join_filepath([save_path, "tmp_" + nwb_file_name])
 
+    # one rewrite at a time, as for whole.nwb: an ROI-edit commit and a data
+    # filter can rewrite the same file, and share its temporary
+    lock = FileLock(FileLockUtils.get_lockfile_path(nwb_path), timeout=120)
+
     # NWBファイルの読み込み
-    with NWBHDF5IO(nwb_path, "r") as io:
+    with lock, _replacing(tmp_nwb_path, nwb_path), NWBHDF5IO(nwb_path, "r") as io:
         nwbfile = io.read()
         # acquisition を元ファイルから作成する
         new_nwbfile = NWBCreater.re_acquisition(nwbfile)
         new_nwbfile = set_nwbconfig(new_nwbfile, config)
 
         with NWBHDF5IO(tmp_nwb_path, "w") as io:
-            # copy stored frames: a link would point at the file replaced below
+            # copy stored frames: a link would point at the file this replaces
             io.write(new_nwbfile, link_data=False)
-    shutil.copyfile(tmp_nwb_path, nwb_path)
-    os.remove(tmp_nwb_path)
 
 
 def merge_nwbfile(old_nwbfile, new_nwbfile):

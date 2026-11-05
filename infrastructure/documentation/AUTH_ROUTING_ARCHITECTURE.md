@@ -360,7 +360,7 @@ For background sync metrics (`ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`,
 
 **Startup check** (`validate_signing_secrets()` in `secret_validation.py`): a key counts as weak when it is unset, empty, a placeholder published in this repository, or under 32 characters. A cloud service (`REMOTE_STORAGE_TYPE=2`) with a weak `SECRET_KEY` or `ROUTING_SECRET_KEY` logs "Refusing to start" and exits. With `USE_FIREBASE_TOKEN=False` the same applies to `SECRET_KEY` on any storage. Local multiuser only warns, and standalone is not checked.
 
-All set in `studio/config/.env.example`; `app_setup.sh` overrides `USE_FIREBASE_TOKEN` to `True` on AWS. `INITIAL_FIREBASE_UID` is set on the ECS task definitions in Terraform (`public_service.tf`, `background_service.tf`, `compute.tf`) but, as of this writing, read by nothing in `studio/`. Re-check with `grep -rn INITIAL_FIREBASE_UID studio/` before relying on that.
+All set in `studio/config/.env.example`. On AWS no task definition sets `USE_FIREBASE_TOKEN`, so the code default `True` applies. `INITIAL_FIREBASE_UID` is set on the ECS task definitions in Terraform (`public_service.tf`, `background_service.tf`, `compute.tf`) but, as of this writing, read by nothing in `studio/`. Re-check with `grep -rn INITIAL_FIREBASE_UID studio/` before relying on that.
 
 For the Terraform-side secrets (`firebase_config_json`, `firebase_private_json`, `optinist_admin_uid`, `test_users[].firebase_uid`) and how they flow into Secrets Manager, see [TERRAFORM_ARCHITECTURE.md](TERRAFORM_ARCHITECTURE.md#how-firebase-configuration-flows).
 
