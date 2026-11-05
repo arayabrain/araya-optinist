@@ -34,6 +34,7 @@ from studio.tests.app.common.db_pool_probe import (
     add_hold_and_health_routes,
     answered_while_waiting,
     asgi_client,
+    assert_answered_while_waiting,
     one_connection_pool,
     statements_on_the_loop,
 )
@@ -139,18 +140,12 @@ async def _send_and_probe(engine, send_path, headers=None):
         )
 
 
-def _assert_answered_while_waiting(health, waiting, response):
-    assert health.status_code == 200
-    assert waiting
-    assert response.status_code == 200
-
-
 @pytest.mark.asyncio
 async def test_the_public_record_list(engine):
-    health, waiting, response = await _send_and_probe(engine, "/api/public/dataview")
+    probe = await _send_and_probe(engine, "/api/public/dataview")
 
-    _assert_answered_while_waiting(health, waiting, response)
-    assert [item["uid"] for item in response.json()["items"]] == [UNIQUE_ID]
+    assert_answered_while_waiting(probe)
+    assert [item["uid"] for item in probe.response.json()["items"]] == [UNIQUE_ID]
 
 
 @pytest.mark.asyncio
@@ -184,21 +179,21 @@ async def test_the_public_record_list_leaves_sync_routes_their_threads(engine):
 
 @pytest.mark.asyncio
 async def test_the_public_output_check(engine):
-    health, waiting, response = await _send_and_probe(
+    probe = await _send_and_probe(
         engine, f"/api/visualizations/thumbnail/{OUTPUT_PATH}", headers=PUBLIC_HEADERS
     )
 
-    _assert_answered_while_waiting(health, waiting, response)
+    assert_answered_while_waiting(probe)
 
 
 @pytest.mark.asyncio
 async def test_the_public_output_bucket_lookup(engine):
-    health, waiting, response = await _send_and_probe(
+    probe = await _send_and_probe(
         engine, f"/api/visualizations/image/{OUTPUT_PATH}", headers=PUBLIC_HEADERS
     )
 
-    _assert_answered_while_waiting(health, waiting, response)
-    assert response.json() == {"bucket": OWNER_BUCKET}
+    assert_answered_while_waiting(probe)
+    assert probe.response.json() == {"bucket": OWNER_BUCKET}
 
 
 @pytest.mark.asyncio
@@ -216,13 +211,10 @@ async def test_the_public_reproduce(engine):
         "reproduce_experiment",
         new=AsyncMock(return_value=_reproduce_result()),
     ):
-        health, waiting, response = await _send_and_probe(
-            engine,
-            f"/api/public/dataview/workflow/reproduce/{WORKSPACE_ID}/{UNIQUE_ID}",
-        )
+        probe = await _send_and_probe(engine, REPRODUCE_URL)
 
-    _assert_answered_while_waiting(health, waiting, response)
-    assert response.json()["unique_id"] == UNIQUE_ID
+    assert_answered_while_waiting(probe)
+    assert probe.response.json()["unique_id"] == UNIQUE_ID
 
 
 class _RemoteReader:

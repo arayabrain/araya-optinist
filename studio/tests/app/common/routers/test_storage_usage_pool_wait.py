@@ -3,9 +3,10 @@ top page and the run button send, and the quota check before a run or upload.
 
 They read the user's storage row and subscription through session_scope. Those
 lookups wait for a pooled connection in a worker thread, so another request is
-answered meanwhile (db_pool_probe). A stale usage is recalculated and stored,
-and the refresh scans and stores; no statement of either runs on the event
-loop. The user and S3 are stubbed; the queries run on the real pool.
+answered meanwhile (db_pool_probe), and none of their statements runs on the
+event loop. The same holds when a stale usage is recalculated and stored, when
+its owner is no longer active, and for the refresh. The user and S3 are
+stubbed; the queries run on the real pool.
 """
 
 import asyncio
@@ -39,6 +40,7 @@ from studio.tests.app.common.db_pool_probe import (
     add_hold_and_health_routes,
     answered_while_waiting,
     asgi_client,
+    assert_answered_while_waiting,
     one_connection_pool,
     statements_on_the_loop,
 )
@@ -161,17 +163,15 @@ async def test_other_requests_are_answered_while_the_route_waits_for_the_pool(
 ):
     released = asyncio.Event()
     async with asgi_client(_app(released)) as client:
-        health, waiting, response = await answered_while_waiting(
+        probe = await answered_while_waiting(
             client, engine, released, lambda: client.get(path)
         )
 
-    assert health.status_code == 200
-    assert waiting
-    assert response.status_code == 200
+    assert_answered_while_waiting(probe)
     if expected is None:
-        assert response.json() is None
+        assert probe.response.json() is None
     else:
-        assert expected.items() <= response.json().items()
+        assert expected.items() <= probe.response.json().items()
 
 
 @pytest.mark.asyncio
@@ -197,6 +197,27 @@ async def test_a_stale_usage_is_recalculated_and_stored_off_the_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_an_inactive_owner_keeps_the_stored_usage_off_the_event_loop(
+    stale_engine, s3_listing
+):
+    with Session(stale_engine) as session:
+        session.execute(update(User).values(active=False))
+        session.commit()
+
+    with patch.object(
+        RemoteStorageType, "get_activated_type", return_value=RemoteStorageType.S3
+    ):
+        async with asgi_client(_app(asyncio.Event())) as client:
+            with statements_on_the_loop(stale_engine) as on_loop:
+                response = await client.get("/storage-limit-alerts/usage")
+
+    assert response.status_code == 200
+    assert response.json()["storage_usage_bytes"] == USAGE_BYTES
+    assert on_loop == []
+    assert _stored_usage(stale_engine) == USAGE_BYTES
+
+
+@pytest.mark.asyncio
 async def test_the_refresh_scans_and_stores_off_the_event_loop(engine, s3_listing):
     async with asgi_client(_app(asyncio.Event())) as client:
         with statements_on_the_loop(engine) as on_loop:
@@ -212,15 +233,18 @@ async def test_the_refresh_scans_and_stores_off_the_event_loop(engine, s3_listin
 @pytest.mark.asyncio
 @pytest.mark.parametrize("router", [run, files], ids=["run", "upload"])
 async def test_the_quota_check_waits_for_the_pool_off_the_event_loop(engine, router):
-    with engine.connect():
-        check = asyncio.create_task(router._check_storage_quota(USER_ID))
-        started = time.monotonic()
-        # A pool wait on the loop holds this sleep until the pool times out
-        await asyncio.sleep(0.2)
-        slept = time.monotonic() - started
-        was_waiting = not check.done()
+    with statements_on_the_loop(engine) as on_loop:
+        with engine.connect():
+            check = asyncio.create_task(router._check_storage_quota(USER_ID))
+            started = time.monotonic()
+            # A pool wait on the loop holds this sleep until the pool times out
+            await asyncio.sleep(0.2)
+            slept = time.monotonic() - started
+            was_waiting = not check.done()
 
-    # Under quota: returns without raising once the connection is back
-    await asyncio.wait_for(check, timeout=2)
+        # Under quota: returns without raising once the connection is back
+        await asyncio.wait_for(check, timeout=2)
+
     assert slept < 1
     assert was_waiting
+    assert on_loop == []
