@@ -8,6 +8,7 @@ It runs periodically and picks up queued/retrying tasks.
 import asyncio
 from typing import Optional
 
+from studio.app.common.core.background.cleanup_job import DataCleanupJob
 from studio.app.common.core.experiment.background_task_service import (
     BackgroundTaskService,
 )
@@ -23,7 +24,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.experiment import BackgroundTaskType
-from studio.app.dir_path import DIRPATH
+from studio.app.common.models.workspace import Workspace
 
 logger = AppLogger.get_logger()
 
@@ -151,7 +152,7 @@ class BackgroundTaskWorker:
     ) -> bool:
         """Delete an experiment (S3 + local + DB record)."""
         try:
-            remote_bucket_name = cls._get_remote_bucket_name()
+            remote_bucket_name = cls._get_remote_bucket_name(workspace_id)
 
             if RemoteStorageController.is_available():
                 try:
@@ -218,7 +219,7 @@ class BackgroundTaskWorker:
             with session_scope() as db:
                 success, message = await WorkspaceService.execute_workspace_deletion(
                     db=db,
-                    remote_bucket_name=(cls._get_remote_bucket_name()),
+                    remote_bucket_name=cls._get_remote_bucket_name(workspace_id),
                     workspace_id=workspace_id,
                     user_id=user_id,
                 )
@@ -229,9 +230,14 @@ class BackgroundTaskWorker:
             raise
 
     @classmethod
-    def _get_remote_bucket_name(cls) -> Optional[str]:
-        """Get the remote S3 bucket name from configuration."""
-        try:
-            return DIRPATH.DATA_BUCKET_NAME
-        except Exception:
+    def _get_remote_bucket_name(cls, workspace_id: int) -> Optional[str]:
+        """The workspace owner's bucket: shared workspaces keep data there too."""
+        with session_scope() as db:
+            owner_id = (
+                db.query(Workspace.user_id)
+                .filter(Workspace.id == int(workspace_id))
+                .scalar()
+            )
+        if owner_id is None:
             return None
+        return DataCleanupJob._resolve_user_bucket_name(owner_id)

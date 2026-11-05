@@ -126,6 +126,8 @@ assignees: ''
     - 実績: {日時}
   - [ ] ユーザーリスト確認
   - [ ] BCCでメール配送
+  - [ ] （ダウンタイムありの場合）サイト内告知を設定 -> [MAINTENANCE_PROCEDURES.md#planned-downtime-announcement-and-maintenance-page](https://github.com/arayabrain/araya-optinist/blob/develop-main/infrastructure/documentation/MAINTENANCE_PROCEDURES.md#planned-downtime-announcement-and-maintenance-page)
+    - [ ] シークレットウィンドウでログインし、ヘッダーに告知が表示されることを確認
 
 #### リリース準備（～リリース前日）
 
@@ -154,6 +156,8 @@ assignees: ''
     - [ ] 実績: {時刻}
   - [ ] Status を In progress に更新、Slack 連絡
   - [ ] 対象 commit SHA / タグ `vX.Y.Z` を再確認
+  - [ ] （ダウンタイムありの場合）メンテナンスページを有効化: `infrastructure/scripts/maintenance_mode.sh subscr on`
+    - [ ] `curl -si https://<host>/ | head -1` が 503 であることを確認
 - [ ] **2. デプロイ実施**
   - 担当: 支援者
   - 時刻:
@@ -169,6 +173,8 @@ assignees: ''
       - check_ecs_image_drift.py を使用して、デプロイしたインスタンスが最新かの確認
         - [ ] 確認結果:
   <!-- - [ ] （DBマイグレーションがある場合）マイグレーション実行 -->
+  - [ ] （メンテナンスページ有効時）解除: `infrastructure/scripts/maintenance_mode.sh subscr off`
+    - [ ] `curl -si https://<host>/ | head -1` が 200 であることを確認
 - [ ] **3. リリース後動作確認（主要EP / 認証 / 課金 / premium routing）**
   - 担当: @
   - 時刻:
@@ -192,6 +198,7 @@ assignees: ''
     - 予定: {時刻}
     - [ ] 実績: {時刻}
   - [ ] メンテナンス終了 / リリース完了を告知
+  - [ ] サイト内告知をクリア（`--value '{}'`、または `until` 経過で自動的に消える）
   - [ ] 完了報告コメントを issue に追加
 
 ### 事後作業
@@ -289,7 +296,7 @@ assignees: ''
 
 - [ ] dev環境テスト結果: リスクレベルに応じた **System test cases (development)** が実施され、結果が記録されている
 - [ ] テスト対象のコミットSHAがリリース対象と一致している
-- [ ] 対象コミットで Weekly Regression が green である（unit / premium_lock / workflow_count / `@slow` e2e。実行できない場合は `make test_run_all`）
+- [ ] 対象コミットで Weekly Regression が green である（unit / premium_lock / workflow_count / expiration / `@slow` e2e。実行できない場合は `make test_run_all`）
 - [ ] System test cases を省略している場合、領域と省略根拠が手順シートに記載され妥当である
 - [ ] Buffer（不具合対応・再テスト）が完了している
 - [ ] 本番 Release test cases sheet の実施担当者・想定タイミングが手順シートに記載されている

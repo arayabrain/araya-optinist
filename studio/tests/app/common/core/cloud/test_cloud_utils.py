@@ -515,14 +515,16 @@ async def test_calculate_limit_warning_premium_active_storage_exceeded():
 
 
 @pytest.mark.asyncio
-async def test_calculate_limit_warning_premium_warning_storage_ok():
-    """
-    Case 4: Premium user in WARNING period, storage OK -> Grace warning.
-    Even when storage is under the free tier limit, a subscription
-    expiration warning is shown.
-    """
+@pytest.mark.parametrize(
+    "days_expired",
+    [
+        SubscriptionPeriods.GRACE_PERIOD_DAYS - 10,  # grace
+        SubscriptionPeriods.GRACE_PERIOD_DAYS + 5,  # overdue
+    ],
+)
+async def test_calculate_limit_warning_expired_premium_storage_ok(days_expired):
+    """Expired premium user under the free limit -> no alert: nothing is deleted."""
     user_id = 1
-    grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
 
     with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
         with patch(
@@ -540,32 +542,25 @@ async def test_calculate_limit_warning_premium_warning_storage_ok():
                 }
                 mock_fresh.return_value = True
 
-                expiration_date = get_current_datetime() - timedelta(
-                    days=grace_period + 10
-                )
                 mock_subscription = Mock()
-                mock_subscription.expiration = expiration_date
+                mock_subscription.expiration = get_current_datetime() - timedelta(
+                    days=days_expired
+                )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
 
                 result = await calculate_limit_warning(user_id)
 
-                # Grace warning shown for expired premium users
-                assert result is not None
-                assert result.has_alert is True
-                assert result.alert_type == AlertType.GRACE.value
-                assert result.days_remaining >= 0
-                assert "expired" in result.message.lower()
+                assert result is None
 
 
 @pytest.mark.asyncio
-async def test_calculate_limit_warning_premium_warning_storage_exceeded():
+async def test_calculate_limit_warning_premium_grace_storage_exceeded():
     """
-    Case 5: Premium user in WARNING period, storage exceeded → Combined warning
-    Note: After grace period expires, user falls back to FREE quota (5GB)
+    Case 5: Premium user in grace period, storage exceeded → Combined warning
+    counting down to grace_end, when the deletion job starts.
     """
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning_period = SubscriptionPeriods.WARNING_PERIOD_DAYS
 
     with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
         with patch(
@@ -584,13 +579,10 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                 }
                 mock_fresh.return_value = True
 
-                # Mock expired subscription in WARNING period
                 expiration_date = get_current_datetime() - timedelta(
-                    days=grace_period + 5
+                    days=grace_period - 5
                 )
-                deletion_date = expiration_date + timedelta(
-                    days=grace_period + warning_period
-                )
+                deletion_date = expiration_date + timedelta(days=grace_period)
 
                 mock_subscription = Mock()
                 mock_subscription.expiration = expiration_date
@@ -607,9 +599,9 @@ async def test_calculate_limit_warning_premium_warning_storage_exceeded():
                     result.days_remaining >= expected_days - 1
                 )  # Allow 1 day variance
                 assert result.days_remaining <= expected_days + 1
+                assert result.deletion_date == deletion_date.isoformat()
                 assert "expired" in result.message
-                msg_lower = result.message.lower()
-                assert "remove" in msg_lower or "upgrade" in msg_lower
+                assert "will be deleted" in result.message
                 # Verify excess is calculated correctly
                 # Note: Uses binary GB (1 GB = 1024^3 bytes), so:
                 # 8,000,000,000 bytes = 7.45 GB, quota = 5.0 GB, excess = 2.45 GB
@@ -624,7 +616,6 @@ async def test_calculate_limit_warning_premium_overdue():
     """
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning_period = SubscriptionPeriods.WARNING_PERIOD_DAYS
 
     with patch("studio.app.common.core.cloud.cloud_utils.session_scope") as mock_scope:
         with patch(
@@ -645,7 +636,7 @@ async def test_calculate_limit_warning_premium_overdue():
 
                 # Mock expired subscription past deletion date
                 expiration_date = get_current_datetime() - timedelta(
-                    days=grace_period + warning_period + 5
+                    days=grace_period + 1
                 )
                 mock_subscription = Mock()
                 mock_subscription.expiration = expiration_date
@@ -698,8 +689,8 @@ async def test_calculate_limit_warning_premium_active_no_storage_issue():
 @pytest.mark.asyncio
 async def test_calculate_limit_warning_premium_in_grace_period():
     """
-    Case 6: Premium user in GRACE period with storage within FREE
-    quota limits -> Grace warning shown (subscription expired).
+    Case 6: Premium user in GRACE period with storage over the FREE
+    quota limit -> Grace warning shown (subscription expired).
     """
     user_id = 1
 
@@ -714,7 +705,7 @@ async def test_calculate_limit_warning_premium_in_grace_period():
                 mock_scope.return_value.__enter__.return_value = mock_db
 
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_usage_bytes": 8_000_000_000,
                     "storage_quota_bytes": 5_000_000_000,
                 }
                 mock_fresh.return_value = True
@@ -876,7 +867,7 @@ async def test_calculate_limit_warning_free_plan_no_premium_warning():
 async def test_calculate_limit_warning_just_expired_grace_period():
     """
     Premium subscription JUST expired (day 1 of grace period)
-    with storage under free limit should show grace warning.
+    with storage over the free limit should show grace warning.
     """
     user_id = 1
 
@@ -891,7 +882,7 @@ async def test_calculate_limit_warning_just_expired_grace_period():
                 mock_scope.return_value.__enter__.return_value = mock_db
 
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_usage_bytes": 8_000_000_000,
                     "storage_quota_bytes": 5_000_000_000,
                 }
                 mock_fresh.return_value = True
@@ -914,7 +905,7 @@ async def test_calculate_limit_warning_just_expired_grace_period():
 async def test_calculate_limit_warning_last_day_of_grace():
     """
     Premium subscription on last day of grace period with storage
-    under free limit should show grace warning.
+    over the free limit should show grace warning.
     """
     user_id = 1
     grace_period = SubscriptionPeriods.GRACE_PERIOD_DAYS
@@ -930,14 +921,16 @@ async def test_calculate_limit_warning_last_day_of_grace():
                 mock_scope.return_value.__enter__.return_value = mock_db
 
                 mock_get_storage.return_value = {
-                    "storage_usage_bytes": 2_000_000_000,
+                    "storage_usage_bytes": 8_000_000_000,
                     "storage_quota_bytes": 5_000_000_000,
                 }
                 mock_fresh.return_value = True
 
                 mock_subscription = Mock()
-                mock_subscription.expiration = get_current_datetime() - timedelta(
-                    days=grace_period
+                mock_subscription.expiration = (
+                    get_current_datetime()
+                    - timedelta(days=grace_period)
+                    + timedelta(hours=1)
                 )
                 mock_db.execute.return_value.all.return_value = [[mock_subscription]]
 
@@ -1409,8 +1402,7 @@ def _run_effective_quota(expiration, raw_quota_bytes):
 def test_effective_quota_overdue_premium_downgraded_to_free():
     """Overdue premium with a still-raw premium record enforces the free limit."""
     grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning = SubscriptionPeriods.WARNING_PERIOD_DAYS
-    expiration = get_current_datetime() - timedelta(days=grace + warning + 5)
+    expiration = get_current_datetime() - timedelta(days=grace + 5)
 
     assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == FREE_QUOTA_BYTES
 
@@ -1418,14 +1410,6 @@ def test_effective_quota_overdue_premium_downgraded_to_free():
 def test_effective_quota_grace_downgraded_to_free():
     """A user just inside the grace period is held to the 5GB free limit."""
     expiration = get_current_datetime() - timedelta(days=1)
-
-    assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == FREE_QUOTA_BYTES
-
-
-def test_effective_quota_warning_downgraded_to_free():
-    """A user in the post-grace warning window is held to the 5GB free limit."""
-    grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    expiration = get_current_datetime() - timedelta(days=grace + 1)
 
     assert _run_effective_quota(expiration, PREMIUM_QUOTA_BYTES) == FREE_QUOTA_BYTES
 
@@ -1493,8 +1477,7 @@ def test_run_gate_blocks_overdue_user_over_effective_quota():
 
     used = 6_886_941_631  # 6.4 GB - the issue's reproduction value
     grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning = SubscriptionPeriods.WARNING_PERIOD_DAYS
-    overdue_expiration = get_current_datetime() - timedelta(days=grace + warning + 5)
+    overdue_expiration = get_current_datetime() - timedelta(days=grace + 5)
 
     with patch(
         "studio.app.common.routers.run.get_current_user_storage_usage",
@@ -1590,8 +1573,7 @@ def test_upload_gate_blocks_overdue_user_over_effective_quota():
     # so a 403 can only mean the gate used the effective (downgraded) quota.
     assert FREE_QUOTA_BYTES < used < PREMIUM_QUOTA_BYTES
     grace = SubscriptionPeriods.GRACE_PERIOD_DAYS
-    warning = SubscriptionPeriods.WARNING_PERIOD_DAYS
-    overdue_expiration = get_current_datetime() - timedelta(days=grace + warning + 5)
+    overdue_expiration = get_current_datetime() - timedelta(days=grace + 5)
 
     with patch(
         "studio.app.common.routers.files.get_current_user_storage_usage",

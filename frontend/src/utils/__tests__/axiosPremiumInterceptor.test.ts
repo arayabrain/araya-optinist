@@ -81,6 +81,14 @@ jest.mock("utils/routing/RoutingService", () => ({
   },
 }))
 
+const mockReloadIfUnderMaintenance = jest.fn<Promise<boolean>, []>(
+  async () => false,
+)
+
+jest.mock("utils/maintenance", () => ({
+  reloadIfUnderMaintenance: mockReloadIfUnderMaintenance,
+}))
+
 jest.mock("utils/DataviewUtils", () => ({
   isDataviewPublicOutputsRequest: mockIsDataviewPublicOutputsRequest,
   DATAVIEW_PUBLIC_REQUEST_KEY: "x-dataview-public",
@@ -106,7 +114,10 @@ type AdapterResponse = {
 // Map request URL → response or response factory. When a factory is supplied
 // it runs per-call so the test can sequence different responses for the same
 // URL (e.g. first call 401, retry 200).
-type Responder = AdapterResponse | (() => AdapterResponse | Error)
+type Responder =
+  | AdapterResponse
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  | ((config?: any) => AdapterResponse | Error)
 
 let responses: Map<string, Responder> = new Map()
 let recorded: RecordedRequest[] = []
@@ -133,7 +144,8 @@ const installAdapter = (instance: { defaults: { adapter: unknown } }): void => {
       throw err
     }
 
-    const resolved = typeof responder === "function" ? responder() : responder
+    const resolved =
+      typeof responder === "function" ? responder(config) : responder
     if (resolved instanceof Error) throw resolved
 
     if (resolved.status >= 400) {
@@ -172,6 +184,8 @@ describe("axios premium-routing interceptors", () => {
     jest.clearAllMocks()
     responses = new Map()
     recorded = []
+
+    mockReloadIfUnderMaintenance.mockResolvedValue(false)
 
     // Default token behaviour
     mockGetToken.mockReturnValue("access-token")
@@ -866,5 +880,51 @@ describe("axios premium-routing interceptors", () => {
     const reqHeaders = recorded[0].headers as Record<string, unknown>
     expect(reqHeaders["X-Routing-ID"]).toBe("rid-outgoing")
     expect(reqHeaders["X-User-Tier"]).toBe("premium")
+  })
+
+  describe("maintenance mode", () => {
+    beforeEach(() => {
+      mockGetRoutingHeaders.mockReturnValue({})
+    })
+
+    const settlesWithin = (promise: Promise<unknown>, ms: number) =>
+      Promise.race([
+        promise.then(
+          () => "settled",
+          () => "settled",
+        ),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), ms)),
+      ])
+
+    it("maintenance reload preempts the premium fallback on a 503", async () => {
+      mockRequiresPremiumRouting.mockReturnValue(true)
+      mockReloadIfUnderMaintenance.mockResolvedValue(true)
+      responses.set("/svc", { status: 503, data: "<html>maintenance</html>" })
+
+      await expect(settlesWithin(axiosInstance.get("/svc"), 50)).resolves.toBe(
+        "pending",
+      )
+      expect(mockReloadIfUnderMaintenance).toHaveBeenCalledTimes(1)
+      expect(mockEmitPremiumUnreachable).not.toHaveBeenCalled()
+      expect(mockSetPremiumAssigned).not.toHaveBeenCalled()
+    })
+
+    it("probes for maintenance on a network error with no response", async () => {
+      responses.set("/svc", (config) =>
+        Object.assign(new Error("Network Error"), { config }),
+      )
+      await expect(axiosInstance.get("/svc")).rejects.toThrow("Network Error")
+      expect(mockReloadIfUnderMaintenance).toHaveBeenCalledTimes(1)
+    })
+
+    it("does not probe for maintenance on a 502 or a cancelled request", async () => {
+      responses.set("/bad-gateway", { status: 502 })
+      await expect(axiosInstance.get("/bad-gateway")).rejects.toThrow()
+      responses.set("/cancelled", (config) =>
+        Object.assign(new Error("canceled"), { __CANCEL__: true, config }),
+      )
+      await expect(axiosInstance.get("/cancelled")).rejects.toThrow("canceled")
+      expect(mockReloadIfUnderMaintenance).not.toHaveBeenCalled()
+    })
   })
 })
