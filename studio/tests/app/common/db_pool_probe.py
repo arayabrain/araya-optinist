@@ -8,6 +8,7 @@ whether another request is answered meanwhile.
 """
 
 import asyncio
+import threading
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from unittest.mock import patch
 
 import httpx
 from fastapi import Depends, FastAPI
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.pool import QueuePool
 
 from studio.app.common.db.database import get_db
@@ -104,6 +105,27 @@ async def wait_until(condition, timeout: float = 2.0) -> None:
     while not condition():
         assert time.monotonic() < deadline, "condition not reached"
         await asyncio.sleep(0.01)
+
+
+@contextmanager
+def statements_on_the_loop(engine):
+    """Collect the SQL the engine runs on the calling thread, the event loop's.
+
+    A pool wait shows only at a request's first checkout; this catches every
+    later statement that still runs on the loop.
+    """
+    loop_thread = threading.current_thread()
+    on_loop = []
+
+    def record(conn, cursor, statement, *args):
+        if threading.current_thread() is loop_thread:
+            on_loop.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        yield on_loop
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
 
 
 def add_hold_and_health_routes(app: FastAPI, released: asyncio.Event) -> None:

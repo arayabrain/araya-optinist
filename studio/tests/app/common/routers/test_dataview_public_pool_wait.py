@@ -3,8 +3,10 @@
 An anonymous visitor's requests (the record list, a published record's
 reproduce, and the output dependencies' public check and bucket lookup) wait
 for a pooled connection in a worker thread, so another request is answered
-meanwhile (db_pool_probe). The queries run on the real pool; the record's
-local files and the workflow read are stubbed.
+meanwhile (db_pool_probe). Reproduce's later lookups and status updates, when
+it downloads a record or demotes one, run no statement on the event loop. The
+queries run on the real pool; the record's local files, S3 and the workflow
+read are stubbed.
 """
 
 import asyncio
@@ -15,7 +17,8 @@ import pytest
 from anyio import to_thread
 from fastapi import Depends, FastAPI
 from fastapi_pagination import add_pagination
-from sqlmodel import Session
+from sqlalchemy import update
+from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user_with_dataview_outputs_check,
@@ -32,6 +35,7 @@ from studio.tests.app.common.db_pool_probe import (
     answered_while_waiting,
     asgi_client,
     one_connection_pool,
+    statements_on_the_loop,
 )
 from studio.tests.app.common.sqlite_harness import sqlite_tables
 
@@ -39,6 +43,7 @@ WORKSPACE_ID = 1
 UNIQUE_ID = "abcd1234"
 OWNER_BUCKET = "owner-bucket"
 OUTPUT_PATH = f"{WORKSPACE_ID}/{UNIQUE_ID}/node/a.png"
+REPRODUCE_URL = f"/api/public/dataview/workflow/reproduce/{WORKSPACE_ID}/{UNIQUE_ID}"
 PUBLIC_HEADERS = {DataviewService.DATAVIEW_PUBLIC_REQUEST_KEY: "1"}
 
 
@@ -218,3 +223,96 @@ async def test_the_public_reproduce(engine):
 
     _assert_answered_while_waiting(health, waiting, response)
     assert response.json()["unique_id"] == UNIQUE_ID
+
+
+class _RemoteReader:
+    """Stands in for the remote storage reader: the download succeeds."""
+
+    buckets = []
+
+    def __init__(self, remote_bucket_name, *args, **kwargs):
+        self.buckets.append(remote_bucket_name)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def download_experiment(self, workspace_id, unique_id):
+        return True
+
+
+def _set_sync_status(engine, sync_status: str) -> None:
+    with Session(engine) as session:
+        session.execute(update(ExperimentRecord).values(local_sync_status=sync_status))
+        session.commit()
+
+
+def _stored_record(engine):
+    with Session(engine) as session:
+        return session.exec(
+            select(ExperimentRecord.local_sync_status, ExperimentRecord.version)
+        ).one()
+
+
+@pytest.mark.asyncio
+async def test_a_pending_record_is_downloaded_and_marked_synced_off_the_loop(engine):
+    _set_sync_status(engine, LocalSyncStatus.pending.value)
+    _RemoteReader.buckets = []
+    sync_inputs = AsyncMock()
+    with patch.object(
+        dataview.RemoteSyncStatusFileUtil,
+        "check_sync_status_unsynced",
+        return_value=False,
+    ), patch.object(
+        dataview.RemoteStorageController, "is_available", return_value=True
+    ), patch.object(
+        dataview, "RemoteStorageReader", _RemoteReader
+    ), patch.object(
+        dataview.RemoteStorageDownloadUtils, "sync_experiment_input_files", sync_inputs
+    ), patch.object(
+        dataview.PublishValidator,
+        "validate_for_display",
+        return_value=MagicMock(is_displayable=True),
+    ), patch.object(
+        dataview,
+        "reproduce_experiment",
+        new=AsyncMock(return_value=_reproduce_result()),
+    ):
+        async with asgi_client(_app(asyncio.Event())) as client:
+            with statements_on_the_loop(engine) as on_loop:
+                response = await client.get(REPRODUCE_URL)
+
+    assert response.status_code == 200
+    assert on_loop == []
+    # Both downloads used the owner's bucket, read from the database
+    assert _RemoteReader.buckets == [OWNER_BUCKET]
+    assert sync_inputs.await_args.args[2] == OWNER_BUCKET
+    assert _stored_record(engine) == (LocalSyncStatus.synced.value, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_synced_record_missing_from_s3_is_demoted_off_the_loop(engine):
+    exists_in_s3 = AsyncMock(return_value=(False, "no objects"))
+    with patch.object(
+        dataview.RemoteSyncStatusFileUtil,
+        "check_sync_status_unsynced",
+        return_value=False,
+    ), patch.object(
+        dataview.RemoteStorageController, "is_available", return_value=True
+    ), patch.object(
+        dataview.PublishValidator,
+        "validate_for_display",
+        return_value=MagicMock(is_displayable=False, reason="files missing"),
+    ), patch.object(
+        dataview, "_validate_experiment_exists_in_s3", exists_in_s3
+    ):
+        async with asgi_client(_app(asyncio.Event())) as client:
+            with statements_on_the_loop(engine) as on_loop:
+                response = await client.get(REPRODUCE_URL)
+
+    assert response.status_code == 503
+    assert on_loop == []
+    assert exists_in_s3.await_args.args[2] == OWNER_BUCKET
+    assert _stored_record(engine)[0] == LocalSyncStatus.error.value
