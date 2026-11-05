@@ -1,7 +1,9 @@
 import asyncio
+import contextvars
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Optional
 
@@ -97,6 +99,13 @@ TIFF_PREVIEW_WAIT_SECONDS = 30
 _tiff_preview_lock = asyncio.Lock()
 # Also held by the thread, which outlives a cancelled request's await
 _tiff_preview_thread_lock = threading.Lock()
+
+# A timeseries record is read by parsing its whole chunk, which holds the GIL
+# throughout. One read at a time per process holds one parsed chunk and keeps
+# the event loop's waits short; more at once would not finish sooner
+_timeseries_read_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="timeseries-read"
+)
 
 
 async def get_or_generate_thumbnail(
@@ -705,17 +714,22 @@ async def get_inittimedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
-    body = await asyncio.to_thread(
-        _timeseries_body, _init_timeseries_data, abs_dirpath, isFull
+    return await _read_timeseries(_init_timeseries_data, abs_dirpath, isFull)
+
+
+async def _read_timeseries(read, *args) -> Response:
+    """
+    read(*args) on the timeseries read thread, encoded there as the response
+    model would: the response model validates and encodes on the event loop.
+    """
+    context = contextvars.copy_context()
+    body = await asyncio.get_running_loop().run_in_executor(
+        _timeseries_read_executor, context.run, _timeseries_body, read, *args
     )
     return Response(content=body, media_type="application/json")
 
 
 def _timeseries_body(read, *args) -> bytes:
-    """
-    read(*args) encoded as the response model would, in the caller's thread:
-    the response model validates and encodes on the event loop.
-    """
     return json.dumps(
         asdict(read(*args)), ensure_ascii=False, allow_nan=False, separators=(",", ":")
     ).encode()
@@ -782,10 +796,7 @@ async def get_timedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
-    body = await asyncio.to_thread(
-        _timeseries_body, _timeseries_record_data, abs_dirpath, index, isFull
-    )
-    return Response(content=body, media_type="application/json")
+    return await _read_timeseries(_timeseries_record_data, abs_dirpath, index, isFull)
 
 
 def _timeseries_record_data(

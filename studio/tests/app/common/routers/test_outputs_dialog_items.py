@@ -1,6 +1,7 @@
 """Output items the DataView dialog requests at once: stored images from
 ``GET /api/visualizations/image`` and timeseries records from ``/inittimedata``
-and ``/timedata``, read and encoded off the event loop.
+and ``/timedata``, read and encoded off the event loop; timeseries records one
+at a time per process.
 
 TIFF previews are ``test_outputs_tiff_preview.py``'s.
 """
@@ -10,6 +11,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from dataclasses import asdict
 
 import httpx
@@ -178,10 +180,39 @@ async def test_another_request_is_answered_while_a_timeseries_record_is_read(
 
     monkeypatch.setattr(outputs, "_load_timeseries_record", slow_load_timeseries_record)
 
+    # Another timeseries read waits its turn; an image item does not
     held, other = await get_while_held(
-        hold, timeseries_url(route, "fluorescence"), timeseries_url(route, "spks")
+        hold, timeseries_url(route, "fluorescence"), image_url("Vcorr")
     )
 
     assert other.status_code == 200, other.text
     assert held.status_code == 200, held.text
     assert hold.released_by_answer == [True]
+
+
+@pytest.mark.asyncio
+async def test_timeseries_records_are_read_one_at_a_time(node_dir, monkeypatch):
+    running, overlap = [], []
+    load_timeseries_record = outputs._load_timeseries_record
+
+    def counted_load_timeseries_record(dirpath, record_id):
+        token = object()
+        running.append(token)
+        overlap.append(len(running))
+        time.sleep(0.1)
+        running.remove(token)
+        return load_timeseries_record(dirpath, record_id)
+
+    monkeypatch.setattr(
+        outputs, "_load_timeseries_record", counted_load_timeseries_record
+    )
+
+    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        responses = await asyncio.gather(
+            http.get(timeseries_url("inittimedata", "fluorescence")),
+            http.get(timeseries_url("inittimedata", "spks")),
+            http.get(timeseries_url("timedata", "fluorescence")),
+        )
+
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert overlap == [1, 1, 1]
