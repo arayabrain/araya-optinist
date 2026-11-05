@@ -958,11 +958,11 @@ async def get_image(
         return await _read_tiff_preview(
             abs_filepath, save_dirpath, json_filepath, start_index, end_index
         )
-    else:
-        json_filepath = abs_filepath
-        _require_output_file(json_filepath)
 
-    return JsonReader.read_as_output(json_filepath)
+    _require_output_file(abs_filepath)
+    body = await asyncio.to_thread(JsonReader.read_as_output_bytes, abs_filepath)
+    # Served as written: parsing and encoding it again would hold the event loop
+    return Response(content=body, media_type="application/json")
 
 
 def _tiff_preview_body(
