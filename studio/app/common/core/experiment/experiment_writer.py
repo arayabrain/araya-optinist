@@ -457,7 +457,7 @@ class ExptDataWriter:
         try:
             os.mkdir(staging_dir)
         except FileExistsError:
-            logger.error(f"Copy destination already exists: {staging_dir}")
+            logger.error(f"Copy build directory already exists: {staging_dir}")
             return False
 
         succeeded = False

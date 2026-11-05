@@ -355,7 +355,7 @@ def test_copy_data_keeps_a_destination_it_did_not_create(copy_source, name):
 
 
 def test_a_copy_leaves_a_build_directory_claimed_after_its_check(
-    copy_source, monkeypatch
+    copy_source, monkeypatch, caplog
 ):
     """Two copies that draw the same id can both pass the existence check: the
     one that loses the claim must not remove the other's build directory."""
@@ -373,6 +373,9 @@ def test_a_copy_leaves_a_build_directory_claimed_after_its_check(
     assert not copy_the_source()
 
     assert os.listdir(STAGING) == ["other.txt"]
+    assert any(  # refused by the claim, not by some earlier check
+        "Copy build directory already exists" in r.message for r in caplog.records
+    )
 
 
 def test_the_record_list_sees_the_copy_only_once_it_is_complete(
