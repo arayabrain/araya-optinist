@@ -28,9 +28,36 @@ from studio.app.common.core.subscription.constants import (
 )
 from studio.app.common.core.users import crud_users
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
-from studio.app.common.db.database import session_scope
+from studio.app.common.db.database import run_db_lookup, session_scope
 
 logger = AppLogger.get_logger()
+
+
+def _get_accessible_workspace_ids(user_id: int) -> List[int]:
+    """Ids of the workspaces the user owns or shares; runs in a worker thread."""
+    from sqlmodel import or_, select
+
+    from studio.app.common import models as common_model
+    from studio.app.common.db.database import session_scope
+
+    with session_scope() as db:
+        workspaces_query = (
+            select(common_model.Workspace.id)
+            .join(
+                common_model.WorkspacesShareUser,
+                common_model.Workspace.id
+                == common_model.WorkspacesShareUser.workspace_id,
+                isouter=True,
+            )
+            .filter(
+                common_model.Workspace.deleted.is_(False),
+                or_(
+                    common_model.WorkspacesShareUser.user_id == user_id,
+                    common_model.Workspace.user_id == user_id,
+                ),
+            )
+        )
+        return db.execute(workspaces_query).scalars().all()
 
 
 class S3StorageMonitor:
@@ -67,30 +94,7 @@ class S3StorageMonitor:
         total_size = 0
 
         try:
-            # Get all workspaces the user has access to
-            from sqlmodel import or_, select
-
-            from studio.app.common import models as common_model
-            from studio.app.common.db.database import session_scope
-
-            with session_scope() as db:
-                workspaces_query = (
-                    select(common_model.Workspace.id)
-                    .join(
-                        common_model.WorkspacesShareUser,
-                        common_model.Workspace.id
-                        == common_model.WorkspacesShareUser.workspace_id,
-                        isouter=True,
-                    )
-                    .filter(
-                        common_model.Workspace.deleted.is_(False),
-                        or_(
-                            common_model.WorkspacesShareUser.user_id == user_id,
-                            common_model.Workspace.user_id == user_id,
-                        ),
-                    )
-                )
-                workspace_ids = db.execute(workspaces_query).scalars().all()
+            workspace_ids = await run_db_lookup(_get_accessible_workspace_ids, user_id)
 
             logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
@@ -207,30 +211,7 @@ class S3StorageMonitor:
         s3_client = None
 
         try:
-            # Get all workspaces the user has access to
-            from sqlmodel import or_, select
-
-            from studio.app.common import models as common_model
-            from studio.app.common.db.database import session_scope
-
-            with session_scope() as db:
-                workspaces_query = (
-                    select(common_model.Workspace.id)
-                    .join(
-                        common_model.WorkspacesShareUser,
-                        common_model.Workspace.id
-                        == common_model.WorkspacesShareUser.workspace_id,
-                        isouter=True,
-                    )
-                    .filter(
-                        common_model.Workspace.deleted.is_(False),
-                        or_(
-                            common_model.WorkspacesShareUser.user_id == user_id,
-                            common_model.Workspace.user_id == user_id,
-                        ),
-                    )
-                )
-                workspace_ids = db.execute(workspaces_query).scalars().all()
+            workspace_ids = await run_db_lookup(_get_accessible_workspace_ids, user_id)
 
             logger.info(
                 f"[Streaming] Checking S3 storage for user {user_id} "

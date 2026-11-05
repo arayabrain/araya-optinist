@@ -11,12 +11,15 @@ import asyncio
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Awaitable, Callable
 from unittest.mock import patch
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
+
+from studio.app.common.db.database import get_db
 
 _AUTH_MODULE = "studio.app.common.core.auth.auth_dependencies"
 # Both auth modes' headers, so the tests hold whichever AUTH_CONFIG selects
@@ -101,3 +104,43 @@ async def wait_until(condition, timeout: float = 2.0) -> None:
     while not condition():
         assert time.monotonic() < deadline, "condition not reached"
         await asyncio.sleep(0.01)
+
+
+def add_hold_and_health_routes(app: FastAPI, released: asyncio.Event) -> None:
+    """/hold keeps a pooled connection until released; /health needs none."""
+
+    @app.get("/hold")
+    async def hold(db=Depends(get_db)):
+        db.execute(text("SELECT 1"))
+        await released.wait()
+
+    @app.get("/health")
+    async def health():
+        return {}
+
+
+async def answered_while_waiting(
+    client: httpx.AsyncClient,
+    engine,
+    released: asyncio.Event,
+    send: Callable[[], Awaitable[httpx.Response]],
+):
+    """Send a request while /hold keeps the pool's only connection.
+
+    Returns /health's response, whether the request was still waiting when
+    /health was answered, and the request's response once the connection is
+    returned. A pool wait on the event loop stops /health until it times out.
+    """
+    hold = asyncio.create_task(client.get("/hold"))
+    await wait_until(lambda: engine.pool.checkedout() == 1)
+
+    request = asyncio.create_task(send())
+    # Long enough for the request to reach the pool wait
+    await asyncio.sleep(0.2)
+    health = await asyncio.wait_for(client.get("/health"), timeout=1)
+    waiting = not request.done()
+
+    released.set()
+    response = await request
+    await hold
+    return health, waiting, response
