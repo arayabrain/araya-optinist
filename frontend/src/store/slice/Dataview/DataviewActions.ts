@@ -8,6 +8,8 @@ import {
   privateDataviewReproduceWorkflowApi,
   publicDataviewReproduceWorkflowApi,
   putAttributesApi,
+  putHiddenOutputsApi,
+  getHiddenOutputsApi,
 } from "api/dataview/Dataview"
 import { WorkflowWithResultDTO } from "api/workflow/Workflow"
 import {
@@ -124,3 +126,28 @@ export const putAttributes = createAsyncThunk<
     return rejectWithValue(e)
   }
 })
+
+export const getHiddenOutputs = createAsyncThunk<string[], { id: number }>(
+  `${DATAVIEW_SLICE_NAME}/getHiddenOutputs`,
+  async ({ id }, thunkAPI) => {
+    try {
+      return await getHiddenOutputsApi(id)
+    } catch (e) {
+      return thunkAPI.rejectWithValue(e)
+    }
+  },
+)
+
+export const putHiddenOutputs = createAsyncThunk<
+  string[],
+  { id: number; path: string; hidden: boolean }
+>(
+  `${DATAVIEW_SLICE_NAME}/putHiddenOutputs`,
+  async ({ id, path, hidden }, thunkAPI) => {
+    try {
+      return await putHiddenOutputsApi(id, path, hidden)
+    } catch (e) {
+      return thunkAPI.rejectWithValue(e)
+    }
+  },
+)

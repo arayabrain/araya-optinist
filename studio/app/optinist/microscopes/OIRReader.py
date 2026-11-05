@@ -1,16 +1,15 @@
 import ctypes
 import os
 import platform
-import shutil
 
 import numpy as np
-import requests
 
 import studio.app.optinist.microscopes.modules.olympus.lib as lib
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.microscopes.MicroscopeDataReaderBase import (
     MicroscopeDataReaderBase,
     OMEDataModel,
+    unpack_microscope_libs,
 )
 from studio.app.optinist.microscopes.modules.olympus.area_image_size import (
     AreaImageSize,
@@ -58,17 +57,7 @@ class OIRReader(MicroscopeDataReaderBase):
     @staticmethod
     def unpack_libs():
         """Unpack library files"""
-        if not os.path.isdir(DIRPATH.MICROSCOPE_LIB_DIR):
-            if not os.path.exists(DIRPATH.MICROSCOPE_LIB_ZIP):
-                response = requests.get(
-                    "https://github.com/oist/optinist/raw/v1.2.1/studio/app/optinist/microscopes/libs.zip"  # noqa: E501
-                )
-                with open(DIRPATH.MICROSCOPE_LIB_ZIP, "wb") as f:
-                    f.write(response.content)
-
-            shutil.unpack_archive(
-                DIRPATH.MICROSCOPE_LIB_ZIP, DIRPATH.MICROSCOPE_LIB_DIR
-            )
+        unpack_microscope_libs()
 
     @staticmethod
     def get_library_path() -> str:

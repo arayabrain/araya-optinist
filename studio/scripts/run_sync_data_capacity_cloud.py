@@ -62,8 +62,8 @@ class CloudWorkspaceDataCapacityService:
 
             # Check both input and output directories for the workspace
             prefixes = [
-                f"{S3StorageController.S3_BASE_PATH}/input/{workspace_id}/",
-                f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/",
+                S3StorageController.make_s3_input_prefix(workspace_id),
+                S3StorageController.make_s3_output_prefix(workspace_id),
             ]
 
             logger.info(f"Calculating S3 usage for workspace {workspace_id}")
@@ -126,9 +126,7 @@ class CloudWorkspaceDataCapacityService:
 
         try:
             s3_client = boto3.client("s3")
-            prefix = (
-                f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/{unique_id}/"
-            )
+            prefix = S3StorageController.make_s3_output_prefix(workspace_id, unique_id)
 
             # logger.debug(
             #     f"Calculating S3 usage for experiment {workspace_id}/{unique_id}"
@@ -210,7 +208,7 @@ class CloudWorkspaceDataCapacityService:
         # Get S3 input storage size
         try:
             s3_client = boto3.client("s3")
-            prefix = f"{S3StorageController.S3_BASE_PATH}input/{workspace_id}/"
+            prefix = S3StorageController.make_s3_input_prefix(workspace_id)
 
             paginator = s3_client.get_paginator("list_objects_v2")
             page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
@@ -270,7 +268,7 @@ class CloudWorkspaceDataCapacityService:
         s3_experiments = set()
         try:
             s3_client = boto3.client("s3")
-            prefix = f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/"
+            prefix = S3StorageController.make_s3_output_prefix(workspace_id)
 
             response = s3_client.list_objects_v2(
                 Bucket=bucket_name, Prefix=prefix, Delimiter="/"

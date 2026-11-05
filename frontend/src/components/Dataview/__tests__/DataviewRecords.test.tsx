@@ -129,16 +129,10 @@ jest.mock("components/common/PaginationCustom", () => {
 
 jest.mock("components/Workspace/Visualize/Plot/ImagePlotSimple", () => ({
   ImagePlotSimple: () => <div data-testid="image-plot">Image Plot</div>,
-  ImagePlotSimpleWithLoading: () => (
-    <div data-testid="image-plot-with-loading">Image Plot With Loading</div>
-  ),
 }))
 
 jest.mock("components/Workspace/Visualize/Plot/RoiPlotSimple", () => ({
   RoiPlotSimple: () => <div data-testid="roi-plot">ROI Plot</div>,
-  RoiPlotSimpleWithLoading: () => (
-    <div data-testid="roi-plot-with-loading">ROI Plot With Loading</div>
-  ),
 }))
 
 jest.mock("components/common/SwitchCustom", () => {
@@ -746,9 +740,9 @@ describe("DataviewRecords Component", () => {
         "blob:roi",
       )
 
-      // Should not use the WithLoading plot components for PNG thumbnails
-      expect(screen.queryByTestId("image-plot-with-loading")).toBeNull()
-      expect(screen.queryByTestId("roi-plot-with-loading")).toBeNull()
+      // Should not use the on-demand plot components for PNG thumbnails
+      expect(screen.queryByTestId("image-plot")).toBeNull()
+      expect(screen.queryByTestId("roi-plot")).toBeNull()
     })
 
     it("does not render PNG img tags for legacy TIFF/JSON thumbnails", () => {
@@ -759,8 +753,8 @@ describe("DataviewRecords Component", () => {
       renderWithProviders(<DataviewRecords user={mockUser} />)
 
       // The legacy path routes to the on-demand-sync plot components instead
-      expect(screen.getByTestId("image-plot-with-loading")).toBeDefined()
-      expect(screen.getByTestId("roi-plot-with-loading")).toBeDefined()
+      expect(screen.getByTestId("image-plot")).toBeDefined()
+      expect(screen.getByTestId("roi-plot")).toBeDefined()
       expect(screen.queryByAltText("Input thumbnail")).toBeNull()
       expect(screen.queryByAltText("ROI thumbnail")).toBeNull()
     })
@@ -776,14 +770,42 @@ describe("DataviewRecords Component", () => {
       const placeholders = screen.getAllByTestId("ImageIcon")
       expect(placeholders).toHaveLength(2)
       expect(screen.queryByAltText("Input thumbnail")).toBeNull()
-      expect(screen.queryByTestId("image-plot-with-loading")).toBeNull()
-      expect(screen.queryByTestId("roi-plot-with-loading")).toBeNull()
+      expect(screen.queryByTestId("image-plot")).toBeNull()
+      expect(screen.queryByTestId("roi-plot")).toBeNull()
 
       fireEvent.click(placeholders[0])
       expect(screen.getByTestId("inputs-view")).toHaveAttribute(
         "data-open",
         "true",
       )
+    })
+  })
+
+  describe("Hidden outputs indicator", () => {
+    it("shows how many outputs are hidden and opens the outputs", () => {
+      store = mockStore(
+        stateWithPrivateItems([
+          { ...mockDataviewRecord, hidden_outputs: ["1/a/x", "1/a/y"] },
+        ]),
+      )
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      fireEvent.click(screen.getByText("2 hidden"))
+      expect(screen.getByTestId("outputs-view")).toHaveAttribute(
+        "data-open",
+        "true",
+      )
+    })
+
+    it("shows nothing when every output is public", () => {
+      store = mockStore(
+        stateWithPrivateItems([{ ...mockDataviewRecord, hidden_outputs: [] }]),
+      )
+
+      renderWithProviders(<DataviewRecords user={mockUser} />)
+
+      expect(screen.queryByText(/hidden$/)).toBeNull()
     })
   })
 

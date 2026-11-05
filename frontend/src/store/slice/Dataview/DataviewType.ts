@@ -20,6 +20,7 @@ export type DataviewType = {
   attributes?: object
   analyzed_at: string
   publish_status?: number
+  hidden_outputs?: string[]
   created_at: string
   updated_at: string
 }
