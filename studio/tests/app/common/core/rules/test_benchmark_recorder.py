@@ -184,6 +184,22 @@ def test_phase_exit_failure_changes_no_outcome(monkeypatch):
             raise ValueError("body")
 
 
+def test_record_starts_without_an_earlier_rules_steps(monkeypatch):
+    monkeypatch.setenv(ENV_FLAG, "1")
+    BenchmarkRecorder._marks = {"imports_done": 1.0}
+    BenchmarkRecorder._phases = [{"name": "earlier"}]
+    BenchmarkRecorder._phase_stack = [{"name": "earlier"}]
+    BenchmarkRecorder._peak_kb = 10**9
+    broken_smk = SimpleNamespace(rule="r", output=[], params=None)
+
+    with BenchmarkRecorder.record(broken_smk):
+        assert BenchmarkRecorder._phases == []
+        assert BenchmarkRecorder._phase_stack == []
+        assert BenchmarkRecorder._peak_kb == 0
+        # A mark made before record() (post_process) is kept
+        assert BenchmarkRecorder._marks == {"imports_done": 1.0}
+
+
 def test_phase_is_inert_when_disabled(monkeypatch):
     monkeypatch.delenv(ENV_FLAG, raising=False)
     with BenchmarkRecorder.phase("x"):

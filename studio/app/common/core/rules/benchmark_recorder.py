@@ -34,9 +34,10 @@ def _process_start_epoch() -> float:
         # Field 22 (starttime, clock ticks since boot); comm may contain spaces
         fields = f.read().rsplit(")", 1)[1].split()
     start_ticks = int(fields[19])
-    with open("/proc/stat") as f:
-        btime = next(int(line.split()[1]) for line in f if line.startswith("btime"))
-    return btime + start_ticks / os.sysconf("SC_CLK_TCK")
+    with open("/proc/uptime") as f:
+        uptime = float(f.read().split()[0])
+    # Counted back from now: /proc/stat's btime is whole seconds
+    return time.time() - uptime + start_ticks / os.sysconf("SC_CLK_TCK")
 
 
 def _vm_hwm_kb() -> int:
@@ -65,6 +66,7 @@ def _proc_io() -> dict:
 
 
 class BenchmarkRecorder:
+    # Per process: snakemake runs each rule script in its own process
     _marks = {}
     _phases = []
     # Peak RSS seen before any reset, in KiB; resets would otherwise hide it
@@ -135,6 +137,10 @@ class BenchmarkRecorder:
             yield
             return
 
+        # Steps belong to this rule; marks may precede it (post_process)
+        cls._phases = []
+        cls._phase_stack = []
+        cls._peak_kb = 0
         t_start = time.time()
         error = None
         try:
@@ -190,8 +196,15 @@ class BenchmarkRecorder:
 
             out_dir = Path(output).parent.parent / OUTPUT_DIRNAME
             out_dir.mkdir(exist_ok=True)
-            with open(out_dir / OUTPUT_FILENAME, "a") as f:
-                f.write(json.dumps(record) + "\n")
+            # Parallel rules append to one file: one write() per line, so
+            # lines do not interleave
+            fd = os.open(
+                out_dir / OUTPUT_FILENAME, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644
+            )
+            try:
+                os.write(fd, (json.dumps(record) + "\n").encode())
+            finally:
+                os.close(fd)
         except Exception:
             # Recording must never change the rule's outcome
             pass
