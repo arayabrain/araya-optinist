@@ -199,6 +199,33 @@ class TestPublicOutputsReadGate:
         record = _record([HIDDEN])
         assert not DataviewService.is_hidden_output(record, "1/uid/roi")
 
+    @pytest.mark.parametrize(
+        "hidden, path",
+        [
+            ("1/uid/func1/cell_roi.json", "1/uid/func1/cell_roi.json.orig"),
+            ("1/uid/func1/fluorescence", "1/uid/func1/fluorescence.orig/0.json"),
+            ("1/uid/func1/tiff/mc/mc.tif", "1/uid/func1/tiff.orig/mc/mc.tif"),
+            ("1/uid/func1/tiff/mc/mc.tif", "1/uid/func1/tiff/mc/mc/mc_0_10.json"),
+            ("1/uid/func1/tiff/mc/mc.tif", "1/uid/func1/tiff.orig/mc/mc/mc_0_10.json"),
+        ],
+    )
+    def test_backups_and_cached_previews_of_a_hidden_output_are_hidden(
+        self, hidden, path
+    ):
+        assert DataviewService.is_hidden_output(_record([hidden]), path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "1/uid/func1/all_roi.json.orig",
+            "1/uid/func1/fluorescence_other.orig/0.json",
+            "1/uid/func1/tiff/mc/other/x.json",
+        ],
+    )
+    def test_backups_of_visible_outputs_stay_visible(self, path):
+        hidden = ["1/uid/func1/cell_roi.json", "1/uid/func1/tiff/mc/mc.tif"]
+        assert not DataviewService.is_hidden_output(_record(hidden), path)
+
 
 class TestPutHiddenOutputs:
     @staticmethod

@@ -34,7 +34,7 @@ from studio.app.common.schemas.dataview import (
     PublishValidationResult,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
-from studio.app.const import ThumbnailType
+from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -283,11 +283,18 @@ class DataviewService:
         """
         if not path:
             return False
-        path = cls.canonical_output_path(path)
-        return any(
-            path == hidden or path.startswith(hidden + "/")
-            for hidden in record.hidden_outputs or []
+        # A filter's .orig backup counts as the output it backs up
+        path = "/".join(
+            part.removesuffix(ORIGINAL_DATA_EXT)
+            for part in cls.canonical_output_path(path).split("/")
         )
+        roots = []
+        for hidden in record.hidden_outputs or []:
+            roots.append(hidden)
+            stem, ext = posixpath.splitext(hidden)
+            if ext in ACCEPT_FILE_EXT.TIFF_EXT.value:
+                roots.append(stem)  # the TIFF's cached previews
+        return any(path == root or path.startswith(root + "/") for root in roots)
 
     @classmethod
     def is_dataview_public_outputs_request(cls, req: Request) -> bool:
