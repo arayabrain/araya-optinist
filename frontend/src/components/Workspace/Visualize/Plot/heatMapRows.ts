@@ -1,5 +1,8 @@
 import { HeatMapData } from "api/visualizations/Outputs"
-import { HeatMapZRangeMode } from "store/slice/VisualizeItem/VisualizeItemType"
+import {
+  HeatMapZRange,
+  HeatMapZRangeMode,
+} from "store/slice/VisualizeItem/VisualizeItemType"
 
 export function filterHeatMapRows(
   z: HeatMapData,
@@ -32,17 +35,15 @@ export function filterHeatMapColumns(
 }
 
 // Colour range of the whole matrix: the finite min and max (auto), the p-th to
-// (100 - p)-th percentile of the finite values, or the typed range. A percentile or
-// manual range that is empty falls back to auto.
+// (100 - p)-th percentile of the finite values, or the typed range, where a bound
+// left empty is the data's. A percentile or manual range that is empty falls back
+// to auto.
 export function heatMapZRange(
   z: HeatMapData | undefined,
   mode: HeatMapZRangeMode = "auto",
   percentile = 2,
-  manual: [number, number] | null = null,
+  manual: HeatMapZRange | null = null,
 ): [number, number] | undefined {
-  if (mode === "manual" && manual != null && manual[0] < manual[1]) {
-    return manual
-  }
   let min = Infinity
   let max = -Infinity
   let count = 0
@@ -55,6 +56,11 @@ export function heatMapZRange(
       }
     }),
   )
+  if (mode === "manual" && manual != null) {
+    const lo = manual[0] ?? min
+    const hi = manual[1] ?? max
+    if (lo < hi) return [lo, hi]
+  }
   if (min > max) return undefined
   if (mode === "percentile" && percentile > 0 && percentile < 50) {
     // a typed array sorts numerically without a comparator, several times faster
@@ -72,4 +78,15 @@ export function heatMapZRange(
     if (lo < hi) return [lo, hi]
   }
   return [min, max]
+}
+
+// True when a typed manual range is empty on this data, so the data range is drawn.
+export function manualZRangeIgnored(
+  z: HeatMapData | undefined,
+  manual: HeatMapZRange | null,
+): boolean {
+  if (manual == null || (manual[0] == null && manual[1] == null)) return false
+  const data = heatMapZRange(z)
+  if (data == null) return false
+  return !((manual[0] ?? data[0]) < (manual[1] ?? data[1]))
 }

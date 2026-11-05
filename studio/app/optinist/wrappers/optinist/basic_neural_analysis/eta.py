@@ -114,6 +114,24 @@ def nan_stats(data):
         )
 
 
+def population_trace(mean, band):
+    """Mean across the cells that are finite at every time point, with the std or
+    sem across them. A cell NaN anywhere is left out everywhere, so a NaN cannot
+    turn into a step where the cell set changes."""
+    rows = mean[np.isfinite(mean).all(axis=1)]
+    n_cell = len(rows)
+    if n_cell == 0:
+        nan = np.full(mean.shape[1], np.nan)
+        return nan, nan.copy(), 0
+    overall = rows.mean(axis=0)
+    if n_cell < 2:
+        return overall, np.full_like(overall, np.nan), n_cell
+    spread = rows.std(axis=0, ddof=1)
+    if band == "sem":
+        spread = spread / np.sqrt(n_cell, dtype=spread.dtype)
+    return overall, spread, n_cell
+
+
 def ETA(
     neural_data: FluoData,
     behaviors_data: BehaviorData,
@@ -149,6 +167,8 @@ def ETA(
         Y = behaviors_data.transpose()
     else:
         Y = behaviors_data
+    if Y.ndim == 1:
+        Y = Y[:, np.newaxis]
 
     assert (
         X.shape[0] == Y.shape[0]
@@ -158,12 +178,22 @@ def ETA(
 
     if iscell is not None:
         iscell = iscell.data
+        assert len(iscell) == X.shape[1], (
+            f"iscell has {len(iscell)} entries but neural_data has "
+            f"{X.shape[1]} ROIs"
+        )
         ind = np.where(iscell > 0)[0]
         assert len(ind) > 0, "iscell marks no ROI as a cell, nothing to average"
         cell_numbers = ind
         X = X[:, ind]
 
-    Y = Y[:, params["event_col_index"]]
+    col = params["event_col_index"]
+    assert col == int(col) and 0 <= col < Y.shape[1], (
+        f"event_col_index {col} is out of range for behaviour data with "
+        f"{Y.shape[1]} column(s); it must be a whole number from 0 to "
+        f"{Y.shape[1] - 1}"
+    )
+    Y = Y[:, int(col)]
 
     # The window is abs(pre_event) frames before the trigger whichever sign is given
     pre_event = -abs(params["pre_event"])
@@ -212,8 +242,6 @@ def ETA(
     smooth_sigma = float(params.get("smooth_sigma_frames") or 0)
     if smooth_sigma < 0:
         raise ValueError(f"smooth_sigma_frames {smooth_sigma} must be >= 0")
-    if smooth_sigma > 0 and not np.issubdtype(event_trigger_data.dtype, np.floating):
-        event_trigger_data = event_trigger_data.astype(float)
 
     num_event = len(event_trigger_data)
     dropped_length = num_detected - len(trigger_idxs)
@@ -254,10 +282,6 @@ def ETA(
                 int(skip.sum()),
                 cells[skip.any(axis=0)].tolist(),
             )
-    if smooth_sigma > 0:
-        # one window at a time: the float64 temporaries of a whole cube are GBs
-        for window in event_trigger_data:
-            window[...] = nan_gaussian_1d(window, smooth_sigma, axis=0)
     if baseline_window:
         mean, std, n_event = nan_stats(event_trigger_data)
         empty = (n_event == 0).all(axis=0)
@@ -280,19 +304,21 @@ def ETA(
     std = std.transpose()
     sem = sem.transpose()
 
-    # Overall mean across cells with its error band (std or sem across cells)
-    if baseline_window:
-        overall_mean, overall_std, n_cell = nan_stats(mean)
-    else:
-        overall_mean = np.mean(mean, axis=0)
-        n_cell = mean.shape[0]
-    if mean.shape[0] < 2:
-        logger.warning("mean_trace error band is undefined for a single cell")
-        overall_band = np.full_like(overall_mean, np.nan)
-    else:
-        overall_band = overall_std if baseline_window else np.std(mean, axis=0, ddof=1)
-        if mean_trace_band == "sem":
-            overall_band = overall_band / np.sqrt(n_cell)
+    heatmap_cells = (
+        np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
+    )
+    # mean, std, sem and the NWB stay unsmoothed; the heatmap and mean_trace plot
+    # use the smoothed means, stored as *_smoothed
+    smoothed = nan_gaussian_1d(mean, smooth_sigma, axis=1) if smooth_sigma > 0 else mean
+    overall_mean, overall_band, n_cell = population_trace(mean, mean_trace_band)
+    left_out = ~np.isfinite(mean).all(axis=1)
+    if left_out.any():
+        logger.warning(
+            "ETA: mean_trace leaves out cells %s, NaN at some time point",
+            heatmap_cells[left_out].tolist(),
+        )
+    if n_cell < 2:
+        logger.warning("mean_trace error band is undefined for fewer than 2 cells")
 
     nwbfile = {}
     nwbfile[NWBDATASET.POSTPROCESS] = {
@@ -305,25 +331,31 @@ def ETA(
             "mean_trace_band": overall_band,
         }
     }
+    trace_mean, trace_band = overall_mean, overall_band
+    if smooth_sigma > 0:
+        trace_mean, trace_band, _ = population_trace(smoothed, mean_trace_band)
+        nwbfile[NWBDATASET.POSTPROCESS][function_id].update(
+            mean_smoothed=smoothed,
+            mean_trace_smoothed=trace_mean,
+            mean_trace_band_smoothed=trace_band,
+        )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # an all-NaN row stays NaN
-        min_value = np.nanmin(mean, axis=1, keepdims=True)
-        value_range = np.nanmax(mean, axis=1, keepdims=True) - min_value
+        min_value = np.nanmin(smoothed, axis=1, keepdims=True)
+        value_range = np.nanmax(smoothed, axis=1, keepdims=True) - min_value
     value_range[value_range == 0] = 1  # a flat cell becomes a zero row, not NaN
-    norm_mean = (mean - min_value) / value_range
+    norm_mean = (smoothed - min_value) / value_range
 
     trace_index = list(range(pre_event, post_event + trigger_len))
-    heatmap_cells = (
-        np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
-    )
     order = np.arange(len(mean))
     if order_from is not None:
         order = row_order_from(order_from, heatmap_cells)
     elif params.get("sort_by_peak", False):
         order = peak_order(norm_mean)
 
-    trace_cells = int((~empty).sum()) if baseline_window else mean.shape[0]
     title = f"n = {num_event} events"
+    if num_event < num_detected:
+        title = f"n = {num_event} of {num_detected} events"
     if baseline_window:
         title += ", per-event z-score"
     if smooth_sigma > 0:
@@ -339,11 +371,11 @@ def ETA(
         file_name="mean",
     )
     info["mean_trace"] = TimeSeriesData(
-        overall_mean[np.newaxis],
-        std=overall_band[np.newaxis],
+        trace_mean[np.newaxis],
+        std=trace_band[np.newaxis],
         index=trace_index,
         file_name="mean_trace",
-        meta=PlotMetaData(title=f"{title}, {trace_cells} cells"),
+        meta=PlotMetaData(title=f"{title}, {n_cell} cells"),
     )
     info["mean_heatmap"] = HeatMapData(
         norm_mean[order],

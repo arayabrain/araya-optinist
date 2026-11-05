@@ -19,6 +19,7 @@ import {
   TimeSeriesItem,
   RoiItem,
   HeatMapItem,
+  HeatMapZRange,
   HeatMapZRangeMode,
   ScatterItem,
   VisualaizeItem,
@@ -831,7 +832,7 @@ export const visualaizeItemSlice = createSlice({
       state,
       action: PayloadAction<{
         itemId: number
-        zRange: [number, number] | null
+        zRange: HeatMapZRange | null
       }>,
     ) => {
       const targetItem = state.items[action.payload.itemId]

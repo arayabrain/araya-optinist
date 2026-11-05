@@ -502,8 +502,94 @@ def test_trial_mode_nan_sample_blanks_that_trial_bin_only(tmp_path):
 
 
 def test_trial_col_out_of_range_fails_with_a_clear_message(tmp_path):
-    with pytest.raises(AssertionError, match="trial_col_index 5 is out of range"):
+    with pytest.raises(
+        AssertionError, match="trial_col_index 5 must be -1 .off. or a column index"
+    ):
         _bin(tmp_path, params={"trial_col_index": 5})
+
+
+@pytest.mark.parametrize("value", [-2, 2.5])
+def test_trial_col_must_be_minus_one_or_a_column(tmp_path, value):
+    with pytest.raises(AssertionError, match=f"trial_col_index {value} must be"):
+        _bin(tmp_path, behavior=_trial_behavior(), params={"trial_col_index": value})
+
+
+def test_whole_float_trial_col_is_accepted(tmp_path):
+    behavior = _trial_behavior()
+    as_float = _bin(
+        tmp_path, behavior=behavior, params=_trial_params(trial_col_index=2.0)
+    )
+    as_int = _bin(tmp_path, behavior=behavior, params=_trial_params())
+    np.testing.assert_array_equal(as_float["mean"].data, as_int["mean"].data)
+
+
+def _lap_behavior(n_laps=10, frames=40):
+    """Position runs 0 to 4 once per lap; column 2 is the lap id."""
+    position = np.tile(np.arange(frames) * 4.0 / frames, n_laps)
+    lap = np.repeat(np.arange(n_laps), frames).astype(float)
+    return np.column_stack([np.zeros(len(lap)), position, lap])
+
+
+def _lap_fluo(behavior):
+    return np.random.default_rng(2).random((NUM_CELL, len(behavior)))
+
+
+def test_lap_column_over_a_narrow_range_is_accepted_with_a_warning(tmp_path, caplog):
+    """A narrow fixed range leaves one frame per lap in range; the lap still spans
+    the range, so it is a trial id, and the sparse table only warns."""
+    caplog.set_level(logging.WARNING, logger="optinist")
+    behavior = _lap_behavior(n_laps=40, frames=20)
+
+    out = _postprocess(
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params=_trial_params(n_bins=2, bin_min=3.7, bin_max=3.8),
+        )
+    )
+
+    assert list(out["num_sample"]) == [0, 40]
+    assert "40 trials x 2 bins is more than the 40 binned samples" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "make_column",
+    [lambda n: np.arange(n) // 2, lambda n: np.arange(n) // 4],
+    ids=["frame_counter_two_frames_per_value", "coarse_clock"],
+)
+def test_counter_or_clock_column_is_not_a_trial_id(tmp_path, make_column):
+    behavior = _lap_behavior()
+    behavior = _with_column(behavior, make_column(len(behavior)).astype(float))
+
+    with pytest.raises(AssertionError) as error:
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params={"trial_col_index": 3},
+        )
+
+    message = str(error.value)
+    assert "of the binned range 0 to 4, where a trial spans most of it" in message
+    assert message.endswith("Column 2 looks like one.")
+
+
+def test_interpolated_trial_ids_are_refused_with_a_rounding_hint(tmp_path):
+    behavior = _lap_behavior()
+    lap = behavior[:, 2]
+    lap[40::40] -= 0.5  # each lap boundary interpolated half way
+
+    with pytest.raises(
+        AssertionError,
+        match="9 of its values are not whole numbers.*round them to the nearest",
+    ):
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params=_trial_params(),
+        )
 
 
 def _with_column(behavior, column):
@@ -519,7 +605,7 @@ def test_continuous_trial_column_fails_before_allocating(tmp_path):
 
     message = str(error.value)
     assert "trial_col_index 3 does not look like a trial id" in message
-    assert "120 distinct values over 120 binned samples" in message
+    assert "a typical value spans 0% of the binned range 0 to 4" in message
     assert message.endswith("Column 2 looks like one.")
 
 
@@ -563,13 +649,31 @@ def test_min_samples_blanks_sparse_bins_in_sample_mode(tmp_path, caplog):
 
     np.testing.assert_allclose(out["mean"][:, 0], 1.0)
     assert np.isnan(out["mean"][:, 2]).all()
-    assert list(out["num_sample"]) == [2, 0, 1, 0]
+    assert list(out["num_sample"]) == [2, 0, 0, 0]
     assert "1 of 4 bins have fewer than min_samples 2 and are NaN: [2]" in caplog.text
 
 
 def test_invalid_min_samples_fails_with_a_clear_message(tmp_path):
-    with pytest.raises(AssertionError, match="min_samples must be >= 1"):
+    with pytest.raises(AssertionError, match="min_samples must be a whole number"):
         _bin(tmp_path, params={"min_samples": 0})
+    with pytest.raises(AssertionError, match="min_samples must be a whole number"):
+        _bin(tmp_path, params={"min_samples": 1.5})
+
+
+def test_mean_normalization_in_trial_mode_uses_only_trial_samples(tmp_path):
+    behavior = _trial_behavior()
+    behavior[:12, 2] = np.nan  # trial 0 has no id, so it is not binned
+    fluo = np.ones((NUM_CELL, NUM_FRAME))
+    fluo[:, :12] = 100.0
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=behavior,
+        params=_trial_params(heatmap_normalization="mean"),
+    )
+
+    np.testing.assert_allclose(info["mean_heatmap"].data, 1.0)
 
 
 def test_smoothing_changes_the_heatmap_not_the_mean(tmp_path):

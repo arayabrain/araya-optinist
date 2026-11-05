@@ -110,6 +110,8 @@ export interface TimeSeriesItem extends DisplayDataItemBaseType {
 }
 
 export type HeatMapZRangeMode = "auto" | "percentile" | "manual"
+// a null bound is the data's min or max
+export type HeatMapZRange = [number | null, number | null]
 
 export interface HeatMapItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.HEAT_MAP
@@ -120,7 +122,7 @@ export interface HeatMapItem extends DisplayDataItemBaseType {
   // percentile: clip the colour scale to [p, 100 - p] percent of the finite values
   zRangePercentile: number
   // manual: the typed colour range
-  zRange: [number, number] | null
+  zRange: HeatMapZRange | null
 }
 export interface CsvItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.CSV

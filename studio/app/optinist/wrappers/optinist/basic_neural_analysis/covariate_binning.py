@@ -18,24 +18,41 @@ from studio.app.optinist.wrappers.optinist.utils import (
 logger = AppLogger.get_logger()
 
 HEATMAP_NORMALIZATION_OPTIONS = ("minmax", "mean", "none")
+# median share of the bin range a trial id must span to count as one
+MIN_TRIAL_COVERAGE = 0.25
 
 
-def _not_a_trial_id(trial, in_range, n_bins):
+def _not_a_trial_id(trial, covariate, in_range, lo, hi):
     """Why this behaviour column cannot be a trial id, or None if it can. A trial id
-    covers one stretch of frames per trial, and the (trial, bin) table it sizes is
-    never larger than the binned samples."""
-    keep = in_range & np.isfinite(trial)
-    if not keep.any():
+    is a whole number held over one stretch of frames, and a typical trial spans
+    most of the binned range of the covariate."""
+    finite = np.isfinite(trial)
+    if not (in_range & finite).any():
         return "no in-range sample has a finite value"
-    n_kept = np.count_nonzero(keep)
-    n_trial = len(np.unique(trial[keep]))
-    if n_trial * n_bins > n_kept:
+    values = trial[finite]
+    whole = values == np.round(values)
+    if not whole.all() and whole.mean() >= 0.5:
         return (
-            f"{n_trial:,} distinct values over {n_kept:,} binned samples, fewer than "
-            f"one sample per trial and bin"
+            f"{np.count_nonzero(~whole):,} of its values are not whole numbers, as "
+            f"when trial ids are interpolated onto the imaging frames; round them to "
+            f"the nearest trial first"
         )
-    finite = trial[np.isfinite(trial)]
-    run_ids = finite[np.r_[True, np.diff(finite) != 0]]
+    # over all frames, not only the binned ones, so a narrow bin range keeps laps
+    seen = finite & np.isfinite(covariate)
+    ids, pos = np.unique(trial[seen], return_inverse=True)
+    clipped = np.clip(covariate[seen], lo, hi)
+    low = np.full(len(ids), np.inf)
+    high = np.full(len(ids), -np.inf)
+    np.minimum.at(low, pos, clipped)
+    np.maximum.at(high, pos, clipped)
+    coverage = float(np.median((high - low) / (hi - lo)))
+    if coverage < MIN_TRIAL_COVERAGE:
+        return (
+            f"a typical value spans {coverage:.0%} of the binned range {lo:g} to "
+            f"{hi:g}, where a trial spans most of it (a continuous signal, a frame "
+            f"counter or a clock does not)"
+        )
+    run_ids = values[np.r_[True, np.diff(values) != 0]]
     ids, n_runs = np.unique(run_ids, return_counts=True)
     recurring = ids[n_runs > 1]
     if len(recurring) == 1:
@@ -52,15 +69,27 @@ def _not_a_trial_id(trial, in_range, n_bins):
     return None
 
 
-def _check_trial_col(Y, trial_col, in_range, n_bins, event_col):
-    problem = _not_a_trial_id(Y[:, trial_col].astype(float), in_range, n_bins)
+def _check_trial_col(Y, trial_col, event_col, in_range, lo, hi, n_bins):
+    covariate = Y[:, event_col].astype(float)
+    trial = Y[:, trial_col].astype(float)
+    problem = _not_a_trial_id(trial, covariate, in_range, lo, hi)
     if problem is None:
+        n_trial = len(np.unique(trial[in_range & np.isfinite(trial)]))
+        n_kept = np.count_nonzero(in_range & np.isfinite(trial))
+        if n_trial * n_bins > n_kept:
+            logger.warning(
+                "covariate_binning: %d trials x %d bins is more than the %d binned "
+                "samples, so most trial-bins are empty; fewer bins (n_bins) fill them",
+                n_trial,
+                n_bins,
+                n_kept,
+            )
         return
     candidates = [
         c
         for c in range(Y.shape[1])
         if c not in (trial_col, event_col)
-        and _not_a_trial_id(Y[:, c].astype(float), in_range, n_bins) is None
+        and _not_a_trial_id(Y[:, c].astype(float), covariate, in_range, lo, hi) is None
         and np.nanmax(Y[in_range, c]) > np.nanmin(Y[in_range, c])
     ]
     if len(candidates) == 1:
@@ -162,10 +191,12 @@ def covariate_binning(
         f"neural.shape{X.shape}, behavior.shape{Y.shape}"
     )
     col = params["event_col_index"]
-    assert 0 <= col < Y.shape[1], (
+    assert col == int(col) and 0 <= col < Y.shape[1], (
         f"event_col_index {col} is out of range for behaviour data with "
-        f"{Y.shape[1]} column(s)"
+        f"{Y.shape[1]} column(s); it must be a whole number from 0 to "
+        f"{Y.shape[1] - 1}"
     )
+    col = int(col)
     n_bins = int(params["n_bins"])
     assert n_bins > 0, f"n_bins must be > 0, got {n_bins}"
     normalization = str(params.get("heatmap_normalization") or "minmax").strip().lower()
@@ -174,14 +205,18 @@ def covariate_binning(
         f"got '{normalization}'"
     )
     trial_col = params.get("trial_col_index")
-    trial_col = -1 if trial_col is None else int(trial_col)
-    assert trial_col < Y.shape[1], (
-        f"trial_col_index {trial_col} is out of range for behaviour data with "
-        f"{Y.shape[1]} column(s)"
+    trial_col = -1 if trial_col is None else trial_col
+    assert trial_col == int(trial_col) and -1 <= trial_col < Y.shape[1], (
+        f"trial_col_index {trial_col} must be -1 (off) or a column index from 0 to "
+        f"{Y.shape[1] - 1}"
     )
+    trial_col = int(trial_col)
     min_samples = params.get("min_samples")
-    min_samples = 1 if min_samples is None else int(min_samples)
-    assert min_samples >= 1, f"min_samples must be >= 1, got {min_samples}"
+    min_samples = 1 if min_samples is None else min_samples
+    assert (
+        min_samples == int(min_samples) and min_samples >= 1
+    ), f"min_samples must be a whole number >= 1, got {min_samples}"
+    min_samples = int(min_samples)
     smooth_sigma = float(params.get("smooth_sigma_bins") or 0)
     assert smooth_sigma >= 0, f"smooth_sigma_bins must be >= 0, got {smooth_sigma}"
 
@@ -214,7 +249,7 @@ def covariate_binning(
     num_cell = X.shape[1]
     n_trial = None
     if trial_col >= 0:
-        _check_trial_col(Y, trial_col, in_range, n_bins, col)
+        _check_trial_col(Y, trial_col, col, in_range, lo, hi, n_bins)
         mean, std, sem, num_sample, n_trial = _trial_stats(
             X,
             in_range,
@@ -226,15 +261,26 @@ def covariate_binning(
     else:
         mean = np.full((num_cell, n_bins), np.nan)
         std = np.full((num_cell, n_bins), np.nan)
-        num_sample = np.zeros(n_bins, dtype=int)
+        counts = np.zeros(n_bins, dtype=int)
         for b in range(n_bins):
             samples = X[in_range & (bin_idx == b)]
-            num_sample[b] = len(samples)
-            if num_sample[b] >= min_samples:
+            counts[b] = len(samples)
+            if counts[b] >= min_samples:
                 mean[:, b] = samples.mean(axis=0)
-            if num_sample[b] > 1 and num_sample[b] >= min_samples:
+            if counts[b] > 1 and counts[b] >= min_samples:
                 std[:, b] = samples.std(axis=0, ddof=1)
-        sem = std / np.sqrt(np.maximum(num_sample, 1))
+        sem = std / np.sqrt(np.maximum(counts, 1))
+        sparse = (counts > 0) & (counts < min_samples)
+        if sparse.any():
+            logger.warning(
+                "covariate_binning: %d of %d bins have fewer than min_samples %d "
+                "and are NaN: %s",
+                np.count_nonzero(sparse),
+                n_bins,
+                min_samples,
+                np.flatnonzero(sparse).tolist(),
+            )
+        num_sample = counts
 
     if (num_sample == 0).any():
         logger.warning(
@@ -243,16 +289,9 @@ def covariate_binning(
             n_bins,
             np.flatnonzero(num_sample == 0).tolist(),
         )
-    sparse = (num_sample > 0) & (num_sample < min_samples)
-    if n_trial is None and sparse.any():
-        logger.warning(
-            "covariate_binning: %d of %d bins have fewer than min_samples %d "
-            "and are NaN: %s",
-            np.count_nonzero(sparse),
-            n_bins,
-            min_samples,
-            np.flatnonzero(sparse).tolist(),
-        )
+    if n_trial is None:
+        # as in trial mode, num_sample counts only what the mean is over
+        num_sample = np.where(sparse, 0, num_sample)
 
     smoothed = nan_gaussian_1d(mean, smooth_sigma, axis=1) if smooth_sigma > 0 else mean
     with warnings.catch_warnings():
@@ -264,7 +303,10 @@ def covariate_binning(
 
     if normalization == "mean":
         # masked sum and count, so the binned samples are not copied out of X
-        counted = in_range[:, None] & ~np.isnan(X)
+        binned = in_range
+        if n_trial is not None:
+            binned = in_range & np.isfinite(np.asarray(Y[:, trial_col], dtype=float))
+        counted = binned[:, None] & ~np.isnan(X)
         with np.errstate(invalid="ignore", divide="ignore"):
             cell_mean = np.sum(X, axis=0, where=counted) / counted.sum(axis=0)
         undefined = ~(cell_mean > 0)

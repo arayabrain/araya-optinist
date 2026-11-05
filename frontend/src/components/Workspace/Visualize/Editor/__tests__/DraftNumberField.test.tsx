@@ -28,6 +28,23 @@ describe("DraftNumberField", () => {
     expect(input.value).toBe("7")
   })
 
+  it("clears the value when emptied, if the field allows it", () => {
+    const onCommit = jest.fn()
+    const onClear = jest.fn()
+    render(
+      <DraftNumberField
+        label="Max"
+        value={5}
+        onCommit={onCommit}
+        onClear={onClear}
+      />,
+    )
+    const input = screen.getByRole("spinbutton") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "" } })
+    expect(onClear).toHaveBeenCalledTimes(1)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
   it("shows but does not commit a value the field rejects", () => {
     const onCommit = jest.fn()
     render(

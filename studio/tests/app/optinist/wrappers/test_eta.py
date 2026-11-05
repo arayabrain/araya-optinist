@@ -415,38 +415,54 @@ def test_order_from_missing_a_cell_fails_with_a_clear_message(
         )
 
 
-def test_smoothing_equals_scipy_on_each_window(neural, behavior, output_dir):
+def _smooth(a, sigma):
     from scipy.ndimage import gaussian_filter1d
 
+    return gaussian_filter1d(a, sigma, axis=-1, mode="constant") / gaussian_filter1d(
+        np.ones_like(a), sigma, axis=-1, mode="constant"
+    )
+
+
+def _post(info):
+    from studio.app.optinist.core.nwb.nwb import NWBDATASET
+
+    (post,) = info["nwbfile"][NWBDATASET.POSTPROCESS].values()
+    return post
+
+
+def test_smoothing_changes_the_figures_not_the_mean(neural, behavior, output_dir):
+    """As in covariate_binning: mean, std and sem stay unsmoothed."""
+    raw = ETA(neural, behavior, output_dir, params=dict(PARAMS))
     info = ETA(
         neural, behavior, output_dir, params={**PARAMS, "smooth_sigma_frames": 1.5}
     )
 
-    windows = _windows(neural.data, pre=2)
-    smoothed = gaussian_filter1d(
-        windows, 1.5, axis=1, mode="constant"
-    ) / gaussian_filter1d(np.ones_like(windows), 1.5, axis=1, mode="constant")
-    np.testing.assert_allclose(info["mean"].data, smoothed.mean(axis=0).T)
-    np.testing.assert_allclose(info["mean"].std, smoothed.std(axis=0, ddof=1).T)
+    np.testing.assert_array_equal(info["mean"].data, raw["mean"].data)
+    np.testing.assert_array_equal(info["mean"].std, raw["mean"].std)
+    np.testing.assert_array_equal(_post(info)["mean"], _post(raw)["mean"])
+    smoothed = _smooth(raw["mean"].data, 1.5)
+    np.testing.assert_allclose(_post(info)["mean_smoothed"], smoothed)
+    np.testing.assert_allclose(info["mean_trace"].data[0], smoothed.mean(axis=0))
+    np.testing.assert_allclose(
+        info["mean_trace"].std[0], smoothed.std(axis=0, ddof=1) / np.sqrt(N_CELL)
+    )
+    lo, hi = smoothed.min(axis=1, keepdims=True), smoothed.max(axis=1, keepdims=True)
+    np.testing.assert_allclose(info["mean_heatmap"].data, (smoothed - lo) / (hi - lo))
+    assert "mean_smoothed" not in _post(raw)
+    # the NWB population trace stays unsmoothed too; the plotted one is stored apart
+    np.testing.assert_array_equal(_post(info)["mean_trace"], _post(raw)["mean_trace"])
+    np.testing.assert_allclose(
+        _post(info)["mean_trace_smoothed"], info["mean_trace"].data[0]
+    )
+    np.testing.assert_allclose(
+        _post(info)["mean_trace_band_smoothed"], info["mean_trace"].std[0]
+    )
     assert info["mean_heatmap"].meta.title == "n = 3 events, smoothed 1.5 frames"
 
 
-def test_smoothing_keeps_float32(behavior, output_dir):
-    x = np.random.default_rng(1).random((N_TIME, N_CELL)).astype(np.float32)
-    info = ETA(
-        FluoData(x, file_name="f"),
-        behavior,
-        output_dir,
-        params={**PARAMS, "smooth_sigma_frames": 1},
-    )
-    assert info["mean"].data.dtype == np.float32
-
-
-def test_smoothing_runs_on_the_z_scored_windows(neural, behavior, output_dir):
+def test_smoothing_runs_on_the_z_scored_mean(neural, behavior, output_dir):
     """The baseline statistics come from the unsmoothed window, so a response
     smoothed into the baseline frames does not change them."""
-    from scipy.ndimage import gaussian_filter1d
-
     info = ETA(
         neural,
         behavior,
@@ -454,11 +470,9 @@ def test_smoothing_runs_on_the_z_scored_windows(neural, behavior, output_dir):
         params={**BASELINE_PARAMS, "smooth_sigma_frames": 1.5},
     )
 
-    z = _baseline_z(_windows(neural.data))
-    smoothed = gaussian_filter1d(z, 1.5, axis=1, mode="constant") / gaussian_filter1d(
-        np.ones_like(z), 1.5, axis=1, mode="constant"
-    )
-    np.testing.assert_allclose(info["mean"].data, smoothed.mean(axis=0).T)
+    z_mean = _baseline_z(_windows(neural.data)).mean(axis=0).T
+    np.testing.assert_allclose(info["mean"].data, z_mean)
+    np.testing.assert_allclose(_post(info)["mean_smoothed"], _smooth(z_mean, 1.5))
     assert (
         info["mean_heatmap"].meta.title
         == "n = 3 events, per-event z-score, smoothed 1.5 frames"
@@ -504,3 +518,83 @@ def test_mean_trace_title_counts_only_the_cells_it_averages(neural, output_dir):
 
     assert np.isnan(info["mean"].data[1]).all()
     assert info["mean_trace"].meta.title == "n = 3 events, per-event z-score, 2 cells"
+
+
+def test_title_counts_the_detected_events_when_some_are_dropped(neural, output_dir):
+    y = np.zeros((N_TIME, 2))
+    for start in (0, 30, 50):  # the first window crosses the recording start
+        y[start : start + 3, 1] = 1.0
+
+    info = ETA(neural, BehaviorData(y, file_name="b"), output_dir, params=dict(PARAMS))
+
+    assert info["mean_heatmap"].meta.title == "n = 2 of 3 events"
+    assert info["mean_trace"].meta.title == "n = 2 of 3 events, 3 cells"
+
+
+def test_one_dimensional_behaviour_is_one_column(neural, behavior, output_dir):
+    one_d = BehaviorData(behavior.data[:, 1], file_name="b")
+
+    info = ETA(neural, one_d, output_dir, params={**PARAMS, "event_col_index": 0})
+
+    expected = ETA(neural, behavior, output_dir, params=dict(PARAMS))
+    np.testing.assert_array_equal(info["mean"].data, expected["mean"].data)
+
+
+def test_event_col_out_of_range_fails_with_a_clear_message(
+    neural, behavior, output_dir
+):
+    with pytest.raises(AssertionError, match="event_col_index 2 is out of range"):
+        ETA(neural, behavior, output_dir, params={**PARAMS, "event_col_index": 2})
+
+
+def test_raw_mean_trace_leaves_out_a_nan_cell(neural, behavior, output_dir):
+    x = neural.data.copy()
+    x[:, 1] = np.nan
+
+    info = ETA(FluoData(x, file_name="f"), behavior, output_dir, params=dict(PARAMS))
+
+    assert np.isnan(info["mean"].data[1]).all()
+    np.testing.assert_allclose(
+        info["mean_trace"].data[0], info["mean"].data[[0, 2]].mean(axis=0)
+    )
+    assert info["mean_trace"].meta.title == "n = 3 events, 2 cells"
+
+
+def test_mean_trace_leaves_out_a_partly_nan_cell_everywhere(
+    neural, behavior, output_dir, caplog
+):
+    """One NaN sample makes the raw mean NaN at one time point; dropping the cell
+    there only would draw a step where the cell set changes."""
+    caplog.set_level(logging.WARNING, logger="optinist")
+    x = neural.data.copy()
+    x[STARTS[1] + 1, 1] = np.nan  # event 1, cell 1, one time point
+
+    info = ETA(FluoData(x, file_name="f"), behavior, output_dir, params=dict(PARAMS))
+
+    assert np.isnan(info["mean"].data[1]).sum() == 1
+    kept = info["mean"].data[[0, 2]]
+    np.testing.assert_allclose(info["mean_trace"].data[0], kept.mean(axis=0))
+    np.testing.assert_allclose(
+        info["mean_trace"].std[0], kept.std(axis=0, ddof=1) / np.sqrt(2)
+    )
+    assert info["mean_trace"].meta.title == "n = 3 events, 2 cells"
+    assert "mean_trace leaves out cells [1]" in caplog.text
+
+
+def test_whole_float_event_col_is_accepted(neural, behavior, output_dir):
+    as_float = ETA(
+        neural, behavior, output_dir, params={**PARAMS, "event_col_index": 1.0}
+    )
+    as_int = ETA(neural, behavior, output_dir, params=dict(PARAMS))
+    np.testing.assert_array_equal(as_float["mean"].data, as_int["mean"].data)
+
+
+def test_iscell_length_must_match_the_rois(neural, behavior, output_dir):
+    with pytest.raises(AssertionError, match="iscell has 2 entries but neural_data"):
+        ETA(
+            neural,
+            behavior,
+            output_dir,
+            iscell=IscellData(np.array([1, 1])),
+            params=dict(PARAMS),
+        )

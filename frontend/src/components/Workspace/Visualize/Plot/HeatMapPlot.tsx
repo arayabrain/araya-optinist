@@ -9,6 +9,7 @@ import {
   filterHeatMapColumns,
   filterHeatMapRows,
   heatMapZRange,
+  manualZRangeIgnored,
 } from "components/Workspace/Visualize/Plot/heatMapRows"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { getHeatMapData } from "store/slice/DisplayData/DisplayDataActions"
@@ -110,6 +111,11 @@ const HeatMapImple = memo(function HeatMapImple() {
       heatMapZRange(heatMapData, zRangeMode, zRangePercentile, manualZRange),
     [heatMapData, zRangeMode, zRangePercentile, manualZRange],
   )
+  const manualIgnored = useMemo(
+    () =>
+      zRangeMode === "manual" && manualZRangeIgnored(heatMapData, manualZRange),
+    [heatMapData, zRangeMode, manualZRange],
+  )
 
   const data = useMemo(
     () =>
@@ -200,7 +206,17 @@ const HeatMapImple = memo(function HeatMapImple() {
     )
   }
 
-  return <PlotlyChart data={data} layout={layout} config={config} />
+  return (
+    <>
+      {manualIgnored && (
+        <Typography variant="caption" color="error" sx={{ px: 1 }}>
+          The manual colour range is empty for this data; showing the data
+          range.
+        </Typography>
+      )}
+      <PlotlyChart data={data} layout={layout} config={config} />
+    </>
+  )
 })
 
 function heatMapDataEqualtyFn(

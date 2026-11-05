@@ -31,6 +31,7 @@ import {
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import {
   ColorType,
+  HeatMapZRange,
   HeatMapZRangeMode,
 } from "store/slice/VisualizeItem/VisualizeItemType"
 
@@ -89,11 +90,14 @@ const ColorRange: FC = () => {
       }),
     )
   }
-  const setBound = (bound: 0 | 1) => (value: number) => {
-    const next: [number, number] = [zRange?.[0] ?? 0, zRange?.[1] ?? 1]
+  const setBound = (bound: 0 | 1) => (value: number | null) => {
+    const next: HeatMapZRange = [zRange?.[0] ?? null, zRange?.[1] ?? null]
     next[bound] = value
     dispatch(setHeatMapItemZRange({ itemId, zRange: next }))
   }
+  const lo = zRange?.[0] ?? null
+  const hi = zRange?.[1] ?? null
+  const inverted = lo != null && hi != null && lo >= hi
   return (
     <>
       <ParamSelect label="Color Range" value={mode} onChange={onChangeMode}>
@@ -122,15 +126,24 @@ const ColorRange: FC = () => {
           <Grid item xs={6}>
             <DraftNumberField
               label="Min"
-              value={zRange?.[0] ?? null}
+              value={lo}
               onCommit={setBound(0)}
+              onClear={() => setBound(0)(null)}
+              placeholder="data min"
+              error={inverted}
             />
           </Grid>
           <Grid item xs={6}>
             <DraftNumberField
               label="Max"
-              value={zRange?.[1] ?? null}
+              value={hi}
               onCommit={setBound(1)}
+              onClear={() => setBound(1)(null)}
+              placeholder="data max"
+              error={inverted}
+              helperText={
+                inverted ? "Max must be above Min; showing the data range" : ""
+              }
             />
           </Grid>
         </Grid>
@@ -140,22 +153,41 @@ const ColorRange: FC = () => {
 }
 
 // The field shows what was typed ("-", "", "1.50") and commits each finite value;
-// a value changed from outside (another item selected) shows through.
+// a value changed from outside (another item selected) shows through. With onClear,
+// emptying the field commits that too.
 export const DraftNumberField: FC<{
   label: string
   value: number | null
   onCommit: (value: number) => void
+  onClear?: () => void
   accepts?: (value: number) => boolean
   inputProps?: TextFieldProps["inputProps"]
-}> = ({ label, value, onCommit, accepts = () => true, inputProps }) => {
+  placeholder?: string
+  error?: boolean
+  helperText?: string
+}> = ({
+  label,
+  value,
+  onCommit,
+  onClear,
+  accepts = () => true,
+  inputProps,
+  placeholder,
+  error,
+  helperText,
+}) => {
   const [draft, setDraft] = useState({ text: asText(value), of: value })
   const text = draft.of === value ? draft.text : asText(value)
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const next = Number(event.target.value)
-    const ok =
-      event.target.value !== "" && Number.isFinite(next) && accepts(next)
-    setDraft({ text: event.target.value, of: ok ? next : value })
+    const typed = event.target.value
+    const next = Number(typed)
+    const ok = typed !== "" && Number.isFinite(next) && accepts(next)
+    // an empty field is a cleared bound; validity.badInput is a lone "-"
+    const cleared =
+      typed === "" && onClear != null && !event.target.validity?.badInput
+    setDraft({ text: typed, of: ok ? next : cleared ? null : value })
     if (ok) onCommit(next)
+    else if (cleared) onClear()
   }
   return (
     <ParamTextField
@@ -164,6 +196,9 @@ export const DraftNumberField: FC<{
       value={text}
       onChange={onChange}
       inputProps={inputProps}
+      placeholder={placeholder}
+      error={error}
+      helperText={helperText}
     />
   )
 }

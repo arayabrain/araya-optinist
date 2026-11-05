@@ -4,6 +4,7 @@ import {
   filterHeatMapColumns,
   filterHeatMapRows,
   heatMapZRange,
+  manualZRangeIgnored,
 } from "components/Workspace/Visualize/Plot/heatMapRows"
 
 // ETA with iscell: rows are ROI numbers, not positions.
@@ -112,6 +113,23 @@ describe("heatMapZRange modes", () => {
   it("manual falls back to auto until the range is valid", () => {
     expect(heatMapZRange(matrix, "manual", 2, null)).toEqual([0, 1000])
     expect(heatMapZRange(matrix, "manual", 2, [3, 3])).toEqual([0, 1000])
+  })
+
+  it("manual takes an empty bound from the data", () => {
+    expect(heatMapZRange(matrix, "manual", 2, [null, 50])).toEqual([0, 50])
+    expect(heatMapZRange(matrix, "manual", 2, [5, null])).toEqual([5, 1000])
+    expect(heatMapZRange(matrix, "manual", 2, [null, null])).toEqual([0, 1000])
+    // a typed min above the data max leaves no range
+    expect(heatMapZRange(matrix, "manual", 2, [2000, null])).toEqual([0, 1000])
+  })
+
+  it("reports a typed range that is empty on the data", () => {
+    expect(manualZRangeIgnored(matrix, null)).toBe(false)
+    expect(manualZRangeIgnored(matrix, [null, null])).toBe(false)
+    expect(manualZRangeIgnored(matrix, [5, null])).toBe(false)
+    expect(manualZRangeIgnored(matrix, [2000, null])).toBe(true)
+    expect(manualZRangeIgnored(matrix, [null, -1])).toBe(true)
+    expect(manualZRangeIgnored(matrix, [3, 3])).toBe(true)
   })
 
   it("skips NaN and null in every mode", () => {
