@@ -1,5 +1,6 @@
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -455,8 +456,12 @@ class InputFileLock:
 
     @classmethod
     def _lock_path(cls, workspace_id: str, filename: str) -> str:
+        # a 255-byte file name plus ".lock" is over the file name limit
+        head, name = os.path.split(os.path.normpath(filename))
+        if len(name.encode()) > 250:
+            name = hashlib.sha256(name.encode()).hexdigest()
         return join_filepath(
-            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, f"{filename}.lock"]
+            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, head, f"{name}.lock"]
         )
 
     @classmethod
