@@ -1,5 +1,4 @@
 import asyncio
-import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
@@ -33,6 +32,7 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
@@ -462,9 +462,7 @@ async def apply_filter(
         ).filter_node_data(params)
 
     try:
-        await asyncio.get_running_loop().run_in_executor(
-            _filter_executor, contextvars.copy_context().run, filter_node_data
-        )
+        await run_in_executor_with_context(_filter_executor, filter_node_data)
 
         background_tasks.add_task(
             WorkspaceDataCapacityService.update_experiment_data_usage, workspace_id, uid

@@ -17,6 +17,7 @@ from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.security import validate_access_token
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 
 # Thread pool for running synchronous Firebase calls asynchronously
 _thread_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="firebase_auth")
@@ -25,9 +26,10 @@ _T = TypeVar("_T")
 
 
 async def run_firebase_call(func: Callable[..., _T], *args) -> _T:
-    """func(*args) in the Firebase thread pool: a Firebase call is an HTTPS
-    request, and on the event loop it would hold every other request."""
-    return await asyncio.get_running_loop().run_in_executor(_thread_pool, func, *args)
+    """func(*args) in the Firebase thread pool, with the request's context: a
+    Firebase call is an HTTPS request, and on the event loop it would hold every
+    other request."""
+    return await run_in_executor_with_context(_thread_pool, func, *args)
 
 
 # Token cache with TTL (Time To Live)

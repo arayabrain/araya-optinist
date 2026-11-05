@@ -1,5 +1,4 @@
 import asyncio
-import contextvars
 import math
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -21,6 +20,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 from studio.app.optinist.core.edit_ROI.wrappers import edit_roi_algos
 from studio.app.optinist.schemas.roi import RoiPos
 
@@ -46,10 +46,7 @@ class EditRoiUtils:
     @classmethod
     async def run_on_edit_thread(cls, func: Callable[[], _T]) -> _T:
         """func() on the ROI edit thread, with the request's context."""
-        context = contextvars.copy_context()
-        return await asyncio.get_running_loop().run_in_executor(
-            _edit_executor, context.run, func
-        )
+        return await run_in_executor_with_context(_edit_executor, func)
 
     @classmethod
     async def execute(cls, filepath: str, remote_bucket_name: str):
