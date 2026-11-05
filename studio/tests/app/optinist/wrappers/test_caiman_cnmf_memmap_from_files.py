@@ -211,3 +211,72 @@ def test_caiman_cnmf_fills_the_memmap_from_every_file(tmp_path, monkeypatch):
     with pytest.raises(Called) as called:
         cnmf.caiman_cnmf(ImageData(paths), str(output_dir), params={})
     assert called.value.args[0] == paths
+
+
+def test_the_memmap_is_reserved_up_front(tmp_path):
+    """A sparse memmap on a disk that fills mid-fill dies with SIGBUS; the
+    whole file is allocated first where the OS supports it."""
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    _, _, mmap_path = util_get_image_memmap_from_files(
+        "fid", [path], str(out / "m.tif")
+    )
+    nbytes = 6 * 9 * 7 * 4
+    st = os.stat(mmap_path)
+    assert st.st_size == nbytes
+    if hasattr(os, "posix_fallocate"):
+        assert st.st_blocks * 512 >= nbytes
+
+
+def test_a_full_disk_at_reservation_leaves_no_file(tmp_path, monkeypatch):
+    import errno
+
+    def enospc(fd, offset, length):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "posix_fallocate", enospc, raising=False)
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(OSError) as info:
+        util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    assert info.value.errno == errno.ENOSPC
+    assert list(out.iterdir()) == []
+
+
+def test_an_unsupported_fallocate_stays_sparse(tmp_path, monkeypatch):
+    import errno
+
+    def unsupported(fd, offset, length):
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+    monkeypatch.setattr(os, "posix_fallocate", unsupported, raising=False)
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    images, _, _ = util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    np.testing.assert_array_equal(images, tifffile.imread(path))
+
+
+def test_the_host_reserve_is_checked_before_any_file_is_created(tmp_path, monkeypatch):
+    """The movie would fit, but not without eating the host's headroom."""
+    import errno
+    from types import SimpleNamespace
+
+    from studio.app.common.core.storage import local_disk_guard as guard
+
+    monkeypatch.setenv(guard.MIN_FREE_DISK_ENV, "8")
+    monkeypatch.setattr(
+        guard.shutil,
+        "disk_usage",
+        lambda p: SimpleNamespace(free=8 * guard.GIB + 100, total=0, used=0),
+    )
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(OSError) as info:
+        util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    assert info.value.errno == errno.ENOSPC
+    assert "must stay free" in str(info.value)
+    assert list(out.iterdir()) == []
