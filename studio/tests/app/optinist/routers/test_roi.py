@@ -16,7 +16,12 @@ from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.edit_ROI import utils as edit_roi_utils
 from studio.app.optinist.routers import roi
 from studio.app.optinist.schemas.roi import RoiStatus
-from studio.tests.app.common.loop_probe import Hold, health_while_held, wait_until
+from studio.tests.app.common.loop_probe import (
+    REQUEST_CLIENT_ID,
+    Hold,
+    health_while_held,
+    wait_until,
+)
 
 ROI_ACTIONS = [
     ("status", None),
@@ -127,6 +132,8 @@ async def test_health_is_answered_while_an_roi_call_reads_the_node(
     assert health.status_code == 200
     assert held.status_code == 200, held.text
     assert hold.released_by_answer == [True]
+    # the edit thread logs with the request's client id
+    assert hold.client_ids == [REQUEST_CLIENT_ID]
 
 
 @pytest.mark.asyncio

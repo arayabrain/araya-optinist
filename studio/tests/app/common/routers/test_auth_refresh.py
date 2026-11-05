@@ -16,7 +16,11 @@ from requests import HTTPError, Response
 
 from studio.app.common.core.auth.auth import refresh_current_user_token
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token
-from studio.tests.app.common.loop_probe import Hold, health_while_held
+from studio.tests.app.common.loop_probe import (
+    REQUEST_CLIENT_ID,
+    Hold,
+    health_while_held,
+)
 
 
 def test_refresh_token_schema_allows_missing_or_null():
@@ -113,6 +117,7 @@ async def test_health_is_answered_while_a_token_refresh_waits_for_firebase():
     assert held.status_code == 200, held.text
     assert held.json()["access_token"] == "new-access-token"
     assert hold.released_by_answer == [True]
+    assert hold.client_ids == [REQUEST_CLIENT_ID]
 
 
 def test_refresh_endpoint_missing_token_returns_401(client):
