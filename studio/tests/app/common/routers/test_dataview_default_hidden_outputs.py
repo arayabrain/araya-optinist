@@ -3,6 +3,7 @@ Default visibility of Dataview outputs: intermediate processing steps are
 hidden once a later processing step builds on them; everything else is public.
 """
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -327,6 +328,41 @@ class TestRoutes:
             "d": None,
             "e": [],
         }
+
+    @pytest.mark.asyncio
+    async def test_bulk_publish_reads_files_off_the_event_loop(self):
+        loop_thread = threading.get_ident()
+        threads = []
+
+        def validate(**_):
+            threads.append(threading.get_ident())
+            return MagicMock(can_publish=True)
+
+        def defaults(*_):
+            threads.append(threading.get_ident())
+            return ["1/uid/a"]
+
+        record = _record(None)
+        record.name = "r"
+        with patch(
+            ROUTER + "DataviewService.find_user_owned_dataview_record",
+            return_value=record,
+        ), patch(
+            ROUTER + "RemoteStorageController.is_available", return_value=False
+        ), patch(
+            ROUTER + "PublishValidator.validate", side_effect=validate
+        ), patch(
+            ROUTER + "DataviewService.multiple_publish_dataview_records"
+        ), patch.object(
+            DataviewService, "default_hidden_outputs", side_effect=defaults
+        ):
+            await multiple_publish_dataview_records(
+                [7],
+                PublishFlags.on,
+                db=MagicMock(),
+                current_user=MagicMock(remote_bucket_name="b"),
+            )
+        assert len(threads) == 2 and loop_thread not in threads
 
 
 def test_a_copy_of_an_unset_record_stays_unset():

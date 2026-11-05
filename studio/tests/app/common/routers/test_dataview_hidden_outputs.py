@@ -11,18 +11,26 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.dialects import mysql
 
+from studio.__main_unit__ import app
 from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
     get_current_user_with_dataview_outputs_check,
 )
 from studio.app.common.core.dataview.dataview_services import DataviewService
 from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
+from studio.app.common.db.database import get_db
 from studio.app.common.routers.dataview import (
     public_reproduce_experiment,
     put_hidden_outputs,
 )
-from studio.app.common.schemas.dataview import HiddenOutputChange, LocalSyncStatus
+from studio.app.common.schemas.dataview import (
+    DataviewRecord,
+    HiddenOutputChange,
+    LocalSyncStatus,
+    PageWithHeader,
+)
 from studio.app.common.schemas.workflow import WorkflowWithResults
 from studio.app.dir_path import DIRPATH
 
@@ -226,6 +234,39 @@ class TestPublicOutputsReadGate:
         assert result is None
         find.assert_called_once()
 
+    def _allowed(self, url):
+        with patch(self._FIND, return_value=_record([HIDDEN])):
+            return DataviewService.validate_dataview_public_outputs_request(
+                _public_request(url), MagicMock()
+            )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "html/1/uid/func1/heatmap.plot-meta.json",
+            "html/1/uid/func1/fluorescence.plot-meta.json",
+            "html/1/uid/func1//heatmap.plot-meta.json/",
+            "alltimedata/1/uid/func1",
+            "inittimedata/1/uid/func1/",
+            "alltimedata/1/uid//func1",
+            "alltimedata/1/uid",
+        ],
+    )
+    def test_plot_meta_and_directories_holding_a_hidden_output_are_refused(self, url):
+        assert not self._allowed(f"/api/visualizations/{url}")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"inittimedata/{VISIBLE}",
+            "alltimedata/1/uid/func2",
+            # names an input node, whose outputs share its directory
+            "structured/1/uid/func1",
+        ],
+    )
+    def test_reads_that_serve_no_hidden_file_are_allowed(self, url):
+        assert self._allowed(f"/api/visualizations/{url}")
+
     def test_empty_path_is_not_hidden(self):
         assert not DataviewService.is_hidden_output(_record([HIDDEN]), None)
 
@@ -328,6 +369,30 @@ class TestPutHiddenOutputs:
                     current_user=MagicMock(id=1),
                 )
         assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "url, shown", [("/api/public/dataview", False), ("/api/dataview", True)]
+)
+def test_only_the_owners_list_carries_the_hidden_outputs(client, url, shown):
+    page = PageWithHeader[DataviewRecord](
+        items=[DataviewRecord(id=7, uid="uid", hidden_outputs=[HIDDEN])],
+        total=1,
+        limit=50,
+        offset=0,
+    )
+    original = app.dependency_overrides.copy()
+    app.dependency_overrides[get_db] = lambda: MagicMock()
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id=1)
+    try:
+        with patch(ROUTER + "paginate", return_value=page):
+            response = client.get(url)
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original)
+
+    assert response.status_code == 200
+    assert ("hidden_outputs" in response.json()["items"][0]) is shown
 
 
 def test_a_copied_record_hides_the_same_outputs_under_its_own_uid():

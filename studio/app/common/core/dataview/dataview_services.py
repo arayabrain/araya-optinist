@@ -179,6 +179,8 @@ class DataviewService:
     DATAVIEW_PUBLIC_REQUEST_KEY = "DATAVIEW_PUBLIC_REQUEST"
     OUTPUTS_URL_PREFIX = r"^/api/visualizations/[^/]+/"
     OUTPUTS_IMAGE_URL_PREFIX = r"^/api/visualizations/image/"
+    STRUCTURED_URL_PREFIX = r"^/api/visualizations/structured/"
+    PLOT_META_SUFFIX = ".plot-meta.json"
 
     @classmethod
     def find_dataview_record(
@@ -347,9 +349,12 @@ class DataviewService:
             return []
 
     @classmethod
-    def is_hidden_output(cls, record: ExperimentRecord, path: str) -> bool:
+    def is_hidden_output(
+        cls, record: ExperimentRecord, path: str, ancestors: bool = False
+    ) -> bool:
         """
-        Check whether an output path (or a file under it) is hidden by the owner
+        Check whether an output path (or a file under it, or with ancestors a
+        directory holding one) is hidden by the owner
         """
         if not path:
             return False
@@ -364,7 +369,12 @@ class DataviewService:
             stem, ext = posixpath.splitext(hidden)
             if ext in ACCEPT_FILE_EXT.TIFF_EXT.value:
                 roots.append(stem)  # the TIFF's cached previews
-        return any(path == root or path.startswith(root + "/") for root in roots)
+        return any(
+            path == root
+            or path.startswith(root + "/")
+            or (ancestors and root.startswith(path + "/"))
+            for root in roots
+        )
 
     @classmethod
     def is_dataview_public_outputs_request(cls, req: Request) -> bool:
@@ -409,8 +419,17 @@ class DataviewService:
             record = DataviewService.find_dataview_record(
                 db, int(workspace_id), unique_id, published_only=True
             )
-            is_allowed_access = record is not None and not cls.is_hidden_output(
-                record, data_file_path
+            is_allowed_access = (
+                record is not None
+                and not cls.canonical_output_path(data_file_path).endswith(
+                    cls.PLOT_META_SUFFIX
+                )
+                and not cls.is_hidden_output(
+                    record,
+                    data_file_path,
+                    # structured names an input node; the other routes read the path
+                    ancestors=not re.match(cls.STRUCTURED_URL_PREFIX, request_url_path),
+                )
             )
 
         # Request case for input data

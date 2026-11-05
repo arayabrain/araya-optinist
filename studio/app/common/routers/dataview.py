@@ -1,5 +1,6 @@
 import asyncio
 import os
+from types import SimpleNamespace
 from typing import List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -830,6 +831,27 @@ async def put_hidden_outputs(
     return paths
 
 
+def _validate_for_bulk_publish(records: List[SimpleNamespace]) -> Tuple[list, list]:
+    """Each record's validation failure, else its default hidden outputs if unset"""
+    failed, defaults = [], []
+    for record in records:
+        validation = PublishValidator.validate(
+            workspace_id=str(record.workspace_id),
+            unique_id=record.uid,
+            user_has_s3_bucket=True,  # Already checked by the caller
+            check_files_on_disk=True,
+        )
+        if not validation.can_publish:
+            failed.append(
+                {"id": record.id, "name": record.name, "reason": validation.reason}
+            )
+        elif record.hidden_outputs is None and not record.publish_status:
+            defaults.append(
+                (record.id, DataviewService.effective_hidden_outputs(record))
+            )
+    return failed, defaults
+
+
 @router.post(
     "/multiple/publish/{flag}",
     response_model=bool,
@@ -899,23 +921,21 @@ async def multiple_publish_dataview_records(
                 return_exceptions=True,
             )
 
-        # Validate each record
-        failed_records = []
-        for record_id, record in owned_records:
-            validation = PublishValidator.validate(
-                workspace_id=str(record.workspace_id),
-                unique_id=record.uid,
-                user_has_s3_bucket=True,  # Already checked above
-                check_files_on_disk=True,
+        # Plain copies: the file reads run in a thread, away from the session
+        snapshots = [
+            SimpleNamespace(
+                id=record.id,
+                name=record.name,
+                workspace_id=record.workspace_id,
+                uid=record.uid,
+                hidden_outputs=record.hidden_outputs,
+                publish_status=record.publish_status,
             )
-            if not validation.can_publish:
-                failed_records.append(
-                    {
-                        "id": record_id,
-                        "name": record.name,
-                        "reason": validation.reason,
-                    }
-                )
+            for _, record in owned_records
+        ]
+        failed_records, defaults = await asyncio.to_thread(
+            _validate_for_bulk_publish, snapshots
+        )
 
         if failed_records:
             logger.warning(
@@ -934,11 +954,6 @@ async def multiple_publish_dataview_records(
                 detail += f"... and {len(failed_records) - 5} more"
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
-        defaults = [
-            (record.id, DataviewService.effective_hidden_outputs(record))
-            for _, record in owned_records
-            if record.hidden_outputs is None and not record.publish_status
-        ]
         column = models.ExperimentRecord.hidden_outputs
         for start in range(0, len(defaults), HIDDEN_OUTPUTS_BATCH):
             batch = dict(defaults[start : start + HIDDEN_OUTPUTS_BATCH])
