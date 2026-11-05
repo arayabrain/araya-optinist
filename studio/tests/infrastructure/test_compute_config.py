@@ -418,7 +418,7 @@ class TestWorkflowTierSizing:
         """IOPS and throughput are null unless the tier sets them: an unset
         attribute keeps gp3's baseline and leaves today's templates as they
         are, where an explicit default would change every environment's
-        template at the next apply (and recreate the base premium instance)."""
+        template at the next apply."""
         devices = dict(_BLOCK_DEVICE_RE.findall(self.launch_template))
         for device, volume in (
             ('"/dev/xvda"', "root"),
