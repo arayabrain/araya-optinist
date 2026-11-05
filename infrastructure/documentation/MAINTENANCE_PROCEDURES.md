@@ -85,6 +85,7 @@ The infrastructure lead has Terraform access and handles infrastructure-level ch
 | **Quarterly** | Review and update ASG capacity settings | Infrastructure lead | Manual |
 | **Quarterly** | Review RDS storage growth | Infrastructure lead | Manual |
 | **Quarterly** | Security audit (dependencies, IAM) | Infrastructure lead | Manual |
+| **Every 6 h, and after each deploy** | Docker hygiene on every ECS host (prune stopped containers and unused images) | Automatic | SSM association `<env>-docker-hygiene` (see [Host Root Volume Hygiene](#host-root-volume-hygiene)) |
 
 ---
 
@@ -621,6 +622,63 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 - **Monthly:** Review slow query log for optimization opportunities (covered by `monthly-maintenance.sh` section 2)
 - **Quarterly:** Check storage growth trend and plan increases (see [Quarterly Checks](#3-rds-storage-growth))
 - **As needed:** If connection count alarms fire, review application connection pooling
+
+### Host Root Volume Hygiene
+
+Every ECS host keeps docker's images and the app's working data (`/app/studio_data`, the container's
+writable layer) on one root volume. Each deploy adds a 2.1 GB image and leaves the stopped container of
+the previous task definition, and nothing in ECS reclaims them fast enough: on 2026-11-04 the dev
+premium host filled its 48 GB root with 11 images and 19 containers, every run failed with `ENOSPC`,
+and once at 100 % the SSM agent and cloud-init could not write either, so the host was unreachable.
+
+Two layers keep that from happening again:
+
+- **Host side.** The SSM association `<env>-docker-hygiene` (`deployment.tf`) runs
+  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the four launch
+  templates (free, premium, background, public), every 6 hours and once after each deploy
+  (`null_resource.deploy_to_ecs` and `ecr_build_push.sh --deploy` call `start-associations-once`).
+  It prunes stopped containers older than 10 minutes, then, only when the ECS agent reports at
+  least one RUNNING task and none mid-start, every image no container uses. The log is
+  `/var/log/docker_hygiene.log` on the host. A host still over 80 % used after pruning exits 2,
+  which shows as **non-compliant** on the State Manager dashboard; that is a flag to look at, not
+  an alarm (a CloudWatch disk alarm was deliberately left out).
+- **App side.** A run or upload is refused with HTTP 507 when starting it would leave less than
+  `OPTINIST_MIN_FREE_DISK_GIB` (default 8) free on the data disk, after first deleting leftovers
+  no run references (CaImAn memmaps, interrupted atomic writes, orphaned CaImAn temp dirs). CaImAn
+  nodes also check the size of the memmap they are about to write and fail the node, with the sizes
+  in the error, rather than take the host under the reserve. Users are told to delete records they
+  no longer need: deleting a record frees local disk.
+
+To run the hygiene by hand (for example after a rollback that pulled an old image):
+
+```bash
+ASSOC_ID=$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)
+aws ssm start-associations-once --association-ids "$ASSOC_ID" --region ap-northeast-1
+# A few minutes later, one line per host with its exit code
+aws ssm describe-association-executions --association-id "$ASSOC_ID" --region ap-northeast-1 \
+  --max-results 1 --query 'AssociationExecutions[0].[Status,ExecutionId]' --output text
+```
+
+The previous image is only removed once the old task's stopped container is older than 10 minutes,
+so a second `start-associations-once` about 15 minutes after a deploy clears what the first left;
+the 6-hour run catches it anyway.
+
+### Emergency: EC2 Root Volume Full
+
+Symptoms: runs fail with `No space left on device` or `SIGBUS`, records stay "running",
+`DELETE /experiments/{ws}/{uid}` returns 500, and SSM Run Command on the host fails in 0 s with no
+output (Session Manager and ECS Exec say "Plugin with name Standard_Stream not found").
+
+1. If SSM still answers, run the hygiene association (above) or, on the host,
+   `docker container prune -f; docker image prune -af`, then delete records the user no longer
+   needs. Check with `df -h /` and `docker system df`.
+2. If SSM does not answer, the host cannot be repaired in place: growing the volume does not help
+   because cloud-init fails with `ENOSPC` before it reaches `growpart`. Either replace the instance
+   (`terraform apply -replace=aws_instance.premium[0]`, at a time with no premium run active) or
+   rescue the volume: stop the instance, attach its root volume to the free-tier host in the same
+   AZ, `growpart` partition 1, `mount -o nouuid`, `xfs_growfs`, reattach, start, then prune docker.
+3. Afterwards, confirm the association is targeting the host
+   (`aws ssm describe-association-execution-targets`) so it does not happen again.
 
 ### Emergency: RDS Storage Full
 

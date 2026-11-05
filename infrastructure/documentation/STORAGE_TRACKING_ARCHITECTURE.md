@@ -328,6 +328,7 @@ The background ECS service that runs `StorageReconciliationJob` is monitored via
 | `S3_DEFAULT_BUCKET_NAME` | S3 bucket for user storage | Required |
 | `DISABLE_BACKGROUND_SCHEDULER` | Disable in-process scheduler (for multi-worker deployments) | `0` |
 | `SKIP_STORAGE_CHECKS` | Skip storage usage lookup (test mode) | Not set |
+| `OPTINIST_MIN_FREE_DISK_GIB` | Free space to keep on the host's local data disk; a run or upload that would go under it is refused with 507 (the host's disk, not the user's quota; `0` disables) | `8` (`0` in standalone) |
 
 ### Constants
 
