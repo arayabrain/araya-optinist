@@ -40,13 +40,23 @@ brew install terraform
 
 ### Optional Build Configuration
 
-`infrastructure/.env.deploy` (gitignored) supplies build-time frontend values that Terraform does not own. Currently only the analytics container ID, keyed per environment. Without it the frontend is built with analytics disabled, which the build log states explicitly. See [ANALYTICS_ARCHITECTURE.md](ANALYTICS_ARCHITECTURE.md).
+The analytics (GTM) container ID is read at build time from the SSM String parameter `/<environment>/optinist/gtm-id` (`/development/optinist/gtm-id`, `/subscr/optinist/gtm-id`). The build log names the source, and if the parameter does not exist the frontend is built with analytics disabled. Any other SSM error (for example access denied) fails the build. See [ANALYTICS_ARCHITECTURE.md](ANALYTICS_ARCHITECTURE.md).
+
+`infrastructure/.env.deploy` (gitignored) is an optional local override. When it sets the key for the target environment, that value wins and SSM is not read:
 
 ```bash
 # infrastructure/.env.deploy
 REACT_APP_GTM_ID_SUBSCR=GTM-XXXXXXX       # production
 REACT_APP_GTM_ID_DEVELOPMENT=GTM-YYYYYYY  # development
 ```
+
+Production analytics stays off until the parameter exists. Create it only once the production GTM container is published and the privacy policy that describes analytics has shipped:
+
+```bash
+aws ssm put-parameter --name /subscr/optinist/gtm-id --type String --value GTM-N43LLNTP --region ap-northeast-1
+```
+
+To turn analytics off again, delete the parameter (and any `.env.deploy` entry) and rebuild.
 
 ### Required AWS Permissions
 
@@ -55,6 +65,7 @@ The deploying user needs the following AWS permissions:
 - **ECR**: Push images (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, etc.)
 - **ECS**: List and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:UpdateService`, etc.)
 - **Secrets Manager**: Read secrets (granted automatically to the deployment role)
+- **SSM**: `ssm:GetParameter` on `arn:aws:ssm:ap-northeast-1:<account-id>:parameter/<environment>/optinist/gtm-id` (the analytics container ID; not managed by Terraform)
 - **RDS**: Describe instances (for verification)
 - **S3**: List buckets (for verification)
 

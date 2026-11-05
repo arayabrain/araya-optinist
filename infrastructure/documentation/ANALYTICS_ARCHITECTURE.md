@@ -89,11 +89,18 @@ No CloudWatch metrics or alarms: this subsystem is entirely client-side and emit
 
 ## Configuration
 
-| Variable                         | Where it is set                           | Effect when unset                                                |
-| -------------------------------- | ----------------------------------------- | ---------------------------------------------------------------- |
-| `REACT_APP_GTM_ID_<ENVIRONMENT>` | `infrastructure/.env.deploy` (gitignored) | GTM, GA4, the consent notice and all event tracking are disabled |
+| Source (first match wins)                    | Where it is set                           |
+| -------------------------------------------- | ----------------------------------------- |
+| `REACT_APP_GTM_ID_<ENVIRONMENT>`             | `infrastructure/.env.deploy` (gitignored) |
+| String parameter `/<environment>/optinist/gtm-id` | SSM Parameter Store, `ap-northeast-1`     |
 
-`ecr_build_push.sh` selects the entry matching the Terraform `environment` output, uppercased: production (`subscr`) reads `REACT_APP_GTM_ID_SUBSCR`, development reads `REACT_APP_GTM_ID_DEVELOPMENT`. Per-environment keys prevent a development build from being published with the production container, which would pollute the property permanently. The file is sourced in a subshell, so unrelated assignments in it cannot affect the build.
+When neither is set, GTM, GA4, the consent notice and all event tracking are disabled.
+
+`ecr_build_push.sh` keys both on the Terraform `environment` output. Production (`subscr`) reads `REACT_APP_GTM_ID_SUBSCR` or `/subscr/optinist/gtm-id`; development reads `REACT_APP_GTM_ID_DEVELOPMENT` or `/development/optinist/gtm-id`. Per-environment keys prevent a development build from being published with the production container, which would pollute the property permanently. A missing parameter means analytics off; any other SSM error fails the build, so an access problem cannot silently ship a build without analytics. The build log states which source supplied the ID. `.env.deploy` is sourced in a subshell, so unrelated assignments in it cannot affect the build.
+
+There is deliberately no placeholder parameter for production: absence is the off switch. See [DEPLOYMENT_PROCEDURE.md](DEPLOYMENT_PROCEDURE.md) for the command that creates it.
+
+Optional local override:
 
 ```
 # infrastructure/.env.deploy
@@ -133,7 +140,7 @@ Setting `REACT_APP_GTM_ID` is what activates every risk in this document. Until 
 
 ### Compliance
 
-4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. Section 5.2 describes the consent flow, the events and the GA4 property settings; update it whenever any of those change. The policy describes analytics as active, which holds only in a build with `REACT_APP_GTM_ID_SUBSCR` set: ship it in the same release that sets the production container ID.
+4. **Keep the privacy policy current.** The notice links `/privacy` in a new tab. Section 5.2 describes the consent flow, the events and the GA4 property settings; update it whenever any of those change. The policy describes analytics as active, which holds only in a build with a production container ID (`/subscr/optinist/gtm-id` or `REACT_APP_GTM_ID_SUBSCR`): ship it in the same release that sets the production container ID.
 5. **Have the notice copy reviewed.** It has had no legal review. Put these points to that review: APPI Article 28(2) asks for the destination country's protection system and the recipient's measures to be given when consent is sought, while privacy policy Section 4.2 offers them on request; the notice says Google processes data in the United States, while the Section 4.2 table says United States and other countries; and `gtm.js` and the Google Fonts stylesheets in `public/index.html` send the visitor's IP address and browser information to Google on every visit whatever the consent choice, while Sections 4.1, 4.2 and 9 describe Google's analytics processing as consent-only.
 6. **Confirm the consent controls still meet "withdrawal as easy as granting".** Decline and Accept carry identical styling in the notice, and `/account` offers an Analytics Cookies switch that both withdraws and re-grants, taking effect immediately without a reload in that tab. Other open tabs keep their earlier choice until reloaded (nothing listens for the `analyticsConsent` storage key), and the policy tells visitors so. A restyle of either surface can regress this.
 7. **Settle the GDPR Article 27 position.** Analytics records how EEA/UK visitors use the Service, which is likely "monitoring" under Article 3(2)(b), and continuous analytics is hard to call "occasional" under the Article 27(2)(a) exemption. Privacy policy Section 4.2 now says only that no representative has been appointed. Legal either appoints one, and Section 4.2 then names them with contact details, or records why none is required.
