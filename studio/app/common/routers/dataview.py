@@ -152,23 +152,29 @@ def get_records_filtered_query(
 - Search and respond to data for display in Public Dataview
 """,
 )
-def public_search_dataview_records(
+async def public_search_dataview_records(
     db: Session = Depends(get_db),
     options: DataviewRecordSearchOptions = Depends(),
     sortOptions: SortOptions = Depends(),
 ):
+    # Anonymous traffic: a pool wait takes a run_db_lookup slot, not a thread
+    # of the pool that sync routes share
+    return await run_db_lookup(_search_public_records, db, options, sortOptions)
+
+
+def _search_public_records(
+    db: Session, options: DataviewRecordSearchOptions, sortOptions: SortOptions
+) -> PageWithHeader:
     query = get_records_common_query(sortOptions).filter(
         models.ExperimentRecord.publish_status == PublishStatus.on.value,
     )
     query = get_records_filtered_query(query, options)
 
-    data: PageWithHeader = paginate(
+    return paginate(
         session=db,
         query=query,
         transformer=records_pagenate_transformer,
     )
-
-    return data
 
 
 @router.get(

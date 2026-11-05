@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from anyio import to_thread
 from fastapi import Depends, FastAPI
 from fastapi_pagination import add_pagination
 from sqlmodel import Session
@@ -145,6 +146,35 @@ async def test_the_public_record_list(engine):
 
     _assert_answered_while_waiting(health, waiting, response)
     assert [item["uid"] for item in response.json()["items"]] == [UNIQUE_ID]
+
+
+@pytest.mark.asyncio
+async def test_the_public_record_list_leaves_sync_routes_their_threads(engine):
+    app = _app(asyncio.Event())
+
+    @app.get("/sync")
+    def sync():
+        return {}
+
+    limiter = to_thread.current_default_thread_limiter()
+    default_tokens = limiter.total_tokens
+    # One thread for this event loop's sync routes and dependencies
+    limiter.total_tokens = 1
+    try:
+        async with asgi_client(app) as client:
+            with engine.connect():
+                listing = asyncio.create_task(client.get("/api/public/dataview"))
+                # Long enough for the list to reach the pool wait
+                await asyncio.sleep(0.2)
+                sync_response = await asyncio.wait_for(client.get("/sync"), timeout=1)
+                was_waiting = not listing.done()
+            response = await listing
+    finally:
+        limiter.total_tokens = default_tokens
+
+    assert sync_response.status_code == 200
+    assert was_waiting
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio
