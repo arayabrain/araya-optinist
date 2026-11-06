@@ -21,6 +21,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
+from studio.app.common.core.workflow.workflow_result import await_despite_cancel
 from studio.app.optinist.core.edit_ROI.wrappers import edit_roi_algos
 from studio.app.optinist.schemas.roi import RoiPos
 
@@ -67,7 +68,16 @@ class EditRoiUtils:
             )
             return RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
 
-        token = await cls.run_on_edit_thread(take_lock)
+        lock_taken = asyncio.ensure_future(cls.run_on_edit_thread(take_lock))
+        try:
+            token = await await_despite_cancel(lock_taken)
+        except asyncio.CancelledError:
+            # The thread took the lock anyway, and no commit follows to release it
+            if lock_taken.exception() is None:
+                RemoteSyncLockFileUtil.delete_sync_lock_file(
+                    workspace_id, unique_id, lock_taken.result()
+                )
+            raise
 
         try:
             # Operate remote storage data.

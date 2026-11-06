@@ -265,3 +265,36 @@ async def test_an_edit_queued_behind_a_commit_is_refused_with_423(
     assert queued_response.status_code == 423
     assert len(opened) == 1
     assert [r.status_code for r in responses] == [200, 200]
+
+
+@pytest.mark.asyncio
+async def test_a_commit_cancelled_while_taking_the_lock_releases_it(
+    monkeypatch, commit_pool
+):
+    hold = Hold()
+    take_lock = RemoteSyncLockFileUtil.create_sync_lock_file.__func__
+
+    def held_take_lock(cls, *args):
+        token = take_lock(cls, *args)
+        hold()
+        return token
+
+    monkeypatch.setattr(
+        RemoteSyncLockFileUtil, "create_sync_lock_file", classmethod(held_take_lock)
+    )
+    filepath = join_filepath(
+        [DIRPATH.OUTPUT_DIR, "1", "uid", "suite2p_roi_x", "cell_roi.json"]
+    )
+
+    commit = asyncio.create_task(edit_roi_utils.EditRoiUtils.execute(filepath, ""))
+    await wait_until(hold.started)
+    commit.cancel()
+    await asyncio.sleep(0.1)
+    hold.answered.set()
+    with pytest.raises(asyncio.CancelledError):
+        await commit
+    # the edit thread is done with the lock
+    await edit_roi_utils.EditRoiUtils.run_on_edit_thread(lambda: None)
+
+    assert hold.released_by_answer == [True]
+    assert not RemoteSyncLockFileUtil.check_sync_lock_file("1", "uid")
