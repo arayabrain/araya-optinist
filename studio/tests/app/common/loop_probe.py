@@ -7,6 +7,7 @@ so the wait times out; run in a thread it is released by the answer.
 
 import asyncio
 import threading
+import time
 from unittest.mock import patch
 
 import httpx
@@ -36,9 +37,9 @@ class Hold:
 
 
 async def wait_until(event: threading.Event, timeout: float = 5.0):
-    for _ in range(int(timeout / 0.01)):
-        if event.is_set():
-            return
+    deadline = time.monotonic() + timeout
+    while not event.is_set():
+        assert time.monotonic() < deadline, "the held work did not start"
         await asyncio.sleep(0.01)
 
 
