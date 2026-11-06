@@ -243,7 +243,12 @@ test.describe("Web UI load lane @disruptive", () => {
     let post: RunReport["post"]
     let postError: string | null = null
 
-    const cooldown = async (seconds: number): Promise<WatchResult | null> => {
+    // The settle belongs to the run: after an early end the last step has
+    // had its cool-down already, and that record stays the step's
+    const cooldown = async (
+      seconds: number,
+      name: "after" | "settle",
+    ): Promise<WatchResult | null> => {
       if (!last) return null
       log.step(`watching ${seconds} s after ${last.outcome.key}`)
       const w = await watch(
@@ -253,8 +258,8 @@ test.describe("Web UI load lane @disruptive", () => {
         seconds,
         last.thresholds,
       )
-      writeWatch(last.dir, w)
-      last.outcome.after = afterOf(w)
+      writeWatch(name === "after" ? last.dir : runDir, w, name)
+      last.outcome.after = last.outcome.after ?? afterOf(w)
       return w
     }
 
@@ -284,7 +289,7 @@ test.describe("Web UI load lane @disruptive", () => {
             continue
           }
           if (last) {
-            const w = await cooldown(plan.cooldown_s)
+            const w = await cooldown(plan.cooldown_s, "after")
             if (w?.unhealthy) {
               endedEarly = `the services did not settle after ${last.outcome.key} (${afterOf(w)?.unhealthy})`
               skipStep("the run ended early")
@@ -397,7 +402,7 @@ test.describe("Web UI load lane @disruptive", () => {
       }
       // A public instance has been replaced 2 and 6 minutes after the load
       // that broke it, so the run watches that long before it reads AWS
-      await cooldown(plan.settle_s)
+      await cooldown(plan.settle_s, "settle")
     } finally {
       if (publishedByUs && publicRecord) {
         await setPublished(base, sessions[owner], publicRecord.id, false).catch(

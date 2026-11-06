@@ -34,7 +34,7 @@ import {
   renderReport,
   RunReport,
 } from "./report"
-import { fiveXxReason } from "./runner"
+import { fiveXxReason, watchStreak } from "./runner"
 import {
   CaptureRow,
   checkDashboardCapture,
@@ -50,6 +50,7 @@ import {
   failuresOf,
   figuresOf,
   pct,
+  ProbeRecord,
   RequestRecord,
   StepFigures,
   StepSummary,
@@ -241,6 +242,25 @@ test.describe("load lane: figures", () => {
     expect(fiveXxReason(rows(18, 1))).toBeNull()
     expect(fiveXxReason(rows(19, 1))).toBeNull()
     expect(fiveXxReason(rows(18, 2))).toBe("5xx 2/20")
+  })
+
+  test("a cool-down ends the run on a service's second bad probe in a row, not on a lone one", () => {
+    const limits = { public: 5, free: 5 }
+    const bad = { public: 0, free: 0 }
+    const probe = (
+      target: "public" | "free",
+      dur: number,
+      status: number | null = 200,
+    ): ProbeRecord => ({ target, t: 0, status, dur })
+    // Lone bad probes on either service, then free's second bad one in a row
+    expect(watchStreak(bad, probe("free", 5.001, null), limits)).toBeNull()
+    expect(watchStreak(bad, probe("public", 1.968), limits)).toBeNull()
+    expect(watchStreak(bad, probe("free", 0.073), limits)).toBeNull()
+    expect(watchStreak(bad, probe("free", 5.2), limits)).toBeNull()
+    expect(watchStreak(bad, probe("public", 5.0), limits)).toBeNull()
+    expect(watchStreak(bad, probe("free", 0.1, 503), limits)).toMatch(
+      /^probe free: /,
+    )
   })
 })
 

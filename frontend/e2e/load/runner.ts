@@ -431,8 +431,23 @@ export type WatchResult = {
   seconds: number
   probes: ProbeRecord[]
   stats: Record<Target, ProbeStat>
-  // Set when a service did not answer twice in a row, or past its threshold
+  // Set when a service failed or reached its threshold twice in a row
   unhealthy: string | null
+}
+
+// Bad probes in a row per target while no load of ours runs. A lone slow or
+// failed probe between fast ones is the load generator's own link (the ALB's
+// response times stay flat through it); a service in trouble misses twice.
+export function watchStreak(
+  bad: Record<Target, number>,
+  rec: ProbeRecord,
+  limits: Record<Target, number>,
+): string | null {
+  const isBad = rec.status !== 200 || rec.dur >= limits[rec.target]
+  bad[rec.target] = isBad ? bad[rec.target] + 1 : 0
+  return bad[rec.target] >= 2
+    ? `probe ${rec.target}: ${JSON.stringify(rec)}`
+    : null
 }
 
 // The cool-down after a step, and the settle after the last one: no load,
@@ -447,13 +462,13 @@ export async function watch(
   const t0 = performance.now()
   const p = prober(base, s, pin, t0)
   const probes: ProbeRecord[] = []
-  const fails: Record<Target, number> = { public: 0, free: 0 }
+  const bad: Record<Target, number> = { public: 0, free: 0 }
   let unhealthy: string | null = null
   while (performance.now() - t0 < seconds * 1000) {
     for (const target of ["public", "free"] as Target[]) {
       const rec = await probeOnce(p, target, limits[target])
       probes.push(rec)
-      unhealthy = unhealthy ?? streak(fails, rec, limits)
+      unhealthy = unhealthy ?? watchStreak(bad, rec, limits)
     }
     const left = seconds * 1000 - (performance.now() - t0)
     await sleep(Math.max(0, Math.min(WATCH_INTERVAL_S * 1000, left)))
@@ -492,8 +507,16 @@ export function writeStep(dir: string, result: StepResult): void {
   )
 }
 
-export function writeWatch(dir: string, result: WatchResult): void {
-  writeJsonl(path.join(dir, "probes-after.jsonl"), result.probes)
+// "after" in a step's folder for its cool-down, "settle" in the run's folder
+export function writeWatch(
+  dir: string,
+  result: WatchResult,
+  name: "after" | "settle",
+): void {
+  writeJsonl(path.join(dir, `probes-${name}.jsonl`), result.probes)
   const { probes: _probes, ...rest } = result
-  fs.writeFileSync(path.join(dir, "after.json"), JSON.stringify(rest, null, 1))
+  fs.writeFileSync(
+    path.join(dir, `${name}.json`),
+    JSON.stringify(rest, null, 1),
+  )
 }

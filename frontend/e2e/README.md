@@ -509,9 +509,11 @@ the free instance's `/is_standalone` with a Bearer token. A step stops at a
 probe at or over its threshold, two failed probes in a row, or 5xx above 5 %
 of the answers. A stopped step ends its screen, unless the plan's next step
 names the stop it accepts. Between steps there is a cool-down probed every 5
-seconds; a probe past its threshold or failing twice in a row, an unhealthy
-target, or any scaling activity ends the run. After the last step the run watches for 10 minutes
-before its post-checks.
+seconds; a service that fails or reaches its threshold on two probes in a
+row, an unhealthy target, or any scaling activity ends the run. A lone slow
+probe there is the load generator's own link: no load of the run is going,
+and the ALB's response times stay flat through it. After the last step the
+run watches for 10 minutes before its post-checks.
 
 **Plans** live in `load/plans/`. `default` stops at the largest counts measured
 on 2026-11-05, and `parity` runs 1 and 5 users per screen:
@@ -599,8 +601,9 @@ scaling activity. The report is written either way.
 **What a run leaves** in `e2e/load-results/<UTC time>-<plan>/`: per step
 `summary.json` (the schema of the tool the 2026-11-02 and 2026-11-05 figures
 came from, so those steps compare as they are), `requests.jsonl`,
-`probes.jsonl`, `vus.jsonl` and `after.json`; the recordings
-(`capture-*.json`), `run.json` and `report.md`. The report gives each
+`probes.jsonl`, `vus.jsonl` and the cool-down's `after.json`; the recordings
+(`capture-*.json`), the 10-minute watch's `settle.json`, `run.json` and
+`report.md`. The report gives each
 screen's table before → after with an Improvement column, the 1-user
 per-item times, the differences the comparison has to be read with (6
 connections per user, a different fixture, other thresholds, a changed
