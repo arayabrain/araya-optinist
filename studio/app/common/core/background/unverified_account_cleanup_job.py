@@ -7,10 +7,13 @@ can never log in, so abandoned registrations accumulate forever. This job
 sweeps them via the Admin SDK.
 
 Safety model (Firebase deletion is irreversible):
-- Only accounts that have NEVER signed in at the Firebase level are candidates.
-  Firebase resets email_verified when an email address is changed through the
-  Admin SDK, so "unverified + old" alone could match a dormant real user;
-  "never signed in" cannot.
+- Only accounts never used after registration are candidates. Registration
+  itself signs the user in once to send the verification email, so a Firebase
+  sign-in is allowed only within REGISTRATION_WINDOW_SECONDS of creation, and
+  the DB row must not have been edited after that window. Firebase resets
+  email_verified when an email address is changed through the Admin SDK, so
+  "unverified + old" alone could match a dormant real user; these two checks
+  exclude it.
 - Mutations happen only when UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete; any other
   value (including unset) is a dry run that only logs candidate uids.
 - Never touched: uids in UNVERIFIED_CLEANUP_PROTECTED_UIDS, disabled accounts,
@@ -111,7 +114,6 @@ class UnverifiedAccountCleanupJob:
         mode = os.environ.get(
             UnverifiedAccountCleanup.MODE_ENV, UnverifiedAccountCleanup.MODE_DRY_RUN
         )
-        mode = mode.strip().lower()
         if mode == UnverifiedAccountCleanup.MODE_DELETE:
             return True
         if mode != UnverifiedAccountCleanup.MODE_DRY_RUN:
@@ -128,7 +130,8 @@ class UnverifiedAccountCleanupJob:
 
     @staticmethod
     def _is_candidate(user, cutoff_ms: float, protected_uids: Set[str]) -> bool:
-        """True only for a stale, never-used, password-only registration."""
+        """True only for a stale, password-only registration never used after
+        its registration-time sign-in."""
         if user.email_verified or user.disabled:
             return False
         if user.uid in protected_uids:
@@ -136,10 +139,13 @@ class UnverifiedAccountCleanupJob:
         meta = user.user_metadata
         if not meta.creation_timestamp or meta.creation_timestamp >= cutoff_ms:
             return False
-        # Never signed in at the Firebase level: an Admin-SDK email change
-        # resets email_verified, so this is what excludes dormant real users.
-        if meta.last_sign_in_timestamp or meta.last_refresh_timestamp:
-            return False
+        window_end_ms = (
+            meta.creation_timestamp
+            + UnverifiedAccountCleanup.REGISTRATION_WINDOW_SECONDS * 1000
+        )
+        for ts in (meta.last_sign_in_timestamp, meta.last_refresh_timestamp):
+            if ts and ts > window_end_ms:
+                return False
         if not user.provider_data or any(
             p.provider_id != "password" for p in user.provider_data
         ):
@@ -150,9 +156,23 @@ class UnverifiedAccountCleanupJob:
     def _delete_account(
         cls, uid: str, cutoff_ms: float, protected_uids: Set[str]
     ) -> bool:
-        """Delete one account. Returns True only if Firebase was deleted."""
-        # Re-check on a fresh record: the account may have verified (or even
-        # signed in) between listing and deletion.
+        """Delete one account. Returns True if Firebase was deleted."""
+        with session_scope() as db:
+            user_db = db.query(UserModel).filter(UserModel.uid == uid).first()
+            if user_db is None:
+                logger.info(f"Skipping uid {uid}: no DB user in this environment")
+                return False
+            if cls._has_admin_role(db, user_db.id):
+                logger.warning(f"Skipping uid {uid}: user {user_db.id} has admin role")
+                return False
+            if user_db.active and cls._edited_after_registration(user_db):
+                logger.info(f"Skipping uid {uid}: DB row edited after registration")
+                return False
+            user_id = user_db.id
+            bucket_name = user_db.remote_bucket_name
+
+        # Fresh record right before deletion: the account may have verified
+        # (or signed in) since listing or during the DB precheck.
         try:
             fb_user = firebase_auth.get_user(uid)
         except firebase_auth.UserNotFoundError:
@@ -164,35 +184,34 @@ class UnverifiedAccountCleanupJob:
             logger.info(f"Skipping uid {uid}: no longer a cleanup candidate")
             return False
 
-        with session_scope() as db:
-            user_db = db.query(UserModel).filter(UserModel.uid == uid).first()
-            if user_db is None:
-                logger.info(f"Skipping uid {uid}: no DB user in this environment")
-                return False
-            if cls._has_admin_role(db, user_db.id):
-                logger.warning(f"Skipping uid {uid}: user {user_db.id} has admin role")
-                return False
-            user_id = user_db.id
-            bucket_name = user_db.remote_bucket_name
-
         # Firebase first: if this fails, the DB row is untouched and the
         # account is retried next run.
         firebase_auth.delete_user(uid)
 
         try:
             cls._deactivate_db_user(uid)
-        except Exception:
+        except Exception as e:
             # The account is already unusable (login fails without Firebase),
             # but the row lingers active with no automatic repair path.
             logger.critical(
                 f"Firebase account {uid} deleted but DB deactivation failed "
-                f"for user {user_id}; manual cleanup required"
+                f"for user {user_id}; manual cleanup required: {e}",
+                exc_info=True,
             )
-            raise
+            return True
 
         cls._delete_user_bucket(user_id, bucket_name)
         logger.info(f"Deleted unverified account uid {uid} (user {user_id})")
         return True
+
+    @staticmethod
+    def _edited_after_registration(user_db) -> bool:
+        """An email change (which resets email_verified) touches updated_at."""
+        if not user_db.created_at or not user_db.updated_at:
+            return True
+        return (
+            user_db.updated_at - user_db.created_at
+        ).total_seconds() > UnverifiedAccountCleanup.REGISTRATION_WINDOW_SECONDS
 
     @staticmethod
     def _has_admin_role(db, user_id: int) -> bool:

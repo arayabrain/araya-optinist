@@ -218,6 +218,10 @@ resource "aws_ecs_task_definition" "background" {
           value = var.s3_user_bucket_prefix
         },
         {
+          name  = "S3_USER_BUCKET_SECRET"
+          value = var.s3_user_bucket_secret
+        },
+        {
           name  = "REMOTE_STORAGE_TYPE"
           value = "2"
         },

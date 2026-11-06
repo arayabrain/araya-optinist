@@ -2,6 +2,7 @@
 
 import inspect
 import time
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -42,11 +43,16 @@ def _fb_user(
     return user
 
 
-def _db_user(user_id=5, active=True, bucket_name=None):
+REGISTERED_AT = datetime(2026, 1, 1)
+
+
+def _db_user(user_id=5, active=True, bucket_name=None, edited_after_seconds=1):
     row = MagicMock()
     row.id = user_id
     row.active = active
     row.remote_bucket_name = bucket_name
+    row.created_at = REGISTERED_AT
+    row.updated_at = REGISTERED_AT + timedelta(seconds=edited_after_seconds)
     return row
 
 
@@ -125,11 +131,24 @@ class TestIsCandidate:
     def test_recent_account_skipped(self):
         assert self._check(_fb_user(creation_timestamp=NOW_MS)) is False
 
-    def test_signed_in_account_skipped(self):
-        assert self._check(_fb_user(last_sign_in_timestamp=OLD_MS)) is False
+    def test_registration_time_sign_in_is_candidate(self):
+        """Registration signs in once to send the verification email."""
+        signed_in = OLD_MS + 2000
+        user = _fb_user(
+            last_sign_in_timestamp=signed_in, last_refresh_timestamp=signed_in
+        )
+        assert self._check(user) is True
 
-    def test_refreshed_account_skipped(self):
-        assert self._check(_fb_user(last_refresh_timestamp=OLD_MS)) is False
+    def test_sign_in_after_registration_window_skipped(self):
+        window_ms = UnverifiedAccountCleanup.REGISTRATION_WINDOW_SECONDS * 1000
+        at_edge = OLD_MS + window_ms
+        assert self._check(_fb_user(last_sign_in_timestamp=at_edge)) is True
+        late = at_edge + 1
+        assert self._check(_fb_user(last_sign_in_timestamp=late)) is False
+
+    def test_refresh_after_registration_window_skipped(self):
+        late = OLD_MS + 86400 * 1000
+        assert self._check(_fb_user(last_refresh_timestamp=late)) is False
 
     def test_empty_provider_data_skipped(self):
         assert self._check(_fb_user(providers=())) is False
@@ -148,9 +167,10 @@ class TestMode:
         monkeypatch.setenv(UnverifiedAccountCleanup.MODE_ENV, "delete")
         assert UnverifiedAccountCleanupJob._is_delete_mode() is True
 
-    def test_delete_is_case_and_whitespace_tolerant(self, monkeypatch):
-        monkeypatch.setenv(UnverifiedAccountCleanup.MODE_ENV, " DELETE ")
-        assert UnverifiedAccountCleanupJob._is_delete_mode() is True
+    @pytest.mark.parametrize("value", [" delete", "DELETE", " DELETE "])
+    def test_only_exact_delete_enables(self, monkeypatch, value):
+        monkeypatch.setenv(UnverifiedAccountCleanup.MODE_ENV, value)
+        assert UnverifiedAccountCleanupJob._is_delete_mode() is False
 
     def test_unknown_value_fails_closed(self, monkeypatch, caplog):
         monkeypatch.setenv(UnverifiedAccountCleanup.MODE_ENV, "enabled")
@@ -261,7 +281,7 @@ class TestRunDelete:
         mock_fb.get_user.return_value = user
         # Pre-check sees the inactive row; _deactivate_db_user (active filter)
         # then finds nothing to update.
-        db = _mock_db([_db_user(active=False), None])
+        db = _mock_db([_db_user(active=False, edited_after_seconds=86400), None])
 
         with _patch_session(db):
             UnverifiedAccountCleanupJob.run()
@@ -274,16 +294,71 @@ class TestRunDelete:
         _set_candidates(mock_fb, [_fb_user(uid="stale-1")])
         mock_fb.get_user.return_value = _fb_user(uid="stale-1", email_verified=True)
 
-        with _patch_session(_mock_db([])):
+        with _patch_session(_mock_db([_db_user()])):
             UnverifiedAccountCleanupJob.run()
 
         mock_fb.delete_user.assert_not_called()
+
+    def test_verified_during_db_precheck_skipped(self, mock_fb):
+        """The fresh Firebase read happens after the DB precheck closes."""
+        _set_candidates(mock_fb, [_fb_user(uid="stale-1")])
+        verified = {"now": False}
+
+        def get_user(uid):
+            return _fb_user(uid=uid, email_verified=verified["now"])
+
+        mock_fb.get_user.side_effect = get_user
+        db = _mock_db([_db_user()])
+        scope = MagicMock()
+        scope.return_value.__enter__ = MagicMock(return_value=db)
+        scope.return_value.__exit__ = MagicMock(
+            side_effect=lambda *a: verified.update(now=True) or False
+        )
+
+        with patch(f"{MODULE}.session_scope", scope):
+            UnverifiedAccountCleanupJob.run()
+
+        mock_fb.delete_user.assert_not_called()
+
+    def test_db_row_edited_after_registration_skipped(self, mock_fb):
+        """An email change resets email_verified and touches updated_at."""
+        user = _fb_user(uid="stale-1")
+        _set_candidates(mock_fb, [user])
+        mock_fb.get_user.return_value = user
+        db = _mock_db([_db_user(edited_after_seconds=86400)])
+
+        with _patch_session(db):
+            UnverifiedAccountCleanupJob.run()
+
+        mock_fb.get_user.assert_not_called()
+        mock_fb.delete_user.assert_not_called()
+
+    def test_db_failure_after_firebase_delete_still_counts(self, mock_fb, caplog):
+        """A Firebase delete consumes the cap even if DB cleanup fails."""
+        first, second = _fb_user(uid="first"), _fb_user(uid="second")
+        _set_candidates(mock_fb, [first, second])
+        mock_fb.get_user.side_effect = [first, second]
+
+        with patch.object(
+            UnverifiedAccountCleanup, "MAX_ACCOUNTS_PER_RUN", 1
+        ), _patch_session(_mock_db([_db_user()])), patch.object(
+            UnverifiedAccountCleanupJob,
+            "_deactivate_db_user",
+            side_effect=RuntimeError("db down"),
+        ), caplog.at_level(
+            "INFO"
+        ):
+            UnverifiedAccountCleanupJob.run()
+
+        mock_fb.delete_user.assert_called_once_with("first")
+        assert "manual cleanup required" in caplog.text
+        assert "1 deleted" in caplog.text
 
     def test_already_deleted_reconciles_db_row(self, mock_fb):
         _set_candidates(mock_fb, [_fb_user(uid="gone")])
         mock_fb.get_user.side_effect = real_firebase_auth.UserNotFoundError("gone")
         row = _db_user()
-        db = _mock_db([row])
+        db = _mock_db([row, row])
 
         with _patch_session(db):
             UnverifiedAccountCleanupJob.run()
@@ -297,7 +372,7 @@ class TestRunDelete:
         _set_candidates(mock_fb, [_fb_user(uid="bad"), good])
         mock_fb.get_user.side_effect = [ValueError("boom"), good]
         row = _db_user()
-        db = _mock_db([row, row])
+        db = _mock_db([row, row, row])
 
         with _patch_session(db), caplog.at_level("INFO"):
             UnverifiedAccountCleanupJob.run()
@@ -313,7 +388,7 @@ class TestRunDelete:
         _set_candidates(mock_fb, [_fb_user(uid="bad"), good, never])
         mock_fb.get_user.side_effect = [ValueError("boom"), good, never]
         row = _db_user()
-        db = _mock_db([row, row])
+        db = _mock_db([row, row, row])
 
         with patch.object(
             UnverifiedAccountCleanup, "MAX_ACCOUNTS_PER_RUN", 1

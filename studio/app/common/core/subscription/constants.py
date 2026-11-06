@@ -496,8 +496,8 @@ class PremiumExpirationSweep:
 class UnverifiedAccountCleanup:
     """Constants for the unverified Firebase account cleanup job.
 
-    Deletes Firebase accounts that never verified their email and never
-    signed in, after a grace period. Dry-run unless the mode env var is
+    Deletes Firebase accounts that never verified their email and were never
+    used after registration, after a grace period. Dry-run unless the mode env var is
     set to ``delete``.
     """
 
@@ -505,6 +505,8 @@ class UnverifiedAccountCleanup:
     JOB_INTERVAL_MINUTES = 1440  # Daily
     GRACE_PERIOD_DAYS = 30
     MAX_ACCOUNTS_PER_RUN = 100  # Bound work per run; counts successful deletes
+    # Registration signs the user in to send the verification email.
+    REGISTRATION_WINDOW_SECONDS = 600
     MODE_ENV = "UNVERIFIED_ACCOUNT_CLEANUP_MODE"
     MODE_DELETE = "delete"
     MODE_DRY_RUN = "dry_run"
