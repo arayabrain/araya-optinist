@@ -183,8 +183,9 @@ async function runVu(
 // ---------------------------------------------------------------------------
 
 // The top page in a new tab with a session. It shows after the first
-// /users/me; the storage refresh, the second /users/me and the limit warning
-// go out together after it.
+// /users/me; the storage refresh, the second /users/me, the limit warning and
+// the header's announcement go out together after it. The announcement carries
+// no Bearer token, so the ALB's default rule sends it to the public service.
 export function dashboardUser(
   ctx: StepContext,
   vu: VirtualUser,
@@ -242,6 +243,7 @@ export function dashboardUser(
           "free",
           { headers: h },
         ),
+        call(ctx, vu, "announcement", "GET", "/announcement", "public"),
       ])
       v.done = elapsed(start)
     },
@@ -388,6 +390,17 @@ const DASHBOARD_REQUESTS: Record<string, number> = {
   "GET /users/me": 2,
   "POST /workspaces/refresh-storage": 1,
   "GET /storage-limit-alerts/limit-warning": 1,
+  "GET /announcement": 1,
+}
+
+// The public visit's requests besides the list, thumbnails, reproduce and items
+const PUBLIC_FIXED_REQUESTS: Record<string, number> = {
+  "POST /auth/refresh": 1,
+  "GET /is_standalone": 1,
+}
+
+function requestKey(r: CaptureRow): string {
+  return `${r.method} ${r.path.split("?")[0]}`
 }
 
 function tally(keys: string[]): Record<string, number> {
@@ -406,11 +419,7 @@ function describeTally(t: Record<string, number>): string {
 // The top page's order is fixed in dashboardUser; the capture only has to
 // show the browser still sends exactly that set
 export function checkDashboardCapture(rows: CaptureRow[]): void {
-  const sent = tally(
-    apiRows(rows, "dashboard_new_tab").map(
-      (r) => `${r.method} ${r.path.split("?")[0]}`,
-    ),
-  )
+  const sent = tally(apiRows(rows, "dashboard_new_tab").map(requestKey))
   if (describeTally(sent) !== describeTally(DASHBOARD_REQUESTS)) {
     throw new CaptureChanged(
       `the top page now sends ${describeTally(sent)}; ` +
@@ -474,15 +483,35 @@ export function publicSpec(rows: CaptureRow[], record: RecordRef): PublicSpec {
   const reproduce = answered.filter((r) =>
     r.path.startsWith(`/api/public/dataview/workflow/reproduce/${own}`),
   )
-  const items = answered
-    .filter(
-      (r) =>
-        r.phase === "dialog" &&
-        r.path.startsWith("/api/visualizations/") &&
-        !r.path.includes("/thumbnail/") &&
-        r.path.includes(`/${own}/`),
+  const itemRows = answered.filter(
+    (r) =>
+      r.phase === "dialog" &&
+      r.path.startsWith("/api/visualizations/") &&
+      !r.path.includes("/thumbnail/") &&
+      r.path.includes(`/${own}/`),
+  )
+  const items = itemRows.map((r) => ({
+    path: r.path,
+    headers: publicHeaders(r),
+  }))
+  const rest = tally(
+    answered
+      .filter(
+        (r) =>
+          !lists.includes(r) &&
+          !reproduce.includes(r) &&
+          !itemRows.includes(r) &&
+          !r.path.includes("/api/visualizations/thumbnail/"),
+      )
+      .map(requestKey),
+  )
+  if (describeTally(rest) !== describeTally(PUBLIC_FIXED_REQUESTS)) {
+    throw new CaptureChanged(
+      "besides the list, thumbnails, reproduce and items, the public page " +
+        `now sends ${describeTally(rest) || "nothing"}; ` +
+        `the replay sends ${describeTally(PUBLIC_FIXED_REQUESTS)}`,
     )
-    .map((r) => ({ path: r.path, headers: publicHeaders(r) }))
+  }
   if (
     lists.length !== 1 ||
     reproduce.length !== 1 ||

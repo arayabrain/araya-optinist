@@ -485,6 +485,7 @@ test.describe("load lane: request sets", () => {
     row("dashboard_new_tab", "GET", "/storage-limit-alerts/limit-warning"),
     row("dashboard_new_tab", "POST", "/log-report/frontend-errors"),
     row("dashboard_new_tab", "POST", "/workspaces/refresh-storage"),
+    row("dashboard_new_tab", "GET", "/announcement", { type: "fetch" }),
     row("dashboard_new_tab", "GET", "/static/js/main.js", { type: "script" }),
   ]
 
@@ -502,8 +503,14 @@ test.describe("load lane: request sets", () => {
     expect(routeOf("/api/dataview/workflow/reproduce/7/u")).toBe("free")
   })
 
-  test("the top page's capture must still be the replay's six requests", () => {
+  test("the top page's capture must still be the replay's seven requests", () => {
     expect(() => checkDashboardCapture(dashboard)).not.toThrow()
+    const withoutAnnouncement = dashboard.filter(
+      (r) => r.path !== "/announcement",
+    )
+    expect(() => checkDashboardCapture(withoutAnnouncement)).toThrow(
+      /now sends/,
+    )
     const more = [
       ...dashboard,
       row("dashboard_new_tab", "GET", "/users/me/premium/status"),
@@ -542,6 +549,8 @@ test.describe("load lane: request sets", () => {
     const pub = { request_headers: { dataview_public_request: "true" } }
     const rows = [
       row("warmup_list", "GET", "/api/public/dataview?offset=0&limit=50"),
+      row("public_list", "POST", "/auth/refresh", { status: 401 }),
+      row("public_list", "GET", "/is_standalone"),
       row("public_list", "GET", "/api/public/dataview?offset=0&limit=50"),
       row(
         "public_list",
@@ -585,6 +594,34 @@ test.describe("load lane: request sets", () => {
     expect(() =>
       publicSpec(
         rows.filter((r) => !r.path.includes("reproduce")),
+        record,
+      ),
+    ).toThrow(CaptureChanged)
+  })
+
+  test("a public visit with a request the replay does not send fails", () => {
+    const record = { workspaceId: 7, uid: "6ab411e3" }
+    const rows = [
+      row("public_list", "POST", "/auth/refresh", { status: 401 }),
+      row("public_list", "GET", "/is_standalone"),
+      row("public_list", "GET", "/api/public/dataview?offset=0&limit=50"),
+      row("public_list", "GET", "/api/visualizations/thumbnail/7/6ab411e3/i"),
+      row(
+        "dialog",
+        "GET",
+        "/api/public/dataview/workflow/reproduce/7/6ab411e3",
+      ),
+      row("dialog", "GET", "/api/visualizations/image/7/6ab411e3/n/a.json"),
+    ]
+    expect(() => publicSpec(rows, record)).not.toThrow()
+    const more = [
+      ...rows,
+      row("public_list", "GET", "/announcement", { type: "fetch" }),
+    ]
+    expect(() => publicSpec(more, record)).toThrow(/now sends .*announcement/)
+    expect(() =>
+      publicSpec(
+        rows.filter((r) => r.path !== "/is_standalone"),
         record,
       ),
     ).toThrow(CaptureChanged)

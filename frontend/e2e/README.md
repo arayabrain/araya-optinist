@@ -489,11 +489,12 @@ order, over its own connections, at most 6 at a time (a browser's limit on
 this HTTP/1.1 listener). The requests come from a Playwright recording made
 at the start of every run, so the replay follows today's frontend. A
 recording whose shape the replay does not know (no `reproduce`, a new request
-on the top page) fails the run rather than being replayed wrongly.
+on the top page or the public page) fails the run rather than being replayed
+wrongly; the replay is then updated to the new request set.
 
 | Screen | Plan name | What one user does |
 | --- | --- | --- |
-| Top page after sign-in | `dashboard` | a new tab with a session: `/auth/refresh`, `/is_standalone`, `/users/me`, then the storage refresh, `/users/me` and the limit warning at once |
+| Top page after sign-in | `dashboard` | a new tab with a session: `/auth/refresh`, `/is_standalone`, `/users/me`, then the storage refresh, `/users/me`, the limit warning and `/announcement` at once |
 | `/users/me` burst | `usersme` | the top page's two `/users/me`, tokens refreshed beforehand |
 | Output dialog, owner | `dialog` | the record's `reproduce`, then every item the dialog fetched, at once |
 | Public DataView | `public` | anonymous: `/public` with its thumbnails, then the same record's output dialog |
