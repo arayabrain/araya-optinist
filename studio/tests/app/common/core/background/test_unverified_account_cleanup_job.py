@@ -184,28 +184,32 @@ class TestMode:
 
 
 class TestRunDryRun:
-    def test_dry_run_logs_candidates_and_mutates_nothing(
+    def test_dry_run_reports_what_delete_would_do_and_mutates_nothing(
         self, mock_fb, monkeypatch, caplog
     ):
         monkeypatch.delenv(UnverifiedAccountCleanup.MODE_ENV, raising=False)
         monkeypatch.delenv(UnverifiedAccountCleanup.PROTECTED_UIDS_ENV, raising=False)
-        _set_candidates(mock_fb, [_fb_user(uid="stale-1"), _fb_user(uid="stale-2")])
+        _set_candidates(mock_fb, [_fb_user(uid="stale-1"), _fb_user(uid="other-env")])
+        row = _db_user()
+        db = _mock_db([row, None])
 
-        with _patch_session(_mock_db([])) as scope, caplog.at_level("INFO"):
+        with _patch_session(db), caplog.at_level("INFO"):
             UnverifiedAccountCleanupJob.run()
 
         mock_fb.get_user.assert_not_called()
         mock_fb.delete_user.assert_not_called()
-        scope.assert_not_called()
+        db.add.assert_not_called()
+        assert row.active is True
         assert "2 candidates" in caplog.text
-        assert "stale-1" in caplog.text
         assert "dry_run" in caplog.text
+        assert "1 would be deleted, uids: ['stale-1']" in caplog.text
+        assert "Skipping uid other-env: no DB user" in caplog.text
 
     def test_no_email_ever_logged(self, mock_fb, monkeypatch, caplog):
         monkeypatch.delenv(UnverifiedAccountCleanup.MODE_ENV, raising=False)
         _set_candidates(mock_fb, [_fb_user()])
 
-        with caplog.at_level("DEBUG"):
+        with _patch_session(_mock_db([_db_user()])), caplog.at_level("DEBUG"):
             UnverifiedAccountCleanupJob.run()
 
         assert SECRET_EMAIL not in caplog.text

@@ -15,7 +15,8 @@ Safety model (Firebase deletion is irreversible):
   "unverified + old" alone could match a dormant real user; these two checks
   exclude it.
 - Mutations happen only when UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete; any other
-  value (including unset) is a dry run that only logs candidate uids.
+  value (including unset) is a dry run that runs the same DB checks and only
+  logs the uids delete mode would delete.
 - Never touched: uids in UNVERIFIED_CLEANUP_PROTECTED_UIDS, disabled accounts,
   non-password providers, admin-role users, and uids with no DB row in this
   environment (the Firebase project may be shared across environments).
@@ -24,7 +25,7 @@ Safety model (Firebase deletion is irreversible):
 import asyncio
 import os
 import time
-from typing import Optional, Set
+from typing import Optional, Set, Tuple
 
 from firebase_admin import auth as firebase_auth
 
@@ -82,6 +83,12 @@ class UnverifiedAccountCleanupJob:
                 f"{candidates[:UnverifiedAccountCleanup.MAX_ACCOUNTS_PER_RUN]}"
             )
             if not delete_mode:
+                would_delete = [uid for uid in candidates if cls._db_precheck(uid)]
+                logger.info(
+                    f"Unverified account cleanup dry run: {len(would_delete)} "
+                    f"would be deleted, uids: "
+                    f"{would_delete[:UnverifiedAccountCleanup.MAX_ACCOUNTS_PER_RUN]}"
+                )
                 return
 
             deleted = skipped = errors = 0
@@ -157,19 +164,10 @@ class UnverifiedAccountCleanupJob:
         cls, uid: str, cutoff_ms: float, protected_uids: Set[str]
     ) -> bool:
         """Delete one account. Returns True if Firebase was deleted."""
-        with session_scope() as db:
-            user_db = db.query(UserModel).filter(UserModel.uid == uid).first()
-            if user_db is None:
-                logger.info(f"Skipping uid {uid}: no DB user in this environment")
-                return False
-            if cls._has_admin_role(db, user_db.id):
-                logger.warning(f"Skipping uid {uid}: user {user_db.id} has admin role")
-                return False
-            if user_db.active and cls._edited_after_registration(user_db):
-                logger.info(f"Skipping uid {uid}: DB row edited after registration")
-                return False
-            user_id = user_db.id
-            bucket_name = user_db.remote_bucket_name
+        precheck = cls._db_precheck(uid)
+        if precheck is None:
+            return False
+        user_id, bucket_name = precheck
 
         # Fresh record right before deletion: the account may have verified
         # (or signed in) since listing or during the DB precheck.
@@ -203,6 +201,22 @@ class UnverifiedAccountCleanupJob:
         cls._delete_user_bucket(user_id, bucket_name)
         logger.info(f"Deleted unverified account uid {uid} (user {user_id})")
         return True
+
+    @classmethod
+    def _db_precheck(cls, uid: str) -> Optional[Tuple[int, Optional[str]]]:
+        """(user_id, bucket_name) if the DB row allows deleting uid, else None."""
+        with session_scope() as db:
+            user_db = db.query(UserModel).filter(UserModel.uid == uid).first()
+            if user_db is None:
+                logger.info(f"Skipping uid {uid}: no DB user in this environment")
+                return None
+            if cls._has_admin_role(db, user_db.id):
+                logger.warning(f"Skipping uid {uid}: user {user_db.id} has admin role")
+                return None
+            if user_db.active and cls._edited_after_registration(user_db):
+                logger.info(f"Skipping uid {uid}: DB row edited after registration")
+                return None
+            return user_db.id, user_db.remote_bucket_name
 
     @staticmethod
     def _edited_after_registration(user_db) -> bool:
