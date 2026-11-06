@@ -245,14 +245,17 @@ async def test_the_api_answers_while_a_refresh_lists_s3(tmp_path, s3_environment
             )
             await wait_until(hold.started.is_set, timeout=5)
             health = await asyncio.wait_for(client.get("/health"), timeout=5)
-            # The refresh holds no pooled connection while it lists
-            database = await asyncio.wait_for(client.get("/database"), timeout=1)
+            try:
+                database = await asyncio.wait_for(client.get("/database"), timeout=1)
+            except asyncio.TimeoutError:
+                database = None
             hold.answered.set()
             response = await refresh
         stored = stored_usage(engine, [WORKSPACE_ID])
 
     assert hold.released_by_answer == [True], "the listing held the event loop"
     assert health.status_code == 200
+    assert database is not None, "the refresh held the pooled connection while listing"
     assert database.status_code == 200
     assert response.status_code == 200
     body = response.json()
