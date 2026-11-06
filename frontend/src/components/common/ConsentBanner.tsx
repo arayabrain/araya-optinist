@@ -11,10 +11,10 @@ import { Z_INDEX } from "const/Layout"
 import { FONT_SIZE, TEXT_COLOR } from "const/Style"
 import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
 import {
-  ConsentDecision,
   getAnalyticsConsent,
   isGtmEnabled,
   setAnalyticsConsent,
+  subscribeAnalyticsConsent,
 } from "utils/analytics"
 
 const REOPEN_EVENT = "consent-banner-reopen"
@@ -45,15 +45,15 @@ const ConsentBanner: FC = () => {
   const isStandalone = useSelector(selectModeStandalone)
   const [decided, setDecided] = useState(() => getAnalyticsConsent() !== null)
 
-  const decide = (decision: ConsentDecision) => {
-    setAnalyticsConsent(decision)
-    setDecided(true)
-  }
-
+  // Any decision closes the notice, including one made on /account while reopened.
   useEffect(() => {
     const reopen = () => setDecided(false)
     window.addEventListener(REOPEN_EVENT, reopen)
-    return () => window.removeEventListener(REOPEN_EVENT, reopen)
+    const unsubscribe = subscribeAnalyticsConsent(() => setDecided(true))
+    return () => {
+      window.removeEventListener(REOPEN_EVENT, reopen)
+      unsubscribe()
+    }
   }, [])
 
   // Only once the backend has confirmed hosted mode: standalone is a local
@@ -102,7 +102,7 @@ const ConsentBanner: FC = () => {
         <Button
           size="small"
           variant="outlined"
-          onClick={() => decide("denied")}
+          onClick={() => setAnalyticsConsent("denied")}
           data-testid="consent-decline"
         >
           Decline
@@ -110,7 +110,7 @@ const ConsentBanner: FC = () => {
         <Button
           size="small"
           variant="outlined"
-          onClick={() => decide("granted")}
+          onClick={() => setAnalyticsConsent("granted")}
           data-testid="consent-accept"
         >
           Accept

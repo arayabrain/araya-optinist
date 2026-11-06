@@ -197,7 +197,10 @@ const FooterCopyright = styled(Typography)({
 
 const FooterLegal = styled(Box)({
   display: "flex",
-  gap: "1rem",
+  flexWrap: "wrap",
+  justifyContent: "center",
+  columnGap: "1rem",
+  rowGap: "0.25rem",
 })
 
 const LegalLink = styled(Link)({

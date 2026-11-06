@@ -1,17 +1,24 @@
 import { Provider } from "react-redux"
+import { MemoryRouter } from "react-router-dom"
 
 import configureMockStore from "redux-mock-store"
 
 // expect is left global so the jest-dom matchers stay typed.
 import { beforeEach, afterEach, describe, it } from "@jest/globals"
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import ConsentBanner, {
   CookieSettingsLink,
 } from "components/common/ConsentBanner"
+import PublicFooter from "components/PublicLayout/PublicFooter"
+import { Footer } from "pages/LandingPage/components/Footer"
 import { ModeType } from "store/slice/Standalone/StandaloneType"
-import { CONSENT_STORAGE_KEY, trackEvent } from "utils/analytics"
+import {
+  CONSENT_STORAGE_KEY,
+  setAnalyticsConsent,
+  trackEvent,
+} from "utils/analytics"
 import {
   disableGtm,
   setUpAnalyticsTest,
@@ -175,9 +182,36 @@ describe("ConsentBanner", () => {
     ])
   })
 
+  it("closes a reopened notice when the /account switch decides", async () => {
+    localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
+    renderWithCookieSettings()
+
+    await userEvent.click(cookieSettings() as HTMLElement)
+    // What the switch's onChange calls
+    act(() => setAnalyticsConsent("denied"))
+
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe("denied")
+    expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
+  })
+
   it("hides Cookie settings when GTM is not configured", () => {
     disableGtm()
     renderWithCookieSettings()
     expect(cookieSettings()).not.toBeInTheDocument()
+  })
+})
+
+describe("Cookie settings in the footers", () => {
+  beforeEach(() => {
+    setUpAnalyticsTest()
+  })
+  afterEach(tearDownAnalyticsTest)
+
+  it.each([
+    ["landing page", <Footer key="landing" />],
+    ["/public", <PublicFooter key="public" />],
+  ])("shows the link in the %s footer", (_, footer) => {
+    render(<MemoryRouter>{footer}</MemoryRouter>)
+    expect(cookieSettings()).toBeInTheDocument()
   })
 })
