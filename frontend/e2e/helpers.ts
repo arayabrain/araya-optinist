@@ -198,11 +198,12 @@ export const AWS_REGION = "ap-northeast-1"
 // Named for the environment under test, as 17-aws-health names its resources:
 // hardcoding development had a production run watch development's group and
 // time out on a line that had landed correctly somewhere else. Exported so the
-// spec reads the same four names rather than deriving identical ones twice.
+// spec reads the same names rather than deriving identical ones twice.
 export const TARGET_ENV = process.env.HEALTH_ENV || "development"
 export const FREE_LOG_GROUP = `/ecs/${TARGET_ENV}-optinist-cloud-taskdef`
 export const PREMIUM_LOG_GROUP = `/ecs/${TARGET_ENV}-premium-optinist-cloud-taskdef`
 export const PUBLIC_LOG_GROUP = `/ecs/${TARGET_ENV}-public-optinist-cloud-taskdef`
+export const PUBLIC_DATAVIEW_LOG_GROUP = `/ecs/${TARGET_ENV}-public-dataview-optinist-cloud-taskdef`
 export const BACKGROUND_LOG_GROUP = `/ecs/${TARGET_ENV}-background-optinist-cloud-taskdef`
 
 // MUI's default error.main, which the theme does not override: the colour the

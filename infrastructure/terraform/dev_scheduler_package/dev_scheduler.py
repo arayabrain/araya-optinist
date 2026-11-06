@@ -49,9 +49,10 @@ Resources managed:
 - Background service EC2 instance (stop/start)
 - Premium EC2 instances (stop/start)
 - Free tier ASG (scale 0/1)
-- Public tier ASG (scale 0/2 — terminate/recreate, no stale checkpoint)
+- Public and public DataView tier ASGs (scale 0/their desired size —
+  terminate/recreate, no stale checkpoint)
 - ECS services (desired_count 0/1 — prevents failed placement noise)
-- Public ECS service (desired_count 0/2)
+- Public and public DataView ECS services (desired_count 0/their ASG's desired)
 - Lambda schedule rules (disable/enable)
 - CloudWatch alarm actions (disable/enable)
 
@@ -121,6 +122,11 @@ PROXY_REGISTER_POLL_INTERVAL = 10
 # Pinned against compute.tf by test_dev_scheduler.py.
 TASK_STOP_WAIT_SECONDS = 480
 TASK_STOP_POLL_INTERVAL = 10
+
+# Tiers with their own ASG and ECS service sized together, by env-var prefix:
+# <P>_ASG_NAME, <P>_ASG_MIN_SIZE, <P>_ASG_MAX_SIZE, <P>_ASG_DESIRED_CAPACITY,
+# <P>_ECS_SERVICE_NAME. A tier whose names are unset is skipped.
+PUBLIC_TIER_ENV_PREFIXES = ("PUBLIC", "PUBLIC_DATAVIEW")
 
 rds = boto3.client("rds")
 ec2 = boto3.client("ec2")
@@ -302,17 +308,19 @@ def start_environment():
             max_size=int(os.environ.get("ASG_MAX_SIZE", "3")),
         )
 
-        # 5b. Scale up the public ASG. Terminate/recreate (not stop/start) so
-        #     each start gets fresh instances with no stale ECS-agent checkpoint.
-        public_asg = os.environ.get("PUBLIC_ASG_NAME")
-        if public_asg:
-            results["public_asg"] = with_retry(
-                scale_asg,
-                public_asg,
-                min_size=int(os.environ["PUBLIC_ASG_MIN_SIZE"]),
-                desired=int(os.environ["PUBLIC_ASG_DESIRED_CAPACITY"]),
-                max_size=int(os.environ["PUBLIC_ASG_MAX_SIZE"]),
-            )
+        # 5b. Scale up the public tiers' ASGs. Terminate/recreate (not
+        #     stop/start) so each start gets fresh instances with no stale
+        #     ECS-agent checkpoint.
+        for tier in PUBLIC_TIER_ENV_PREFIXES:
+            tier_asg = os.environ.get(f"{tier}_ASG_NAME")
+            if tier_asg:
+                results[f"{tier.lower()}_asg"] = with_retry(
+                    scale_asg,
+                    tier_asg,
+                    min_size=int(os.environ[f"{tier}_ASG_MIN_SIZE"]),
+                    desired=int(os.environ[f"{tier}_ASG_DESIRED_CAPACITY"]),
+                    max_size=int(os.environ[f"{tier}_ASG_MAX_SIZE"]),
+                )
 
         # 6. Restore ECS service desired counts (so tasks start scheduling
         #    once container instances register)
@@ -324,17 +332,18 @@ def start_environment():
                 )
             )
 
-        # 6b. Restore the public service to its HA desired count, not the
-        #     desired=1 used for the single-task services above.
-        public_service = os.environ.get("PUBLIC_ECS_SERVICE_NAME")
-        if public_service:
-            results.update(
-                update_ecs_services(
-                    os.environ["CLUSTER_NAME"],
-                    [public_service],
-                    desired_count=int(os.environ["PUBLIC_ASG_DESIRED_CAPACITY"]),
+        # 6b. Restore each public tier's service to its ASG's desired count,
+        #     not the desired=1 used for the single-task services above.
+        for tier in PUBLIC_TIER_ENV_PREFIXES:
+            tier_service = os.environ.get(f"{tier}_ECS_SERVICE_NAME")
+            if tier_service:
+                results.update(
+                    update_ecs_services(
+                        os.environ["CLUSTER_NAME"],
+                        [tier_service],
+                        desired_count=int(os.environ[f"{tier}_ASG_DESIRED_CAPACITY"]),
+                    )
                 )
-            )
 
         # 7. Enable Lambda schedule rules (except delayed rules)
         rules = json.loads(os.environ.get("SCHEDULE_RULE_NAMES", "[]"))
@@ -434,20 +443,22 @@ def stop_environment(stop_mode="destroy"):
             )
         )
 
-    # 3b. Scale down the public service (drain tasks before its ASG terminates).
-    public_service = os.environ.get("PUBLIC_ECS_SERVICE_NAME")
-    if public_service:
-        results.update(
-            update_ecs_services(
-                os.environ["CLUSTER_NAME"], [public_service], desired_count=0
+    # 3b. Scale down the public tiers' services (drain tasks before their ASGs
+    #     terminate).
+    for tier in PUBLIC_TIER_ENV_PREFIXES:
+        tier_service = os.environ.get(f"{tier}_ECS_SERVICE_NAME")
+        if tier_service:
+            results.update(
+                update_ecs_services(
+                    os.environ["CLUSTER_NAME"], [tier_service], desired_count=0
+                )
             )
-        )
 
     # 3c. Wait for the step 3 services' tasks to stop while NAT is still up (see
     #     TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the stop
     #     carries on, and the drain then waits for NAT as before.
-    #     - Not the public service: its ASG has no capacity provider, so no
-    #       managed-draining hook holds its instances
+    #     - Not the public tiers' services: their ASGs have no capacity
+    #       provider, so no managed-draining hook holds their instances
     #     - Skipped when NAT is known to be down (verify-stop, weekend manual
     #       stop): the agent cannot report, so the tasks would never stop.
     #       Run on "unknown": a wasted wait costs at most TASK_STOP_WAIT_SECONDS,
@@ -482,10 +493,13 @@ def stop_environment(stop_mode="destroy"):
         scale_asg, os.environ["ASG_NAME"], min_size=0, desired=0
     )
 
-    # 4b. Scale down the public ASG (terminate instances).
-    public_asg = os.environ.get("PUBLIC_ASG_NAME")
-    if public_asg:
-        results["public_asg"] = with_retry(scale_asg, public_asg, min_size=0, desired=0)
+    # 4b. Scale down the public tiers' ASGs (terminate instances).
+    for tier in PUBLIC_TIER_ENV_PREFIXES:
+        tier_asg = os.environ.get(f"{tier}_ASG_NAME")
+        if tier_asg:
+            results[f"{tier.lower()}_asg"] = with_retry(
+                scale_asg, tier_asg, min_size=0, desired=0
+            )
 
     # 5. Stop base premium instances (Terraform-managed)
     premium_ids = [

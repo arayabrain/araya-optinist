@@ -15,7 +15,8 @@
   their sizes from that tier's sizing in main.tf; its defaults, partial
   overrides and validation rules, unknown fields included.
 - Uvicorn workers: every task definition that starts cloud-startup.sh sets
-  its own count (the public and background ones live in their own files).
+  its own count (the public, public DataView and background ones live in
+  their own files; the two public ones read one environment local).
 - Health check grace: every service that starts cloud-startup.sh outlasts
   its database wait.
 """
@@ -457,6 +458,23 @@ class TestWorkflowTierSizingVariables:
         ]
 
 
+def _task_environment(tf_file: str, task_definition: str) -> str:
+    """Return the source of a task definition's environment: the definition
+    itself, or the public tiers' shared local when it reads that."""
+    block = resource_block(
+        read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
+    )
+    if "local.public_task_environment" not in block:
+        return block
+    shared = re.search(
+        r"^\s*public_task_environment\s*=\s*\[.*?^\s*\]",
+        read(TERRAFORM_DIR / "public_service.tf"),
+        re.DOTALL | re.MULTILINE,
+    )
+    assert shared, "local.public_task_environment not found in public_service.tf"
+    return shared.group()
+
+
 class TestUvicornWorkers:
     """Every task definition that starts cloud-startup.sh sets its worker count."""
 
@@ -466,17 +484,16 @@ class TestUvicornWorkers:
             ("compute.tf", "autoscaling", "3"),
             ("compute.tf", "premium", "2"),
             ("public_service.tf", "public", "1"),
+            ("public_dataview_service.tf", "public_dataview", "1"),
             ("background_service.tf", "background", "1"),
         ],
     )
     def test_worker_count_is_explicit(self, tf_file, task_definition, workers):
         """Unset, cloud-startup.sh's default would apply; each worker holds a
         full app process out of the memory the instance shares."""
-        block = resource_block(
-            read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
-        )
         values = re.findall(
-            r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
+            r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"',
+            _task_environment(tf_file, task_definition),
         )
         assert values == [workers]
 
@@ -498,6 +515,7 @@ class TestServiceHealthCheckGrace:
             ("compute.tf", "autoscaling"),
             ("compute.tf", "premium"),
             ("public_service.tf", "public"),
+            ("public_dataview_service.tf", "public_dataview"),
             ("background_service.tf", "background"),
         ],
     )

@@ -12,6 +12,7 @@ import {
   isLocalBaseUrl,
   logTail,
   PREMIUM_LOG_GROUP as PREMIUM_LOG,
+  PUBLIC_DATAVIEW_LOG_GROUP as PUBLIC_DATAVIEW_LOG,
   PUBLIC_LOG_GROUP as PUBLIC_LOG,
   RDS_PROXY_HOST,
   runSql,
@@ -53,9 +54,12 @@ const SERVICES = [
   `${ENV}-premium-optinist-cloud-service`,
   `${ENV}-public-optinist-cloud-service`,
   `${ENV}-background-optinist-cloud-service`,
+  `${ENV}-public-dataview-optinist-cloud-service`,
 ]
 const FREE_TG = `${ENV}-optinist-tg`
 const PUBLIC_TG = `${ENV}-optinist-public-tg`
+// Shortened: target group names cap at 32 characters
+const PUBLIC_DATAVIEW_TG = `${ENV}-optinist-pubdv-tg`
 const RDS_INSTANCE = `${ENV}-optinist-cloud-rds`
 const METRIC_NAMESPACE = `OptiNiSt/BackgroundJobs/${ENV}`
 const BUCKET_PREFIX = `${ENV}-optinist-user-`
@@ -77,6 +81,8 @@ const EXPECTED_ALARMS = [
   `${ENV}-optinist-high-iowait`,
   `${ENV}-optinist-load-average-high`,
   `${ENV}-optinist-memory-high`,
+  `${ENV}-optinist-public-dataview-tg-response-time-high`,
+  `${ENV}-optinist-public-dataview-tg-unhealthy-hosts`,
   `${ENV}-optinist-public-tg-response-time-high`,
   `${ENV}-optinist-public-tg-unhealthy-hosts`,
   `${ENV}-optinist-rds-connections-high`,
@@ -293,7 +299,7 @@ test.describe("Compute and routing", () => {
     }
     // The premium service idles at zero, so running == desired is vacuous for
     // it; the tiers that must always serve traffic are asserted to be up.
-    for (const name of [SERVICES[0], SERVICES[2], SERVICES[3]]) {
+    for (const name of [SERVICES[0], SERVICES[2], SERVICES[3], SERVICES[4]]) {
       expect(
         services.find((s) => s.name === name)!.running,
         `${name} must always have a task`,
@@ -348,12 +354,12 @@ test.describe("Compute and routing", () => {
     }
   })
 
-  test("HEALTH-03 - the free and public target groups hold only healthy targets", async () => {
+  test("HEALTH-03 - the free, public and public DataView target groups hold only healthy targets", async () => {
     skipUnlessDeployed("BT-1104 / 1218")
     // The poll below absorbs a draining target for up to 3 minutes per group.
-    test.setTimeout(420_000)
+    test.setTimeout(600_000)
 
-    for (const name of [FREE_TG, PUBLIC_TG]) {
+    for (const name of [FREE_TG, PUBLIC_TG, PUBLIC_DATAVIEW_TG]) {
       const arn = awsJson<string>(
         `elbv2 describe-target-groups --names ${name} ` +
           `--query 'TargetGroups[0].TargetGroupArn'`,
@@ -410,6 +416,7 @@ test.describe("Compute and routing", () => {
     const tierOf = (rule: Rule) => {
       const arn = rule.Actions[0].TargetGroupArn || ""
       if (arn.includes(PUBLIC_TG)) return "public"
+      if (arn.includes(PUBLIC_DATAVIEW_TG)) return "public-dataview"
       if (arn.includes(FREE_TG)) return "free"
       return arn.replace(/^.*targetgroup\//, "") || "no target group"
     }
@@ -440,10 +447,25 @@ test.describe("Compute and routing", () => {
     expect(tierOf(byPath("/manifest.json")!), "static asset tier").toBe(
       "public",
     )
+    // The public DataView API, which anonymous visitors call without limit,
+    // must not load the tier that answers sign-in, so it has a tier of its own.
     expect(
       tierOf(byPath("/api/public/dataview")!),
       "public dataview tier",
-    ).toBe("public")
+    ).toBe("public-dataview")
+    const publicVisualizations = rules.find((r) =>
+      r.Conditions.some(
+        (c) => c.HttpHeaderConfig?.HttpHeaderName === "DATAVIEW_PUBLIC_REQUEST",
+      ),
+    )
+    expect(
+      publicVisualizations,
+      "no DATAVIEW_PUBLIC_REQUEST-header rule on the listener",
+    ).toBeTruthy()
+    expect(
+      tierOf(publicVisualizations!),
+      "public dataview visualization tier",
+    ).toBe("public-dataview")
 
     // The Bearer rule is a catch-all for authed traffic, so every path family
     // that must escape it has to be evaluated first.
@@ -467,7 +489,7 @@ test.describe("Compute and routing", () => {
     expect(tierOf(fallback!), "default action tier").toBe("public")
   })
 
-  test("HEALTH-05 - both auto scaling groups are in service within their bounds", () => {
+  test("HEALTH-05 - every auto scaling group is in service within its bounds", () => {
     skipUnlessDeployed("826")
 
     const groups = awsJson<
@@ -487,6 +509,7 @@ test.describe("Compute and routing", () => {
     expect(groups.map((g) => g.name).sort()).toEqual([
       `${ENV}-optinist-asg`,
       `${ENV}-optinist-public-asg`,
+      `${ENV}-optinist-public-dataview-asg`,
     ])
     for (const group of groups) {
       expect(group.min, `${group.name} min`).toBeGreaterThan(0)
@@ -759,8 +782,9 @@ test.describe("Alarms, logs and metrics", () => {
     expect(
       firing,
       "alarms whose metric is breaching right now. If this names " +
-        "public-tg-unhealthy-hosts within ~25 minutes of the scheduled 08:00 " +
-        "JST start-up, the environment is still booting rather than broken",
+        "public-tg-unhealthy-hosts or public-dataview-tg-unhealthy-hosts " +
+        "within ~25 minutes of the scheduled 08:00 JST start-up, the " +
+        "environment is still booting rather than broken",
     ).toEqual([])
   })
 
@@ -825,11 +849,12 @@ test.describe("Alarms, logs and metrics", () => {
     skipUnlessDeployed("BT-1107 / 1205")
 
     // Absence only means anything once a line from the same window proves
-    // delivery is current; the ALB health check guarantees one on both of these
+    // delivery is current; the ALB health check guarantees one on each of these
     // tiers every minute. The premium tier is excluded on purpose: it idles at
     // zero tasks, so it has no line to prove that with.
+    const live = [FREE_LOG, PUBLIC_LOG, PUBLIC_DATAVIEW_LOG]
     const since = Date.now() - 5 * 60_000
-    for (const group of [FREE_LOG, PUBLIC_LOG]) {
+    for (const group of live) {
       expect(
         cloudwatchHas(group, "HTTP/1.1", since),
         `${group} delivered no line in the last 5 minutes`,
@@ -847,7 +872,7 @@ test.describe("Alarms, logs and metrics", () => {
       "Child process",
     ]
     const hour = Date.now() - 60 * 60_000
-    for (const group of [FREE_LOG, PUBLIC_LOG]) {
+    for (const group of live) {
       for (const marker of fatal) {
         expect(
           cloudwatchHas(group, marker, hour),
@@ -1002,7 +1027,13 @@ test.describe("Alarms, logs and metrics", () => {
       `logs describe-log-groups --log-group-name-prefix /ecs/${ENV} ` +
         `--query 'logGroups[].{name:logGroupName,retention:retentionInDays}'`,
     )
-    for (const name of [FREE_LOG, PREMIUM_LOG, PUBLIC_LOG, BACKGROUND_LOG]) {
+    for (const name of [
+      FREE_LOG,
+      PREMIUM_LOG,
+      PUBLIC_LOG,
+      PUBLIC_DATAVIEW_LOG,
+      BACKGROUND_LOG,
+    ]) {
       const group = groups.find((g) => g.name === name)
       expect(group, `${name} missing`).toBeTruthy()
       // Never-expire is the failure this row is looking for: it is what turns
@@ -1145,7 +1176,7 @@ test.describe("HTTP contract", () => {
     const bad = responses.map((r) => r.status()).filter((s) => s !== 200)
     expect(bad, "non-200 responses under concurrent load").toEqual([])
     // The sheet's floor. Generous on purpose: this is a smoke test for the
-    // public tier serving in parallel, not a benchmark.
+    // public DataView tier serving in parallel, not a benchmark.
     expect(
       responses.length / elapsed,
       `throughput was ${(responses.length / elapsed).toFixed(1)}/s`,

@@ -677,7 +677,7 @@ test.describe("Public Dataview", () => {
     // slow publish times the test out and takes the cleanup with it
     test.setTimeout(15 * 60_000)
     // Row 813: the grid's thumbnails are served by /api/visualizations/*, which
-    // only reaches the public tier through an ALB rule keyed on the
+    // only reaches the public DataView tier through an ALB rule keyed on the
     // DATAVIEW_PUBLIC_REQUEST header the app sends. A broken rule leaves the
     // page loading fine with every image missing, so the statuses are the row.
     // Every publishing test here reverts its own state, so the row that the
@@ -776,7 +776,8 @@ test.describe("Public Dataview", () => {
           seen.filter((status) => status !== 200),
           `thumbnail responses that were not 200 (of ${seen.length}) - a ` +
             "status that never clears means the ALB rule keyed on " +
-            "DATAVIEW_PUBLIC_REQUEST is not routing them to the public tier",
+            "DATAVIEW_PUBLIC_REQUEST is not routing them to the public " +
+            "DataView tier",
         ).toEqual([])
       }).toPass({ timeout: 150_000, intervals: [5_000] })
     } finally {
