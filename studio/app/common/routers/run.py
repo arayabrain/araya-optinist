@@ -1,5 +1,4 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -32,7 +31,6 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
-from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
@@ -60,6 +58,7 @@ from studio.app.common.db.database import get_db, release_request_session
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 from studio.app.const import DATE_FORMAT
+from studio.app.optinist.core.edit_ROI import EditRoiUtils
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -69,11 +68,6 @@ logger = AppLogger.get_logger()
 # anyway, so a dead post-process can't strand the run in a spinner. Sized to
 # cover thumbnail generation on large experiments.
 RECORD_WRITE_GRACE_SEC = 300
-
-# A data filter rewrites the node's pickle, JSON outputs and NWB files. One at a
-# time per process, as on the event loop: two filters of a node do not
-# interleave here, and one filter's data is held at a time
-_filter_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="data-filter")
 
 
 def _finished_within_grace(expt_config: ExptConfig) -> bool:
@@ -462,7 +456,9 @@ async def apply_filter(
         ).filter_node_data(params)
 
     try:
-        await run_in_executor_with_context(_filter_executor, filter_node_data)
+        # A filter rewrites the node's pickle, JSON outputs and NWB files, which
+        # ROI edits read and write too: on their thread, the two never interleave
+        await EditRoiUtils.run_on_edit_thread(filter_node_data)
 
         background_tasks.add_task(
             WorkspaceDataCapacityService.update_experiment_data_usage, workspace_id, uid

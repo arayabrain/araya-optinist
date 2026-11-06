@@ -28,10 +28,10 @@ logger = AppLogger.get_logger()
 
 _T = TypeVar("_T")
 
-# ROI edits, and a commit's taking of the experiment lock, one at a time per
-# process, as on the event loop: an edit under way finishes before a commit
-# takes the lock, one queued behind the commit finds it taken, and one edit's
-# data is held at a time
+# ROI edits, data filters and a commit's taking of the experiment lock, one at a
+# time per process, as on the event loop: an edit and a filter of a node do not
+# interleave, an edit under way finishes before a commit takes the lock, one
+# queued behind the commit finds it taken, and one node's data is held at a time
 _edit_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="roi-edit")
 
 

@@ -1,5 +1,5 @@
-"""POST /run/filter rewrites the node's outputs off the event loop, one filter
-at a time per process."""
+"""POST /run/filter rewrites the node's outputs off the event loop, on the ROI
+edit thread: one filter or ROI edit at a time per process."""
 
 import asyncio
 
@@ -7,7 +7,11 @@ import httpx
 import pytest
 
 from studio.__main_unit__ import app
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+)
 from studio.app.common.routers import run
+from studio.app.optinist.routers import roi
 from studio.tests.app.common.loop_probe import (
     REQUEST_CLIENT_ID,
     Hold,
@@ -75,4 +79,43 @@ async def test_a_second_data_filter_waits_for_the_first(monkeypatch):
 
     assert hold.released_by_answer == [True]
     assert filtered_while_first_runs == ["first"]
+    assert [r.status_code for r in responses] == [200, 200]
+
+
+@pytest.mark.asyncio
+async def test_a_data_filter_waits_for_the_roi_edit_under_way(monkeypatch):
+    # A cancel reads the node, then rewrites its JSON outputs from what it read
+    hold, events = Hold(), []
+
+    class HeldEditROI:
+        def __init__(self, file_path):
+            events.append("edit")
+            hold()
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(RemoteStorageController, "is_available", lambda: False)
+    monkeypatch.setattr(roi, "EditROI", HeldEditROI)
+    monkeypatch.setattr(
+        run, "WorkflowNodeDataFilter", fake_filter(lambda _: events.append("filter"))
+    )
+    cancel_url = (
+        "/api/visualizations/image/1/uid/suite2p_roi_x/cell_roi.json/cancel_edit"
+        "?workspace_id=1"
+    )
+
+    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        edit = asyncio.create_task(http.post(cancel_url))
+        await wait_until(hold.started)
+        filtering = asyncio.create_task(http.post("/run/filter/1/uid/suite2p_roi_x"))
+        # time for the filter to start, were it run beside the edit
+        await asyncio.sleep(0.2)
+        events_while_editing = list(events)
+        hold.answered.set()
+        responses = await asyncio.gather(edit, filtering)
+
+    assert hold.released_by_answer == [True]
+    assert events_while_editing == ["edit"]
+    assert events == ["edit", "filter"]
     assert [r.status_code for r in responses] == [200, 200]
