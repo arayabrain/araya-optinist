@@ -223,6 +223,10 @@ resource "null_resource" "deploy_to_ecs" {
         --cluster ${aws_ecs_cluster.main.name} \
         --region ${var.aws_region} \
         --query 'serviceArns[]' --output text)
+      if [ -z "$SERVICES" ]; then
+        echo "ERROR: no ECS services found in ${aws_ecs_cluster.main.name}"
+        exit 1
+      fi
       for svc in $SERVICES; do
         echo "  -> $${svc##*/}"
         aws ecs update-service \
@@ -232,13 +236,28 @@ resource "null_resource" "deploy_to_ecs" {
           --region ${var.aws_region} >/dev/null
       done
 
-      echo "Waiting for all services to stabilize..."
-      timeout 1800 aws ecs wait services-stable \
+      # One `aws ecs wait` stops at 10 minutes, shorter than a public rollout
+      echo "Waiting for all services to stabilize (up to 60 minutes)..."
+      DEADLINE=$(( $(date +%s) + 3600 ))
+      until aws ecs wait services-stable \
         --cluster ${aws_ecs_cluster.main.name} \
         --services $SERVICES \
-        --region ${var.aws_region} \
-        --cli-read-timeout 1800 \
-        --cli-connect-timeout 120 || echo "Warning: service stabilization timed out, but continuing..."
+        --region ${var.aws_region}; do
+        if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+          echo "ERROR: services not stable after 60 minutes; the new image may not be serving."
+          aws ecs describe-services \
+            --cluster ${aws_ecs_cluster.main.name} \
+            --services $SERVICES \
+            --region ${var.aws_region} \
+            --query 'services[?!(length(deployments) == `1` && runningCount == desiredCount)].[serviceName, events[0].message]' \
+            --output text || true
+          echo "Check those services in the ECS console. deploy_to_ecs is marked tainted,"
+          echo "so the next terraform apply forces a new deployment on every service again."
+          exit 1
+        fi
+        echo "Still rolling out, waiting again..."
+        sleep 15
+      done
 
       # Each host now holds the image this deploy replaced; prune it now
       # rather than at the next scheduled run

@@ -388,6 +388,11 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
   --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
 ```
 
+`terraform apply` does both steps itself in `null_resource.deploy_to_ecs`. It waits up to 60
+minutes for every service to settle (the public service alone took about 40 minutes on
+development) and fails the apply, naming each unsettled service, if one does not. The failed
+resource is tainted, so the next apply forces a new deployment on every service again.
+
 ### Safe Deployment Workflow
 
 1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
