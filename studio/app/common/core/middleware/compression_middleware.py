@@ -2,13 +2,12 @@
 Gzip compression of responses
 
 Whole responses of a compressible type are gzipped by CompressionMiddleware;
-streamed responses and downloads pass through. The frontend bundle is gzipped
-at image build and served by PrecompressedStaticFiles.
+streamed responses, downloads and byte ranges pass through. The frontend
+bundle is gzipped at image build and served by PrecompressedStaticFiles.
 """
 
 import asyncio
 import gzip
-import mimetypes
 import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
@@ -16,8 +15,8 @@ from typing import Optional, Tuple
 
 import anyio
 from starlette.datastructures import Headers, MutableHeaders
-from starlette.responses import FileResponse, Response
-from starlette.staticfiles import NotModifiedResponse, StaticFiles
+from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Smaller bodies gain too little to pay for the gzip framing
@@ -28,15 +27,16 @@ COMPRESS_LEVEL = 1
 # Under this size a body compresses in well under a millisecond, on the loop
 THREAD_MINIMUM_SIZE = 64 * 1024
 
-# Besides text/*
+# Besides text/* and the +json / +xml types
 COMPRESSIBLE_MEDIA_TYPES = frozenset(
     {
         "application/javascript",
         "application/json",
         "application/xml",
-        "image/svg+xml",
     }
 )
+# Never whole, so holding its start would only delay the stream
+EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
 
 # zlib releases the GIL while it compresses, so a thread leaves the event loop
 # free; two per process bound the CPU compression takes
@@ -62,12 +62,24 @@ def accepts_gzip(headers: Headers) -> bool:
     return qualities.get("gzip", qualities.get("*", 0.0)) > 0
 
 
-def _is_compressible(headers: Headers) -> bool:
-    """A type that compresses, not encoded yet, and not a download."""
+def _is_compressible(start: Message) -> bool:
+    """
+    A type that compresses, not encoded yet, not a download, and not a byte
+    range, whose Content-Range counts the bytes as they are.
+    """
+    headers = Headers(raw=start["headers"])
+    if start["status"] == 206:
+        return False
     if "content-encoding" in headers or "content-disposition" in headers:
         return False
     media_type = headers.get("content-type", "").partition(";")[0].strip().lower()
-    return media_type.startswith("text/") or media_type in COMPRESSIBLE_MEDIA_TYPES
+    if media_type == EVENT_STREAM_MEDIA_TYPE:
+        return False
+    return (
+        media_type.startswith("text/")
+        or media_type.endswith(("+json", "+xml"))
+        or media_type in COMPRESSIBLE_MEDIA_TYPES
+    )
 
 
 def _gzip(body: bytes) -> bytes:
@@ -114,7 +126,7 @@ class _CompressingSend:
 
     async def __call__(self, message: Message) -> None:
         if message["type"] == "http.response.start":
-            if _is_compressible(Headers(raw=message["headers"])):
+            if _is_compressible(message):
                 self.held_start = message
                 return
         elif message["type"] == "http.response.body" and self.held_start is not None:
@@ -134,6 +146,11 @@ class _CompressingSend:
             body = await _compress(body)
             headers["Content-Encoding"] = "gzip"
             headers["Content-Length"] = str(len(body))
+            # A strong ETag names one representation and the gzip body is
+            # another, so the tag is weakened, as nginx does
+            etag = headers.get("etag")
+            if etag and not etag.startswith("W/"):
+                headers["ETag"] = f"W/{etag}"
             message = {**message, "body": body}
         return {**start, "headers": headers.raw}, message
 
@@ -150,20 +167,16 @@ class PrecompressedStaticFiles(StaticFiles):
                 self.lookup_path, f"{path}.gz"
             )
             if stat_result and stat.S_ISREG(stat_result.st_mode):
-                return self._gzip_file_response(path, full_path, stat_result, scope)
+                return self._gzip_file_response(full_path, stat_result, scope)
         return await super().get_response(path, scope)
 
     def _gzip_file_response(
-        self, path: str, full_path: str, stat_result: os.stat_result, scope: Scope
+        self, full_path: str, stat_result: os.stat_result, scope: Scope
     ) -> Response:
-        # ETag and Last-Modified come from the copy, so they differ per encoding
-        response = FileResponse(
-            full_path,
-            stat_result=stat_result,
-            method=scope["method"],
-            media_type=mimetypes.guess_type(path)[0],
-            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
-        )
-        if self.is_not_modified(response.headers, Headers(scope=scope)):
-            return NotModifiedResponse(response.headers)
+        # The type is guessed from `<file>.gz` as the file's own; ETag and
+        # Last-Modified come from the copy, so they differ per encoding
+        response = self.file_response(full_path, stat_result, scope)
+        response.headers.add_vary_header("Accept-Encoding")
+        if response.status_code != 304:
+            response.headers["Content-Encoding"] = "gzip"
         return response

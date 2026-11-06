@@ -1,6 +1,6 @@
 """Whole compressible responses are gzipped, large ones off the event loop;
-downloads, streams and other types pass through. The bundle's gzip copies are
-served by PrecompressedStaticFiles."""
+downloads, streams, byte ranges and other types pass through. The bundle's gzip
+copies are served by PrecompressedStaticFiles."""
 
 import asyncio
 import gzip
@@ -38,10 +38,11 @@ def _body(size: int) -> bytes:
     return (b"[0.123456789," * (size // 13 + 1))[:size]
 
 
-def _asgi_get(app, path, raw_headers):
+def _asgi_get(app, path, raw_headers, messages=None):
     """GET through the ASGI app with these header fields, one scope entry each,
-    as a server passes them; the test client joins fields of one name."""
-    messages = []
+    as a server passes them; the test client joins fields of one name. The
+    messages sent go to `messages` as they are sent."""
+    messages = [] if messages is None else messages
 
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
@@ -102,6 +103,15 @@ def client(tmp_path, loop_threads):
             headers={"Content-Encoding": "gzip"},
         )
 
+    @app.get("/range")
+    async def byte_range():
+        return Response(
+            content=_body(10_000),
+            status_code=206,
+            media_type="application/json",
+            headers={"Content-Range": "bytes 0-9999/20000"},
+        )
+
     with TestClient(app) as test_client:
         yield test_client
 
@@ -152,6 +162,7 @@ def test_a_whole_json_body_is_gzipped(client):
         ("text/css", True),
         ("application/javascript", True),
         ("image/svg+xml", True),
+        ("application/problem+json", True),
         ("image/png", False),
         ("application/octet-stream", False),
     ],
@@ -207,6 +218,37 @@ def test_a_streamed_response_passes_through(client):
 
     assert "content-encoding" not in response.headers
     assert response.content == _body(10_000) * 2
+
+
+def test_a_byte_range_passes_through(client):
+    response = client.get("/range", headers=GZIP)
+
+    assert response.status_code == 206
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-range"] == "bytes 0-9999/20000"
+    assert response.num_bytes_downloaded == 10_000
+
+
+def test_an_event_stream_starts_before_its_first_event():
+    messages = []
+    sent_before_first_event = []
+
+    async def events(scope, receive, send):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        sent_before_first_event.append(len(messages))
+        await send({"type": "http.response.body", "body": b"data: 1\n\n"})
+
+    _asgi_get(
+        CompressionMiddleware(events), "/", [(b"accept-encoding", b"gzip")], messages
+    )
+
+    assert sent_before_first_event == [1]
 
 
 def test_an_encoded_body_is_not_compressed_again(client):
@@ -305,7 +347,41 @@ class TestPrecompressedStaticFiles:
 
         assert compressed.headers["etag"] != plain.headers["etag"]
         assert revalidated.status_code == 304
+        assert "content-encoding" not in revalidated.headers
         assert "accept-encoding" in revalidated.headers["vary"].lower()
+
+    def test_a_head_request_gets_the_copys_headers(self, static_client, tmp_path):
+        response = static_client.head("/static/main.js", headers=GZIP)
+
+        assert response.status_code == 200
+        assert response.headers["content-encoding"] == "gzip"
+        gz_size = (tmp_path / "main.js.gz").stat().st_size
+        assert response.headers["content-length"] == str(gz_size)
+        assert response.content == b""
+
+    def test_a_file_the_middleware_compresses_gets_a_weak_etag(self, bundle_dir):
+        """A browser revalidates with both validators; the 304 comes from
+        Last-Modified where Starlette compares If-None-Match exactly."""
+        app = FastAPI()
+        app.add_middleware(CompressionMiddleware)
+        app.mount("/static", PrecompressedStaticFiles(directory=bundle_dir))
+
+        with TestClient(app) as test_client:
+            compressed = test_client.get("/static/other.js", headers=GZIP)
+            plain = test_client.get("/static/other.js", headers=IDENTITY)
+            revalidated = test_client.get(
+                "/static/other.js",
+                headers={
+                    **GZIP,
+                    "if-none-match": compressed.headers["etag"],
+                    "if-modified-since": compressed.headers["last-modified"],
+                },
+            )
+
+        assert compressed.headers["content-encoding"] == "gzip"
+        assert compressed.headers["etag"] == f"W/{plain.headers['etag']}"
+        assert not plain.headers["etag"].startswith("W/")
+        assert revalidated.status_code == 304
 
     def test_a_small_copy_passes_the_middleware_as_it_is(self, tmp_path):
         """A copy under one FileResponse chunk reaches the middleware as one
