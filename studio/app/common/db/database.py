@@ -1,10 +1,18 @@
 from contextlib import contextmanager
 from functools import lru_cache
+from typing import Callable, TypeVar
 
+from anyio import CapacityLimiter, to_thread
+from anyio.lowlevel import RunVar
 from sqlalchemy.orm import Session, sessionmaker
 from sqlmodel import create_engine
 
 from studio.app.common.db.config import DATABASE_CONFIG, get_ssl_creator
+
+_T = TypeVar("_T")
+
+# Per event loop, as anyio's default limiter is
+_db_lookup_limiter: RunVar[CapacityLimiter] = RunVar("db_lookup_limiter")
 
 
 def get_new_engine():
@@ -71,6 +79,26 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+async def run_db_lookup(func: Callable[..., _T], *args) -> _T:
+    """
+    Run a short blocking database lookup from async request code in a thread.
+
+    - A wait for a pooled connection must not block the event loop: the loop
+      also starts the get_db teardowns that return connections.
+    - Its own thread limiter, sized to the pool: lookups waiting for a
+      connection do not take the threadpool slots that sync routes and
+      dependencies run in.
+    """
+    try:
+        limiter = _db_lookup_limiter.get()
+    except LookupError:
+        limiter = CapacityLimiter(
+            DATABASE_CONFIG.POOL_SIZE + DATABASE_CONFIG.MAX_OVERFLOW
+        )
+        _db_lookup_limiter.set(limiter)
+    return await to_thread.run_sync(func, *args, limiter=limiter)
 
 
 def release_request_session(db: Session) -> None:

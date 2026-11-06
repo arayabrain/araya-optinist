@@ -34,6 +34,9 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # Default organization ID for multi-user cloud deployment
 DEFAULT_ORGANIZATION_ID = 1
 
+# Per-workspace cache of HDF5 / MAT inputs converted to TIFF, under the output dir
+INPUT_TIFF_CACHE_DIRNAME = "input_tiff"
+
 # Default is set for local development, override with FRONTEND_URL environment variable
 FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")
 

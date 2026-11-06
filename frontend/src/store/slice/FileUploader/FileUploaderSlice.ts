@@ -4,6 +4,7 @@ import {
   getStatusLoadViaUrl,
   setUploadProgress,
   uploadFile,
+  uploadRejectionMessage,
   waitForUploadViaUrl,
 } from "store/slice/FileUploader/FileUploaderActions"
 import { inistialUploaderState } from "store/slice/FileUploader/FileUploaderInitlalState"
@@ -58,7 +59,10 @@ export const fileUploaderSlice = createSlice({
           ...currentState,
           pending: false,
           fulfilled: false,
-          error: action.error.message,
+          error: uploadRejectionMessage(
+            action.payload,
+            action.error.message ?? "Upload failed",
+          ),
         }
       })
       .addCase(getStatusLoadViaUrl.pending, (state, action) => {

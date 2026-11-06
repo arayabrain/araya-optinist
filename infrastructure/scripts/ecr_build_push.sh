@@ -251,4 +251,15 @@ if [ "$DEPLOY" = true ]; then
     done
     echo "Force-new-deployment issued for all services (re-pulling ${ECR_URI}:latest)."
     echo "Running services restart now; any service at desiredCount 0 re-pulls on next scale-up."
+
+    # Each host now holds the image this deploy replaced; prune it once the
+    # new tasks are up rather than at the next scheduled run
+    echo "Waiting for services to stabilize..."
+    aws ecs wait services-stable --cluster "$CLUSTER" --services $SERVICES --region "$REGION" \
+        || echo "Warning: services not stable yet; docker hygiene runs on its 6 h schedule"
+    HYGIENE_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw docker_hygiene_association_id 2>/dev/null || echo "")
+    if [ -n "$HYGIENE_ID" ]; then
+        aws ssm start-associations-once --association-ids "$HYGIENE_ID" --region "$REGION" \
+            || echo "Warning: could not trigger docker hygiene"
+    fi
 fi
