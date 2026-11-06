@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import logging
 import os
 import time
@@ -347,9 +348,12 @@ def _observe_overall_with_lock_retry(
     observe_success = False
     observe_lock_conflict = False
     upload_confirmed = False
+    reclaimed_disk = False
     retry_max = RemoteSyncLockFileUtil.LOCK_CONFLICT_RETRY_MAX
 
-    for attempt in range(1, retry_max + 1):
+    attempt = 0
+    while attempt < retry_max:
+        attempt += 1
         try:
             asyncio.run(
                 WorkflowResult(workspace_id, unique_id).observe_overall(generation)
@@ -384,6 +388,31 @@ def _observe_overall_with_lock_retry(
             if attempt < retry_max:
                 time.sleep(RemoteSyncLockFileUtil.LOCK_CONFLICT_RETRY_BACKOFF_SECONDS)
         except Exception as e:
+            # A full disk leaves the run RUNNING forever; free leftovers of
+            # other runs once and record the result, rather than hang
+            if (
+                isinstance(e, OSError)
+                and e.errno == errno.ENOSPC
+                and not reclaimed_disk
+            ):
+                from studio.app.common.core.storage.local_disk_guard import (
+                    min_free_bytes,
+                    reclaim_local_caches,
+                )
+
+                reclaimed_disk = True
+                logger.error(
+                    "LOCAL_DISK_FULL while finalizing [%s/%s]: %s",
+                    workspace_id,
+                    unique_id,
+                    e,
+                )
+                reclaim_local_caches(
+                    target_free_bytes=min_free_bytes(),
+                    exclude=(workspace_id, unique_id),
+                )
+                attempt -= 1  # the disk retry is not a lock retry
+                continue
             logger.error(
                 f"snakemake_execute post process (WorkflowResult) failed: {e}",
                 exc_info=True,

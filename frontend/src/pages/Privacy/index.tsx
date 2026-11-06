@@ -392,8 +392,8 @@ const Privacy = () => {
         IP address and browser information, but no analytics cookies are set and
         no analytics events are sent. You can change your choice at any time:
         signed-in users can use the Analytics Cookies setting on the Account
-        page, and any visitor can clear this site&apos;s stored data in their
-        browser and then reload the page to see the notice again. A change
+        page, and any visitor can select the Cookie settings link in the footer
+        of the home and public data pages to see the notice again. A change
         applies at once in the tab where you make it; other tabs of the Service
         that are already open keep your earlier choice until you reload them.
         Google Analytics is configured with a data-retention period of 14
