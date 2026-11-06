@@ -1,13 +1,12 @@
 import argparse
-import asyncio
 import os
 import sys
 from pathlib import Path
 
-import boto3
 import yaml
 
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+from studio.app.common.core.storage.storage_scan import get_s3_client
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent.parent
@@ -41,10 +40,13 @@ logger = AppLogger.get_logger()
 class CloudWorkspaceDataCapacityService:
     """
     Enhanced workspace data capacity service that includes S3 storage usage
+
+    Blocking (S3 listings, file and database writes): async request code
+    runs it through run_storage_scan.
     """
 
     @classmethod
-    async def get_s3_workspace_size(cls, bucket_name: str, workspace_id: str) -> int:
+    def get_s3_workspace_size(cls, bucket_name: str, workspace_id: str) -> int:
         """
         Calculate total S3 storage size for a workspace.
 
@@ -58,7 +60,7 @@ class CloudWorkspaceDataCapacityService:
         total_size = 0
 
         try:
-            s3_client = boto3.client("s3")
+            s3_client = get_s3_client()
 
             # Check both input and output directories for the workspace
             prefixes = [
@@ -108,7 +110,7 @@ class CloudWorkspaceDataCapacityService:
         return total_size
 
     @classmethod
-    async def get_s3_experiment_size(
+    def get_s3_experiment_size(
         cls, bucket_name: str, workspace_id: str, unique_id: str
     ) -> int:
         """
@@ -125,7 +127,7 @@ class CloudWorkspaceDataCapacityService:
         total_size = 0
 
         try:
-            s3_client = boto3.client("s3")
+            s3_client = get_s3_client()
             prefix = S3StorageController.make_s3_output_prefix(workspace_id, unique_id)
 
             # logger.debug(
@@ -157,7 +159,7 @@ class CloudWorkspaceDataCapacityService:
         return total_size
 
     @classmethod
-    async def update_experiment_data_usage_with_s3(
+    def update_experiment_data_usage_with_s3(
         cls, bucket_name: str, workspace_id: str, unique_id: str
     ):
         """
@@ -170,7 +172,7 @@ class CloudWorkspaceDataCapacityService:
             local_size = get_folder_size(workflow_dir)
 
         # Get S3 storage size
-        s3_size = await cls.get_s3_experiment_size(bucket_name, workspace_id, unique_id)
+        s3_size = cls.get_s3_experiment_size(bucket_name, workspace_id, unique_id)
 
         # Total data usage is the max of local and S3 (they are mirrored)
         # Using max instead of sum to avoid double-counting synced files
@@ -193,7 +195,7 @@ class CloudWorkspaceDataCapacityService:
             )
 
     @classmethod
-    async def update_workspace_data_usage_with_s3(
+    def update_workspace_data_usage_with_s3(
         cls, db, bucket_name: str, workspace_id: str, auto_commit: bool = True
     ):
         """
@@ -207,7 +209,7 @@ class CloudWorkspaceDataCapacityService:
 
         # Get S3 input storage size
         try:
-            s3_client = boto3.client("s3")
+            s3_client = get_s3_client()
             prefix = S3StorageController.make_s3_input_prefix(workspace_id)
 
             paginator = s3_client.get_paginator("list_objects_v2")
@@ -248,7 +250,7 @@ class CloudWorkspaceDataCapacityService:
             db.commit()
 
     @classmethod
-    async def recalculate_workspace_data_capacity_with_s3(
+    def recalculate_workspace_data_capacity_with_s3(
         cls, db, bucket_name: str, workspace_id: str, delete_existing: bool = False
     ):
         """
@@ -267,7 +269,7 @@ class CloudWorkspaceDataCapacityService:
         # Get all experiment folders from S3
         s3_experiments = set()
         try:
-            s3_client = boto3.client("s3")
+            s3_client = get_s3_client()
             prefix = S3StorageController.make_s3_output_prefix(workspace_id)
 
             response = s3_client.list_objects_v2(
@@ -304,7 +306,7 @@ class CloudWorkspaceDataCapacityService:
                     local_size = get_folder_size(local_exp_dir)
 
                 # Get S3 size
-                s3_size = await cls.get_s3_experiment_size(
+                s3_size = cls.get_s3_experiment_size(
                     bucket_name, workspace_id, unique_id
                 )
 
@@ -403,19 +405,19 @@ class CloudWorkspaceDataCapacityService:
         )
 
     @classmethod
-    async def sync_workspace_data_capacity_with_s3(
+    def sync_workspace_data_capacity_with_s3(
         cls, db, bucket_name: str, workspace_id: str, delete_existing: bool = False
     ):
         """
         Sync workspace data usage including S3 storage and recalculate data capacity.
         """
-        await cls.update_workspace_data_usage_with_s3(db, bucket_name, workspace_id)
-        await cls.recalculate_workspace_data_capacity_with_s3(
+        cls.update_workspace_data_usage_with_s3(db, bucket_name, workspace_id)
+        cls.recalculate_workspace_data_capacity_with_s3(
             db, bucket_name, workspace_id, delete_existing=delete_existing
         )
 
 
-async def main(args):
+def main(args):
     """
     Main function to sync workspace data capacity including S3 storage.
     """
@@ -458,7 +460,7 @@ async def main(args):
                     f"for workspace: [{workspace_id}]"
                 )
                 service = CloudWorkspaceDataCapacityService
-                await service.sync_workspace_data_capacity_with_s3(
+                service.sync_workspace_data_capacity_with_s3(
                     db,
                     bucket_name,
                     str(workspace_id),
@@ -468,7 +470,7 @@ async def main(args):
         logger.info("Single-user mode detected")
         # Single-user mode always uses delete_existing=True (default)
         service = CloudWorkspaceDataCapacityService
-        await service.recalculate_workspace_data_capacity_with_s3(
+        service.recalculate_workspace_data_capacity_with_s3(
             db=None,
             bucket_name=bucket_name,
             workspace_id="1",
@@ -495,4 +497,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    asyncio.run(main(args))
+    main(args)

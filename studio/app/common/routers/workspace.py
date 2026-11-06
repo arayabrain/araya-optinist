@@ -1,4 +1,5 @@
 import os
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi_pagination import LimitOffsetPage
@@ -13,6 +14,7 @@ from studio.app.common.core.auth.auth_dependencies import (
 )
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.storage_scan import run_storage_scan
 from studio.app.common.core.subscription.constants import StorageSize
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import WorkflowRunStatus
@@ -21,7 +23,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
-from studio.app.common.db.database import get_db
+from studio.app.common.db.database import get_db, session_scope
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workspace import (
@@ -397,133 +399,34 @@ def update_workspace_share_status(
 """,
 )
 async def refresh_all_workspaces_storage(
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Refresh storage usage calculation for all workspaces.
     This will recalculate both local and S3 storage usage.
+
+    The listings, folder walks and the writes of what they find run in a
+    worker thread (run_storage_scan), not on the event loop.
     """
     try:
-        # Import both local and cloud capacity services
-        import sys
-        from pathlib import Path
-
-        project_root = Path(__file__).parent.parent.parent.parent.parent
-        sys.path.insert(0, str(project_root))
-
-        # Determine if we should use S3 or local storage based on environment
-        # Use shared bucket from environment, not user-specific buckets
-        import os
-
         from studio.app.common.core.storage.remote_storage_controller import (
             RemoteStorageType,
         )
-        from studio.scripts.run_sync_data_capacity_cloud import (
-            CloudWorkspaceDataCapacityService,
-        )
 
         bucket_name = None
-        remote_storage_type = RemoteStorageType.get_activated_type()
-
-        if remote_storage_type == RemoteStorageType.S3:
+        if RemoteStorageType.get_activated_type() == RemoteStorageType.S3:
             # Use per-user bucket if available, otherwise fall back to shared bucket
-            from studio.app.common.core.users import crud_users
-
-            user_info = await crud_users.get_user_with_context(db, current_user.id)
-
-            if user_info and user_info.remote_bucket_name:
-                bucket_name = user_info.remote_bucket_name
-            else:
-                # Fallback to shared bucket
+            bucket_name = current_user.remote_bucket_name
+            if not bucket_name:
                 bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
                 logger.warning(
                     f"User {current_user.id} has no personal bucket, "
                     f"using shared bucket: {bucket_name}"
                 )
 
-        use_s3 = bool(bucket_name)
-
-        # Get all non-deleted workspaces that the user has access to
-        from studio.app.common.core.workspace.workspace_services import WorkspaceService
-
-        workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
-            db, current_user.id
+        refreshed_count, workspace_count = await run_storage_scan(
+            _refresh_workspaces_storage, current_user.id, bucket_name
         )
-
-        logger.info(
-            f"Refreshing storage for {len(workspace_ids)} workspaces "
-            f"for user {current_user.id}"
-        )
-
-        # Process each workspace
-        refreshed_count = 0
-        for workspace_id in workspace_ids:
-            try:
-                if use_s3:
-                    # Use S3 storage service with user's bucket (per-user or shared)
-                    service = CloudWorkspaceDataCapacityService
-                    await service.sync_workspace_data_capacity_with_s3(
-                        db,
-                        bucket_name,
-                        str(workspace_id),
-                        delete_existing=False,
-                    )
-                else:
-                    # Use local storage service - calculate actual filesystem sizes
-                    from studio.app.common.core.utils.file_reader import get_folder_size
-
-                    # Calculate input folder size
-                    workspace_input_path = os.path.join(
-                        DIRPATH.INPUT_DIR, str(workspace_id)
-                    )
-                    input_size = (
-                        get_folder_size(workspace_input_path)
-                        if os.path.exists(workspace_input_path)
-                        else 0
-                    )
-
-                    # Calculate output folder size
-                    workspace_output_path = os.path.join(
-                        DIRPATH.OUTPUT_DIR, str(workspace_id)
-                    )
-                    output_size = (
-                        get_folder_size(workspace_output_path)
-                        if os.path.exists(workspace_output_path)
-                        else 0
-                    )
-
-                    total_workspace_size = input_size + output_size
-
-                    # Update workspace input_data_usage to reflect filesystem size
-                    from sqlalchemy import text
-
-                    db.execute(
-                        text(
-                            "UPDATE workspaces SET input_data_usage = :total_size "
-                            "WHERE id = :ws_id"
-                        ),
-                        {"total_size": total_workspace_size, "ws_id": workspace_id},
-                    )
-
-                    # Clear stale experiment records data_usage for this workspace
-                    db.execute(
-                        text(
-                            "UPDATE experiment_records SET data_usage = 0 "
-                            "WHERE workspace_id = :ws_id"
-                        ),
-                        {"ws_id": workspace_id},
-                    )
-
-                refreshed_count += 1
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to refresh storage for workspace {workspace_id}: {e}"
-                )
-                continue
-
-        db.commit()
 
         # After refreshing individual workspaces, update the user's total storage usage
         try:
@@ -544,13 +447,13 @@ async def refresh_all_workspaces_storage(
 
         logger.info(
             f"Successfully refreshed storage for {refreshed_count}/"
-            f"{len(workspace_ids)} workspaces"
+            f"{workspace_count} workspaces"
         )
 
         return {
             "success": True,
             "refreshed_workspaces": refreshed_count,
-            "total_workspaces": len(workspace_ids),
+            "total_workspaces": workspace_count,
             "message": (f"Refreshed storage usage for {refreshed_count} " "workspaces"),
         }
 
@@ -559,3 +462,95 @@ async def refresh_all_workspaces_storage(
         raise HTTPException(
             status_code=500, detail="Failed to refresh workspace storage usage"
         )
+
+
+def _refresh_workspaces_storage(
+    user_id: int, bucket_name: Optional[str]
+) -> Tuple[int, int]:
+    """
+    Recalculate the usage of each workspace the user can access, from S3 when
+    bucket_name is set, else from local folders. Blocking: run_storage_scan.
+
+    - Commits after the workspace id read and after each workspace, so the
+      session holds no connection during the listings that follow.
+
+    Returns the refreshed and the accessible workspace counts.
+    """
+    from studio.scripts.run_sync_data_capacity_cloud import (
+        CloudWorkspaceDataCapacityService,
+    )
+
+    with session_scope() as db:
+        # Get all non-deleted workspaces that the user has access to
+        workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(db, user_id)
+        db.commit()
+
+        logger.info(
+            f"Refreshing storage for {len(workspace_ids)} workspaces "
+            f"for user {user_id}"
+        )
+
+        refreshed_count = 0
+        for workspace_id in workspace_ids:
+            try:
+                if bucket_name:
+                    # Use S3 storage service with user's bucket (per-user or shared)
+                    service = CloudWorkspaceDataCapacityService
+                    service.sync_workspace_data_capacity_with_s3(
+                        db,
+                        bucket_name,
+                        str(workspace_id),
+                        delete_existing=False,
+                    )
+                else:
+                    _refresh_local_workspace_storage(db, workspace_id)
+                db.commit()
+                refreshed_count += 1
+
+            except Exception as e:
+                db.rollback()
+                logger.error(
+                    f"Failed to refresh storage for workspace {workspace_id}: {e}"
+                )
+
+    return refreshed_count, len(workspace_ids)
+
+
+def _refresh_local_workspace_storage(db: Session, workspace_id: int) -> None:
+    """Store the workspace's input and output folder sizes as its input usage."""
+    from sqlalchemy import text
+
+    from studio.app.common.core.utils.file_reader import get_folder_size
+
+    # Calculate input folder size
+    workspace_input_path = os.path.join(DIRPATH.INPUT_DIR, str(workspace_id))
+    input_size = (
+        get_folder_size(workspace_input_path)
+        if os.path.exists(workspace_input_path)
+        else 0
+    )
+
+    # Calculate output folder size
+    workspace_output_path = os.path.join(DIRPATH.OUTPUT_DIR, str(workspace_id))
+    output_size = (
+        get_folder_size(workspace_output_path)
+        if os.path.exists(workspace_output_path)
+        else 0
+    )
+
+    total_workspace_size = input_size + output_size
+
+    # Update workspace input_data_usage to reflect filesystem size
+    db.execute(
+        text("UPDATE workspaces SET input_data_usage = :total_size WHERE id = :ws_id"),
+        {"total_size": total_workspace_size, "ws_id": workspace_id},
+    )
+
+    # Clear stale experiment records data_usage for this workspace
+    db.execute(
+        text(
+            "UPDATE experiment_records SET data_usage = 0 "
+            "WHERE workspace_id = :ws_id"
+        ),
+        {"ws_id": workspace_id},
+    )
