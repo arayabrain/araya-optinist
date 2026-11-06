@@ -489,17 +489,24 @@ order, over its own connections, at most 6 at a time (a browser's limit on
 this HTTP/1.1 listener). The requests come from a Playwright recording made
 at the start of every run, so the replay follows today's frontend. A
 recording whose shape the replay does not know (no `reproduce`, a new request
-on the top page or the public page) fails the run rather than being replayed
+on the Dashboard or PublicDataview) fails the run rather than being replayed
 wrongly; the replay is then updated to the new request set.
 
 | Screen | Plan name | What one user does |
 | --- | --- | --- |
-| Top page after sign-in | `dashboard` | a new tab with a session: `/auth/refresh`, `/is_standalone`, `/users/me`, then the storage refresh, `/users/me`, the limit warning and `/announcement` at once |
-| `/users/me` burst | `usersme` | the top page's two `/users/me`, tokens refreshed beforehand |
-| Output dialog, owner | `dialog` | the record's `reproduce`, then every item the dialog fetched, at once |
-| Public DataView | `public` | anonymous: `/public` with its thumbnails, then the same record's output dialog |
+| Dashboard after sign-in | `dashboard` | a new tab on `/dashboard` with a session: `/auth/refresh`, `/is_standalone`, `/users/me`, then the storage refresh, `/users/me`, the limit warning and `/announcement` at once |
+| `/users/me` burst | `usersme` | the Dashboard's two `/users/me`, tokens refreshed beforehand |
+| OutputsView from Dataview, owner | `dialog` | the record's `reproduce`, then every item OutputsView fetched, at once |
+| PublicDataview without sign-in | `public` | anonymous: `/public` with its thumbnails, then the same record's OutputsView |
 
-Dialog items and thumbnails are timed to the response headers: the server
+Screens carry the frontend code's names: `pages/Dashboard` (`/dashboard`),
+`pages/Dataview` (`/dataview/<workspace id>`), `pages/PublicDataview`
+(`/public`) and `components/Dataview/OutputsView`, the dialog the Outputs
+column opens on both lists. The UI titles OutputsView "Workflow Outputs" and
+PublicDataview "OptiNiSt Public Repository"; the code's `PublicRepository` is
+a section of the landing page (`/`), which the lane does not load.
+
+OutputsView items and thumbnails are timed to the response headers: the server
 builds the body before it sends them, so the load generator's own link does
 not bound the figure. Free-route requests carry one `AWSALB` cookie, so every
 user reaches the same free instance, and each step checks that they did.
@@ -523,15 +530,16 @@ on 2026-11-05, and `parity` runs 1 and 5 users per screen:
 
 | Screen | `default` steps |
 | --- | --- |
-| Top page | 1 / 10 / 50 (50 also after a stop by the free probe, at a 10 s free threshold) |
+| Dashboard | 1 / 10 / 50 (50 also after a stop by the free probe, at a 10 s free threshold) |
 | `/users/me` burst | 50 |
-| Output dialog | 1 / 5 / 10 / 20 |
-| Public DataView | 1 / 5 / 10, then 20 and 30 while the previous public probe max stays under 3 s |
+| OutputsView from Dataview | 1 / 5 / 10 / 20 |
+| PublicDataview | 1 / 5 / 10, then 20 and 30 while the previous public probe max stays under 3 s |
 
-The plan lists larger steps too (100 on the top page, 50 on the dialog and
-50 / 100 on the public page). A step above its screen's cap runs only when
-that run sets both `LOAD_MAX_USERS_<SCREEN>=<n>` and `LOAD_GO_AHEAD=1`, and the
-report records the override. The committed caps never change for one run.
+The plan lists larger steps too (100 on the Dashboard, 50 on OutputsView from
+Dataview and 50 / 100 on PublicDataview). A step above its screen's cap runs
+only when that run sets both `LOAD_MAX_USERS_<SCREEN>=<n>` and
+`LOAD_GO_AHEAD=1`, and the report records the override. The committed caps
+never change for one run.
 
 **Safety rules**, each from something one of the two manual runs hit:
 
@@ -567,10 +575,10 @@ report records the override. The committed caps never change for one run.
 | `RUN_LOAD_AWS` | yes | opt-in, with `RUN_DISRUPTIVE=1` |
 | `AWS_PROFILE` | yes | read access to development's ECS, ELB, Auto Scaling, CloudWatch and logs; every AWS call is a read |
 | `LOAD_ACCOUNTS_FILE` | yes | one `email<TAB>password` line per account, 1-5 free accounts. Read, never printed; keep it outside the repository. A relative path is from `e2e/` |
-| `LOAD_DIALOG_RECORD` | yes | the dialog fixture, `<workspace id>/<uid>` |
+| `LOAD_DIALOG_RECORD` | yes | the OutputsView fixture, `<workspace id>/<uid>` |
 | `LOAD_DIALOG_OWNER` | yes | its owner's email, one of the accounts |
-| `LOAD_PUBLIC_RECORD` | no | the record public visitors open, the owner's; default the dialog record |
-| `LOAD_PUBLISH` | no | publish the public record for the run when it is not; it is unpublished after the public steps, and the run asserts the restore |
+| `LOAD_PUBLIC_RECORD` | no | the record PublicDataview visitors open, the owner's; default `LOAD_DIALOG_RECORD` |
+| `LOAD_PUBLISH` | no | publish the public record for the run when it is not; it is unpublished after the PublicDataview steps, and the run asserts the restore |
 | `LOAD_IMAGE_DIGEST` | yes | `sha256:...` the tasks must run |
 | `LOAD_WINDOW_END` | yes | ISO-8601 with its offset, e.g. `2026-11-10T17:00+09:00`. No step starts that could still run after it, nor after 12:40 UTC (development stops at 13:00 UTC) |
 | `LOAD_WINDOW_ANNOUNCED` | no | see rule 6 |
@@ -580,9 +588,9 @@ report records the override. The committed caps never change for one run.
 | `LOAD_BASELINE` | no | the baseline to compare with: a baseline file or another run's results folder; default `load/baseline-20261105.json` |
 | `LOAD_RESULTS_DIR` | no | default `e2e/load-results` (gitignored) |
 
-**The dialog fixture** is a suite2p result of #637's size (the 1.4 GB TIFF
-through `suite2p_file_convert`, `suite2p_registration` and `suite2p_roi`)
-owned by one of the accounts. If it is gone, upload the recording as that
+**The OutputsView fixture** is a suite2p result of #637's size (the 1.4 GB
+TIFF through `suite2p_file_convert`, `suite2p_registration` and
+`suite2p_roi`) owned by one of the accounts. If it is gone, upload the recording as that
 account and run the workflow (about 20-25 minutes); a smaller record
 measures something else, and the report says so (its bytes per open differ).
 
@@ -614,7 +622,7 @@ came from, so those steps compare as they are), `requests.jsonl`,
 screen's table before → after with an Improvement column, the 1-user
 per-item times, the differences the comparison has to be read with (6
 connections per user, a different fixture, other thresholds, a changed
-request set), the top page's robustness (DB pool timeouts, 401 and 5xx in the
+request set), the Dashboard's robustness (DB pool timeouts, 401 and 5xx in the
 server logs, instance replacement) and the post-checks (target health,
 scaling activity, the services' CPU per step, 5xx at the ALB, the ALB's
 slowest answer per step). Items are labelled by endpoint, the output's node
@@ -632,8 +640,8 @@ before committing.
 writes no token file; the tokens stay in memory, and the public record is
 restored. Delete the folder once the report is written up.
 
-**Still manual**: agreeing the window with the team; the dialog fixture when
-it is missing; the approval to publish a record (`LOAD_PUBLISH=1` is that
+**Still manual**: agreeing the window with the team; the OutputsView fixture
+when it is missing; the approval to publish a record (`LOAD_PUBLISH=1` is that
 approval, given per run); reading the report, what changed and why; and the
 issue or PR comments that follow. Scale-out under load is not covered: the
 lane pins one free instance and keeps to 5 accounts.
@@ -736,7 +744,7 @@ gated and how to run it. This table is the map, not the documentation.
 | `21-stripe-roundtrip` | STRIPE-01 | cancel at period end through our own API, then reactivate, read back from Stripe rather than a mock: `cancel_at_period_end`, `cancel_at`, the `customer.subscription.updated` event, and our own `scheduled_downgrade` without a plan downgrade. The undo is in a `finally` and asserted. `RUN_STRIPE_WRITE=1` and `TEST_STRIPE_*`, since the `TEST_PREMIUM_*` accounts own no Stripe customer to cancel |
 | `22-disruptive`    | OUT-01..05, ASG-01 | the rows that can only be observed by breaking something, against deployed dev: with the free service at zero the public tier still serves the shell, `/auth/login` and an authenticated client error report (OUT-01); a rolling public deployment keeps serving and published data survives the task replacement, 200 rather than the 202 that would mean it re-synced from S3 (OUT-02); a premium user keeps their instance through the outage (OUT-03); the assigned premium instance stopped (OUT-04) or terminated (OUT-05) out from under the user, with the DEGRADED snackbar, the row reconciliation and the instance-lost re-trigger's recovery asserted, and the standby pool healed before the run ends; and terminating a public instance gets it replaced, with an ECS task really placed on the replacement and no request dropped (ASG-01). Row 824's alarm is logged rather than asserted - whether a terminating target is ever counted `unhealthy` or goes straight to `draining` is undocumented, so HEALTH-27 carries that row instead |
 | `23-subscription-lifecycle` | LC-06, LC-11..13, LC-16, LC-21..23 | the subscription-state half of the lifecycle rows, split out of `11-lifecycle` so it can run against deployed dev: the expiry captions (Renew / Expires / Expired), the expired-premium grace warning, the downgrade confirmation and its retention notice, the cancelled banner, the profile after cancellation, a renewal writing only a later period end, the post-grace Expired status with the 403 the assign route answers, and one real account deletion on a per-run throwaway. Plan and expiry are staged one statement at a time through `runSqlWriteOnDev`, and an `afterAll` restores the account to exactly what registration leaves, so no fabricated premium row outlives the run. Needs `TEST_LIFECYCLE_*` pointing at a dedicated account (LC-16 deletes the account it runs on) and, for LC-16 only, `FIREBASE_ADMIN_PYTHON`. **Writes to the shared dev RDS and currently runs in the default lane** - see the note below |
-| `24-load`          | LOAD-01..02 | Web UI capacity on development: N users of the top page, the `/users/me` burst, the owner's output dialog and the public DataView released together, step by step, with stop probes, cool-downs, read-only AWS post-checks and a before / after report against the committed baseline (LOAD-01); the report rebuilt from saved steps without touching anything remote (LOAD-02). `@disruptive` plus `RUN_LOAD_AWS=1`, in an announced window - see [Web UI load lane](#web-ui-load-lane). Its logic is unit-tested offline in `load/load.unit.spec.ts` |
+| `24-load`          | LOAD-01..02 | Web UI capacity on development: N users of the Dashboard, the `/users/me` burst, the owner's OutputsView from Dataview and PublicDataview released together, step by step, with stop probes, cool-downs, read-only AWS post-checks and a before / after report against the committed baseline (LOAD-01); the report rebuilt from saved steps without touching anything remote (LOAD-02). `@disruptive` plus `RUN_LOAD_AWS=1`, in an announced window - see [Web UI load lane](#web-ui-load-lane). Its logic is unit-tested offline in `load/load.unit.spec.ts` |
 | `99-cleanup`       | CLEAN-01    | deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`; runs last so the groups above keep their fixtures |
 
 ## Coverage maps

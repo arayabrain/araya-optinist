@@ -70,7 +70,7 @@ export type StepSummary = {
   vu_done: number
   shown: Stat3
   done: Stat3
-  // Absent in the steps measured before the public screen existed
+  // Absent in the steps measured before the PublicDataview screen existed
   dialog?: Stat3
   requests: Record<string, RequestStat>
   probes: Record<Target, ProbeStat>

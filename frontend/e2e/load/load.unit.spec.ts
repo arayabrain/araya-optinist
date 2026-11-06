@@ -340,7 +340,7 @@ test.describe("load lane: plan", () => {
     const dialog = screenOf(p, "dialog")
     const freeStop = figures({ screen: "dashboard", stopped_by: "free" })
     const publicStop = figures({ screen: "dashboard", stopped_by: "public" })
-    // 2026-11-05: the 10-user top page stopped on the free probe and 50 still ran
+    // 2026-11-05: the 10-user Dashboard stopped on the free probe and 50 still ran
     expect(decideStep(dashboard, dashboard.steps[2], freeStop, gates)).toEqual({
       run: true,
     })
@@ -356,7 +356,7 @@ test.describe("load lane: plan", () => {
     })
   })
 
-  test("the public screen goes on to 20 and 30 only while the public probe stays under 3 s", () => {
+  test("PublicDataview goes on to 20 and 30 only while the public probe stays under 3 s", () => {
     const pub = screenOf(plan(), "public")
     const gates = { goAhead: false }
     const at = (max: number | null) =>
@@ -538,7 +538,7 @@ test.describe("load lane: request sets", () => {
     expect(routeOf("/api/dataview/workflow/reproduce/7/u")).toBe("free")
   })
 
-  test("the top page's capture must still be the replay's seven requests", () => {
+  test("the Dashboard's capture must still be the replay's seven requests", () => {
     expect(() => checkDashboardCapture(dashboard)).not.toThrow()
     const withoutAnnouncement = dashboard.filter(
       (r) => r.path !== "/announcement",
@@ -554,7 +554,7 @@ test.describe("load lane: request sets", () => {
     expect(() => checkDashboardCapture(dashboard.slice(1))).toThrow(/now sends/)
   })
 
-  test("the owner's dialog replays the recorded open, not the warm-up", () => {
+  test("the owner's OutputsView replays the recorded open, not the warm-up", () => {
     const record = { workspaceId: 7, uid: "6ab411e3" }
     const rows = [
       row(
@@ -579,7 +579,7 @@ test.describe("load lane: request sets", () => {
     )
   })
 
-  test("the public visit keeps each item's routing header and leaves the warm-up and the filter out", () => {
+  test("the PublicDataview visit keeps each item's routing header and leaves the warm-up and the filter out", () => {
     const record = { workspaceId: 7, uid: "6ab411e3" }
     const pub = { request_headers: { dataview_public_request: "true" } }
     const rows = [
@@ -634,7 +634,7 @@ test.describe("load lane: request sets", () => {
     ).toThrow(CaptureChanged)
   })
 
-  test("a public visit with a request the replay does not send fails", () => {
+  test("a PublicDataview visit with a request the replay does not send fails", () => {
     const record = { workspaceId: 7, uid: "6ab411e3" }
     const rows = [
       row("public_list", "POST", "/auth/refresh", { status: 401 }),
@@ -802,12 +802,14 @@ test.describe("load lane: report", () => {
     ]
     const notes = differences(before, after).join("\n")
     expect(notes).toContain("at most 6 connections")
-    expect(notes).toContain("The dialog fixture differs: the record's items")
+    expect(notes).toContain(
+      "OutputsView from Dataview, owner: the fixture differs; the record's items",
+    )
     expect(notes).toContain("15.00 MB → 9.00 MB")
     expect(notes).toContain("now also `hidden_outputs`")
   })
 
-  test("a changed item set or a changed public list is not read as another record", () => {
+  test("a changed item set or a changed PublicDataview list is not read as another record", () => {
     const req = (bytes: number) => ({
       count: 1,
       ok: 1,
@@ -926,11 +928,11 @@ test.describe("load lane: report", () => {
       { measured_on: "2026-11-05", note: "", steps: [] },
       run,
     )
-    expect(report).toContain("## Output dialog, owner")
+    expect(report).toContain("## OutputsView from Dataview, owner")
     expect(report).not.toContain("f04ebc058a3326be")
     // Logs nobody read do not read as a clean step
     expect(report).toContain(
-      "| Top page after sign-in, 1 | — | — | — | — | — |",
+      "| Dashboard after sign-in, 1 | — | — | — | — | — |",
     )
   })
 

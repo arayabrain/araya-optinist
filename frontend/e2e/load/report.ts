@@ -219,7 +219,7 @@ function bytesPerUser(f: StepFigures | undefined): number | null {
   return total / f.vus
 }
 
-// Requests that do not belong to the record: the public list and its
+// Requests that do not belong to the record: PublicDataview's list and its
 // thumbnails follow whatever else is published
 const NOT_THE_RECORD = ["auth_refresh_anon", "is_standalone", "public_list"]
 
@@ -258,7 +258,7 @@ const SCREEN_TABLES: Record<
   }
 > = {
   dashboard: {
-    title: "Top page after sign-in",
+    title: "Dashboard after sign-in",
     usersTitle: "Users at once",
     headline: (f) => f.shown_max,
     columns: [
@@ -317,7 +317,7 @@ const SCREEN_TABLES: Record<
     ],
   },
   dialog: {
-    title: "Output dialog, owner",
+    title: "OutputsView from Dataview, owner",
     usersTitle: "Users at once",
     headline: (f) => f.done_max,
     columns: [
@@ -330,13 +330,13 @@ const SCREEN_TABLES: Record<
     ],
   },
   public: {
-    title: "Public DataView without sign-in",
+    title: "PublicDataview without sign-in",
     usersTitle: "Visitors at once",
     headline: (f) => f.done_max,
     columns: [
       { title: "Stopped", cell: (f) => STOP_WORDS[f.stopped_by] },
       { title: "List shown, last", cell: (f) => fmtS(f.shown_max) },
-      { title: "Dialog ready, last", cell: (f) => fmtS(f.dialog_max) },
+      { title: "OutputsView ready, last", cell: (f) => fmtS(f.dialog_max) },
       { title: "Whole visit, last", cell: (f) => fmtS(f.done_max) },
       { title: "Public probe max", cell: (f) => fmtS(f.public_probe_max) },
       { title: "Public CPU max", cell: (f) => fmtPct(f.cpu_max_pct?.public) },
@@ -445,7 +445,7 @@ export function differences(
     `Each user opens at most ${BROWSER_SOCKETS_PER_HOST} connections to the host, as a ` +
       "browser does on this HTTP/1.1 listener. The tool behind the 2026-11-02 and " +
       "2026-11-05 figures sent each user's parallel requests all at once (15 thumbnails " +
-      "per public visitor), so list and item times there are on the strict side.",
+      "per PublicDataview visitor), so list and item times there are on the strict side.",
   ]
   for (const screen of ["dialog", "public"] as Screen[]) {
     const bytes = recordBytes(
@@ -458,7 +458,7 @@ export function differences(
       Math.abs(bytes[1] - bytes[0]) / bytes[0] > 0.01
     ) {
       notes.push(
-        `The ${screen} fixture differs: the record's items both runs fetched move ` +
+        `${SCREEN_TABLES[screen].title}: the fixture differs; the record's items both runs fetched move ` +
           `${fmtMB(bytes[0])} → ${fmtMB(bytes[1])} at 1 user, so its times compare ` +
           "a different record.",
       )
@@ -548,11 +548,11 @@ function replacedCell(s: StepOutcome): string {
 }
 
 function robustness(steps: StepOutcome[]): string[] {
-  const top = steps.filter(
+  const onDashboard = steps.filter(
     (s) => s.figures.screen === "dashboard" || s.figures.screen === "usersme",
   )
-  if (!top.length) return []
-  const rows = top.map((s) => [
+  if (!onDashboard.length) return []
+  const rows = onDashboard.map((s) => [
     `${SCREEN_TABLES[s.figures.screen].title}, ${s.figures.vus}`,
     count(s.logs, "QueuePool"),
     count(s.logs, "401"),
@@ -563,7 +563,7 @@ function robustness(steps: StepOutcome[]): string[] {
       : "—",
   ])
   return [
-    "## Top page robustness",
+    "## Dashboard robustness",
     "",
     "Server log lines in each step's window (the step and its cool-down), from every client.",
     "",

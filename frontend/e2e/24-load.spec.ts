@@ -223,9 +223,9 @@ test.describe("Web UI load lane @disruptive", () => {
       const record = await findRecord(base, sessions[owner], cfg.dialogRecord)
       expect(
         record,
-        "LOAD_DIALOG_RECORD is not in LOAD_DIALOG_OWNER's DataView",
+        "LOAD_DIALOG_RECORD is not in LOAD_DIALOG_OWNER's Dataview",
       ).not.toBeNull()
-      log.step("capturing the top page and the output dialog")
+      log.step("capturing the Dashboard and OutputsView from Dataview")
       const rows = await captureOwner(
         browser,
         base,
@@ -333,7 +333,7 @@ test.describe("Web UI load lane @disruptive", () => {
             )
             expect(
               publicRecord,
-              "LOAD_PUBLIC_RECORD is not in LOAD_DIALOG_OWNER's DataView",
+              "LOAD_PUBLIC_RECORD is not in LOAD_DIALOG_OWNER's Dataview",
             ).not.toBeNull()
             const rec = publicRecord as RecordState
             if (rec.publishStatus !== PUBLISHED) {
@@ -348,7 +348,7 @@ test.describe("Web UI load lane @disruptive", () => {
               await setPublished(base, sessions[owner], rec.id, true)
               publishedByUs = true
             }
-            log.step("capturing the public page")
+            log.step("capturing PublicDataview")
             const rows: CaptureRow[] = await capturePublic(
               browser,
               base,

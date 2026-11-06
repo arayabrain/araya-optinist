@@ -189,7 +189,7 @@ async function runVu(
 // Screens
 // ---------------------------------------------------------------------------
 
-// The top page in a new tab with a session. It shows after the first
+// The Dashboard in a new tab with a session. It shows after the first
 // /users/me; the storage refresh, the second /users/me, the limit warning and
 // the header's announcement go out together after it. The announcement carries
 // no Bearer token, so the ALB's default rule sends it to the public service.
@@ -258,7 +258,7 @@ export function dashboardUser(
   )
 }
 
-// The top page's two /users/me alone, tokens refreshed before the release: a
+// The Dashboard's two /users/me alone, tokens refreshed before the release: a
 // burst on the signed-in user lookup without the token refresh in front of it
 export function usersMeUser(
   ctx: StepContext,
@@ -274,8 +274,8 @@ export function usersMeUser(
 
 export type DialogSpec = { reproduce: string; items: string[] }
 
-// The owner opens the record's output dialog: reproduce, then every item the
-// browser fetched for it, at once
+// The owner opens the record's OutputsView from Dataview: reproduce, then
+// every item the browser fetched for it, at once
 export function dialogUser(
   ctx: StepContext,
   vu: VirtualUser,
@@ -314,8 +314,8 @@ export type PublicSpec = {
   items: HeaderedPath[]
 }
 
-// An anonymous visitor: /public with its thumbnails, then the record's output
-// dialog. Every request goes to the public service.
+// An anonymous visitor: PublicDataview with its thumbnails, then the record's
+// OutputsView. Every request goes to the public service.
 export function publicUser(
   ctx: StepContext,
   vu: VirtualUser,
@@ -400,7 +400,8 @@ const DASHBOARD_REQUESTS: Record<string, number> = {
   "GET /announcement": 1,
 }
 
-// The public visit's requests besides the list, thumbnails, reproduce and items
+// The PublicDataview visit's requests besides the list, thumbnails, reproduce
+// and items
 const PUBLIC_FIXED_REQUESTS: Record<string, number> = {
   "POST /auth/refresh": 1,
   "GET /is_standalone": 1,
@@ -423,13 +424,13 @@ function describeTally(t: Record<string, number>): string {
     .join(", ")
 }
 
-// The top page's order is fixed in dashboardUser; the capture only has to
+// The Dashboard's order is fixed in dashboardUser; the capture only has to
 // show the browser still sends exactly that set
 export function checkDashboardCapture(rows: CaptureRow[]): void {
   const sent = tally(apiRows(rows, "dashboard_new_tab").map(requestKey))
   if (describeTally(sent) !== describeTally(DASHBOARD_REQUESTS)) {
     throw new CaptureChanged(
-      `the top page now sends ${describeTally(sent)}; ` +
+      `the Dashboard now sends ${describeTally(sent)}; ` +
         `the replay sends ${describeTally(DASHBOARD_REQUESTS)}`,
     )
   }
@@ -448,7 +449,7 @@ export function dialogSpec(rows: CaptureRow[], record: RecordRef): DialogSpec {
     !items.length
   ) {
     throw new CaptureChanged(
-      `the output dialog sent ${reproduce.length} reproduce request(s) and ` +
+      `OutputsView from Dataview sent ${reproduce.length} reproduce request(s) and ` +
         `${items.length} item(s); the replay needs one reproduce of the record ` +
         "and at least one item",
     )
@@ -514,7 +515,7 @@ export function publicSpec(rows: CaptureRow[], record: RecordRef): PublicSpec {
   )
   if (describeTally(rest) !== describeTally(PUBLIC_FIXED_REQUESTS)) {
     throw new CaptureChanged(
-      "besides the list, thumbnails, reproduce and items, the public page " +
+      "besides the list, thumbnails, reproduce and items, PublicDataview " +
         `now sends ${describeTally(rest) || "nothing"}; ` +
         `the replay sends ${describeTally(PUBLIC_FIXED_REQUESTS)}`,
     )
@@ -526,7 +527,7 @@ export function publicSpec(rows: CaptureRow[], record: RecordRef): PublicSpec {
     !items.length
   ) {
     throw new CaptureChanged(
-      `the public page sent ${lists.length} list, ${reproduce.length} reproduce, ` +
+      `PublicDataview sent ${lists.length} list, ${reproduce.length} reproduce, ` +
         `${thumbnails.length} thumbnail and ${items.length} item request(s); ` +
         "the replay needs one list, one reproduce, and some of each other",
     )

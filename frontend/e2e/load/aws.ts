@@ -297,7 +297,7 @@ function logEvents(
   )
 }
 
-// What broke the top page on 2026-11-02 left these behind: the DB pool timing
+// What broke the Dashboard on 2026-11-02 left these behind: the DB pool timing
 // out in the auth dependency, tracebacks, a deadlock in the activity update
 export const LOG_TERMS = ["QueuePool", "Traceback", "Deadlock"]
 // 401 is how a pool timeout reached users (and signed them out); 5xx the rest

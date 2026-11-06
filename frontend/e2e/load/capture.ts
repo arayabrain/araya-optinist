@@ -159,9 +159,9 @@ async function clearCache(context: BrowserContext, page: Page): Promise<void> {
   await cdp.detach()
 }
 
-// Sign in, open the top page in a new tab (a new tab runs the storage
-// refresh; a sign-in through the form does not), then the record's output
-// dialog from DataView. The first open warms the record on the instance
+// Sign in, open the Dashboard in a new tab (a new tab runs the storage
+// refresh; a sign-in through the form does not), then the record's
+// OutputsView from Dataview. The first open warms the record on the instance
 // (cold, it comes down from S3 first); the second is recorded as "dialog".
 export async function captureOwner(
   browser: Browser,
@@ -222,11 +222,11 @@ async function openPublicRecord(
   }
 }
 
-// An anonymous visitor: /public, then the record's output dialog. The record
-// is found on the first page of the listing or, failing that, through the uid
-// filter, whose own requests are marked and left out of the replay. One whole
-// visit warms the record on the public service (a cold first open after
-// publishing answers its thumbnails late, or 423); the second is recorded.
+// An anonymous visitor: PublicDataview, then the record's OutputsView. The
+// record is found on the first page of the listing or, failing that, through
+// the uid filter, whose own requests are marked and left out of the replay.
+// One whole visit warms the record on the public service (a cold first open
+// after publishing answers its thumbnails late, or 423); the second is recorded.
 export async function capturePublic(
   browser: Browser,
   base: URL,

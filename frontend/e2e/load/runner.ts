@@ -146,7 +146,7 @@ export async function findRecord(
     headers: authHeaders(owner.accessToken, owner.exToken),
   })
   if (res.status !== 200)
-    throw new Error(`the owner's DataView listing answered ${res.status}`)
+    throw new Error(`the owner's Dataview listing answered ${res.status}`)
   const { items } = jsonBody<{
     items: { id: number; uid?: string; publish_status: number }[]
   }>(res)

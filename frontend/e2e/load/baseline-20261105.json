@@ -1,6 +1,6 @@
 {
   "measured_on": "2026-11-05",
-  "note": "Development, 15:37-17:05 JST: a build of develop-main with #1109, #1110, #1098 and #1099; the 5 shared free accounts; the #637-size suite2p record for the dialog and the public page. Each user sent its parallel requests at once. CPU (1-minute maximum) and the stop thresholds are from the run's notes; the top page's CPU was not read. Item labels name the output's node, read from the recordings the steps replayed.",
+  "note": "Development, 15:37-17:05 JST: a build of develop-main with #1109, #1110, #1098 and #1099; the 5 shared free accounts; the #637-size suite2p record for OutputsView from Dataview and for PublicDataview. Each user sent its parallel requests at once. CPU (1-minute maximum) and the stop thresholds are from the run's notes; the Dashboard's CPU was not read. Item labels name the output's node, read from the recordings the steps replayed.",
   "steps": [
     {
       "screen": "dashboard",
