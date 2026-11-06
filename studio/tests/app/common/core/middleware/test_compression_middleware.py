@@ -2,6 +2,7 @@
 downloads, streams and other types pass through. The bundle's gzip copies are
 served by PrecompressedStaticFiles."""
 
+import asyncio
 import gzip
 import random
 import threading
@@ -23,6 +24,11 @@ from studio.app.common.core.middleware.compression_middleware import (
 
 GZIP = {"accept-encoding": "gzip, deflate"}
 IDENTITY = {"accept-encoding": "identity"}
+# Accept-Encoding sent in two fields, the second refusing gzip
+GZIP_REFUSED_IN_SECOND_FIELD = [
+    (b"accept-encoding", b"*"),
+    (b"accept-encoding", b"gzip;q=0"),
+]
 # Random bytes do not compress, so their gzip form stays above MINIMUM_SIZE
 RANDOM_BYTES = random.Random(0).randbytes(4096)
 ENCODED = gzip.compress(RANDOM_BYTES)
@@ -30,6 +36,35 @@ ENCODED = gzip.compress(RANDOM_BYTES)
 
 def _body(size: int) -> bytes:
     return (b"[0.123456789," * (size // 13 + 1))[:size]
+
+
+def _asgi_get(app, path, raw_headers):
+    """GET through the ASGI app with these header fields, one scope entry each,
+    as a server passes them; the test client joins fields of one name."""
+    messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": raw_headers,
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+        "http_version": "1.1",
+    }
+    asyncio.run(app(scope, receive, send))
+    start = Headers(raw=messages[0]["headers"])
+    return start, b"".join(m.get("body", b"") for m in messages[1:])
 
 
 @pytest.fixture
@@ -90,6 +125,15 @@ def test_accepts_gzip_reads_the_quality(accept_encoding, accepted):
     assert accepts_gzip(headers) is accepted
 
 
+@pytest.mark.parametrize(
+    "fields, accepted", [(["*", "gzip;q=0"], False), (["identity", "gzip"], True)]
+)
+def test_accepts_gzip_reads_every_field(fields, accepted):
+    headers = Headers(raw=[(b"accept-encoding", field.encode()) for field in fields])
+
+    assert accepts_gzip(headers) is accepted
+
+
 def test_a_whole_json_body_is_gzipped(client):
     response = client.get("/body", params={"size": 10_000}, headers=GZIP)
 
@@ -137,6 +181,17 @@ def test_a_client_without_gzip_gets_the_body_as_is_with_vary(client):
     assert "content-encoding" not in response.headers
     assert "accept-encoding" in response.headers["vary"].lower()
     assert response.num_bytes_downloaded == 10_000
+
+
+def test_a_refusal_in_a_second_field_is_honoured():
+    app = CompressionMiddleware(
+        Response(content=_body(10_000), media_type="application/json")
+    )
+
+    headers, body = _asgi_get(app, "/", GZIP_REFUSED_IN_SECOND_FIELD)
+
+    assert "content-encoding" not in headers
+    assert body == _body(10_000)
 
 
 def test_a_download_passes_through(client):
@@ -193,12 +248,16 @@ class TestPrecompressedStaticFiles:
     SCRIPT = b"console.log('bundle');\n" * 200
 
     @pytest.fixture
-    def static_client(self, tmp_path):
+    def bundle_dir(self, tmp_path):
         (tmp_path / "main.js").write_bytes(self.SCRIPT)
         (tmp_path / "main.js.gz").write_bytes(gzip.compress(self.SCRIPT))
         (tmp_path / "other.js").write_bytes(self.SCRIPT)
+        return tmp_path
+
+    @pytest.fixture
+    def static_client(self, bundle_dir):
         app = FastAPI()
-        app.mount("/static", PrecompressedStaticFiles(directory=tmp_path))
+        app.mount("/static", PrecompressedStaticFiles(directory=bundle_dir))
         with TestClient(app) as test_client:
             yield test_client
 
@@ -218,6 +277,16 @@ class TestPrecompressedStaticFiles:
 
         assert "content-encoding" not in response.headers
         assert response.num_bytes_downloaded == len(self.SCRIPT)
+
+    def test_a_refusal_in_a_second_field_gets_the_file(self, bundle_dir):
+        static_files = PrecompressedStaticFiles(directory=bundle_dir)
+
+        headers, body = _asgi_get(
+            static_files, "/main.js", GZIP_REFUSED_IN_SECOND_FIELD
+        )
+
+        assert "content-encoding" not in headers
+        assert body == self.SCRIPT
 
     def test_a_file_without_a_copy_is_served_as_is(self, static_client):
         response = static_client.get("/static/other.js", headers=GZIP)

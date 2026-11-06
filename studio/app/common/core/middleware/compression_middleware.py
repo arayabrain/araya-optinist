@@ -45,8 +45,10 @@ _compress_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gzip"
 
 def accepts_gzip(headers: Headers) -> bool:
     """Whether the request's Accept-Encoding allows gzip; q=0 refuses it."""
+    # A header sent in several fields reads as their values joined by commas
+    accept_encoding = ",".join(headers.getlist("accept-encoding"))
     qualities = {}
-    for coding in headers.get("accept-encoding", "").split(","):
+    for coding in accept_encoding.split(","):
         name, *params = [part.strip() for part in coding.split(";")]
         quality = 1.0
         for param in params:
