@@ -463,10 +463,9 @@ AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURAT
 
 A change to either reaches a host only when it is launched from the new launch template version:
 
-- `aws_instance.premium` and `aws_instance.background` use `version = "$Latest"`. Run `terraform plan`
-  first: if they do not show `-/+`, replace them explicitly, at a time with no premium run active
-  (users on the old instance lose their task):
-  `terraform apply -replace=aws_instance.premium[0] -replace=aws_instance.background -var-file=...`.
+- `aws_instance.premium` and `aws_instance.background` pin their template's `latest_version`, so the
+  plan that changes a template shows `-/+` on its instance and the same apply replaces it. Apply at a
+  time with no premium run active: users on the old premium instance lose their task.
 - The free and public ASGs do not instance-refresh under `$Latest`; their hosts pick the change up
   at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
 - Premium hosts created by the Lambda (`premium_manager.py`) keep their size until terminated.
