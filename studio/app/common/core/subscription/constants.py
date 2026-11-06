@@ -493,6 +493,24 @@ class PremiumExpirationSweep:
     RELEASE_TIMEOUT_SECONDS = 15
 
 
+class UnverifiedAccountCleanup:
+    """Constants for the unverified Firebase account cleanup job.
+
+    Deletes Firebase accounts that never verified their email and never
+    signed in, after a grace period. Dry-run unless the mode env var is
+    set to ``delete``.
+    """
+
+    JOB_ID = "unverified_account_cleanup"
+    JOB_INTERVAL_MINUTES = 1440  # Daily
+    GRACE_PERIOD_DAYS = 30
+    MAX_ACCOUNTS_PER_RUN = 100  # Bound work per run; counts successful deletes
+    MODE_ENV = "UNVERIFIED_ACCOUNT_CLEANUP_MODE"
+    MODE_DELETE = "delete"
+    MODE_DRY_RUN = "dry_run"
+    PROTECTED_UIDS_ENV = "UNVERIFIED_CLEANUP_PROTECTED_UIDS"
+
+
 class S3Pagination:
     """Constants for S3 pagination and streaming"""
 

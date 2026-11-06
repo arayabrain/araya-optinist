@@ -39,6 +39,7 @@ from studio.app.common.core.subscription.constants import (
     PremiumExpirationSweep,
     StorageReconciliation,
     SyncStatusConstants,
+    UnverifiedAccountCleanup,
 )
 
 # Background job imports (only used in non-standalone mode)
@@ -55,6 +56,9 @@ if not MODE.IS_STANDALONE:
         StorageReconciliationJob,
     )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+    from studio.app.common.core.background.unverified_account_cleanup_job import (
+        UnverifiedAccountCleanupJob,
+    )
 
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workspace.workspace_dependencies import (
@@ -182,6 +186,14 @@ async def lifespan(app: FastAPI):
             func=PremiumExpirationSweepJob.run,
             interval_minutes=PremiumExpirationSweep.JOB_INTERVAL_MINUTES,
             job_id=PremiumExpirationSweep.JOB_ID,
+        )
+
+        # Sweep never-verified, never-signed-in Firebase accounts. Dry-run
+        # unless UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete.
+        BackgroundScheduler.add_job(
+            func=UnverifiedAccountCleanupJob.run,
+            interval_minutes=UnverifiedAccountCleanup.JOB_INTERVAL_MINUTES,
+            job_id=UnverifiedAccountCleanup.JOB_ID,
         )
 
         # Start scheduler

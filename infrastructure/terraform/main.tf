@@ -161,6 +161,12 @@ variable "firebase_private_json" {
   sensitive   = true
 }
 
+variable "unverified_account_cleanup_mode" {
+  description = "Unverified Firebase account cleanup mode: dry_run (log candidates only) or delete"
+  type        = string
+  default     = "dry_run"
+}
+
 variable "test_users" {
   description = "Test user configuration with Firebase UIDs and subscription details"
   type = list(object({

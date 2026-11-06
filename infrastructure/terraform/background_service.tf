@@ -287,6 +287,16 @@ resource "aws_ecs_task_definition" "background" {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "0"
         },
+        {
+          name  = "UNVERIFIED_ACCOUNT_CLEANUP_MODE"
+          value = var.unverified_account_cleanup_mode
+        },
+        # Seeded accounts whose email_verified flag is set best-effort at
+        # provisioning time; the cleanup job must never touch them.
+        {
+          name  = "UNVERIFIED_CLEANUP_PROTECTED_UIDS"
+          value = join(",", concat([var.optinist_admin_uid], var.test_users[*].firebase_uid))
+        },
         # Single worker for background service
         {
           name  = "UVICORN_WORKERS"
