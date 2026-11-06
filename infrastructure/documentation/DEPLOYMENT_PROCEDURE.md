@@ -54,6 +54,7 @@ The deploying user needs the following AWS permissions:
 
 - **ECR**: Push images (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, etc.)
 - **ECS**: List and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:UpdateService`, etc.)
+- **SSM**: Trigger the docker hygiene run after a deploy (`ssm:StartAssociationsOnce`)
 - **Secrets Manager**: Read secrets (granted automatically to the deployment role)
 - **RDS**: Describe instances (for verification)
 - **S3**: List buckets (for verification)
@@ -121,6 +122,10 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
        no new rows)
      - Verifies the admin account's email in Firebase
    - It writes no application configuration to the host: each container fetches its own at startup (`cloud-startup.sh`).
+
+4. **Host docker hygiene (`docker_hygiene.sh`, every 6 hours and after each deploy):**
+   - `aws_ssm_association "docker_hygiene"` (`deployment.tf`) runs on every host launched from one of the four launch templates (free, premium, background, public). It prunes stopped containers older than 10 minutes and, when the ECS agent reports a steady running task, every image no container uses.
+   - Each force-deploy leaves the replaced 2.1 GB image and the previous task's stopped container on every host; without this, a few deploys fill a 48 GB root. Both `terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` trigger a run after `ecs wait services-stable`. See [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene) for the manual trigger and the full-disk runbook.
 
    > **Design note / future consideration:** this script runs one-shot bootstrap (package installs, DB seeding, Firebase admin verification, which need only run once) on a 30-minute loop. The seed migration now owns the DB reference rows, so the DB block could be removed from here entirely. Running the rest once at launch would be cleaner. Not required for correctness — the bootstrap steps are idempotent — but it would stop re-running one-shot work every 30 minutes for the life of each instance.
 
@@ -246,6 +251,17 @@ aws ecs update-service \
   --force-new-deployment \
   --region ap-northeast-1
 ```
+
+A force-deploy done this way (not through `terraform apply` or `ecr_build_push.sh --deploy`) leaves the replaced image and the previous task's stopped container on every host. Trigger the docker hygiene run yourself once the services are stable, without Terraform:
+
+```bash
+ASSOC_ID=$(aws ssm list-associations --region ap-northeast-1 \
+  --association-filter-list key=Name,value=<env>-docker-hygiene \
+  --query 'Associations[0].AssociationId' --output text)
+aws ssm start-associations-once --association-ids "$ASSOC_ID" --region ap-northeast-1
+```
+
+Otherwise the scheduled run reclaims the space within 6 hours.
 
 ---
 
