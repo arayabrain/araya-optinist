@@ -1,5 +1,6 @@
 import json
 import logging
+import tracemalloc
 
 import numpy as np
 import pytest
@@ -376,3 +377,437 @@ def test_nested_params_are_flattened(tmp_path):
     )
 
     assert info["mean"].data.shape == (NUM_CELL, 4)
+
+
+def _trial_params(**extra):
+    return {"trial_col_index": 2, **extra}
+
+
+def _trial_behavior(samples_per_trial=12):
+    covariate = _covariate()
+    trial = np.arange(NUM_FRAME) // samples_per_trial
+    return np.column_stack([np.zeros(NUM_FRAME), covariate, trial])
+
+
+def test_trial_mode_averages_per_trial_then_across_trials(tmp_path):
+    fluo = _fluo()
+    behavior = _trial_behavior()
+
+    info = _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    out = _postprocess(info)
+
+    covariate, trial = behavior[:, 1], behavior[:, 2]
+    per_trial = np.array(
+        [
+            [
+                fluo[:, (trial == t) & (covariate == c)].mean(axis=1)
+                for c in _bin_centres()
+            ]
+            for t in range(10)
+        ]
+    )  # (trial, bin, cell)
+    np.testing.assert_allclose(info["mean"].data, per_trial.mean(axis=0).T)
+    np.testing.assert_allclose(out["std"], per_trial.std(axis=0, ddof=1).T)
+    np.testing.assert_allclose(
+        out["sem"], per_trial.std(axis=0, ddof=1).T / np.sqrt(10)
+    )
+    assert list(out["num_sample"]) == [10] * 4
+    assert info["mean_heatmap"].meta.title == "n = 10 trials, 10 to 10 per bin"
+
+
+def _bin_centres():
+    return [0.5, 1.5, 2.5, 3.5]
+
+
+def test_trial_mode_sem_is_over_trials_not_samples(tmp_path):
+    behavior = _trial_behavior()
+    fluo = np.tile(behavior[:, 2], (NUM_CELL, 1))  # each trial is flat at its id
+
+    out = _postprocess(
+        _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    )
+
+    np.testing.assert_allclose(out["std"], np.std(np.arange(10), ddof=1))
+    np.testing.assert_allclose(out["sem"], np.std(np.arange(10), ddof=1) / np.sqrt(10))
+
+
+def test_trial_mode_sem_counts_the_trials_the_cell_has(tmp_path):
+    """A NaN sample drops that trial's bin for the cell; num_sample still counts
+    the occupancy, so the sem must not divide by it."""
+    behavior = _trial_behavior()
+    fluo = np.tile(behavior[:, 2], (NUM_CELL, 1)).astype(float)
+    in_trial_2_bin_0 = (behavior[:, 2] == 2) & (behavior[:, 1] == 0.5)
+    fluo[0, np.flatnonzero(in_trial_2_bin_0)[0]] = np.nan
+
+    out = _postprocess(
+        _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    )
+
+    left = np.array([0, 1, 3, 4, 5, 6, 7, 8, 9], dtype=float)
+    np.testing.assert_allclose(out["mean"][0, 0], left.mean())
+    np.testing.assert_allclose(out["sem"][0, 0], left.std(ddof=1) / 3)
+    np.testing.assert_allclose(
+        out["sem"][1, 0], np.std(np.arange(10), ddof=1) / np.sqrt(10)
+    )
+    assert list(out["num_sample"]) == [10] * 4
+
+
+def test_trial_mode_min_samples_drops_a_sparse_trial_bin(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    behavior = _trial_behavior()
+    behavior[0, 1] = 10.0  # trial 0 keeps 2 of its 3 samples in bin 0
+    fluo = np.ones((NUM_CELL, NUM_FRAME))
+    fluo[:, :12] = 5.0  # trial 0 is the odd one out
+
+    dense = _postprocess(
+        _bin(
+            tmp_path, fluo=fluo, behavior=behavior, params=_trial_params(min_samples=3)
+        )
+    )
+    loose = _postprocess(
+        _bin(
+            tmp_path, fluo=fluo, behavior=behavior, params=_trial_params(min_samples=2)
+        )
+    )
+
+    assert list(dense["num_sample"]) == [9, 10, 10, 10]
+    np.testing.assert_allclose(dense["mean"][:, 0], 1.0)
+    assert (
+        "1 of 40 trial-bins with samples have fewer than min_samples 3" in caplog.text
+    )
+    assert "bins have fewer than min_samples" not in caplog.text
+    assert list(loose["num_sample"]) == [10] * 4
+    np.testing.assert_allclose(loose["mean"][:, 0], 1.4)
+
+
+def test_trial_mode_ignores_samples_without_a_trial_id(tmp_path):
+    behavior = _trial_behavior()
+    behavior[:12, 2] = np.nan
+
+    out = _postprocess(_bin(tmp_path, behavior=behavior, params=_trial_params()))
+
+    assert list(out["num_sample"]) == [9] * 4
+
+
+def test_trial_mode_nan_sample_blanks_that_trial_bin_only(tmp_path):
+    behavior = _trial_behavior()
+    fluo = np.ones((NUM_CELL, NUM_FRAME))
+    fluo[0, 0] = np.nan  # cell 0, trial 0, bin 0
+
+    out = _postprocess(
+        _bin(tmp_path, fluo=fluo, behavior=behavior, params=_trial_params())
+    )
+
+    assert np.isfinite(out["mean"]).all()
+    assert list(out["num_sample"]) == [10] * 4
+
+
+def test_trial_col_out_of_range_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(
+        AssertionError, match="trial_col_index 5 must be -1 .off. or a column index"
+    ):
+        _bin(tmp_path, params={"trial_col_index": 5})
+
+
+@pytest.mark.parametrize("value", [-2, 2.5])
+def test_trial_col_must_be_minus_one_or_a_column(tmp_path, value):
+    with pytest.raises(AssertionError, match=f"trial_col_index {value} must be"):
+        _bin(tmp_path, behavior=_trial_behavior(), params={"trial_col_index": value})
+
+
+def test_whole_float_trial_col_is_accepted(tmp_path):
+    behavior = _trial_behavior()
+    as_float = _bin(
+        tmp_path, behavior=behavior, params=_trial_params(trial_col_index=2.0)
+    )
+    as_int = _bin(tmp_path, behavior=behavior, params=_trial_params())
+    np.testing.assert_array_equal(as_float["mean"].data, as_int["mean"].data)
+
+
+def _lap_behavior(n_laps=10, frames=40):
+    """Position runs 0 to 4 once per lap; column 2 is the lap id."""
+    position = np.tile(np.arange(frames) * 4.0 / frames, n_laps)
+    lap = np.repeat(np.arange(n_laps), frames).astype(float)
+    return np.column_stack([np.zeros(len(lap)), position, lap])
+
+
+def _lap_fluo(behavior):
+    return np.random.default_rng(2).random((NUM_CELL, len(behavior)))
+
+
+def test_lap_column_over_a_narrow_range_is_accepted_with_a_warning(tmp_path, caplog):
+    """A narrow fixed range leaves one frame per lap in range; the lap still spans
+    the range, so it is a trial id, and the sparse table only warns."""
+    caplog.set_level(logging.WARNING, logger="optinist")
+    behavior = _lap_behavior(n_laps=40, frames=20)
+
+    out = _postprocess(
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params=_trial_params(n_bins=2, bin_min=3.7, bin_max=3.8),
+        )
+    )
+
+    assert list(out["num_sample"]) == [0, 40]
+    assert "40 trials x 2 bins is more than the 40 binned samples" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "make_column",
+    [lambda n: np.arange(n) // 2, lambda n: np.arange(n) // 4],
+    ids=["frame_counter_two_frames_per_value", "coarse_clock"],
+)
+def test_counter_or_clock_column_is_not_a_trial_id(tmp_path, make_column):
+    behavior = _lap_behavior()
+    behavior = _with_column(behavior, make_column(len(behavior)).astype(float))
+
+    with pytest.raises(AssertionError) as error:
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params={"trial_col_index": 3},
+        )
+
+    message = str(error.value)
+    assert "of the binned range 0 to 4, where a trial spans most of it" in message
+    assert message.endswith("Column 2 looks like one.")
+
+
+def test_interpolated_trial_ids_are_refused_with_a_rounding_hint(tmp_path):
+    behavior = _lap_behavior()
+    lap = behavior[:, 2]
+    lap[40::40] -= 0.5  # each lap boundary interpolated half way
+
+    with pytest.raises(
+        AssertionError,
+        match="9 of its values are not whole numbers.*round them to the nearest",
+    ):
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params=_trial_params(),
+        )
+
+
+def _with_column(behavior, column):
+    return np.column_stack([behavior, column])
+
+
+def test_continuous_trial_column_fails_before_allocating(tmp_path):
+    speed = np.random.default_rng(1).random(NUM_FRAME)
+    behavior = _with_column(_trial_behavior(), speed)
+
+    with pytest.raises(AssertionError) as error:
+        _bin(tmp_path, behavior=behavior, params={"trial_col_index": 3})
+
+    message = str(error.value)
+    assert "trial_col_index 3 does not look like a trial id" in message
+    assert "a typical value spans 0% of the binned range 0 to 4" in message
+    assert message.endswith("Column 2 looks like one.")
+
+
+def test_event_code_trial_column_fails_with_a_clear_message(tmp_path):
+    lick = np.tile([0, 0, 1, 2, 0, 1], NUM_FRAME // 6)
+    behavior = _with_column(_trial_behavior(), lick)
+
+    with pytest.raises(
+        AssertionError, match="its 3 values recur in 100 separate stretches of frames"
+    ):
+        _bin(tmp_path, behavior=behavior, params={"trial_col_index": 3})
+
+
+def test_trial_column_with_a_between_trials_code_points_at_condition_split(tmp_path):
+    behavior = _trial_behavior()
+    trial = behavior[:, 2] + 1
+    trial[trial % 2 == 0] = 0  # every other block of frames is between trials
+    behavior[:, 2] = trial
+
+    with pytest.raises(
+        AssertionError,
+        match="value 0 recurs in 5 separate stretches.*condition_split first.*"
+        "No other column looks like one",
+    ):
+        _bin(tmp_path, behavior=behavior, params=_trial_params())
+
+
+def test_min_samples_blanks_sparse_bins_in_sample_mode(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="optinist")
+    covariate = np.array([0.5, 0.5, 2.5])
+    fluo = np.ones((NUM_CELL, 3))
+
+    out = _postprocess(
+        _bin(
+            tmp_path,
+            fluo=fluo,
+            behavior=_behavior(covariate),
+            params={"min_samples": 2},
+        )
+    )
+
+    np.testing.assert_allclose(out["mean"][:, 0], 1.0)
+    assert np.isnan(out["mean"][:, 2]).all()
+    assert list(out["num_sample"]) == [2, 0, 0, 0]
+    assert "1 of 4 bins have fewer than min_samples 2 and are NaN: [2]" in caplog.text
+
+
+def test_invalid_min_samples_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="min_samples must be a whole number"):
+        _bin(tmp_path, params={"min_samples": 0})
+    with pytest.raises(AssertionError, match="min_samples must be a whole number"):
+        _bin(tmp_path, params={"min_samples": 1.5})
+
+
+def test_mean_normalization_in_trial_mode_uses_only_trial_samples(tmp_path):
+    behavior = _trial_behavior()
+    behavior[:12, 2] = np.nan  # trial 0 has no id, so it is not binned
+    fluo = np.ones((NUM_CELL, NUM_FRAME))
+    fluo[:, :12] = 100.0
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=behavior,
+        params=_trial_params(heatmap_normalization="mean"),
+    )
+
+    np.testing.assert_allclose(info["mean_heatmap"].data, 1.0)
+
+
+def test_smoothing_changes_the_heatmap_not_the_mean(tmp_path):
+    from scipy.ndimage import gaussian_filter1d
+
+    fluo = _peaked_fluo([1.5, 2.5, 3.5])
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        params={"smooth_sigma_bins": 1, "heatmap_normalization": "none"},
+    )
+    out = _postprocess(info)
+
+    raw = np.eye(4)[1:]
+    np.testing.assert_allclose(info["mean"].data, raw)
+    np.testing.assert_allclose(out["mean"], raw)
+    expected = gaussian_filter1d(raw, 1, axis=1, mode="constant") / gaussian_filter1d(
+        np.ones_like(raw), 1, axis=1, mode="constant"
+    )
+    np.testing.assert_allclose(info["mean_heatmap"].data, expected)
+    np.testing.assert_allclose(out["mean_smoothed"], expected)
+    assert (
+        info["mean_heatmap"].meta.title == "30 to 30 samples per bin, smoothed 1 bins"
+    )
+
+
+def test_smoothing_leaves_an_empty_bin_blank_and_its_neighbours_finite(tmp_path):
+    covariate = np.tile([1.5, 2.5, 3.5], 40)
+    fluo = np.stack([(covariate == 2.5) * 1.0])
+
+    info = _bin(
+        tmp_path,
+        fluo=fluo,
+        behavior=_behavior(covariate),
+        params={"smooth_sigma_bins": 1, "heatmap_normalization": "none"},
+    )
+
+    row = info["mean_heatmap"].data[0]
+    assert np.isnan(row[0])
+    assert np.isfinite(row[1:]).all()
+    assert row[2] == np.nanmax(row) > row[1] > 0
+
+
+def test_sort_by_peak_follows_the_smoothed_row(tmp_path):
+    covariate = _covariate()
+    # cell 0 peaks in bin 3 with a wide shoulder in bins 0 and 1; smoothing moves it
+    fluo = np.stack(
+        [
+            np.select(
+                [covariate == 0.5, covariate == 1.5, covariate == 3.5], [0.9, 0.9, 1.0]
+            ),
+            (covariate == 2.5) * 1.0,
+        ]
+    )
+
+    raw = _bin(tmp_path, fluo=fluo, params={"sort_by_peak": True})
+    smooth = _bin(
+        tmp_path, fluo=fluo, params={"sort_by_peak": True, "smooth_sigma_bins": 1}
+    )
+
+    assert raw["mean_heatmap"].index == [1, 0]
+    assert smooth["mean_heatmap"].index == [0, 1]
+
+
+def test_invalid_smoothing_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(AssertionError, match="smooth_sigma_bins must be >= 0"):
+        _bin(tmp_path, params={"smooth_sigma_bins": -1})
+
+
+def test_default_title_reports_samples_per_bin(tmp_path):
+    info = _bin(tmp_path)
+    assert info["mean_heatmap"].meta.title == "30 to 30 samples per bin"
+
+
+def test_single_trial_column_is_refused(tmp_path):
+    behavior = _trial_behavior()
+    behavior[:, 2] = 7.0  # one id throughout, like an experiment-phase code
+
+    with pytest.raises(AssertionError, match="trial mode needs two trials"):
+        _bin(tmp_path, behavior=behavior, params=_trial_params())
+
+
+def test_hint_skips_a_two_value_block_code(tmp_path):
+    behavior = _lap_behavior()
+    block = (np.arange(len(behavior)) >= len(behavior) // 2).astype(float)
+    behavior = _with_column(_with_column(behavior, block), np.zeros(len(behavior)))
+    behavior[:, 4] = np.tile([0, 0, 1, 2, 0, 1, 0, 0], len(behavior) // 8)
+
+    with pytest.raises(AssertionError) as error:
+        _bin(
+            tmp_path,
+            fluo=_lap_fluo(behavior),
+            behavior=behavior,
+            params={"trial_col_index": 4},
+        )
+
+    assert str(error.value).endswith("Column 2 looks like one.")
+
+
+def test_trial_coverage_ignores_trials_outside_the_bin_range(tmp_path):
+    laps = _lap_behavior(n_laps=2)
+    away = np.column_stack(
+        [np.zeros(120), np.linspace(10, 14, 120), np.repeat([2.0, 3.0, 4.0], 40)]
+    )
+    behavior = np.vstack([laps, away])
+
+    info = _bin(
+        tmp_path, fluo=_lap_fluo(behavior), behavior=behavior, params=_trial_params()
+    )
+
+    assert info["mean_heatmap"].meta.title.startswith("n = 2 trials")
+
+
+def test_trial_mode_does_not_hold_a_cells_by_trials_by_bins_table(tmp_path):
+    n_cell, n_trial, n_bins = 300, 300, 20
+    behavior = _lap_behavior(n_laps=n_trial, frames=n_bins)
+    fluo = np.random.default_rng(3).random((n_cell, len(behavior)))
+    fluo_data = FluoData(fluo, file_name="f")
+    behavior_data = BehaviorData(behavior, file_name="b")
+    dense = n_cell * n_trial * n_bins * 8
+    if tracemalloc.is_tracing():
+        pytest.skip("tracemalloc is already tracing this process")
+
+    tracemalloc.start()
+    try:
+        covariate_binning(
+            fluo_data,
+            behavior_data,
+            str(tmp_path / "default" / "uid" / "covariate_binning_1"),
+            params={**PARAMS, **_trial_params(n_bins=n_bins)},
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < dense / 4

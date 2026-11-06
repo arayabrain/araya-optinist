@@ -13,7 +13,7 @@ from studio.app.common.core.utils.filepath_creater import (
     join_filepath,
 )
 from studio.app.common.dataclass import CsvData, ImageData
-from studio.app.const import FILETYPE
+from studio.app.const import FILETYPE, INPUT_TIFF_CACHE_DIRNAME
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
@@ -188,7 +188,14 @@ class FileWriter:
             os.path.dirname(os.path.dirname(rule_config.output))
         )
         return join_filepath(
-            [workspace_dir, "input_tiff", digest, "tiff", "image", "image.tif"]
+            [
+                workspace_dir,
+                INPUT_TIFF_CACHE_DIRNAME,
+                digest,
+                "tiff",
+                "image",
+                "image.tif",
+            ]
         )
 
     @classmethod
