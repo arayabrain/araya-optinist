@@ -243,8 +243,9 @@ resource "null_resource" "deploy_to_ecs" {
         --cluster ${aws_ecs_cluster.main.name} \
         --services $SERVICES \
         --region ${var.aws_region}; do
-        if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-          echo "ERROR: services not stable after 60 minutes; the new image may not be serving."
+        # Start another wait only if it and the sleep can finish by the deadline
+        if [ $(( $(date +%s) + 615 )) -gt "$DEADLINE" ]; then
+          echo "ERROR: services not stable within 60 minutes; the new image may not be serving."
           aws ecs describe-services \
             --cluster ${aws_ecs_cluster.main.name} \
             --services $SERVICES \

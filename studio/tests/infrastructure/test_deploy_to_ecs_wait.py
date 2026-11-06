@@ -19,16 +19,18 @@ case "$1 $2" in
   "ecs wait")
     n=$(( $(cat "$STUB_DIR/waits" 2>/dev/null || echo 0) + 1 ))
     echo $n > "$STUB_DIR/waits"
+    echo $(( $(cat "$STUB_DIR/now") + 600 )) > "$STUB_DIR/now"
     [ "$n" -ge "$STABLE_ON_WAIT" ] || exit 255 ;;
   "ecs describe-services") printf 'svc-b\\tunable to place a task\\n' ;;
 esac
 """
 
-# Each `date +%s` reads 20 minutes later than the previous one
+# A shared clock: a failed wait takes its full 10 minutes, sleep takes its argument
 DATE_STUB = """#!/bin/bash
-t=$(( $(cat "$STUB_DIR/now" 2>/dev/null || echo 0) + 1200 ))
-echo $t > "$STUB_DIR/now"
-echo $t
+cat "$STUB_DIR/now"
+"""
+SLEEP_STUB = """#!/bin/bash
+echo $(( $(cat "$STUB_DIR/now") + $1 )) > "$STUB_DIR/now"
 """
 
 
@@ -42,9 +44,10 @@ def _command() -> str:
 
 
 def _run(tmp_path: Path, stable_on_wait: int) -> tuple:
-    for name, body in (("aws", AWS_STUB), ("date", DATE_STUB), ("sleep", "")):
+    (tmp_path / "now").write_text("0\n")
+    for name, body in (("aws", AWS_STUB), ("date", DATE_STUB), ("sleep", SLEEP_STUB)):
         stub = tmp_path / name
-        stub.write_text(body or "#!/bin/sh\n")
+        stub.write_text(body)
         stub.chmod(0o755)
     env = {
         **os.environ,
@@ -55,20 +58,29 @@ def _run(tmp_path: Path, stable_on_wait: int) -> tuple:
     result = subprocess.run(
         ["bash", "-c", _command()], env=env, capture_output=True, text=True
     )
-    return result, (tmp_path / "aws.log").read_text()
+    now = int((tmp_path / "now").read_text())
+    return result, (tmp_path / "aws.log").read_text(), now
 
 
 def test_a_slow_rollout_is_waited_out(tmp_path):
-    result, calls = _run(tmp_path, stable_on_wait=2)
+    result, calls, _ = _run(tmp_path, stable_on_wait=2)
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls.count("ecs wait services-stable") == 2
     assert "ssm start-associations-once" in calls
 
 
 def test_a_rollout_past_the_deadline_fails_and_names_the_service(tmp_path):
-    result, calls = _run(tmp_path, stable_on_wait=99)
+    result, calls, now = _run(tmp_path, stable_on_wait=99)
     assert result.returncode == 1
-    assert "not stable after 60 minutes" in result.stdout
+    assert calls.count("ecs wait services-stable") == 5
+    assert now <= 3600
+    assert "not stable within 60 minutes" in result.stdout
     assert "svc-b\tunable to place a task" in result.stdout
     assert "DEPLOYMENT COMPLETE" not in result.stdout
     assert "ssm start-associations-once" not in calls
+
+
+def test_the_last_wait_that_fits_the_deadline_can_still_succeed(tmp_path):
+    result, _, now = _run(tmp_path, stable_on_wait=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert now <= 3600
