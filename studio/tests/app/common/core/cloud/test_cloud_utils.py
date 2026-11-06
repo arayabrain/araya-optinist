@@ -9,7 +9,6 @@ Tests cover:
 """
 
 import asyncio
-import io
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -32,6 +31,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPeriods,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.tests.app.common.upload_request import upload_request
 
 # ============================================================================
 # Fixtures
@@ -1541,22 +1541,6 @@ def test_effective_quota_db_error_fails_open_to_raw():
 # ============================================================================
 
 
-def _upload_request(data=b""):
-    """A request whose multipart body holds the upload, as the route parses it"""
-    from starlette.datastructures import UploadFile
-
-    async def stream():
-        yield b""
-
-    request = Mock(headers={})
-    request.form = AsyncMock(
-        return_value={"file": UploadFile(io.BytesIO(data), size=len(data))}
-    )
-    request.stream = stream
-    request.close = AsyncMock()
-    return request
-
-
 def _call_create_file(user_id, filename="test.tiff"):
     """Invoke create_file for the given user. workspace_id/filename and the
     background_tasks/file/remote_bucket_name/db args are inert for the gate: it
@@ -1568,7 +1552,7 @@ def _call_create_file(user_id, filename="test.tiff"):
             workspace_id="1",
             filename=filename,
             background_tasks=Mock(),
-            request=_upload_request(),
+            request=upload_request(),
             current_user=Mock(id=user_id),
             remote_bucket_name="",
             db=Mock(),

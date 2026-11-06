@@ -27,7 +27,6 @@ queues long work stays green until someone re-checks the list.
 import ast
 import asyncio
 import inspect
-import io
 import re
 import textwrap
 from contextlib import contextmanager
@@ -80,6 +79,7 @@ from studio.app.common.routers import (
 from studio.app.common.schemas.files import DownloadFileRequest
 from studio.app.optinist.routers import hdf5, mat, nwb, roi
 from studio.tests.app.common.dependency_tree import depends_on
+from studio.tests.app.common.upload_request import upload_request
 
 APP_DIR = Path(studio.app.__file__).parent
 
@@ -607,25 +607,6 @@ def _queued_usage_updates(background_tasks):
     ]
 
 
-def _upload_request(events):
-    """A request whose multipart body holds the upload; each body read is logged"""
-    from starlette.datastructures import UploadFile
-
-    async def stream():
-        events.append("read body")
-        yield b""
-
-    async def form():
-        events.append("read body")
-        return {"file": UploadFile(io.BytesIO(b""), size=0)}
-
-    request = Mock(headers={})
-    request.form = form
-    request.stream = stream
-    request.close = AsyncMock()
-    return request
-
-
 def _call_create_file(db, background_tasks, events, over_quota=False):
     db.close.side_effect = lambda: events.append("release session")
     with patch.object(
@@ -648,7 +629,7 @@ def _call_create_file(db, background_tasks, events, over_quota=False):
                 workspace_id="1",
                 filename="data.csv",
                 background_tasks=background_tasks,
-                request=_upload_request(events),
+                request=upload_request(on_read=lambda: events.append("read body")),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=db,

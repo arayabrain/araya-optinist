@@ -22,6 +22,7 @@ from fastapi import BackgroundTasks
 from studio.app.common.routers import files
 from studio.app.common.routers.files import _write_file_atomic
 from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
+from studio.tests.app.common.upload_request import upload_request
 
 OLD, NEW = b"old movie " * 1000, b"new movie " * 10
 UPLOAD_ID = "0123456789abcdef" * 2
@@ -66,22 +67,6 @@ def input_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(files.DIRPATH, "INPUT_DIR", str(tmp_path))
     (tmp_path / "1").mkdir()
     return tmp_path / "1"
-
-
-def _upload_request(data=b""):
-    """A request whose multipart body holds the upload, as the route parses it"""
-    from starlette.datastructures import UploadFile
-
-    async def stream():
-        yield b""
-
-    request = Mock(headers={})
-    request.form = AsyncMock(
-        return_value={"file": UploadFile(io.BytesIO(data), size=len(data))}
-    )
-    request.stream = stream
-    request.close = AsyncMock()
-    return request
 
 
 def data_files(input_dir):
@@ -142,7 +127,7 @@ def upload(filename, data=NEW, remote=False):
                 workspace_id="1",
                 filename=filename,
                 background_tasks=BackgroundTasks(),
-                request=_upload_request(data),
+                request=upload_request(data),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=Mock(),
@@ -380,7 +365,7 @@ def test_the_upload_routes_fetch_copy_and_parse_off_the_event_loop(input_dir):
                 workspace_id="1",
                 filename="data.tif",
                 background_tasks=BackgroundTasks(),
-                request=_upload_request(NEW),
+                request=upload_request(NEW),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=Mock(),

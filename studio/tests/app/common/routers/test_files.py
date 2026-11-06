@@ -90,9 +90,9 @@ def test_upload_refused_before_anything_is_written_when_the_disk_is_full(
     assert detail.startswith("Cannot upload file: ")
     assert "not your storage quota" in detail
     assert "Delete records you no longer need" in detail
-    # Checked against Content-Length, before the multipart body is spooled
-    assert seen["extra_bytes"] == int(response.request.headers["content-length"])
-    assert seen["extra_bytes"] > 16
+    # The spool and the copy, from Content-Length, before the body is spooled
+    assert seen["extra_bytes"] == 2 * int(response.request.headers["content-length"])
+    assert seen["extra_bytes"] > 32
     assert not (tmp_path / workspace_id).exists()
 
 
@@ -112,7 +112,7 @@ def test_upload_checks_the_destination_copy_after_parsing(
     )
 
     assert response.status_code == 200, response.text
-    assert checked == [int(response.request.headers["content-length"]), 16]
+    assert checked == [2 * int(response.request.headers["content-length"]), 16]
 
 
 def test_upload_refused_when_only_the_destination_copy_does_not_fit(

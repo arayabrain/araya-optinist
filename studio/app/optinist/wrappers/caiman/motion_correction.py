@@ -50,11 +50,12 @@ def caiman_mc(
                 params_dict=distribute_params_to_groups(params, vars(opts))
             )
 
-        # Peak disk: MotionCorrect's float32 memmap, save_memmap's copy of it
-        # (fallback path) and the float32 output TIFF, all present at once
+        # Peak disk: MotionCorrect's float32 memmap and the float32 output TIFF,
+        # plus save_memmap's copy when the fallback can be taken
         nbytes = _movie_float32_bytes(image.path)
         if nbytes is not None:
-            require_free_bytes(nbytes * 3, caiman_temp_root())
+            copies = 3 if _may_need_save_memmap(image.path, opts) else 2
+            require_free_bytes(nbytes * copies, caiman_temp_root())
         with caiman_cluster() as (dview, n_processes):
             mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
 
@@ -263,6 +264,14 @@ def _movie_float32_bytes(paths):
             logger.warning("caiman_mc: cannot size %s, disk check skipped: %s", path, e)
             return None
     return total * 4
+
+
+def _may_need_save_memmap(paths, opts) -> bool:
+    """needs_save_memmap as far as it is known before MotionCorrect runs:
+    border_to_0 is only known after it, so any border_nan but 'copy' counts."""
+    files = paths if isinstance(paths, list) else [paths]
+    border_to_0 = 0 if opts.get("motion", "border_nan") == "copy" else 1
+    return bool(needs_save_memmap([f"{f}.mmap" for f in files], border_to_0))
 
 
 def __handle_mmap_cleanup(mc, mmap_file_new):

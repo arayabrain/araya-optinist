@@ -882,14 +882,14 @@ async def create_file(
         except HTTPException as e:
             await _refuse_upload(request, e.status_code, e.detail)
 
-        # The multipart body is spooled to the host's disk as it is parsed,
-        # so the reserve is checked against Content-Length before reading it,
-        # and again for the destination copy while the spool still exists
+        # The multipart body is spooled to the host's disk as it is parsed and
+        # then copied, so the spool and the copy are budgeted before reading it,
+        # and the copy again once the real size is known
         try:
             declared = int(request.headers.get("content-length", 0))
         except ValueError:
             declared = 0
-        await _require_upload_headroom(declared, request)
+        await _require_upload_headroom(2 * declared, request)
         try:
             form = await request.form()
         except StarletteHTTPException as e:

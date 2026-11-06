@@ -16,6 +16,8 @@ from studio.app.dir_path import DIRPATH
 
 
 class _Params:
+    border_nan = "copy"
+
     def __init__(self):
         self.motion = {}
 
@@ -26,7 +28,7 @@ class _Params:
         return {}
 
     def get(self, group, key):
-        return False
+        return self.border_nan if key == "border_nan" else False
 
 
 def _module(name, **attrs):
@@ -74,7 +76,13 @@ def caiman(monkeypatch, tmp_path):
         ),
     )
     modules = {
-        "caiman": _module("caiman", load_memmap=None, save_memmap=None, paths=paths),
+        "caiman": _module(
+            "caiman",
+            __version__="1.12.2",
+            load_memmap=None,
+            save_memmap=None,
+            paths=paths,
+        ),
         "caiman.paths": paths,
         "caiman.mmapping": _module(
             "caiman.mmapping",
@@ -204,8 +212,18 @@ def test_mc_refuses_before_motion_correct_when_the_reserve_would_go(
     assert os.listdir(caiman["temp_root"]) == []
 
 
-def test_mc_budgets_the_memmap_its_copy_and_the_output_tiff(
-    caiman, experiment, monkeypatch
+@pytest.mark.parametrize(
+    "border_nan, n_files, version, copies",
+    [
+        ("copy", 1, "1.12.2", 2),  # memmap + output TIFF
+        (True, 1, "1.12.2", 3),  # + save_memmap's copy
+        ("copy", 2, "1.12.2", 3),
+        ("copy", 1, "1.13.0", 3),
+    ],
+)
+@pytest.mark.parametrize("spare", [-1, 0])
+def test_mc_budgets_save_memmaps_copy_only_when_it_can_be_made(
+    caiman, experiment, monkeypatch, border_nan, n_files, version, copies, spare
 ):
     import errno
     from types import SimpleNamespace
@@ -216,18 +234,25 @@ def test_mc_budgets_the_memmap_its_copy_and_the_output_tiff(
         caiman_mc,
     )
 
-    nbytes = _movie_float32_bytes(experiment["movie"])
+    monkeypatch.setattr(_Params, "border_nan", border_nan)
+    monkeypatch.setattr(sys.modules["caiman"], "__version__", version)
+    movies = [experiment["movie"]] * n_files
+    free = 8 * guard.GIB + copies * _movie_float32_bytes(movies) + spare
     monkeypatch.setenv(guard.MIN_FREE_DISK_ENV, "8")
     monkeypatch.setattr(
         guard.shutil,
         "disk_usage",
-        lambda p: SimpleNamespace(free=8 * guard.GIB + 2 * nbytes + 1, total=0, used=0),
+        lambda p: SimpleNamespace(free=free, total=0, used=0),
     )
     output_dir = experiment["node"]("caiman_mc")
-    with pytest.raises(OSError) as info:
-        caiman_mc(ImageData([experiment["movie"]]), output_dir, {})
-    assert info.value.errno == errno.ENOSPC
-    assert caiman["mc_calls"] == 0
+    with pytest.raises((OSError, RuntimeError)) as info:
+        caiman_mc(ImageData(movies), output_dir, {})
+    if spare < 0:
+        assert info.value.errno == errno.ENOSPC
+        assert caiman["mc_calls"] == 0
+    else:
+        assert str(info.value) == "motion correction failed"
+        assert caiman["mc_calls"] == 1
 
 
 def test_mc_skips_the_check_when_a_header_cannot_be_read(

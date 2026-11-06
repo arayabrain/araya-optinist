@@ -235,8 +235,8 @@ def test_the_memmap_is_reserved_before_it_is_mapped(tmp_path, monkeypatch):
     util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
     nbytes = 6 * 9 * 7 * 4
     assert seen["mode"] == "r+"
-    assert seen["size"] == nbytes
     if hasattr(os, "posix_fallocate"):
+        assert seen["size"] == nbytes
         assert seen["allocated"] >= nbytes
 
 

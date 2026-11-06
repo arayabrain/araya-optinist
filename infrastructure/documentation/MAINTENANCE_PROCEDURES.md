@@ -637,8 +637,8 @@ Two layers keep that from happening again:
   `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the four launch
   templates (free, premium, background, public), every 6 hours and once after each deploy
   (`null_resource.deploy_to_ecs` and `ecr_build_push.sh --deploy` call `start-associations-once`).
-  It prunes stopped containers older than 10 minutes, then, only when the ECS agent reports at
-  least one RUNNING task and none mid-start, every image no container uses. The log is
+  It prunes stopped containers created more than 10 minutes ago, then, only when the ECS agent
+  reports at least one RUNNING task and none mid-start, every image no container uses. The log is
   `/var/log/docker_hygiene.log` on the host. A host still over 80 % used after pruning exits 2,
   which shows as **non-compliant** on the State Manager dashboard; that is a flag to look at, not
   an alarm (a CloudWatch disk alarm was deliberately left out).
@@ -659,9 +659,10 @@ aws ssm describe-association-executions --association-id "$ASSOC_ID" --region ap
   --max-results 1 --query 'AssociationExecutions[0].[Status,ExecutionId]' --output text
 ```
 
-The previous image is only removed once the old task's stopped container is older than 10 minutes,
-so a second `start-associations-once` about 15 minutes after a deploy clears what the first left;
-the 6-hour run catches it anyway.
+The 10 minutes count from when a container was created, not from when it stopped, so the old
+task's container (created when that task started) and with it the previous image go on the first
+post-deploy run. A second `start-associations-once` helps only when an old task was still draining
+during the first; the 6-hour run catches that anyway.
 
 ### Emergency: EC2 Root Volume Full
 

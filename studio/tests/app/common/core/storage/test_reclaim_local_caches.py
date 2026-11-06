@@ -169,8 +169,10 @@ class TestCaimanTempDirs:
         running = _file(temp / "expB_caiman_mc" / "b.mmap", 100)
         deleted_record = _file(temp / "zzzz_caiman_mc" / "c.mmap", 100)
         young = _file(temp / "expC_caiman_mc" / "d.mmap", 100, mtime=time.time())
-        for d in (temp / "expA_caiman_mc", temp / "zzzz_caiman_mc"):
-            os.utime(d, (OLD, OLD))
+        # A dir's mtime stays put while a file inside it is written, so only
+        # the running check keeps a long run's memmap
+        for d in ("expA_caiman_mc", "expB_caiman_mc", "zzzz_caiman_mc"):
+            os.utime(temp / d, (OLD, OLD))
         assert guard.reclaim_local_caches() == 200
         assert not os.path.exists(finished)
         assert not os.path.exists(deleted_record)
