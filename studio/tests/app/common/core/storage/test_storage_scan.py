@@ -66,7 +66,7 @@ async def test_scans_past_the_limit_wait_for_a_slot_off_the_loop():
         for _ in range(MAX_CONCURRENT_SCANS + 2)
     ]
     # The loop keeps running while the scans are held
-    await wait_until(lambda: running[0] == MAX_CONCURRENT_SCANS)
+    await wait_until(lambda: running[0] >= MAX_CONCURRENT_SCANS)
     await asyncio.sleep(0.05)
     assert running[0] == MAX_CONCURRENT_SCANS
     release.set()
