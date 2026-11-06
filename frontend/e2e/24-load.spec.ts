@@ -21,9 +21,9 @@ import {
 } from "./load/aws"
 import { captureOwner, capturePublic } from "./load/capture"
 import {
+  inUseBy,
   LoadConfig,
   laneSkipReason,
-  othersActive,
   readConfig,
   targetProblems,
 } from "./load/config"
@@ -89,8 +89,9 @@ import {
 //     yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
 //
 // It loads the shared environment, so it is @disruptive, opt-in twice, and
-// refuses when another account was active in the last 30 minutes unless the
-// window was announced. Every AWS call is a read.
+// refuses when an account other than the suite's (the shared load accounts
+// included) was active in the last 30 minutes unless the window was announced.
+// Every AWS call is a read.
 //
 // LOAD-02 rebuilds a report from saved steps and touches nothing remote:
 //
@@ -159,18 +160,19 @@ test.describe("Web UI load lane @disruptive", () => {
     // Not knowing who is on is not the same as nobody being on
     const sql = sqlSkipReason()
     skipNamed(log, sql && `cannot check whether development is in use: ${sql}`)
-    const others = othersActive(otherActiveUsers(), cfg.accounts)
+    const inUse = inUseBy(otherActiveUsers(), cfg.accounts)
     const overrides: string[] = []
-    if (others.length) {
+    if (inUse.length) {
       skipNamed(
         log,
         cfg.windowAnnounced
           ? ""
-          : `development is in use by ${others.join(", ")} (active within 30 minutes); ` +
-              "load it only in an announced window, with LOAD_WINDOW_ANNOUNCED=1",
+          : `development is in use by ${inUse.join(", ")} (active within 30 minutes); ` +
+              "load it only in an announced window, or right after this lane's own run, " +
+              "with LOAD_WINDOW_ANNOUNCED=1",
       )
       overrides.push(
-        `LOAD_WINDOW_ANNOUNCED: ${others.length} other account(s) active in the 30 minutes before the start`,
+        `LOAD_WINDOW_ANNOUNCED: ${inUse.length} account(s) active in the 30 minutes before the start`,
       )
     }
     for (const [screen, max] of Object.entries(cfg.maxUsers)) {

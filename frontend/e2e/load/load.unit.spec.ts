@@ -9,8 +9,8 @@ import { expect, test } from "@playwright/test"
 import { accessLine } from "./aws"
 import {
   accountProblems,
+  inUseBy,
   laneSkipReason,
-  othersActive,
   parseAccounts,
   readConfig,
   targetProblems,
@@ -432,10 +432,10 @@ test.describe("load lane: configuration", () => {
     expect(accountProblems([five[0], five[0]], {}).join()).toContain("repeats")
   })
 
-  test("the run's own accounts do not count as somebody else on development", () => {
+  test("a shared load account active before the start counts, labelled", () => {
     expect(
-      othersActive(["U1@x", "colleague@x"], [{ email: "u1@x", password: "p" }]),
-    ).toEqual(["colleague@x"])
+      inUseBy(["U1@x", "colleague@x"], [{ email: "u1@x", password: "p" }]),
+    ).toEqual(["U1@x (a load account)", "colleague@x"])
   })
 
   test("every missing or malformed setting is listed at once", () => {

@@ -215,9 +215,12 @@ export function accountProblems(accounts: Account[], env: Env): string[] {
   return problems
 }
 
-// The accounts active in the last 30 minutes that are neither the suite's
-// nor this run's: somebody's work in progress.
-export function othersActive(active: string[], accounts: Account[]): string[] {
-  const ours = new Set(accounts.map((a) => a.email.toLowerCase()))
-  return active.filter((email) => !ours.has(email.toLowerCase()))
+// The accounts other than the suite's active in the last 30 minutes. The load
+// accounts count too: they are shared, so their activity may be somebody
+// else's. They are labelled, since it may also be this lane's previous run.
+export function inUseBy(active: string[], accounts: Account[]): string[] {
+  const load = new Set(accounts.map((a) => a.email.toLowerCase()))
+  return active.map((email) =>
+    load.has(email.toLowerCase()) ? `${email} (a load account)` : email,
+  )
 }
