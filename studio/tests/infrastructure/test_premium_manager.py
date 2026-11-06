@@ -5764,6 +5764,54 @@ class TestPremiumTgUnhealthyAlarm:
             )
             assert "[premium-alarm] action=delete" in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        "delete_error, name_check, expected",
+        [
+            (None, Exception("TargetGroupNotFound"), ["tg", "alarm"]),
+            (None, {"TargetGroups": [{}]}, ["tg"]),
+            (None, Exception("Throttling"), ["tg"]),
+            (Exception("ResourceInUse"), None, ["tg"]),
+        ],
+        ids=["name-free", "name-taken-again", "name-unchecked", "delete-fails"],
+    )
+    def test_teardown_deletes_the_alarm_after_the_tg_once_the_name_is_free(
+        self, mock_env_vars_premium, delete_error, name_check, expected
+    ):
+        """A failed delete leaves a live TG that still needs its alarm, and a
+        same-named TG created since shares the alarm name."""
+        calls = []
+
+        def delete_tg(TargetGroupArn):
+            calls.append("tg")
+            if delete_error:
+                raise delete_error
+
+        elbv2 = MagicMock()
+        elbv2.delete_target_group.side_effect = delete_tg
+        if isinstance(name_check, Exception):
+            elbv2.describe_target_groups.side_effect = name_check
+        else:
+            elbv2.describe_target_groups.return_value = name_check
+        mock_cw = MagicMock()
+        mock_cw.delete_alarms.side_effect = lambda **k: calls.append("alarm")
+
+        with patch.dict("os.environ", self._env(mock_env_vars_premium)), patch(
+            "boto3.client", return_value=elbv2
+        ):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                errors = premium_manager._teardown_alb_resources(7, None, self.TG_ARN)
+
+        assert calls == expected
+        assert bool(errors) is (delete_error is not None)
+        if delete_error is None:
+            elbv2.describe_target_groups.assert_called_once_with(
+                Names=["premium-6120-tg"]
+            )
+
 
 class TestAssignCascadeTiers:
     """Every reachable branch of the assign cascade emits the correct

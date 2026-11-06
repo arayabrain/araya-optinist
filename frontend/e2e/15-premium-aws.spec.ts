@@ -465,8 +465,9 @@ test.afterAll(async () => {
         `the lane finished with ${user.email} still assigned`,
       ).toBeNull()
       // The ALB half of the invariant: a hard release can delete the row and
-      // rule but fail the TG deletion, stranding a rule-less TG no sweep can
-      // find (issue #814) - so only a genuine NotFound counts as absence.
+      // rule but fail the TG deletion, stranding a rule-less TG the hourly
+      // cleanup removes only later (issue #814) - so only a genuine NotFound
+      // counts as absence.
       const me = await api.get("/users/me", {
         headers,
         timeout: STATUS_REQUEST_TIMEOUT_MS,
