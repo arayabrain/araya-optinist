@@ -79,6 +79,7 @@ from studio.app.common.routers import (
 from studio.app.common.schemas.files import DownloadFileRequest
 from studio.app.optinist.routers import hdf5, mat, nwb, roi
 from studio.tests.app.common.dependency_tree import depends_on
+from studio.tests.app.common.upload_request import upload_request
 
 APP_DIR = Path(studio.app.__file__).parent
 
@@ -117,6 +118,7 @@ RELEASING_ENDPOINTS = {
     ("run", "run_result"),
     ("files", "create_file"),
     ("files", "download_file"),
+    ("files", "get_download_status"),
     ("outputs", "sync_visualization_files"),
     ("internal", "sync_user_experiments"),
 }
@@ -463,12 +465,16 @@ def test_run_releases_the_request_session_on_failure(endpoint):
 def test_download_file_releases_the_request_session():
     db = Mock()
     background_tasks = BackgroundTasks()
-    with patch.object(files, "create_directory"), patch.object(files, "open_url"):
+    with patch.object(files, "create_directory"), patch.object(
+        files, "open_url"
+    ), patch.object(files, "_write_download_status"):
         result = asyncio.run(
             files.download_file(
                 workspace_id="1",
                 file=DownloadFileRequest(url="https://example.com/data.csv"),
                 background_tasks=background_tasks,
+                current_user=None,
+                remote_bucket_name="bucket",
                 db=db,
             )
         )
@@ -488,12 +494,26 @@ def test_download_file_releases_the_request_session_on_failure():
                 workspace_id="1",
                 file=DownloadFileRequest(url="https://example.com/data.exe"),
                 background_tasks=background_tasks,
+                current_user=None,
+                remote_bucket_name="bucket",
                 db=db,
             )
         )
     assert raised.value.status_code == 400
     db.close.assert_called_once()
     assert background_tasks.tasks == []
+
+
+def test_a_status_poll_that_finishes_a_copy_releases_the_request_session():
+    db = Mock()
+    background_tasks = BackgroundTasks()
+    landed = {"file_name": "data.csv", "remote_bucket_name": "b", "user_id": 1}
+    with patch.object(files, "_read_download_status", return_value=(Mock(), landed)):
+        asyncio.run(files.get_download_status("1", "0" * 32, background_tasks, db=db))
+    db.close.assert_called_once()
+    task = background_tasks.tasks[0]
+    assert task.func is files._finish_landed_upload
+    assert db not in task.args
 
 
 @contextmanager
@@ -587,7 +607,8 @@ def _queued_usage_updates(background_tasks):
     ]
 
 
-def _call_create_file(db, background_tasks, over_quota=False):
+def _call_create_file(db, background_tasks, events, over_quota=False):
+    db.close.side_effect = lambda: events.append("release session")
     with patch.object(
         files,
         "get_current_user_storage_usage",
@@ -608,7 +629,7 @@ def _call_create_file(db, background_tasks, over_quota=False):
                 workspace_id="1",
                 filename="data.csv",
                 background_tasks=background_tasks,
-                file=Mock(),
+                request=upload_request(on_read=lambda: events.append("read body")),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=db,
@@ -616,23 +637,24 @@ def _call_create_file(db, background_tasks, over_quota=False):
         )
 
 
-def test_create_file_releases_the_request_session():
-    db = Mock()
+def test_create_file_releases_the_request_session_before_reading_the_body():
+    db, events = Mock(), []
     background_tasks = BackgroundTasks()
-    assert _call_create_file(db, background_tasks) == {"file_path": "data.csv"}
-    db.close.assert_called_once()
+    result = _call_create_file(db, background_tasks, events)
+    assert result == {"file_path": "data.csv"}
+    assert events == ["release session", "read body"]
     # Both tasks are still queued: the usage update and the live storage refresh
     assert _queued_usage_updates(background_tasks) == [("1",)]
     assert len(background_tasks.tasks) == 2
     assert all(db not in task.args for task in background_tasks.tasks)
 
 
-def test_create_file_releases_the_request_session_on_failure():
-    db = Mock()
+def test_create_file_releases_the_request_session_before_draining_a_refusal():
+    db, events = Mock(), []
     with pytest.raises(HTTPException) as raised:
-        _call_create_file(db, BackgroundTasks(), over_quota=True)
+        _call_create_file(db, BackgroundTasks(), events, over_quota=True)
     assert raised.value.status_code == 403
-    db.close.assert_called_once()
+    assert events == ["release session", "read body"]
 
 
 # --------------------------------------------------------------------------
@@ -640,23 +662,25 @@ def test_create_file_releases_the_request_session_on_failure():
 # --------------------------------------------------------------------------
 
 
-def test_download_updates_usage_in_its_own_session(tmp_path):
+def test_download_updates_usage_in_its_own_session(tmp_path, monkeypatch):
     own_session = Mock()
 
     @contextmanager
     def fake_session_scope():
         yield own_session
 
+    monkeypatch.setattr(files.DIRPATH, "INPUT_DIR", str(tmp_path))
+    (tmp_path / "1").mkdir()
     response = Mock(headers={"content-length": "3"})
     response.iter_content.return_value = [b"abc"]
-    with patch.object(
-        files, "join_filepath", return_value=str(tmp_path / "data.csv")
-    ), patch.object(files, "session_scope", new=fake_session_scope), patch.object(
+    with patch.object(files, "session_scope", new=fake_session_scope), patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=True
     ), patch.object(
         files.WorkspaceDataCapacityService, "update_workspace_data_usage"
-    ) as update:
-        files.download(response, "data.csv", "1")
+    ) as update, patch.object(
+        files.RemoteStorageController, "is_available", return_value=False
+    ):
+        asyncio.run(files.download(response, "data.csv", "1", "0" * 32))
     update.assert_called_once_with(own_session, "1", auto_commit=False)
 
 

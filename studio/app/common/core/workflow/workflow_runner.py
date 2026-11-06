@@ -244,6 +244,7 @@ class WorkflowRunner:
         This helps backfill metadata for files uploaded before caching was added.
         """
         from studio.app.common.routers.files import (
+            edit_cache_off_loop,
             update_hdf5_structure,
             update_image_shape,
             update_mat_structure,
@@ -256,11 +257,17 @@ class WorkflowRunner:
             try:
                 match metadata_file:
                     case MetadataCacheFile.IMAGE_SHAPE:
-                        update_image_shape(self.workspace_id, filename)
+                        await edit_cache_off_loop(
+                            update_image_shape, self.workspace_id, filename
+                        )
                     case MetadataCacheFile.HDF5_STRUCTURE:
-                        update_hdf5_structure(self.workspace_id, filename)
+                        await edit_cache_off_loop(
+                            update_hdf5_structure, self.workspace_id, filename
+                        )
                     case MetadataCacheFile.MAT_STRUCTURE:
-                        update_mat_structure(self.workspace_id, filename)
+                        await edit_cache_off_loop(
+                            update_mat_structure, self.workspace_id, filename
+                        )
                 metadata_files_updated.add(metadata_file)
                 self.logger.debug(f"Updated metadata for {filename}")
             except Exception as e:

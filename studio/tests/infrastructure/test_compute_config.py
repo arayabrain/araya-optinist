@@ -245,7 +245,7 @@ TIER_SIZING_DEFAULTS = {
         "container_memory_reservation_mib": 4096,
         "container_max_swap_mib": 32768,
         "container_swappiness": 20,
-        "root_volume_gib": 48,
+        "root_volume_gib": 64,
         "swap_volume_gib": 32,
     },
 }

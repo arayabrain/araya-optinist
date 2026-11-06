@@ -127,6 +127,18 @@ def test_binning_and_split_nodes_expose_their_ports():
     ]
 
 
+def test_eta_takes_a_row_order_heatmap():
+    eta = NestDictGetter.get_nest_dict(wrapper_dict, "")["optinist"]["children"][
+        "basic_neural_analysis"
+    ]["children"]["eta"]
+    assert [(a.name, a.type, a.isNone) for a in eta.args] == [
+        ("neural_data", "FluoData", False),
+        ("behaviors_data", "BehaviorData", False),
+        ("iscell", "IscellData", True),
+        ("order_from", "HeatMapData", True),
+    ]
+
+
 def test_caiman_dff_is_a_fluo_port():
     caiman = NestDictGetter.get_nest_dict(wrapper_dict, "")["caiman"]["children"]
     for name in ("caiman_cnmf", "caiman_cnmfe", "cnmf_multisession"):

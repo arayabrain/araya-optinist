@@ -20,6 +20,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.logger_context_helpers import (
     init_client_id_from_snakemake_config,
 )
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_reader import RuleConfigReader
@@ -104,6 +105,8 @@ class PostProcessRunner:
 
 
 if __name__ == "__main__":
+    BenchmarkRecorder.mark("imports_done")
+
     # Initialize client_id from snakemake config
     init_client_id_from_snakemake_config(snakemake.config)
 
@@ -118,4 +121,5 @@ if __name__ == "__main__":
     rule_config.input = snakemake.input
     rule_config.output = snakemake.output[0]
 
-    asyncio.run(PostProcessRunner.run(rule_config))
+    with BenchmarkRecorder.record(snakemake):
+        asyncio.run(PostProcessRunner.run(rule_config))
