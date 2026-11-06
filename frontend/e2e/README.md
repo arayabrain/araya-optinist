@@ -549,8 +549,9 @@ report records the override. The committed caps never change for one run.
 5. **Watch 10 minutes after the last step.** Public instances have been
    replaced 2 and 6 minutes after the load that broke them.
 6. **Nobody else on development.** The run refuses when another account was
-   active in the last 30 minutes, and when it cannot tell; in a window the
-   team has agreed, `LOAD_WINDOW_ANNOUNCED=1` runs anyway and the report says so.
+   active in the last 30 minutes, and when it cannot tell, and prints the
+   reason (the list reporter does not show a skip's); in a window the team has
+   agreed, `LOAD_WINDOW_ANNOUNCED=1` runs anyway and the report says so.
 7. **The image under test is named**: every running free and public task must
    run `LOAD_IMAGE_DIGEST`. Development often runs a teammate's test image.
 8. **`--retries 0`.** A retry would load the environment again on top of a step

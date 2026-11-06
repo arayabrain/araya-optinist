@@ -126,6 +126,13 @@ function afterOf(w: WatchResult): StepOutcome["after"] {
   }
 }
 
+// Past the opt-in a skip is news, and the list reporter does not print its
+// reason
+function skipNamed(log: ReturnType<typeof progressLog>, reason: string): void {
+  if (reason) log.step(`skipped: ${reason}`)
+  test.skip(!!reason, reason)
+}
+
 // The uid filter matches across every account; the row is then found by its
 // primary key
 async function filterTo(page: Page, uid: string): Promise<void> {
@@ -151,14 +158,16 @@ test.describe("Web UI load lane @disruptive", () => {
 
     // Not knowing who is on is not the same as nobody being on
     const sql = sqlSkipReason()
-    test.skip(!!sql, `cannot check whether development is in use: ${sql}`)
+    skipNamed(log, sql && `cannot check whether development is in use: ${sql}`)
     const others = othersActive(otherActiveUsers(), cfg.accounts)
     const overrides: string[] = []
     if (others.length) {
-      test.skip(
-        !cfg.windowAnnounced,
-        `development is in use by ${others.join(", ")} (active within 30 minutes); ` +
-          "load it only in an announced window, with LOAD_WINDOW_ANNOUNCED=1",
+      skipNamed(
+        log,
+        cfg.windowAnnounced
+          ? ""
+          : `development is in use by ${others.join(", ")} (active within 30 minutes); ` +
+              "load it only in an announced window, with LOAD_WINDOW_ANNOUNCED=1",
       )
       overrides.push(
         `LOAD_WINDOW_ANNOUNCED: ${others.length} other account(s) active in the 30 minutes before the start`,
