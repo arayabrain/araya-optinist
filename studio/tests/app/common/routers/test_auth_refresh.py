@@ -6,6 +6,8 @@ present-but-invalid token keeps the existing 400 and a valid token returns the
 refreshed access token.
 """
 
+import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from fastapi import HTTPException, status
 from requests import ConnectionError as RequestsConnectionError
 from requests import HTTPError, Response
 
+from studio.app.common.core.auth import auth_helper
 from studio.app.common.core.auth.auth import refresh_current_user_token
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token
 from studio.tests.app.common.loop_probe import (
@@ -118,6 +121,34 @@ async def test_health_is_answered_while_a_token_refresh_waits_for_firebase():
     assert held.json()["access_token"] == "new-access-token"
     assert hold.released_by_answer == [True]
     assert hold.client_ids == [REQUEST_CLIENT_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_token_check_does_not_wait_for_refreshes_stalled_at_firebase():
+    released = threading.Event()
+
+    def stalled_refresh():
+        released.wait(5)
+
+    # As many stalled refreshes as the token check's pool has threads
+    refreshes = [
+        asyncio.ensure_future(auth_helper.run_firebase_call(stalled_refresh))
+        for _ in range(auth_helper._thread_pool._max_workers)
+    ]
+    auth_helper._token_cache.clear()
+    try:
+        with patch.object(
+            auth_helper.firebase_auth, "verify_id_token", return_value={"uid": "uid-1"}
+        ):
+            checked = await asyncio.wait_for(
+                auth_helper.extract_uid_from_firebase_jwt_async("new-token"), 1
+            )
+    finally:
+        released.set()
+        await asyncio.gather(*refreshes)
+        auth_helper._token_cache.clear()
+
+    assert checked == ("uid-1", None)
 
 
 def test_refresh_endpoint_missing_token_returns_401(client):
