@@ -16,6 +16,7 @@ import {
   cpuMax,
   logHits,
   preCheckProblems,
+  responseMax,
   targetStates,
 } from "./load/aws"
 import { captureOwner, capturePublic } from "./load/capture"
@@ -418,6 +419,10 @@ test.describe("Web UI load lane @disruptive", () => {
             o.figures.cpu_max_pct = {
               free: cpuMax("free", t.from, to),
               public: cpuMax("public", t.from, to),
+            }
+            o.figures.alb_response_max_s = {
+              free: responseMax("free", t.from, to),
+              public: responseMax("public", t.from, to),
             }
           }
           const { hits, truncated } = logHits(started, ended)

@@ -214,6 +214,29 @@ function dimensionOf(
   return kind === "loadbalancer" ? tail.replace(/^loadbalancer\//, "") : tail
 }
 
+// The target group's slowest answer over a window (1-minute maxima), for every
+// client. A probe that waited past its threshold while this stayed short was
+// held up on the load generator's side, not by the service.
+export function responseMax(
+  target: Target,
+  from: Date,
+  to: Date,
+): number | null {
+  const tg = targetGroup(target)
+  const values = metric(
+    "AWS/ApplicationELB",
+    "TargetResponseTime",
+    [
+      ["TargetGroup", dimensionOf(tg.arn, "targetgroup")],
+      ["LoadBalancer", dimensionOf(tg.lbArn, "loadbalancer")],
+    ],
+    "Maximum",
+    new Date(Math.floor(from.getTime() / 60_000) * 60_000),
+    to,
+  )
+  return values.length ? Math.max(...values) : null
+}
+
 // 5xx the targets answered, and 5xx the ALB answered itself (502 / 503 / 504
 // when no target could), for every client, not only this run's
 export function albFiveXx(

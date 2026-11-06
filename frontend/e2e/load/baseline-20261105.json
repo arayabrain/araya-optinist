@@ -1,6 +1,6 @@
 {
   "measured_on": "2026-11-05",
-  "note": "Development, 15:37-17:05 JST: a build of develop-main with #1109, #1110, #1098 and #1099; the 5 shared free accounts; the #637-size suite2p record for the dialog and the public page. Each user sent its parallel requests at once. CPU (1-minute maximum) and the stop thresholds are from the run's notes; the top page's CPU was not read.",
+  "note": "Development, 15:37-17:05 JST: a build of develop-main with #1109, #1110, #1098 and #1099; the 5 shared free accounts; the #637-size suite2p record for the dialog and the public page. Each user sent its parallel requests at once. CPU (1-minute maximum) and the stop thresholds are from the run's notes; the top page's CPU was not read. Item labels name the output's node, read from the recordings the steps replayed.",
   "steps": [
     {
       "screen": "dashboard",
@@ -259,7 +259,7 @@
           "max": 0.147,
           "bytes_total": 10313
         },
-        "image:mc_images.tif": {
+        "image:suite2p_registration/mc_images.tif": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -268,7 +268,7 @@
           "max": 0.142,
           "bytes_total": 6931880
         },
-        "image:meanImg.json": {
+        "image:suite2p_registration/meanImg.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -277,7 +277,7 @@
           "max": 0.261,
           "bytes_total": 3627146
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -286,7 +286,7 @@
           "max": 0.343,
           "bytes_total": 1379614
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -295,7 +295,7 @@
           "max": 0.433,
           "bytes_total": 3313093
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -334,7 +334,7 @@
           "max": 1.183,
           "bytes_total": 51565
         },
-        "image:mc_images.tif": {
+        "image:suite2p_registration/mc_images.tif": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -343,7 +343,7 @@
           "max": 1.335,
           "bytes_total": 34659400
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -352,7 +352,7 @@
           "max": 1.659,
           "bytes_total": 685355
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -361,7 +361,7 @@
           "max": 1.656,
           "bytes_total": 16565465
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -370,7 +370,7 @@
           "max": 1.828,
           "bytes_total": 6898070
         },
-        "image:meanImg.json": {
+        "image:suite2p_registration/meanImg.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -409,7 +409,7 @@
           "max": 0.666,
           "bytes_total": 103130
         },
-        "image:mc_images.tif": {
+        "image:suite2p_registration/mc_images.tif": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -418,7 +418,7 @@
           "max": 5.504,
           "bytes_total": 69318800
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -427,7 +427,7 @@
           "max": 5.545,
           "bytes_total": 13796140
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -436,7 +436,7 @@
           "max": 5.383,
           "bytes_total": 1370710
         },
-        "image:meanImg.json": {
+        "image:suite2p_registration/meanImg.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -445,7 +445,7 @@
           "max": 5.454,
           "bytes_total": 36271460
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -484,7 +484,7 @@
           "max": 3.542,
           "bytes_total": 206260
         },
-        "image:mc_images.tif": {
+        "image:suite2p_registration/mc_images.tif": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -493,7 +493,7 @@
           "max": 8.87,
           "bytes_total": 138637600
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -502,7 +502,7 @@
           "max": 8.761,
           "bytes_total": 66261860
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -511,7 +511,7 @@
           "max": 7.98,
           "bytes_total": 2741420
         },
-        "image:meanImg.json": {
+        "image:suite2p_registration/meanImg.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -520,7 +520,7 @@
           "max": 8.209,
           "bytes_total": 72542920
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -604,7 +604,7 @@
           "max": 0.139,
           "bytes_total": 9677
         },
-        "image:cell_roi.json": {
+        "image:suite2p_roi/cell_roi.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -613,7 +613,7 @@
           "max": 0.283,
           "bytes_total": 1334771
         },
-        "image:noncell_roi.json": {
+        "image:suite2p_roi/noncell_roi.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -622,7 +622,7 @@
           "max": 0.284,
           "bytes_total": 1361441
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -631,7 +631,7 @@
           "max": 0.357,
           "bytes_total": 137071
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -640,7 +640,7 @@
           "max": 0.354,
           "bytes_total": 3313093
         },
-        "image:max_proj.json": {
+        "image:suite2p_roi/max_proj.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -649,7 +649,7 @@
           "max": 0.377,
           "bytes_total": 3488663
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 1,
           "ok": 1,
           "non_200": [],
@@ -733,7 +733,7 @@
           "max": 1.6,
           "bytes_total": 48385
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -742,7 +742,7 @@
           "max": 1.357,
           "bytes_total": 685355
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -751,7 +751,7 @@
           "max": 1.667,
           "bytes_total": 16565465
         },
-        "image:max_proj.json": {
+        "image:suite2p_roi/max_proj.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -760,7 +760,7 @@
           "max": 1.668,
           "bytes_total": 17443315
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -769,7 +769,7 @@
           "max": 1.29,
           "bytes_total": 6898070
         },
-        "image:noncell_roi.json": {
+        "image:suite2p_roi/noncell_roi.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -778,7 +778,7 @@
           "max": 1.663,
           "bytes_total": 6807205
         },
-        "image:cell_roi.json": {
+        "image:suite2p_roi/cell_roi.json": {
           "count": 5,
           "ok": 5,
           "non_200": [],
@@ -862,7 +862,7 @@
           "max": 2.388,
           "bytes_total": 96770
         },
-        "image:max_proj.json": {
+        "image:suite2p_roi/max_proj.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -871,7 +871,7 @@
           "max": 2.201,
           "bytes_total": 34886630
         },
-        "image:noncell_roi.json": {
+        "image:suite2p_roi/noncell_roi.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -880,7 +880,7 @@
           "max": 3.113,
           "bytes_total": 13614410
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -889,7 +889,7 @@
           "max": 2.936,
           "bytes_total": 13796140
         },
-        "image:cell_roi.json": {
+        "image:suite2p_roi/cell_roi.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -898,7 +898,7 @@
           "max": 2.31,
           "bytes_total": 13347710
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -907,7 +907,7 @@
           "max": 2.871,
           "bytes_total": 33130930
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 10,
           "ok": 10,
           "non_200": [],
@@ -991,7 +991,7 @@
           "max": 3.689,
           "bytes_total": 193540
         },
-        "image:cell_roi.json": {
+        "image:suite2p_roi/cell_roi.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -1000,7 +1000,7 @@
           "max": 4.867,
           "bytes_total": 26695420
         },
-        "image:noncell_roi.json": {
+        "image:suite2p_roi/noncell_roi.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -1009,7 +1009,7 @@
           "max": 5.104,
           "bytes_total": 27228820
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -1018,7 +1018,7 @@
           "max": 4.867,
           "bytes_total": 66261860
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -1027,7 +1027,7 @@
           "max": 4.587,
           "bytes_total": 2741420
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -1036,7 +1036,7 @@
           "max": 5.354,
           "bytes_total": 27592280
         },
-        "image:max_proj.json": {
+        "image:suite2p_roi/max_proj.json": {
           "count": 20,
           "ok": 20,
           "non_200": [],
@@ -1120,7 +1120,7 @@
           "max": 6.507,
           "bytes_total": 290310
         },
-        "inittimedata:fluorescence": {
+        "inittimedata:suite2p_roi/fluorescence": {
           "count": 30,
           "ok": 30,
           "non_200": [],
@@ -1129,7 +1129,7 @@
           "max": 5.33,
           "bytes_total": 4112130
         },
-        "image:noncell_roi.json": {
+        "image:suite2p_roi/noncell_roi.json": {
           "count": 30,
           "ok": 30,
           "non_200": [],
@@ -1138,7 +1138,7 @@
           "max": 6.092,
           "bytes_total": 40843230
         },
-        "image:cell_roi.json": {
+        "image:suite2p_roi/cell_roi.json": {
           "count": 30,
           "ok": 30,
           "non_200": [],
@@ -1147,7 +1147,7 @@
           "max": 6.016,
           "bytes_total": 40043130
         },
-        "image:max_proj.json": {
+        "image:suite2p_roi/max_proj.json": {
           "count": 30,
           "ok": 30,
           "non_200": [],
@@ -1156,7 +1156,7 @@
           "max": 6.045,
           "bytes_total": 104659890
         },
-        "image:Vcorr.json": {
+        "image:suite2p_roi/Vcorr.json": {
           "count": 30,
           "ok": 30,
           "non_200": [],
@@ -1165,7 +1165,7 @@
           "max": 5.724,
           "bytes_total": 99392790
         },
-        "image:all_roi.json": {
+        "image:suite2p_roi/all_roi.json": {
           "count": 30,
           "ok": 30,
           "non_200": [],

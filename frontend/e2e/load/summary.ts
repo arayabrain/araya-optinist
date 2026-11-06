@@ -208,6 +208,7 @@ export type StepFigures = {
   requests: Record<string, RequestStat>
   // Filled from the run's post-checks; null where nobody read it
   cpu_max_pct?: Partial<Record<Target, number | null>>
+  alb_response_max_s?: Partial<Record<Target, number | null>>
   // The stop thresholds the step ran with, where known
   probe_stop_s?: Partial<Record<Target, number>>
 }

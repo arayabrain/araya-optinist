@@ -509,12 +509,27 @@ test.describe("load lane: request sets", () => {
     row("dashboard_new_tab", "GET", "/static/js/main.js", { type: "script" }),
   ]
 
-  test("labels and routes follow the reference tool, without database ids", () => {
+  test("labels keep the output's node without its random tail, and drop database ids", () => {
     expect(
       itemName(
-        "/api/visualizations/image/7/u/node/meanImg.json?workspace_id=7",
+        "/api/visualizations/image/7/u/suite2p_registration_e4kbyoqliv/meanImg.json?workspace_id=7",
       ),
-    ).toBe("image:meanImg.json")
+    ).toBe("image:suite2p_registration/meanImg.json")
+    expect(
+      itemName(
+        "/api/visualizations/image/7/u/suite2p_file_convert_bwrzk3a80i/meanImg.json?workspace_id=7",
+      ),
+    ).toBe("image:suite2p_file_convert/meanImg.json")
+    expect(
+      itemName(
+        "/api/visualizations/image/7/u/suite2p_registration_e4kbyoqliv/tiff/mc_images/mc_images.tif",
+      ),
+    ).toBe("image:suite2p_registration/mc_images.tif")
+    expect(
+      itemName(
+        "/api/visualizations/inittimedata/7/u/suite2p_roi_0cw3ccyc1w/fluorescence",
+      ),
+    ).toBe("inittimedata:suite2p_roi/fluorescence")
     expect(itemName("/api/visualizations/thumbnail/382/79ceea1d/input")).toBe(
       "thumbnail:input",
     )
@@ -787,8 +802,59 @@ test.describe("load lane: report", () => {
     ]
     const notes = differences(before, after).join("\n")
     expect(notes).toContain("at most 6 connections")
-    expect(notes).toContain("The dialog fixture differs: 15.00 MB → 9.00 MB")
+    expect(notes).toContain("The dialog fixture differs: the record's items")
+    expect(notes).toContain("15.00 MB → 9.00 MB")
     expect(notes).toContain("now also `hidden_outputs`")
+  })
+
+  test("a changed item set or a changed public list is not read as another record", () => {
+    const req = (bytes: number) => ({
+      count: 1,
+      ok: 1,
+      non_200: [],
+      p50: 1,
+      p95: 1,
+      max: 1,
+      bytes_total: bytes,
+    })
+    const before = [
+      dialog(1, {
+        requests: {
+          reproduce: req(10),
+          "image:suite2p_registration/meanImg.json": req(15_000_000),
+        },
+      }),
+      dialog(1, {
+        screen: "public",
+        requests: {
+          public_list: req(1_000),
+          "thumbnail:input": req(100_000),
+          "image:suite2p_roi/Vcorr.json": req(5_000_000),
+        },
+      }),
+    ]
+    const after = [
+      dialog(1, {
+        requests: {
+          reproduce: req(10),
+          hidden_outputs: req(50),
+          "image:suite2p_file_convert/meanImg.json": req(3_600_000),
+        },
+      }),
+      dialog(1, {
+        screen: "public",
+        requests: {
+          public_list: req(4_000),
+          "thumbnail:input": req(900_000),
+          "image:suite2p_roi/Vcorr.json": req(5_000_000),
+        },
+      }),
+    ]
+    const notes = differences(before, after).join("\n")
+    expect(notes).not.toContain("fixture differs")
+    expect(notes).toContain(
+      "no longer `image:suite2p_registration/meanImg.json`",
+    )
   })
 
   test("log lines go to the step whose window holds them", () => {
@@ -897,5 +963,39 @@ test.describe("load lane: report", () => {
     const report = renderReport(null, run)
     expect(report).toContain("Terminating EC2 instance: <instance>")
     expect(report).not.toMatch(/i-0e00e9|i-07f023|123456789012/)
+  })
+
+  test("each step's window shows the ALB's slowest answer, to tell a service stop from the generator's", () => {
+    const s = summary({ screen: "public" })
+    const f = figuresOf(s)
+    f.alb_response_max_s = { free: 0.215, public: 12.258 }
+    const run: RunReport = {
+      plan: "parity",
+      startedAt: "s",
+      endedAt: "e",
+      baselineLabel: "baseline",
+      overrides: [],
+      endedEarly: null,
+      notRun: [],
+      steps: [
+        {
+          key: "public-n5",
+          summary: s,
+          figures: f,
+          failures: [],
+          stop: describeStop(s),
+          logs: [],
+        },
+      ],
+      post: {
+        targets: { free: ["healthy"], public: ["healthy"] },
+        activities: [],
+        alb5xx: { free: 0, public: 0, alb: 0 },
+        logTruncated: [],
+      },
+    }
+    expect(renderReport(null, run)).toContain(
+      "| public-n5 | 0 | 0 | 0 | 0 (0 on `/auth/refresh`) | 0 | 0.22 s / 12.3 s |",
+    )
   })
 })

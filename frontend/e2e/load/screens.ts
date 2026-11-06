@@ -30,13 +30,20 @@ export function routeOf(path: string): Route {
   return PUBLIC_PREFIXES.some((p) => path.startsWith(p)) ? "public" : "free"
 }
 
-// A stable label: the endpoint and the output file's name. A numeric tail is
-// a database id, so the label keeps the endpoint alone.
+// A node id is the algorithm's name and a random 10-character tail
+const NODE_ID_TAIL = /_[a-z0-9]{10}$/
+
+// A stable label: the endpoint, the output's node without its random tail, and
+// the output file's name, so the same file name from two nodes stays two
+// items. A numeric tail is a database id, so the label keeps the endpoint
+// alone. Paths: /api/visualizations/<endpoint>/<ws>/<uid>[/<node>/...]/<file>
 export function itemName(path: string): string {
   const parts = path.split("?")[0].split("/")
   const endpoint = parts.length > 3 ? parts[3] : parts.join("/")
   const last = parts[parts.length - 1]
-  return /^\d+$/.test(last) ? endpoint : `${endpoint}:${last}`
+  if (/^\d+$/.test(last)) return endpoint
+  const node = parts.length > 7 ? parts[6].replace(NODE_ID_TAIL, "") : null
+  return node ? `${endpoint}:${node}/${last}` : `${endpoint}:${last}`
 }
 
 export type Session = {

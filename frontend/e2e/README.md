@@ -513,7 +513,10 @@ seconds; a service that fails or reaches its threshold on two probes in a
 row, an unhealthy target, or any scaling activity ends the run. A lone slow
 probe there is the load generator's own link: no load of the run is going,
 and the ALB's response times stay flat through it. After the last step the
-run watches for 10 minutes before its post-checks.
+run watches for 10 minutes before its post-checks. Inside a step a single slow
+probe still stops it; the report gives each step the ALB's slowest answer per
+target, so a stop the ALB did not see reads as the generator's, not the
+service's.
 
 **Plans** live in `load/plans/`. `default` stops at the largest counts measured
 on 2026-11-05, and `parity` runs 1 and 5 users per screen:
@@ -609,7 +612,10 @@ per-item times, the differences the comparison has to be read with (6
 connections per user, a different fixture, other thresholds, a changed
 request set), the top page's robustness (DB pool timeouts, 401 and 5xx in the
 server logs, instance replacement) and the post-checks (target health,
-scaling activity, the services' CPU per step, 5xx at the ALB).
+scaling activity, the services' CPU per step, 5xx at the ALB, the ALB's
+slowest answer per step). Items are labelled by endpoint, the output's node
+and the file (`image:suite2p_roi/Vcorr.json`), so the same file name from two
+nodes never compares as one item.
 
 **What may go to GitHub**: `report.md` as it is. It holds measured values
 only; instance ids and ARNs in AWS's own text are masked. The rest of the

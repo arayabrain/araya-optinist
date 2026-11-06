@@ -219,6 +219,29 @@ function bytesPerUser(f: StepFigures | undefined): number | null {
   return total / f.vus
 }
 
+// Requests that do not belong to the record: the public list and its
+// thumbnails follow whatever else is published
+const NOT_THE_RECORD = ["auth_refresh_anon", "is_standalone", "public_list"]
+
+// Bytes per user, before and after, over the record's items both steps sent;
+// null when they share none
+function recordBytes(
+  b: StepFigures | undefined,
+  a: StepFigures | undefined,
+): [number, number] | null {
+  if (!b?.vus || !a?.vus) return null
+  const shared = Object.keys(a.requests).filter(
+    (n) =>
+      n in b.requests &&
+      !NOT_THE_RECORD.includes(n) &&
+      !n.startsWith("thumbnail:"),
+  )
+  if (!shared.length) return null
+  const per = (f: StepFigures) =>
+    shared.reduce((sum, n) => sum + f.requests[n].bytes_total, 0) / f.vus
+  return [per(b), per(a)]
+}
+
 // ---------------------------------------------------------------------------
 // Tables per screen
 // ---------------------------------------------------------------------------
@@ -425,16 +448,19 @@ export function differences(
       "per public visitor), so list and item times there are on the strict side.",
   ]
   for (const screen of ["dialog", "public"] as Screen[]) {
-    const b = bytesPerUser(
+    const bytes = recordBytes(
       before.find((f) => f.screen === screen && f.vus === 1),
-    )
-    const a = bytesPerUser(
       after.find((f) => f.screen === screen && f.vus === 1),
     )
-    if (a !== null && b !== null && Math.abs(a - b) / b > 0.01) {
+    if (
+      bytes &&
+      bytes[0] > 0 &&
+      Math.abs(bytes[1] - bytes[0]) / bytes[0] > 0.01
+    ) {
       notes.push(
-        `The ${screen} fixture differs: ${fmtMB(b)} → ${fmtMB(a)} per ${screen === "public" ? "visit" : "open"} ` +
-          "at 1 user, so its times compare a different record.",
+        `The ${screen} fixture differs: the record's items both runs fetched move ` +
+          `${fmtMB(bytes[0])} → ${fmtMB(bytes[1])} at 1 user, so its times compare ` +
+          "a different record.",
       )
     }
   }
@@ -564,9 +590,18 @@ function logTable(steps: StepOutcome[]): string[] {
     count(s.logs, "Deadlock"),
     `${count(s.logs, "401")} (${count(s.logs, "401", (r) => r === "POST /auth/refresh")} on \`/auth/refresh\`)`,
     fiveXx(s.logs),
+    `${fmtS(s.figures.alb_response_max_s?.free)} / ${fmtS(s.figures.alb_response_max_s?.public)}`,
   ])
   return table(
-    ["Step", "`QueuePool`", "`Traceback`", "`Deadlock`", "401", "5xx"],
+    [
+      "Step",
+      "`QueuePool`",
+      "`Traceback`",
+      "`Deadlock`",
+      "401",
+      "5xx",
+      "ALB slowest answer free / public",
+    ],
     rows,
   )
 }
@@ -665,7 +700,9 @@ export function renderReport(
       lines.push(`- Log reads cut at their limit: ${p.logTruncated.join(", ")}`)
     lines.push(
       "",
-      "Server log lines per step window:",
+      "Server log lines per step window, and the ALB's slowest answer per " +
+        "target over the step and the minute after it (a probe stop the ALB " +
+        "did not see came from the load generator's side):",
       "",
       ...logTable(run.steps),
       "",
