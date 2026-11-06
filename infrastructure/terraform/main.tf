@@ -251,10 +251,12 @@ variable "premium_instance_type" {
 
 # Workflow task and host sizes per tier. A tfvars override names only the
 # fields it changes, e.g. premium_tier_sizing = { task_memory_mib = ... }; the
-# others keep these defaults. An unknown, null, fractional or too-small field
-# fails the plan: an object type would drop a misspelled field silently. Rules
-# across fields are preconditions on the task definitions (compute.tf). Host
-# swap is the whole swap volume (ecs-user-data.sh runs mkswap on the device)
+# others keep these defaults. An unknown, null, fractional, too-small or
+# too-large field fails the plan: an object type would drop a misspelled field
+# silently. Rules across fields, and against the instance type and the AMI,
+# are preconditions on the task definitions and launch templates (compute.tf).
+# Host swap is the whole swap volume (ecs-user-data.sh runs mkswap on the
+# device). A prepared resize per tier: TIER_RESIZE_RUNBOOK.md
 locals {
   free_tier_sizing_defaults = {
     task_cpu                         = 2048
@@ -280,8 +282,18 @@ locals {
     swap_volume_gib                  = 32
   }
 
+  # Fields without a default: the launch template then leaves the attribute
+  # unset, and the volume gets gp3's included 3,000 IOPS and 125 MiB/s
+  tier_sizing_optional_fields = [
+    "root_volume_iops",
+    "root_volume_throughput_mibps",
+    "swap_volume_iops",
+    "swap_volume_throughput_mibps",
+  ]
+
   # Smallest whole value per field: 0 where ECS accepts none, the AMI
-  # snapshot size (stock and custom) for the root volume
+  # snapshot size (stock and custom) for the root volume, gp3's included
+  # baseline for IOPS and throughput
   tier_sizing_minimums = {
     task_cpu                         = 1
     task_memory_mib                  = 1
@@ -292,6 +304,19 @@ locals {
     container_swappiness             = 0
     root_volume_gib                  = 30
     swap_volume_gib                  = 1
+    root_volume_iops                 = 3000
+    root_volume_throughput_mibps     = 125
+    swap_volume_iops                 = 3000
+    swap_volume_throughput_mibps     = 125
+  }
+
+  # Largest value where Docker or gp3 sets one
+  tier_sizing_maximums = {
+    container_swappiness         = 100
+    root_volume_iops             = 80000
+    root_volume_throughput_mibps = 2000
+    swap_volume_iops             = 80000
+    swap_volume_throughput_mibps = 2000
   }
 
   # Read by the resources. A null field is dropped here so that only the
@@ -307,14 +332,14 @@ locals {
 }
 
 variable "free_tier_sizing" {
-  description = "Free-tier size overrides (aws_ecs_task_definition.autoscaling, aws_launch_template.ecs). Fields and defaults: local.free_tier_sizing_defaults"
+  description = "Free-tier size overrides (aws_ecs_task_definition.autoscaling, aws_launch_template.ecs). Fields and defaults: local.free_tier_sizing_defaults; fields without a default: local.tier_sizing_optional_fields"
   type        = map(number)
   default     = {}
   nullable    = false
 
   validation {
-    condition     = length(setsubtract(keys(var.free_tier_sizing), keys(local.free_tier_sizing_defaults))) == 0
-    error_message = "free_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.free_tier_sizing), keys(local.free_tier_sizing_defaults)))}; the fields are those of local.free_tier_sizing_defaults."
+    condition     = length(setsubtract(keys(var.free_tier_sizing), concat(keys(local.free_tier_sizing_defaults), local.tier_sizing_optional_fields))) == 0
+    error_message = "free_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.free_tier_sizing), concat(keys(local.free_tier_sizing_defaults), local.tier_sizing_optional_fields)))}; the fields are those of local.free_tier_sizing_defaults and local.tier_sizing_optional_fields."
   }
 
   validation {
@@ -336,20 +361,23 @@ variable "free_tier_sizing" {
   }
 
   validation {
-    condition     = lookup(var.free_tier_sizing, "container_swappiness", null) == null || lookup(var.free_tier_sizing, "container_swappiness", 0) <= 100
-    error_message = "free_tier_sizing: container_swappiness must not exceed 100."
+    condition = alltrue([
+      for field, value in var.free_tier_sizing :
+      value == null || !contains(keys(local.tier_sizing_maximums), field) || value <= local.tier_sizing_maximums[field]
+    ])
+    error_message = "free_tier_sizing: above the maximum in local.tier_sizing_maximums: ${join(", ", [for field, value in var.free_tier_sizing : field if value != null && value > lookup(local.tier_sizing_maximums, field, value)])}."
   }
 }
 
 variable "premium_tier_sizing" {
-  description = "Premium-tier size overrides (aws_ecs_task_definition.premium, aws_launch_template.premium, which premium-dedicated instances launch from too). Fields and defaults: local.premium_tier_sizing_defaults"
+  description = "Premium-tier size overrides (aws_ecs_task_definition.premium, aws_launch_template.premium, which premium-dedicated instances launch from too). Fields and defaults: local.premium_tier_sizing_defaults; fields without a default: local.tier_sizing_optional_fields"
   type        = map(number)
   default     = {}
   nullable    = false
 
   validation {
-    condition     = length(setsubtract(keys(var.premium_tier_sizing), keys(local.premium_tier_sizing_defaults))) == 0
-    error_message = "premium_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.premium_tier_sizing), keys(local.premium_tier_sizing_defaults)))}; the fields are those of local.premium_tier_sizing_defaults."
+    condition     = length(setsubtract(keys(var.premium_tier_sizing), concat(keys(local.premium_tier_sizing_defaults), local.tier_sizing_optional_fields))) == 0
+    error_message = "premium_tier_sizing: unknown field(s) ${join(", ", setsubtract(keys(var.premium_tier_sizing), concat(keys(local.premium_tier_sizing_defaults), local.tier_sizing_optional_fields)))}; the fields are those of local.premium_tier_sizing_defaults and local.tier_sizing_optional_fields."
   }
 
   validation {
@@ -371,8 +399,11 @@ variable "premium_tier_sizing" {
   }
 
   validation {
-    condition     = lookup(var.premium_tier_sizing, "container_swappiness", null) == null || lookup(var.premium_tier_sizing, "container_swappiness", 0) <= 100
-    error_message = "premium_tier_sizing: container_swappiness must not exceed 100."
+    condition = alltrue([
+      for field, value in var.premium_tier_sizing :
+      value == null || !contains(keys(local.tier_sizing_maximums), field) || value <= local.tier_sizing_maximums[field]
+    ])
+    error_message = "premium_tier_sizing: above the maximum in local.tier_sizing_maximums: ${join(", ", [for field, value in var.premium_tier_sizing : field if value != null && value > lookup(local.tier_sizing_maximums, field, value)])}."
   }
 }
 

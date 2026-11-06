@@ -143,6 +143,46 @@ locals {
   # Attachment name of the dedicated swap volume. ecs-user-data.sh finds the
   # device by it, so the mapping and the script must use the same name
   swap_device_name = "/dev/xvds"
+
+  # Size of the effective AMI's root snapshot: a launch with a smaller root
+  # volume fails after the launch template is accepted
+  effective_ami_root_gib = one([
+    for mapping in data.aws_ami.effective.block_device_mappings :
+    tonumber(mapping.ebs.volume_size) if mapping.device_name == data.aws_ami.effective.root_device_name
+  ])
+
+  # Each workflow tier's volumes with their gp3 performance: the sizing field
+  # when set, else gp3's included 3,000 IOPS and 125 MiB/s
+  tier_volumes = {
+    for tier, sizing in { free = local.free_tier_sizing, premium = local.premium_tier_sizing } :
+    tier => {
+      for volume in ["root", "swap"] : volume => {
+        gib              = sizing["${volume}_volume_gib"]
+        iops             = lookup(sizing, "${volume}_volume_iops", 3000)
+        throughput_mibps = lookup(sizing, "${volume}_volume_throughput_mibps", 125)
+      }
+    }
+  }
+}
+
+# The image local.effective_ami_id names, stock or custom, for its root
+# snapshot size
+data "aws_ami" "effective" {
+  owners = ["self", "amazon"]
+
+  filter {
+    name   = "image-id"
+    values = [local.effective_ami_id]
+  }
+}
+
+# The workflow tiers' instance types, for the task definitions' fit checks
+data "aws_ec2_instance_type" "free" {
+  instance_type = var.free_instance_type
+}
+
+data "aws_ec2_instance_type" "premium" {
+  instance_type = var.premium_instance_type
 }
 
 resource "aws_launch_template" "ecs" {
@@ -157,11 +197,14 @@ resource "aws_launch_template" "ecs" {
     name = aws_iam_instance_profile.ecs_instance_profile.name
   }
 
+  # iops / throughput: null (unset, gp3's baseline) unless the tier sets them
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
       volume_size = local.free_tier_sizing.root_volume_gib
       volume_type = "gp3"
+      iops        = lookup(local.free_tier_sizing, "root_volume_iops", null)
+      throughput  = lookup(local.free_tier_sizing, "root_volume_throughput_mibps", null)
       encrypted   = true
     }
   }
@@ -173,6 +216,8 @@ resource "aws_launch_template" "ecs" {
     ebs {
       volume_size           = local.free_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
+      iops                  = lookup(local.free_tier_sizing, "swap_volume_iops", null)
+      throughput            = lookup(local.free_tier_sizing, "swap_volume_throughput_mibps", null)
       encrypted             = true
       delete_on_termination = true
     }
@@ -212,8 +257,25 @@ resource "aws_launch_template" "ecs" {
     }
   }
 
+  # Rules a template accepts and a launch then rejects. The volume rules are
+  # gp3's: 0.25 MiB/s per IOPS, 500 IOPS per GiB (3,000 on any size)
   lifecycle {
     create_before_destroy = true
+
+    precondition {
+      condition     = local.free_tier_sizing.root_volume_gib >= local.effective_ami_root_gib
+      error_message = "free_tier_sizing: root_volume_gib must be at least the root snapshot of ${local.effective_ami_id} (${local.effective_ami_root_gib} GiB)."
+    }
+
+    precondition {
+      condition     = alltrue([for volume in values(local.tier_volumes.free) : volume.throughput_mibps * 4 <= volume.iops])
+      error_message = "free_tier_sizing: throughput above iops / 4 (3,000 IOPS when unset) on the ${join(", ", [for name, volume in local.tier_volumes.free : name if volume.throughput_mibps * 4 > volume.iops])} volume."
+    }
+
+    precondition {
+      condition     = alltrue([for volume in values(local.tier_volumes.free) : volume.iops <= max(3000, volume.gib * 500)])
+      error_message = "free_tier_sizing: iops above 500 per GiB on the ${join(", ", [for name, volume in local.tier_volumes.free : name if volume.iops > max(3000, volume.gib * 500)])} volume."
+    }
   }
 }
 
@@ -427,11 +489,14 @@ resource "aws_launch_template" "premium" {
     name = aws_iam_instance_profile.ecs_instance_profile.name
   }
 
+  # iops / throughput: null (unset, gp3's baseline) unless the tier sets them
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
       volume_size = local.premium_tier_sizing.root_volume_gib
       volume_type = "gp3"
+      iops        = lookup(local.premium_tier_sizing, "root_volume_iops", null)
+      throughput  = lookup(local.premium_tier_sizing, "root_volume_throughput_mibps", null)
       encrypted   = true
     }
   }
@@ -443,6 +508,8 @@ resource "aws_launch_template" "premium" {
     ebs {
       volume_size           = local.premium_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
+      iops                  = lookup(local.premium_tier_sizing, "swap_volume_iops", null)
+      throughput            = lookup(local.premium_tier_sizing, "swap_volume_throughput_mibps", null)
       encrypted             = true
       delete_on_termination = true
     }
@@ -484,8 +551,24 @@ resource "aws_launch_template" "premium" {
     }
   }
 
+  # Same rules as the free tier's launch template
   lifecycle {
     create_before_destroy = true
+
+    precondition {
+      condition     = local.premium_tier_sizing.root_volume_gib >= local.effective_ami_root_gib
+      error_message = "premium_tier_sizing: root_volume_gib must be at least the root snapshot of ${local.effective_ami_id} (${local.effective_ami_root_gib} GiB)."
+    }
+
+    precondition {
+      condition     = alltrue([for volume in values(local.tier_volumes.premium) : volume.throughput_mibps * 4 <= volume.iops])
+      error_message = "premium_tier_sizing: throughput above iops / 4 (3,000 IOPS when unset) on the ${join(", ", [for name, volume in local.tier_volumes.premium : name if volume.throughput_mibps * 4 > volume.iops])} volume."
+    }
+
+    precondition {
+      condition     = alltrue([for volume in values(local.tier_volumes.premium) : volume.iops <= max(3000, volume.gib * 500)])
+      error_message = "premium_tier_sizing: iops above 500 per GiB on the ${join(", ", [for name, volume in local.tier_volumes.premium : name if volume.iops > max(3000, volume.gib * 500)])} volume."
+    }
   }
 }
 
@@ -922,6 +1005,19 @@ resource "aws_ecs_task_definition" "autoscaling" {
       condition     = local.free_tier_sizing.container_max_swap_mib <= local.free_tier_sizing.swap_volume_gib * 1024
       error_message = "free_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
     }
+
+    # The task against its instance type, or it is never placed. ECS registers
+    # less memory than the nominal (t3.large: 7,823 of 8,192 MiB); 15/16 stays
+    # below that from 4 GiB up. CPU registers as 1,024 per vCPU
+    precondition {
+      condition     = local.free_tier_sizing.task_memory_mib <= data.aws_ec2_instance_type.free.memory_size * 15 / 16
+      error_message = "free_tier_sizing: task_memory_mib must not exceed 15/16 of ${var.free_instance_type}'s memory (${data.aws_ec2_instance_type.free.memory_size * 15 / 16} MiB)."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.task_cpu <= data.aws_ec2_instance_type.free.default_vcpus * 1024
+      error_message = "free_tier_sizing: task_cpu must not exceed ${var.free_instance_type}'s ${data.aws_ec2_instance_type.free.default_vcpus * 1024} CPU units."
+    }
   }
 }
 
@@ -1204,6 +1300,16 @@ resource "aws_ecs_task_definition" "premium" {
     precondition {
       condition     = local.premium_tier_sizing.container_max_swap_mib <= local.premium_tier_sizing.swap_volume_gib * 1024
       error_message = "premium_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.task_memory_mib <= data.aws_ec2_instance_type.premium.memory_size * 15 / 16
+      error_message = "premium_tier_sizing: task_memory_mib must not exceed 15/16 of ${var.premium_instance_type}'s memory (${data.aws_ec2_instance_type.premium.memory_size * 15 / 16} MiB)."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.task_cpu <= data.aws_ec2_instance_type.premium.default_vcpus * 1024
+      error_message = "premium_tier_sizing: task_cpu must not exceed ${var.premium_instance_type}'s ${data.aws_ec2_instance_type.premium.default_vcpus * 1024} CPU units."
     }
   }
 }

@@ -148,6 +148,17 @@ maximum below the current desired capacity takes instances with it, as above.
 For sizing, lead time, checks and restore, see
 [FREE_TIER_PREPROVISIONING_RUNBOOK.md](FREE_TIER_PREPROVISIONING_RUNBOOK.md).
 
+### Workflow Tier Size (`*_instance_type` / `*_tier_sizing`)
+
+Each workflow tier's instance type, task and container sizes, swap and volumes
+are variables, with today's sizes as defaults in `main.tf`. The plan rejects a
+set that cannot launch or does not fit: a task above its instance type, a root
+volume below the AMI's root snapshot, gp3 IOPS or throughput out of range.
+Applying a new size takes two phases, the host before the task, so that no
+task is sent to an instance too small for it. The prepared next size per tier,
+when to apply it and how to revert it:
+[TIER_RESIZE_RUNBOOK.md](TIER_RESIZE_RUNBOOK.md).
+
 ### Database Username (`mysql_user`)
 
 > **Caution:** Changing `mysql_user` requires destroying and recreating the RDS database instance. Do not rename the database user on a running environment unless you are prepared for full data loss and re-provisioning.
