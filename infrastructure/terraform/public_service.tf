@@ -123,6 +123,9 @@ resource "aws_autoscaling_group" "public" {
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
 
+  # The serving-below-desired alarm's desired input
+  enabled_metrics = ["GroupDesiredCapacity"]
+
   tag {
     key                 = "Name"
     value               = "${local.env_prefix}-public-asg-instance"

@@ -141,7 +141,9 @@ function breaches(value: number, threshold: number, operator: string): boolean {
 // state indefinitely once the metric stops publishing, so "the state says
 // ALARM" and "the environment is unhealthy" are different questions. A metric
 // that has gone quiet answers "unknown", which counts as still breaching:
-// silence is not evidence of health.
+// silence is not evidence of health. A metric-math result is read at the newest
+// minute every source metric reported: a FILL over a minute not yet published
+// is a placeholder, not a reading.
 //
 // get-metric-data, not get-metric-statistics: it takes a percentile and a plain
 // statistic as the same `Stat` string and answers with one flat Values array
@@ -167,19 +169,28 @@ function stillBreaching(alarm: AlarmDetail): boolean {
         },
       ]
   const resultId = queries.find((q) => q.ReturnData !== false)!.Id
-  const query = JSON.stringify(queries)
+  // Every query returns data, so each source metric's minutes can be checked.
+  const query = JSON.stringify(queries.map((q) => ({ ...q, ReturnData: true })))
   // The query rides inside single quotes in the shell command below.
   expect(query, "alarm metadata carries a quote character").not.toContain("'")
-  const values =
-    awsJson<{ Id: string; Values: number[] }[]>(
-      `cloudwatch get-metric-data --metric-data-queries '${query}' ` +
-        `--start-time ${new Date(Date.now() - window * 1000).toISOString()} ` +
-        `--end-time ${new Date().toISOString()} ` +
-        `--scan-by TimestampDescending ` +
-        `--query 'MetricDataResults[].{Id:Id,Values:Values}'`,
-    ).find((r) => r.Id === resultId)?.Values ?? []
-  if (!values.length) return true
-  return breaches(values[0], alarm.threshold, alarm.operator)
+  const results = awsJson<
+    { Id: string; Timestamps: string[]; Values: number[] }[]
+  >(
+    `cloudwatch get-metric-data --metric-data-queries '${query}' ` +
+      `--start-time ${new Date(Date.now() - window * 1000).toISOString()} ` +
+      `--end-time ${new Date().toISOString()} ` +
+      `--scan-by TimestampDescending ` +
+      `--query 'MetricDataResults[].{Id:Id,Timestamps:Timestamps,Values:Values}'`,
+  )
+  const result = results.find((r) => r.Id === resultId)
+  const sources = results.filter(
+    (r) => "MetricStat" in queries.find((q) => q.Id === r.Id)!,
+  )
+  const newest = (result?.Timestamps ?? []).findIndex((t) =>
+    sources.every((s) => s.Timestamps.includes(t)),
+  )
+  if (newest < 0) return true
+  return breaches(result!.Values[newest], alarm.threshold, alarm.operator)
 }
 
 // The dev scheduler starts this environment at 23:00 UTC Sun-Thu (08:00 JST) and

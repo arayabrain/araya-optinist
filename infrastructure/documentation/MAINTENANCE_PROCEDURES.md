@@ -511,8 +511,8 @@ There is no scale-down alarm. The free-manager Lambda removes capacity by user c
 | `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/public-dataview latency. Check public instance health and cold-cache reads. |
 | `subscr-optinist-free-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Free workflow instance failing health checks. Check ECS task and EBS I/O. |
 | `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / public-dataview at risk. Check public ASG instances. |
-| `subscr-optinist-free-serving-below-desired` | Healthy targets < ECS desired tasks for 25 of 30 min, outside an ECS deployment | A host the ASG does not replace (ECS deregistered its target). Check ASG activity first: a refresh or scale-out in progress is expected. Otherwise find the host with no healthy target and set it unhealthy in the ASG. |
-| `subscr-optinist-public-serving-below-desired` | Healthy targets < ECS desired tasks for 25 of 30 min, outside an ECS deployment | Same check on the public tier. The other public host keeps serving meanwhile. |
+| `subscr-optinist-free-serving-below-desired` | Healthy targets < ASG desired hosts for 25 of 30 min, outside an ECS deployment | A host the ASG does not replace (ECS deregistered its target). Check ASG activity first: a refresh or scale-out in progress is expected. Otherwise find the host with no healthy target and set it unhealthy in the ASG. |
+| `subscr-optinist-public-serving-below-desired` | Healthy targets < ASG desired hosts for 25 of 30 min, outside an ECS deployment | Same check on the public tier. The other public host keeps serving meanwhile. |
 
 ### Background Service Alarms
 

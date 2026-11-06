@@ -479,7 +479,7 @@ class TestPublicUnhealthyHostsAlarm:
 
 
 class TestServingBelowDesiredAlarm:
-    """Fewer healthy targets than ECS desired tasks, per tier.
+    """Fewer healthy targets than ASG desired hosts, per tier.
 
     Covers what the ASG's ELB check and UnHealthyHostCount both miss: a target
     ECS deregistered while its agent was lost, so the host shows as unused
@@ -495,21 +495,25 @@ class TestServingBelowDesiredAlarm:
         )
 
     @pytest.mark.parametrize(
-        "tier, target_group, service",
-        [("free", "autoscaling", "autoscaling"), ("public", "public", "public")],
+        "tier, target_group, service, asg",
+        [
+            ("free", "autoscaling", "autoscaling", "main"),
+            ("public", "public", "public", "public"),
+        ],
     )
     def test_each_tier_compares_its_own_target_group_and_service(
-        self, tier, target_group, service
+        self, tier, target_group, service, asg
     ):
         match = re.search(
             r"^\s*%s\s*=\s*\{\s*\n"
             r"\s*tg_arn_suffix\s*=\s*aws_lb_target_group\.(\w+)\.arn_suffix\s*\n"
-            r"\s*service_name\s*=\s*aws_ecs_service\.(\w+)\.name" % tier,
+            r"\s*service_name\s*=\s*aws_ecs_service\.(\w+)\.name\s*\n"
+            r"\s*asg_name\s*=\s*aws_autoscaling_group\.(\w+)\.name" % tier,
             self.alarm,
             re.MULTILINE,
         )
         assert match, f"tg_serving_below_desired has no {tier} for_each key"
-        assert match.groups() == (target_group, service)
+        assert match.groups() == (target_group, service, asg)
 
     def test_alarm_name_is_keyed_per_tier(self):
         name = attribute(self.alarm, "alarm_name")
@@ -530,10 +534,10 @@ class TestServingBelowDesiredAlarm:
         [
             (
                 "desired",
-                "ECS/ContainerInsights",
-                "DesiredTaskCount",
-                "Average",
-                ("ClusterName", "ServiceName"),
+                "AWS/AutoScaling",
+                "GroupDesiredCapacity",
+                "Minimum",
+                ("AutoScalingGroupName",),
             ),
             (
                 "deploys",
@@ -566,9 +570,19 @@ class TestServingBelowDesiredAlarm:
         for key in dimensions:
             attribute(query, key)
 
+    @pytest.mark.parametrize(
+        "tf, asg", [(COMPUTE_TF, "main"), (PUBLIC_SERVICE_TF, "public")]
+    )
+    def test_asg_publishes_desired_capacity(self, tf, asg):
+        """``desired`` is unfilled: an ASG without group metrics gives the
+        alarm no datapoints and it never fires."""
+        block = resource_block(read(tf), "aws_autoscaling_group", asg)
+        metrics = re.search(r"enabled_metrics\s*=\s*\[(.*?)\]", block, re.DOTALL)
+        assert metrics and '"GroupDesiredCapacity"' in metrics.group(1)
+
     def test_container_insights_is_on(self):
-        """``desired`` and ``deploys`` come from it; without it the alarm
-        fills both with 0 and never fires."""
+        """``deploys`` comes from it; without it the deployment gate never
+        closes and every rollout breaches."""
         cluster = resource_block(read(COMPUTE_TF), "aws_ecs_cluster", "main")
         assert re.search(
             r'name\s*=\s*"containerInsights"\s*\n\s*value\s*=\s*"enabled"', cluster
@@ -578,10 +592,12 @@ class TestServingBelowDesiredAlarm:
         """A public rollout replaces its two tasks one at a time, each held
         below desired by the 600 s drain, for about 28 of 30 min. Missing
         healthy counts as 0 healthy, so a target that has gone cannot hide in
-        a data gap; missing desired counts as 0, so a stopped dev environment
-        stays quiet."""
+        a data gap. Desired is the ASG's, not ECS's DesiredTaskCount, which
+        Container Insights stops publishing once no task runs: the tier's last
+        task gone would read 0 - 0. A stopped dev environment stays quiet on
+        the ASG's explicit 0."""
         assert attribute(self.alarm, "expression") == (
-            '"IF(FILL(deploys, 0) > 1, 0, FILL(desired, 0) - FILL(healthy, 0))"'
+            '"IF(FILL(deploys, 0) > 1, 0, desired - FILL(healthy, 0))"'
         )
         assert attribute(self._query("gap"), "return_data") == "true"
         assert attribute(self.alarm, "treat_missing_data") == '"notBreaching"'

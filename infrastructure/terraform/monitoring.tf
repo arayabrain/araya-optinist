@@ -333,21 +333,23 @@ resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
   }
 }
 
-# A target gone or never healthy, which the ASG's ELB check misses; quiet while ECS deploys
+# A target gone or never healthy, missed by the ASG's ELB check; desired is the ASG's, which still publishes with no task
 resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
   for_each = {
     free = {
       tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
       service_name  = aws_ecs_service.autoscaling.name
+      asg_name      = aws_autoscaling_group.main.name
     }
     public = {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
       service_name  = aws_ecs_service.public.name
+      asg_name      = aws_autoscaling_group.public.name
     }
   }
 
   alarm_name          = "${local.env_prefix}-${each.key}-serving-below-desired"
-  alarm_description   = "Fewer healthy ${each.key} targets than ECS desired tasks for 25 of 30 min, outside an ECS deployment. Check ASG activity first: a refresh or scale-out in progress is expected."
+  alarm_description   = "Fewer healthy ${each.key} targets than ASG desired hosts for 25 of 30 min, outside an ECS deployment. Check ASG activity first: a refresh or scale-out in progress is expected."
   comparison_operator = "GreaterThanThreshold"
   threshold           = "0"
   evaluation_periods  = "30"
@@ -358,20 +360,19 @@ resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
 
   metric_query {
     id          = "gap"
-    expression  = "IF(FILL(deploys, 0) > 1, 0, FILL(desired, 0) - FILL(healthy, 0))"
+    expression  = "IF(FILL(deploys, 0) > 1, 0, desired - FILL(healthy, 0))"
     return_data = true
   }
 
   metric_query {
     id = "desired"
     metric {
-      namespace   = "ECS/ContainerInsights"
-      metric_name = "DesiredTaskCount"
+      namespace   = "AWS/AutoScaling"
+      metric_name = "GroupDesiredCapacity"
       period      = 60
-      stat        = "Average"
+      stat        = "Minimum"
       dimensions = {
-        ClusterName = aws_ecs_cluster.main.name
-        ServiceName = each.value.service_name
+        AutoScalingGroupName = each.value.asg_name
       }
     }
   }

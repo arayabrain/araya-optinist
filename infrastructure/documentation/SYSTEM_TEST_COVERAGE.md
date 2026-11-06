@@ -869,7 +869,7 @@ read is what notices an environment where the removal was skipped. The
 procedure is in `FREE_MANAGER_ARCHITECTURE.md`, *Lifecycle Hooks*.
 
 **`free-` / `public-serving-below-desired` have no row either.** They fire when
-a tier serves fewer healthy targets than ECS wants tasks, the case where ECS
+a tier serves fewer healthy targets than its ASG wants hosts, the case where ECS
 deregistered a target and the ASG's ELB check sees the host as unused, not
 unhealthy, outside an ECS deployment. `test_public_instance_config.py::TestServingBelowDesiredAlarm`
 pins each query, the deployment gate and the window, and `test_compute_config.py::TestFreeAsgScaleIn::test_asg_replaces_hosts_ecs_cannot_fix`
