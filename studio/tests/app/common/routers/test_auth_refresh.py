@@ -16,6 +16,11 @@ from requests import HTTPError, Response
 
 from studio.app.common.core.auth.auth import refresh_current_user_token
 from studio.app.common.schemas.auth import AccessToken, RefreshToken, Token
+from studio.tests.app.common.loop_probe import (
+    REQUEST_CLIENT_ID,
+    Hold,
+    health_while_held,
+)
 
 
 def test_refresh_token_schema_allows_missing_or_null():
@@ -89,6 +94,30 @@ async def test_refresh_valid_token_returns_access_token():
 
     assert isinstance(result, AccessToken)
     assert result.access_token == "new-access-token"
+
+
+@pytest.mark.asyncio
+async def test_health_is_answered_while_a_token_refresh_waits_for_firebase():
+    hold = Hold()
+
+    def refresh(refresh_token):
+        hold()
+        return {"idToken": "new-access-token"}
+
+    with patch(
+        "studio.app.common.core.auth.auth.validate_refresh_token",
+        return_value=({"sub": "firebase-refresh-token"}, None),
+    ), patch("studio.app.common.core.auth.auth.pyrebase_app") as mock_pyrebase:
+        mock_pyrebase.auth.return_value.refresh.side_effect = refresh
+        held, health = await health_while_held(
+            hold, "POST", "/auth/refresh", json={"refresh_token": "present"}
+        )
+
+    assert health.status_code == 200
+    assert held.status_code == 200, held.text
+    assert held.json()["access_token"] == "new-access-token"
+    assert hold.released_by_answer == [True]
+    assert hold.client_ids == [REQUEST_CLIENT_ID]
 
 
 def test_refresh_endpoint_missing_token_returns_401(client):
