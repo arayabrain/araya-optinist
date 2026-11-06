@@ -221,6 +221,38 @@ aws elbv2 describe-target-health \
 # Expected: targets in "healthy" state
 ```
 
+### Health Checks
+
+The public and free ASGs both use `health_check_type = "ELB"`. Two layers judge health from the same target group:
+
+| Layer | Judges | Grace counts from | Remedy |
+|---|---|---|---|
+| ECS service with `load_balancer` | task (TG + container check) | every task start | replace the task |
+| ASG with `ELB` | instance (same TG) | first InService, once | replace the instance |
+
+The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `unused` are ignored.
+
+**Why `ELB`, not `EC2`:** the target group is the only signal that replaces a host ECS cannot fix. A new instance that never gets a task, and a wedged host ECS keeps re-placing tasks onto (the only eligible one under the static port 8000 and the tier constraint), both stay forever under `EC2`.
+
+**The cost:** past the ASG's 900 s grace, a task that restarts and does not serve within the target group window (public about 90 s, free about 300 s) gets its whole instance replaced, whatever the ECS grace says. On public the other host serves meanwhile; on free a task restart already loses every running workflow.
+
+**Rejected:**
+- `EC2`, with or without automated `set-instance-health`: an earlier attempt fought ASG scaling and was rolled back.
+- `EC2` on public only: one host for an unbounded time, to save a 10 to 15 min half-capacity window.
+- A target group window wider than 900 s: the ALB would route users to a dead target for 15 min.
+
+**What neither catches:** an agent lost after ECS deregistered the target leaves the host `unused`, not `unhealthy`. `<env>-optinist-{free,public}-serving-below-desired` covers it:
+
+| Input | Metric | Why |
+|---|---|---|
+| desired | `AWS/AutoScaling` `GroupDesiredCapacity` (`Minimum`) | One task per host. Container Insights publishes no `DesiredTaskCount` while no task runs, so the tier losing its last task would read 0; the ASG publishes an explicit 0 when the dev schedule stops it |
+| healthy | `AWS/ApplicationELB` `HealthyHostCount` (`Minimum`, `FILL` 0) | A wedged host keeps `RunningTaskCount` at desired; a deregistered target leaves a data gap, read as 0 |
+| deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min, so the alarm is off while it exceeds 1 |
+
+It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public, which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min on dev: the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
+
+**Revisit the decision for a tier** if warm-host task restart to first healthy target has a p95 above about 60 s on public or about 240 s on free, or a prod instance replacement is traced to a slow restart. Options then: widen that tier's target group window (for example public `unhealthy_threshold` 3 to 5), make the restart faster, or build `EC2` with automated recovery as its own change.
+
 ---
 
 ## Configuration
@@ -256,7 +288,7 @@ Stripe variables are intentionally omitted because the subscriptions router is g
 |---|---|---|
 | Target group | `aws_lb_target_group.public` | `/health` check, 600s deregistration delay |
 | Launch template | `aws_launch_template.public` | `var.public_instance_type`, 30 GB gp3 root |
-| Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, `OldestInstance` policy |
+| Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, `OldestInstance` policy, `GroupDesiredCapacity` metric for the serving alarm |
 | Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mounts (output + input cache) |
 | ECS service | `aws_ecs_service.public` | EC2 launch type, `tier == public` placement constraint |
 | Log group | `aws_cloudwatch_log_group.public_optinist` | `/ecs/<env>-public-optinist-cloud-taskdef`, 30-day retention |

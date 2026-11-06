@@ -512,6 +512,8 @@ There is no scale-down alarm. The free-manager Lambda removes capacity by user c
 | `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/public-dataview latency. Check public instance health and cold-cache reads. |
 | `subscr-optinist-free-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Free workflow instance failing health checks. Check ECS task and EBS I/O. |
 | `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / public-dataview at risk. Check public ASG instances. |
+| `subscr-optinist-free-serving-below-desired` | Healthy targets < ASG desired hosts for 25 of 30 min, outside an ECS deployment | A host the ASG does not replace (ECS deregistered its target). Check ASG activity first: a refresh or scale-out in progress is expected. Otherwise find the host with no healthy target and set it unhealthy in the ASG. |
+| `subscr-optinist-public-serving-below-desired` | Healthy targets < ASG desired hosts for 35 of 40 min, outside an ECS deployment | Same check on the public tier. The other public host keeps serving meanwhile. A host replacement is short for about 25 min (two 600 s drains), so the window is longer than free's. |
 
 ### Background Service Alarms
 
@@ -558,6 +560,8 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 | `subscr-optinist-public-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the public tier |
 | `subscr-optinist-free-tg-unhealthy-hosts` | `monitoring.tf` | Free workflow instance down |
 | `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / public-dataview at risk |
+| `subscr-optinist-free-serving-below-desired` | `monitoring.tf` | Free tier down with no automatic replacement |
+| `subscr-optinist-public-serving-below-desired` | `monitoring.tf` | Public tier short of a host with no automatic replacement |
 | `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
 | `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
