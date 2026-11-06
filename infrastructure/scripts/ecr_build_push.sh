@@ -156,11 +156,9 @@ if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGIO
     exit 1
 fi
 
-# infrastructure/.env.deploy (gitignored) holds build-time values Terraform does
-# not own. Keyed per environment so a development build can never be published
-# with the production analytics container. Sourced in a subshell so a stray
-# assignment in that file cannot clobber the variables used below.
+# GTM ID: the gitignored .env.deploy (sourced in a subshell) overrides SSM; neither means analytics off.
 GTM_ID_VAR="REACT_APP_GTM_ID_$(echo "$ENVIRONMENT" | tr '[:lower:]-' '[:upper:]_')"
+GTM_ID_PARAM="/${ENVIRONMENT}/optinist/gtm-id"
 REACT_APP_GTM_ID=$(
     set +e
     if [ -f "$REPO_ROOT/infrastructure/.env.deploy" ]; then
@@ -168,15 +166,36 @@ REACT_APP_GTM_ID=$(
     fi
     printf '%s' "${!GTM_ID_VAR:-}"
 )
+GTM_ID_SOURCE=".env.deploy $GTM_ID_VAR"
+
+if [ -z "$REACT_APP_GTM_ID" ]; then
+    GTM_SSM_ERR=$(mktemp)
+    if REACT_APP_GTM_ID=$(aws ssm get-parameter --name "$GTM_ID_PARAM" \
+        --query Parameter.Value --output text --region "$REGION" 2>"$GTM_SSM_ERR"); then
+        GTM_ID_SOURCE="SSM $GTM_ID_PARAM"
+    elif grep -q ParameterNotFound "$GTM_SSM_ERR"; then
+        REACT_APP_GTM_ID=""
+    else
+        echo "ERROR: could not read $GTM_ID_PARAM from SSM:"
+        cat "$GTM_SSM_ERR"
+        rm -f "$GTM_SSM_ERR"
+        exit 1
+    fi
+    rm -f "$GTM_SSM_ERR"
+fi
 
 if [ -n "$REACT_APP_GTM_ID" ] && ! [[ "$REACT_APP_GTM_ID" =~ ^GTM-[A-Z0-9]+$ ]]; then
-    echo "ERROR: malformed $GTM_ID_VAR ('$REACT_APP_GTM_ID'). Expected GTM-XXXXXXX."
+    echo "ERROR: malformed GTM ID from $GTM_ID_SOURCE ('$REACT_APP_GTM_ID'). Expected GTM-XXXXXXX."
     exit 1
 fi
 
 # Build frontend with custom domain for autoscaling
 echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
-echo "Analytics ($ENVIRONMENT): ${REACT_APP_GTM_ID:-<$GTM_ID_VAR unset, analytics disabled>}"
+if [ -n "$REACT_APP_GTM_ID" ]; then
+    echo "Analytics ($ENVIRONMENT): $REACT_APP_GTM_ID (from $GTM_ID_SOURCE)"
+else
+    echo "Analytics ($ENVIRONMENT): <none: $GTM_ID_VAR unset in .env.deploy and $GTM_ID_PARAM not in SSM, analytics disabled>"
+fi
 cd "$REPO_ROOT/frontend"
 cat > .env.production << ENV_EOF
 REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
