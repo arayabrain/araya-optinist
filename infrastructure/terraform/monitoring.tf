@@ -340,20 +340,25 @@ resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
       tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
       service_name  = aws_ecs_service.autoscaling.name
       asg_name      = aws_autoscaling_group.main.name
+      periods       = 30
+      datapoints    = 25
     }
     public = {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
       service_name  = aws_ecs_service.public.name
       asg_name      = aws_autoscaling_group.public.name
+      # A host replacement waits out two 600 s drains, about 25 min short
+      periods    = 40
+      datapoints = 35
     }
   }
 
   alarm_name          = "${local.env_prefix}-${each.key}-serving-below-desired"
-  alarm_description   = "Fewer healthy ${each.key} targets than ASG desired hosts for 25 of 30 min, outside an ECS deployment. Check ASG activity first: a refresh or scale-out in progress is expected."
+  alarm_description   = "Fewer healthy ${each.key} targets than ASG desired hosts for ${each.value.datapoints} of ${each.value.periods} min, outside an ECS deployment. Check ASG activity first: a refresh or scale-out in progress is expected."
   comparison_operator = "GreaterThanThreshold"
   threshold           = "0"
-  evaluation_periods  = "30"
-  datapoints_to_alarm = "25"
+  evaluation_periods  = each.value.periods
+  datapoints_to_alarm = each.value.datapoints
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.critical_alerts_actions
   ok_actions          = local.critical_alerts_actions

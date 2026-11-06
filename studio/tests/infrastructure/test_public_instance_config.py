@@ -604,13 +604,20 @@ class TestServingBelowDesiredAlarm:
         assert attribute(self.alarm, "threshold") == '"0"'
         assert attribute(self.alarm, "comparison_operator") == '"GreaterThanThreshold"'
 
-    def test_window_outlasts_a_refresh_or_a_slow_start(self):
-        """A single-instance refresh or a slow morning start leaves the tier
-        below desired for up to about 17 min."""
-        datapoints = int(attribute(self.alarm, "datapoints_to_alarm").strip('"'))
-        evaluation = int(attribute(self.alarm, "evaluation_periods").strip('"'))
-        assert datapoints * 60 >= 1200
-        assert datapoints <= evaluation
+    @pytest.mark.parametrize("tier, min_datapoints", [("free", 20), ("public", 30)])
+    def test_window_outlasts_the_tiers_longest_normal_gap(self, tier, min_datapoints):
+        """A free refresh or slow morning start is short for up to about 17 min.
+        A public host replacement waits out the task's and the instance's 600 s
+        drains and was short for about 25 min on dev."""
+        assert attribute(self.alarm, "evaluation_periods") == "each.value.periods"
+        assert attribute(self.alarm, "datapoints_to_alarm") == "each.value.datapoints"
+        block = re.search(r"^\s*%s\s*=\s*\{(.*?)^\s*\}" % tier, self.alarm, re.M | re.S)
+        assert block, f"tg_serving_below_desired has no {tier} for_each key"
+        periods = int(re.search(r"\bperiods\s*=\s*(\d+)", block.group(1)).group(1))
+        datapoints = int(
+            re.search(r"\bdatapoints\s*=\s*(\d+)", block.group(1)).group(1)
+        )
+        assert min_datapoints <= datapoints <= periods
 
     def test_breach_and_recovery_are_both_wired(self):
         assert attribute(self.alarm, "alarm_actions") == "local.critical_alerts_actions"
