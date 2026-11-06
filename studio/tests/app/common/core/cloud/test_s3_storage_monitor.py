@@ -19,6 +19,11 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 
+# The size scans read the workspace ids through get_accessible_workspace_ids
+WORKSPACE_IDS_SESSION_SCOPE = (
+    "studio.app.common.core.cloud.storage_tracking.session_scope"
+)
+
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -154,7 +159,7 @@ async def test_get_user_s3_storage_size_single_workspace():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch("studio.app.common.db.database.session_scope") as mock_scope:
+        with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
             # Mock database to return single workspace
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
@@ -198,7 +203,7 @@ async def test_get_user_s3_storage_size_multiple_workspaces():
     workspace_ids = [100, 101, 102]
 
     with patch("boto3.client") as mock_boto_client:
-        with patch("studio.app.common.db.database.session_scope") as mock_scope:
+        with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -235,7 +240,7 @@ async def test_get_user_s3_storage_size_empty_bucket():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch("studio.app.common.db.database.session_scope") as mock_scope:
+        with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
             mock_db.execute.return_value.scalars.return_value.all.return_value = [
@@ -265,7 +270,7 @@ async def test_get_user_s3_storage_size_pagination():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch("studio.app.common.db.database.session_scope") as mock_scope:
+        with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
 
@@ -311,7 +316,7 @@ async def test_get_user_s3_storage_size_prefix_error_handling():
     workspace_id = 100
 
     with patch("boto3.client") as mock_boto_client:
-        with patch("studio.app.common.db.database.session_scope") as mock_scope:
+        with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
             mock_db.execute.return_value.scalars.return_value.all.return_value = [
@@ -343,7 +348,7 @@ async def test_get_user_s3_storage_size_no_workspaces():
     user_id = 1
 
     with patch("boto3.client"):
-        with patch("studio.app.common.db.database.session_scope") as mock_scope:
+        with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
             mock_db = Mock()
             mock_scope.return_value.__enter__.return_value = mock_db
             mock_db.execute.return_value.scalars.return_value.all.return_value = []
@@ -359,7 +364,7 @@ async def test_get_user_s3_storage_size_database_error():
     """Test handling when database query fails"""
     user_id = 1
 
-    with patch("studio.app.common.db.database.session_scope") as mock_scope:
+    with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
         mock_scope.side_effect = Exception("Database connection failed")
 
         monitor = S3StorageMonitor("test-bucket")
