@@ -23,9 +23,13 @@ from studio.app.common.core.instance_mode import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
+    CompressionMiddleware,
     SecureRoutingMiddleware,
     SPARoutingMiddleware,
     UserActivityMiddleware,
+)
+from studio.app.common.core.middleware.compression_middleware import (
+    PrecompressedStaticFiles,
 )
 from studio.app.common.core.middleware.cors_config import get_cors_origin_options
 from studio.app.common.core.middleware.spa_routing_middleware import (
@@ -373,6 +377,9 @@ app.add_middleware(ClientIdLoggingMiddleware)
 
 app.add_middleware(UserActivityMiddleware)
 
+# Added last, so it wraps the others and compresses their responses too
+app.add_middleware(CompressionMiddleware)
+
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])
 async def is_standalone():
@@ -380,9 +387,10 @@ async def is_standalone():
 
 
 os.makedirs(f"{DIRPATH.FRONTEND_DIRS.BUILD}/static", exist_ok=True)
+# The image build writes a gzip copy beside each script and stylesheet
 app.mount(
     "/static",
-    StaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
+    PrecompressedStaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
     name="static",
 )
 
