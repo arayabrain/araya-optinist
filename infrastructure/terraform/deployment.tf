@@ -237,15 +237,15 @@ resource "null_resource" "deploy_to_ecs" {
       done
 
       # One `aws ecs wait` stops at 10 minutes, shorter than a public rollout
-      echo "Waiting for all services to stabilize (up to 60 minutes)..."
-      DEADLINE=$(( $(date +%s) + 3600 ))
+      echo "Waiting for all services to stabilize (up to about an hour)..."
+      DEADLINE=$(( $(date +%s) + 3700 ))
       until aws ecs wait services-stable \
         --cluster ${aws_ecs_cluster.main.name} \
         --services $SERVICES \
         --region ${var.aws_region}; do
         # Start another wait only if it and the sleep can finish by the deadline
         if [ $(( $(date +%s) + 615 )) -gt "$DEADLINE" ]; then
-          echo "ERROR: services not stable within 60 minutes; the new image may not be serving."
+          echo "ERROR: services not stable within about an hour; the new image may not be serving."
           aws ecs describe-services \
             --cluster ${aws_ecs_cluster.main.name} \
             --services $SERVICES \

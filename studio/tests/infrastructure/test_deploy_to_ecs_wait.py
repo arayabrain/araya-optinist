@@ -15,7 +15,7 @@ from terraform_source import TERRAFORM_DIR, read, resource_block
 AWS_STUB = """#!/bin/bash
 echo "$*" >> "$STUB_DIR/aws.log"
 case "$1 $2" in
-  "ecs list-services") echo "arn:svc/svc-a arn:svc/svc-b" ;;
+  "ecs list-services") [ -n "$NO_SERVICES" ] || echo "arn:svc/svc-a arn:svc/svc-b" ;;
   "ecs wait")
     n=$(( $(cat "$STUB_DIR/waits" 2>/dev/null || echo 0) + 1 ))
     echo $n > "$STUB_DIR/waits"
@@ -43,7 +43,7 @@ def _command() -> str:
     return re.sub(r"\$\{[^}]*\}", "tfvalue", script).replace("\0", "${")
 
 
-def _run(tmp_path: Path, stable_on_wait: int) -> tuple:
+def _run(tmp_path: Path, stable_on_wait: int, **extra_env) -> tuple:
     (tmp_path / "now").write_text("0\n")
     for name, body in (("aws", AWS_STUB), ("date", DATE_STUB), ("sleep", SLEEP_STUB)):
         stub = tmp_path / name
@@ -54,6 +54,7 @@ def _run(tmp_path: Path, stable_on_wait: int) -> tuple:
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
         "STUB_DIR": str(tmp_path),
         "STABLE_ON_WAIT": str(stable_on_wait),
+        **extra_env,
     }
     result = subprocess.run(
         ["bash", "-c", _command()], env=env, capture_output=True, text=True
@@ -72,15 +73,23 @@ def test_a_slow_rollout_is_waited_out(tmp_path):
 def test_a_rollout_past_the_deadline_fails_and_names_the_service(tmp_path):
     result, calls, now = _run(tmp_path, stable_on_wait=99)
     assert result.returncode == 1
-    assert calls.count("ecs wait services-stable") == 5
-    assert now <= 3600
-    assert "not stable within 60 minutes" in result.stdout
+    assert calls.count("ecs wait services-stable") == 6
+    assert 3600 <= now <= 3700
+    assert "not stable within about an hour" in result.stdout
     assert "svc-b\tunable to place a task" in result.stdout
     assert "DEPLOYMENT COMPLETE" not in result.stdout
     assert "ssm start-associations-once" not in calls
 
 
 def test_the_last_wait_that_fits_the_deadline_can_still_succeed(tmp_path):
-    result, _, now = _run(tmp_path, stable_on_wait=5)
+    result, _, now = _run(tmp_path, stable_on_wait=6)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert now <= 3600
+    assert now <= 3700
+
+
+def test_an_empty_cluster_fails_before_any_update_or_wait(tmp_path):
+    result, calls, _ = _run(tmp_path, stable_on_wait=1, NO_SERVICES="1")
+    assert result.returncode == 1
+    assert "no ECS services found" in result.stdout
+    assert "ecs update-service" not in calls
+    assert "ecs wait" not in calls
