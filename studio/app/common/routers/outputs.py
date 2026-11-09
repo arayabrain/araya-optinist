@@ -34,6 +34,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -117,14 +118,6 @@ _timeseries_reads_in_flight = 0
 _image_read_executor = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="image-read"
 )
-
-
-async def _run_in(executor: ThreadPoolExecutor, func, *args):
-    """func(*args) on executor, with the request's context, as to_thread runs it."""
-    context = contextvars.copy_context()
-    return await asyncio.get_running_loop().run_in_executor(
-        executor, context.run, func, *args
-    )
 
 
 async def get_or_generate_thumbnail(
@@ -1056,7 +1049,7 @@ async def get_image(
         )
 
     _require_output_file(abs_filepath)
-    body = await _run_in(
+    body = await run_in_executor_with_context(
         _image_read_executor, JsonReader.read_as_output_bytes, abs_filepath
     )
     # Served as written: parsing and encoding it again would hold the event loop

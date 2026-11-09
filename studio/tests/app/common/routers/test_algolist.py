@@ -1,8 +1,14 @@
+import os
+from collections import Counter
+
 import pytest
 
+from studio.app.common.core.snakemake.smk_utils import SmkInternalUtils, SmkUtils
+from studio.app.common.routers import algolist
 from studio.app.common.routers.algolist import NestDictGetter
 from studio.app.common.schemas.algolist import Algo
 from studio.app.wrappers import wrapper_dict
+from studio.tests.app.common.loop_probe import Hold, health_while_held
 
 
 def _collect_algos(nest_dict, algos):
@@ -158,3 +164,82 @@ def test_clustering_takes_eta_mean():
         ("neural_data", "TimeSeriesData", False)
     ]
     assert ("mean", "TimeSeriesData") in [(r.name, r.type) for r in eta.returns]
+
+
+@pytest.fixture
+def no_env_found_yet(monkeypatch):
+    monkeypatch.setattr(algolist, "_built_conda_envs", set())
+    algolist._conda_env_filepath.cache_clear()
+    yield
+    algolist._conda_env_filepath.cache_clear()
+
+
+def _conda_env_flags(output):
+    """conda_env_exists of each algorithm that runs in a conda env, by path."""
+    algos = {}
+    for value in output.values():
+        if "children" in value:
+            algos.update(_conda_env_flags(value["children"]))
+        elif value["conda_name"]:
+            algos[value["path"]] = value["conda_env_exists"]
+    return algos
+
+
+def test_an_env_is_checked_until_found_built_and_then_no_more(
+    client, monkeypatch, no_env_found_yet
+):
+    built, checks, searches = [False], [], Counter()
+    search = SmkUtils.get_conda_env_filepath.__func__
+
+    def counting_search(cls, conda_name):
+        searches[conda_name] += 1
+        return search(cls, conda_name)
+
+    def check(conda_name, conda_env_filepath):
+        assert os.path.exists(conda_env_filepath)
+        checks[-1][conda_name] += 1
+        return built[0]
+
+    monkeypatch.setattr(
+        SmkUtils, "get_conda_env_filepath", classmethod(counting_search)
+    )
+    monkeypatch.setattr(
+        SmkInternalUtils, "verify_conda_env_exists", staticmethod(check)
+    )
+
+    def request_algolist():
+        checks.append(Counter())
+        return _conda_env_flags(client.get("/algolist").json())
+
+    before = request_algolist()
+    built[0] = True  # a run builds every env
+    after = [request_algolist(), request_algolist()]
+
+    assert before and not any(before.values())
+    assert all(after[0].values()) and after[1] == after[0]
+    # found on the first check after the build, then not checked again
+    assert set(checks[1].values()) == {1} and checks[2] == {}
+    # each env file is searched for once
+    assert set(searches.values()) == {1} and searches.keys() == checks[0].keys()
+
+
+@pytest.mark.asyncio
+async def test_health_is_answered_while_algolist_checks_an_env(
+    monkeypatch, no_env_found_yet
+):
+    hold = Hold()
+
+    def held_check(conda_name, conda_env_filepath):
+        if not hold.started.is_set():
+            hold()
+        return False
+
+    monkeypatch.setattr(
+        SmkInternalUtils, "verify_conda_env_exists", staticmethod(held_check)
+    )
+
+    held, health = await health_while_held(hold, "GET", "/algolist")
+
+    assert health.status_code == 200
+    assert held.status_code == 200, held.text
+    assert hold.released_by_answer == [True]

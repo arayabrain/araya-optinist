@@ -11,6 +11,7 @@ from sqlmodel import Session
 from studio.app.common.core.auth import pyrebase_app
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.auth_dependencies import get_admin_user
+from studio.app.common.core.auth.auth_helper import run_firebase_call
 from studio.app.common.core.auth.security import (
     create_access_token,
     create_refresh_token,
@@ -123,7 +124,7 @@ async def refresh_current_user_token(refresh_token: Optional[str]):
     if err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     try:
-        user = pyrebase_app.auth().refresh(refresh_token=token["sub"])
+        user = await run_firebase_call(pyrebase_app.auth().refresh, token["sub"])
         return AccessToken(access_token=user["idToken"])
     except RequestException as e:
         # pyrebase re-raises HTTPError(original, body); the response is on the original

@@ -1,5 +1,5 @@
 import os
-from typing import Union
+from typing import Callable, TypeVar, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -23,6 +23,8 @@ router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
 
+_T = TypeVar("_T")
+
 
 def roi_filepath(filepath: str, workspace_id: Union[int, str]) -> str:
     """The node path an ROI endpoint acts on, bound to the workspace it authorized."""
@@ -36,9 +38,7 @@ def roi_filepath(filepath: str, workspace_id: Union[int, str]) -> str:
     return filepath
 
 
-def unlocked_roi_filepath(filepath: str = Depends(roi_filepath)) -> str:
-    """The same path, refused while a commit (or, with remote storage, a run)
-    holds the experiment lock."""
+def _refuse_while_locked(filepath: str) -> None:
     ids = ExptOutputPathIds(os.path.dirname(filepath))
     try:
         RemoteSyncLockFileUtil.check_sync_lock_file(
@@ -47,7 +47,24 @@ def unlocked_roi_filepath(filepath: str = Depends(roi_filepath)) -> str:
     except RemoteStorageLockError as e:
         logger.warning(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+
+
+def unlocked_roi_filepath(filepath: str = Depends(roi_filepath)) -> str:
+    """The same path, refused while a commit (or, with remote storage, a run)
+    holds the experiment lock."""
+    _refuse_while_locked(filepath)
     return filepath
+
+
+async def _edit(filepath: str, action: Callable[[EditROI], _T]) -> _T:
+    """action(EditROI(filepath)) on the ROI edit thread. The lock is checked again
+    there: a commit may have taken it while the edit waited for the thread."""
+
+    def run():
+        _refuse_while_locked(filepath)
+        return action(EditROI(file_path=filepath))
+
+    return await EditRoiUtils.run_on_edit_thread(run)
 
 
 async def ensure_experiment_synced_for_edit(
@@ -104,7 +121,7 @@ async def status_roi(
 ):
     # Ensure experiment is synced before Edit ROI operations
     await ensure_experiment_synced_for_edit(filepath, remote_bucket_name)
-    return EditROI(file_path=filepath).get_status()
+    return await _edit(filepath, lambda edit_roi: edit_roi.get_status())
 
 
 @router.post(
@@ -113,7 +130,7 @@ async def status_roi(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def add_roi(pos: RoiPos, filepath: str = Depends(unlocked_roi_filepath)):
-    EditROI(file_path=filepath).add(pos)
+    await _edit(filepath, lambda edit_roi: edit_roi.add(pos))
     return True
 
 
@@ -123,7 +140,7 @@ async def add_roi(pos: RoiPos, filepath: str = Depends(unlocked_roi_filepath)):
     dependencies=[Depends(is_workspace_owner)],
 )
 async def merge_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)):
-    EditROI(file_path=filepath).merge(roi_list.ids)
+    await _edit(filepath, lambda edit_roi: edit_roi.merge(roi_list.ids))
     return True
 
 
@@ -133,7 +150,7 @@ async def merge_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_file
     dependencies=[Depends(is_workspace_owner)],
 )
 async def delete_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)):
-    EditROI(file_path=filepath).delete(roi_list.ids)
+    await _edit(filepath, lambda edit_roi: edit_roi.delete(roi_list.ids))
     return True
 
 
@@ -145,7 +162,7 @@ async def delete_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_fil
 async def promote_roi(
     roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)
 ):
-    EditROI(file_path=filepath).promote(roi_list.ids)
+    await _edit(filepath, lambda edit_roi: edit_roi.promote(roi_list.ids))
     return True
 
 
@@ -183,5 +200,5 @@ async def commit_edit(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def cancel_edit(filepath: str = Depends(unlocked_roi_filepath)):
-    EditROI(file_path=filepath).cancel()
+    await _edit(filepath, lambda edit_roi: edit_roi.cancel())
     return True
