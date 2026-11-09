@@ -224,7 +224,7 @@ resource "aws_autoscaling_group" "main" {
   name                      = "${local.env_prefix}-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns         = [aws_lb_target_group.autoscaling.arn]
-  health_check_type         = "ELB"
+  health_check_type         = "ELB" # not EC2: only the TG check replaces a registered host with no task, or a wedged one
   health_check_grace_period = 900
   default_cooldown          = 300
 
@@ -1252,6 +1252,7 @@ resource "aws_ecs_service" "autoscaling" {
     expression = "attribute:tier == free"
   }
 
+  # Cold starts only: past the ASG's grace, a restart not serving in ~300 s loses its instance
   health_check_grace_period_seconds = 900
 
   # desired_count above is the creation value only. At runtime the
