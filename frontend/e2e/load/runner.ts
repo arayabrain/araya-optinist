@@ -385,15 +385,24 @@ export async function runStep(input: StepInput): Promise<StepResult> {
     releaseAt = round3((performance.now() - t0) / 1000)
     const all = Promise.all(tasks)
     let timer: NodeJS.Timeout | undefined
-    const finished = await Promise.race([
-      all.then(() => true),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), ctx.deadlineMs)
+    let poll: NodeJS.Timeout | undefined
+    const ended = await Promise.race([
+      all.then(() => "done" as const),
+      new Promise<"deadline">((resolve) => {
+        timer = setTimeout(() => resolve("deadline"), ctx.deadlineMs)
+      }),
+      // A stop rule ends every user at once: their open and queued requests
+      // would keep loading the service the rule found struggling
+      new Promise<"stopped">((resolve) => {
+        poll = setInterval(() => {
+          if (ctx.abortReason) resolve("stopped")
+        }, 100)
       }),
     ])
     clearTimeout(timer)
-    if (!finished) {
-      ctx.cancelled = true
+    clearInterval(poll)
+    if (ended !== "done") {
+      ctx.cancelled = ended === "deadline"
       for (const vu of users) vu.stop()
       await all
     }

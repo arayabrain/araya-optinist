@@ -54,6 +54,7 @@ import {
   PUBLISHED,
   planName,
   RecordState,
+  refreshed,
   runStep,
   setPublished,
   signIn,
@@ -212,6 +213,10 @@ test.describe("Web UI load lane @disruptive", () => {
       ).toBe("Free")
     }
     const owner = cfg.accounts.indexOf(cfg.dialogOwner)
+    // ID tokens last an hour and a run outlasts one, so every record lookup
+    // and publish change refreshes the owner's session first
+    const ownerSession = async (): Promise<Session> =>
+      (sessions[owner] = await refreshed(base, sessions[owner]))
     const wanted = (screen: Screen) =>
       !cfg.screens || cfg.screens.includes(screen)
     const planned = plan.screens.filter((s) => wanted(s.screen))
@@ -220,7 +225,11 @@ test.describe("Web UI load lane @disruptive", () => {
     if (
       planned.some((s) => s.screen === "dashboard" || s.screen === "dialog")
     ) {
-      const record = await findRecord(base, sessions[owner], cfg.dialogRecord)
+      const record = await findRecord(
+        base,
+        await ownerSession(),
+        cfg.dialogRecord,
+      )
       expect(
         record,
         "LOAD_DIALOG_RECORD is not in LOAD_DIALOG_OWNER's Dataview",
@@ -328,7 +337,7 @@ test.describe("Web UI load lane @disruptive", () => {
           if (screen.screen === "public" && !publicSpecReady) {
             publicRecord = await findRecord(
               base,
-              sessions[owner],
+              await ownerSession(),
               cfg.publicRecord,
             )
             expect(
@@ -345,8 +354,9 @@ test.describe("Web UI load lane @disruptive", () => {
                 continue
               }
               log.step("publishing the public record for the run")
-              await setPublished(base, sessions[owner], rec.id, true)
+              // Restored even when the change is made and its answer lost
               publishedByUs = true
+              await setPublished(base, await ownerSession(), rec.id, true)
             }
             log.step("capturing PublicDataview")
             const rows: CaptureRow[] = await capturePublic(
@@ -408,7 +418,7 @@ test.describe("Web UI load lane @disruptive", () => {
           previous = outcome.figures
         }
         if (publishedByUs && publicRecord) {
-          await setPublished(base, sessions[owner], publicRecord.id, false)
+          await setPublished(base, await ownerSession(), publicRecord.id, false)
           publishedByUs = false
         }
       }
@@ -417,9 +427,12 @@ test.describe("Web UI load lane @disruptive", () => {
       await cooldown(plan.settle_s, "settle")
     } finally {
       if (publishedByUs && publicRecord) {
-        await setPublished(base, sessions[owner], publicRecord.id, false).catch(
-          (e) => console.error(`could not unpublish the public record: ${e}`),
-        )
+        const id = publicRecord.id
+        await ownerSession()
+          .then((s) => setPublished(base, s, id, false))
+          .catch((e) =>
+            console.error(`could not unpublish the public record: ${e}`),
+          )
       }
       if (outcomes.length) {
         try {
@@ -490,7 +503,11 @@ test.describe("Web UI load lane @disruptive", () => {
     }
 
     if (publicRecord) {
-      const after = await findRecord(base, sessions[owner], cfg.publicRecord)
+      const after = await findRecord(
+        base,
+        await ownerSession(),
+        cfg.publicRecord,
+      )
       expect(
         after?.publishStatus,
         "the public record's publish state was not restored",
