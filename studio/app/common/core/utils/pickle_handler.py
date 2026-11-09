@@ -1,6 +1,7 @@
 import os
 import pickle
 import traceback
+from contextlib import suppress
 from glob import glob
 
 from studio.app.common.core.utils.filepath_creater import (
@@ -58,11 +59,20 @@ class PickleWriter:
         if os.path.exists(pickle_path):
             os.remove(pickle_path)
 
-        with open(tmp_pickle_path, "wb") as f:
-            pickle.dump(info, f)
-            f.flush()
-
+        cls._dump(tmp_pickle_path, info)
         os.rename(tmp_pickle_path, pickle_path)
+
+    @classmethod
+    def _dump(cls, tmp_pickle_path, info):
+        # A failed dump (full disk) leaves no multi-GB .tmp behind
+        try:
+            with open(tmp_pickle_path, "wb") as f:
+                pickle.dump(info, f)
+                f.flush()
+        except BaseException:
+            with suppress(OSError):
+                os.remove(tmp_pickle_path)
+            raise
 
     @classmethod
     def write_error(cls, pickle_path, err: Exception):
@@ -84,8 +94,5 @@ class PickleWriter:
             if os.path.exists(pickle_path):
                 os.remove(pickle_path)
 
-            with open(tmp_pickle_path, "wb") as f:
-                pickle.dump(old_pkl, f)
-                f.flush()
-
+            cls._dump(tmp_pickle_path, old_pkl)
             os.rename(tmp_pickle_path, pickle_path)

@@ -388,6 +388,11 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
   --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
 ```
 
+`terraform apply` does both steps itself in `null_resource.deploy_to_ecs`. It waits up to about
+an hour for every service to settle (the public service alone took about 40 minutes on
+development) and fails the apply, naming each unsettled service, if one does not. The failed
+resource is tainted, so the next apply forces a new deployment on every service again.
+
 ### Safe Deployment Workflow
 
 1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
@@ -447,6 +452,31 @@ The ECR lifecycle policy automatically manages storage:
 - **Untagged images**: removed after 7 days
 - **Versioned images**: only the last 10 are kept
 - **`:latest`**: always retained
+
+On the hosts themselves, the `<env>-docker-hygiene` SSM association prunes stopped containers and
+unused images every 6 hours and after each deploy (`null_resource.deploy_to_ecs` and
+`ecr_build_push.sh --deploy` both trigger it). See
+[MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene).
+
+### Host Root Volumes
+
+Root volume sizes are `root_volume_gib` in `local.free_tier_sizing_defaults` (88 GiB) and
+`local.premium_tier_sizing_defaults` (64 GiB) in `main.tf`, overridable per environment through
+`free_tier_sizing` / `premium_tier_sizing` in the tfvars. Background and public hosts keep the
+AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` and the
+`ECS_IMAGE_*` settings in `scripts/ecs-user-data.sh`) ship with the user data.
+
+A change to either reaches a host only when it is launched from the new launch template version:
+
+- `aws_instance.premium` and `aws_instance.background` pin their template's `latest_version`, so the
+  plan that changes a template shows `-/+` on its instance and the same apply replaces it. Apply at a
+  time with no premium run active: users on the old premium instance lose their task.
+- The free and public ASGs do not instance-refresh under `$Latest`; their hosts pick the change up
+  at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
+- Premium hosts created by the Lambda (`premium_manager.py`) keep their size until terminated.
+
+The hygiene association needs none of this: it targets hosts by the
+`aws:ec2launchtemplate:id` tag, which every host launched from a template already carries.
 
 ---
 

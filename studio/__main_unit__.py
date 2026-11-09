@@ -23,9 +23,13 @@ from studio.app.common.core.instance_mode import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
+    CompressionMiddleware,
     SecureRoutingMiddleware,
     SPARoutingMiddleware,
     UserActivityMiddleware,
+)
+from studio.app.common.core.middleware.compression_middleware import (
+    PrecompressedStaticFiles,
 )
 from studio.app.common.core.middleware.cors_config import get_cors_origin_options
 from studio.app.common.core.middleware.spa_routing_middleware import (
@@ -39,6 +43,7 @@ from studio.app.common.core.subscription.constants import (
     PremiumExpirationSweep,
     StorageReconciliation,
     SyncStatusConstants,
+    UnverifiedAccountCleanup,
 )
 
 # Background job imports (only used in non-standalone mode)
@@ -55,6 +60,9 @@ if not MODE.IS_STANDALONE:
         StorageReconciliationJob,
     )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+    from studio.app.common.core.background.unverified_account_cleanup_job import (
+        UnverifiedAccountCleanupJob,
+    )
 
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workspace.workspace_dependencies import (
@@ -182,6 +190,14 @@ async def lifespan(app: FastAPI):
             func=PremiumExpirationSweepJob.run,
             interval_minutes=PremiumExpirationSweep.JOB_INTERVAL_MINUTES,
             job_id=PremiumExpirationSweep.JOB_ID,
+        )
+
+        # Sweep never-verified Firebase accounts unused since registration. Dry-run
+        # unless UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete.
+        BackgroundScheduler.add_job(
+            func=UnverifiedAccountCleanupJob.run,
+            interval_minutes=UnverifiedAccountCleanup.JOB_INTERVAL_MINUTES,
+            job_id=UnverifiedAccountCleanup.JOB_ID,
         )
 
         # Start scheduler
@@ -361,6 +377,9 @@ app.add_middleware(ClientIdLoggingMiddleware)
 
 app.add_middleware(UserActivityMiddleware)
 
+# Added last, so it wraps the others and compresses their responses too
+app.add_middleware(CompressionMiddleware)
+
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])
 async def is_standalone():
@@ -368,9 +387,10 @@ async def is_standalone():
 
 
 os.makedirs(f"{DIRPATH.FRONTEND_DIRS.BUILD}/static", exist_ok=True)
+# The image build writes a gzip copy beside each script and stylesheet
 app.mount(
     "/static",
-    StaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
+    PrecompressedStaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
     name="static",
 )
 

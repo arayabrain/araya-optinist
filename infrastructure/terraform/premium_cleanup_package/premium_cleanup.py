@@ -67,12 +67,17 @@ def _premium_tg_alarm_name(tg_arn: str) -> str | None:
 
     Must match the name used at alarm creation so deletion targets it.
     """
+    tg_name = _tg_name(tg_arn)
+    if not tg_name:
+        return None
+    return f"{EnvironmentConfig.get_env_prefix()}-{tg_name}-unhealthy-hosts"
+
+
+def _tg_name(tg_arn: str) -> str | None:
     idx = tg_arn.find(":targetgroup/")
     suffix = tg_arn[idx + 1 :] if idx != -1 else tg_arn
     parts = suffix.split("/")
-    if len(parts) < 2:
-        return None
-    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+    return parts[1] if len(parts) >= 2 else None
 
 
 def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
@@ -90,6 +95,28 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
         print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"Warning: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
+
+
+def _delete_premium_tg(elbv2: "ElasticLoadBalancingv2Client", tg_arn: str) -> bool:
+    """Delete a premium TG, then its alarm unless a newer TG has taken its name.
+
+    The alarm is named after the TG name, and a delete may succeed for an ARN
+    that is already gone, so the alarm goes only once the name is free.
+    """
+    try:
+        elbv2.delete_target_group(TargetGroupArn=tg_arn)
+    except Exception as e:
+        print(f"Warning: Failed to delete target group {tg_arn}: {e}")
+        return False
+    try:
+        elbv2.describe_target_groups(Names=[_tg_name(tg_arn)])
+        print(f"Keeping the alarm of {tg_arn}: its name is in use again")
+    except Exception as e:
+        if "TargetGroupNotFound" in str(e):
+            _delete_premium_tg_unhealthy_alarm(tg_arn)
+        else:
+            print(f"Keeping the alarm of {tg_arn}: cannot check its name: {e}")
+    return True
 
 
 def _cleanup_assignment_alb_resources(
@@ -118,12 +145,8 @@ def _cleanup_assignment_alb_resources(
         and target_group_arn.lower() != PremiumAssignment.STANDBY
         and target_group_arn != autoscaling_tg_arn
     ):
-        try:
-            _delete_premium_tg_unhealthy_alarm(target_group_arn)
-            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+        if _delete_premium_tg(elbv2, target_group_arn):
             print(f"Deleted target group for user {user_id}: {target_group_arn}")
-        except Exception as e:
-            print(f"Warning: Failed to delete target group {target_group_arn}: {e}")
     elif target_group_arn == autoscaling_tg_arn:
         print(
             f"Skipping deletion of shared autoscaling "
@@ -219,6 +242,47 @@ def get_assign_claimed_user_ids() -> Set[int]:
 
 
 _PREMIUM_TG_NAME_RE = re.compile(r":targetgroup/premium-(\d+)-tg/")
+_PREMIUM_TG_FULL_NAME_RE = re.compile(r"^premium-([1-9]\d*)-tg$")
+MAX_RULELESS_TG_DELETES_PER_RUN = 20
+
+
+def _list_premium_target_groups(
+    elbv2: "ElasticLoadBalancingv2Client", vpc_id: str
+) -> List[tuple]:
+    """(user_id, TG) for every premium-<id>-tg in this environment's VPC."""
+    groups = []
+    for page in elbv2.get_paginator("describe_target_groups").paginate():
+        for tg in page.get("TargetGroups", []):
+            match = _PREMIUM_TG_FULL_NAME_RE.match(tg.get("TargetGroupName", ""))
+            if match and tg.get("VpcId") == vpc_id:
+                groups.append((int(match.group(1)), tg))
+    return groups
+
+
+def _delete_ruleless_target_groups(
+    elbv2: "ElasticLoadBalancingv2Client",
+    tg_snapshot: List[tuple],
+    keep_user_ids: Set[int],
+    claimed_user_ids: Set[int],
+) -> int:
+    """Delete snapshot TGs no rule forwards to and no row or claim owns."""
+    candidates = [
+        tg["TargetGroupArn"]
+        for user_id, tg in tg_snapshot
+        if not tg.get("LoadBalancerArns")
+        and user_id not in keep_user_ids
+        and user_id not in claimed_user_ids
+    ]
+    if len(candidates) > MAX_RULELESS_TG_DELETES_PER_RUN:
+        print(
+            f"Rule-less TG sweep capped: "
+            f"{len(candidates) - MAX_RULELESS_TG_DELETES_PER_RUN} left for later runs"
+        )
+    deleted = 0
+    for tg_arn in candidates[:MAX_RULELESS_TG_DELETES_PER_RUN]:
+        print(f"Deleting rule-less target group: {tg_arn}")
+        deleted += _delete_premium_tg(elbv2, tg_arn)
+    return deleted
 
 
 def _rule_may_belong_to_inflight_assign(
@@ -471,6 +535,16 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
+        # TG creation must stay inside the assign claim: TGs are listed before claims
+        tg_error = None
+        try:
+            tg_snapshot = _list_premium_target_groups(
+                elbv2, get_required_env_var("VPC_ID")
+            )
+        except Exception as e:
+            print(f"Skipping rule-less TG sweep: cannot list target groups: {e}")
+            tg_snapshot, tg_error = [], str(e)
+
         # Claims before the keep-set: an assign stores its row before dropping its claim
         try:
             claimed_user_ids = get_assign_claimed_user_ids()
@@ -517,6 +591,10 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
             if a["alb_rule_arn"] and a["alb_rule_arn"].startswith("arn:")
         }
         print(f"Found {len(db_rule_arns)} keep-set assignments in database")
+        # By user id too: a pool migration creates the TG before the row points at it
+        keep_user_ids = {
+            int(a["user_id"]) for a in db_assignments if a["user_id"] is not None
+        }
 
         # Find orphaned rules (in ALB but not in database)
         orphaned_rules = []
@@ -527,14 +605,6 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 print(f"Keeping rule {rule['RuleArn']}: an assign is in flight")
                 continue
             orphaned_rules.append(rule)
-
-        if not orphaned_rules:
-            print("No orphaned ALB resources found")
-            return {
-                "orphaned_rules_deleted": 0,
-                "orphaned_target_groups_deleted": 0,
-                "message": "No orphaned resources to clean",
-            }
 
         print(f"Found {len(orphaned_rules)} orphaned ALB rules to clean up")
 
@@ -563,13 +633,9 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
                 # Delete the target group if it exists (skip shared autoscaling TG)
                 if target_group_arn and target_group_arn != autoscaling_tg_arn:
-                    try:
-                        _delete_premium_tg_unhealthy_alarm(target_group_arn)
-                        elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                    if _delete_premium_tg(elbv2, target_group_arn):
                         target_groups_deleted += 1
                         print(f"Deleted target group: {target_group_arn}")
-                    except Exception as tg_error:
-                        print(f"Warning: Failed to delete target group: {tg_error}")
                 elif target_group_arn == autoscaling_tg_arn:
                     print(
                         f"Skipping deletion of shared autoscaling "
@@ -580,18 +646,28 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 print(f"Error deleting orphaned rule {rule_arn}: {e}")
                 # Continue with other rules
 
-        print(
-            f"Orphaned resource cleanup complete: {rules_deleted} rules, "
-            f"{target_groups_deleted} target groups deleted"
+        ruleless_deleted = _delete_ruleless_target_groups(
+            elbv2, tg_snapshot, keep_user_ids, claimed_user_ids
         )
 
-        return {
+        print(
+            f"Orphaned resource cleanup complete: {rules_deleted} rules, "
+            f"{target_groups_deleted} target groups, "
+            f"{ruleless_deleted} rule-less target groups deleted"
+        )
+
+        result = {
             "orphaned_rules_deleted": rules_deleted,
             "orphaned_target_groups_deleted": target_groups_deleted,
+            "ruleless_target_groups_deleted": ruleless_deleted,
             "total_orphaned": len(orphaned_rules),
-            "message": f"Cleaned {rules_deleted} orphaned ALB rules and "
-            f"{target_groups_deleted} target groups",
+            "message": f"Cleaned {rules_deleted} orphaned ALB rules, "
+            f"{target_groups_deleted} target groups and "
+            f"{ruleless_deleted} rule-less target groups",
         }
+        if tg_error:
+            result["ruleless_tg_error"] = tg_error
+        return result
 
     except Exception as e:
         print(f"Error during orphaned resource cleanup: {str(e)}")
@@ -712,18 +788,9 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                     for action in rule.get("Actions", []):
                         if action.get("Type") == "forward":
                             tg_arn = action.get("TargetGroupArn")
-                            if tg_arn:
-                                try:
-                                    _delete_premium_tg_unhealthy_alarm(tg_arn)
-                                    elbv2.delete_target_group(TargetGroupArn=tg_arn)
-                                    target_groups_deleted += 1
-                                    print(f"Deleted target group {tg_arn}")
-                                except Exception as tg_error:
-                                    # Target group might be in use by another rule
-                                    print(
-                                        f"Could not delete target group : "
-                                        f"{tg_arn}: {tg_error}"
-                                    )
+                            if tg_arn and _delete_premium_tg(elbv2, tg_arn):
+                                target_groups_deleted += 1
+                                print(f"Deleted target group {tg_arn}")
 
                 except Exception as e:
                     print(f"Failed to delete rule {rule_arn}: {e}")
@@ -1746,6 +1813,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         total_operations = (
             results["cleanup_stats"].get("cleaned_assignments", 0)
             + results["orphaned_cleanup_stats"].get("orphaned_rules_deleted", 0)
+            + results["orphaned_cleanup_stats"].get("ruleless_target_groups_deleted", 0)
             + results["duplicate_cleanup_stats"].get("duplicates_deleted", 0)
             + results["reconciliation_stats"].get("cleanup_count", 0)
             + results["reconciliation_stats"].get("update_count", 0)

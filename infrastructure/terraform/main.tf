@@ -161,6 +161,12 @@ variable "firebase_private_json" {
   sensitive   = true
 }
 
+variable "unverified_account_cleanup_mode" {
+  description = "Unverified Firebase account cleanup mode: dry_run (log candidates only) or delete"
+  type        = string
+  default     = "dry_run"
+}
+
 variable "test_users" {
   description = "Test user configuration with Firebase UIDs and subscription details"
   type = list(object({
@@ -276,7 +282,7 @@ locals {
     container_memory_reservation_mib = 4096
     container_max_swap_mib           = 32768
     container_swappiness             = 20
-    root_volume_gib                  = 48
+    root_volume_gib                  = 64
     swap_volume_gib                  = 32
   }
 

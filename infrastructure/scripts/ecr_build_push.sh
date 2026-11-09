@@ -46,12 +46,27 @@ done
 # ===========================================
 DIRTY_FILES=$(git -C "$(git rev-parse --show-toplevel)" status --porcelain)
 if [ -n "$DIRTY_FILES" ]; then
-    echo "ERROR: Working tree is not clean. Commit or stash changes before building."
+    CHANGED_FILES=$(printf '%s\n' "$DIRTY_FILES" | grep -v '^??' | cut -c4-)
+    UNTRACKED_FILES=$(printf '%s\n' "$DIRTY_FILES" | grep '^??' | cut -c4-)
+    echo "ERROR: the image is built only from committed code, and this checkout has"
+    echo "files that are not committed. Untracked files count too: anything"
+    echo "'git status' lists blocks the build."
+    if [ -n "$CHANGED_FILES" ]; then
+        echo ""
+        echo "Changed (modified, staged, deleted or renamed):"
+        printf '%s\n' "$CHANGED_FILES" | sed 's/^/  /'
+    fi
+    if [ -n "$UNTRACKED_FILES" ]; then
+        echo ""
+        echo "Untracked (not in git):"
+        printf '%s\n' "$UNTRACKED_FILES" | sed 's/^/  /'
+    fi
     echo ""
-    echo "$DIRTY_FILES"
-    echo ""
-    echo "This check ensures builds are reproducible from a clean commit."
-    echo "Note: .gitignored secrets (.env, firebase JSONs) are excluded by .dockerignore, not this check."
+    echo "To fix: commit them, or set them aside with 'git stash -u' and bring them"
+    echo "back after the build with 'git stash pop'."
+    echo "From terraform apply: what the apply already changed stays changed, and"
+    echo "null_resource.build_and_deploy is marked tainted, so rerunning"
+    echo "terraform apply retries the build."
     exit 1
 fi
 
@@ -156,27 +171,47 @@ if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGIO
     exit 1
 fi
 
-# infrastructure/.env.deploy (gitignored) holds build-time values Terraform does
-# not own. Keyed per environment so a development build can never be published
-# with the production analytics container. Sourced in a subshell so a stray
-# assignment in that file cannot clobber the variables used below.
+# GTM ID: only the gitignored .env.deploy (not a shell export) overrides SSM; neither means analytics off.
 GTM_ID_VAR="REACT_APP_GTM_ID_$(echo "$ENVIRONMENT" | tr '[:lower:]-' '[:upper:]_')"
+GTM_ID_PARAM="/${ENVIRONMENT}/optinist/gtm-id"
 REACT_APP_GTM_ID=$(
     set +e
+    unset "$GTM_ID_VAR"
     if [ -f "$REPO_ROOT/infrastructure/.env.deploy" ]; then
         . "$REPO_ROOT/infrastructure/.env.deploy"
     fi
     printf '%s' "${!GTM_ID_VAR:-}"
 )
+GTM_ID_SOURCE=".env.deploy $GTM_ID_VAR"
+
+if [ -z "$REACT_APP_GTM_ID" ]; then
+    GTM_SSM_ERR=$(mktemp)
+    if REACT_APP_GTM_ID=$(aws ssm get-parameter --name "$GTM_ID_PARAM" \
+        --query Parameter.Value --output text --region "$REGION" 2>"$GTM_SSM_ERR"); then
+        GTM_ID_SOURCE="SSM $GTM_ID_PARAM"
+    elif grep -q ParameterNotFound "$GTM_SSM_ERR"; then
+        REACT_APP_GTM_ID=""
+    else
+        echo "ERROR: could not read $GTM_ID_PARAM from SSM:"
+        cat "$GTM_SSM_ERR"
+        rm -f "$GTM_SSM_ERR"
+        exit 1
+    fi
+    rm -f "$GTM_SSM_ERR"
+fi
 
 if [ -n "$REACT_APP_GTM_ID" ] && ! [[ "$REACT_APP_GTM_ID" =~ ^GTM-[A-Z0-9]+$ ]]; then
-    echo "ERROR: malformed $GTM_ID_VAR ('$REACT_APP_GTM_ID'). Expected GTM-XXXXXXX."
+    echo "ERROR: malformed GTM ID from $GTM_ID_SOURCE ('$REACT_APP_GTM_ID'). Expected GTM-XXXXXXX."
     exit 1
 fi
 
 # Build frontend with custom domain for autoscaling
 echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
-echo "Analytics ($ENVIRONMENT): ${REACT_APP_GTM_ID:-<$GTM_ID_VAR unset, analytics disabled>}"
+if [ -n "$REACT_APP_GTM_ID" ]; then
+    echo "Analytics ($ENVIRONMENT): $REACT_APP_GTM_ID (from $GTM_ID_SOURCE)"
+else
+    echo "Analytics ($ENVIRONMENT): <none: $GTM_ID_VAR unset in .env.deploy and $GTM_ID_PARAM not in SSM, analytics disabled>"
+fi
 cd "$REPO_ROOT/frontend"
 cat > .env.production << ENV_EOF
 REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
@@ -232,4 +267,15 @@ if [ "$DEPLOY" = true ]; then
     done
     echo "Force-new-deployment issued for all services (re-pulling ${ECR_URI}:latest)."
     echo "Running services restart now; any service at desiredCount 0 re-pulls on next scale-up."
+
+    # Each host now holds the image this deploy replaced; prune it once the
+    # new tasks are up rather than at the next scheduled run
+    echo "Waiting for services to stabilize..."
+    aws ecs wait services-stable --cluster "$CLUSTER" --services $SERVICES --region "$REGION" \
+        || echo "Warning: services not stable yet; docker hygiene runs on its 6 h schedule"
+    HYGIENE_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw docker_hygiene_association_id 2>/dev/null || echo "")
+    if [ -n "$HYGIENE_ID" ]; then
+        aws ssm start-associations-once --association-ids "$HYGIENE_ID" --region "$REGION" \
+            || echo "Warning: could not trigger docker hygiene"
+    fi
 fi

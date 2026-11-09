@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import errno
 import json
 import os
 import re
@@ -14,10 +16,13 @@ from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
 import tifffile
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from requests.models import Response
 from sqlmodel import Session
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 from tqdm import tqdm
 
 from studio.app.common.core.auth.auth_dependencies import (
@@ -31,6 +36,11 @@ from studio.app.common.core.cloud.storage_tracking import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
+from studio.app.common.core.storage.local_disk_guard import (
+    USER_HINT,
+    LocalDiskFullError,
+    ensure_local_disk_headroom,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
     InputFileLock,
     RemoteStorageController,
@@ -838,19 +848,66 @@ async def _publish_input(
     "/{workspace_id}/upload/{filename}",
     response_model=FilePath,
     dependencies=[Depends(is_workspace_owner)],
+    # The body is parsed by hand (see below), so the schema is declared here
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["file"],
+                        "properties": {"file": {"type": "string", "format": "binary"}},
+                    }
+                }
+            },
+        }
+    },
 )
 async def create_file(
     workspace_id: str,
     filename: str,
+    request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
+    user_id = current_user.id if current_user else None
+    # The body transfer can take minutes; do not hold a pooled connection for it
+    release_request_session(db)
     try:
-        user_id = current_user.id if current_user else None
-        await _check_storage_quota(user_id)
+        try:
+            await _check_storage_quota(user_id)
+        except HTTPException as e:
+            await _refuse_upload(request, e.status_code, e.detail)
+
+        # The multipart body is spooled to the host's disk as it is parsed and
+        # then copied, so the spool and the copy are budgeted before reading it,
+        # and the copy again once the real size is known
+        try:
+            declared = int(request.headers.get("content-length", 0))
+        except ValueError:
+            declared = 0
+        await _require_upload_headroom(2 * declared, request)
+        try:
+            form = await request.form()
+        except StarletteHTTPException as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
+        except ClientDisconnect:
+            raise HTTPException(status_code=400, detail="Upload interrupted")
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                raise
+            raise HTTPException(
+                status_code=507,
+                detail="Cannot upload file: the analysis server's local disk "
+                f"filled while receiving it. {USER_HINT}",
+            )
+        file = form.get("file")
+        if not isinstance(file, UploadFile):
+            raise HTTPException(status_code=422, detail="Missing file")
+        await _require_upload_headroom(file.size or 0)
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
@@ -887,9 +944,30 @@ async def create_file(
         )
 
     finally:
-        # The live storage refresh lists every S3 object of the user; do not
-        # hold the guards' connection while it runs
-        release_request_session(db)
+        with contextlib.suppress(Exception):
+            await request.close()
+
+
+async def _refuse_upload(request: Request, status_code: int, detail: str) -> None:
+    """Raise HTTPException after reading out the rest of the body (to nowhere):
+    a response sent while the client is still uploading reaches the browser
+    as a connection reset, not as this message."""
+    with contextlib.suppress(ClientDisconnect):
+        async for _ in request.stream():
+            pass
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+async def _require_upload_headroom(
+    nbytes: int, unread_request: Optional[Request] = None
+) -> None:
+    try:
+        await asyncio.to_thread(ensure_local_disk_headroom, nbytes)
+    except LocalDiskFullError as e:
+        detail = f"Cannot upload file: {e} {USER_HINT}"
+        if unread_request is None:
+            raise HTTPException(status_code=507, detail=detail)
+        await _refuse_upload(unread_request, 507, detail)
 
 
 def _update_workspace_data_usage(workspace_id: str) -> None:
@@ -1038,6 +1116,16 @@ async def download_file(
             )
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
+
+        # The response is open: release it before refusing. No Content-Length
+        # means only the reserve is checked.
+        try:
+            await asyncio.to_thread(ensure_local_disk_headroom, _content_length(res))
+        except LocalDiskFullError as e:
+            res.close()
+            raise HTTPException(
+                status_code=507, detail=f"Cannot download file: {e} {USER_HINT}"
+            )
 
         upload_id = uuid.uuid4().hex
         await asyncio.to_thread(

@@ -21,6 +21,11 @@ from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.local_disk_guard import (
+    USER_HINT,
+    LocalDiskFullError,
+    ensure_local_disk_headroom,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
@@ -119,6 +124,7 @@ async def run(
     try:
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
+        await asyncio.to_thread(ensure_local_disk_headroom)
         await ensure_structure_caches(
             remote_bucket_name, workspace_id, runItem.nodeDict
         )
@@ -145,6 +151,12 @@ async def run(
         logger.info("run snakemake")
 
         return unique_id
+
+    except LocalDiskFullError as e:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail=f"Cannot run workflow: {e} {USER_HINT}",
+        )
 
     except KeyError as e:
         logger.error(e, exc_info=True)
@@ -202,6 +214,7 @@ async def run_id(
     try:
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
+        await asyncio.to_thread(ensure_local_disk_headroom)
         await ensure_structure_caches(
             remote_bucket_name, workspace_id, runItem.nodeDict
         )
@@ -272,6 +285,12 @@ async def run_id(
         logger.info("forcerun list: %s", runItem.forceRunList)
 
         return uid
+
+    except LocalDiskFullError as e:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail=f"Cannot run workflow: {e} {USER_HINT}",
+        )
 
     except WorkflowValidationError as e:
         raise HTTPException(

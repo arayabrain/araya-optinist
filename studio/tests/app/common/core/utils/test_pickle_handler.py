@@ -25,3 +25,22 @@ def test_PickleReader():
     data = PickleReader.read(filepath)
 
     assert data == "abc"
+
+
+def test_a_failed_dump_leaves_no_tmp_behind(tmp_path, monkeypatch):
+    import pickle
+
+    import pytest
+
+    target = str(tmp_path / "node" / "node.pkl")
+    PickleWriter.write(target, "old")
+
+    def enospc(obj, f):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pickle, "dump", enospc)
+    with pytest.raises(OSError):
+        PickleWriter.write(target, "new")
+    # the old pickle goes first (a stale success must not survive a failed
+    # write), and the failed write leaves no .tmp
+    assert os.listdir(tmp_path / "node") == []
