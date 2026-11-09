@@ -1,5 +1,6 @@
 """Tests for premium_cleanup Lambda function."""
 
+import ast
 from unittest.mock import MagicMock, patch
 
 import pymysql
@@ -10,6 +11,7 @@ from aws_constants import (
     PremiumInstanceConfig,
     RoutingHeaders,
 )
+from terraform_source import TERRAFORM_DIR
 
 from conftest import MockRow, setup_db_mock
 
@@ -2043,3 +2045,21 @@ class TestGetEcsContainerInstanceArnPrefersLive:
 
             result = _get_ecs_container_instance_arn("i-solo", "test-cluster")
             assert result == arn
+
+
+def test_only_delete_premium_tg_deletes_a_tg_or_its_alarm():
+    """The group-before-alarm order lives in ``_delete_premium_tg``; a direct
+    call anywhere else could put the alarm first again."""
+    tree = ast.parse(
+        (TERRAFORM_DIR / "premium_cleanup_package/premium_cleanup.py").read_text()
+    )
+    callers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "attr", getattr(call.func, "id", None))
+        in {"delete_target_group", "_delete_premium_tg_unhealthy_alarm"}
+    }
+    assert callers == {"_delete_premium_tg"}

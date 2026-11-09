@@ -1,5 +1,6 @@
 """Tests for premium_manager Lambda function."""
 
+import ast
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pymysql
 import pytest
 from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
+from terraform_source import TERRAFORM_DIR
 
 from conftest import FakeAssignClaimsDb, MockRow, setup_db_mock
 
@@ -7289,3 +7291,21 @@ class TestScalePremiumInstancesIfNeeded:
         assert scaled is False
         create.assert_not_called()
         ec2.start_instances.assert_not_called()
+
+
+def test_only_delete_premium_tg_deletes_a_tg_or_its_alarm():
+    """The group-before-alarm order lives in ``_delete_premium_tg``; a direct
+    call anywhere else could put the alarm first again."""
+    tree = ast.parse(
+        (TERRAFORM_DIR / "premium_manager_package/premium_manager.py").read_text()
+    )
+    callers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "attr", getattr(call.func, "id", None))
+        in {"delete_target_group", "_delete_premium_tg_unhealthy_alarm"}
+    }
+    assert callers == {"_delete_premium_tg"}
