@@ -72,7 +72,7 @@ resource "aws_launch_template" "background" {
 resource "aws_instance" "background" {
   launch_template {
     id      = aws_launch_template.background.id
-    version = "$Latest"
+    version = aws_launch_template.background.latest_version
   }
 
   instance_type = var.background_instance_type
