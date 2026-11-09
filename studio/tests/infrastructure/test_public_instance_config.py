@@ -478,6 +478,165 @@ class TestPublicUnhealthyHostsAlarm:
         assert attribute(self.alarm, "ok_actions") == "local.critical_alerts_actions"
 
 
+class TestServingBelowDesiredAlarm:
+    """Fewer healthy targets than ASG desired hosts, per tier.
+
+    Covers what the ASG's ELB check and UnHealthyHostCount both miss: a target
+    ECS deregistered while its agent was lost, so the host shows as unused
+    rather than unhealthy and the tier is silently down.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.alarm = resource_block(
+            read(MONITORING_TF),
+            "aws_cloudwatch_metric_alarm",
+            "tg_serving_below_desired",
+        )
+
+    @pytest.mark.parametrize(
+        "tier, target_group, service, asg",
+        [
+            ("free", "autoscaling", "autoscaling", "main"),
+            ("public", "public", "public", "public"),
+        ],
+    )
+    def test_each_tier_compares_its_own_target_group_and_service(
+        self, tier, target_group, service, asg
+    ):
+        match = re.search(
+            r"^\s*%s\s*=\s*\{\s*\n"
+            r"\s*tg_arn_suffix\s*=\s*aws_lb_target_group\.(\w+)\.arn_suffix\s*\n"
+            r"\s*service_name\s*=\s*aws_ecs_service\.(\w+)\.name\s*\n"
+            r"\s*asg_name\s*=\s*aws_autoscaling_group\.(\w+)\.name" % tier,
+            self.alarm,
+            re.MULTILINE,
+        )
+        assert match, f"tg_serving_below_desired has no {tier} for_each key"
+        assert match.groups() == (target_group, service, asg)
+
+    def test_alarm_name_is_keyed_per_tier(self):
+        name = attribute(self.alarm, "alarm_name")
+        assert name == '"${local.env_prefix}-${each.key}-serving-below-desired"'
+
+    def _query(self, query_id):
+        """The ``metric_query`` block whose ``id`` is ``query_id``."""
+        queries = [
+            q
+            for q in self.alarm.split("metric_query {")[1:]
+            if attribute(q, "id") == f'"{query_id}"'
+        ]
+        assert len(queries) == 1, f"expected one metric_query {query_id}"
+        return queries[0]
+
+    @pytest.mark.parametrize(
+        "query_id, namespace, metric, stat, dimensions",
+        [
+            (
+                "desired",
+                "AWS/AutoScaling",
+                "GroupDesiredCapacity",
+                "Minimum",
+                {"AutoScalingGroupName": "each.value.asg_name"},
+            ),
+            (
+                "deploys",
+                "ECS/ContainerInsights",
+                "DeploymentCount",
+                "Maximum",
+                {
+                    "ClusterName": "aws_ecs_cluster.main.name",
+                    "ServiceName": "each.value.service_name",
+                },
+            ),
+            (
+                "healthy",
+                "AWS/ApplicationELB",
+                "HealthyHostCount",
+                "Minimum",
+                {
+                    "LoadBalancer": "aws_lb.autoscaling.arn_suffix",
+                    "TargetGroup": "each.value.tg_arn_suffix",
+                },
+            ),
+        ],
+    )
+    def test_each_input_reads_its_metric(
+        self, query_id, namespace, metric, stat, dimensions
+    ):
+        """Healthy, not running: a wedged host keeps RunningTaskCount at
+        desired while its target never serves. ``Minimum``, since ALB nodes
+        each report a count. Every dimension is there, or the metric reads
+        nothing and the alarm is silently deaf: the cluster by name, not the
+        ARN, and the ALB and target group by ARN suffix."""
+        query = self._query(query_id)
+        assert attribute(query, "namespace") == f'"{namespace}"'
+        assert attribute(query, "metric_name") == f'"{metric}"'
+        assert attribute(query, "stat") == f'"{stat}"'
+        assert int(attribute(query, "period")) == 60
+        for key, value in dimensions.items():
+            assert attribute(query, key) == value
+
+    @pytest.mark.parametrize(
+        "tf, asg", [(COMPUTE_TF, "main"), (PUBLIC_SERVICE_TF, "public")]
+    )
+    def test_asg_publishes_desired_capacity(self, tf, asg):
+        """``desired`` is unfilled: an ASG without group metrics gives the
+        alarm no datapoints and it never fires."""
+        block = resource_block(read(tf), "aws_autoscaling_group", asg)
+        metrics = re.search(r"enabled_metrics\s*=\s*\[(.*?)\]", block, re.DOTALL)
+        assert metrics and '"GroupDesiredCapacity"' in metrics.group(1)
+
+    def test_container_insights_is_on(self):
+        """``deploys`` comes from it; without it the deployment gate never
+        closes and every rollout breaches."""
+        cluster = resource_block(read(COMPUTE_TF), "aws_ecs_cluster", "main")
+        assert re.search(
+            r'name\s*=\s*"containerInsights"\s*\n\s*value\s*=\s*"enabled"', cluster
+        )
+
+    def test_alarm_measures_the_gap_outside_deployments(self):
+        """A public rollout replaces its two tasks one at a time, each held
+        below desired by the 600 s drain, for about 28 of 30 min. Missing
+        healthy counts as 0 healthy, so a target that has gone cannot hide in
+        a data gap. Desired is the ASG's, not ECS's DesiredTaskCount, which
+        Container Insights stops publishing once no task runs: the tier's last
+        task gone would read 0 - 0. A stopped dev environment stays quiet on
+        the ASG's explicit 0."""
+        assert attribute(self.alarm, "expression") == (
+            '"IF(FILL(deploys, 0) > 1, 0, desired - FILL(healthy, 0))"'
+        )
+        assert attribute(self._query("gap"), "return_data") == "true"
+        assert attribute(self.alarm, "treat_missing_data") == '"notBreaching"'
+        assert attribute(self.alarm, "threshold") == '"0"'
+        assert attribute(self.alarm, "comparison_operator") == '"GreaterThanThreshold"'
+
+    @pytest.mark.parametrize("tier, min_datapoints", [("free", 20), ("public", 30)])
+    def test_window_outlasts_the_tiers_longest_normal_gap(self, tier, min_datapoints):
+        """A free refresh or slow morning start is short for up to about 17 min.
+        A public host replacement waits out the task's and the instance's 600 s
+        drains and was short for about 25 min on dev."""
+        assert attribute(self.alarm, "evaluation_periods") == "each.value.periods"
+        assert attribute(self.alarm, "datapoints_to_alarm") == "each.value.datapoints"
+        block = re.search(r"^\s*%s\s*=\s*\{(.*?)^\s*\}" % tier, self.alarm, re.M | re.S)
+        assert block, f"tg_serving_below_desired has no {tier} for_each key"
+        periods = int(re.search(r"\bperiods\s*=\s*(\d+)", block.group(1)).group(1))
+        datapoints = int(
+            re.search(r"\bdatapoints\s*=\s*(\d+)", block.group(1)).group(1)
+        )
+        assert min_datapoints <= datapoints <= periods
+
+    def test_breach_and_recovery_are_both_wired(self):
+        assert attribute(self.alarm, "alarm_actions") == "local.critical_alerts_actions"
+        assert attribute(self.alarm, "ok_actions") == "local.critical_alerts_actions"
+
+    def test_alarm_is_on_the_dashboard(self):
+        dashboard = resource_block(
+            read(MONITORING_TF), "aws_cloudwatch_dashboard", "main"
+        )
+        assert "aws_cloudwatch_metric_alarm.tg_serving_below_desired" in dashboard
+
+
 class TestPublicServicePlacement:
     """Public tasks are constrained to public-tier instances.
 
@@ -642,9 +801,12 @@ class TestPublicAsgCapacity:
         )
         assert self.min_size <= self.desired <= self.max_size
 
-    def test_asg_replaces_instances_the_load_balancer_reports_unhealthy(self):
-        """``EC2`` health checks only see the instance, not the container, so a
-        task that stops serving would never be replaced."""
+    def test_asg_replaces_hosts_ecs_cannot_fix(self):
+        """ECS replaces an unhealthy task by itself; only the target group
+        check replaces a host that never gets a task or that ECS keeps
+        re-placing onto while it is wedged. ``EC2`` would leave both. The
+        cost: past the ASG grace, a task restart that does not serve within
+        about 90 s loses its instance."""
         assert attribute(self.asg, "health_check_type") == '"ELB"'
 
     def test_asg_grace_period_covers_a_cold_boot(self):

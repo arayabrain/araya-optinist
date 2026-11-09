@@ -52,3 +52,22 @@ class TestLaunchTemplateInstancesLeaveUserDataToTheTemplate:
         )
         ignored = identifier_list(attribute(block, "ignore_changes"))
         assert "user_data" in ignored, f"aws_instance.{name} ignores {ignored}"
+
+
+class TestLaunchTemplateInstancesPinTheLatestVersion:
+    """``$Latest`` plans the replacement in the apply after the template change."""
+
+    @pytest.mark.parametrize("name", sorted(_launch_template_instances()))
+    def test_instance_pins_its_templates_latest_version(self, name):
+        block = _launch_template_instances()[name]
+        template_id = re.search(
+            r"^\s*id\s*=\s*aws_launch_template\.(\w+)\.id\s*$", block, re.MULTILINE
+        )
+        assert template_id, f"aws_instance.{name} has no aws_launch_template id"
+        template = template_id.group(1)
+        assert re.search(
+            r"^\s*version\s*=\s*aws_launch_template\.%s\.latest_version\s*$"
+            % re.escape(template),
+            block,
+            re.MULTILINE,
+        ), f"aws_instance.{name} must pin aws_launch_template.{template}.latest_version"
