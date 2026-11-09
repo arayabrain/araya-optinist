@@ -555,6 +555,37 @@ export const selectHeatMapItemColors =
     }
   }
 
+// Items saved before the colour range existed fall back to the full data range.
+export const selectHeatMapItemZRangeMode =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.zRangeMode ?? "auto"
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectHeatMapItemZRangePercentile =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.zRangePercentile ?? 2
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectHeatMapItemZRange =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.zRange ?? null
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
 export const selectCsvItemTranspose =
   (itemId: number) => (state: RootState) => {
     const item = selectVisualizeItemById(itemId)(state)
