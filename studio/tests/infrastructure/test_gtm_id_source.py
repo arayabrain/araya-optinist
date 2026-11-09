@@ -64,7 +64,7 @@ def build(tmp_path):
         _stub(bin_dir / name, "exit 0")
     _stub(bin_dir / "docker", f'echo "docker $*" >> "{calls}"')
 
-    def run(ssm_mode, ssm_value="", env_deploy=None):
+    def run(ssm_mode, ssm_value="", env_deploy=None, shell_env=None):
         if env_deploy is not None:
             (root / "infrastructure" / ".env.deploy").write_text(env_deploy)
         env = {
@@ -73,6 +73,7 @@ def build(tmp_path):
             "CALLS": str(calls),
             "SSM_MODE": ssm_mode,
             "SSM_VALUE": ssm_value,
+            **(shell_env or {}),
         }
         result = subprocess.run(
             ["bash", str(scripts / "ecr_build_push.sh"), "--yes"],
@@ -109,6 +110,17 @@ def test_ssm_supplies_the_id_when_no_override(build):
     assert gtm == "GTM-575Z6HSR"
     assert "from SSM /development/optinist/gtm-id" in result.stdout
     assert "--name /development/optinist/gtm-id" in calls
+
+
+def test_shell_export_does_not_override_ssm(build):
+    result, gtm, calls = build(
+        "value",
+        "GTM-575Z6HSR",
+        shell_env={"REACT_APP_GTM_ID_DEVELOPMENT": "GTM-SHELL1"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert gtm == "GTM-575Z6HSR"
+    assert "from SSM /development/optinist/gtm-id" in result.stdout
 
 
 def test_missing_parameter_builds_with_analytics_off(build):

@@ -171,11 +171,12 @@ if ! aws ecr describe-repositories --repository-names $REPO_NAME --region $REGIO
     exit 1
 fi
 
-# GTM ID: the gitignored .env.deploy (sourced in a subshell) overrides SSM; neither means analytics off.
+# GTM ID: only the gitignored .env.deploy (not a shell export) overrides SSM; neither means analytics off.
 GTM_ID_VAR="REACT_APP_GTM_ID_$(echo "$ENVIRONMENT" | tr '[:lower:]-' '[:upper:]_')"
 GTM_ID_PARAM="/${ENVIRONMENT}/optinist/gtm-id"
 REACT_APP_GTM_ID=$(
     set +e
+    unset "$GTM_ID_VAR"
     if [ -f "$REPO_ROOT/infrastructure/.env.deploy" ]; then
         . "$REPO_ROOT/infrastructure/.env.deploy"
     fi
