@@ -545,6 +545,9 @@ test.describe("Web UI load lane @disruptive", () => {
         // A restore that failed still leaves the settle and the report to run
         await payRestore().catch((e) => {
           restoreError = (e as Error).message
+          console.error(
+            `could not unpublish the public record: ${restoreError}`,
+          )
         })
       }
       // A public instance has been replaced 2 and 6 minutes after the load

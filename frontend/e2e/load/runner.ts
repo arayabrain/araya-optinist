@@ -207,8 +207,9 @@ export type RestoreDebt = {
 
 // A debt whose publish never answered is paid only while it is this fresh
 const UNANSWERED_DEBT_MS = 24 * 3600_000
-// The publish sync job (every 5 minutes) marks a published record synced, and
-// that write moves its updated_at; a later move is somebody else's
+// After a publish, the first public open or the 5-minute sync job marks the
+// record synced, and that one write moves its updated_at; a later move is
+// somebody else's
 const PUBLISH_SYNC_ALLOWANCE_MS = 15 * 60_000
 
 export function owe(dir: string, debt: RestoreDebt): string {
