@@ -238,7 +238,7 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 
 **Rejected:**
 - `EC2`, with or without automated `set-instance-health`: an earlier attempt fought ASG scaling and was rolled back.
-- `EC2` on public only: one host for an unbounded time, to save a 10 to 15 min half-capacity window.
+- `EC2` on public only: one host for an unbounded time, to save a half-capacity window of about 25 min per host replacement.
 - A target group window wider than 900 s: the ALB would route users to a dead target for 15 min.
 
 **What neither catches:** an agent lost after ECS deregistered the target leaves the host `unused`, not `unhealthy`. `<env>-optinist-{free,public}-serving-below-desired` covers it:

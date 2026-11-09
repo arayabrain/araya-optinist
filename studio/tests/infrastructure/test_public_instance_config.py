@@ -537,21 +537,27 @@ class TestServingBelowDesiredAlarm:
                 "AWS/AutoScaling",
                 "GroupDesiredCapacity",
                 "Minimum",
-                ("AutoScalingGroupName",),
+                {"AutoScalingGroupName": "each.value.asg_name"},
             ),
             (
                 "deploys",
                 "ECS/ContainerInsights",
                 "DeploymentCount",
                 "Maximum",
-                ("ClusterName", "ServiceName"),
+                {
+                    "ClusterName": "aws_ecs_cluster.main.name",
+                    "ServiceName": "each.value.service_name",
+                },
             ),
             (
                 "healthy",
                 "AWS/ApplicationELB",
                 "HealthyHostCount",
                 "Minimum",
-                ("LoadBalancer", "TargetGroup"),
+                {
+                    "LoadBalancer": "aws_lb.autoscaling.arn_suffix",
+                    "TargetGroup": "each.value.tg_arn_suffix",
+                },
             ),
         ],
     )
@@ -561,14 +567,15 @@ class TestServingBelowDesiredAlarm:
         """Healthy, not running: a wedged host keeps RunningTaskCount at
         desired while its target never serves. ``Minimum``, since ALB nodes
         each report a count. Every dimension is there, or the metric reads
-        nothing and the alarm is silently deaf."""
+        nothing and the alarm is silently deaf: the cluster by name, not the
+        ARN, and the ALB and target group by ARN suffix."""
         query = self._query(query_id)
         assert attribute(query, "namespace") == f'"{namespace}"'
         assert attribute(query, "metric_name") == f'"{metric}"'
         assert attribute(query, "stat") == f'"{stat}"'
         assert int(attribute(query, "period")) == 60
-        for key in dimensions:
-            attribute(query, key)
+        for key, value in dimensions.items():
+            assert attribute(query, key) == value
 
     @pytest.mark.parametrize(
         "tf, asg", [(COMPUTE_TF, "main"), (PUBLIC_SERVICE_TF, "public")]
