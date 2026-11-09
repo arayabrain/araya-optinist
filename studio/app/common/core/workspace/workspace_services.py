@@ -295,11 +295,13 @@ class WorkspaceService:
     def get_user_accessible_workspace_ids(db: Session, user_id: int) -> List[int]:
         """
         Get all workspace IDs that a user has access to
-        (owned or shared).
+        (owned or shared), each once.
         """
         try:
             workspaces_query = (
+                # The share join gives an owned workspace one row per share
                 select(common_model.Workspace.id)
+                .distinct()
                 .join(
                     common_model.WorkspacesShareUser,
                     common_model.Workspace.id
