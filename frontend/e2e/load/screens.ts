@@ -33,17 +33,27 @@ export function routeOf(path: string): Route {
 // A node id is the algorithm's name and a random 10-character tail
 const NODE_ID_TAIL = /_[a-z0-9]{10}$/
 
-// A stable label: the endpoint, the output's node without its random tail, and
-// the output file's name, so the same file name from two nodes stays two
-// items. A numeric tail is a database id, so the label keeps the endpoint
-// alone. Paths: /api/visualizations/<endpoint>/<ws>/<uid>[/<node>/...]/<file>
+// A stable label that matches across records: the endpoint, then everything
+// after the record (node, subfolders, file) with every node's random tail
+// dropped, then the query without its ids, so the same file name from two
+// nodes or two folders stays two items. A numeric tail is a database id, so
+// the label keeps the endpoint alone.
+// Paths: /api/visualizations/<endpoint>/<ws>/<uid>[/<node>/...]/<file>[?query]
 export function itemName(path: string): string {
-  const parts = path.split("?")[0].split("/")
+  const [route, query = ""] = path.split("?")
+  const parts = route.split("/")
   const endpoint = parts.length > 3 ? parts[3] : parts.join("/")
   const last = parts[parts.length - 1]
   if (/^\d+$/.test(last)) return endpoint
-  const node = parts.length > 7 ? parts[6].replace(NODE_ID_TAIL, "") : null
-  return node ? `${endpoint}:${node}/${last}` : `${endpoint}:${last}`
+  const rest = parts.slice(6).map((s) => s.replace(NODE_ID_TAIL, ""))
+  const params = [...new URLSearchParams(query).entries()]
+    .filter(([key]) => key !== "id" && !key.endsWith("_id"))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+  return (
+    `${endpoint}:${rest.length ? rest.join("/") : last}` +
+    (params.length ? `?${params.join("&")}` : "")
+  )
 }
 
 export type Session = {
@@ -232,10 +242,10 @@ export function dashboardUser(
           json: { refresh_token: session.refreshToken },
         },
       )
-      let token = session.accessToken
-      if (r?.status === 200) {
-        token = jsonBody<{ access_token: string }>(r).access_token
-      }
+      // A browser whose refresh fails goes to the login page; this user ends
+      // there, unfinished
+      if (r?.status !== 200) return
+      const token = jsonBody<{ access_token: string }>(r).access_token
       const h = authHeaders(token, session.exToken)
       await call(ctx, vu, "is_standalone", "GET", "/is_standalone", "public", {
         headers: ACCEPT_JSON,
@@ -447,9 +457,32 @@ function describeTally(t: Record<string, number>): string {
     .join(", ")
 }
 
+// A recorded request that failed or answered an error would be replayed as a
+// smaller screen, or as an error the browser did not get through: the run
+// stops instead. The anonymous visitor's refresh is refused by design.
+function refuseFailedRows(rows: CaptureRow[], phases: string[]): void {
+  const failed = rows.filter(
+    (r) =>
+      phases.includes(r.phase) &&
+      (r.failed ||
+        !r.status ||
+        (r.status >= 400 &&
+          !(requestKey(r) === "POST /auth/refresh" && r.status === 401))),
+  )
+  if (failed.length) {
+    throw new CaptureChanged(
+      `the recording has ${failed.length} failed request(s): ` +
+        describeTally(
+          tally(failed.map((r) => `${requestKey(r)} ${r.status ?? r.failed}`)),
+        ),
+    )
+  }
+}
+
 // The Dashboard's order is fixed in dashboardUser; the capture only has to
 // show the browser still sends exactly that set
 export function checkDashboardCapture(rows: CaptureRow[]): void {
+  refuseFailedRows(apiRows(rows), ["dashboard_new_tab"])
   const sent = tally(apiRows(rows, "dashboard_new_tab").map(requestKey))
   if (describeTally(sent) !== describeTally(DASHBOARD_REQUESTS)) {
     throw new CaptureChanged(
@@ -459,12 +492,33 @@ export function checkDashboardCapture(rows: CaptureRow[]): void {
   }
 }
 
+// What OutputsView from Dataview sends besides reproduce: its items, and the
+// list of outputs the owner hid
+const DIALOG_ITEM_PREFIXES = [
+  "/api/visualizations/",
+  "/api/dataview/hidden_outputs/",
+]
+
 export function dialogSpec(rows: CaptureRow[], record: RecordRef): DialogSpec {
+  refuseFailedRows(apiRows(rows), ["dialog"])
   const dialog = apiRows(rows, "dialog")
   const reproduce = dialog.filter((r) =>
     r.path.includes("/workflow/reproduce/"),
   )
   const items = dialog.filter((r) => !r.path.includes("/workflow/reproduce/"))
+  // The replay sends GETs of known kinds; anything else is a new request set
+  const unknown = items.filter(
+    (r) =>
+      r.method !== "GET" ||
+      !DIALOG_ITEM_PREFIXES.some((p) => r.path.startsWith(p)),
+  )
+  if (unknown.length) {
+    throw new CaptureChanged(
+      `OutputsView from Dataview now also sends ${describeTally(
+        tally(unknown.map(requestKey)),
+      )}; the replay sends reproduce, items and hidden outputs as GETs`,
+    )
+  }
   const own = `/${record.workspaceId}/${record.uid}`
   if (
     reproduce.length !== 1 ||
@@ -492,8 +546,9 @@ function publicHeaders(r: CaptureRow): Record<string, string> {
 // The recorded visit is phases public_list and dialog; the warm-up visit and
 // the uid filter's own requests stay out
 export function publicSpec(rows: CaptureRow[], record: RecordRef): PublicSpec {
+  refuseFailedRows(apiRows(rows), ["public_list", "dialog"])
   const answered = apiRows(rows).filter(
-    (r) => r.status && (r.phase === "public_list" || r.phase === "dialog"),
+    (r) => r.phase === "public_list" || r.phase === "dialog",
   )
   const lists = answered.filter(
     (r) =>

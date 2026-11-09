@@ -56,6 +56,7 @@ import {
   CaptureRow,
   checkDashboardCapture,
   CaptureChanged,
+  dashboardUser,
   dialogSpec,
   dialogUser,
   itemName,
@@ -631,7 +632,7 @@ test.describe("load lane: request sets", () => {
     row("dashboard_new_tab", "GET", "/static/js/main.js", { type: "script" }),
   ]
 
-  test("labels keep the output's node without its random tail, and drop database ids", () => {
+  test("labels keep the output's node without its random tail, its folders and query, and drop database ids", () => {
     expect(
       itemName(
         "/api/visualizations/image/7/u/suite2p_registration_e4kbyoqliv/meanImg.json?workspace_id=7",
@@ -642,11 +643,24 @@ test.describe("load lane: request sets", () => {
         "/api/visualizations/image/7/u/suite2p_file_convert_bwrzk3a80i/meanImg.json?workspace_id=7",
       ),
     ).toBe("image:suite2p_file_convert/meanImg.json")
+    // Folders stay, so the same file name in two of them stays two items
     expect(
       itemName(
         "/api/visualizations/image/7/u/suite2p_registration_e4kbyoqliv/tiff/mc_images/mc_images.tif",
       ),
-    ).toBe("image:suite2p_registration/mc_images.tif")
+    ).toBe("image:suite2p_registration/tiff/mc_images/mc_images.tif")
+    // The query stays without its ids: another range is another item
+    expect(
+      itemName(
+        "/api/visualizations/image/7/u/suite2p_roi_0cw3ccyc1w/Vcorr.json?workspace_id=7&start_index=1&end_index=10",
+      ),
+    ).toBe("image:suite2p_roi/Vcorr.json?end_index=10&start_index=1")
+    // Every node's tail goes, whatever the endpoint
+    expect(
+      itemName(
+        "/api/visualizations/structured/383/u/input_behavior_a1b2c3d4e5/speed",
+      ),
+    ).toBe("structured:input_behavior/speed")
     expect(
       itemName(
         "/api/visualizations/inittimedata/7/u/suite2p_roi_0cw3ccyc1w/fluorescence",
@@ -699,6 +713,26 @@ test.describe("load lane: request sets", () => {
     expect(() => dialogSpec(rows, { workspaceId: 7, uid: "other" })).toThrow(
       CaptureChanged,
     )
+    // A failed item, a POST and an unknown request are not replayed as GETs
+    const item = "/api/visualizations/image/7/6ab411e3/n/cell_roi.json"
+    expect(() =>
+      dialogSpec(
+        [
+          ...rows,
+          row("dialog", "GET", item, {
+            status: null,
+            failed: "net::ERR_ABORTED",
+          }),
+        ],
+        record,
+      ),
+    ).toThrow(/failed request/)
+    expect(() =>
+      dialogSpec([...rows, row("dialog", "POST", item)], record),
+    ).toThrow(/now also sends POST/)
+    expect(() =>
+      dialogSpec([...rows, row("dialog", "GET", "/api/workspace/7")], record),
+    ).toThrow(/now also sends GET \/api\/workspace\/7/)
   })
 
   test("the PublicDataview visit keeps each item's routing header and leaves the warm-up and the filter out", () => {
@@ -782,6 +816,21 @@ test.describe("load lane: request sets", () => {
         record,
       ),
     ).toThrow(CaptureChanged)
+    // An item that answered 423 would be replayed as a smaller visit
+    const locked = [
+      ...rows,
+      row("dialog", "GET", "/api/visualizations/image/7/6ab411e3/n/b.json", {
+        status: 423,
+      }),
+    ]
+    expect(() => publicSpec(locked, record)).toThrow(/failed request/)
+  })
+
+  test("a Dashboard recording with a failed request fails", () => {
+    const failed = dashboard.map((r) =>
+      r.path === "/announcement" ? { ...r, status: 503 } : r,
+    )
+    expect(() => checkDashboardCapture(failed)).toThrow(/failed request/)
   })
 })
 
@@ -802,6 +851,11 @@ test.describe("load lane: HTTP", () => {
       res.on("close", () => open--)
       if (req.url === "/hold") {
         held.push(res)
+        return
+      }
+      if (req.url === "/auth/refresh") {
+        res.statusCode = 401
+        res.end('{"detail":"expired"}')
         return
       }
       if (req.url === "/file") {
@@ -880,6 +934,28 @@ test.describe("load lane: HTTP", () => {
     const item = ctx.requests.find((r) => r.name !== "reproduce")
     expect((item?.full as number) - (item?.dur as number)).toBeGreaterThan(0.15)
     expect(item?.bytes).toBe(5)
+  })
+
+  test("a Dashboard user whose refresh is refused stops there, unfinished, as a browser goes to the login page", async () => {
+    const ctx: StepContext = {
+      base,
+      pin: "pin",
+      t0: performance.now(),
+      deadlineMs: 5_000,
+      requests: [],
+      vuRecords: [],
+      abortReason: null,
+      cancelled: false,
+      released: Promise.resolve(true),
+    }
+    await dashboardUser(
+      ctx,
+      new VirtualUser(0),
+      { accessToken: "old", refreshToken: "r", exToken: null },
+      0,
+    )
+    expect(ctx.requests.map((r) => r.name)).toEqual(["auth_refresh"])
+    expect(ctx.vuRecords[0].done).toBeUndefined()
   })
 
   test("a user accepts gzip as a browser does, reads the body decoded and counts the bytes as sent", async () => {

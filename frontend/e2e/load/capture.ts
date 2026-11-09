@@ -22,8 +22,22 @@ const SCREEN_TIMEOUT_MS = 120_000
 
 type Recorder = {
   rows: CaptureRow[]
-  setPhase: (phase: string) => void
+  // The phase, and the page whose requests it records
+  setPhase: (phase: string, page: Page) => void
   settled: () => Promise<void>
+}
+
+// Requests from a page other than the recorded one: a poll on a tab left
+// open would otherwise read as part of the screen
+const ELSEWHERE = "elsewhere"
+
+function pageOf(req: Request): Page | null {
+  try {
+    return req.frame().page()
+  } catch {
+    // A service worker's request has no frame
+    return null
+  }
 }
 
 function record(
@@ -34,12 +48,13 @@ function record(
   const rows: CaptureRow[] = []
   const phaseOf = new WeakMap<Request, string>()
   let phase = "start"
+  let recorded: Page | null = null
   let inflight = 0
   let pendingRows = 0
   let lastActivity = Date.now()
   context.on("request", (req) => {
     // The phase the request started in, not the one it finished in
-    phaseOf.set(req, phase)
+    phaseOf.set(req, pageOf(req) === recorded ? phase : ELSEWHERE)
     inflight++
     lastActivity = Date.now()
   })
@@ -77,8 +92,9 @@ function record(
   )
   return {
     rows,
-    setPhase: (next) => {
+    setPhase: (next, page) => {
       phase = next
+      recorded = page
     },
     settled: () =>
       expect
@@ -173,28 +189,30 @@ export async function captureOwner(
   const context = await newContext(browser, base)
   const rec = record(context, base, false)
   try {
-    rec.setPhase("login")
     const page = await context.newPage()
+    rec.setPhase("login", page)
     await login(page, owner.email, owner.password)
     await rec.settled()
 
-    rec.setPhase("dashboard_new_tab")
     const tab = await context.newPage()
+    rec.setPhase("dashboard_new_tab", tab)
+    // Its polls would land in the tab's phases
+    await page.close()
     await tab.goto("/dashboard")
     await rec.settled()
 
-    rec.setPhase("dataview_list")
+    rec.setPhase("dataview_list", tab)
     await tab.goto(`/dataview/${workspaceId}`)
     await expect(recordRow(tab, recordId)).toBeVisible({ timeout: 60_000 })
     await rec.settled()
     await clearModals(tab)
 
-    rec.setPhase("dialog_warmup")
+    rec.setPhase("dialog_warmup", tab)
     await openOutputs(tab, recordId, rec)
     await closeOutputs(tab, rec)
 
     await clearCache(context, tab)
-    rec.setPhase("dialog")
+    rec.setPhase("dialog", tab)
     await openOutputs(tab, recordId, rec)
     return rec.rows
   } finally {
@@ -215,7 +233,7 @@ async function openPublicRecord(
   await rec.settled()
   await clearModals(page)
   if (!(await recordRow(page, recordId).isVisible())) {
-    rec.setPhase("filter")
+    rec.setPhase("filter", page)
     await filterTo(page)
     await expect(recordRow(page, recordId)).toBeVisible({ timeout: 30_000 })
     await rec.settled()
@@ -237,15 +255,15 @@ export async function capturePublic(
   const rec = record(context, base, true)
   try {
     const page = await context.newPage()
-    rec.setPhase("warmup_list")
+    rec.setPhase("warmup_list", page)
     await openPublicRecord(page, recordId, rec, filterTo)
-    rec.setPhase("dialog_warmup")
+    rec.setPhase("dialog_warmup", page)
     await openOutputs(page, recordId, rec)
 
     await clearCache(context, page)
-    rec.setPhase("public_list")
+    rec.setPhase("public_list", page)
     await openPublicRecord(page, recordId, rec, filterTo)
-    rec.setPhase("dialog")
+    rec.setPhase("dialog", page)
     await openOutputs(page, recordId, rec)
     return rec.rows
   } finally {

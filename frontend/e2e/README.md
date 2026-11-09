@@ -489,8 +489,13 @@ order, over its own connections, at most 6 at a time (a browser's limit on
 this HTTP/1.1 listener). The requests come from a Playwright recording made
 at the start of every run, so the replay follows today's frontend. A
 recording whose shape the replay does not know (no `reproduce`, a new request
-on the Dashboard or PublicDataview) fails the run rather than being replayed
-wrongly; the replay is then updated to the new request set.
+on any screen, a request other than a GET in OutputsView) fails the run
+rather than being replayed wrongly; the replay is then updated to the new
+request set. So does a recording with a request that failed or answered an
+error, which would be replayed as a smaller screen. Only the recorded tab's
+requests count; the sign-in tab is closed first. A Dashboard user whose
+`/auth/refresh` is refused stops there unfinished, as a browser goes to the
+login page.
 
 | Screen | Plan name | What one user does |
 | --- | --- | --- |
@@ -655,9 +660,12 @@ the runs, other thresholds, a changed request set), the Dashboard's robustness (
 server logs, instance replacement) and the post-checks (target health,
 scaling activity, the services' CPU per step, 5xx at the ALB, the ALB's
 slowest answer per step, and whether the watch after the last step saw both
-services answer). Items are labelled by endpoint, the output's node
-and the file (`image:suite2p_roi/Vcorr.json`), so the same file name from two
-nodes never compares as one item.
+services answer). Items are labelled by endpoint, then the output's node
+without its random tail, its folders and the file, then the query without its
+ids (`image:suite2p_roi/Vcorr.json?end_index=10&start_index=1`), so the same
+file name from two nodes or two folders never compares as one item. Labels
+from runs before 2026-11-10 dropped folders and queries, so a ranged item
+reads as new against them.
 
 **What may go to GitHub**: `report.md` as it is. It holds measured values
 only; instance ids and ARNs in AWS's own text are masked. The rest of the
