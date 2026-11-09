@@ -36,7 +36,7 @@ export function routeOf(path: string): Route {
 const NODE_ID_TAIL = /_[a-z0-9]{10}$/
 
 // A stable label that matches across records: the endpoint, then everything
-// after the record (node, subfolders, file) with every node's random tail
+// after the record (node, subfolders, file) with the node's random tail
 // dropped, then the query without its ids, so the same file name from two
 // nodes or two folders stays two items. A numeric tail is a database id, so
 // the label keeps the endpoint alone.
@@ -47,7 +47,11 @@ export function itemName(path: string): string {
   const endpoint = parts.length > 3 ? parts[3] : parts.join("/")
   const last = parts[parts.length - 1]
   if (/^\d+$/.test(last)) return endpoint
-  const rest = parts.slice(6).map((s) => s.replace(NODE_ID_TAIL, ""))
+  // Only the node, right after the record, carries the random tail: a folder
+  // or file such as cell_statistics keeps its name
+  const rest = parts
+    .slice(6)
+    .map((s, i) => (i === 0 ? s.replace(NODE_ID_TAIL, "") : s))
   const params = [...new URLSearchParams(query).entries()]
     .filter(([key]) => key !== "id" && !key.endsWith("_id"))
     .sort(([a], [b]) => a.localeCompare(b))
@@ -465,15 +469,23 @@ function describeTally(t: Record<string, number>): string {
 
 // A recorded request that failed or answered an error would be replayed as a
 // smaller screen, or as an error the browser did not get through: the run
-// stops instead. The anonymous visitor's refresh is refused by design.
-function refuseFailedRows(rows: CaptureRow[], phases: string[]): void {
+// stops instead. Only an anonymous visitor's refresh is refused by design.
+function refuseFailedRows(
+  rows: CaptureRow[],
+  phases: string[],
+  anonymous = false,
+): void {
   const failed = rows.filter(
     (r) =>
       phases.includes(r.phase) &&
       (r.failed ||
         !r.status ||
         (r.status >= 400 &&
-          !(requestKey(r) === "POST /auth/refresh" && r.status === 401))),
+          !(
+            anonymous &&
+            requestKey(r) === "POST /auth/refresh" &&
+            r.status === 401
+          ))),
   )
   if (failed.length) {
     throw new CaptureChanged(
@@ -513,11 +525,14 @@ export function dialogSpec(rows: CaptureRow[], record: RecordRef): DialogSpec {
   )
   const items = dialog.filter((r) => !r.path.includes("/workflow/reproduce/"))
   // The replay sends GETs of known kinds; anything else is a new request set
-  const unknown = items.filter(
-    (r) =>
-      r.method !== "GET" ||
-      !DIALOG_ITEM_PREFIXES.some((p) => r.path.startsWith(p)),
-  )
+  const unknown = [
+    ...reproduce.filter((r) => r.method !== "GET"),
+    ...items.filter(
+      (r) =>
+        r.method !== "GET" ||
+        !DIALOG_ITEM_PREFIXES.some((p) => r.path.startsWith(p)),
+    ),
+  ]
   if (unknown.length) {
     throw new CaptureChanged(
       `OutputsView from Dataview now also sends ${describeTally(
@@ -552,7 +567,7 @@ function publicHeaders(r: CaptureRow): Record<string, string> {
 // The recorded visit is phases public_list and dialog; the warm-up visit and
 // the uid filter's own requests stay out
 export function publicSpec(rows: CaptureRow[], record: RecordRef): PublicSpec {
-  refuseFailedRows(apiRows(rows), ["public_list", "dialog"])
+  refuseFailedRows(apiRows(rows), ["public_list", "dialog"], true)
   const answered = apiRows(rows).filter(
     (r) => r.phase === "public_list" || r.phase === "dialog",
   )

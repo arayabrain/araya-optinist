@@ -589,7 +589,9 @@ running into the 13:00 UTC stop is refused.
    activity may be somebody else's. In a window the team has agreed, or right
    after the lane's own run, `LOAD_WINDOW_ANNOUNCED=1` runs anyway and the
    report says so. Between steps the run ends when an account that was not
-   active at the start becomes active.
+   active at the start becomes active. A colleague using one of the shared
+   load accounts cannot be told from the run itself, so the window is agreed
+   on beforehand.
 7. **The image under test is named**: every running free and public task must
    run `LOAD_IMAGE_DIGEST`. Development often runs a teammate's test image.
    With PublicDataview planned, the listener must also send its API to the
@@ -674,8 +676,9 @@ services answer). Items are labelled by endpoint, then the output's node
 without its random tail, its folders and the file, then the query without its
 ids (`image:suite2p_roi/Vcorr.json?end_index=10&start_index=1`), so the same
 file name from two nodes or two folders never compares as one item. Labels
-from runs before 2026-11-10 dropped folders and queries, so a ranged item
-reads as new against them.
+from runs before 2026-11-10 dropped folders and queries, so an item with a
+query or in a folder (`mc_images.tif` under `tiff/mc_images/`) reads as new
+against them, the 2026-11-05 baseline included.
 
 **What may go to GitHub**: `report.md` as it is. It holds measured values
 only; instance ids and ARNs in AWS's own text are masked. The rest of the

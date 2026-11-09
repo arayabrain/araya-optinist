@@ -290,7 +290,8 @@ export function figuresOf(s: StepSummary): StepFigures {
     free_probe_max: s.probes.free.max,
     requests: s.requests,
   }
-  if (s.done_body) {
+  // Only the screens whose items were read have read times
+  if (s.done_body && s.done_body.max !== null) {
     figures.shown_body_max = s.shown_body?.max ?? null
     figures.dialog_body_max = s.dialog_body?.max ?? null
     figures.done_body_max = s.done_body.max

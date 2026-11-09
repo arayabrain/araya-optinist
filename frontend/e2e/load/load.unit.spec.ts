@@ -308,6 +308,12 @@ test.describe("load lane: figures", () => {
     expect(by(slow)).toBe("free")
     expect(by(down)).toBe("free_down")
     expect(by("deadline: 120 s passed")).toBe("deadline")
+    // A 502, then a timeout at the threshold: down, not slow
+    const after502 = { public: 0, free: 0 }
+    probeStreak(after502, probe(0.05, 502), limits)
+    expect(by(probeStreak(after502, probe(5.01, null), limits))).toBe(
+      "free_down",
+    )
     expect(describeStop(summary({ abort_reason: down }))).toBe(
       "free stopped answering: two probes in a row failed, 1.5 s after the release",
     )
@@ -600,8 +606,6 @@ test.describe("load lane: configuration", () => {
     expect(message).not.toContain("pw")
   })
 
-  // Run with RUN_LOAD_AWS=1: playwright.config.ts must count the lane among
-  // the mutating flags, which switch retries off
   test("E2E_OFFLINE=1 keeps globalSetup from signing in or deleting anything", async () => {
     const keys = [
       "E2E_OFFLINE",
@@ -703,6 +707,12 @@ test.describe("load lane: request sets", () => {
       "thumbnail:input",
     )
     expect(itemName("/api/dataview/hidden_outputs/992")).toBe("hidden_outputs")
+    // Only the node carries a random tail; a file's own name is kept
+    expect(
+      itemName(
+        "/api/visualizations/table/7/u/stats_a1b2c3d4e5/cell_statistics",
+      ),
+    ).toBe("table:stats/cell_statistics")
     expect(routeOf("/users/me")).toBe("public")
     expect(routeOf("/api/dataview/workflow/reproduce/7/u")).toBe("free")
   })
@@ -874,6 +884,11 @@ test.describe("load lane: request sets", () => {
       r.path === "/announcement" ? { ...r, status: 503 } : r,
     )
     expect(() => checkDashboardCapture(failed)).toThrow(/failed request/)
+    // The owner's refresh refused is a failure, not the anonymous visitor's
+    const refused = dashboard.map((r) =>
+      r.path === "/auth/refresh" ? { ...r, status: 401 } : r,
+    )
+    expect(() => checkDashboardCapture(refused)).toThrow(/failed request/)
   })
 })
 
@@ -1506,6 +1521,20 @@ test.describe("load lane: safety gates", () => {
     ).toEqual([
       "rule 300 sends PublicDataview's API to development-optinist-pubdv-tg, a tier the lane does not watch",
       "rule 280 sends PublicDataview's API to development-optinist-pubdv-tg, a tier the lane does not watch",
+    ])
+    // A broader rule ahead of them catches the requests first
+    const broad = rule(
+      "10",
+      [{ Field: "path-pattern", Values: ["/api/*"] }],
+      OTHER_TG,
+    )
+    expect(
+      dataviewRoutingProblems(
+        [rule("300", [path300], PUBLIC_TG), broad],
+        PUBLIC_TG,
+      ),
+    ).toEqual([
+      "rule 10 sends PublicDataview's API to development-optinist-pubdv-tg, a tier the lane does not watch",
     ])
   })
 

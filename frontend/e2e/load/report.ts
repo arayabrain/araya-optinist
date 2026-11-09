@@ -479,12 +479,13 @@ function perItem(
       `\`${name}\``,
       hasBaseline ? `${fmtS(x)} → ${fmtS(y)}` : fmtS(y),
       change,
+      fmtS(a?.requests[name]?.full_max),
     ]
   })
   return [
-    "Per item, 1 user (server time, to the response headers):",
+    "Per item, 1 user (server time to the headers; read: to the last byte, slowest):",
     "",
-    ...table(["Item", "Time", "Improvement"], rows),
+    ...table(["Item", "Time", "Improvement", "Read"], rows),
     "",
     `Bytes per open: ${hasBaseline ? `${fmtMB(bytesPerUser(b))} → ` : ""}${fmtMB(bytesPerUser(a))}.`,
   ]

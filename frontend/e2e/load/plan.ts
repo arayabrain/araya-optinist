@@ -56,6 +56,8 @@ const POST_CHECKS_S = 300
 
 const E2E_DIR = path.resolve(__dirname, "..")
 const PLAN_DIR = path.join(__dirname, "plans")
+// The plans in the repository; any other file, in load/plans/ or not, is local
+const COMMITTED_PLANS = ["default", "parity"]
 
 // A path resolves from e2e/, as LOAD_ACCOUNTS_FILE and LOAD_RESULTS_DIR do
 export function planPath(nameOrPath: string): string {
@@ -75,7 +77,11 @@ export function loadPlan(nameOrPath: string): Plan {
   if (problems.length) {
     throw new Error(`plan ${file}:\n  ${problems.join("\n  ")}`)
   }
-  plan.local = path.dirname(file) === PLAN_DIR ? undefined : file
+  plan.local =
+    path.dirname(file) === PLAN_DIR &&
+    COMMITTED_PLANS.includes(path.basename(file, ".json"))
+      ? undefined
+      : file
   if (plan.local) {
     const committed = loadPlan("default")
     for (const s of plan.screens) {
@@ -152,7 +158,7 @@ export function planProblems(plan: Plan): string[] {
     seen.add(s.screen)
     if (!(s.cap > 0)) problems.push(`${s.screen}: cap must be positive`)
     if (!s.steps?.length) problems.push(`${s.screen}: no step`)
-    s.steps.forEach((st, i) => {
+    ;(s.steps ?? []).forEach((st, i) => {
       if (!(Number.isInteger(st.users) && st.users > 0)) {
         problems.push(
           `${s.screen}: step ${i + 1} users must be a positive integer`,

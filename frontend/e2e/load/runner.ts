@@ -348,10 +348,12 @@ export function probeStreak(
   limits: Record<Target, number>,
 ): string | null {
   fails[rec.target] = rec.status === 200 ? 0 : fails[rec.target] + 1
-  if (rec.dur >= limits[rec.target])
-    return `probe ${rec.target}: ${JSON.stringify(rec)}`
+  // A failure after a failure is a service down, even when the second one
+  // timed out at the threshold
   if (fails[rec.target] >= 2)
     return `probe ${rec.target} down: ${JSON.stringify(rec)}`
+  if (rec.dur >= limits[rec.target])
+    return `probe ${rec.target}: ${JSON.stringify(rec)}`
   return null
 }
 

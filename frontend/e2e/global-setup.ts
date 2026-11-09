@@ -23,8 +23,10 @@ import {
 // E2E_OFFLINE=1 skips all of it, for the runs that touch nothing remote (the
 // load lane's unit spec and LOAD-02): e2e/.env would otherwise sign them in.
 export default async function globalSetup() {
-  if (["1", "true"].includes((process.env.E2E_OFFLINE ?? "").toLowerCase()))
+  if (["1", "true"].includes((process.env.E2E_OFFLINE ?? "").toLowerCase())) {
+    console.log("globalSetup: skipped, E2E_OFFLINE=1")
     return
+  }
   const baseURL = process.env.BASE_URL || "http://localhost:3000"
 
   // The read-only AWS lanes document pointing BASE_URL at production, and

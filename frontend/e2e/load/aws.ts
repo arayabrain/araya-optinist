@@ -135,27 +135,78 @@ export type ListenerRule = {
   }[]
 }
 
-// The rules that route PublicDataview's API (its list, its reproduce, and the
-// items its header marks) must forward to the public target group: a tier of
-// its own would take the load with no image check, probe or stop watching it
+// The kinds of request PublicDataview's replay sends to the API, as the
+// listener sees them: the list, reproduce, and thumbnails and items marked by
+// their header
+const DATAVIEW_REQUESTS: { path: string; headers: Record<string, string> }[] = [
+  { path: "/api/public/dataview", headers: {} },
+  { path: "/api/public/dataview/workflow/reproduce/1/r", headers: {} },
+  {
+    path: "/api/visualizations/thumbnail/1/r/input",
+    headers: { dataview_public_request: "true" },
+  },
+  {
+    path: "/api/visualizations/image/1/r/node/item.json",
+    headers: { dataview_public_request: "true" },
+  },
+]
+
+// An ALB pattern: * any characters, ? one
+function albMatch(pattern: string, value: string, caseless: boolean): boolean {
+  const re = pattern
+    .split("")
+    .map((ch) =>
+      ch === "*"
+        ? ".*"
+        : ch === "?"
+          ? "."
+          : ch.replace(/[.+^${}()|[\]\\]/g, "\\$&"),
+    )
+    .join("")
+  return new RegExp(`^${re}$`, caseless ? "i" : "").test(value)
+}
+
+// A condition the lane cannot evaluate (a query string, a source address) is
+// taken to match, so a rule it cannot rule out is still checked
+function conditionMatches(
+  c: ListenerRule["Conditions"][number],
+  req: (typeof DATAVIEW_REQUESTS)[number],
+): boolean {
+  if (c.Field === "path-pattern") {
+    const values = c.PathPatternConfig?.Values ?? c.Values ?? []
+    return values.some((p) => albMatch(p, req.path, false))
+  }
+  if (c.Field === "http-header" && c.HttpHeaderConfig) {
+    const value = req.headers[c.HttpHeaderConfig.HttpHeaderName.toLowerCase()]
+    return (
+      value !== undefined &&
+      c.HttpHeaderConfig.Values.some((v) => albMatch(v, value, true))
+    )
+  }
+  if (c.Field === "http-request-method") {
+    return (c.Values ?? []).includes("GET")
+  }
+  return true
+}
+
+// The rule each of the replay's requests meets first, in priority order, must
+// forward to the public target group: a tier of its own would take the load
+// with no image check, probe or stop watching it
 export function dataviewRoutingProblems(
   rules: ListenerRule[],
   publicTgArn: string,
 ): string[] {
-  const problems: string[] = []
-  for (const rule of rules) {
-    const paths = rule.Conditions.flatMap(
-      (c) =>
-        c.PathPatternConfig?.Values ??
-        (c.Field === "path-pattern" ? (c.Values ?? []) : []),
+  const ordered = [...rules].sort(
+    (a, b) =>
+      (Number(a.Priority) || Number.MAX_SAFE_INTEGER) -
+      (Number(b.Priority) || Number.MAX_SAFE_INTEGER),
+  )
+  const problems = new Set<string>()
+  for (const req of DATAVIEW_REQUESTS) {
+    const rule = ordered.find((r) =>
+      r.Conditions.every((c) => conditionMatches(c, req)),
     )
-    const header = rule.Conditions.some(
-      (c) =>
-        c.HttpHeaderConfig?.HttpHeaderName.toLowerCase() ===
-        "dataview_public_request",
-    )
-    if (!header && !paths.some((p) => p.startsWith("/api/public/dataview")))
-      continue
+    if (!rule) continue
     const forwards = rule.Actions.filter((a) => a.Type === "forward").flatMap(
       (a) =>
         a.ForwardConfig?.TargetGroups.filter((g) => g.Weight !== 0).map(
@@ -163,13 +214,13 @@ export function dataviewRoutingProblems(
         ) ?? (a.TargetGroupArn ? [a.TargetGroupArn] : []),
     )
     for (const arn of forwards.filter((arn) => arn !== publicTgArn)) {
-      problems.push(
+      problems.add(
         `rule ${rule.Priority} sends PublicDataview's API to ${arn.split("/").slice(-2, -1)[0]}, ` +
           "a tier the lane does not watch",
       )
     }
   }
-  return problems
+  return [...problems]
 }
 
 function dataviewRouting(): string[] {

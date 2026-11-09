@@ -140,12 +140,17 @@ export function send(
 }
 
 // The body as the server built it, from the encodings a browser accepts
+// A list of codings was applied in order, so it is undone from the last
 function decode(raw: Buffer, encoding: string | undefined): Buffer {
-  const coding = (encoding || "identity").trim().toLowerCase()
-  if (coding === "identity") return raw
-  if (coding === "gzip") return zlib.gunzipSync(raw)
-  if (coding === "deflate") return zlib.inflateSync(raw)
-  throw new Error(`Content-Encoding ${encoding} was not accepted`)
+  const codings = (encoding || "")
+    .split(",")
+    .map((c) => c.trim().toLowerCase())
+    .filter((c) => c && c !== "identity")
+  return codings.reverse().reduce((body, coding) => {
+    if (coding === "gzip") return zlib.gunzipSync(body)
+    if (coding === "deflate") return zlib.inflateSync(body)
+    throw new Error(`Content-Encoding ${encoding} was not accepted`)
+  }, raw)
 }
 
 export function header(res: HttpResult, name: string): string | null {
