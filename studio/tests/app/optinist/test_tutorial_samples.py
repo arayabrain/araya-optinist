@@ -28,6 +28,14 @@ def _leaves(tree, prefix=()):
             yield prefix + (key,), value
 
 
+def _child_paths(param):
+    for entry in param.values():
+        if entry["type"] == "parent":
+            yield from _child_paths(entry["children"])
+        else:
+            yield entry["path"]
+
+
 def _algorithm_nodes():
     for workflow in sorted(TUTORIAL_DIR.glob("*/workflow.yaml")):
         for node in ConfigReader.read(str(workflow))["nodeDict"].values():
@@ -58,6 +66,13 @@ def test_tutorial_node_params_match_the_shipped_yaml(tutorial, node):
         f"{tutorial} {label}: set the sample to the yaml's values, "
         "or list a value chosen for the tutorial's data in DELIBERATE"
     )
+
+
+@pytest.mark.parametrize("tutorial, node", NODES, ids=NODE_IDS)
+def test_tutorial_node_param_paths_are_unique(tutorial, node):
+    # the parameter form finds a value by its path, first match wins
+    paths = list(_child_paths(node["data"]["param"]))
+    assert len(paths) == len(set(paths))
 
 
 @pytest.mark.parametrize("tutorial, node", NODES, ids=NODE_IDS)
