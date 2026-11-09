@@ -583,7 +583,7 @@ The `handler()` function supports both scheduled and manual invocations:
 All 5 steps run sequentially on each hourly invocation:
 
 1. `cleanup_stale_assignments()` -- remove idle assignments
-2. `cleanup_orphaned_alb_resources()` -- delete orphaned ALB
+2. `cleanup_orphaned_alb_resources()` -- delete orphaned ALB rules and rule-less premium target groups
 3. `cleanup_duplicate_alb_rules()` -- remove duplicate rules
 4. `reconcile_instance_states()` -- sync DB with AWS
 5. `ensure_standby_pool_capacity()` -- monitor standby health
@@ -653,7 +653,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 ┌──────────────────────────────────────────────────────────┐
 │ 2. cleanup_orphaned_alb_resources()                      │
 │    → Find ALB rules with no matching DB entry            │
-│    → Delete orphaned target groups and rules             │
+│    → Delete orphaned rules, their TGs, rule-less TGs     │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -1004,7 +1004,7 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry, routes scheduled vs manual actions |
 | `cleanup_stale_assignments()` | Remove idle assignments (>3h, `@with_transaction`) |
-| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry, except those of a user whose assign is in flight |
+| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry, except those of a user whose assign is in flight; then delete this VPC's rule-less `premium-<id>-tg` groups whose user has no row and no claim |
 | `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id, except those of a user whose assign is in flight |
 | `get_assign_claimed_user_ids()` | Users holding an unexpired assign claim; both ALB sweeps delete nothing if it cannot be read |
 | `reconcile_instance_states()` | Sync DB with AWS reality |

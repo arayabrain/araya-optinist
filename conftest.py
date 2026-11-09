@@ -58,6 +58,8 @@ _TEST_ENV = {
     "STRIPE_WEBHOOK_SECRET": "whsec_dummy_123",
     "STRIPE_CALLBACK_URL": "http://localhost:8000",
     "CORS_ORIGINS": "*",
+    # The local disk guard would 507 a run on a developer's nearly full laptop
+    "OPTINIST_MIN_FREE_DISK_GIB": "0",
 }
 
 os.environ.update(_TEST_ENV)

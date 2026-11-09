@@ -119,13 +119,18 @@ def stale_engine(engine):
 
 @pytest.fixture
 def s3_listing():
-    """boto3's client: each listed prefix holds one object."""
+    """The S3 client of both size scans: each listed prefix holds one object."""
     client = MagicMock()
     page = {"Contents": [{"Size": OBJECT_BYTES}], "IsTruncated": False}
     client.list_objects_v2.return_value = page
     client.get_paginator.return_value.paginate.side_effect = lambda **_: [page]
+    # The refresh's scan creates its own client; the recalculation's streaming
+    # scan takes the process's shared one
     with patch(
         "studio.app.common.core.cloud.s3_storage_monitor.boto3.client",
+        return_value=client,
+    ), patch(
+        "studio.app.common.core.cloud.s3_storage_monitor.get_s3_client",
         return_value=client,
     ):
         yield client

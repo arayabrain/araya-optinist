@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, TypeVar
 
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -17,9 +17,24 @@ from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.security import validate_access_token
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 
 # Thread pool for running synchronous Firebase calls asynchronously
 _thread_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="firebase_auth")
+
+# Firebase requests made through pyrebase (the token refresh), in a pool of their
+# own: they have no timeout, and a stalled one must not hold up the token checks
+_call_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="firebase_call")
+
+_T = TypeVar("_T")
+
+
+async def run_firebase_call(func: Callable[..., _T], *args) -> _T:
+    """func(*args) in the Firebase call pool, with the request's context: a
+    Firebase call is an HTTPS request, and on the event loop it would hold every
+    other request."""
+    return await run_in_executor_with_context(_call_pool, func, *args)
+
 
 # Token cache with TTL (Time To Live)
 # Structure: {token_hash: {"uid": str, "expires_at": float}}

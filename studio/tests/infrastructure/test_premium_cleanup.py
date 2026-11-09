@@ -1,5 +1,6 @@
 """Tests for premium_cleanup Lambda function."""
 
+import ast
 from unittest.mock import MagicMock, patch
 
 import pymysql
@@ -10,6 +11,7 @@ from aws_constants import (
     PremiumInstanceConfig,
     RoutingHeaders,
 )
+from terraform_source import TERRAFORM_DIR
 
 from conftest import MockRow, setup_db_mock
 
@@ -920,13 +922,21 @@ class TestAlbSweepsSkipInFlightAssign:
         assert "assign claims unavailable" in result["error"]
 
     @pytest.mark.parametrize(
-        "sweep", ["cleanup_orphaned_alb_resources", "cleanup_duplicate_alb_rules"]
+        "sweep, reads",
+        [
+            (
+                "cleanup_orphaned_alb_resources",
+                ["rules", "target-groups", "claims", "keep-set"],
+            ),
+            ("cleanup_duplicate_alb_rules", ["rules", "claims", "keep-set"]),
+        ],
     )
     def test_sweep_reads_claims_between_rules_and_keep_set(
-        self, mock_env_vars_premium, sweep
+        self, mock_env_vars_premium, sweep, reads
     ):
         """The read order is the guarantee: an assign that stores its row and
-        drops its claim between two reads is still seen by one of them."""
+        drops its claim between two reads is still seen by one of them. Target
+        groups are listed with the rules, so one created later is never touched."""
         events = []
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
@@ -945,11 +955,14 @@ class TestAlbSweepsSkipInFlightAssign:
             mock_elbv2.describe_rules.side_effect = lambda **k: (
                 events.append("rules") or {"Rules": []}
             )
+            mock_elbv2.get_paginator.return_value.paginate.side_effect = lambda: (
+                events.append("target-groups") or []
+            )
             import premium_cleanup
 
             getattr(premium_cleanup, sweep)()
 
-        assert events == ["rules", "claims", "keep-set"]
+        assert events == reads
 
     def test_duplicate_sweep_keeps_the_claimed_users_extra_rule(
         self, mock_env_vars_premium
@@ -983,6 +996,213 @@ class TestAlbSweepsSkipInFlightAssign:
 
         assert run({12}) == []
         assert run(set()) == [extra_rule]
+
+
+def _tg(name, vpc="vpc-test123", load_balancers=()):
+    """A describe_target_groups entry; the VPC default matches the test env."""
+    return {
+        "TargetGroupName": name,
+        "TargetGroupArn": (
+            f"arn:aws:elasticloadbalancing:region:account:targetgroup/{name}/abc"
+        ),
+        "VpcId": vpc,
+        "LoadBalancerArns": list(load_balancers),
+    }
+
+
+_TG_NOT_FOUND = Exception("An error occurred (TargetGroupNotFound)")
+
+
+class TestRulelessTargetGroupSweep:
+    """A TG whose rule is gone is found only by listing TGs. The orphan sweep
+    deletes it unless a rule, an assignment row or an assign claim may own it."""
+
+    @staticmethod
+    def _sweep(
+        env,
+        pages,
+        rows=(),
+        claims=(),
+        rules=(),
+        failing=(),
+        name_check=_TG_NOT_FOUND,
+        listing_error=None,
+    ):
+        """Run the orphan sweep; returns (result, ordered TG/alarm deletes, cursor)."""
+        calls = []
+
+        def delete_tg(TargetGroupArn):
+            calls.append(("tg", TargetGroupArn))
+            if TargetGroupArn in failing:
+                raise Exception("ResourceInUse")
+
+        connection = setup_db_mock(fetchall_values=[[MockRow(r) for r in rows]])
+        with patch.dict("os.environ", env, clear=True), patch(
+            "boto3.client"
+        ) as mock_boto3, patch(
+            "premium_cleanup.pymysql.connect", return_value=connection
+        ), patch(
+            "premium_cleanup.get_assign_claimed_user_ids",
+            side_effect=claims
+            if isinstance(claims, Exception)
+            else lambda: set(claims),
+        ), patch(
+            "premium_cleanup._delete_premium_tg_unhealthy_alarm",
+            side_effect=lambda arn: calls.append(("alarm", arn)),
+        ):
+            elbv2 = MagicMock()
+            mock_boto3.side_effect = lambda s: elbv2 if s == "elbv2" else MagicMock()
+            elbv2.describe_rules.return_value = {"Rules": list(rules)}
+            paginate = elbv2.get_paginator.return_value.paginate
+            paginate.return_value = [{"TargetGroups": p} for p in pages]
+            paginate.side_effect = listing_error
+            elbv2.delete_target_group.side_effect = delete_tg
+            elbv2.delete_rule.side_effect = lambda RuleArn: None
+            if isinstance(name_check, Exception):
+                elbv2.describe_target_groups.side_effect = name_check
+            else:
+                elbv2.describe_target_groups.return_value = name_check
+            from premium_cleanup import cleanup_orphaned_alb_resources
+
+            result = cleanup_orphaned_alb_resources()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        return result, calls, cursor
+
+    def test_deletes_an_unowned_ruleless_tg_then_its_alarm(self, mock_env_vars_premium):
+        """No orphan rule exists, which is the state issue 814 observed."""
+        tg = _tg("premium-5-tg")
+        result, calls, cursor = self._sweep(mock_env_vars_premium, [[tg]])
+
+        arn = tg["TargetGroupArn"]
+        assert calls == [("tg", arn), ("alarm", arn)]
+        assert result["ruleless_target_groups_deleted"] == 1
+        assert result["orphaned_rules_deleted"] == 0
+        assert "error" not in result and "ruleless_tg_error" not in result
+        assert cursor.execute.call_count == 1
+
+    @pytest.mark.parametrize(
+        "tg, rows, claims",
+        [
+            (_tg("premium-5-tg", load_balancers=["arn:lb"]), (), ()),
+            (_tg("premium-5-tg", vpc="vpc-other-env"), (), ()),
+            (_tg("premium-abc-tg"), (), ()),
+            (_tg("premium-007-tg"), (), ()),
+            (_tg("development-premium-1-tg"), (), ()),
+            (_tg("test-tg"), (), ()),
+            (
+                _tg("premium-5-tg"),
+                [
+                    {
+                        "alb_rule_arn": "arn:aws:rule/pool-5",
+                        "target_group_arn": "arn:aws:tg/autoscaling-pool",
+                        "user_id": 5,
+                    }
+                ],
+                (),
+            ),
+            (_tg("premium-5-tg"), (), {5}),
+        ],
+        ids=[
+            "rule-attached",
+            "other-vpc",
+            "non-numeric-id",
+            "zero-padded-id",
+            "env-prefixed-name",
+            "pool-tg-name",
+            "user-has-a-row",
+            "user-has-a-claim",
+        ],
+    )
+    def test_keeps(self, mock_env_vars_premium, tg, rows, claims):
+        result, calls, _ = self._sweep(
+            mock_env_vars_premium, [[tg]], rows=rows, claims=claims
+        )
+
+        assert calls == []
+        assert result["ruleless_target_groups_deleted"] == 0
+
+    @pytest.mark.parametrize(
+        "name_check",
+        [{"TargetGroups": [_tg("premium-5-tg")]}, Exception("Throttling")],
+        ids=["name-taken-again", "name-unchecked"],
+    )
+    def test_keeps_the_alarm_unless_the_name_is_free(
+        self, mock_env_vars_premium, name_check
+    ):
+        """A same-named TG created since shares the alarm name."""
+        tg = _tg("premium-5-tg")
+        result, calls, _ = self._sweep(
+            mock_env_vars_premium, [[tg]], name_check=name_check
+        )
+
+        assert calls == [("tg", tg["TargetGroupArn"])]
+        assert result["ruleless_target_groups_deleted"] == 1
+
+    def test_failed_delete_keeps_the_alarm_and_tries_the_next(
+        self, mock_env_vars_premium
+    ):
+        first, second = _tg("premium-5-tg"), _tg("premium-6-tg")
+        result, calls, _ = self._sweep(
+            mock_env_vars_premium,
+            [[first, second]],
+            failing={first["TargetGroupArn"]},
+        )
+
+        assert calls == [
+            ("tg", first["TargetGroupArn"]),
+            ("tg", second["TargetGroupArn"]),
+            ("alarm", second["TargetGroupArn"]),
+        ]
+        assert result["ruleless_target_groups_deleted"] == 1
+
+    def test_unreadable_claims_delete_nothing(self, mock_env_vars_premium):
+        result, calls, _ = self._sweep(
+            mock_env_vars_premium,
+            [[_tg("premium-5-tg")]],
+            claims=pymysql.err.OperationalError("db down"),
+        )
+
+        assert calls == []
+        assert "assign claims unavailable" in result["error"]
+
+    @pytest.mark.parametrize("break_listing", ["paginator-raises", "no-vpc-id"])
+    def test_listing_failure_keeps_the_rule_pass(
+        self, mock_env_vars_premium, break_listing
+    ):
+        env = dict(mock_env_vars_premium)
+        listing_error = None
+        if break_listing == "no-vpc-id":
+            del env["VPC_ID"]
+        else:
+            listing_error = Exception("Throttling")
+        orphan_rule = _premium_alb_rule(
+            "arn:aws:rule/user-13-orphan", _user_tg_arn(13), "rid-13"
+        )
+
+        result, calls, _ = self._sweep(
+            env,
+            [[_tg("premium-5-tg")]],
+            rules=[orphan_rule],
+            listing_error=listing_error,
+        )
+
+        assert result["orphaned_rules_deleted"] == 1
+        assert result["ruleless_target_groups_deleted"] == 0
+        assert result["ruleless_tg_error"]
+        assert [c for c in calls if c[0] == "tg"] == [("tg", _user_tg_arn(13))]
+
+    def test_reads_every_page_and_caps_attempts(self, mock_env_vars_premium):
+        """The cap counts attempts, so failed deletes use it up too."""
+        tgs = [_tg(f"premium-{i}-tg") for i in range(1, 26)]
+        failing = {tg["TargetGroupArn"] for tg in tgs[:3]}
+
+        result, calls, _ = self._sweep(
+            mock_env_vars_premium, [tgs[:15], tgs[15:]], failing=failing
+        )
+
+        attempted = [arn for kind, arn in calls if kind == "tg"]
+        assert attempted == [tg["TargetGroupArn"] for tg in tgs[:20]]
+        assert result["ruleless_target_groups_deleted"] == 17
 
 
 class TestReconcileInstanceStates:
@@ -1825,3 +2045,21 @@ class TestGetEcsContainerInstanceArnPrefersLive:
 
             result = _get_ecs_container_instance_arn("i-solo", "test-cluster")
             assert result == arn
+
+
+def test_only_delete_premium_tg_deletes_a_tg_or_its_alarm():
+    """The group-before-alarm order lives in ``_delete_premium_tg``; a direct
+    call anywhere else could put the alarm first again."""
+    tree = ast.parse(
+        (TERRAFORM_DIR / "premium_cleanup_package/premium_cleanup.py").read_text()
+    )
+    callers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "attr", getattr(call.func, "id", None))
+        in {"delete_target_group", "_delete_premium_tg_unhealthy_alarm"}
+    }
+    assert callers == {"_delete_premium_tg"}

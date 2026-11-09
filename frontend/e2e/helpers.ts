@@ -789,8 +789,8 @@ export async function skipUnlessPremiumTargetHealthy(
 
 // The ALB half of "nothing is still held by us". A hard release can delete the
 // assignment row and the listener rule but fail the target-group deletion,
-// stranding a rule-less TG no sweep can find (issue #814) - so /premium/status
-// reporting released is only half the invariant. Only a genuine NotFound counts
+// stranding a rule-less TG that the hourly cleanup removes only later (issue
+// #814) - so /premium/status reporting released is only half the invariant. Only a genuine NotFound counts
 // as absence: premiumTargetHealth() is no substitute, it swallows every error
 // and returns [] for an existing-but-empty group exactly as for a missing one.
 export function expectPremiumTargetGroupGone(userId: number, stage: string) {

@@ -1,4 +1,6 @@
 import gc
+import os
+import shutil
 
 import numpy as np
 
@@ -178,149 +180,162 @@ def caiman_cnmf_multisession(
     cnm_list = []
     templates = []
     mmap_paths = []
-    with caiman_cluster(requested_n_processes) as (dview, n_processes):
-        ops = CNMFParams()
-        ops.change_params(distribute_params_to_groups({**params, "fr": fr}, vars(ops)))
-
-        for split_image_path in split_image_paths:
-            split_image_mmap, _, mmap_path = util_get_image_memmap_from_files(
-                function_id, split_image_path, split_image_path
+    try:
+        with caiman_cluster(requested_n_processes) as (dview, n_processes):
+            ops = CNMFParams()
+            ops.change_params(
+                distribute_params_to_groups({**params, "fr": fr}, vars(ops))
             )
-            mmap_paths.append(mmap_path)
 
-            cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
-            cnm = cnm.fit(split_image_mmap)
-            cnm_list.append(cnm)
-            templates.append(session_template(split_image_path))
+            for split_image_path in split_image_paths:
+                split_image_mmap, _, mmap_path = util_get_image_memmap_from_files(
+                    function_id, split_image_path, split_image_path
+                )
+                mmap_paths.append(mmap_path)
 
-            del split_image_mmap
-            gc.collect()
+                cnm = cnmf.CNMF(
+                    n_processes=n_processes, dview=dview, Ain=Ain, params=ops
+                )
+                cnm = cnm.fit(split_image_mmap)
+                cnm_list.append(cnm)
+                templates.append(session_template(split_image_path))
 
-    spatial = [cnm.estimates.A for cnm in cnm_list]
-    dims = templates[0].shape
+                del split_image_mmap
+                gc.collect()
 
-    spatial_union, assignments, matchings = register_multisession(
-        A=spatial,
-        dims=dims,
-        templates=templates,
-        align_flag=align_flag,
-        max_thr=max_thr,
-        use_opt_flow=use_opt_flow,
-        thresh_cost=thresh_cost,
-        max_dist=max_dist,
-        enclosed_thr=enclosed_thr,
-    )
+        spatial = [cnm.estimates.A for cnm in cnm_list]
+        dims = templates[0].shape
 
-    reg_files = int(len(split_image_paths) * reg_file_rate)
-    kept = assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files]
-    if len(kept) == 0:
-        raise Exception(
-            f"No same cells found in {reg_files} or more "
-            + f"out of {n_split_images} files. "
-            + "Try to set lower reg_file_rate.",
+        spatial_union, assignments, matchings = register_multisession(
+            A=spatial,
+            dims=dims,
+            templates=templates,
+            align_flag=align_flag,
+            max_thr=max_thr,
+            use_opt_flow=use_opt_flow,
+            thresh_cost=thresh_cost,
+            max_dist=max_dist,
+            enclosed_thr=enclosed_thr,
         )
 
-    spatial_filtered = union_footprints(spatial, kept)
+        reg_files = int(len(split_image_paths) * reg_file_rate)
+        kept = assignments[np.sum(~np.isnan(assignments), axis=1) >= reg_files]
+        if len(kept) == 0:
+            raise Exception(
+                f"No same cells found in {reg_files} or more "
+                + f"out of {n_split_images} files. "
+                + "Try to set lower reg_file_rate.",
+            )
 
-    session_estimates = [cnm.estimates for cnm in cnm_list]
-    fluorescence = session_fluorescence(session_estimates, kept)
-    dff = session_dff(session_estimates, kept, frames_window)
+        spatial_filtered = union_footprints(spatial, kept)
 
-    # contours plot
-    thr_method = "nrg"
-    swap_dim = False
+        session_estimates = [cnm.estimates for cnm in cnm_list]
+        fluorescence = session_fluorescence(session_estimates, kept)
+        dff = session_dff(session_estimates, kept, frames_window)
 
-    iscell = np.ones(len(kept), dtype=int)
+        # contours plot
+        thr_method = "nrg"
+        swap_dim = False
 
-    # one footprint at a time: no full-frame layer per cell is kept
-    roi_masks = RoiMasks.from_pixels(
-        dims,
-        (
-            np.flatnonzero(mask)
-            for mask in get_roi(spatial_filtered, roi_thr, thr_method, swap_dim, dims)
-        ),
-    )
-    n_rois = len(roi_masks)
-    all_roi = roi_masks.label_image()
+        iscell = np.ones(len(kept), dtype=int)
 
-    # NWBの追加
-    nwbfile = {}
-    # NWBにROIを追加
-    roi_list = []
-    n_cells = spatial_filtered.shape[-1]
-    for i in range(n_cells):
-        kargs = {}
-        kargs["pixel_mask"] = nwb_pixel_mask(spatial_filtered, i, dims, swap_dim)
-        roi_list.append(kargs)
+        # one footprint at a time: no full-frame layer per cell is kept
+        roi_masks = RoiMasks.from_pixels(
+            dims,
+            (
+                np.flatnonzero(mask)
+                for mask in get_roi(
+                    spatial_filtered, roi_thr, thr_method, swap_dim, dims
+                )
+            ),
+        )
+        n_rois = len(roi_masks)
+        all_roi = roi_masks.label_image()
 
-    nwbfile[NWBDATASET.ROI] = {
-        function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
-    }
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
+        # NWBの追加
+        nwbfile = {}
+        # NWBにROIを追加
+        roi_list = []
+        n_cells = spatial_filtered.shape[-1]
+        for i in range(n_cells):
+            kargs = {}
+            kargs["pixel_mask"] = nwb_pixel_mask(spatial_filtered, i, dims, swap_dim)
+            roi_list.append(kargs)
 
-    # iscellを追加
-    nwbfile[NWBDATASET.COLUMN] = {
-        function_id: {
-            "name": "iscell",
-            "description": "iscell",
-            "data": iscell,
+        nwbfile[NWBDATASET.ROI] = {
+            function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
         }
-    }
+        nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
 
-    nwbfile[NWBDATASET.FLUORESCENCE] = {
-        function_id: {
-            "Fluorescence": {
-                "table_name": "ROIs",
-                "region": list(range(n_rois)),
-                "name": "Fluorescence",
-                "data": fluorescence,
-                "unit": "lumens",
-                "rate": fr,
-                "comments": f"ROIs were detected in {reg_files} out of "
-                + f"{n_split_images} sessions ({reg_file_rate} overall).",
+        # iscellを追加
+        nwbfile[NWBDATASET.COLUMN] = {
+            function_id: {
+                "name": "iscell",
+                "description": "iscell",
+                "data": iscell,
             }
         }
-    }
 
-    # the parts hold the movie's frames, in its dtype and C order
-    Cn, meanImg = correlation_image(FrameStack(split_image_paths))
-    Cn[np.isnan(Cn)] = 0
+        nwbfile[NWBDATASET.FLUORESCENCE] = {
+            function_id: {
+                "Fluorescence": {
+                    "table_name": "ROIs",
+                    "region": list(range(n_rois)),
+                    "name": "Fluorescence",
+                    "data": fluorescence,
+                    "unit": "lumens",
+                    "rate": fr,
+                    "comments": f"ROIs were detected in {reg_files} out of "
+                    + f"{n_split_images} sessions ({reg_file_rate} overall).",
+                }
+            }
+        }
 
-    info = {
-        "images": ImageData(
-            np.array(Cn * 255, dtype=np.uint8),
-            output_dir=output_dir,
-            file_name="images",
-        ),
-        "meanImg": ImageData(
-            meanImg.astype(np.float32), output_dir=output_dir, file_name="meanImg"
-        ),
-        "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
-        "dff": FluoData(dff, file_name="dff"),
-        "iscell": IscellData(iscell, file_name="iscell"),
-        "cell_roi": RoiData(
-            roi_masks.label_image(iscell != 0),
-            output_dir=output_dir,
-            file_name="cell_roi",
-        ),
-        # ROI edits read new traces from a reference, opened at commit time: to
-        # the input when it lies in this experiment, else to the parts, which do
-        "edit_roi_data": EditRoiData(
-            util_edit_roi_movie(
-                images,
-                lambda: edit_reference(ImageData(split_image_paths), output_dir),
-                output_dir,
+        # the parts hold the movie's frames, in its dtype and C order
+        Cn, meanImg = correlation_image(FrameStack(split_image_paths))
+        Cn[np.isnan(Cn)] = 0
+
+        info = {
+            "images": ImageData(
+                np.array(Cn * 255, dtype=np.uint8),
+                output_dir=output_dir,
+                file_name="images",
             ),
-            roi_masks,
-        ),
-        "nwbfile": nwbfile,
-    }
+            "meanImg": ImageData(
+                meanImg.astype(np.float32), output_dir=output_dir, file_name="meanImg"
+            ),
+            "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+            "dff": FluoData(dff, file_name="dff"),
+            "iscell": IscellData(iscell, file_name="iscell"),
+            "cell_roi": RoiData(
+                roi_masks.label_image(iscell != 0),
+                output_dir=output_dir,
+                file_name="cell_roi",
+            ),
+            # ROI edits read new traces from a reference, opened at commit time: to
+            # the input when it lies in this experiment, else to the parts, which do
+            "edit_roi_data": EditRoiData(
+                util_edit_roi_movie(
+                    images,
+                    lambda: edit_reference(ImageData(split_image_paths), output_dir),
+                    output_dir,
+                ),
+                roi_masks,
+            ),
+            "nwbfile": nwbfile,
+        }
 
-    # Clean up temporary files
-    try:
-        util_cleanup_image_memmap(mmap_paths)
-    except Exception as e:
-        logger.warning("Failed to cleanup memmap files.")
-        logger.warning(e)
+    except BaseException:
+        # The parts are only referenced by a finished node's EditRoiData
+        shutil.rmtree(os.path.join(output_dir, "image_split"), ignore_errors=True)
+        raise
+    finally:
+        # Also on the error path, so no half-used memmap outlives the run
+        gc.collect()
+        try:
+            util_cleanup_image_memmap(mmap_paths)
+        except Exception as e:
+            logger.warning("Failed to cleanup memmap files.")
+            logger.warning(e)
 
     return info
