@@ -1,20 +1,26 @@
 import os
-from typing import Optional, Tuple
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi_pagination import LimitOffsetPage
 from fastapi_pagination.ext.sqlmodel import paginate
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlmodel import Session, or_, select
 
 from studio.app.common import models as common_model
 from studio.app.common.core.auth.auth_dependencies import (
+    _get_user_remote_bucket_name,
     get_current_user,
     get_user_remote_bucket_name,
 )
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.logger import AppLogger
-from studio.app.common.core.storage.storage_scan import run_storage_scan
+from studio.app.common.core.storage.storage_scan import (
+    run_storage_scan,
+    storage_scan_lock,
+)
 from studio.app.common.core.subscription.constants import StorageSize
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow import WorkflowRunStatus
@@ -23,7 +29,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_owner,
 )
 from studio.app.common.core.workspace.workspace_services import WorkspaceService
-from studio.app.common.db.database import get_db, session_scope
+from studio.app.common.db.database import get_db, run_db_lookup, session_scope
 from studio.app.common.schemas.base import SortOptions
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workspace import (
@@ -405,8 +411,9 @@ async def refresh_all_workspaces_storage(
     Refresh storage usage calculation for all workspaces.
     This will recalculate both local and S3 storage usage.
 
-    The listings, folder walks and the writes of what they find run in a
-    worker thread (run_storage_scan), not on the event loop.
+    Each workspace's listings, folder walks and the writes of what they find
+    run in a worker thread (run_storage_scan), not on the event loop; one
+    refresh of a workspace at a time in the process (storage_scan_lock).
     """
     try:
         from studio.app.common.core.storage.remote_storage_controller import (
@@ -415,18 +422,25 @@ async def refresh_all_workspaces_storage(
 
         bucket_name = None
         if RemoteStorageType.get_activated_type() == RemoteStorageType.S3:
-            # Use per-user bucket if available, otherwise fall back to shared bucket
-            bucket_name = current_user.remote_bucket_name
-            if not bucket_name:
-                bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
-                logger.warning(
-                    f"User {current_user.id} has no personal bucket, "
-                    f"using shared bucket: {bucket_name}"
-                )
+            # Per-user bucket if available, otherwise the shared bucket
+            bucket_name = _get_user_remote_bucket_name(current_user)
 
-        refreshed_count, workspace_count = await run_storage_scan(
-            _refresh_workspaces_storage, current_user.id, bucket_name
+        workspace_ids = await run_db_lookup(
+            _get_accessible_workspace_ids, current_user.id
         )
+        logger.info(
+            f"Refreshing storage for {len(workspace_ids)} workspaces "
+            f"for user {current_user.id}"
+        )
+
+        refreshed_count = 0
+        for workspace_id in workspace_ids:
+            # One scan call per workspace: other scans can take the slot in between
+            async with storage_scan_lock(f"workspace:{workspace_id}"):
+                if await run_storage_scan(
+                    _refresh_workspace_storage, workspace_id, bucket_name
+                ):
+                    refreshed_count += 1
 
         # After refreshing individual workspaces, update the user's total storage usage
         try:
@@ -447,16 +461,24 @@ async def refresh_all_workspaces_storage(
 
         logger.info(
             f"Successfully refreshed storage for {refreshed_count}/"
-            f"{workspace_count} workspaces"
+            f"{len(workspace_ids)} workspaces"
         )
 
         return {
             "success": True,
             "refreshed_workspaces": refreshed_count,
-            "total_workspaces": workspace_count,
+            "total_workspaces": len(workspace_ids),
             "message": (f"Refreshed storage usage for {refreshed_count} " "workspaces"),
         }
 
+    except PoolTimeoutError as e:
+        # Busy, not down: a 503 would read as an unreachable premium instance
+        logger.warning(f"Storage refresh waited too long for a connection: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="The server is busy. Please retry.",
+            headers={"Retry-After": "5"},
+        )
     except Exception as e:
         logger.error(f"Failed to refresh all workspaces storage: {e}")
         raise HTTPException(
@@ -464,56 +486,44 @@ async def refresh_all_workspaces_storage(
         )
 
 
-def _refresh_workspaces_storage(
-    user_id: int, bucket_name: Optional[str]
-) -> Tuple[int, int]:
+def _get_accessible_workspace_ids(user_id: int) -> List[int]:
+    """The ids of the workspaces the user owns or shares; blocking."""
+    with session_scope() as db:
+        return WorkspaceService.get_user_accessible_workspace_ids(db, user_id)
+
+
+def _refresh_workspace_storage(workspace_id: int, bucket_name: Optional[str]) -> bool:
     """
-    Recalculate the usage of each workspace the user can access, from S3 when
-    bucket_name is set, else from local folders. Blocking: run_storage_scan.
+    Recalculate one workspace's usage, from S3 when bucket_name is set, else
+    from local folders. Blocking: run_storage_scan.
 
-    - Commits after the workspace id read and after each workspace, so the
-      session holds no connection during the listings that follow.
-
-    Returns the refreshed and the accessible workspace counts.
+    - Its own session, committed when done: no pooled connection is held
+      between workspaces.
+    - A failure rolls back what the workspace staged and returns False.
+    - A database that cannot be reached (a pool wait timeout, a lost
+      connection) raises instead: the next workspaces would wait the same way.
     """
     from studio.scripts.run_sync_data_capacity_cloud import (
         CloudWorkspaceDataCapacityService,
     )
 
     with session_scope() as db:
-        # Get all non-deleted workspaces that the user has access to
-        workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(db, user_id)
-        db.commit()
-
-        logger.info(
-            f"Refreshing storage for {len(workspace_ids)} workspaces "
-            f"for user {user_id}"
-        )
-
-        refreshed_count = 0
-        for workspace_id in workspace_ids:
-            try:
-                if bucket_name:
-                    # Use S3 storage service with user's bucket (per-user or shared)
-                    service = CloudWorkspaceDataCapacityService
-                    service.sync_workspace_data_capacity_with_s3(
-                        db,
-                        bucket_name,
-                        str(workspace_id),
-                        delete_existing=False,
-                    )
-                else:
-                    _refresh_local_workspace_storage(db, workspace_id)
-                db.commit()
-                refreshed_count += 1
-
-            except Exception as e:
-                db.rollback()
-                logger.error(
-                    f"Failed to refresh storage for workspace {workspace_id}: {e}"
+        try:
+            if bucket_name:
+                CloudWorkspaceDataCapacityService.sync_workspace_data_capacity_with_s3(
+                    db, bucket_name, str(workspace_id), delete_existing=False
                 )
+            else:
+                _refresh_local_workspace_storage(db, workspace_id)
+            db.commit()
+            return True
 
-    return refreshed_count, len(workspace_ids)
+        except (PoolTimeoutError, OperationalError):
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to refresh storage for workspace {workspace_id}: {e}")
+            return False
 
 
 def _refresh_local_workspace_storage(db: Session, workspace_id: int) -> None:

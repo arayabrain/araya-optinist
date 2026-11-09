@@ -1,4 +1,4 @@
-"""The size scans' shared S3 client, and their thread limit."""
+"""The size scans' shared S3 client, their thread limit and their key locks."""
 
 import asyncio
 import threading
@@ -12,6 +12,7 @@ from studio.app.common.core.storage.storage_scan import (
     MAX_CONCURRENT_SCANS,
     get_s3_client,
     run_storage_scan,
+    storage_scan_lock,
 )
 from studio.tests.app.common.db_pool_probe import wait_until
 
@@ -73,3 +74,29 @@ async def test_scans_past_the_limit_wait_for_a_slot_off_the_loop():
 
     assert await asyncio.gather(*scans) == ["done"] * (MAX_CONCURRENT_SCANS + 2)
     assert peak[0] == MAX_CONCURRENT_SCANS
+
+
+@pytest.mark.asyncio
+async def test_a_key_is_held_by_one_at_a_time_and_dropped_when_free():
+    release = asyncio.Event()
+    holding = []
+
+    async def hold(key, name):
+        async with storage_scan_lock(key):
+            holding.append(name)
+            await release.wait()
+
+    tasks = [
+        asyncio.create_task(hold(key, name))
+        for key, name in (("user:1", "a"), ("user:1", "b"), ("user:2", "c"))
+    ]
+    # Another key runs at once; the same key waits
+    await wait_until(lambda: len(holding) == 2)
+    await asyncio.sleep(0.05)
+    assert holding == ["a", "c"]
+    release.set()
+    await asyncio.gather(*tasks)
+
+    assert holding == ["a", "c", "b"]
+    # No entry is kept for a key no one holds or waits for
+    assert storage_scan._scan_locks.get() == {}

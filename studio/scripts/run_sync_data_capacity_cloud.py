@@ -46,70 +46,6 @@ class CloudWorkspaceDataCapacityService:
     """
 
     @classmethod
-    def get_s3_workspace_size(cls, bucket_name: str, workspace_id: str) -> int:
-        """
-        Calculate total S3 storage size for a workspace.
-
-        Args:
-            bucket_name: S3 bucket name
-            workspace_id: Workspace ID to check storage for
-
-        Returns:
-            Total storage size in bytes for both input and output data
-        """
-        total_size = 0
-
-        try:
-            s3_client = get_s3_client()
-
-            # Check both input and output directories for the workspace
-            prefixes = [
-                S3StorageController.make_s3_input_prefix(workspace_id),
-                S3StorageController.make_s3_output_prefix(workspace_id),
-            ]
-
-            logger.info(f"Calculating S3 usage for workspace {workspace_id}")
-
-            for prefix in prefixes:
-                try:
-                    # logger.debug(f"Scanning S3 prefix: {prefix}")
-                    paginator = s3_client.get_paginator("list_objects_v2")
-                    page_iterator = paginator.paginate(
-                        Bucket=bucket_name, Prefix=prefix
-                    )
-
-                    prefix_size = 0
-                    object_count = 0
-                    for page in page_iterator:
-                        if "Contents" in page:
-                            for obj in page["Contents"]:
-                                object_size = obj["Size"]
-                                total_size += object_size
-                                prefix_size += object_size
-                                object_count += 1
-
-                    # logger.debug(
-                    #     f"Prefix {prefix}: {object_count} objects, "
-                    #     f"{prefix_size:,} bytes"
-                    # )
-
-                except Exception as e:
-                    logger.warning(f"Failed to get size for prefix {prefix}: {e}")
-                    continue
-
-        except Exception as e:
-            logger.error(
-                f"Failed to calculate S3 storage size for "
-                f"workspace {workspace_id}: {e}"
-            )
-            return 0
-
-        logger.info(
-            f"S3 storage size for workspace {workspace_id}: {total_size:,} bytes"
-        )
-        return total_size
-
-    @classmethod
     def get_s3_experiment_size(
         cls, bucket_name: str, workspace_id: str, unique_id: str
     ) -> int:
@@ -157,42 +93,6 @@ class CloudWorkspaceDataCapacityService:
             return 0
 
         return total_size
-
-    @classmethod
-    def update_experiment_data_usage_with_s3(
-        cls, bucket_name: str, workspace_id: str, unique_id: str
-    ):
-        """
-        Update experiment data usage including both local and S3 storage.
-        """
-        # Get local storage size
-        workflow_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
-        local_size = 0
-        if os.path.exists(workflow_dir):
-            local_size = get_folder_size(workflow_dir)
-
-        # Get S3 storage size
-        s3_size = cls.get_s3_experiment_size(bucket_name, workspace_id, unique_id)
-
-        # Total data usage is the max of local and S3 (they are mirrored)
-        # Using max instead of sum to avoid double-counting synced files
-        total_data_usage = max(local_size, s3_size)
-
-        logger.info(
-            f"Experiment {workspace_id}/{unique_id} usage: "
-            f"local={local_size:,} bytes, S3={s3_size:,} bytes, "
-            f"total={total_data_usage:,} bytes (using max to avoid double-counting)"
-        )
-
-        # Update the yaml file and database
-        WorkspaceDataCapacityService._update_exp_data_usage_yaml(
-            workspace_id, unique_id, total_data_usage
-        )
-
-        if WorkspaceDataCapacityService.is_available():
-            WorkspaceDataCapacityService._update_exp_data_usage_db(
-                workspace_id, unique_id, total_data_usage
-            )
 
     @classmethod
     def update_workspace_data_usage_with_s3(

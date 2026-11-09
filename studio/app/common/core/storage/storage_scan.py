@@ -1,11 +1,15 @@
 """Storage size scans (S3 listings, folder walks) for async request code."""
 
 import threading
-from typing import TYPE_CHECKING, Callable, Optional, TypeVar
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Dict, Optional, TypeVar
 
 import boto3
-from anyio import CapacityLimiter, to_thread
+from anyio import CapacityLimiter, Lock
 from anyio.lowlevel import RunVar
+
+from studio.app.common.db.database import run_in_limited_thread
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -15,8 +19,17 @@ _T = TypeVar("_T")
 # Scans running at once in a process; more wait for a slot off the event loop
 MAX_CONCURRENT_SCANS = 4
 
+
+@dataclass
+class _KeyLock:
+    lock: Lock = field(default_factory=Lock)
+    # Holder and waiters; the entry is dropped when none is left
+    users: int = 0
+
+
 # Per event loop, as anyio's default limiter is
 _scan_limiter: RunVar[CapacityLimiter] = RunVar("storage_scan_limiter")
+_scan_locks: RunVar[Dict[str, _KeyLock]] = RunVar("storage_scan_locks")
 
 _s3_client: Optional["S3Client"] = None
 _s3_client_lock = threading.Lock()
@@ -48,9 +61,33 @@ async def run_storage_scan(func: Callable[..., _T], *args) -> _T:
     - Its own thread limiter: scans do not take the slots of the default
       threadpool (sync routes and dependencies) or of run_db_lookup.
     """
+    return await run_in_limited_thread(_scan_limiter, MAX_CONCURRENT_SCANS, func, *args)
+
+
+@asynccontextmanager
+async def storage_scan_lock(key: str) -> AsyncIterator[None]:
+    """
+    One scan-and-store per key at a time in this process.
+
+    - Keys: "workspace:<id>" for a workspace's refresh, "user:<id>" for a
+      user's total.
+    - Two scans of one key that overlap can each miss what the other stores:
+      a record inserted twice, or an older total stored over a newer one.
+    - Other processes are not covered.
+    """
     try:
-        limiter = _scan_limiter.get()
+        locks = _scan_locks.get()
     except LookupError:
-        limiter = CapacityLimiter(MAX_CONCURRENT_SCANS)
-        _scan_limiter.set(limiter)
-    return await to_thread.run_sync(func, *args, limiter=limiter)
+        locks = {}
+        _scan_locks.set(locks)
+    entry = locks.get(key)
+    if entry is None:
+        entry = locks[key] = _KeyLock()
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if not entry.users:
+            del locks[key]
