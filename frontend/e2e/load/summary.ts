@@ -107,7 +107,8 @@ export function roundHalfEven(x: number): number {
   return floor % 2 === 0 ? floor : floor + 1
 }
 
-// Nearest-rank on the sorted values, as the reference tool computes it
+// The sorted value at index p/100 x (n - 1), rounded half to even, as the
+// reference tool computes it
 export function pct(values: number[], p: number): number | null {
   if (!values.length) return null
   const sorted = [...values].sort((a, b) => a - b)

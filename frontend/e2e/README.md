@@ -428,8 +428,9 @@ RUN_CHECKOUT_PROBE=1 yarn test:e2e e2e/19-checkout-probe.spec.ts --retries 0
 RUN_RESTART=1 yarn test:e2e e2e/20-boot.spec.ts --retries 0
 # Web UI load on development, in an announced window (see Web UI load lane)
 RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
-# the load lane's own logic, offline
-yarn test:e2e e2e/load/load.unit.spec.ts
+# the load lane's own logic, offline: E2E_OFFLINE=1 keeps globalSetup from
+# signing in with e2e/.env and deleting workspaces on development
+E2E_OFFLINE=1 yarn test:e2e e2e/load/load.unit.spec.ts
 # type-check the e2e specs (the app tsconfig only covers src/)
 yarn typecheck:e2e
 ```
@@ -603,7 +604,7 @@ a relative path is from `e2e/`:
 
 | Key | Required | What |
 | --- | --- | --- |
-| `RUN_LOAD_AWS` | yes | opt-in, with `RUN_DISRUPTIVE=1`; give it per run, not in `e2e/.env` |
+| `RUN_LOAD_AWS` | yes | opt-in, with `RUN_DISRUPTIVE=1` |
 | `AWS_PROFILE` | yes | read access to development's ECS, ELB, Auto Scaling, CloudWatch and logs; every AWS call is a read |
 | `LOAD_ACCOUNTS_FILE` | yes | one `email<TAB>password` line per account, 1-5 free accounts. Read, never printed; keep it outside the repository |
 | `LOAD_DIALOG_RECORD` | yes | the OutputsView fixture, `<workspace id>/<uid>` |
@@ -618,6 +619,10 @@ a relative path is from `e2e/`:
 | `LOAD_MAX_USERS_<SCREEN>`, `LOAD_GO_AHEAD` | no | larger counts, see Plans |
 | `LOAD_BASELINE` | no | the baseline to compare with: a baseline file or another run's results folder; default `load/baseline-20261105.json` |
 | `LOAD_RESULTS_DIR` | no | default `e2e/load-results` (gitignored) |
+| `LOAD_REPORT_FROM` | LOAD-02 | the results folder to rebuild a report from |
+| `LOAD_REPORT_OUT` | no | LOAD-02's report file; default `report.md` in that folder |
+| `LOAD_BASELINE_OUT`, `LOAD_BASELINE_ON`, `LOAD_BASELINE_NOTE` | no | LOAD-02 also writes a baseline file from the folder, with the date measured and a note |
+| `E2E_OFFLINE` | offline runs | `1` keeps `globalSetup` from signing in and cleaning up, for the unit spec and LOAD-02 |
 
 **The OutputsView fixture** is a suite2p result of #637's size (the 1.4 GB
 TIFF through `suite2p_file_convert`, `suite2p_registration` and
@@ -634,7 +639,8 @@ RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<development profile> \
 LOAD_PLAN=parity RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<development profile> \
   yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
 # rebuild a report from saved steps; reads nothing remote
-LOAD_REPORT_FROM=load-results/<run> yarn test:e2e e2e/24-load.spec.ts -g LOAD-02
+E2E_OFFLINE=1 LOAD_REPORT_FROM=load-results/<run> \
+  yarn test:e2e e2e/24-load.spec.ts -g LOAD-02
 ```
 
 A default run takes about an hour. LOAD-01 fails when a screen's last planned
@@ -649,8 +655,9 @@ is written either way.
 **What a run leaves** in `e2e/load-results/<UTC time>-<plan>/`: per step
 `summary.json` (the schema of the tool the 2026-11-02 and 2026-11-05 figures
 came from, so those steps compare as they are), `requests.jsonl`,
-`probes.jsonl`, `vus.jsonl` and the cool-down's `after.json`; the recordings
-(`capture-*.json`), the 10-minute watch's `settle.json`, `run.json` and
+`probes.jsonl`, `vus.jsonl` and the cool-down's `after.json` with its probes
+in `probes-after.jsonl`; the recordings (`capture-*.json`), the 10-minute
+watch's `settle.json` with `probes-settle.jsonl`, `run.json` and
 `report.md`; and, only while a published record's restore is owed,
 `publish-restore.json`. The report gives each
 screen's table before → after with an Improvement column, the 1-user

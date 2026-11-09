@@ -136,7 +136,15 @@ export function loadBaseline(where: string): Baseline {
 
 export function fmtS(x: number | null | undefined): string {
   if (x === null || x === undefined) return "—"
-  return `${fixed(x, x >= 10 ? 1 : 2)} s`
+  const digits = x >= 10 ? 1 : 2
+  const shown = fixed(x, digits)
+  // Rounded up to a whole number, a time under a threshold (5 s, 10 s) would
+  // read as reaching it
+  if (Number(shown) > x && Number.isInteger(Number(shown))) {
+    const scale = 10 ** digits
+    return `${(Math.floor(x * scale) / scale).toFixed(digits)} s`
+  }
+  return `${shown} s`
 }
 
 function fmtPct(x: number | null | undefined): string {

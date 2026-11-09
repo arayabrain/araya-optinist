@@ -41,6 +41,7 @@ import {
   renderReport,
   RunReport,
 } from "./report"
+import globalSetup from "../global-setup"
 import { devIsUp } from "../helpers"
 
 import {
@@ -597,12 +598,40 @@ test.describe("load lane: configuration", () => {
 
   // Run with RUN_LOAD_AWS=1: playwright.config.ts must count the lane among
   // the mutating flags, which switch retries off
-  test("RUN_LOAD_AWS switches retries off", () => {
+  test("E2E_OFFLINE=1 keeps globalSetup from signing in or deleting anything", async () => {
+    const keys = [
+      "E2E_OFFLINE",
+      "TEST_USER_EMAIL",
+      "TEST_USER_PASSWORD",
+      "BASE_URL",
+    ]
+    const saved = keys.map((k) => [k, process.env[k]] as const)
+    try {
+      // Credentials and a closed port: any sign-in attempt would reject
+      Object.assign(process.env, {
+        E2E_OFFLINE: "1",
+        TEST_USER_EMAIL: "x@example.com",
+        TEST_USER_PASSWORD: "p",
+        BASE_URL: "http://127.0.0.1:9",
+      })
+      await expect(globalSetup()).resolves.toBeUndefined()
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
+  test("RUN_DISRUPTIVE, which the lane needs, switches retries off; RUN_LOAD_AWS alone does not", () => {
     test.skip(
-      !process.env.RUN_LOAD_AWS,
-      "checks the config under RUN_LOAD_AWS=1",
+      !process.env.RUN_DISRUPTIVE && !process.env.RUN_LOAD_AWS,
+      "checks the config under RUN_DISRUPTIVE=1 or RUN_LOAD_AWS=1",
     )
-    expect(test.info().project.retries).toBe(0)
+    // Kept in e2e/.env, the lane's own flag must not cost every lane its retry
+    expect(test.info().project.retries).toBe(
+      process.env.RUN_DISRUPTIVE ? 0 : process.env.CI ? 2 : 1,
+    )
   })
 })
 
@@ -1039,6 +1068,10 @@ test.describe("load lane: report", () => {
     // Half up on the digits as written, as the comment's 0.57 s and 3.47 s read
     expect(fmtS(0.565)).toBe("0.57 s")
     expect(fmtS(3.465)).toBe("3.47 s")
+    // Just under a threshold does not read as reaching it
+    expect(fmtS(9.996)).toBe("9.99 s")
+    expect(fmtS(4.997)).toBe("4.99 s")
+    expect(fmtS(10.04)).toBe("10.0 s")
   })
 
   test("a step whose users did not all finish or that answered errors is not compared; a deadline is a stop", () => {
