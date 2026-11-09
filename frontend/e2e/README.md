@@ -548,15 +548,23 @@ The plan lists larger steps too (100 on the Dashboard, 50 on OutputsView from
 Dataview and 50 / 100 on PublicDataview). A step above its screen's cap runs
 only when that run sets both `LOAD_MAX_USERS_<SCREEN>=<n>` and
 `LOAD_GO_AHEAD=1`, and the report records the override. The committed caps
-never change for one run.
+never change for one run. A plan file outside `load/plans/` brings its own
+steps but not its own caps: they are held to `default`'s, and the report names
+the file. No step goes above 100 users, the count #846 asks for. A plan whose
+cut-off would leave its last step, the 10-minute watch and the post-checks
+running into the 13:00 UTC stop is refused.
 
 **Safety rules**, each from something one of the two manual runs hit:
 
-1. **Development only, on `:8080`.** Without the port the ALB redirects, and
-   the redirect drops the Authorization header.
-2. **Free accounts only, at most 5 distinct ones** counting `TEST_USER_EMAIL`.
-   A premium sign-in through the UI claims a premium instance, and a sixth
-   active user makes the Free Manager add a free instance.
+1. **Development only, on `:8080`.** `BASE_URL` must be a bare `http` origin
+   on `:8080`, and the pre-checks match its host to development's ALB. Without
+   the port the ALB redirects, and the redirect drops the Authorization header.
+2. **Free accounts only, at most 5 distinct ones** counting the accounts
+   `globalSetup` signs in (`TEST_USER_EMAIL`, and `TEST_ADMIN_EMAIL` when its
+   password is set). A premium sign-in through the UI claims a premium
+   instance, and a sixth active user makes the Free Manager add a free
+   instance; between steps the run ends when more than 5 free users were
+   active within 5 minutes.
 3. **The public threshold stays at 5 s or less.** The public target group's
    health check times out at 5 s and replaces the instance after three
    misses; on 2026-11-02 a 10 s threshold could not stop a step before that.
@@ -571,25 +579,34 @@ never change for one run.
    skip's). The load accounts count too, labelled: they are shared, so their
    activity may be somebody else's. In a window the team has agreed, or right
    after the lane's own run, `LOAD_WINDOW_ANNOUNCED=1` runs anyway and the
-   report says so.
+   report says so. Between steps the run ends when an account that was not
+   active at the start becomes active.
 7. **The image under test is named**: every running free and public task must
    run `LOAD_IMAGE_DIGEST`. Development often runs a teammate's test image.
+   With PublicDataview planned, the listener must also send its API to the
+   public target group: a tier of its own (#1122) would take load nothing
+   watches.
 8. **`--retries 0`.** A retry would load the environment again on top of a step
    that may have broken it.
+9. **The public record is restored whatever happens.** The restore is owed in
+   `publish-restore.json` in the run's folder before the publish request, paid
+   at the end, in an `afterEach` hook when the test times out, and by the next
+   run when this one was killed.
 
-**Settings** (`e2e/.env` or the shell):
+**Settings** (`e2e/.env` or the shell). A flag is on for `1` or `true` only;
+a relative path is from `e2e/`:
 
 | Key | Required | What |
 | --- | --- | --- |
-| `RUN_LOAD_AWS` | yes | opt-in, with `RUN_DISRUPTIVE=1` |
+| `RUN_LOAD_AWS` | yes | opt-in, with `RUN_DISRUPTIVE=1`; give it per run, not in `e2e/.env` |
 | `AWS_PROFILE` | yes | read access to development's ECS, ELB, Auto Scaling, CloudWatch and logs; every AWS call is a read |
-| `LOAD_ACCOUNTS_FILE` | yes | one `email<TAB>password` line per account, 1-5 free accounts. Read, never printed; keep it outside the repository. A relative path is from `e2e/` |
+| `LOAD_ACCOUNTS_FILE` | yes | one `email<TAB>password` line per account, 1-5 free accounts. Read, never printed; keep it outside the repository |
 | `LOAD_DIALOG_RECORD` | yes | the OutputsView fixture, `<workspace id>/<uid>` |
 | `LOAD_DIALOG_OWNER` | yes | its owner's email, one of the accounts |
 | `LOAD_PUBLIC_RECORD` | no | the record PublicDataview visitors open, the owner's; default `LOAD_DIALOG_RECORD` |
 | `LOAD_PUBLISH` | no | publish the public record for the run when it is not; it is unpublished after the PublicDataview steps, and the run asserts the restore |
 | `LOAD_IMAGE_DIGEST` | yes | `sha256:...` the tasks must run |
-| `LOAD_WINDOW_END` | yes | ISO-8601 with its offset, e.g. `2026-11-10T17:00+09:00`. No step starts that could still run after it, nor after 12:40 UTC (development stops at 13:00 UTC) |
+| `LOAD_WINDOW_END` | yes | ISO-8601 with its offset, e.g. `2026-11-10T17:00+09:00`. No step is released that could still run after it, nor after the plan's cut-off before the next 13:00 UTC stop (12:40 UTC in the committed plans); a run started past that cut-off gets no step |
 | `LOAD_WINDOW_ANNOUNCED` | no | see rule 6 |
 | `LOAD_PLAN` | no | a plan name or path; default `default` |
 | `LOAD_SCREENS` | no | a comma list, to run some screens only |
@@ -612,29 +629,33 @@ RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<development profile> \
 LOAD_PLAN=parity RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<development profile> \
   yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
 # rebuild a report from saved steps; reads nothing remote
-LOAD_REPORT_FROM=e2e/load-results/<run> yarn test:e2e e2e/24-load.spec.ts -g LOAD-02
+LOAD_REPORT_FROM=load-results/<run> yarn test:e2e e2e/24-load.spec.ts -g LOAD-02
 ```
 
 A default run takes about an hour. LOAD-01 fails when a screen's last planned
 step (by default the counts above) did not run or did not pass: it stopped,
 a user did not finish, a request answered other than a browser's would (the
 anonymous `/auth/refresh` answers 401 by design), or another free instance
-answered. It also fails when the post-checks find a target unhealthy or any
-scaling activity. The report is written either way.
+answered. It also fails when no step ran, when the services did not settle in
+the watch after the last step, and when the post-checks find a target
+unhealthy, a target group with no target, or any scaling activity. The report
+is written either way.
 
 **What a run leaves** in `e2e/load-results/<UTC time>-<plan>/`: per step
 `summary.json` (the schema of the tool the 2026-11-02 and 2026-11-05 figures
 came from, so those steps compare as they are), `requests.jsonl`,
 `probes.jsonl`, `vus.jsonl` and the cool-down's `after.json`; the recordings
 (`capture-*.json`), the 10-minute watch's `settle.json`, `run.json` and
-`report.md`. The report gives each
+`report.md`; and, only while a published record's restore is owed,
+`publish-restore.json`. The report gives each
 screen's table before → after with an Improvement column, the 1-user
 per-item times, the differences the comparison has to be read with (6
 connections per user, a different fixture, items compressed in only one of
 the runs, other thresholds, a changed request set), the Dashboard's robustness (DB pool timeouts, 401 and 5xx in the
 server logs, instance replacement) and the post-checks (target health,
 scaling activity, the services' CPU per step, 5xx at the ALB, the ALB's
-slowest answer per step). Items are labelled by endpoint, the output's node
+slowest answer per step, and whether the watch after the last step saw both
+services answer). Items are labelled by endpoint, the output's node
 and the file (`image:suite2p_roi/Vcorr.json`), so the same file name from two
 nodes never compares as one item.
 
@@ -647,7 +668,10 @@ before committing.
 
 **Cleanup**: none beyond the results folder. The run creates no account and
 writes no token file; the tokens stay in memory, and the public record is
-restored. Delete the folder once the report is written up.
+restored. A `publish-restore.json` left in a run's folder means a killed run
+left the record public: the next run unpublishes it first, or the owner
+unpublishes it and deletes the file. Delete the folder once the report is
+written up.
 
 **Still manual**: agreeing the window with the team; the OutputsView fixture
 when it is missing; the approval to publish a record (`LOAD_PUBLISH=1` is that

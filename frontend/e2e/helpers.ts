@@ -1137,6 +1137,41 @@ export function otherActiveUsers(): string[] {
     : []
 }
 
+// Free users signed in and active within the last minutes, the suite's own
+// included: the Free Manager sizes the free tier from this count
+export function activeFreeUsers(minutes: number): string[] {
+  const rows = runSql(
+    `SELECT u.email FROM free_user_assignments f JOIN users u ON u.id = f.user_id
+       WHERE f.logged_out_at IS NULL
+         AND f.last_activity > UTC_TIMESTAMP() - INTERVAL ${Math.floor(minutes)} MINUTE;`,
+  )
+  return rows
+    ? rows
+        .split("\n")
+        .map((r) => r.trim())
+        .filter(Boolean)
+    : []
+}
+
+// The scheduler runs development 23:00 -> 13:00 UTC on weekdays: it starts at
+// cron(0 23 ? * SUN-THU) and stops at cron(0 13 ? * MON-FRI)
+export function devIsUp(now: Date): boolean {
+  const day = now.getUTCDay()
+  const hour = now.getUTCHours()
+  return (hour >= 23 && day <= 4) || (hour < 13 && day >= 1 && day <= 5)
+}
+
+// The next scheduled stop after a moment: 13:00 UTC on a weekday. Saturday
+// and Sunday carry none.
+export function nextScheduledStop(now: Date): Date {
+  const stop = new Date(now)
+  stop.setUTCHours(13, 0, 0, 0)
+  while (stop <= now || stop.getUTCDay() === 0 || stop.getUTCDay() === 6) {
+    stop.setUTCDate(stop.getUTCDate() + 1)
+  }
+  return stop
+}
+
 // Returns the reason a @disruptive spec must not run right now, or "" if the
 // environment is idle enough to disturb.
 export function disruptiveSkipReason(): string {

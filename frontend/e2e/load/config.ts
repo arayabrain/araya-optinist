@@ -40,19 +40,38 @@ type Env = Record<string, string | undefined>
 // Separate from the configuration so a run that was not asked for skips
 // rather than fails.
 export function laneSkipReason(env: Env): string {
-  if (!env.RUN_LOAD_AWS) {
+  if (!flag(env, "RUN_LOAD_AWS")) {
     return "loads the shared development environment; opt in with RUN_LOAD_AWS=1"
   }
   return ""
 }
 
+// Development's ALB origin: plain HTTP on :8080, nothing but the host. The
+// port matters: without it the ALB redirects, and the redirect drops the
+// Authorization header. The pre-checks match the host to the ALB itself.
+function isDevOrigin(base: string): boolean {
+  let url: URL
+  try {
+    url = new URL(base)
+  } catch {
+    return false
+  }
+  return (
+    url.protocol === "http:" &&
+    url.port === "8080" &&
+    !url.username &&
+    !url.password &&
+    url.pathname === "/" &&
+    !url.search &&
+    !url.hash &&
+    url.hostname.startsWith("development-optinist-")
+  )
+}
+
 // Refusals that are a mistake in an explicit request, so they fail the run
 export function targetProblems(env: Env): string[] {
   const problems: string[] = []
-  const base = env.BASE_URL || ""
-  // The port matters: without :8080 the ALB redirects, and the redirect
-  // drops the Authorization header
-  if (!base.includes("development-optinist") || !/:8080\/?$/.test(base)) {
+  if (!isDevOrigin(env.BASE_URL || "")) {
     problems.push("BASE_URL must be development's ALB origin, ending in :8080")
   }
   if (env.HEALTH_ENV && env.HEALTH_ENV !== "development") {
@@ -83,8 +102,9 @@ export function parseAccounts(text: string): Account[] {
   return accounts
 }
 
-function flag(env: Env, name: string): boolean {
-  return !!env[name] && env[name] !== "0"
+// On only when asked for in so many words: "false" or "no" must not opt in
+export function flag(env: Env, name: string): boolean {
+  return ["1", "true"].includes((env[name] ?? "").trim().toLowerCase())
 }
 
 export function readConfig(env: Env): LoadConfig {
@@ -204,12 +224,15 @@ export function accountProblems(accounts: Account[], env: Env): string[] {
   const emails = new Set(accounts.map((a) => a.email.toLowerCase()))
   if (emails.size !== accounts.length)
     problems.push("the accounts file repeats an account")
-  // globalSetup signs the suite's own free user in too
+  // globalSetup signs the suite's own free user in too, and the admin when
+  // its password is set
   if (env.TEST_USER_EMAIL) emails.add(env.TEST_USER_EMAIL.toLowerCase())
+  if (env.TEST_ADMIN_EMAIL && env.TEST_ADMIN_PASSWORD)
+    emails.add(env.TEST_ADMIN_EMAIL.toLowerCase())
   if (emails.size > MAX_DISTINCT_ACCOUNTS) {
     problems.push(
-      `${emails.size} distinct accounts (the accounts file plus TEST_USER_EMAIL); ` +
-        `more than ${MAX_DISTINCT_ACCOUNTS} scales the free tier out`,
+      `${emails.size} distinct accounts (the accounts file plus the ones globalSetup ` +
+        `signs in); more than ${MAX_DISTINCT_ACCOUNTS} scales the free tier out`,
     )
   }
   return problems
@@ -223,4 +246,17 @@ export function inUseBy(active: string[], accounts: Account[]): string[] {
   return active.map((email) =>
     load.has(email.toLowerCase()) ? `${email} (a load account)` : email,
   )
+}
+
+// Accounts active now that were not at the start and are not the run's own:
+// somebody who signed in while the run went on
+export function newcomers(
+  atStart: string[],
+  now: string[],
+  accounts: Account[],
+): string[] {
+  const known = new Set(
+    [...atStart, ...accounts.map((a) => a.email)].map((e) => e.toLowerCase()),
+  )
+  return now.filter((email) => !known.has(email.toLowerCase()))
 }

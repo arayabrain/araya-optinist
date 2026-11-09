@@ -67,6 +67,9 @@ export type RunReport = {
     alb5xx: Record<Target | "alb", number>
     logTruncated: string[]
   }
+  // Why the watch after the last step found a service unsettled, or null;
+  // absent in runs saved before the report held it
+  settleUnhealthy?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +756,15 @@ export function renderReport(
       `- Targets at the end: free ${p.targets.free.join(", ") || "none"}; ` +
         `public ${p.targets.public.join(", ") || "none"}`,
     )
+    if (run.settleUnhealthy !== undefined) {
+      lines.push(
+        `- The watch after the last step: ${
+          run.settleUnhealthy
+            ? `a service did not settle (${run.settleUnhealthy.replace(/:.*$/, "")})`
+            : "both services answered"
+        }`,
+      )
+    }
     lines.push(
       `- Scaling activity since the start: ${
         p.activities.length

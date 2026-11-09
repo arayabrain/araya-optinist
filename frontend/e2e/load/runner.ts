@@ -11,7 +11,7 @@ import {
   send,
   setCookie,
 } from "./http"
-import { Plan, PlanStep, stopThresholds } from "./plan"
+import { fitsBefore, Plan, PlanStep, stopThresholds } from "./plan"
 import {
   authHeaders,
   dashboardUser,
@@ -25,6 +25,7 @@ import {
   VirtualUser,
 } from "./screens"
 import {
+  pct,
   ProbeRecord,
   ProbeStat,
   RequestRecord,
@@ -178,6 +179,33 @@ export async function setPublished(
     throw new Error(`publish ${on ? "on" : "off"} answered ${res.status}`)
 }
 
+// A record the run published is owed a restore until it is unpublished. The
+// debt is written to the run's folder before the publish request, so a run
+// that is killed, or whose request answer is lost, leaves it for the next run.
+export const RESTORE_FILE = "publish-restore.json"
+export type RestoreDebt = { workspaceId: number; uid: string; id: number }
+
+export function owe(dir: string, debt: RestoreDebt): string {
+  const file = path.join(dir, RESTORE_FILE)
+  fs.writeFileSync(file, JSON.stringify(debt))
+  return file
+}
+
+// The debts earlier runs left in the results folder
+export function leftoverDebts(
+  resultsDir: string,
+): { file: string; debt: RestoreDebt }[] {
+  if (!fs.existsSync(resultsDir)) return []
+  return fs
+    .readdirSync(resultsDir)
+    .map((run) => path.join(resultsDir, run, RESTORE_FILE))
+    .filter((file) => fs.existsSync(file))
+    .map((file) => ({
+      file,
+      debt: JSON.parse(fs.readFileSync(file, "utf-8")) as RestoreDebt,
+    }))
+}
+
 export type Pin = { cookie: string; hash: string }
 
 // The free instance a Bearer request reached, and the AWSALB cookie that
@@ -206,7 +234,7 @@ const PROBE_PATH: Record<Target, string> = {
   free: "/is_standalone",
 }
 
-type Prober = {
+export type Prober = {
   agent: http.Agent
   base: URL
   t0: number
@@ -215,7 +243,7 @@ type Prober = {
   freeHeaders: Record<string, string>
 }
 
-function prober(base: URL, s: Session, pin: Pin, t0: number): Prober {
+export function prober(base: URL, s: Session, pin: Pin, t0: number): Prober {
   return {
     agent: new http.Agent({ keepAlive: true, maxSockets: 2 }),
     base,
@@ -281,7 +309,10 @@ export function fiveXxReason(requests: RequestRecord[]): string | null {
     : null
 }
 
-async function probeLoop(
+// Each target on its own once-a-second schedule, and the 5xx share on a third:
+// a stalled service holds up only its own probe, never the other's or the
+// 5xx check
+export async function probeLoop(
   p: Prober,
   ctx: StepContext,
   probes: ProbeRecord[],
@@ -289,15 +320,25 @@ async function probeLoop(
   running: () => boolean,
 ): Promise<void> {
   const fails: Record<Target, number> = { public: 0, free: 0 }
-  while (running()) {
-    for (const target of ["public", "free"] as Target[]) {
-      const rec = await probeOnce(p, target, limits[target])
-      probes.push(rec)
-      ctx.abortReason = ctx.abortReason ?? probeStreak(fails, rec, limits)
+  const everySecond = async (tick: () => Promise<void>) => {
+    while (running()) {
+      const started = performance.now()
+      await tick()
+      await sleep(Math.max(0, 1000 - (performance.now() - started)))
     }
-    ctx.abortReason = ctx.abortReason ?? fiveXxReason(ctx.requests)
-    await sleep(1000)
   }
+  const probeTarget = (target: Target) => async () => {
+    const rec = await probeOnce(p, target, limits[target])
+    probes.push(rec)
+    ctx.abortReason = ctx.abortReason ?? probeStreak(fails, rec, limits)
+  }
+  await Promise.all([
+    everySecond(probeTarget("public")),
+    everySecond(probeTarget("free")),
+    everySecond(async () => {
+      ctx.abortReason = ctx.abortReason ?? fiveXxReason(ctx.requests)
+    }),
+  ])
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +357,9 @@ export type StepInput = {
   public?: PublicSpec
   // The instance the run pinned first; a different one ends the run
   expectedHash: string | null
+  // The run's cut-off: the users are not released when the step could
+  // still be running after it
+  cutoff: Date
 }
 
 export type StepResult = {
@@ -380,6 +424,12 @@ export async function runStep(input: StepInput): Promise<StepResult> {
   const p = prober(base, probeSession, pin, t0)
   const probeTask = probeLoop(p, ctx, probes, limits, () => probing)
   await sleep(PROBE_BASELINE_S * 1000)
+  if (
+    !fitsBefore(input.cutoff, Date.now(), plan.step_deadline_s + PROBE_TAIL_S)
+  ) {
+    ctx.abortReason =
+      ctx.abortReason ?? `cut-off: ${input.cutoff.toISOString()}`
+  }
   let releaseAt: number | null = null
   if (ctx.abortReason) {
     release(false)
@@ -482,24 +532,29 @@ export async function watch(
   const probes: ProbeRecord[] = []
   const bad: Record<Target, number> = { public: 0, free: 0 }
   let unhealthy: string | null = null
-  while (performance.now() - t0 < seconds * 1000) {
-    for (const target of ["public", "free"] as Target[]) {
+  // Each target on its own schedule, as inside a step
+  const watchTarget = async (target: Target) => {
+    while (performance.now() - t0 < seconds * 1000) {
+      const started = performance.now()
       const rec = await probeOnce(p, target, limits[target])
       probes.push(rec)
       unhealthy = unhealthy ?? watchStreak(bad, rec, limits)
+      const left = seconds * 1000 - (performance.now() - t0)
+      const next = WATCH_INTERVAL_S * 1000 - (performance.now() - started)
+      await sleep(Math.max(0, Math.min(next, left)))
     }
-    const left = seconds * 1000 - (performance.now() - t0)
-    await sleep(Math.max(0, Math.min(WATCH_INTERVAL_S * 1000, left)))
   }
+  await Promise.all([watchTarget("public"), watchTarget("free")])
   p.agent.destroy()
   const stats = {} as Record<Target, ProbeStat>
   for (const target of ["public", "free"] as Target[]) {
     const mine = probes.filter((r) => r.target === target)
+    const durs = mine.map((r) => r.dur)
     stats[target] = {
       count: mine.length,
       failed: mine.filter((r) => r.status !== 200).length,
-      p50: null,
-      max: mine.length ? Math.max(...mine.map((r) => r.dur)) : null,
+      p50: pct(durs, 50),
+      max: durs.length ? Math.max(...durs) : null,
     }
   }
   return { seconds, probes, stats, unhealthy }

@@ -87,11 +87,100 @@ function alarmsInAlarm(): string[] {
   ).filter((name) => !IGNORED_ALARMS.includes(name))
 }
 
+// A target group with no target serves nobody, so it is as wrong as an
+// unhealthy one
+export function targetStateProblems(
+  states: Partial<Record<Target, string[]>>,
+): string[] {
+  const problems: string[] = []
+  for (const target of TARGETS) {
+    const mine = states[target]
+    if (!mine) continue
+    const bad = mine.filter((s) => s !== "healthy")
+    if (!mine.length) problems.push(`${TARGET_GROUPS[target]} has no target`)
+    else if (bad.length)
+      problems.push(`${TARGET_GROUPS[target]}: ${bad.join(", ")}`)
+  }
+  return problems
+}
+
 function unhealthyTargets(target: Target): string | null {
-  const states = targetStates(target)
-  const bad = states.filter((s) => s !== "healthy")
-  if (!states.length) return `${TARGET_GROUPS[target]} has no target`
-  return bad.length ? `${TARGET_GROUPS[target]}: ${bad.join(", ")}` : null
+  return targetStateProblems({ [target]: targetStates(target) })[0] ?? null
+}
+
+// The host BASE_URL names must be the ALB the target groups sit behind: a
+// hostname that only starts like development's could be anything
+function albHostProblem(base: URL): string | null {
+  const dns = awsJson<string>(
+    `elbv2 describe-load-balancers --load-balancer-arns ${targetGroup("free").lbArn} ` +
+      `--query 'LoadBalancers[0].DNSName'`,
+  )
+  return base.hostname === dns ? null : "BASE_URL is not development's ALB"
+}
+
+export type ListenerRule = {
+  Priority: string
+  Conditions: {
+    Field: string
+    Values?: string[]
+    PathPatternConfig?: { Values: string[] }
+    HttpHeaderConfig?: { HttpHeaderName: string; Values: string[] }
+  }[]
+  Actions: {
+    Type: string
+    TargetGroupArn?: string
+    ForwardConfig?: {
+      TargetGroups: { TargetGroupArn: string; Weight?: number }[]
+    }
+  }[]
+}
+
+// The rules that route PublicDataview's API (its list, its reproduce, and the
+// items its header marks) must forward to the public target group: a tier of
+// its own would take the load with no image check, probe or stop watching it
+export function dataviewRoutingProblems(
+  rules: ListenerRule[],
+  publicTgArn: string,
+): string[] {
+  const problems: string[] = []
+  for (const rule of rules) {
+    const paths = rule.Conditions.flatMap(
+      (c) =>
+        c.PathPatternConfig?.Values ??
+        (c.Field === "path-pattern" ? (c.Values ?? []) : []),
+    )
+    const header = rule.Conditions.some(
+      (c) =>
+        c.HttpHeaderConfig?.HttpHeaderName.toLowerCase() ===
+        "dataview_public_request",
+    )
+    if (!header && !paths.some((p) => p.startsWith("/api/public/dataview")))
+      continue
+    const forwards = rule.Actions.filter((a) => a.Type === "forward").flatMap(
+      (a) =>
+        a.ForwardConfig?.TargetGroups.filter((g) => g.Weight !== 0).map(
+          (g) => g.TargetGroupArn,
+        ) ?? (a.TargetGroupArn ? [a.TargetGroupArn] : []),
+    )
+    for (const arn of forwards.filter((arn) => arn !== publicTgArn)) {
+      problems.push(
+        `rule ${rule.Priority} sends PublicDataview's API to ${arn.split("/").slice(-2, -1)[0]}, ` +
+          "a tier the lane does not watch",
+      )
+    }
+  }
+  return problems
+}
+
+function dataviewRouting(): string[] {
+  const listener = awsJson<string>(
+    `elbv2 describe-listeners --load-balancer-arn ${targetGroup("free").lbArn} ` +
+      "--query 'Listeners[?Port==`8080`].ListenerArn | [0]'",
+  )
+  const rules = awsJson<ListenerRule[]>(
+    `elbv2 describe-rules --listener-arn ${listener} --query 'Rules'`,
+  )
+  return dataviewRoutingProblems(rules, targetGroup("public").arn)
 }
 
 export type Activity = {
@@ -115,8 +204,15 @@ export function activitiesSince(since: Date): Activity[] {
 // Refuse to start unless the services under load run the image the requester
 // named, at rest: development often runs a teammate's test image, and a
 // scaled-out or rolling service would not measure one instance.
-export function preCheckProblems(expectedDigest: string): string[] {
+export function preCheckProblems(
+  expectedDigest: string,
+  base: URL,
+  publicPlanned: boolean,
+): string[] {
   const problems: string[] = []
+  const host = albHostProblem(base)
+  if (host) problems.push(host)
+  if (publicPlanned) problems.push(...dataviewRouting())
   for (const target of TARGETS) {
     const svc = serviceState(target)
     if (svc.running !== svc.desired) {

@@ -1,6 +1,8 @@
 import * as fs from "fs"
 import * as path from "path"
 
+import { nextScheduledStop } from "../helpers"
+
 import { SCREENS, Screen, StepFigures, Target } from "./summary"
 
 // A plan is the committed escalation policy: the steps per screen, how far a
@@ -32,6 +34,8 @@ export type Plan = {
   cutoff_utc: string
   probe_stop_s: Record<Target, number>
   screens: ScreenPlan[]
+  // Set on loading: the file of a plan from outside load/plans/
+  local?: string
 }
 
 // Safety floors from the two manual runs. The public target group's health
@@ -43,15 +47,26 @@ export const MAX_PROBE_STOP_S: Record<Target, number> = { public: 5, free: 10 }
 export const MIN_COOLDOWN_S = 240
 export const MIN_SETTLE_S = 600
 export const MAX_STEP_DEADLINE_S = 120
+// #846 asks for 100 users at once; no cap or go-ahead goes past it
+export const MAX_USERS_PER_STEP = 100
+// The scheduler stops development at 13:00 UTC on weekdays. The cut-off must
+// leave the last step, the settle and the post-checks before it.
+const SCHEDULED_STOP_UTC_S = 13 * 3600
+const POST_CHECKS_S = 300
 
+const E2E_DIR = path.resolve(__dirname, "..")
 const PLAN_DIR = path.join(__dirname, "plans")
 
+// A path resolves from e2e/, as LOAD_ACCOUNTS_FILE and LOAD_RESULTS_DIR do
 export function planPath(nameOrPath: string): string {
   return /[/\\]|\.json$/.test(nameOrPath)
-    ? path.resolve(nameOrPath)
+    ? path.resolve(E2E_DIR, nameOrPath)
     : path.join(PLAN_DIR, `${nameOrPath}.json`)
 }
 
+// A plan from outside load/plans/ is local: its steps are its own, but its
+// caps are held to the default plan's, so only LOAD_MAX_USERS_<SCREEN> with
+// LOAD_GO_AHEAD raises them, and the report names the file
 export function loadPlan(nameOrPath: string): Plan {
   const file = planPath(nameOrPath)
   if (!fs.existsSync(file)) throw new Error(`no plan at ${file}`)
@@ -59,6 +74,14 @@ export function loadPlan(nameOrPath: string): Plan {
   const problems = planProblems(plan)
   if (problems.length) {
     throw new Error(`plan ${file}:\n  ${problems.join("\n  ")}`)
+  }
+  plan.local = path.dirname(file) === PLAN_DIR ? undefined : file
+  if (plan.local) {
+    const committed = loadPlan("default")
+    for (const s of plan.screens) {
+      const cap = committed.screens.find((c) => c.screen === s.screen)?.cap
+      s.cap = Math.min(s.cap, cap ?? 0)
+    }
   }
   return plan
 }
@@ -76,8 +99,24 @@ export function planProblems(plan: Plan): string[] {
   if (!(plan.settle_s >= MIN_SETTLE_S)) {
     problems.push(`settle_s must be at least ${MIN_SETTLE_S}`)
   }
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(plan.cutoff_utc ?? "")) {
+  // The name goes into the results folder's
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(plan.name ?? "")) {
+    problems.push("name must be lower-case letters, digits and dashes")
+  }
+  const cutoff = (plan.cutoff_utc ?? "").match(/^([01]\d|2[0-3]):([0-5]\d)$/)
+  if (!cutoff) {
     problems.push("cutoff_utc must be HH:MM")
+  } else {
+    const at = Number(cutoff[1]) * 3600 + Number(cutoff[2]) * 60
+    if (
+      at + plan.step_deadline_s + plan.settle_s + POST_CHECKS_S >
+      SCHEDULED_STOP_UTC_S
+    ) {
+      problems.push(
+        `cutoff_utc ${plan.cutoff_utc} leaves no room for the last step, the ` +
+          "settle and the post-checks before the 13:00 UTC scheduled stop",
+      )
+    }
   }
   const thresholds = [
     ["plan", plan.probe_stop_s] as const,
@@ -95,7 +134,8 @@ export function planProblems(plan: Plan): string[] {
         !(value > 0 && value <= MAX_PROBE_STOP_S[target])
       ) {
         problems.push(
-          `${where}: ${target} threshold must be 0..${MAX_PROBE_STOP_S[target]} s`,
+          `${where}: ${target} threshold must be above 0 and at most ` +
+            `${MAX_PROBE_STOP_S[target]} s`,
         )
       }
     }
@@ -103,16 +143,24 @@ export function planProblems(plan: Plan): string[] {
   if (!plan.probe_stop_s?.public || !plan.probe_stop_s?.free) {
     problems.push("probe_stop_s needs public and free")
   }
+  // A plan that sends no load would pass without measuring anything
+  if (!plan.screens?.length) problems.push("the plan has no screen")
   const seen = new Set<string>()
-  for (const s of plan.screens) {
+  for (const s of plan.screens ?? []) {
     if (!SCREENS.includes(s.screen)) problems.push(`unknown screen ${s.screen}`)
     if (seen.has(s.screen)) problems.push(`${s.screen} listed twice`)
     seen.add(s.screen)
     if (!(s.cap > 0)) problems.push(`${s.screen}: cap must be positive`)
+    if (!s.steps?.length) problems.push(`${s.screen}: no step`)
     s.steps.forEach((st, i) => {
       if (!(Number.isInteger(st.users) && st.users > 0)) {
         problems.push(
           `${s.screen}: step ${i + 1} users must be a positive integer`,
+        )
+      }
+      if (st.users > MAX_USERS_PER_STEP) {
+        problems.push(
+          `${s.screen}: ${st.users} users is above the ${MAX_USERS_PER_STEP} the lane allows`,
         )
       }
       if (i > 0 && st.users <= s.steps[i - 1].users) {
@@ -295,12 +343,18 @@ export function targetStep(
   return allowed.length ? allowed[allowed.length - 1] : null
 }
 
-// The next moment no step may still be running: the plan's daily cut-off or
-// the announced window's end, whichever comes first.
+// The moment no step may still be running: the plan's cut-off on the day of
+// the next scheduled stop, or the announced window's end, whichever comes
+// first. A cut-off already passed stays passed (a run started at 12:50 UTC
+// gets none), so no step runs into the stop.
 export function cutoffAt(plan: Plan, now: Date, windowEnd: Date): Date {
   const [hh, mm] = plan.cutoff_utc.split(":").map(Number)
-  const daily = new Date(now)
+  const daily = nextScheduledStop(now)
   daily.setUTCHours(hh, mm, 0, 0)
-  if (daily <= now) daily.setUTCDate(daily.getUTCDate() + 1)
   return daily < windowEnd ? daily : windowEnd
+}
+
+// Whether a step taking this many seconds from now ends before the cut-off
+export function fitsBefore(end: Date, now: number, seconds: number): boolean {
+  return now + seconds * 1000 <= end.getTime()
 }

@@ -7,11 +7,17 @@ import * as zlib from "zlib"
 
 import { expect, test } from "@playwright/test"
 
-import { accessLine } from "./aws"
+import {
+  accessLine,
+  dataviewRoutingProblems,
+  ListenerRule,
+  targetStateProblems,
+} from "./aws"
 import {
   accountProblems,
   inUseBy,
   laneSkipReason,
+  newcomers,
   parseAccounts,
   readConfig,
   targetProblems,
@@ -35,7 +41,17 @@ import {
   renderReport,
   RunReport,
 } from "./report"
-import { fiveXxReason, probeStreak, watchStreak } from "./runner"
+import { devIsUp } from "../helpers"
+
+import {
+  fiveXxReason,
+  leftoverDebts,
+  owe,
+  probeLoop,
+  prober,
+  probeStreak,
+  watchStreak,
+} from "./runner"
 import {
   CaptureRow,
   checkDashboardCapture,
@@ -310,7 +326,9 @@ test.describe("load lane: plan", () => {
     screenOf(p, "dashboard").steps[0].when = ["previous.free_probe_max < 3"]
     screenOf(p, "public").steps[3].when = ["previous.public_probe_max<3"]
     const problems = planProblems(p).join("\n")
-    expect(problems).toContain("plan: public threshold must be 0..5 s")
+    expect(problems).toContain(
+      "plan: public threshold must be above 0 and at most 5 s",
+    )
     expect(problems).toContain("cooldown_s must be at least 240")
     expect(problems).toContain("dialog: steps must rise")
     expect(problems).toContain(
@@ -413,10 +431,49 @@ test.describe("load lane: plan", () => {
     expect(
       cutoffAt(p, morning, new Date("2026-11-10T05:00:00Z")).toISOString(),
     ).toBe("2026-11-10T05:00:00.000Z")
+    // Past today's cut-off there is none left, not tomorrow's
     const evening = new Date("2026-11-10T12:50:00Z")
     expect(
       cutoffAt(p, evening, new Date("2026-11-12T00:00:00Z")).toISOString(),
-    ).toBe("2026-11-11T12:40:00.000Z")
+    ).toBe("2026-11-10T12:40:00.000Z")
+    // Started after Sunday's 23:00 UTC start: Monday's stop
+    const sunday = new Date("2026-11-08T23:30:00Z")
+    expect(
+      cutoffAt(p, sunday, new Date("2026-11-10T00:00:00Z")).toISOString(),
+    ).toBe("2026-11-09T12:40:00.000Z")
+  })
+
+  test("a plan cannot run past the scheduled stop, above 100 users, without a step, or raise its own caps", () => {
+    const p = plan()
+    expect(planProblems({ ...p, cutoff_utc: "12:55" })).toEqual([
+      "cutoff_utc 12:55 leaves no room for the last step, the settle and the post-checks before the 13:00 UTC scheduled stop",
+    ])
+    expect(planProblems({ ...p, cutoff_utc: "13:30" })).toHaveLength(1)
+    expect(planProblems({ ...p, name: "../x" })).toEqual([
+      "name must be lower-case letters, digits and dashes",
+    ])
+    const big = plan()
+    screenOf(big, "dialog").steps.push({ users: 500 })
+    expect(planProblems(big)).toContain(
+      "dialog: 500 users is above the 100 the lane allows",
+    )
+    const empty = plan()
+    screenOf(empty, "usersme").steps = []
+    expect(planProblems(empty)).toContain("usersme: no step")
+    // A local file's own cap does not count: the default's does
+    const local = plan()
+    local.name = "local"
+    screenOf(local, "dialog").cap = 100
+    const file = path.join(os.tmpdir(), `load-plan-${process.pid}.json`)
+    fs.writeFileSync(file, JSON.stringify(local))
+    try {
+      const loaded = loadPlan(file)
+      expect(screenOf(loaded, "dialog").cap).toBe(20)
+      expect(loaded.local).toBe(file)
+      expect(loadPlan("default").local).toBeUndefined()
+    } finally {
+      fs.rmSync(file)
+    }
   })
 })
 
@@ -437,6 +494,30 @@ test.describe("load lane: configuration", () => {
     expect(
       targetProblems({ BASE_URL: DEV, HEALTH_ENV: "subscr" }),
     ).toHaveLength(1)
+    // Matched as a parsed origin, not as text: each of these would send the
+    // accounts somewhere else, or ask for a path
+    for (const other of [
+      "http://development-optinist@production.example:8080",
+      "http://production.example:8080/development-optinist",
+      "http://production.example/?x=development-optinist:8080",
+      "https://development-optinist-lb-1.example.com:8080",
+      `${DEV}/api`,
+    ]) {
+      expect(targetProblems({ BASE_URL: other }), other).toHaveLength(1)
+    }
+  })
+
+  test("a flag is on only for 1 or true", () => {
+    expect(laneSkipReason({ RUN_LOAD_AWS: "false" })).not.toBe("")
+    expect(laneSkipReason({ RUN_LOAD_AWS: "no" })).not.toBe("")
+    expect(laneSkipReason({ RUN_LOAD_AWS: "true" })).toBe("")
+  })
+
+  test("an account that becomes active during the run is a newcomer; the run's own are not", () => {
+    const accounts = [{ email: "load1@x", password: "p" }]
+    expect(
+      newcomers(["early@x"], ["early@x", "Load1@x", "late@x"], accounts),
+    ).toEqual(["late@x"])
   })
 
   test("a malformed accounts file is named by line, never by content", () => {
@@ -461,6 +542,14 @@ test.describe("load lane: configuration", () => {
     expect(accountProblems(five, { TEST_USER_EMAIL: "U0@x" })).toEqual([])
     expect(
       accountProblems(five, { TEST_USER_EMAIL: "other@x" }).join(),
+    ).toContain("6 distinct accounts")
+    // globalSetup signs the admin in when its password is set
+    expect(
+      accountProblems(five, {
+        TEST_USER_EMAIL: "U0@x",
+        TEST_ADMIN_EMAIL: "admin@x",
+        TEST_ADMIN_PASSWORD: "p",
+      }).join(),
     ).toContain("6 distinct accounts")
     expect(accountProblems([five[0], five[0]], {}).join()).toContain("repeats")
   })
@@ -1202,5 +1291,135 @@ test.describe("load lane: report", () => {
     expect(renderReport(null, run)).toContain(
       "| public-n5 | 0 | 0 | 0 | 0 (0 on `/auth/refresh`) | 0 | 0.22 s / 12.3 s |",
     )
+    expect(
+      renderReport(null, {
+        ...run,
+        settleUnhealthy: 'probe free: {"target":"free"}',
+      }),
+    ).toContain(
+      "- The watch after the last step: a service did not settle (probe free)",
+    )
+  })
+})
+
+test.describe("load lane: safety gates", () => {
+  const PUBLIC_TG =
+    "arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:targetgroup/development-optinist-public-tg/a1"
+  const OTHER_TG =
+    "arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:targetgroup/development-optinist-pubdv-tg/b2"
+  const rule = (
+    priority: string,
+    conditions: ListenerRule["Conditions"],
+    tg: string,
+  ): ListenerRule => ({
+    Priority: priority,
+    Conditions: conditions,
+    Actions: [{ Type: "forward", TargetGroupArn: tg }],
+  })
+  const path300 = {
+    Field: "path-pattern",
+    PathPatternConfig: {
+      Values: ["/api/public/dataview", "/api/public/dataview/*"],
+    },
+  }
+  const header280 = {
+    Field: "http-header",
+    HttpHeaderConfig: {
+      HttpHeaderName: "DATAVIEW_PUBLIC_REQUEST",
+      Values: ["true"],
+    },
+  }
+
+  test("PublicDataview's API routed to a tier the lane does not watch is refused", () => {
+    const signIn = rule(
+      "305",
+      [{ Field: "path-pattern", Values: ["/auth/*"] }],
+      OTHER_TG,
+    )
+    expect(
+      dataviewRoutingProblems(
+        [
+          rule("300", [path300], PUBLIC_TG),
+          rule("280", [header280], PUBLIC_TG),
+          signIn,
+        ],
+        PUBLIC_TG,
+      ),
+    ).toEqual([])
+    expect(
+      dataviewRoutingProblems(
+        [rule("300", [path300], OTHER_TG), rule("280", [header280], OTHER_TG)],
+        PUBLIC_TG,
+      ),
+    ).toEqual([
+      "rule 300 sends PublicDataview's API to development-optinist-pubdv-tg, a tier the lane does not watch",
+      "rule 280 sends PublicDataview's API to development-optinist-pubdv-tg, a tier the lane does not watch",
+    ])
+  })
+
+  test("a target group with no target is a problem, as an unhealthy one is", () => {
+    expect(targetStateProblems({ free: ["healthy"], public: [] })).toEqual([
+      "development-optinist-public-tg has no target",
+    ])
+    expect(
+      targetStateProblems({
+        free: ["healthy", "draining"],
+        public: ["healthy"],
+      }),
+    ).toEqual(["development-optinist-tg: draining"])
+  })
+
+  test("a publish leaves its restore owed on disk until it is paid", () => {
+    const results = fs.mkdtempSync(path.join(os.tmpdir(), "load-results-"))
+    const run = path.join(results, "20261109T000000Z-default")
+    fs.mkdirSync(run)
+    expect(leftoverDebts(results)).toEqual([])
+    const file = owe(run, { workspaceId: 7, uid: "6ab411e3", id: 42 })
+    expect(leftoverDebts(results)).toEqual([
+      { file, debt: { workspaceId: 7, uid: "6ab411e3", id: 42 } },
+    ])
+    fs.rmSync(results, { recursive: true })
+  })
+
+  test("development runs 23:00 -> 13:00 UTC on weekdays", () => {
+    expect(devIsUp(new Date("2026-11-09T01:00:00Z"))).toBe(true)
+    expect(devIsUp(new Date("2026-11-09T13:30:00Z"))).toBe(false)
+    expect(devIsUp(new Date("2026-11-08T23:30:00Z"))).toBe(true)
+    expect(devIsUp(new Date("2026-11-07T10:00:00Z"))).toBe(false)
+  })
+
+  test("a stalled service holds up only its own probe", async () => {
+    const server = http.createServer((req, res) => {
+      const delay = req.url === "/health" ? 2_500 : 0
+      setTimeout(() => res.end("ok"), delay)
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const base = new URL(
+      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    )
+    const t0 = performance.now()
+    const ctx = {
+      requests: [],
+      abortReason: null,
+    } as unknown as StepContext
+    const probes: ProbeRecord[] = []
+    const p = prober(
+      base,
+      { accessToken: "a", refreshToken: "r", exToken: null },
+      { cookie: "c", hash: "h" },
+      t0,
+    )
+    await probeLoop(
+      p,
+      ctx,
+      probes,
+      { public: 5, free: 5 },
+      () => performance.now() - t0 < 3_000,
+    )
+    p.agent.destroy()
+    await new Promise((resolve) => server.close(resolve))
+    expect(probes.filter((r) => r.target === "free").length).toBeGreaterThan(2)
+    expect(probes.filter((r) => r.target === "public").length).toBeLessThan(3)
+    expect(ctx.abortReason).toBeNull()
   })
 })
