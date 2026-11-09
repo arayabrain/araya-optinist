@@ -20,7 +20,13 @@ import {
 // The sweep and steps 2 and 4 run only against a disposable BASE_URL.
 // The Firebase sweep runs first because AUTH-02/03/04 need no credentials: a
 // run that returns below still registers the throwaways the sweep clears.
+// E2E_OFFLINE=1 skips all of it, for the runs that touch nothing remote (the
+// load lane's unit spec and LOAD-02): e2e/.env would otherwise sign them in.
 export default async function globalSetup() {
+  if (["1", "true"].includes((process.env.E2E_OFFLINE ?? "").toLowerCase())) {
+    console.log("globalSetup: skipped, E2E_OFFLINE=1")
+    return
+  }
   const baseURL = process.env.BASE_URL || "http://localhost:3000"
 
   // The read-only AWS lanes document pointing BASE_URL at production, and

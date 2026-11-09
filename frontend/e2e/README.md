@@ -9,6 +9,7 @@ release tester only hand-verifies what the coverage maps list as manual.
 - [Test environment](#test-environment)
 - [Credentials and test accounts](#credentials-and-test-accounts)
 - [Running the tests](#running-the-tests)
+- [Web UI load lane](#web-ui-load-lane)
 - [How the suite works](#how-the-suite-works)
 - [Test groups](#test-groups)
 - [Coverage maps](#coverage-maps)
@@ -158,6 +159,9 @@ Every lane that writes refuses to start anywhere but development:
   environment it was pointed at.
 - **`22-disruptive`** additionally refuses when another account has been active
   in the last 30 minutes, and refuses when it cannot tell.
+- **`24-load`** loads rather than writes, and refuses any BASE_URL that is not
+  development's ALB origin on `:8080`, any `HEALTH_ENV` but development, and
+  any account not on the free plan; see [Web UI load lane](#web-ui-load-lane).
 - **`runSqlWriteOnDev`** makes the same assertion for the one sanctioned SQL
   write path.
 
@@ -422,6 +426,11 @@ yarn test:e2e e2e/18-stripe-audit.spec.ts --retries 0
 RUN_CHECKOUT_PROBE=1 yarn test:e2e e2e/19-checkout-probe.spec.ts --retries 0
 # restarts the local backend to watch it boot; nothing else may share the stack
 RUN_RESTART=1 yarn test:e2e e2e/20-boot.spec.ts --retries 0
+# Web UI load on development, in an announced window (see Web UI load lane)
+RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
+# the load lane's own logic, offline: E2E_OFFLINE=1 keeps globalSetup from
+# signing in with e2e/.env and deleting workspaces on development
+E2E_OFFLINE=1 yarn test:e2e e2e/load/load.unit.spec.ts
 # type-check the e2e specs (the app tsconfig only covers src/)
 yarn typecheck:e2e
 ```
@@ -466,6 +475,230 @@ Notes:
   minutes. The trade is that a default run leaves 23 release-sheet rows and 27
   system-sheet rows unchecked; their e2e citations are marked `@slow` in the
   sheets rather than counted as covered by a green default run.
+
+## Web UI load lane
+
+`24-load` measures how many users development's free instance and public
+service serve at the same moment, and reports it against the previous
+measurement. It is the lane to re-run after a performance change. It loads
+the environment the whole team shares, so it is tagged `@disruptive`, needs
+`RUN_LOAD_AWS=1` on top, and never runs by default or on the schedule.
+
+**What one step is.** N virtual users of one screen are released together.
+Each sends that screen's requests the way a browser does: in the browser's
+order, over its own connections, at most 6 at a time (a browser's limit on
+this HTTP/1.1 listener). The requests come from a Playwright recording made
+at the start of every run, so the replay follows today's frontend. A
+recording whose shape the replay does not know (no `reproduce`, a new request
+on any screen, a request other than a GET in OutputsView) fails the run
+rather than being replayed wrongly; the replay is then updated to the new
+request set. So does a recording with a request that failed or answered an
+error, which would be replayed as a smaller screen. Only the recorded tab's
+requests count; the sign-in tab is closed first. A Dashboard user whose
+`/auth/refresh` is refused stops there unfinished, as a browser goes to the
+login page.
+
+| Screen | Plan name | What one user does |
+| --- | --- | --- |
+| Dashboard after sign-in | `dashboard` | a new tab on `/dashboard` with a session: `/auth/refresh`, `/is_standalone`, `/users/me`, then the storage refresh, `/users/me`, the limit warning and `/announcement` at once |
+| `/users/me` burst | `usersme` | the Dashboard's two `/users/me`, tokens refreshed beforehand |
+| OutputsView from Dataview, owner | `dialog` | the record's `reproduce`, then every item OutputsView fetched, at once |
+| PublicDataview without sign-in | `public` | anonymous: `/public` with its thumbnails, then the same record's OutputsView |
+
+Screens carry the frontend code's names: `pages/Dashboard` (`/dashboard`),
+`pages/Dataview` (`/dataview/<workspace id>`), `pages/PublicDataview`
+(`/public`) and `components/Dataview/OutputsView`, the dialog the Outputs
+column opens on both lists. The UI titles OutputsView "Workflow Outputs" and
+PublicDataview "OptiNiSt Public Repository"; the code's `PublicRepository` is
+a section of the landing page (`/`), which the lane does not load.
+
+OutputsView items and thumbnails are read to their last byte, as a browser
+reads them, over the user's kept connections. Each is timed twice: to its
+headers from when its request got a connection, the server's time, and to its
+last byte from when the user asked for it, which adds the wait for one of the
+6 connections and the transfer over the load generator's own link. A screen's
+"answered" columns add up each phase's slowest server answer, as the
+reference tool, which had no connection limit, measured them; they give the
+Improvement. Its "read" columns are the user's own wait to the last byte.
+Every request accepts `gzip, deflate`, as a browser does
+on this plain-HTTP origin, so the server compresses what it would for a
+browser; bytes are counted as they crossed the wire. Free-route requests carry
+one `AWSALB` cookie, so every user reaches the same free instance, and each
+step checks that they did.
+
+**Stops.** Two probes run once a second: the public service's `/health` and
+the free instance's `/is_standalone` with a Bearer token. A step stops at a
+probe at or over its threshold (a slow service), at two failed probes in a
+row (a service that stopped answering, its own stop reason), at 5xx above 5 %
+of the answers, or at its deadline. A stopped step ends its screen, unless the
+plan's next step names the stop it accepts. A step whose users did not all
+finish, or that got answers a browser would not, is not compared with its
+before. Between steps there is a cool-down probed every 5
+seconds; a service that fails or reaches its threshold on two probes in a
+row, an unhealthy target, or any scaling activity ends the run. A lone slow
+probe there is the load generator's own link: no load of the run is going,
+and the ALB's response times stay flat through it. After the last step the
+run watches for 10 minutes before its post-checks. Inside a step a single slow
+probe still stops it; the report gives each step the ALB's slowest answer per
+target, so a stop the ALB did not see reads as the generator's, not the
+service's.
+
+**Plans** live in `load/plans/`. `default` stops at the largest counts measured
+on 2026-11-05, and `parity` runs 1 and 5 users per screen:
+
+| Screen | `default` steps |
+| --- | --- |
+| Dashboard | 1 / 10 / 50 (50 also after a slow free probe, not after free stopped answering, at a 10 s free threshold) |
+| `/users/me` burst | 50 |
+| OutputsView from Dataview | 1 / 5 / 10 / 20 |
+| PublicDataview | 1 / 5 / 10, then 20 and 30 while the previous public probe max stays under 3 s |
+
+The plan lists larger steps too (100 on the Dashboard, 50 on OutputsView from
+Dataview and 50 / 100 on PublicDataview). A step above its screen's cap runs
+only when that run sets both `LOAD_MAX_USERS_<SCREEN>=<n>` and
+`LOAD_GO_AHEAD=1`, and the report records the override. The committed caps
+never change for one run. A plan file outside `load/plans/` brings its own
+steps but not its own caps: they are held to `default`'s, and the report names
+the file. No step goes above 100 users, the count #846 asks for. A plan whose
+cut-off would leave its last step, the 10-minute watch and the post-checks
+running into the 13:00 UTC stop is refused.
+
+**Safety rules**, each from something one of the two manual runs hit:
+
+1. **Development only, on `:8080`.** `BASE_URL` must be a bare `http` origin
+   on `:8080`, and the pre-checks match its host to development's ALB. Without
+   the port the ALB redirects, and the redirect drops the Authorization header.
+2. **Free accounts only, at most 5 distinct ones** counting the accounts
+   `globalSetup` signs in (`TEST_USER_EMAIL`, and `TEST_ADMIN_EMAIL` when its
+   password is set). A premium sign-in through the UI claims a premium
+   instance, and a sixth active user makes the Free Manager add a free
+   instance; between steps the run ends when more than 5 free users were
+   active within 5 minutes.
+3. **The public threshold stays at 5 s or less.** The public target group's
+   health check times out at 5 s and replaces the instance after three
+   misses; on 2026-11-02 a 10 s threshold could not stop a step before that.
+   The free threshold may go to 10 s (its check allows 30 s, five times).
+4. **At least 4 minutes between steps**, so the free tier's `cpu-high` alarm
+   (over 60 % for 2 x 2 minutes) does not add an instance.
+5. **Watch 10 minutes after the last step.** Public instances have been
+   replaced 2 and 6 minutes after the load that broke them.
+6. **Nobody else on development.** The run refuses when an account other than
+   the suite's `TEST_*` ones was active in the last 30 minutes, and when it
+   cannot tell, and prints the reason (the list reporter does not show a
+   skip's). The load accounts count too, labelled: they are shared, so their
+   activity may be somebody else's. In a window the team has agreed, or right
+   after the lane's own run, `LOAD_WINDOW_ANNOUNCED=1` runs anyway and the
+   report says so. Between steps the run ends when an account that was not
+   active at the start becomes active. A colleague using one of the shared
+   load accounts cannot be told from the run itself, so the window is agreed
+   on beforehand.
+7. **The image under test is named**: every running free and public task must
+   run `LOAD_IMAGE_DIGEST`. Development often runs a teammate's test image.
+   With PublicDataview planned, the listener must also send its API to the
+   public target group: a tier of its own (#1122) would take load nothing
+   watches.
+8. **`--retries 0`.** A retry would load the environment again on top of a step
+   that may have broken it.
+9. **The public record is restored whatever happens.** The restore is owed in
+   `publish-restore.json` in the run's folder before the publish request, paid
+   at the end, in an `afterEach` hook when the test times out, and by the next
+   run when this one was killed.
+
+**Settings** (`e2e/.env` or the shell). A flag is on for `1` or `true` only;
+a relative path is from `e2e/`:
+
+| Key | Required | What |
+| --- | --- | --- |
+| `RUN_LOAD_AWS` | yes | opt-in, with `RUN_DISRUPTIVE=1` |
+| `AWS_PROFILE` | yes | read access to development's ECS, ELB, Auto Scaling, CloudWatch and logs; every AWS call is a read |
+| `LOAD_ACCOUNTS_FILE` | yes | one `email<TAB>password` line per account, 1-5 free accounts. Read, never printed; keep it outside the repository |
+| `LOAD_DIALOG_RECORD` | yes | the OutputsView fixture, `<workspace id>/<uid>` |
+| `LOAD_DIALOG_OWNER` | yes | its owner's email, one of the accounts |
+| `LOAD_PUBLIC_RECORD` | no | the record PublicDataview visitors open, the owner's; default `LOAD_DIALOG_RECORD` |
+| `LOAD_PUBLISH` | no | publish the public record for the run when it is not; it is unpublished after the PublicDataview steps, and the run asserts the restore |
+| `LOAD_IMAGE_DIGEST` | yes | `sha256:...` the tasks must run |
+| `LOAD_WINDOW_END` | yes | ISO-8601 with its offset, e.g. `2026-11-10T17:00+09:00`. No step is released that could still run after it, nor after the plan's cut-off before the next 13:00 UTC stop (12:40 UTC in the committed plans); a run started past that cut-off gets no step |
+| `LOAD_WINDOW_ANNOUNCED` | no | see rule 6 |
+| `LOAD_PLAN` | no | a plan name or path; default `default` |
+| `LOAD_SCREENS` | no | a comma list, to run some screens only |
+| `LOAD_MAX_USERS_<SCREEN>`, `LOAD_GO_AHEAD` | no | larger counts, see Plans |
+| `LOAD_BASELINE` | no | the baseline to compare with: a baseline file or another run's results folder; default `load/baseline-20261105.json` |
+| `LOAD_RESULTS_DIR` | no | default `e2e/load-results` (gitignored) |
+| `LOAD_REPORT_FROM` | LOAD-02 | the results folder to rebuild a report from |
+| `LOAD_REPORT_OUT` | no | LOAD-02's report file; default `report.md` in that folder |
+| `LOAD_BASELINE_OUT`, `LOAD_BASELINE_ON`, `LOAD_BASELINE_NOTE` | no | LOAD-02 also writes a baseline file from the folder, with the date measured and a note |
+| `E2E_OFFLINE` | offline runs | `1` keeps `globalSetup` from signing in and cleaning up, for the unit spec and LOAD-02 |
+
+**The OutputsView fixture** is a suite2p result of #637's size (the 1.4 GB
+TIFF through `suite2p_file_convert`, `suite2p_registration` and
+`suite2p_roi`) owned by one of the accounts. If it is gone, upload the recording as that
+account and run the workflow (about 20-25 minutes); a smaller record
+measures something else, and the report says so (its bytes per open differ).
+
+**Running it**:
+
+```bash
+RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<development profile> \
+  yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
+# 1 and 5 users per screen, e.g. right after a deploy
+LOAD_PLAN=parity RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<development profile> \
+  yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
+# rebuild a report from saved steps; reads nothing remote
+E2E_OFFLINE=1 LOAD_REPORT_FROM=load-results/<run> \
+  yarn test:e2e e2e/24-load.spec.ts -g LOAD-02
+```
+
+A default run takes about an hour. LOAD-01 fails when a screen's last planned
+step (by default the counts above) did not run or did not pass: it stopped,
+a user did not finish, a request answered other than a browser's would (the
+anonymous `/auth/refresh` answers 401 by design), or another free instance
+answered. It also fails when no step ran, when the services did not settle in
+the watch after the last step, and when the post-checks find a target
+unhealthy, a target group with no target, or any scaling activity. The report
+is written either way.
+
+**What a run leaves** in `e2e/load-results/<UTC time>-<plan>/`: per step
+`summary.json` (the schema of the tool the 2026-11-02 and 2026-11-05 figures
+came from, so those steps compare as they are), `requests.jsonl`,
+`probes.jsonl`, `vus.jsonl` and the cool-down's `after.json` with its probes
+in `probes-after.jsonl`; the recordings (`capture-*.json`), the 10-minute
+watch's `settle.json` with `probes-settle.jsonl`, `run.json` and
+`report.md`; and, only while a published record's restore is owed,
+`publish-restore.json`. The report gives each
+screen's table before → after with an Improvement column, the 1-user
+per-item times, the differences the comparison has to be read with (6
+connections per user, a different fixture, items compressed in only one of
+the runs, other thresholds, a changed request set), the Dashboard's robustness (DB pool timeouts, 401 and 5xx in the
+server logs, instance replacement) and the post-checks (target health,
+scaling activity, the services' CPU per step, 5xx at the ALB, the ALB's
+slowest answer per step, and whether the watch after the last step saw both
+services answer). Items are labelled by endpoint, then the output's node
+without its random tail, its folders and the file, then the query without its
+ids (`image:suite2p_roi/Vcorr.json?end_index=10&start_index=1`), so the same
+file name from two nodes or two folders never compares as one item. Labels
+from runs before 2026-11-10 dropped folders and queries, so an item with a
+query or in a folder (`mc_images.tif` under `tiff/mc_images/`) reads as new
+against them, the 2026-11-05 baseline included.
+
+**What may go to GitHub**: `report.md` as it is. It holds measured values
+only; instance ids and ARNs in AWS's own text are masked. The rest of the
+folder does not: the recordings and summaries carry record ids, instance
+hashes and paths. A new baseline is made from a run's folder with
+`LOAD_BASELINE_OUT=<file>` on LOAD-02; add the run's CPU and thresholds to it
+before committing.
+
+**Cleanup**: none beyond the results folder. The run creates no account and
+writes no token file; the tokens stay in memory, and the public record is
+restored. A `publish-restore.json` left in a run's folder means a killed run
+left the record public: the next run unpublishes it first, or the owner
+unpublishes it and deletes the file. Delete the folder once the report is
+written up.
+
+**Still manual**: agreeing the window with the team; the OutputsView fixture
+when it is missing; the approval to publish a record (`LOAD_PUBLISH=1` is that
+approval, given per run); reading the report, what changed and why; and the
+issue or PR comments that follow. Scale-out under load is not covered: the
+lane pins one free instance and keeps to 5 accounts.
 
 ## How the suite works
 
@@ -565,6 +798,7 @@ gated and how to run it. This table is the map, not the documentation.
 | `21-stripe-roundtrip` | STRIPE-01 | cancel at period end through our own API, then reactivate, read back from Stripe rather than a mock: `cancel_at_period_end`, `cancel_at`, the `customer.subscription.updated` event, and our own `scheduled_downgrade` without a plan downgrade. The undo is in a `finally` and asserted. `RUN_STRIPE_WRITE=1` and `TEST_STRIPE_*`, since the `TEST_PREMIUM_*` accounts own no Stripe customer to cancel |
 | `22-disruptive`    | OUT-01..05, ASG-01 | the rows that can only be observed by breaking something, against deployed dev: with the free service at zero the public tier still serves the shell, `/auth/login` and an authenticated client error report (OUT-01); a rolling public deployment keeps serving and published data survives the task replacement, 200 rather than the 202 that would mean it re-synced from S3 (OUT-02); a premium user keeps their instance through the outage (OUT-03); the assigned premium instance stopped (OUT-04) or terminated (OUT-05) out from under the user, with the DEGRADED snackbar, the row reconciliation and the instance-lost re-trigger's recovery asserted, and the standby pool healed before the run ends; and terminating a public instance gets it replaced, with an ECS task really placed on the replacement and no request dropped (ASG-01). Row 824's alarm is logged rather than asserted - whether a terminating target is ever counted `unhealthy` or goes straight to `draining` is undocumented, so HEALTH-27 carries that row instead |
 | `23-subscription-lifecycle` | LC-06, LC-11..13, LC-16, LC-21..23 | the subscription-state half of the lifecycle rows, split out of `11-lifecycle` so it can run against deployed dev: the expiry captions (Renew / Expires / Expired), the expired-premium grace warning, the downgrade confirmation and its retention notice, the cancelled banner, the profile after cancellation, a renewal writing only a later period end, the post-grace Expired status with the 403 the assign route answers, and one real account deletion on a per-run throwaway. Plan and expiry are staged one statement at a time through `runSqlWriteOnDev`, and an `afterAll` restores the account to exactly what registration leaves, so no fabricated premium row outlives the run. Needs `TEST_LIFECYCLE_*` pointing at a dedicated account (LC-16 deletes the account it runs on) and, for LC-16 only, `FIREBASE_ADMIN_PYTHON`. **Writes to the shared dev RDS and currently runs in the default lane** - see the note below |
+| `24-load`          | LOAD-01..02 | Web UI capacity on development: N users of the Dashboard, the `/users/me` burst, the owner's OutputsView from Dataview and PublicDataview released together, step by step, with stop probes, cool-downs, read-only AWS post-checks and a before / after report against the committed baseline (LOAD-01); the report rebuilt from saved steps without touching anything remote (LOAD-02). `@disruptive` plus `RUN_LOAD_AWS=1`, in an announced window - see [Web UI load lane](#web-ui-load-lane). Its logic is unit-tested offline in `load/load.unit.spec.ts` |
 | `99-cleanup`       | CLEAN-01    | deletion of the account's `e2e-*` workspaces. Skipped unless `RUN_CLEANUP=1`; runs last so the groups above keep their fixtures |
 
 ## Coverage maps

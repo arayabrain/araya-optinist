@@ -1,0 +1,724 @@
+import * as fs from "fs"
+import * as path from "path"
+
+import { expect, test } from "@playwright/test"
+
+import {
+  activeFreeUsers,
+  devIsUp,
+  otherActiveUsers,
+  progressLog,
+  sqlSkipReason,
+} from "./helpers"
+import {
+  activitiesSince,
+  albFiveXx,
+  betweenStepProblems,
+  cpuMax,
+  logHits,
+  preCheckProblems,
+  responseMax,
+  targetStateProblems,
+  targetStates,
+} from "./load/aws"
+import { captureOwner, capturePublic } from "./load/capture"
+import {
+  inUseBy,
+  LoadConfig,
+  laneSkipReason,
+  MAX_DISTINCT_ACCOUNTS,
+  newcomers,
+  readConfig,
+  targetProblems,
+} from "./load/config"
+import {
+  cutoffAt,
+  decideStep,
+  fitsBefore,
+  loadPlan,
+  Plan,
+  stopThresholds,
+  targetStep,
+} from "./load/plan"
+import {
+  Baseline,
+  bucket,
+  loadBaseline,
+  baselineFrom,
+  readSteps,
+  renderReport,
+  RunReport,
+  StepOutcome,
+  Window,
+} from "./load/report"
+import {
+  findRecord,
+  leftoverDebts,
+  isCutoffStop,
+  owe,
+  payDebt,
+  Pin,
+  PUBLISHED,
+  planName,
+  RecordState,
+  refreshed,
+  roomNeeded,
+  runStep,
+  setPublished,
+  signIn,
+  stopActiveStep,
+  watch,
+  WatchResult,
+  writeStep,
+  writeWatch,
+} from "./load/runner"
+import {
+  checkDashboardCapture,
+  CaptureRow,
+  dialogSpec,
+  DialogSpec,
+  publicSpec,
+  PublicSpec,
+  Session,
+} from "./load/screens"
+import {
+  describeStop,
+  failuresOf,
+  figuresOf,
+  Screen,
+  StepFigures,
+  Target,
+} from "./load/summary"
+
+// The Web UI capacity measurement as a lane: N users of one screen released
+// together against development, step by step, with the before / after report
+// against the committed baseline (2026-11-05). See the README's "Web UI load
+// lane" for the .env keys, the safety rules and what may be posted.
+//
+//   RUN_DISRUPTIVE=1 RUN_LOAD_AWS=1 AWS_PROFILE=<dev profile> \
+//     yarn test:e2e e2e/24-load.spec.ts -g LOAD-01 --retries 0
+//
+// It loads the shared environment, so it is @disruptive, opt-in twice, and
+// refuses when an account other than the suite's (the shared load accounts
+// included) was active in the last 30 minutes unless the window was announced.
+// Every AWS call is a read.
+//
+// LOAD-02 rebuilds a report from saved steps and touches nothing remote:
+//
+//   LOAD_REPORT_FROM=<results dir> yarn test:e2e e2e/24-load.spec.ts -g LOAD-02
+
+const BASELINE = path.join(__dirname, "load", "baseline-20261105.json")
+
+// Every path a LOAD_* setting names resolves from e2e/
+function fromE2e(p: string): string {
+  return path.resolve(__dirname, p)
+}
+
+function baselinePath(): string {
+  return process.env.LOAD_BASELINE
+    ? fromE2e(process.env.LOAD_BASELINE)
+    : BASELINE
+}
+// Sign-ins, captures and post-checks around the steps
+const RUN_OVERHEAD_MS = 20 * 60_000
+
+type Last = {
+  outcome: StepOutcome
+  dir: string
+  pin: Pin
+  session: Session
+  thresholds: Record<Target, number>
+}
+
+function stamp(d: Date): string {
+  return d
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z")
+}
+
+function afterOf(w: WatchResult): StepOutcome["after"] {
+  return {
+    public_max: w.stats.public.max,
+    free_max: w.stats.free.max,
+    failed: w.stats.public.failed + w.stats.free.failed,
+    unhealthy: w.unhealthy ? w.unhealthy.replace(/:.*$/, "") : null,
+  }
+}
+
+// Past the opt-in a skip is news, and the list reporter does not print its
+// reason
+function skipNamed(log: ReturnType<typeof progressLog>, reason: string): void {
+  if (reason) log.step(`skipped: ${reason}`)
+  test.skip(!!reason, reason)
+}
+
+// The restore of a record this run published. The test body pays it; the hook
+// pays it too, since a timed-out test's body is not waited for.
+let owedRestore: (() => Promise<void>) | null = null
+
+async function payRestore(): Promise<void> {
+  const pay = owedRestore
+  owedRestore = null
+  if (pay) await pay()
+}
+
+test.describe("Web UI load lane @disruptive", () => {
+  test.afterEach(async () => {
+    stopActiveStep()
+    await payRestore().catch((e) =>
+      console.error(`could not unpublish the public record: ${e}`),
+    )
+  })
+
+  test("LOAD-01 each screen holds the plan's last step", async ({
+    browser,
+  }) => {
+    const skip = laneSkipReason(process.env)
+    test.skip(!!skip, skip)
+    // A retry would re-run the load on top of a step that broke something
+    expect(test.info().project.retries, "run this lane with --retries 0").toBe(
+      0,
+    )
+    const problems = targetProblems(process.env)
+    expect(problems, problems.join("; ")).toEqual([])
+    const cfg: LoadConfig = readConfig(process.env)
+    const plan: Plan = loadPlan(cfg.plan)
+    const log = progressLog("24-load", "LOAD-01")
+    expect(
+      devIsUp(new Date()),
+      "development is stopped: it runs 23:00 -> 13:00 UTC on weekdays",
+    ).toBe(true)
+
+    // A run that was killed while the record was public left its restore
+    // owed. It is paid first: the in-use check below would skip this run while
+    // that run's accounts still read as active.
+    const debts = leftoverDebts(cfg.resultsDir)
+    if (debts.length) {
+      let [debtor] = await signIn(cfg.base, [cfg.dialogOwner])
+      const debtorSession = async () =>
+        (debtor = await refreshed(cfg.base, debtor))
+      for (const { file, debt } of debts) {
+        expect(
+          debt.workspaceId === cfg.publicRecord.workspaceId &&
+            debt.uid === cfg.publicRecord.uid,
+          `${file}: an earlier run left another record published; unpublish it ` +
+            "as its owner, then delete the file",
+        ).toBe(true)
+        log.step("unpublishing the record an earlier run left published")
+        await payDebt(cfg.base, debtorSession, file)
+      }
+    }
+
+    // Not knowing who is on is not the same as nobody being on
+    const sql = sqlSkipReason()
+    skipNamed(log, sql && `cannot check whether development is in use: ${sql}`)
+    const activeAtStart = otherActiveUsers()
+    const inUse = inUseBy(activeAtStart, cfg.accounts)
+    const overrides: string[] = []
+    if (plan.local) {
+      overrides.push(
+        `plan from ${path.basename(plan.local)}, not a committed plan; its caps held to the default plan's`,
+      )
+    }
+    if (inUse.length) {
+      skipNamed(
+        log,
+        cfg.windowAnnounced
+          ? ""
+          : `development is in use by ${inUse.join(", ")} (active within 30 minutes); ` +
+              "load it only in an announced window, or right after this lane's own run, " +
+              "with LOAD_WINDOW_ANNOUNCED=1",
+      )
+      overrides.push(
+        `LOAD_WINDOW_ANNOUNCED: ${inUse.length} account(s) active in the 30 minutes before the start`,
+      )
+    }
+    for (const [screen, max] of Object.entries(cfg.maxUsers)) {
+      const cap = plan.screens.find((s) => s.screen === screen)?.cap
+      overrides.push(
+        `cap for ${screen} set to ${max} for this run (plan: ${cap})`,
+      )
+    }
+    if (cfg.goAhead)
+      overrides.push("LOAD_GO_AHEAD: steps above the default caps allowed")
+    if (cfg.screens) overrides.push(`screens: ${cfg.screens.join(", ")} only`)
+
+    const started = new Date()
+    const end = cutoffAt(plan, started, cfg.windowEnd)
+    // Room before the cut-off for one more step, and for the cool-down
+    // before it when a step ran already
+    const stepFits = (afterAStep = false) =>
+      fitsBefore(end, Date.now(), roomNeeded(plan, afterAStep))
+    // Past the cut-off nothing would run: no sign-in, no recording
+    expect(
+      stepFits(),
+      `the cut-off at ${end.toISOString()} leaves no room for a step`,
+    ).toBe(true)
+    test.setTimeout(
+      end.getTime() -
+        started.getTime() +
+        plan.settle_s * 1000 +
+        RUN_OVERHEAD_MS,
+    )
+
+    const wanted = (screen: Screen) =>
+      !cfg.screens || cfg.screens.includes(screen)
+    const planned = plan.screens.filter((s) => wanted(s.screen))
+    const pre = preCheckProblems(
+      cfg.imageDigest,
+      cfg.base,
+      planned.some((s) => s.screen === "public"),
+    )
+    expect(
+      pre,
+      `development is not ready to be measured: ${pre.join("; ")}`,
+    ).toEqual([])
+
+    const runDir = path.join(cfg.resultsDir, `${stamp(started)}-${plan.name}`)
+    fs.mkdirSync(runDir, { recursive: true })
+    log.step(`results in ${runDir}`)
+
+    const base = cfg.base
+    const sessions = await signIn(base, cfg.accounts)
+    // A premium sign-in through the UI would claim a premium instance
+    for (const [i, s] of sessions.entries()) {
+      const name = await planName(base, s)
+      expect(
+        name,
+        `account ${i + 1} of the accounts file is not on the free plan`,
+      ).toBe("Free")
+    }
+    const owner = cfg.accounts.indexOf(cfg.dialogOwner)
+    // ID tokens last an hour and a run outlasts one, so every record lookup
+    // and publish change refreshes the owner's session first
+    const ownerSession = async (): Promise<Session> =>
+      (sessions[owner] = await refreshed(base, sessions[owner]))
+
+    let dialog: DialogSpec | undefined
+    if (
+      planned.some((s) => s.screen === "dashboard" || s.screen === "dialog")
+    ) {
+      const record = await findRecord(
+        base,
+        await ownerSession(),
+        cfg.dialogRecord,
+      )
+      expect(
+        record,
+        "LOAD_DIALOG_RECORD is not in LOAD_DIALOG_OWNER's Dataview",
+      ).not.toBeNull()
+      log.step("capturing the Dashboard and OutputsView from Dataview")
+      const rows = await captureOwner(
+        browser,
+        base,
+        cfg.dialogOwner,
+        cfg.dialogRecord.workspaceId,
+        (record as RecordState).id,
+      )
+      fs.writeFileSync(
+        path.join(runDir, "capture-owner.json"),
+        JSON.stringify(rows, null, 1),
+      )
+      if (planned.some((s) => s.screen === "dashboard"))
+        checkDashboardCapture(rows)
+      if (planned.some((s) => s.screen === "dialog"))
+        dialog = dialogSpec(rows, cfg.dialogRecord)
+    }
+
+    const outcomes: StepOutcome[] = []
+    const notRun: RunReport["notRun"] = []
+    const windows: Window[] = []
+    const stepTimes = new Map<string, { from: Date; to: Date }>()
+    let endedEarly: string | null = null
+    let expectedHash: string | null = null
+    let last: Last | null = null
+    let publicRecord: RecordState | null = null
+    let post: RunReport["post"]
+    let postError: string | null = null
+    let settleUnhealthy: string | null = null
+
+    // The settle belongs to the run: after an early end the last step has
+    // had its cool-down already, and that record stays the step's
+    const cooldown = async (
+      seconds: number,
+      name: "after" | "settle",
+    ): Promise<WatchResult | null> => {
+      if (!last) return null
+      log.step(`watching ${seconds} s after ${last.outcome.key}`)
+      const w = await watch(
+        base,
+        last.session,
+        last.pin,
+        seconds,
+        last.thresholds,
+      )
+      writeWatch(name === "after" ? last.dir : runDir, w, name)
+      last.outcome.after = last.outcome.after ?? afterOf(w)
+      return w
+    }
+
+    try {
+      for (const screen of planned) {
+        let previous: StepFigures | null = null
+        let ended = false
+        let publicSpecReady: PublicSpec | undefined
+        for (const step of screen.steps) {
+          const skipStep = (reason: string) =>
+            notRun.push({ screen: screen.screen, users: step.users, reason })
+          if (endedEarly) {
+            skipStep("the run ended early")
+            continue
+          }
+          if (ended) {
+            skipStep("the screen ended at an earlier step")
+            continue
+          }
+          const d = decideStep(screen, step, previous, {
+            capOverride: cfg.maxUsers[screen.screen],
+            goAhead: cfg.goAhead,
+          })
+          if (!d.run) {
+            skipStep(d.reason)
+            ended = d.endsScreen
+            continue
+          }
+          // The cool-down counts too: a step that cannot follow it in time
+          // ends the run here, and the settle starts at once
+          if (!stepFits(last !== null)) {
+            endedEarly = `the cut-off at ${end.toISOString()}`
+            skipStep("the run ended early")
+            continue
+          }
+          if (last) {
+            const w = await cooldown(plan.cooldown_s, "after")
+            if (w?.unhealthy) {
+              endedEarly = `the services did not settle after ${last.outcome.key} (${afterOf(w)?.unhealthy})`
+              skipStep("the run ended early")
+              continue
+            }
+            const between = betweenStepProblems(started)
+            // Somebody who signed in since the start would get the load next
+            const joined = newcomers(
+              activeAtStart,
+              otherActiveUsers(),
+              cfg.accounts,
+            )
+            if (joined.length)
+              between.push(`${joined.join(", ")} became active during the run`)
+            const free = activeFreeUsers(5)
+            if (free.length > MAX_DISTINCT_ACCOUNTS) {
+              between.push(
+                `${free.length} free users active within 5 minutes; more than ` +
+                  `${MAX_DISTINCT_ACCOUNTS} scales the free tier out`,
+              )
+            }
+            if (between.length) {
+              endedEarly = `before ${screen.screen} ${step.users}: ${between.join("; ")}`
+              skipStep("the run ended early")
+              continue
+            }
+          }
+          if (!stepFits()) {
+            endedEarly = `the cut-off at ${end.toISOString()}`
+            skipStep("the run ended early")
+            continue
+          }
+          if (screen.screen === "public" && !publicSpecReady) {
+            publicRecord = await findRecord(
+              base,
+              await ownerSession(),
+              cfg.publicRecord,
+            )
+            expect(
+              publicRecord,
+              "LOAD_PUBLIC_RECORD is not in LOAD_DIALOG_OWNER's Dataview",
+            ).not.toBeNull()
+            const rec = publicRecord as RecordState
+            if (rec.publishStatus !== PUBLISHED) {
+              if (!cfg.publish) {
+                skipStep(
+                  "the public record is not published; LOAD_PUBLISH=1 publishes it for the run",
+                )
+                ended = true
+                continue
+              }
+              log.step("publishing the public record for the run")
+              const debt = {
+                ...cfg.publicRecord,
+                id: rec.id,
+                at: new Date().toISOString(),
+                updatedAt: null,
+              }
+              const debtFile = owe(runDir, debt)
+              const publishing = (async () => {
+                await setPublished(base, await ownerSession(), rec.id, true)
+                const now = await findRecord(
+                  base,
+                  await ownerSession(),
+                  cfg.publicRecord,
+                )
+                owe(runDir, { ...debt, updatedAt: now?.updatedAt ?? null })
+              })()
+              // An unpublish that lands while the publish is still syncing
+              // changes nothing on the server, so the restore waits for it
+              owedRestore = async () => {
+                await publishing.catch(() => undefined)
+                await payDebt(base, ownerSession, debtFile)
+              }
+              await publishing
+            }
+            log.step("capturing PublicDataview")
+            const rows: CaptureRow[] = await capturePublic(browser, base, {
+              id: rec.id,
+              uid: cfg.publicRecord.uid,
+            })
+            fs.writeFileSync(
+              path.join(runDir, "capture-public.json"),
+              JSON.stringify(rows, null, 1),
+            )
+            publicSpecReady = publicSpec(rows, cfg.publicRecord)
+            // Publishing and two visits take minutes
+            if (!stepFits()) {
+              endedEarly = `the cut-off at ${end.toISOString()}`
+              skipStep("the run ended early")
+              continue
+            }
+          }
+
+          const key = `${screen.screen}-n${step.users}`
+          log.step(`step ${key}`)
+          const from = new Date()
+          if (windows.length) windows[windows.length - 1].to = from.getTime()
+          windows.push({
+            key,
+            from: from.getTime(),
+            to: Number.POSITIVE_INFINITY,
+          })
+          const result = await runStep({
+            base,
+            plan,
+            screen: screen.screen,
+            step,
+            sessions,
+            owner,
+            dialog,
+            public: publicSpecReady,
+            expectedHash,
+            cutoff: end,
+          })
+          // Held back by the cut-off before its release: a step that did not
+          // run, not one that stopped
+          if (isCutoffStop(result)) {
+            windows.pop()
+            endedEarly = `the cut-off at ${end.toISOString()}`
+            skipStep("the run ended early")
+            continue
+          }
+          stepTimes.set(key, { from, to: new Date() })
+          expectedHash = expectedHash ?? result.pin.hash
+          const dir = path.join(runDir, key)
+          writeStep(dir, result)
+          const thresholds = stopThresholds(plan, step)
+          const outcome: StepOutcome = {
+            key,
+            summary: result.summary,
+            figures: { ...figuresOf(result.summary), probe_stop_s: thresholds },
+            failures: failuresOf(result.summary),
+            stop: describeStop(result.summary),
+          }
+          outcomes.push(outcome)
+          log.step(
+            `${key}: ${outcome.failures.length ? outcome.failures.join("; ") : "passes"}`,
+          )
+          last = {
+            outcome,
+            dir,
+            pin: result.pin,
+            session: result.probeSession,
+            thresholds,
+          }
+          previous = outcome.figures
+        }
+        await payRestore()
+      }
+      // A public instance has been replaced 2 and 6 minutes after the load
+      // that broke it, so the run watches that long before it reads AWS
+      const settle = await cooldown(plan.settle_s, "settle")
+      settleUnhealthy = settle?.unhealthy ?? null
+    } finally {
+      await payRestore().catch((e) =>
+        console.error(`could not unpublish the public record: ${e}`),
+      )
+      if (outcomes.length) {
+        try {
+          const ended = new Date()
+          for (const o of outcomes) {
+            const t = stepTimes.get(o.key) as { from: Date; to: Date }
+            const to = new Date(t.to.getTime() + 60_000)
+            o.figures.cpu_max_pct = {
+              free: cpuMax("free", t.from, to),
+              public: cpuMax("public", t.from, to),
+            }
+            o.figures.alb_response_max_s = {
+              free: responseMax("free", t.from, to),
+              public: responseMax("public", t.from, to),
+            }
+          }
+          const { hits, truncated } = logHits(started, ended)
+          const byStep = bucket(hits, windows)
+          const activities = activitiesSince(started)
+          for (const o of outcomes) {
+            o.logs = byStep[o.key]
+            const w = windows.find((x) => x.key === o.key) as Window
+            o.replaced = activities
+              .filter((a) => {
+                const at = new Date(a.start).getTime()
+                return at >= w.from && at < w.to
+              })
+              .map((a) => a.description)
+          }
+          post = {
+            targets: {
+              free: targetStates("free"),
+              public: targetStates("public"),
+            },
+            activities,
+            alb5xx: albFiveXx(started, ended),
+            logTruncated: truncated,
+          }
+        } catch (e) {
+          postError = (e as Error).message.split("\n")[0]
+        }
+      }
+      const where = baselinePath()
+      const baseline: Baseline = loadBaseline(where)
+      const run: RunReport = {
+        plan: plan.name,
+        startedAt: started.toISOString(),
+        endedAt: new Date().toISOString(),
+        baselineLabel: path.basename(where),
+        overrides,
+        endedEarly:
+          endedEarly ?? (postError ? `post-checks failed: ${postError}` : null),
+        notRun,
+        steps: outcomes,
+        post,
+        settleUnhealthy,
+      }
+      fs.writeFileSync(
+        path.join(runDir, "run.json"),
+        JSON.stringify(run, null, 1),
+      )
+      const report = path.join(runDir, "report.md")
+      fs.writeFileSync(report, renderReport(baseline, run))
+      await test
+        .info()
+        .attach("report.md", { path: report, contentType: "text/markdown" })
+      log.step(`report: ${report}`)
+    }
+
+    if (publicRecord) {
+      const after = await findRecord(
+        base,
+        await ownerSession(),
+        cfg.publicRecord,
+      )
+      expect(
+        after?.publishStatus,
+        "the public record's publish state was not restored",
+      ).toBe((publicRecord as RecordState).publishStatus)
+    }
+    expect
+      .soft(outcomes.length, "no step ran, so nothing was measured")
+      .toBeGreaterThan(0)
+    expect
+      .soft(
+        settleUnhealthy,
+        `the services did not settle after the last step: ${settleUnhealthy}`,
+      )
+      .toBeNull()
+    for (const screen of planned) {
+      const target = targetStep(screen, {
+        capOverride: cfg.maxUsers[screen.screen],
+        goAhead: cfg.goAhead,
+      })
+      if (!target) continue
+      const key = `${screen.screen}-n${target.users}`
+      const outcome = outcomes.find((o) => o.key === key)
+      const why = notRun.find(
+        (n) => n.screen === screen.screen && n.users === target.users,
+      )?.reason
+      expect.soft(outcome, `${key} did not run: ${why}`).toBeDefined()
+      if (outcome)
+        expect
+          .soft(outcome.failures, `${key}: ${outcome.failures.join("; ")}`)
+          .toEqual([])
+    }
+    expect.soft(postError, `post-checks: ${postError}`).toBeNull()
+    if (post) {
+      expect
+        .soft(
+          targetStateProblems(post.targets),
+          "targets not healthy at the end of the run",
+        )
+        .toEqual([])
+      expect
+        .soft(
+          post.activities.map((a) => `${a.group}: ${a.description}`),
+          "the load replaced or added an instance",
+        )
+        .toEqual([])
+    }
+  })
+})
+
+test.describe("Web UI load lane, offline", () => {
+  test("LOAD-02 a report from saved steps", async () => {
+    const from = process.env.LOAD_REPORT_FROM
+    test.skip(
+      !from,
+      "rebuilds a report from saved steps; set LOAD_REPORT_FROM=<results dir>",
+    )
+    const dir = fromE2e(from as string)
+    if (process.env.LOAD_BASELINE_OUT) {
+      // A new baseline: measured values only. Thresholds and CPU, which the
+      // steps do not hold, are added by hand from the run's notes.
+      const baseline = baselineFrom(
+        dir,
+        process.env.LOAD_BASELINE_ON || "",
+        process.env.LOAD_BASELINE_NOTE || "",
+      )
+      fs.writeFileSync(
+        fromE2e(process.env.LOAD_BASELINE_OUT),
+        JSON.stringify(baseline, null, 1) + "\n",
+      )
+    }
+    const saved = path.join(dir, "run.json")
+    const run: RunReport = fs.existsSync(saved)
+      ? JSON.parse(fs.readFileSync(saved, "utf-8"))
+      : {
+          plan: "(saved steps)",
+          startedAt: "—",
+          endedAt: "—",
+          baselineLabel: "",
+          overrides: [],
+          endedEarly: null,
+          notRun: [],
+          steps: readSteps(dir).map(({ key, summary }) => ({
+            key,
+            summary,
+            figures: figuresOf(summary),
+            failures: failuresOf(summary),
+            stop: describeStop(summary),
+          })),
+        }
+    const where = baselinePath()
+    run.baselineLabel = path.basename(where)
+    const out = process.env.LOAD_REPORT_OUT
+      ? fromE2e(process.env.LOAD_REPORT_OUT)
+      : path.join(dir, "report.md")
+    fs.writeFileSync(out, renderReport(loadBaseline(where), run))
+    console.log(`report: ${out}`)
+  })
+})
