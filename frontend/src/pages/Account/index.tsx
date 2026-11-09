@@ -503,8 +503,8 @@ const Account = () => {
           </>
         )}
       </BoxFlex>
-      {/* Rendered only once a decision exists, by which point the banner has
-          dismissed itself -- so only this direction needs a subscription. */}
+      {/* Rendered only once a decision exists; the banner subscribes too, so a
+          reopened notice closes when this switch changes. */}
       {isGtmEnabled() && analyticsConsent !== null && (
         <BoxFlex>
           <TitleData>Analytics Cookies</TitleData>

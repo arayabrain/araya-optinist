@@ -5,7 +5,7 @@ Maintains data hygiene and resource reconciliation for premium tier. Runs hourly
 
 ## Primary Responsibilities
 - **Stale Assignment Cleanup**: Remove inactive user assignments (>2 hours idle)
-- **Orphaned Resource Cleanup**: Delete ALB rules/target groups with no database entry
+- **Orphaned Resource Cleanup**: Delete ALB rules/target groups with no database entry, including rule-less `premium-<id>-tg` groups in this VPC
 - **Duplicate Rule Cleanup**: Remove redundant ALB rules with same routing_id
 - **State Reconciliation**: Sync database instance states with AWS reality
 - **Standby Pool Monitoring**: Health checks on standby instances (read-only)
