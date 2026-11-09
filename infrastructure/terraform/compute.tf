@@ -586,7 +586,7 @@ resource "aws_instance" "premium" {
 
   launch_template {
     id      = aws_launch_template.premium.id
-    version = "$Latest"
+    version = aws_launch_template.premium.latest_version
   }
 
   instance_type = var.premium_instance_type
