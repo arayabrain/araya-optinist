@@ -85,7 +85,8 @@ class ND2Reader(MicroscopeDataReaderBase):
     def is_available() -> bool:
         """Determine if library is available"""
         __class__.unpack_libs()
-        return os.path.isfile(__class__.get_library_path())
+        library_path = __class__.get_library_path()
+        return library_path is not None and os.path.isfile(library_path)
 
     def _init_library(self):
         # load sdk libraries (dependencies)
