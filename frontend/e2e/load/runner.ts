@@ -256,16 +256,20 @@ async function probeOnce(
   return rec
 }
 
-// Probe failures in a row per target; returns the reason to stop, if any
-function streak(
+// The reason to stop on this probe, if any: one at its threshold is a slow
+// service ("probe free: ..."), two failed in a row under it one that stopped
+// answering ("probe free down: ..."). Failures in a row are kept per target.
+export function probeStreak(
   fails: Record<Target, number>,
   rec: ProbeRecord,
   limits: Record<Target, number>,
 ): string | null {
   fails[rec.target] = rec.status === 200 ? 0 : fails[rec.target] + 1
-  return rec.dur >= limits[rec.target] || fails[rec.target] >= 2
-    ? `probe ${rec.target}: ${JSON.stringify(rec)}`
-    : null
+  if (rec.dur >= limits[rec.target])
+    return `probe ${rec.target}: ${JSON.stringify(rec)}`
+  if (fails[rec.target] >= 2)
+    return `probe ${rec.target} down: ${JSON.stringify(rec)}`
+  return null
 }
 
 export function fiveXxReason(requests: RequestRecord[]): string | null {
@@ -289,7 +293,7 @@ async function probeLoop(
     for (const target of ["public", "free"] as Target[]) {
       const rec = await probeOnce(p, target, limits[target])
       probes.push(rec)
-      ctx.abortReason = ctx.abortReason ?? streak(fails, rec, limits)
+      ctx.abortReason = ctx.abortReason ?? probeStreak(fails, rec, limits)
     }
     ctx.abortReason = ctx.abortReason ?? fiveXxReason(ctx.requests)
     await sleep(1000)
@@ -401,6 +405,11 @@ export async function runStep(input: StepInput): Promise<StepResult> {
     ])
     clearTimeout(timer)
     clearInterval(poll)
+    if (ended === "deadline") {
+      // Users still waiting at the deadline did not get the screen
+      ctx.abortReason =
+        ctx.abortReason ?? `deadline: ${plan.step_deadline_s} s passed`
+    }
     if (ended !== "done") {
       ctx.cancelled = ended === "deadline"
       for (const vu of users) vu.stop()

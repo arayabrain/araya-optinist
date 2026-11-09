@@ -11,6 +11,7 @@ import {
   StepSummary,
   StoppedBy,
   Target,
+  unexpectedAnswers,
 } from "./summary"
 
 // The before / after report. It holds measured values only - no hostname,
@@ -158,7 +159,10 @@ const STOP_WORDS: Record<StoppedBy, string> = {
   none: "no",
   public: "public probe",
   free: "free probe",
+  public_down: "public not answering",
+  free_down: "free not answering",
   "5xx": "5xx",
+  deadline: "deadline",
   other: "yes",
 }
 
@@ -177,8 +181,16 @@ function thresholdNote(b: StepFigures, a: StepFigures): string {
   return notes.length ? `; ${notes.join(", ")}` : ""
 }
 
+// Why a step that did not stop still cannot stand for the screen: users who
+// never finished, or answers a browser would not get, make it look fast
+function incomplete(f: StepFigures): string | null {
+  if (f.vu_done < f.vus) return `${f.vu_done} / ${f.vus} users done`
+  if (unexpectedAnswers(f.requests).length) return "error answers"
+  return null
+}
+
 // Every row says which way it went: a share where both steps ran through,
-// in words where one of them stopped
+// in words where one of them stopped or did not complete
 export function improvement(
   b: StepFigures | undefined,
   a: StepFigures | undefined,
@@ -193,6 +205,13 @@ export function improvement(
   if (!stoppedBefore && stoppedAfter)
     return `no stop → stopped (${STOP_WORDS[a.stopped_by]})${note}`
   if (stoppedBefore && stoppedAfter) return `stopped both times${note}`
+  const gaps = [
+    [incomplete(b), "before"],
+    [incomplete(a), "after"],
+  ]
+    .filter(([why]) => why)
+    .map(([why, side]) => `${side}: ${why}`)
+  if (gaps.length) return `not compared (${gaps.join("; ")})${note}`
   const x = headline(b)
   const y = headline(a)
   if (x === null || y === null || x === 0) return `not compared${note}`
@@ -227,13 +246,18 @@ function encoded(f: StepFigures, name: string): boolean {
   return (f.requests[name].encoded ?? 0) > 0
 }
 
-// The record's items both steps sent
+// The record's items both steps sent and that answered every time in both:
+// a timed-out item would otherwise read as a smaller record
 function recordItems(b: StepFigures, a: StepFigures): string[] {
+  const answered = (f: StepFigures, n: string) =>
+    f.requests[n].ok === f.requests[n].count
   return Object.keys(a.requests).filter(
     (n) =>
       n in b.requests &&
       !NOT_THE_RECORD.includes(n) &&
-      !n.startsWith("thumbnail:"),
+      !n.startsWith("thumbnail:") &&
+      answered(a, n) &&
+      answered(b, n),
   )
 }
 
@@ -334,7 +358,14 @@ const SCREEN_TABLES: Record<
     columns: [
       { title: "Stopped", cell: (f) => STOP_WORDS[f.stopped_by] },
       { title: "Users done", cell: (f) => `${f.vu_done} / ${f.vus}` },
-      { title: "Every item ready, last user", cell: (f) => fmtS(f.done_max) },
+      {
+        title: "Every item answered, last user",
+        cell: (f) => fmtS(f.done_max),
+      },
+      {
+        title: "Every item read, last user",
+        cell: (f) => fmtS(f.done_body_max),
+      },
       { title: "Slowest item", cell: (f) => fmtS(itemMax(f, ["reproduce"])) },
       { title: "Free probe max", cell: (f) => fmtS(f.free_probe_max) },
       { title: "Free CPU max", cell: (f) => fmtPct(f.cpu_max_pct?.free) },
@@ -346,9 +377,13 @@ const SCREEN_TABLES: Record<
     headline: (f) => f.done_max,
     columns: [
       { title: "Stopped", cell: (f) => STOP_WORDS[f.stopped_by] },
-      { title: "List shown, last", cell: (f) => fmtS(f.shown_max) },
-      { title: "OutputsView ready, last", cell: (f) => fmtS(f.dialog_max) },
-      { title: "Whole visit, last", cell: (f) => fmtS(f.done_max) },
+      { title: "List answered, last", cell: (f) => fmtS(f.shown_max) },
+      {
+        title: "OutputsView answered, last",
+        cell: (f) => fmtS(f.dialog_max),
+      },
+      { title: "Whole visit answered, last", cell: (f) => fmtS(f.done_max) },
+      { title: "Whole visit read, last", cell: (f) => fmtS(f.done_body_max) },
       { title: "Public probe max", cell: (f) => fmtS(f.public_probe_max) },
       { title: "Public CPU max", cell: (f) => fmtPct(f.cpu_max_pct?.public) },
     ],
@@ -482,11 +517,22 @@ export function differences(
       Math.abs(bytes[1] - bytes[0]) / bytes[0] > 0.01
     ) {
       notes.push(
-        `${SCREEN_TABLES[screen].title}: the fixture differs; the record's items both runs fetched move ` +
-          `${fmtMB(bytes[0])} → ${fmtMB(bytes[1])} at 1 user, so its times compare ` +
-          "a different record.",
+        `${SCREEN_TABLES[screen].title}: the record's items that answered in both runs move ` +
+          `${fmtMB(bytes[0])} → ${fmtMB(bytes[1])} per open at 1 user. Either the fixture ` +
+          "differs or the server now answers the same items with other bytes; read its " +
+          "times with that in mind.",
       )
     }
+  }
+  const bodies = (list: StepFigures[]) =>
+    list.some((f) => f.done_body_max !== undefined)
+  if (bodies(after) && !bodies(before)) {
+    notes.push(
+      'Items and thumbnails: the "answered" columns end at the headers, as the ' +
+        'reference tool\'s did, and give the Improvement. The "read" columns end at ' +
+        "the last byte, include the load generator's own link, and have no before. " +
+        "A visit's next phase now starts once the previous phase's bodies arrive.",
+    )
   }
   for (const screen of [
     "dashboard",

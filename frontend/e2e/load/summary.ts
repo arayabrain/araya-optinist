@@ -13,7 +13,11 @@ export type RequestRecord = {
   route: Route
   start: number
   status: number | null
+  // To the headers for an item or a thumbnail (the server's time), to the
+  // last byte for the rest
   dur: number
+  // To the last byte, for an item or a thumbnail
+  full?: number
   bytes?: number
   // The answer's Content-Encoding, when it had one
   encoding?: string
@@ -30,12 +34,17 @@ export type ProbeRecord = {
   error?: string
 }
 
+// shown, dialog and done end at the last item's headers; the *_body ones at
+// its last byte
 export type VuRecord = {
   vu: number
   account?: number
   shown?: number
   dialog?: number
   done?: number
+  shown_body?: number
+  dialog_body?: number
+  done_body?: number
   aborted?: boolean
   error?: string
 }
@@ -57,6 +66,8 @@ export type RequestStat = {
   bytes_total: number
   // Answers that came encoded; absent in steps whose client asked for none
   encoded?: number
+  // To the last byte; absent where bodies were not read
+  full_max?: number | null
 }
 
 export type ProbeStat = {
@@ -77,6 +88,10 @@ export type StepSummary = {
   done: Stat3
   // Absent in the steps measured before the PublicDataview screen existed
   dialog?: Stat3
+  // Absent in the steps whose items were timed to the headers only
+  shown_body?: Stat3
+  dialog_body?: Stat3
+  done_body?: Stat3
   requests: Record<string, RequestStat>
   probes: Record<Target, ProbeStat>
   release_at: number | null
@@ -152,6 +167,10 @@ export function summarize(step: {
       bytes_total: rs.reduce((sum, r) => sum + (r.bytes ?? 0), 0),
       encoded: rs.filter((r) => r.encoding).length,
     }
+    const fulls = rs
+      .filter((r) => r.status === 200 && typeof r.full === "number")
+      .map((r) => r.full as number)
+    if (fulls.length) requests[name].full_max = Math.max(...fulls)
   }
   const served = [
     ...new Set(
@@ -171,7 +190,15 @@ export function summarize(step: {
       max: durs.length ? Math.max(...durs) : null,
     }
   }
-  const of = (key: "shown" | "done" | "dialog") =>
+  const of = (
+    key:
+      | "shown"
+      | "done"
+      | "dialog"
+      | "shown_body"
+      | "dialog_body"
+      | "done_body",
+  ) =>
     stat3(
       step.vuRecords
         .map((v) => v[key])
@@ -187,6 +214,9 @@ export function summarize(step: {
     shown: of("shown"),
     done: of("done"),
     dialog: of("dialog"),
+    shown_body: of("shown_body"),
+    dialog_body: of("dialog_body"),
+    done_body: of("done_body"),
     requests,
     probes,
     release_at: step.releaseAt,
@@ -199,7 +229,17 @@ export function summarize(step: {
 // committed baseline is a list of them.
 // ---------------------------------------------------------------------------
 
-export type StoppedBy = "none" | "public" | "free" | "5xx" | "other"
+// A probe at its threshold (public, free) is a slow service; two failed
+// probes in a row (public_down, free_down) one that stopped answering
+export type StoppedBy =
+  | "none"
+  | "public"
+  | "free"
+  | "public_down"
+  | "free_down"
+  | "5xx"
+  | "deadline"
+  | "other"
 
 export type StepFigures = {
   screen: Screen
@@ -209,6 +249,10 @@ export type StepFigures = {
   shown_max: number | null
   done_max: number | null
   dialog_max: number | null
+  // To the last byte; absent where bodies were not read
+  shown_body_max?: number | null
+  dialog_body_max?: number | null
+  done_body_max?: number | null
   public_probe_max: number | null
   free_probe_max: number | null
   requests: Record<string, RequestStat>
@@ -221,14 +265,17 @@ export type StepFigures = {
 
 export function stoppedBy(abortReason: string | null): StoppedBy {
   if (!abortReason) return "none"
+  const down = abortReason.match(/^probe (public|free) down\b/)
+  if (down) return `${down[1] as Target}_down`
   const probe = abortReason.match(/^probe (public|free)\b/)
   if (probe) return probe[1] as Target
   if (abortReason.startsWith("5xx")) return "5xx"
+  if (abortReason.startsWith("deadline")) return "deadline"
   return "other"
 }
 
 export function figuresOf(s: StepSummary): StepFigures {
-  return {
+  const figures: StepFigures = {
     screen: s.screen,
     vus: s.vus,
     stopped_by: stoppedBy(s.abort_reason),
@@ -240,6 +287,12 @@ export function figuresOf(s: StepSummary): StepFigures {
     free_probe_max: s.probes.free.max,
     requests: s.requests,
   }
+  if (s.done_body) {
+    figures.shown_body_max = s.shown_body?.max ?? null
+    figures.dialog_body_max = s.dialog_body?.max ?? null
+    figures.done_body_max = s.done_body.max
+  }
+  return figures
 }
 
 // Why a step stopped, in words. The stop reason itself holds the probe's
@@ -249,7 +302,7 @@ export function describeStop(s: StepSummary): string {
   const reason = s.abort_reason
   if (!reason) return "no stop"
   const by = stoppedBy(reason)
-  if (by === "5xx") return reason
+  if (by === "5xx" || by === "deadline") return reason
   if (by === "other") return "stopped"
   const num = (key: string) => {
     const m = reason.match(new RegExp(`["']${key}["']:\\s*([\\d.]+)`))
@@ -265,6 +318,10 @@ export function describeStop(s: StepSummary): string {
         : `, ${fixed(t - s.release_at, 1)} s after the release`
   const status = num("status")
   const secs = dur === null ? "?" : fixed(dur, 2)
+  if (by === "public_down" || by === "free_down") {
+    const target = by.replace("_down", "")
+    return `${target} stopped answering: two probes in a row failed${when}`
+  }
   // A probe times out at its threshold, so a stall reads as a timeout
   if (status === null && /Timeout/.test(reason))
     return `${by} probe ≥ ${secs} s${when}`
@@ -276,6 +333,21 @@ export function describeStop(s: StepSummary): string {
 // The anonymous visitor's /auth/refresh is refused by design
 const EXPECTED_STATUS: Record<string, number> = { auth_refresh_anon: 401 }
 
+// The requests that answered other than a browser's would, with the answers
+export function unexpectedAnswers(
+  requests: Record<string, RequestStat>,
+): string[] {
+  const out: string[] = []
+  for (const [name, r] of Object.entries(requests)) {
+    const want = EXPECTED_STATUS[name] ?? 200
+    const bad =
+      want === 200 ? [...r.non_200] : r.non_200.filter((x) => x !== `${want}`)
+    if (want !== 200 && r.ok) bad.push("200")
+    if (bad.length) out.push(`${name}: ${bad.join(", ")}`)
+  }
+  return out
+}
+
 // A step passes when it did not stop, every virtual user finished, every
 // request answered as a browser's would, and every free-route request reached
 // the pinned instance.
@@ -283,13 +355,7 @@ export function failuresOf(s: StepSummary): string[] {
   const failures: string[] = []
   if (s.abort_reason) failures.push(`stopped: ${describeStop(s)}`)
   if (s.vu_done !== s.vus) failures.push(`${s.vu_done} / ${s.vus} users done`)
-  for (const [name, r] of Object.entries(s.requests)) {
-    const want = EXPECTED_STATUS[name] ?? 200
-    const bad =
-      want === 200 ? r.non_200 : r.non_200.filter((x) => x !== `${want}`)
-    if (want !== 200 && r.ok) bad.push("200")
-    if (bad.length) failures.push(`${name}: ${bad.join(", ")}`)
-  }
+  failures.push(...unexpectedAnswers(s.requests))
   const strays = s.free_served_by.filter((h) => h !== s.free_instance_hash)
   if (strays.length) {
     failures.push(`${strays.length} other free instance(s) answered`)

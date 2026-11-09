@@ -158,7 +158,16 @@ const NUMERIC = [
 ] as const
 type NumericMetric = (typeof NUMERIC)[number]
 type Op = "<" | "<=" | ">" | ">=" | "==" | "!="
-const STOP_REASONS = ["none", "public", "free", "5xx", "other"]
+const STOP_REASONS = [
+  "none",
+  "public",
+  "free",
+  "public_down",
+  "free_down",
+  "5xx",
+  "deadline",
+  "other",
+]
 
 export type Condition =
   | { metric: NumericMetric; op: Op; value: number; text: string }

@@ -506,9 +506,12 @@ column opens on both lists. The UI titles OutputsView "Workflow Outputs" and
 PublicDataview "OptiNiSt Public Repository"; the code's `PublicRepository` is
 a section of the landing page (`/`), which the lane does not load.
 
-OutputsView items and thumbnails are timed to the response headers: the server
-builds the body before it sends them, so the load generator's own link does
-not bound the figure. Every request accepts `gzip, deflate`, as a browser does
+OutputsView items and thumbnails are read to their last byte, as a browser
+reads them, over the user's kept connections. Each is timed twice: to its
+headers, the server's time and what the reference tool measured, and to its
+last byte, which adds the transfer over the load generator's own link. The
+report's "answered" columns and the Improvement use the first; its "read"
+columns the second. Every request accepts `gzip, deflate`, as a browser does
 on this plain-HTTP origin, so the server compresses what it would for a
 browser; bytes are counted as they crossed the wire. Free-route requests carry
 one `AWSALB` cookie, so every user reaches the same free instance, and each
@@ -516,9 +519,12 @@ step checks that they did.
 
 **Stops.** Two probes run once a second: the public service's `/health` and
 the free instance's `/is_standalone` with a Bearer token. A step stops at a
-probe at or over its threshold, two failed probes in a row, or 5xx above 5 %
-of the answers. A stopped step ends its screen, unless the plan's next step
-names the stop it accepts. Between steps there is a cool-down probed every 5
+probe at or over its threshold (a slow service), at two failed probes in a
+row (a service that stopped answering, its own stop reason), at 5xx above 5 %
+of the answers, or at its deadline. A stopped step ends its screen, unless the
+plan's next step names the stop it accepts. A step whose users did not all
+finish, or that got answers a browser would not, is not compared with its
+before. Between steps there is a cool-down probed every 5
 seconds; a service that fails or reaches its threshold on two probes in a
 row, an unhealthy target, or any scaling activity ends the run. A lone slow
 probe there is the load generator's own link: no load of the run is going,
@@ -533,7 +539,7 @@ on 2026-11-05, and `parity` runs 1 and 5 users per screen:
 
 | Screen | `default` steps |
 | --- | --- |
-| Dashboard | 1 / 10 / 50 (50 also after a stop by the free probe, at a 10 s free threshold) |
+| Dashboard | 1 / 10 / 50 (50 also after a slow free probe, not after free stopped answering, at a 10 s free threshold) |
 | `/users/me` burst | 50 |
 | OutputsView from Dataview | 1 / 5 / 10 / 20 |
 | PublicDataview | 1 / 5 / 10, then 20 and 30 while the previous public probe max stays under 3 s |

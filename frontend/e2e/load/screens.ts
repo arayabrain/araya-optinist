@@ -107,10 +107,21 @@ function elapsed(since: number): number {
   return round3((performance.now() - since) / 1000)
 }
 
+// Since a moment, to the last headers among the answers; to now when none
+// answered
+function lastHeaders(results: (HttpResult | null)[], since: number): number {
+  const at = results
+    .filter((r): r is HttpResult => r !== null)
+    .map((r) => r.headersAt)
+  return at.length ? round3((Math.max(...at) - since) / 1000) : elapsed(since)
+}
+
 type CallOptions = {
   headers?: Record<string, string>
   json?: unknown
-  ttfb?: boolean
+  // An item or a thumbnail: timed to the headers (the server's time) and to
+  // the last byte, its body read through and dropped
+  item?: boolean
 }
 
 // One request, recorded whatever happens to it: every failure is a data point
@@ -140,12 +151,17 @@ async function call(
     res = await send(vu.agent, ctx.base, method, path, {
       headers,
       json: opts.json,
-      ttfb: opts.ttfb,
+      discardBody: opts.item,
       timeoutMs: ctx.deadlineMs,
       inflight: vu.inflight,
     })
     rec.status = res.status
-    rec.dur = elapsed(t)
+    if (opts.item) {
+      rec.dur = round3((res.headersAt - t) / 1000)
+      rec.full = round3((res.endAt - t) / 1000)
+    } else {
+      rec.dur = round3((res.endAt - t) / 1000)
+    }
     rec.bytes = res.bytes
     rec.served_by = header(res, "x-served-by-instance")
     const encoding = header(res, "content-encoding")
@@ -296,15 +312,16 @@ export function dialogUser(
         headers,
       },
     )
-    await Promise.all(
+    const items = await Promise.all(
       spec.items.map((p) =>
         call(ctx, vu, itemName(p), "GET", p, routeOf(p), {
-          ttfb: true,
+          item: true,
           headers,
         }),
       ),
     )
-    v.done = elapsed(start)
+    v.done = lastHeaders(items, start)
+    v.done_body = elapsed(start)
   })
 }
 
@@ -339,29 +356,33 @@ export function publicUser(
     await call(ctx, vu, "public_list", "GET", spec.list, "public", {
       headers: ACCEPT_JSON,
     })
-    await Promise.all(
+    const thumbnails = await Promise.all(
       spec.thumbnails.map((t) =>
         call(ctx, vu, itemName(t.path), "GET", t.path, "public", {
-          ttfb: true,
+          item: true,
           headers: t.headers,
         }),
       ),
     )
-    v.shown = elapsed(start)
+    v.shown = lastHeaders(thumbnails, start)
+    v.shown_body = elapsed(start)
+    // The visitor opens the record once the list has drawn
     const dialogStart = performance.now()
     await call(ctx, vu, "public_reproduce", "GET", spec.reproduce, "public", {
       headers: ACCEPT_JSON,
     })
-    await Promise.all(
+    const items = await Promise.all(
       spec.items.map((t) =>
         call(ctx, vu, itemName(t.path), "GET", t.path, "public", {
-          ttfb: true,
+          item: true,
           headers: t.headers,
         }),
       ),
     )
-    v.dialog = elapsed(dialogStart)
-    v.done = elapsed(start)
+    v.dialog = lastHeaders(items, dialogStart)
+    v.dialog_body = elapsed(dialogStart)
+    v.done = lastHeaders(items, start)
+    v.done_body = elapsed(start)
   })
 }
 

@@ -35,15 +35,17 @@ import {
   renderReport,
   RunReport,
 } from "./report"
-import { fiveXxReason, watchStreak } from "./runner"
+import { fiveXxReason, probeStreak, watchStreak } from "./runner"
 import {
   CaptureRow,
   checkDashboardCapture,
   CaptureChanged,
   dialogSpec,
+  dialogUser,
   itemName,
   publicSpec,
   routeOf,
+  StepContext,
   VirtualUser,
 } from "./screens"
 import {
@@ -265,6 +267,29 @@ test.describe("load lane: figures", () => {
       /^probe free: /,
     )
   })
+
+  test("a probe at its threshold is a slow service, two failed under it one that stopped answering", () => {
+    const limits = { public: 5, free: 5 }
+    const probe = (dur: number, status: number | null): ProbeRecord => ({
+      target: "free",
+      t: 12,
+      status,
+      dur,
+      error: status === null ? "Timeout" : undefined,
+    })
+    const slow = probeStreak({ public: 0, free: 0 }, probe(5.01, null), limits)
+    const fails = { public: 0, free: 0 }
+    expect(probeStreak(fails, probe(0.05, 401), limits)).toBeNull()
+    const down = probeStreak(fails, probe(0.05, 401), limits)
+    const by = (reason: string | null) =>
+      figuresOf(summary({ abort_reason: reason })).stopped_by
+    expect(by(slow)).toBe("free")
+    expect(by(down)).toBe("free_down")
+    expect(by("deadline: 120 s passed")).toBe("deadline")
+    expect(describeStop(summary({ abort_reason: down }))).toBe(
+      "free stopped answering: two probes in a row failed, 1.5 s after the release",
+    )
+  })
 })
 
 test.describe("load lane: plan", () => {
@@ -349,6 +374,11 @@ test.describe("load lane: plan", () => {
     })
     expect(
       decideStep(dashboard, dashboard.steps[2], publicStop, gates),
+    ).toMatchObject({ run: false })
+    // A free instance that stopped answering is not a slow one
+    const freeDown = figures({ screen: "dashboard", stopped_by: "free_down" })
+    expect(
+      decideStep(dashboard, dashboard.steps[2], freeDown, gates),
     ).toMatchObject({ run: false })
     expect(decideStep(dialog, dialog.steps[1], freeStop, gates)).toMatchObject({
       run: false,
@@ -673,6 +703,7 @@ test.describe("load lane: HTTP", () => {
   let peak = 0
   const held: http.ServerResponse[] = []
   let acceptEncoding: string | undefined
+  let connections = 0
   const json = Buffer.from(JSON.stringify({ items: "x".repeat(4_000) }))
 
   test.beforeAll(async () => {
@@ -682,6 +713,13 @@ test.describe("load lane: HTTP", () => {
       res.on("close", () => open--)
       if (req.url === "/hold") {
         held.push(res)
+        return
+      }
+      if (req.url === "/file") {
+        // As a FileResponse: the headers first, the body after them
+        res.setHeader("Content-Length", "5")
+        res.flushHeaders()
+        setTimeout(() => res.end("bytes"), 200)
         return
       }
       if (req.url === "/json") {
@@ -701,6 +739,7 @@ test.describe("load lane: HTTP", () => {
       res.setHeader("Content-Length", "11")
       res.end("hello world")
     })
+    server.on("connection", () => connections++)
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
     base = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
   })
@@ -710,18 +749,48 @@ test.describe("load lane: HTTP", () => {
     await new Promise((resolve) => server.close(resolve))
   })
 
-  test("TTFB mode answers at the headers with the announced size, and reads the cookie it set", async () => {
+  test("an item is timed to its headers and to its last byte, read through on one kept connection", async () => {
     const agent = userAgent()
-    const res = await send(agent, base, "GET", "/", {
-      ttfb: true,
-      timeoutMs: 5_000,
-    })
-    expect(res.bytes).toBe(11)
-    expect(res.body).toBeUndefined()
-    expect(setCookie(res, "AWSALB")).toBe("pin-value")
+    const before = connections
+    for (let i = 0; i < 3; i++) {
+      const res = await send(agent, base, "GET", "/file", {
+        discardBody: true,
+        timeoutMs: 5_000,
+      })
+      expect(res.bytes).toBe(5)
+      expect(res.body).toBeUndefined()
+      expect(res.endAt - res.headersAt).toBeGreaterThan(150)
+    }
+    expect(connections - before).toBe(1)
     const full = await send(agent, base, "GET", "/", { timeoutMs: 5_000 })
     expect(full.body?.toString()).toBe("hello world")
+    expect(setCookie(full, "AWSALB")).toBe("pin-value")
     agent.destroy()
+  })
+
+  test("an OutputsView user is done at the last item's headers and read at its last byte", async () => {
+    const ctx: StepContext = {
+      base,
+      pin: "pin",
+      t0: performance.now(),
+      deadlineMs: 5_000,
+      requests: [],
+      vuRecords: [],
+      abortReason: null,
+      cancelled: false,
+      released: Promise.resolve(true),
+    }
+    await dialogUser(
+      ctx,
+      new VirtualUser(0),
+      {},
+      { reproduce: "/", items: ["/file", "/file"] },
+    )
+    const v = ctx.vuRecords[0]
+    expect((v.done_body as number) - (v.done as number)).toBeGreaterThan(0.15)
+    const item = ctx.requests.find((r) => r.name !== "reproduce")
+    expect((item?.full as number) - (item?.dur as number)).toBeGreaterThan(0.15)
+    expect(item?.bytes).toBe(5)
   })
 
   test("a user accepts gzip as a browser does, reads the body decoded and counts the bytes as sent", async () => {
@@ -732,11 +801,11 @@ test.describe("load lane: HTTP", () => {
     expect(full.body?.equals(json)).toBe(true)
     expect(full.bytes).toBe(zlib.gzipSync(json).length)
     expect(full.bytes).toBeLessThan(json.length / 10)
-    const ttfb = await send(agent, base, "GET", "/json", {
-      ttfb: true,
+    const item = await send(agent, base, "GET", "/json", {
+      discardBody: true,
       timeoutMs: 5_000,
     })
-    expect(ttfb.bytes).toBe(full.bytes)
+    expect(item.bytes).toBe(full.bytes)
     agent.destroy()
   })
 
@@ -807,6 +876,46 @@ test.describe("load lane: report", () => {
     expect(fmtS(3.465)).toBe("3.47 s")
   })
 
+  test("a step whose users did not all finish or that answered errors is not compared; a deadline is a stop", () => {
+    const headline = (f: StepFigures) => f.done_max
+    const before = dialog(20, { vus: 20, vu_done: 20, done_max: 10.2 })
+    // 17 of 20 cut at the deadline read as 71 % shorter before
+    expect(
+      improvement(
+        before,
+        dialog(20, { vus: 20, vu_done: 3, done_max: 2.9 }),
+        headline,
+      ),
+    ).toBe("not compared (after: 3 / 20 users done)")
+    // Every item answered 423 at once
+    const locked = dialog(20, {
+      vus: 20,
+      vu_done: 20,
+      done_max: 0.05,
+      requests: {
+        "image:Vcorr.json": {
+          count: 20,
+          ok: 0,
+          non_200: ["423"],
+          p50: null,
+          p95: null,
+          max: null,
+          bytes_total: 0,
+        },
+      },
+    })
+    expect(improvement(before, locked, headline)).toBe(
+      "not compared (after: error answers)",
+    )
+    expect(
+      improvement(
+        before,
+        dialog(20, { vus: 20, vu_done: 3, stopped_by: "deadline" }),
+        headline,
+      ),
+    ).toBe("no stop → stopped (deadline)")
+  })
+
   test("the report states the differences it has to be read with", () => {
     const req = (bytes: number) => ({
       count: 1,
@@ -819,14 +928,21 @@ test.describe("load lane: report", () => {
     })
     const before = [
       dialog(1, {
-        requests: { reproduce: req(10), "image:Vcorr.json": req(15_000_000) },
+        requests: {
+          reproduce: req(10),
+          "image:Vcorr.json": req(15_000_000),
+          "image:roi.json": req(5_000_000),
+        },
       }),
     ]
     const after = [
       dialog(1, {
+        done_body_max: 2,
         requests: {
           reproduce: req(10),
           "image:Vcorr.json": req(9_000_000),
+          // Timed out: no bytes, and no sign of a smaller record
+          "image:roi.json": { ...req(0), ok: 0, non_200: ["Timeout"] },
           hidden_outputs: req(50),
         },
       }),
@@ -834,10 +950,11 @@ test.describe("load lane: report", () => {
     const notes = differences(before, after).join("\n")
     expect(notes).toContain("at most 6 connections")
     expect(notes).toContain(
-      "OutputsView from Dataview, owner: the fixture differs; the record's items",
+      "OutputsView from Dataview, owner: the record's items that answered in both runs move",
     )
     expect(notes).toContain("15.00 MB → 9.00 MB")
     expect(notes).toContain("now also `hidden_outputs`")
+    expect(notes).toContain('The "read" columns end at the last byte')
   })
 
   test("a changed item set or a changed PublicDataview list is not read as another record", () => {

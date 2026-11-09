@@ -21,19 +21,21 @@ export function userAgent(): http.Agent {
 export type HttpResult = {
   status: number
   headers: http.IncomingHttpHeaders
-  // Only when the body was read; decoded
+  // Only when the body was kept; decoded
   body?: Buffer
   // As they crossed the wire, still encoded
   bytes: number
+  // performance.now() at the response headers and at the body's last byte
+  headersAt: number
+  endAt: number
 }
 
 export type SendOptions = {
   headers?: Record<string, string>
   json?: unknown
-  // Resolve on the response headers and drop the body unread: the server
-  // builds the body before it sends them, so this is the server's time, not
-  // the load generator's link. bytes is then the Content-Length it announced.
-  ttfb?: boolean
+  // Read the body to its end, as a browser does, but keep only its size. The
+  // connection then serves the user's next request.
+  discardBody?: boolean
   // Whole-request limit, headers and body
   timeoutMs: number
   // Holds the request while it is in flight, so its owner can end it: an
@@ -91,29 +93,33 @@ export function send(
     }
     req.on("error", fail)
     req.on("response", (res) => {
+      const headersAt = performance.now()
       const status = res.statusCode ?? 0
-      if (opts.ttfb) {
-        settle()
-        const bytes = Number(res.headers["content-length"] ?? 0)
-        res.destroy()
-        resolve({ status, headers: res.headers, bytes })
-        return
-      }
       const chunks: Buffer[] = []
-      res.on("data", (chunk: Buffer) => chunks.push(chunk))
+      let bytes = 0
+      res.on("data", (chunk: Buffer) => {
+        bytes += chunk.length
+        if (!opts.discardBody) chunks.push(chunk)
+      })
       res.on("error", fail)
       res.on("aborted", () => fail(new Error("aborted")))
       res.on("end", () => {
+        const endAt = performance.now()
         settle()
-        const raw = Buffer.concat(chunks)
-        let body: Buffer
-        try {
-          body = decode(raw, res.headers["content-encoding"])
-        } catch (e) {
-          reject(e)
+        const result = { status, headers: res.headers, bytes, headersAt, endAt }
+        if (opts.discardBody) {
+          resolve(result)
           return
         }
-        resolve({ status, headers: res.headers, body, bytes: raw.length })
+        try {
+          const body = decode(
+            Buffer.concat(chunks),
+            res.headers["content-encoding"],
+          )
+          resolve({ ...result, body })
+        } catch (e) {
+          reject(e)
+        }
       })
     })
     req.end(payload)
