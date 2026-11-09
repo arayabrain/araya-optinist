@@ -22,6 +22,7 @@ from fastapi import BackgroundTasks
 from studio.app.common.routers import files
 from studio.app.common.routers.files import _write_file_atomic
 from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
+from studio.tests.app.common.upload_request import upload_request
 
 OLD, NEW = b"old movie " * 1000, b"new movie " * 10
 UPLOAD_ID = "0123456789abcdef" * 2
@@ -126,7 +127,7 @@ def upload(filename, data=NEW, remote=False):
                 workspace_id="1",
                 filename=filename,
                 background_tasks=BackgroundTasks(),
-                file=Mock(file=io.BytesIO(data)),
+                request=upload_request(data),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=Mock(),
@@ -364,7 +365,7 @@ def test_the_upload_routes_fetch_copy_and_parse_off_the_event_loop(input_dir):
                 workspace_id="1",
                 filename="data.tif",
                 background_tasks=BackgroundTasks(),
-                file=Mock(file=io.BytesIO(NEW)),
+                request=upload_request(NEW),
                 current_user=Mock(id=1),
                 remote_bucket_name="bucket",
                 db=Mock(),
