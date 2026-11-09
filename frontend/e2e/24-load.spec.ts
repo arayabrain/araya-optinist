@@ -54,17 +54,19 @@ import {
 import {
   findRecord,
   leftoverDebts,
+  isCutoffStop,
   owe,
+  payDebt,
   Pin,
-  PROBE_BASELINE_S,
-  PROBE_TAIL_S,
   PUBLISHED,
   planName,
   RecordState,
   refreshed,
+  roomNeeded,
   runStep,
   setPublished,
   signIn,
+  stopActiveStep,
   watch,
   WatchResult,
   writeStep,
@@ -119,8 +121,6 @@ function baselinePath(): string {
 }
 // Sign-ins, captures and post-checks around the steps
 const RUN_OVERHEAD_MS = 20 * 60_000
-// The step's own probes and setup, beyond its deadline
-const STEP_SETUP_S = 30
 
 type Last = {
   outcome: StepOutcome
@@ -165,6 +165,7 @@ async function payRestore(): Promise<void> {
 
 test.describe("Web UI load lane @disruptive", () => {
   test.afterEach(async () => {
+    stopActiveStep()
     await payRestore().catch((e) =>
       console.error(`could not unpublish the public record: ${e}`),
     )
@@ -188,6 +189,26 @@ test.describe("Web UI load lane @disruptive", () => {
       devIsUp(new Date()),
       "development is stopped: it runs 23:00 -> 13:00 UTC on weekdays",
     ).toBe(true)
+
+    // A run that was killed while the record was public left its restore
+    // owed. It is paid first: the in-use check below would skip this run while
+    // that run's accounts still read as active.
+    const debts = leftoverDebts(cfg.resultsDir)
+    if (debts.length) {
+      let [debtor] = await signIn(cfg.base, [cfg.dialogOwner])
+      const debtorSession = async () =>
+        (debtor = await refreshed(cfg.base, debtor))
+      for (const { file, debt } of debts) {
+        expect(
+          debt.workspaceId === cfg.publicRecord.workspaceId &&
+            debt.uid === cfg.publicRecord.uid,
+          `${file}: an earlier run left another record published; unpublish it ` +
+            "as its owner, then delete the file",
+        ).toBe(true)
+        log.step("unpublishing the record an earlier run left published")
+        await payDebt(cfg.base, debtorSession, file)
+      }
+    }
 
     // Not knowing who is on is not the same as nobody being on
     const sql = sqlSkipReason()
@@ -225,6 +246,15 @@ test.describe("Web UI load lane @disruptive", () => {
 
     const started = new Date()
     const end = cutoffAt(plan, started, cfg.windowEnd)
+    // Room before the cut-off for one more step, and for the cool-down
+    // before it when a step ran already
+    const stepFits = (afterAStep = false) =>
+      fitsBefore(end, Date.now(), roomNeeded(plan, afterAStep))
+    // Past the cut-off nothing would run: no sign-in, no recording
+    expect(
+      stepFits(),
+      `the cut-off at ${end.toISOString()} leaves no room for a step`,
+    ).toBe(true)
     test.setTimeout(
       end.getTime() -
         started.getTime() +
@@ -264,19 +294,6 @@ test.describe("Web UI load lane @disruptive", () => {
     // and publish change refreshes the owner's session first
     const ownerSession = async (): Promise<Session> =>
       (sessions[owner] = await refreshed(base, sessions[owner]))
-
-    // A run that was killed while the record was public left its restore owed
-    for (const { file, debt } of leftoverDebts(cfg.resultsDir)) {
-      expect(
-        debt.workspaceId === cfg.publicRecord.workspaceId &&
-          debt.uid === cfg.publicRecord.uid,
-        `${file}: an earlier run left another record published; unpublish it ` +
-          "as its owner, then delete the file",
-      ).toBe(true)
-      log.step("unpublishing the record an earlier run left published")
-      await setPublished(base, await ownerSession(), debt.id, false)
-      fs.rmSync(file)
-    }
 
     let dialog: DialogSpec | undefined
     if (
@@ -320,14 +337,6 @@ test.describe("Web UI load lane @disruptive", () => {
     let post: RunReport["post"]
     let postError: string | null = null
     let settleUnhealthy: string | null = null
-    // Room for one more step before the cut-off: its baseline probes, its
-    // deadline, its tail and its setup
-    const stepFits = () =>
-      fitsBefore(
-        end,
-        Date.now(),
-        PROBE_BASELINE_S + plan.step_deadline_s + PROBE_TAIL_S + STEP_SETUP_S,
-      )
 
     // The settle belongs to the run: after an early end the last step has
     // had its cool-down already, and that record stays the step's
@@ -372,6 +381,13 @@ test.describe("Web UI load lane @disruptive", () => {
           if (!d.run) {
             skipStep(d.reason)
             ended = d.endsScreen
+            continue
+          }
+          // The cool-down counts too: a step that cannot follow it in time
+          // ends the run here, and the settle starts at once
+          if (!stepFits(last !== null)) {
+            endedEarly = `the cut-off at ${end.toISOString()}`
+            skipStep("the run ended early")
             continue
           }
           if (last) {
@@ -428,12 +444,29 @@ test.describe("Web UI load lane @disruptive", () => {
                 continue
               }
               log.step("publishing the public record for the run")
-              const debt = owe(runDir, { ...cfg.publicRecord, id: rec.id })
-              owedRestore = async () => {
-                await setPublished(base, await ownerSession(), rec.id, false)
-                fs.rmSync(debt, { force: true })
+              const debt = {
+                ...cfg.publicRecord,
+                id: rec.id,
+                at: new Date().toISOString(),
+                updatedAt: null,
               }
-              await setPublished(base, await ownerSession(), rec.id, true)
+              const debtFile = owe(runDir, debt)
+              const publishing = (async () => {
+                await setPublished(base, await ownerSession(), rec.id, true)
+                const now = await findRecord(
+                  base,
+                  await ownerSession(),
+                  cfg.publicRecord,
+                )
+                owe(runDir, { ...debt, updatedAt: now?.updatedAt ?? null })
+              })()
+              // An unpublish that lands while the publish is still syncing
+              // changes nothing on the server, so the restore waits for it
+              owedRestore = async () => {
+                await publishing.catch(() => undefined)
+                await payDebt(base, ownerSession, debtFile)
+              }
+              await publishing
             }
             log.step("capturing PublicDataview")
             const rows: CaptureRow[] = await capturePublic(browser, base, {
@@ -474,6 +507,14 @@ test.describe("Web UI load lane @disruptive", () => {
             expectedHash,
             cutoff: end,
           })
+          // Held back by the cut-off before its release: a step that did not
+          // run, not one that stopped
+          if (isCutoffStop(result)) {
+            windows.pop()
+            endedEarly = `the cut-off at ${end.toISOString()}`
+            skipStep("the run ended early")
+            continue
+          }
           stepTimes.set(key, { from, to: new Date() })
           expectedHash = expectedHash ?? result.pin.hash
           const dir = path.join(runDir, key)

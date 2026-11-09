@@ -25,7 +25,9 @@ export type HttpResult = {
   body?: Buffer
   // As they crossed the wire, still encoded
   bytes: number
-  // performance.now() at the response headers and at the body's last byte
+  // performance.now() when the request got a connection (after any wait for
+  // one of the user's six), at the response headers and at the last byte
+  sentAt: number
   headersAt: number
   endAt: number
 }
@@ -79,6 +81,10 @@ export function send(
       headers,
     })
     opts.inflight?.add(req)
+    let sentAt = performance.now()
+    req.on("socket", () => {
+      sentAt = performance.now()
+    })
     const timer = setTimeout(
       () => req.destroy(new RequestTimeout()),
       opts.timeoutMs,
@@ -106,7 +112,14 @@ export function send(
       res.on("end", () => {
         const endAt = performance.now()
         settle()
-        const result = { status, headers: res.headers, bytes, headersAt, endAt }
+        const result = {
+          status,
+          headers: res.headers,
+          bytes,
+          sentAt,
+          headersAt,
+          endAt,
+        }
         if (opts.discardBody) {
           resolve(result)
           return

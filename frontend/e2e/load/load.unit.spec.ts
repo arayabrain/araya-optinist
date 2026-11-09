@@ -26,6 +26,7 @@ import { header, send, setCookie, userAgent } from "./http"
 import {
   cutoffAt,
   decideStep,
+  fitsBefore,
   loadPlan,
   Plan,
   planProblems,
@@ -48,9 +49,11 @@ import {
   fiveXxReason,
   leftoverDebts,
   owe,
+  payDebt,
   probeLoop,
   prober,
   probeStreak,
+  roomNeeded,
   watchStreak,
 } from "./runner"
 import {
@@ -976,6 +979,35 @@ test.describe("load lane: HTTP", () => {
     expect(item?.bytes).toBe(5)
   })
 
+  test("an item's server time and the screen's answered time leave out the wait for one of six connections", async () => {
+    const ctx: StepContext = {
+      base,
+      pin: "pin",
+      t0: performance.now(),
+      deadlineMs: 5_000,
+      requests: [],
+      vuRecords: [],
+      abortReason: null,
+      cancelled: false,
+      released: Promise.resolve(true),
+    }
+    // Twelve items whose bodies take 200 ms: the last six wait for a socket
+    await dialogUser(
+      ctx,
+      new VirtualUser(0),
+      {},
+      { reproduce: "/", items: Array(12).fill("/file") },
+    )
+    const items = ctx.requests.filter((r) => r.name !== "reproduce")
+    expect(Math.max(...items.map((r) => r.dur))).toBeLessThan(0.1)
+    expect(Math.max(...items.map((r) => r.wait as number))).toBeGreaterThan(
+      0.15,
+    )
+    const v = ctx.vuRecords[0]
+    expect(v.done as number).toBeLessThan(0.15)
+    expect(v.done_body as number).toBeGreaterThan(0.35)
+  })
+
   test("a Dashboard user whose refresh is refused stops there, unfinished, as a browser goes to the login page", async () => {
     const ctx: StepContext = {
       base,
@@ -1163,7 +1195,7 @@ test.describe("load lane: report", () => {
     )
     expect(notes).toContain("15.00 MB → 9.00 MB")
     expect(notes).toContain("now also `hidden_outputs`")
-    expect(notes).toContain('The "read" columns end at the last byte')
+    expect(notes).toContain('The "read" columns are the user\'s wait')
   })
 
   test("a changed item set or a changed PublicDataview list is not read as another record", () => {
@@ -1494,11 +1526,101 @@ test.describe("load lane: safety gates", () => {
     const run = path.join(results, "20261109T000000Z-default")
     fs.mkdirSync(run)
     expect(leftoverDebts(results)).toEqual([])
-    const file = owe(run, { workspaceId: 7, uid: "6ab411e3", id: 42 })
-    expect(leftoverDebts(results)).toEqual([
-      { file, debt: { workspaceId: 7, uid: "6ab411e3", id: 42 } },
-    ])
+    const debt = {
+      workspaceId: 7,
+      uid: "6ab411e3",
+      id: 42,
+      at: "2026-11-09T03:00:00.000Z",
+      updatedAt: null,
+    }
+    const file = owe(run, debt)
+    expect(leftoverDebts(results)).toEqual([{ file, debt }])
     fs.rmSync(results, { recursive: true })
+  })
+
+  test("a debt is paid only for the run's own publish, and only once the record reads private", async () => {
+    // The owner's listing and the unpublish, as the API answers them
+    const state = { status: 1, updatedAt: "2026-11-09T03:00:05", takes: true }
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/api/dataview/publish/42/off") {
+        if (state.takes) state.status = 0
+        res.end("true")
+        return
+      }
+      res.end(
+        JSON.stringify({
+          items: [
+            {
+              id: 42,
+              uid: "6ab411e3",
+              publish_status: state.status,
+              updated_at: state.updatedAt,
+            },
+          ],
+        }),
+      )
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const base = new URL(
+      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    )
+    const owner = async () => ({
+      accessToken: "a",
+      refreshToken: "r",
+      exToken: null,
+    })
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "load-debt-"))
+    const debt = {
+      workspaceId: 7,
+      uid: "6ab411e3",
+      id: 42,
+      at: "2026-11-09T03:00:00.000Z",
+      updatedAt: "2026-11-09T03:00:05",
+    }
+    const now = Date.parse("2026-11-09T04:00:00Z")
+    try {
+      // The owner changed the record since: left alone, debt kept
+      const file = owe(dir, { ...debt, updatedAt: "2026-11-09T03:00:01" })
+      await expect(payDebt(base, owner, file, now)).rejects.toThrow(
+        /changed after the run published it/,
+      )
+      expect(state.status).toBe(1)
+      expect(fs.existsSync(file)).toBe(true)
+      // The unpublish did not take: debt kept
+      state.takes = false
+      owe(dir, debt)
+      await expect(payDebt(base, owner, file, now)).rejects.toThrow(
+        /still public/,
+      )
+      expect(fs.existsSync(file)).toBe(true)
+      // The run's own publish: unpublished, confirmed, paid
+      state.takes = true
+      await payDebt(base, owner, file, now)
+      expect(state.status).toBe(0)
+      expect(fs.existsSync(file)).toBe(false)
+      // A publish that never answered is paid only while fresh
+      state.status = 1
+      owe(dir, { ...debt, updatedAt: null })
+      await expect(
+        payDebt(base, owner, file, now + 2 * 24 * 3600_000),
+      ).rejects.toThrow(/changed after/)
+      await payDebt(base, owner, file, now)
+      expect(state.status).toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+      await new Promise((resolve) => server.close(resolve))
+    }
+  })
+
+  test("a step after another needs room for the cool-down before it, not after the cut-off", () => {
+    const p = loadPlan("default")
+    const end = new Date("2026-11-09T12:40:00Z")
+    const before = (s: number) => end.getTime() - s * 1000
+    expect(roomNeeded(p, false)).toBe(170)
+    expect(roomNeeded(p, true)).toBe(410)
+    // Five minutes before the cut-off: a first step fits, one more does not
+    expect(fitsBefore(end, before(300), roomNeeded(p, false))).toBe(true)
+    expect(fitsBefore(end, before(300), roomNeeded(p, true))).toBe(false)
   })
 
   test("development runs 23:00 -> 13:00 UTC on weekdays", () => {

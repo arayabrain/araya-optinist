@@ -13,10 +13,12 @@ export type RequestRecord = {
   route: Route
   start: number
   status: number | null
-  // To the headers for an item or a thumbnail (the server's time), to the
-  // last byte for the rest
+  // For an item or a thumbnail, to the headers from when it got a connection
+  // (the server's time); for the rest, to the last byte
   dur: number
-  // To the last byte, for an item or a thumbnail
+  // For an item or a thumbnail: its wait for one of the user's connections,
+  // and the time to its last byte from when the user asked for it
+  wait?: number
   full?: number
   bytes?: number
   // The answer's Content-Encoding, when it had one

@@ -115,20 +115,25 @@ function elapsed(since: number): number {
   return round3((performance.now() - since) / 1000)
 }
 
-// Since a moment, to the last headers among the answers; to now when none
-// answered
-function lastHeaders(results: (HttpResult | null)[], since: number): number {
-  const at = results
-    .filter((r): r is HttpResult => r !== null)
-    .map((r) => r.headersAt)
-  return at.length ? round3((Math.max(...at) - since) / 1000) : elapsed(since)
+// A phase of items, answered: from the phase's start to its first request on
+// the wire, then the slowest server answer, each from when its request got a
+// connection. Waits for one of the user's six connections are left out, as
+// the reference tool, which had no such limit, left them out. To now when
+// none answered.
+function phaseAnswered(results: (HttpResult | null)[], since: number): number {
+  const answered = results.filter((r): r is HttpResult => r !== null)
+  if (!answered.length) return elapsed(since)
+  const firstSent = Math.min(...answered.map((r) => r.sentAt))
+  const slowest = Math.max(...answered.map((r) => r.headersAt - r.sentAt))
+  return round3((firstSent - since + slowest) / 1000)
 }
 
 type CallOptions = {
   headers?: Record<string, string>
   json?: unknown
-  // An item or a thumbnail: timed to the headers (the server's time) and to
-  // the last byte, its body read through and dropped
+  // An item or a thumbnail: timed to the headers from when it got a
+  // connection (the server's time), and to the last byte from when the user
+  // asked for it; its body read through and dropped
   item?: boolean
 }
 
@@ -165,7 +170,8 @@ async function call(
     })
     rec.status = res.status
     if (opts.item) {
-      rec.dur = round3((res.headersAt - t) / 1000)
+      rec.dur = round3((res.headersAt - res.sentAt) / 1000)
+      rec.wait = round3((res.sentAt - t) / 1000)
       rec.full = round3((res.endAt - t) / 1000)
     } else {
       rec.dur = round3((res.endAt - t) / 1000)
@@ -328,7 +334,7 @@ export function dialogUser(
         }),
       ),
     )
-    v.done = lastHeaders(items, start)
+    v.done = phaseAnswered(items, start)
     v.done_body = elapsed(start)
   })
 }
@@ -372,7 +378,7 @@ export function publicUser(
         }),
       ),
     )
-    v.shown = lastHeaders(thumbnails, start)
+    v.shown = phaseAnswered(thumbnails, start)
     v.shown_body = elapsed(start)
     // The visitor opens the record once the list has drawn
     const dialogStart = performance.now()
@@ -387,9 +393,11 @@ export function publicUser(
         }),
       ),
     )
-    v.dialog = lastHeaders(items, dialogStart)
+    v.dialog = phaseAnswered(items, dialogStart)
     v.dialog_body = elapsed(dialogStart)
-    v.done = lastHeaders(items, start)
+    // Answered: the list's phase, then the record's, without the thumbnail
+    // bodies the visitor read in between
+    v.done = round3(v.shown + v.dialog)
     v.done_body = elapsed(start)
   })
 }

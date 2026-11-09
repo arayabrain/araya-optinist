@@ -135,7 +135,11 @@ export async function planName(base: URL, s: Session): Promise<string | null> {
   )
 }
 
-export type RecordState = { id: number; publishStatus: number }
+export type RecordState = {
+  id: number
+  publishStatus: number
+  updatedAt: string | null
+}
 
 // The record's primary key and publish state, from its owner's listing. The
 // uid alone is not unique: records are keyed by workspace and uid.
@@ -151,10 +155,21 @@ export async function findRecord(
   if (res.status !== 200)
     throw new Error(`the owner's Dataview listing answered ${res.status}`)
   const { items } = jsonBody<{
-    items: { id: number; uid?: string; publish_status: number }[]
+    items: {
+      id: number
+      uid?: string
+      publish_status: number
+      updated_at?: string | null
+    }[]
   }>(res)
   const item = items.find((i) => i.uid === ref.uid)
-  return item ? { id: item.id, publishStatus: item.publish_status } : null
+  return item
+    ? {
+        id: item.id,
+        publishStatus: item.publish_status,
+        updatedAt: item.updated_at ?? null,
+      }
+    : null
 }
 
 export const PUBLISHED = 1
@@ -177,13 +192,61 @@ export async function setPublished(
 // A record the run published is owed a restore until it is unpublished. The
 // debt is written to the run's folder before the publish request, so a run
 // that is killed, or whose request answer is lost, leaves it for the next run.
+// Once the publish answers, the debt notes the record's updated_at: a record
+// changed after that is its owner's again and is not unpublished.
 export const RESTORE_FILE = "publish-restore.json"
-export type RestoreDebt = { workspaceId: number; uid: string; id: number }
+export type RestoreDebt = {
+  workspaceId: number
+  uid: string
+  id: number
+  // When the debt was written, and the record's updated_at after the publish
+  // (null while the publish has not answered)
+  at: string
+  updatedAt: string | null
+}
+
+// A debt whose publish never answered is paid only while it is this fresh
+const UNANSWERED_DEBT_MS = 24 * 3600_000
 
 export function owe(dir: string, debt: RestoreDebt): string {
   const file = path.join(dir, RESTORE_FILE)
   fs.writeFileSync(file, JSON.stringify(debt))
   return file
+}
+
+export function readDebt(file: string): RestoreDebt {
+  return JSON.parse(fs.readFileSync(file, "utf-8")) as RestoreDebt
+}
+
+// Unpublishes the record, then confirms it is private before the debt goes.
+// Throws, keeping the debt, when the record changed since the run published it
+// or the restore did not take.
+export async function payDebt(
+  base: URL,
+  owner: () => Promise<Session>,
+  file: string,
+  now = Date.now(),
+): Promise<void> {
+  const debt = readDebt(file)
+  const ref = { workspaceId: debt.workspaceId, uid: debt.uid }
+  const before = await findRecord(base, await owner(), ref)
+  if (before?.publishStatus === PUBLISHED) {
+    const ours =
+      debt.updatedAt !== null
+        ? before.updatedAt === debt.updatedAt
+        : now - Date.parse(debt.at) < UNANSWERED_DEBT_MS
+    if (!ours) {
+      throw new Error(
+        `${file}: the record changed after the run published it; check it ` +
+          "as its owner, then delete the file",
+      )
+    }
+    await setPublished(base, await owner(), debt.id, false)
+    const after = await findRecord(base, await owner(), ref)
+    if (after?.publishStatus === PUBLISHED)
+      throw new Error(`${file}: the record is still public after the restore`)
+  }
+  fs.rmSync(file, { force: true })
 }
 
 // The debts earlier runs left in the results folder
@@ -195,10 +258,7 @@ export function leftoverDebts(
     .readdirSync(resultsDir)
     .map((run) => path.join(resultsDir, run, RESTORE_FILE))
     .filter((file) => fs.existsSync(file))
-    .map((file) => ({
-      file,
-      debt: JSON.parse(fs.readFileSync(file, "utf-8")) as RestoreDebt,
-    }))
+    .map((file) => ({ file, debt: readDebt(file) }))
 }
 
 export type Pin = { cookie: string; hash: string }
@@ -366,6 +426,36 @@ export type StepResult = {
   probeSession: Session
 }
 
+// A step's own setup around its probes: refreshing tokens, taking the pin
+const STEP_SETUP_S = 30
+
+// The seconds one more step needs before the cut-off: its baseline probes,
+// deadline, tail and setup, and the cool-down first when a step ran before it
+export function roomNeeded(plan: Plan, afterAStep: boolean): number {
+  return (
+    (afterAStep ? plan.cooldown_s : 0) +
+    PROBE_BASELINE_S +
+    plan.step_deadline_s +
+    PROBE_TAIL_S +
+    STEP_SETUP_S
+  )
+}
+
+// The stop reason of a step the cut-off held back before its release
+export const CUTOFF_STOP = "cut-off"
+
+export function isCutoffStop(result: StepResult): boolean {
+  return !!result.summary.abort_reason?.startsWith(`${CUTOFF_STOP}:`)
+}
+
+// Stops the step that is running, if any: for a hook after a timed-out test,
+// whose body is no longer waited for
+let activeStop: (() => void) | null = null
+
+export function stopActiveStep(): void {
+  activeStop?.()
+}
+
 export async function runStep(input: StepInput): Promise<StepResult> {
   const { base, plan, screen, step } = input
   const t0 = performance.now()
@@ -418,53 +508,66 @@ export async function runStep(input: StepInput): Promise<StepResult> {
   let probing = true
   const p = prober(base, probeSession, pin, t0)
   const probeTask = probeLoop(p, ctx, probes, limits, () => probing)
-  await sleep(PROBE_BASELINE_S * 1000)
-  if (
-    !fitsBefore(input.cutoff, Date.now(), plan.step_deadline_s + PROBE_TAIL_S)
-  ) {
-    ctx.abortReason =
-      ctx.abortReason ?? `cut-off: ${input.cutoff.toISOString()}`
-  }
-  let releaseAt: number | null = null
-  if (ctx.abortReason) {
+  // However the step ends, even abandoned by a timed-out test, its users and
+  // probes stop with it
+  const stopAll = () => {
+    probing = false
     release(false)
-    await Promise.all(tasks)
-  } else {
-    release(true)
-    releaseAt = round3((performance.now() - t0) / 1000)
-    const all = Promise.all(tasks)
-    let timer: NodeJS.Timeout | undefined
-    let poll: NodeJS.Timeout | undefined
-    const ended = await Promise.race([
-      all.then(() => "done" as const),
-      new Promise<"deadline">((resolve) => {
-        timer = setTimeout(() => resolve("deadline"), ctx.deadlineMs)
-      }),
-      // A stop rule ends every user at once: their open and queued requests
-      // would keep loading the service the rule found struggling
-      new Promise<"stopped">((resolve) => {
-        poll = setInterval(() => {
-          if (ctx.abortReason) resolve("stopped")
-        }, 100)
-      }),
-    ])
-    clearTimeout(timer)
-    clearInterval(poll)
-    if (ended === "deadline") {
-      // Users still waiting at the deadline did not get the screen
-      ctx.abortReason =
-        ctx.abortReason ?? `deadline: ${plan.step_deadline_s} s passed`
-    }
-    if (ended !== "done") {
-      ctx.cancelled = ended === "deadline"
-      for (const vu of users) vu.stop()
-      await all
-    }
-    await sleep(PROBE_TAIL_S * 1000)
+    for (const vu of users) vu.stop()
   }
-  probing = false
-  await probeTask
-  p.agent.destroy()
+  activeStop = stopAll
+  let releaseAt: number | null = null
+  try {
+    await sleep(PROBE_BASELINE_S * 1000)
+    if (
+      !fitsBefore(input.cutoff, Date.now(), plan.step_deadline_s + PROBE_TAIL_S)
+    ) {
+      ctx.abortReason =
+        ctx.abortReason ?? `${CUTOFF_STOP}: ${input.cutoff.toISOString()}`
+    }
+    if (ctx.abortReason) {
+      release(false)
+      await Promise.all(tasks)
+    } else {
+      release(true)
+      releaseAt = round3((performance.now() - t0) / 1000)
+      const all = Promise.all(tasks)
+      let timer: NodeJS.Timeout | undefined
+      let poll: NodeJS.Timeout | undefined
+      const raced = await Promise.race([
+        all.then(() => "done" as const),
+        new Promise<"deadline">((resolve) => {
+          timer = setTimeout(() => resolve("deadline"), ctx.deadlineMs)
+        }),
+        // A stop rule ends every user at once: their open and queued
+        // requests would keep loading the service the rule found struggling
+        new Promise<"stopped">((resolve) => {
+          poll = setInterval(() => {
+            if (ctx.abortReason) resolve("stopped")
+          }, 100)
+        }),
+      ])
+      clearTimeout(timer)
+      clearInterval(poll)
+      // A stop rule that fired just before the deadline is still the stop
+      const ended = raced === "deadline" && ctx.abortReason ? "stopped" : raced
+      if (ended === "deadline") {
+        // Users still waiting at the deadline did not get the screen
+        ctx.abortReason = `deadline: ${plan.step_deadline_s} s passed`
+      }
+      if (ended !== "done") {
+        ctx.cancelled = ended === "deadline"
+        for (const vu of users) vu.stop()
+        await all
+      }
+      await sleep(PROBE_TAIL_S * 1000)
+    }
+  } finally {
+    activeStop = null
+    stopAll()
+    await probeTask
+    p.agent.destroy()
+  }
 
   const summary = summarize({
     screen,

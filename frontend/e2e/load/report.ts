@@ -539,10 +539,12 @@ export function differences(
     list.some((f) => f.done_body_max !== undefined)
   if (bodies(after) && !bodies(before)) {
     notes.push(
-      'Items and thumbnails: the "answered" columns end at the headers, as the ' +
-        'reference tool\'s did, and give the Improvement. The "read" columns end at ' +
-        "the last byte, include the load generator's own link, and have no before. " +
-        "A visit's next phase now starts once the previous phase's bodies arrive.",
+      'Items and thumbnails: the "answered" columns add up each phase\'s slowest ' +
+        "server answer, timed from when its request got a connection, as the " +
+        "reference tool (which had no connection limit) timed them; they give the " +
+        'Improvement. The "read" columns are the user\'s wait to the last byte, ' +
+        "with the waits for one of its 6 connections and the load generator's own " +
+        "link, and have no before.",
     )
   }
   for (const screen of [

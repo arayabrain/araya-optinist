@@ -514,10 +514,13 @@ a section of the landing page (`/`), which the lane does not load.
 
 OutputsView items and thumbnails are read to their last byte, as a browser
 reads them, over the user's kept connections. Each is timed twice: to its
-headers, the server's time and what the reference tool measured, and to its
-last byte, which adds the transfer over the load generator's own link. The
-report's "answered" columns and the Improvement use the first; its "read"
-columns the second. Every request accepts `gzip, deflate`, as a browser does
+headers from when its request got a connection, the server's time, and to its
+last byte from when the user asked for it, which adds the wait for one of the
+6 connections and the transfer over the load generator's own link. A screen's
+"answered" columns add up each phase's slowest server answer, as the
+reference tool, which had no connection limit, measured them; they give the
+Improvement. Its "read" columns are the user's own wait to the last byte.
+Every request accepts `gzip, deflate`, as a browser does
 on this plain-HTTP origin, so the server compresses what it would for a
 browser; bytes are counted as they crossed the wire. Free-route requests carry
 one `AWSALB` cookie, so every user reaches the same free instance, and each
