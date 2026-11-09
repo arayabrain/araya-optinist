@@ -388,6 +388,11 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
   --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
 ```
 
+`terraform apply` does both steps itself in `null_resource.deploy_to_ecs`. It waits up to about
+an hour for every service to settle (the public service alone took about 40 minutes on
+development) and fails the apply, naming each unsettled service, if one does not. The failed
+resource is tainted, so the next apply forces a new deployment on every service again.
+
 ### Safe Deployment Workflow
 
 1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
@@ -463,10 +468,9 @@ AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURAT
 
 A change to either reaches a host only when it is launched from the new launch template version:
 
-- `aws_instance.premium` and `aws_instance.background` use `version = "$Latest"`. Run `terraform plan`
-  first: if they do not show `-/+`, replace them explicitly, at a time with no premium run active
-  (users on the old instance lose their task):
-  `terraform apply -replace=aws_instance.premium[0] -replace=aws_instance.background -var-file=...`.
+- `aws_instance.premium` and `aws_instance.background` pin their template's `latest_version`, so the
+  plan that changes a template shows `-/+` on its instance and the same apply replaces it. Apply at a
+  time with no premium run active: users on the old premium instance lose their task.
 - The free and public ASGs do not instance-refresh under `$Latest`; their hosts pick the change up
   at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
 - Premium hosts created by the Lambda (`premium_manager.py`) keep their size until terminated.

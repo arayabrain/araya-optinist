@@ -333,6 +333,84 @@ resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
   }
 }
 
+# A target gone or never healthy, missed by the ASG's ELB check; desired is the ASG's, which still publishes with no task
+resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
+  for_each = {
+    free = {
+      tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
+      service_name  = aws_ecs_service.autoscaling.name
+      asg_name      = aws_autoscaling_group.main.name
+      periods       = 30
+      datapoints    = 25
+    }
+    public = {
+      tg_arn_suffix = aws_lb_target_group.public.arn_suffix
+      service_name  = aws_ecs_service.public.name
+      asg_name      = aws_autoscaling_group.public.name
+      # A host replacement waits out two 600 s drains, about 25 min short
+      periods    = 40
+      datapoints = 35
+    }
+  }
+
+  alarm_name          = "${local.env_prefix}-${each.key}-serving-below-desired"
+  alarm_description   = "Fewer healthy ${each.key} targets than ASG desired hosts for ${each.value.datapoints} of ${each.value.periods} min, outside an ECS deployment. Check ASG activity first: a refresh or scale-out in progress is expected."
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = "0"
+  evaluation_periods  = each.value.periods
+  datapoints_to_alarm = each.value.datapoints
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  metric_query {
+    id          = "gap"
+    expression  = "IF(FILL(deploys, 0) > 1, 0, desired - FILL(healthy, 0))"
+    return_data = true
+  }
+
+  metric_query {
+    id = "desired"
+    metric {
+      namespace   = "AWS/AutoScaling"
+      metric_name = "GroupDesiredCapacity"
+      period      = 60
+      stat        = "Minimum"
+      dimensions = {
+        AutoScalingGroupName = each.value.asg_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "deploys"
+    metric {
+      namespace   = "ECS/ContainerInsights"
+      metric_name = "DeploymentCount"
+      period      = 60
+      stat        = "Maximum"
+      dimensions = {
+        ClusterName = aws_ecs_cluster.main.name
+        ServiceName = each.value.service_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "healthy"
+    metric {
+      namespace   = "AWS/ApplicationELB"
+      metric_name = "HealthyHostCount"
+      period      = 60
+      stat        = "Minimum"
+      dimensions = {
+        LoadBalancer = aws_lb.autoscaling.arn_suffix
+        TargetGroup  = each.value.tg_arn_suffix
+      }
+    }
+  }
+}
+
 # Premium UnHealthyHostCount alarms are created/deleted by the premium-manager
 # Lambda alongside each per-user target group; static alarms here would not
 # match the dynamic per-user TG ARNs.
@@ -772,6 +850,7 @@ resource "aws_cloudwatch_dashboard" "main" {
             # Per-TG alarms (for_each maps) flattened into the overview.
             [for a in aws_cloudwatch_metric_alarm.alb_response_time_high : a.arn],
             [for a in aws_cloudwatch_metric_alarm.tg_unhealthy_hosts : a.arn],
+            [for a in aws_cloudwatch_metric_alarm.tg_serving_below_desired : a.arn],
           )
         }
       }

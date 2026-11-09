@@ -46,12 +46,27 @@ done
 # ===========================================
 DIRTY_FILES=$(git -C "$(git rev-parse --show-toplevel)" status --porcelain)
 if [ -n "$DIRTY_FILES" ]; then
-    echo "ERROR: Working tree is not clean. Commit or stash changes before building."
+    CHANGED_FILES=$(printf '%s\n' "$DIRTY_FILES" | grep -v '^??' | cut -c4-)
+    UNTRACKED_FILES=$(printf '%s\n' "$DIRTY_FILES" | grep '^??' | cut -c4-)
+    echo "ERROR: the image is built only from committed code, and this checkout has"
+    echo "files that are not committed. Untracked files count too: anything"
+    echo "'git status' lists blocks the build."
+    if [ -n "$CHANGED_FILES" ]; then
+        echo ""
+        echo "Changed (modified, staged, deleted or renamed):"
+        printf '%s\n' "$CHANGED_FILES" | sed 's/^/  /'
+    fi
+    if [ -n "$UNTRACKED_FILES" ]; then
+        echo ""
+        echo "Untracked (not in git):"
+        printf '%s\n' "$UNTRACKED_FILES" | sed 's/^/  /'
+    fi
     echo ""
-    echo "$DIRTY_FILES"
-    echo ""
-    echo "This check ensures builds are reproducible from a clean commit."
-    echo "Note: .gitignored secrets (.env, firebase JSONs) are excluded by .dockerignore, not this check."
+    echo "To fix: commit them, or set them aside with 'git stash -u' and bring them"
+    echo "back after the build with 'git stash pop'."
+    echo "From terraform apply: what the apply already changed stays changed, and"
+    echo "null_resource.build_and_deploy is marked tainted, so rerunning"
+    echo "terraform apply retries the build."
     exit 1
 fi
 
