@@ -191,6 +191,10 @@ rules:
         trigger_threshold: 0.5
         pre_event: -10
         post_event: 10
+        baseline_window: 0
+        smooth_sigma_frames: 0.0
+        mean_trace_band: sem
+        sort_by_peak: false
     output: 1/tutorial1/eta_elysjdrr7j/eta.pkl
     type: eta
     nwbfile: null

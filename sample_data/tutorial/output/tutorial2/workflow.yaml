@@ -151,7 +151,7 @@ nodeDict:
               path: init_params/do_refit
             K:
               type: child
-              value: 10
+              value: 4
               path: init_params/K
             gSig:
               type: child
@@ -165,7 +165,7 @@ nodeDict:
               path: init_params/ssub
             tsub:
               type: child
-              value: 1
+              value: 2
               path: init_params/tsub
             nb:
               type: child
@@ -184,14 +184,14 @@ nodeDict:
           children:
             p:
               type: child
-              value: 2
+              value: 1
               path: preprocess_params/p
         patch_params:
           type: parent
           children:
             rf:
               type: child
-              value: null
+              value: 15
               path: patch_params/rf
             stride:
               type: child
@@ -445,11 +445,11 @@ nodeDict:
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/gSig_range
                 min_SNR:
                   type: child
-                  value: 2.5
+                  value: 2
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/min_SNR
                 min_cnn_thr:
                   type: child
-                  value: 0.9
+                  value: 0.99
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/min_cnn_thr
                 rval_lowest:
                   type: child
@@ -457,7 +457,7 @@ nodeDict:
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/rval_lowest
                 rval_thr:
                   type: child
-                  value: 0.8
+                  value: 0.85
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/rval_thr
                 use_cnn:
                   type: child
@@ -630,6 +630,13 @@ nodeDict:
                   type: child
                   value: 1
                   path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/online_params/W_update_factor
+            dff_params:
+              type: parent
+              children:
+                frames_window:
+                  type: child
+                  value: 500
+                  path: advanced/init_params/preprocess_params/patch_params/merge_params/quality_evaluation_params/online_params/dff_params/frames_window
       path: caiman/caiman_cnmf
       type: algorithm
       fileType: null
