@@ -67,8 +67,9 @@ export type RunReport = {
     alb5xx: Record<Target | "alb", number>
     logTruncated: string[]
   }
-  // Why the watch after the last step found a service unsettled, or null;
-  // absent in runs saved before the report held it
+  // Whether the watch after the last step ran, and why it found a service
+  // unsettled, or null; absent in runs saved before the report held them
+  settleRan?: boolean
   settleUnhealthy?: string | null
 }
 
@@ -767,7 +768,9 @@ export function renderReport(
       `- Targets at the end: free ${p.targets.free.join(", ") || "none"}; ` +
         `public ${p.targets.public.join(", ") || "none"}`,
     )
-    if (run.settleUnhealthy !== undefined) {
+    if (run.settleRan === false) {
+      lines.push("- The watch after the last step: not run")
+    } else if (run.settleUnhealthy !== undefined) {
       lines.push(
         `- The watch after the last step: ${
           run.settleUnhealthy
